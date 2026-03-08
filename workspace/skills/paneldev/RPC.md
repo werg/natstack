@@ -75,29 +75,22 @@ export default function Editor() {
 ## Use from Parent
 
 ```tsx
-import { useState, useEffect } from "react";
-import { createChildWithContract } from "@workspace/runtime";
+import { useState } from "react";
+import { buildPanelLink } from "@workspace/runtime";
 import { editorContract } from "@workspace-panels/editor/contract";
 
 export default function IDE() {
-  const [editor, setEditor] = useState(null);
+  const [dirty, setDirty] = useState(false);
 
-  const launch = async () => {
-    const child = await createChildWithContract(editorContract, { name: "editor" });
-    setEditor(child);
+  const launch = () => {
+    // Navigate to the editor panel via URL
+    window.open(buildPanelLink("panels/editor"));
   };
-
-  useEffect(() => {
-    if (!editor) return;
-    const unsub1 = editor.onEvent("saved", ({ path }) => console.log("Saved:", path));
-    const unsub2 = editor.onEvent("modified", ({ dirty }) => console.log("Dirty:", dirty));
-    return () => { unsub1(); unsub2(); };
-  }, [editor]);
 
   return (
     <div>
       <button onClick={launch}>Open Editor</button>
-      {editor && <button onClick={() => editor.call.save()}>Save</button>}
+      <span>{dirty ? "Modified" : "Saved"}</span>
     </div>
   );
 }

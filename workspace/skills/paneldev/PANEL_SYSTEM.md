@@ -23,9 +23,14 @@ NatStack panels are TypeScript apps running in isolated webviews.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `title` | string | Required | Display name |
+| `title` | string | package name | Display name |
 | `entry` | string | `index.tsx` | Entry point |
-| `exposeModules` | string[] | `[]` | Extra modules to bundle |
+| `sourcemap` | boolean | `true` | Include inline source maps |
+| `externals` | Record | `{}` | Import map entries (externalized from bundle) |
+| `exposeModules` | string[] | `[]` | Modules registered on `__natstackModuleMap__` |
+| `dedupeModules` | string[] | `[]` | Additional packages to deduplicate |
+| `shell` | boolean | `false` | Grants shell service access (about pages) |
+| `hiddenInLauncher` | boolean | `false` | Hide from launcher UI |
 
 ## Runtime API
 
@@ -41,13 +46,22 @@ import {
   rpc,
 
   // Services
-  db, fs, fsReady, gitConfig, pubsubConfig, env,
+  db, fs, ai, gitConfig, pubsubConfig, env,
 
   // Lifecycle
-  closeSelf, getInfo, getTheme, onThemeChange, onFocus,
+  closeSelf, focusPanel, getInfo, getTheme, onThemeChange, onFocus, exposeMethod,
+  onConnectionError,
+
+  // Git utilities
+  getWorkspaceTree, listBranches, listCommits,
 
   // Navigation
   buildPanelLink, contextIdToSubdomain,
+
+  // Utilities
+  parseContextId, isValidContextId, getInstanceId,
+  normalizePath, getFileName, resolvePath,
+  getStateArgs, useStateArgs, setStateArgs,
 } from "@workspace/runtime";
 ```
 
@@ -71,6 +85,34 @@ window.location.href = buildPanelLink("panels/chat", {
 window.open(buildPanelLink("panels/editor"));
 ```
 
+## Git Utilities
+
+```typescript
+import { getWorkspaceTree, listBranches, listCommits } from "@workspace/runtime";
+
+// Get workspace directory tree (nodes have name, path, isGitRepo, launchable, packageInfo)
+const tree = await getWorkspaceTree();
+
+// List branches: [{ name: "main", current: true }, ...]
+const branches = await listBranches("panels/editor");
+
+// List commits (default: HEAD, limit 50): [{ oid, message, author: { name, timestamp } }]
+const commits = await listCommits("panels/editor", "main", 20);
+```
+
+## Connection Error Handling
+
+```typescript
+import { onConnectionError } from "@workspace/runtime";
+
+const unsubscribe = onConnectionError((error) => {
+  // error: { code: number, reason: string, source?: "electron" | "server" }
+  console.error(`Connection error [${error.code}]: ${error.reason}`);
+});
+```
+
+Fires on terminal auth failures (invalid token, bad handshake). Not on normal disconnects.
+
 ## Context & Storage
 
 Panels have isolated storage based on context ID:
@@ -82,9 +124,10 @@ Panels have isolated storage based on context ID:
 
 | Scope | Location |
 |-------|----------|
-| `@workspace-panels/*` | `workspace/panels/` |
-| `@workspace-workers/*` | `workspace/workers/` |
 | `@workspace/*` | `workspace/packages/` |
+| `@workspace-panels/*` | `workspace/panels/` |
+| `@workspace-about/*` | `workspace/about/` |
+| `@workspace-agents/*` | `workspace/agents/` |
 
 ## Related Docs
 

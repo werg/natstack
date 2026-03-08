@@ -32,6 +32,7 @@ import {
   usePanel,           // Full runtime API
   usePanelTheme,      // "light" | "dark"
   usePanelId,         // Panel's unique ID
+  usePanelPartition,  // Storage partition name (null while loading)
   useContextId,       // Context ID for storage
   usePanelFocus,      // Focus state
   usePanelParent,     // Parent handle
@@ -121,26 +122,87 @@ Environment variables are set at panel creation time via the server.
 
 ---
 
-## Workers
+## State Args
 
-Background processes with console UI:
+Pass and receive configuration data during navigation:
 
 ```typescript
-// workers/compute/index.ts
-import { rpc, parent } from "@workspace/runtime";
+import { buildPanelLink, getStateArgs, useStateArgs, setStateArgs } from "@workspace/runtime";
 
-rpc.expose({
-  async compute(data: number[]) {
-    const sum = data.reduce((a, b) => a + b, 0);
-    parent.emit("progress", { percent: 100 });
-    return sum;
-  },
+// Pass state when navigating
+window.location.href = buildPanelLink("panels/chat", {
+  contextId: "abc-123",
+  stateArgs: { channelName: "general", mode: "compact" },
 });
+
+// Read state reactively in a component (re-renders on update)
+const stateArgs = useStateArgs<{ channelName: string; mode: string }>();
+
+// Read state non-reactively (snapshot, for event handlers)
+const args = getStateArgs<{ channelName: string }>();
+
+// Update state (persists + triggers re-render)
+await setStateArgs({ mode: "expanded" });
 ```
 
-```json
-{ "natstack": { "title": "Compute" } }
+---
+
+## Database
+
+SQLite database access via `db` from the runtime:
+
+```typescript
+import { db } from "@workspace/runtime";
+
+const database = await db.open("my-data");
+await database.exec("CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT)");
+await database.run("INSERT INTO items (name) VALUES (?)", ["example"]);
+const rows = await database.query("SELECT * FROM items");
+const one = await database.get("SELECT * FROM items WHERE id = ?", [1]);
+await database.close();
 ```
+
+Databases are stored at `<workspace>/.databases/<name>.db`.
+
+---
+
+## PubSub
+
+Real-time messaging between panels via `@natstack/pubsub`:
+
+```typescript
+import { pubsubConfig } from "@workspace/runtime";
+import { connectWithConfig } from "@natstack/pubsub";
+
+const client = connectWithConfig(pubsubConfig, {
+  channel: "my-channel",
+  contextId,
+  handle: "my-panel",
+  reconnect: true,
+});
+
+await client.ready();
+await client.publish("chat", { text: "Hello!" });
+
+for await (const msg of client.messages()) {
+  console.log(msg.type, msg.payload);
+}
+```
+
+---
+
+## Package Scopes
+
+| Scope | Import from | Location | Purpose |
+|-------|-------------|----------|---------|
+| `@workspace/*` | workspace packages | `workspace/packages/` | Shared utilities (built by esbuild) |
+| `@workspace-panels/*` | other panels | `workspace/panels/` | Panel code sharing |
+| `@workspace-about/*` | about panels | `workspace/about/` | Shell panels |
+| `@workspace-agents/*` | agents | `workspace/agents/` | Agent processes |
+| `@natstack/*` | root packages | `packages/` | Pre-built libraries (pubsub, ai, git, types) |
+
+`@workspace/*` packages export TypeScript source directly (esbuild transpiles at build time).
+`@natstack/*` packages are pre-compiled and export from `dist/`.
 
 ---
 

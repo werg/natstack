@@ -361,6 +361,37 @@ const roles = await ai.listRoles();
 // { fast: { displayName: "...", modelId: "..." }, smart: {...}, ... }
 ```
 
+### Browser Automation
+
+Control browser panels via Playwright over CDP (Electron mode only):
+
+```typescript
+import { chromium } from "playwright-core";
+import { rpc } from "@workspace/runtime";
+
+// 1. Open a browser child (host intercepts and creates a browser panel)
+window.open("https://example.com");
+
+// 2. Get the CDP endpoint for the browser panel
+const cdpUrl = await rpc.call("main", "browser.getCdpEndpoint", browserId);
+
+// 3. Connect Playwright
+const browser = await chromium.connectOverCDP(cdpUrl);
+const page = browser.contexts()[0].pages()[0];
+
+// 4. Interact with the page
+await page.fill("input[name=query]", "NatStack");
+await page.click(".search-button");
+const text = await page.textContent(".results .first");
+
+// 5. Or use RPC for simple navigation
+await rpc.call("main", "browser.navigate", browserId, "https://other.com");
+await rpc.call("main", "browser.goBack", browserId);
+await rpc.call("main", "browser.reload", browserId);
+```
+
+Browser service methods: `getCdpEndpoint`, `navigate`, `goBack`, `goForward`, `reload`, `stop` — all take `browserId` as the first argument. Panels can only control browser panels they own.
+
 ---
 
 ## Sharing Code
@@ -395,35 +426,79 @@ import type { MyType } from "@workspace-panels/my-panel/types";
 
 ---
 
-## Workers
+## State Args
 
-Workers are background processes with console UI:
+Pass and receive configuration data during panel navigation:
 
 ```typescript
-// workers/compute/index.ts
-import { rpc, parent } from "@workspace/runtime";
+import { buildPanelLink, getStateArgs, useStateArgs, setStateArgs } from "@workspace/runtime";
 
-rpc.expose({
-  async compute(data: number[]) {
-    const sum = data.reduce((a, b) => a + b, 0);
-    parent.emit("progress", { percent: 100 });
-    return sum;
-  },
+// Pass state when navigating
+window.location.href = buildPanelLink("panels/chat", {
+  contextId: "abc-123",
+  stateArgs: { channelName: "general", mode: "compact" },
 });
+
+// Read state reactively in a component (re-renders on update)
+const stateArgs = useStateArgs<{ channelName: string; mode: string }>();
+
+// Read state non-reactively (snapshot, for event handlers)
+const args = getStateArgs<{ channelName: string }>();
+
+// Update state (persists to DB + triggers re-render via WebSocket)
+await setStateArgs({ mode: "expanded" });
 ```
 
-```json
-{
-  "natstack": { "title": "Compute Worker" }
+---
+
+## Database
+
+SQLite database access via `db` from the runtime:
+
+```typescript
+import { db } from "@workspace/runtime";
+
+const database = await db.open("my-data");
+await database.exec("CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT)");
+await database.run("INSERT INTO items (name) VALUES (?)", ["example"]);
+const rows = await database.query<{ id: number; name: string }>("SELECT * FROM items");
+const one = await database.get<{ id: number; name: string }>("SELECT * FROM items WHERE id = ?", [1]);
+await database.close();
+```
+
+Databases are stored at `<workspace>/.databases/<name>.db` and backed by `better-sqlite3`.
+
+---
+
+## PubSub
+
+Real-time messaging between panels via `@natstack/pubsub`:
+
+```typescript
+import { pubsubConfig } from "@workspace/runtime";
+import { connectWithConfig } from "@natstack/pubsub";
+
+const client = connectWithConfig(pubsubConfig, {
+  channel: "my-channel",
+  contextId,
+  handle: "my-panel",
+  reconnect: true,
+});
+
+await client.ready();
+await client.publish("chat", { text: "Hello!" });
+
+for await (const msg of client.messages()) {
+  console.log(msg.type, msg.payload);
 }
 ```
 
-Workers are launched via URL-based navigation:
-```typescript
-import { buildPanelLink } from "@workspace/runtime";
-
-window.open(buildPanelLink("workers/compute"));
-```
+Key PubSub client APIs:
+- `publish(type, payload)` -- Send a message
+- `messages()` -- Async iterator for incoming messages
+- `onRoster(handler)` -- Track connected participants
+- `updateMetadata(meta)` -- Update participant metadata
+- `ready(timeoutMs?)` -- Wait for replay completion
 
 ---
 
@@ -441,14 +516,7 @@ window.open(buildPanelLink("workers/compute"));
 
 4. **Export contracts** -- Put contract in separate file and export via package.json
 
-5. **Wait for fs** -- Use `fsReady` before filesystem operations:
-   ```typescript
-   import { fsReady } from "@workspace/runtime";
-   await fsReady;
-   // Now safe to use fs
-   ```
-
-6. **Use buildPanelLink for navigation** -- All panel navigation uses URL-based links:
+5. **Use buildPanelLink for navigation** -- All panel navigation uses URL-based links:
    ```typescript
    import { buildPanelLink } from "@workspace/runtime";
    window.location.href = buildPanelLink("panels/target");

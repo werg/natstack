@@ -10,36 +10,46 @@ NatStack uses platform-specific directories for storing application state, follo
 | **macOS** | `~/Library/Application Support/natstack/` |
 | **Windows** | `%APPDATA%\natstack\` |
 
-These paths are managed by Electron's `app.getPath('userData')` API.
+These paths are determined by `getUserDataPath()` from `@natstack/env-paths`.
 
 ## Contents
 
-### `panel-cache/`
+### `builds/`
 
-Stores cached panel builds to avoid rebuilding panels when their source hasn't changed.
+Content-addressed build store. Each build is stored immutably at `{userData}/builds/{build_key}/`:
 
-- `build-cache.json` - Metadata about cached builds (panel path, hash, timestamps)
+```
+{build_key}/
+  ├── bundle.js
+  ├── bundle.css      (panels/about only)
+  ├── index.html      (panels/about only)
+  ├── package.json    (agents only — {"type":"module"})
+  ├── assets/         (chunks, images, fonts)
+  └── metadata.json   (sentinel — kind, name, ev, sourcemap, builtAt)
+```
 
-**Size**: Grows with the number of unique panels you've loaded. Each panel typically uses a few KB.
+The build key is a hash of `BUILD_CACHE_VERSION + unitName + effectiveVersion + sourcemap`. No LRU or TTL — garbage collection prunes entries not referenced by any active unit.
 
 **When to clear**:
 - If you suspect stale/corrupt builds
 - To force rebuild all panels
 - To reclaim disk space
 
-## Build Artifacts (`build-artifacts/`)
+### `build-artifacts/`
 
-NatStack stores build outputs and dependency installs centrally under the NatStack state root:
+Stores external dependency installs (npm `node_modules`) for panels and agents, keyed by a hash of the merged dependency set.
 
-- With an active workspace: `<workspace>/.cache/build-artifacts/`
-- Otherwise: `<userData>/build-artifacts/` (usually `~/.config/natstack/build-artifacts/`)
+### `context-scopes/`
 
-This avoids creating build directories inside panel/worker repositories.
+Per-workspace, per-context filesystem scopes at `{userData}/context-scopes/{workspaceId}/{contextId}/`. Each context gets an isolated filesystem root.
 
-Typical contents:
-- `panel/<id>/<commit>/deps/` - Per-panel dependency installs (`node_modules/`, `package.json`, lockfile)
-- `worker/<id>/<commit>/deps/` - Per-worker dependency installs
-- `git/<id>/temp-builds/` - Temporary git worktrees/checkouts used for versioned builds
+### `ev-map.json`
+
+Persisted effective version map — derived state, safe to delete (triggers full recompute on next startup).
+
+### `ref-state.json`
+
+Per-unit commit SHAs used for cold-start diffing. Compared against current refs to determine which units need EV recomputation.
 
 ## Fallback Behavior
 

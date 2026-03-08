@@ -23,8 +23,7 @@ my-panel/
   "natstack": {
     "title": "My Panel",
     "entry": "index.tsx",
-    "exposeModules": ["@radix-ui/colors"],
-    "injectHostThemeVariables": true
+    "exposeModules": ["@radix-ui/colors"]
   },
   "dependencies": {
     "@workspace/runtime": "workspace:*",
@@ -37,10 +36,14 @@ my-panel/
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `title` | string | **Required** | Display name |
+| `title` | string | package name | Display name |
 | `entry` | string | `index.tsx` | Entry point file |
-| `exposeModules` | string[] | `[]` | Extra modules to bundle |
-| `injectHostThemeVariables` | boolean | `true` | Inherit theme CSS variables |
+| `sourcemap` | boolean | `true` | Include inline source maps |
+| `externals` | Record | `{}` | Import map entries (externalized from bundle) |
+| `exposeModules` | string[] | `[]` | Modules registered on `__natstackModuleMap__` |
+| `dedupeModules` | string[] | `[]` | Additional packages to deduplicate (react/react-dom always deduped) |
+| `shell` | boolean | `false` | Grants shell service access (about pages) |
+| `hiddenInLauncher` | boolean | `false` | Hide from launcher UI |
 
 ## Core Runtime API
 
@@ -66,22 +69,43 @@ import {
 
   // Services
   db,                    // SQLite database access
-  fs,                    // Filesystem (RPC-backed or Node.js)
-  fsReady,               // Promise that resolves when fs ready
+  fs,                    // Filesystem (RPC-backed)
+  ai,                    // AI client (streaming text generation with tools)
 
   // Configuration
   gitConfig,             // Git server config
   pubsubConfig,          // PubSub config
   env,                   // Environment variables (Record<string, string>)
+
   // Lifecycle
   closeSelf,             // Close this panel
+  focusPanel,            // Focus another panel by ID
   getInfo,               // Get panel info
   getTheme,              // Get current theme
   onThemeChange,         // Subscribe to theme changes
   onFocus,               // Subscribe to focus events
+  exposeMethod,          // Expose RPC methods
+  onConnectionError,     // Subscribe to RPC connection errors
+
+  // Git utilities
+  getWorkspaceTree,      // Get workspace directory tree with metadata
+  listBranches,          // List branches for a repo (repoPath) → BranchInfo[]
+  listCommits,           // List commits for a repo (repoPath, ref?, limit?) → CommitInfo[]
 
   // Utilities
   parseContextId,        // Parse context ID components
+  isValidContextId,      // Validate context ID format
+  getInstanceId,         // Extract instance ID from context ID
+
+  // Path utilities
+  normalizePath,         // Cross-platform path normalization
+  getFileName,           // Extract file name from path
+  resolvePath,           // Resolve relative paths
+
+  // State args
+  getStateArgs,          // Get panel state arguments
+  useStateArgs,          // React hook for state arguments
+  setStateArgs,          // Set panel state arguments
 } from "@workspace/runtime";
 ```
 
@@ -164,6 +188,47 @@ rpc.expose({
 parent.emit("saved", { path: "/file.txt" }); // Typed!
 ```
 
+## Git Utilities
+
+Query workspace repository metadata:
+
+```typescript
+import { getWorkspaceTree, listBranches, listCommits } from "@workspace/runtime";
+
+// Get the full workspace directory tree
+const tree = await getWorkspaceTree();
+// tree.children: WorkspaceNode[] — each node has name, path, isGitRepo,
+//   launchable?: { title }, packageInfo?: { name, version }, children
+
+// List branches for a repo
+const branches = await listBranches("panels/editor");
+// [{ name: "main", current: true }, { name: "feature-x", current: false }]
+
+// List recent commits (default: HEAD, limit 50)
+const commits = await listCommits("panels/editor");
+// [{ oid: "abc123...", message: "Fix bug", author: { name: "...", timestamp: 1709900000 } }]
+
+// List commits on a specific branch with custom limit
+const history = await listCommits("panels/editor", "feature-x", 10);
+```
+
+## Connection Error Handling
+
+Monitor RPC connection health:
+
+```typescript
+import { onConnectionError } from "@workspace/runtime";
+
+const unsubscribe = onConnectionError((error) => {
+  console.error(`Connection error [${error.code}]: ${error.reason}`);
+  // error.source is "electron" or "server" when using dual transports
+});
+
+// Later: unsubscribe();
+```
+
+Fires on terminal WebSocket close codes (auth failures like invalid token or bad handshake). Does not fire on normal disconnects (e.g., panel closing).
+
 ## Context & Storage
 
 Panels have isolated storage based on their context ID:
@@ -177,9 +242,10 @@ Panels can share code via workspace packages:
 
 | Scope | Location | Purpose |
 |-------|----------|---------|
-| `@workspace-panels/*` | `workspace/panels/` | Panel packages |
-| `@workspace-workers/*` | `workspace/workers/` | Worker packages |
 | `@workspace/*` | `workspace/packages/` | Shared utilities |
+| `@workspace-panels/*` | `workspace/panels/` | Panel packages |
+| `@workspace-about/*` | `workspace/about/` | About/shell panels |
+| `@workspace-agents/*` | `workspace/agents/` | Agent packages |
 
 Export contracts for cross-panel imports:
 ```json
@@ -194,5 +260,6 @@ Export contracts for cross-panel imports:
 ## Build System
 
 - Panels built on-demand with esbuild
-- Cached by source file hash
-- State directory: `~/.config/natstack/` (Linux), `~/Library/Application Support/natstack/` (macOS)
+- Cached by effective version (content hash + transitive dependency hashes)
+- Build store: `{userData}/builds/{build_key}/`
+- See [BUILD_SYSTEM.md](BUILD_SYSTEM.md) for full details

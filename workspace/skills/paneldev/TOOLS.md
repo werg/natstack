@@ -98,14 +98,29 @@ Called via `rpc.call("main", "service.method", ...args)`:
 
 #### project.create
 
-Scaffold a new workspace project (panel, package, skill, agent).
+Scaffold a new workspace project. Supported types: `panel`, `package`, `skill`, `agent`.
 
 ```
+// Create a panel
 eval({ code: `
   import { rpc } from "@workspace/runtime";
   await rpc.call("main", "project.create", contextId, "panel", "my-app", "My App");
 `, timeout: 30000 })
+
+// Create a shared package
+eval({ code: `
+  import { rpc } from "@workspace/runtime";
+  await rpc.call("main", "project.create", contextId, "package", "utils", "Shared Utils");
+`, timeout: 30000 })
+
+// Create an agent
+eval({ code: `
+  import { rpc } from "@workspace/runtime";
+  await rpc.call("main", "project.create", contextId, "agent", "my-agent", "My Agent");
+`, timeout: 30000 })
 ```
+
+Each type scaffolds into its directory (`panels/`, `packages/`, `agents/`, `skills/`), initializes git, commits, and pushes.
 
 #### git.contextOp
 

@@ -26,7 +26,7 @@ The build key is the full cache identity:
 build_key = hash(BUILD_CACHE_VERSION, unitName, ev, sourcemap)
 ```
 
-`BUILD_CACHE_VERSION` (currently `"2"`) is incremented when build logic changes (plugins, esbuild options, shims) to invalidate all cached builds. Unit name is included to prevent different units with identical EVs from sharing builds.
+`BUILD_CACHE_VERSION` (currently `"3"`) is incremented when build logic changes (plugins, esbuild options, shims) to invalidate all cached builds. Unit name is included to prevent different units with identical EVs from sharing builds.
 
 ### Content-Addressed Build Store
 
@@ -70,7 +70,7 @@ Scans four workspace directories:
 |-----------|------|-------|
 | `workspace/packages/` | `package` | `@workspace/*` |
 | `workspace/panels/` | `panel` | `@workspace-panels/*` |
-| `workspace/about/` | `about` | `@workspace-about/*` |
+| `workspace/about/` | `panel` | `@workspace-about/*` |
 | `workspace/agents/` | `agent` | `@workspace-agents/*` |
 
 Each unit's `package.json` is read. Dependencies matching any workspace scope (`@workspace/`, `@workspace-panels/`, `@workspace-about/`, `@workspace-agents/`) become internal edges in the DAG. Both `dependencies` and `peerDependencies` are included (peers first, so regular deps override on conflict).

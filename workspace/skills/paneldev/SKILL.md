@@ -59,6 +59,8 @@ eval({ code: `
 | Task | How |
 |------|-----|
 | Create panel | `eval` — `rpc.call("main", "project.create", contextId, "panel", "my-app")` |
+| Create package | `eval` — `rpc.call("main", "project.create", contextId, "package", "utils")` |
+| Create agent | `eval` — `rpc.call("main", "project.create", contextId, "agent", "my-agent")` |
 | Read a file | `Read({ file_path: "panels/my-app/index.tsx" })` |
 | Edit a file | `Edit({ file_path: "panels/my-app/index.tsx", old_string: "...", new_string: "..." })` |
 | Check types | `eval` — `rpc.call("main", "typecheck.check", "panels/my-app")` |
