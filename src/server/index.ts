@@ -366,7 +366,6 @@ async function main() {
   const { createTokensService } = await import("./services/tokensService.js");
   const { createGitService } = await import("./services/gitService.js");
   const { createTestService } = await import("./services/testService.js");
-  const { createProjectService } = await import("./services/projectService.js");
   const { createAgentSettingsService: createAgentSettingsServiceDef } = await import("./services/agentSettingsService.js");
   const { createDbService } = await import("./services/dbService.js");
   const { createTypecheckService } = await import("./services/typecheckService.js");
@@ -395,7 +394,6 @@ async function main() {
   container.register(rpcService(createTokensService({ tokenManager }), ["tokenManager"]));
   container.register(rpcService(createGitService({ gitServer, tokenManager, contextFolderManager }), ["gitServer"]));
   container.register(rpcService(createTestService({ contextFolderManager, workspacePath, panelTestSetupPath })));
-  container.register(rpcService(createProjectService({ contextFolderManager, gitServer, tokenManager }), ["gitServer"]));
   container.register(rpcService(createDbService({ databaseManager }), ["databaseManager"]));
   container.register(rpcService(createTypecheckService({ contextFolderManager })));
   container.register(rpcService(createEventsServiceDefinition(eventService)));

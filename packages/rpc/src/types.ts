@@ -149,7 +149,6 @@ export const SERVER_SERVICE_NAMES = [
   "build",
   "db",
   "git",
-  "project",
   "test",
   "tokens",
   "typecheck",

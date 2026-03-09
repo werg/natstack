@@ -61,6 +61,36 @@ Grep({ pattern: "import.*runtime", type: "ts" })
 
 ---
 
+## Creating Projects
+
+Create new projects by reading the `create-project.ts` script from this skill and eval'ing it with variable definitions prepended. The script scaffolds files, initializes git, commits, and pushes — all in one eval call.
+
+Supported types: `panel`, `package`, `skill`, `agent`, `worker`. Each scaffolds into its directory (`panels/`, `packages/`, `skills/`, `agents/`, `workers/`).
+
+### Usage
+
+1. Read the script:
+
+```
+Read({ file_path: "skills/paneldev/create-project.ts" })
+```
+
+2. Eval it with variables prepended (replace the declare lines and top comment with actual values):
+
+```
+eval({ code: `
+  const PROJECT_TYPE = "panel";
+  const PROJECT_NAME = "my-app";
+  const PROJECT_TITLE = "My App";
+
+  ${scriptContents}
+`, timeout: 30000 })
+```
+
+Replace `${scriptContents}` with the script body (everything after the `declare` lines).
+
+---
+
 ## eval
 
 Execute TypeScript/JavaScript code in the panel runtime. Runtime APIs are available via static imports from `@workspace/runtime`.
@@ -95,38 +125,6 @@ Available via `import { ... } from "@workspace/runtime"` and `import { ... } fro
 ### RPC Services
 
 Called via `rpc.call("main", "service.method", ...args)`:
-
-#### project.create
-
-Scaffold a new workspace project. Supported types: `panel`, `package`, `skill`, `agent`, `worker`.
-
-```
-// Create a panel
-eval({ code: `
-  import { rpc } from "@workspace/runtime";
-  await rpc.call("main", "project.create", contextId, "panel", "my-app", "My App");
-`, timeout: 30000 })
-
-// Create a shared package
-eval({ code: `
-  import { rpc } from "@workspace/runtime";
-  await rpc.call("main", "project.create", contextId, "package", "utils", "Shared Utils");
-`, timeout: 30000 })
-
-// Create an agent
-eval({ code: `
-  import { rpc } from "@workspace/runtime";
-  await rpc.call("main", "project.create", contextId, "agent", "my-agent", "My Agent");
-`, timeout: 30000 })
-
-// Create a worker
-eval({ code: `
-  import { rpc } from "@workspace/runtime";
-  await rpc.call("main", "project.create", contextId, "worker", "my-worker", "My Worker");
-`, timeout: 30000 })
-```
-
-Each type scaffolds into its directory (`panels/`, `packages/`, `agents/`, `skills/`, `workers/`), initializes git, commits, and pushes.
 
 #### workerd (Worker Management)
 

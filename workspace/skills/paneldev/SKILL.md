@@ -18,6 +18,7 @@ Documentation for developing NatStack panels.
 | [AI.md](AI.md) | AI and browser automation |
 | [TOOLS.md](TOOLS.md) | Agent tools reference |
 | [WORKFLOW.md](WORKFLOW.md) | Development workflow |
+| [create-project.ts](create-project.ts) | Project scaffolding script (eval with `PROJECT_TYPE/NAME/TITLE`) |
 
 ## Critical Rules
 
@@ -29,28 +30,26 @@ Documentation for developing NatStack panels.
 
 ## Quick Start Workflow
 
-Create a project via eval:
+Create a project using the `create-project.ts` script (read it, then eval with variables):
 
 ```
+Read({ file_path: "skills/paneldev/create-project.ts" })
+
 eval({ code: `
-  import { rpc } from "@workspace/runtime";
-  await rpc.call("main", "project.create", contextId, "panel", "my-app", "My App");
+  const PROJECT_TYPE = "panel";
+  const PROJECT_NAME = "my-app";
+  const PROJECT_TITLE = "My App";
+
+  ${scriptBody}
 `, timeout: 30000 })
 ```
 
-Edit the generated files:
-
-```
-Read({ file_path: "panels/my-app/index.tsx" })
-Edit({ file_path: "panels/my-app/index.tsx", old_string: "...", new_string: "..." })
-```
-
-Launch via eval:
+Edit the generated files, then launch:
 
 ```
 eval({ code: `
   import { rpc, buildPanelLink } from "@workspace/runtime";
-  await rpc.call("main", "git.contextOp", contextId, "commit_and_push", "panels/my-app", "Initial launch");
+  await rpc.call("main", "git.contextOp", contextId, "commit_and_push", "panels/my-app", "Update");
   window.open(buildPanelLink("panels/my-app", { contextId }));
 `, timeout: 30000 })
 ```
@@ -59,10 +58,7 @@ eval({ code: `
 
 | Task | How |
 |------|-----|
-| Create panel | `eval` — `rpc.call("main", "project.create", contextId, "panel", "my-app")` |
-| Create package | `eval` — `rpc.call("main", "project.create", contextId, "package", "utils")` |
-| Create agent | `eval` — `rpc.call("main", "project.create", contextId, "agent", "my-agent")` |
-| Create worker | `eval` — `rpc.call("main", "project.create", contextId, "worker", "my-worker")` |
+| Create project | Read `skills/paneldev/create-project.ts`, eval with `PROJECT_TYPE/NAME/TITLE` |
 | Launch worker | `eval` — `workers.create({ source: "workers/my-worker", contextId, limits: { cpuMs: 100 } })` |
 | Read a file | `Read({ file_path: "panels/my-app/index.tsx" })` |
 | Edit a file | `Edit({ file_path: "panels/my-app/index.tsx", old_string: "...", new_string: "..." })` |

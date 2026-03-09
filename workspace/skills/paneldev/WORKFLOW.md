@@ -12,18 +12,21 @@ All runtime operations (project creation, git, typecheck, tests, launching) are 
 
 ### 1. Create
 
-Scaffold a new project via eval:
+Read the `create-project.ts` script and eval it with your project details (see [TOOLS.md](TOOLS.md)):
 
 ```
+Read({ file_path: "skills/paneldev/create-project.ts" })
+
 eval({ code: `
-  import { rpc } from "@workspace/runtime";
-  await rpc.call("main", "project.create", contextId, "panel", "my-app", "My App");
+  const PROJECT_TYPE = "panel";
+  const PROJECT_NAME = "my-app";
+  const PROJECT_TITLE = "My App";
+
+  ${scriptBody}
 `, timeout: 30000 })
 ```
 
-This creates the project directory with `package.json` (including dependencies), `index.tsx`, initializes git, commits, and pushes. **Do not create project files manually.**
-
-After creation, the files are immediately available in your working directory at `panels/my-app/`.
+This creates the directory, writes template files, initializes git, commits, and pushes. After creation, the files are available in your working directory at `panels/my-app/`.
 
 ### 2. Develop
 
@@ -89,7 +92,7 @@ eval({ code: `
 
 ### New Panel
 
-1. Create via eval (`project.create`)
+1. Run `create-project.ts` via eval with `PROJECT_TYPE="panel"`
 2. Edit the generated `index.tsx`
 3. Launch via eval (`commit_and_push` + `window.open(buildPanelLink(...))`)
 
