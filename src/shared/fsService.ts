@@ -125,8 +125,8 @@ function serializeDirent(d: fsSync.Dirent) {
 export class FsService {
   private readonly contextFolderManager: ContextFolderManager;
 
-  /** panelId → contextId mapping */
-  private readonly panelContextMap = new Map<string, string>();
+  /** callerId → contextId mapping (panels, workers, etc.) */
+  private readonly callerContextMap = new Map<string, string>();
 
   /** handleId → TrackedHandle */
   private readonly openHandles = new Map<number, TrackedHandle>();
@@ -137,25 +137,44 @@ export class FsService {
   }
 
   // =========================================================================
-  // Panel context registration
+  // Caller context registration
   // =========================================================================
 
-  registerPanelContext(panelId: string, contextId: string): void {
-    this.panelContextMap.set(panelId, contextId);
+  registerCallerContext(callerId: string, contextId: string): void {
+    this.callerContextMap.set(callerId, contextId);
   }
 
+  unregisterCallerContext(callerId: string): void {
+    this.callerContextMap.delete(callerId);
+  }
+
+  /** @deprecated Use registerCallerContext */
+  registerPanelContext(panelId: string, contextId: string): void {
+    this.registerCallerContext(panelId, contextId);
+  }
+
+  /** @deprecated Use unregisterCallerContext */
   unregisterPanelContext(panelId: string): void {
-    this.panelContextMap.delete(panelId);
+    this.unregisterCallerContext(panelId);
   }
 
   // =========================================================================
   // FileHandle cleanup
   // =========================================================================
 
-  /** Close all open file handles for a given panel. */
+  /** Close all open file handles for a given caller. */
+  closeHandlesForCaller(callerId: string): void {
+    this._closeHandlesImpl(callerId);
+  }
+
+  /** @deprecated Use closeHandlesForCaller */
   closeHandlesForPanel(panelId: string): void {
+    this._closeHandlesImpl(panelId);
+  }
+
+  private _closeHandlesImpl(callerId: string): void {
     for (const [id, tracked] of this.openHandles) {
-      if (tracked.panelId === panelId) {
+      if (tracked.panelId === callerId) {
         clearTimeout(tracked.timer);
         tracked.handle.close().catch(() => {});
         this.openHandles.delete(id);
@@ -179,11 +198,11 @@ export class FsService {
     let contextId: string;
     let panelId: string;
 
-    if (ctx.callerKind === "panel") {
+    if (ctx.callerKind === "panel" || ctx.callerKind === "worker") {
       panelId = ctx.callerId;
-      const cid = this.panelContextMap.get(panelId);
+      const cid = this.callerContextMap.get(panelId);
       if (!cid) {
-        throw new Error(`No context registered for panel ${panelId}`);
+        throw new Error(`No context registered for ${ctx.callerKind} ${panelId}`);
       }
       contextId = cid;
     } else {

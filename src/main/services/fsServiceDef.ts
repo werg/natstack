@@ -9,7 +9,7 @@ export function createFsServiceDefinition(deps: {
   return {
     name: "fs",
     description: "Per-context filesystem operations (sandboxed to context folder)",
-    policy: { allowed: ["panel", "server"] },
+    policy: { allowed: ["panel", "server", "worker"] },
     methods: {
       readFile: { args: z.tuple([z.string()]).rest(z.unknown()) },
       writeFile: { args: z.tuple([z.string()]).rest(z.unknown()) },

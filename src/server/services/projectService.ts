@@ -12,7 +12,7 @@ export function createProjectService(deps: {
   return {
     name: "project",
     description: "Scaffold new workspace projects",
-    policy: { allowed: ["panel", "server"] },
+    policy: { allowed: ["panel", "server", "worker"] },
     methods: {
       create: { args: z.tuple([z.string()]).rest(z.unknown()) },
     },

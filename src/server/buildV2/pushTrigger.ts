@@ -211,7 +211,7 @@ export class PushTrigger extends EventEmitter {
     for (const name of allChanged) {
       const node = this.graph.tryGet(name);
       if (!node) continue;
-      if (node.kind === "package") continue; // Packages are libraries, not buildable
+      if (node.kind === "package") continue; // Packages are libraries, not directly buildable
 
       const ev = result.evMap[name]!;
       const sourcemap = node.manifest.sourcemap !== false;

@@ -31,7 +31,7 @@ export interface BuildArtifacts {
 }
 
 export interface BuildMetadata {
-  kind: "panel" | "agent" | "package";
+  kind: "panel" | "agent" | "package" | "worker";
   name: string;
   ev: string;
   sourcemap: boolean;
@@ -178,8 +178,8 @@ export function put(
   // Write bundle
   fs.writeFileSync(path.join(tmpDir, "bundle.js"), artifacts.bundle);
 
-  // Ensure Node.js treats bundle.js as ESM (agents are format: "esm")
-  if (metadata.kind === "agent") {
+  // Ensure Node.js treats bundle.js as ESM (agents and workers are format: "esm")
+  if (metadata.kind === "agent" || metadata.kind === "worker") {
     fs.writeFileSync(path.join(tmpDir, "package.json"), '{"type":"module"}');
   }
 

@@ -224,8 +224,9 @@ export class RpcServer {
       case "ws:tool-result":
         this.handleToolResult(msg.callId, msg.result as ToolExecutionResult);
         break;
+      case "ws:route":
       case "ws:panel-rpc":
-        this.handlePanelRpc(client, msg.targetId, msg.message);
+        this.handleRoute(client, msg.targetId, msg.message);
         break;
       case "ws:auth":
         // Ignore duplicate auth messages
@@ -302,29 +303,45 @@ export class RpcServer {
     pending.resolve(result);
   }
 
-  private handlePanelRpc(client: WsClientState, targetId: string, message: RpcMessage): void {
-    if (!this.deps.panelManager) return;
+  /**
+   * Route a message from one caller to another. Authorization depends on
+   * caller types:
+   *   - panel → panel: requires ancestor/descendant relationship
+   *   - worker/server: can route to any connected caller
+   */
+  private handleRoute(client: WsClientState, targetId: string, message: RpcMessage): void {
+    // Panel-to-panel: enforce tree relationship.
+    // Panel-to-worker/server: allowed (workers are server-managed, trusted targets).
+    if (client.callerKind === "panel") {
+      const targetState = this.callerToClient.get(targetId);
+      const targetIsPanel = targetState?.callerKind === "panel";
 
-    const pm = this.deps.panelManager;
+      if (targetIsPanel) {
+        if (!this.deps.panelManager) return;
 
-    // Validate parent/child relationship
-    const parentId = pm.findParentId(targetId);
-    const isParentOfTarget = parentId === client.callerId;
-    const isChildOfTarget = pm.findParentId(client.callerId) === targetId;
+        const pm = this.deps.panelManager;
+        const parentId = pm.findParentId(targetId);
+        const isParentOfTarget = parentId === client.callerId;
+        const isChildOfTarget = pm.findParentId(client.callerId) === targetId;
 
-    if (!isParentOfTarget && !isChildOfTarget) {
-      // Check ancestor relationship
-      if (!pm.isDescendantOf(targetId, client.callerId) &&
-          !pm.isDescendantOf(client.callerId, targetId)) {
-        return; // Silently drop unauthorized panel-to-panel messages
+        if (!isParentOfTarget && !isChildOfTarget) {
+          if (!pm.isDescendantOf(targetId, client.callerId) &&
+              !pm.isDescendantOf(client.callerId, targetId)) {
+            return; // Silently drop unauthorized panel-to-panel messages
+          }
+        }
       }
+      // Non-panel targets (workers, server) are reachable from any panel.
     }
+
+    // Workers and server callers can route to any connected caller.
+    // Shell callers are not expected to route, but there's no harm in allowing it.
 
     const targetClient = this.callerToClient.get(targetId);
     if (!targetClient || targetClient.ws.readyState !== WebSocket.OPEN) return;
 
     this.sendToWs(targetClient.ws, {
-      type: "ws:panel-rpc-delivery",
+      type: "ws:routed",
       fromId: client.callerId,
       message,
     });

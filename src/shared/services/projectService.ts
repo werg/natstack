@@ -25,6 +25,7 @@ const TYPE_DIRS: Record<string, string> = {
   package: "packages",
   skill: "skills",
   agent: "agents",
+  worker: "workers",
 };
 
 /** Package scope by project type */
@@ -33,6 +34,7 @@ const PACKAGE_SCOPES: Record<string, string> = {
   package: "@workspace",
   skill: "@workspace-skills",
   agent: "@workspace-agents",
+  worker: "@workspace-workers",
 };
 
 interface ProjectTemplate {
@@ -118,12 +120,42 @@ export default function ${toPascalCase(name)}() {
             {
               name: `${PACKAGE_SCOPES[type]}/${name}`,
               version: "0.1.0",
-              natstack: { type: "worker", title },
+              natstack: { type: "agent", title },
             },
             null,
             2,
           ),
           "index.ts": `/**\n * ${title} agent\n */\n\nconsole.log("${title} agent started");\n`,
+        },
+      };
+
+    case "worker":
+      return {
+        files: {
+          "package.json": JSON.stringify(
+            {
+              name: `${PACKAGE_SCOPES[type]}/${name}`,
+              version: "0.1.0",
+              private: true,
+              type: "module",
+              natstack: { type: "worker", entry: "index.ts", title },
+              dependencies: {
+                "@workspace/runtime": "workspace:*",
+              },
+            },
+            null,
+            2,
+          ),
+          "index.ts": `import { createWorkerRuntime } from "@workspace/runtime/worker";
+import type { WorkerEnv, ExecutionContext } from "@workspace/runtime/worker";
+
+export default {
+  async fetch(request: Request, env: WorkerEnv, _ctx: ExecutionContext) {
+    const runtime = createWorkerRuntime(env);
+    return new Response("Hello from ${title}!");
+  },
+};
+`,
         },
       };
 
@@ -169,7 +201,7 @@ export async function handleProjectCall(
   validateProjectName(name);
   const typeDir = TYPE_DIRS[type];
   if (!typeDir) {
-    throw new Error(`Unknown project type: ${type}. Must be one of: panel, package, skill, agent`);
+    throw new Error(`Unknown project type: ${type}. Must be one of: panel, package, skill, agent, worker`);
   }
 
   const contextRoot = await contextFolderManager.ensureContextFolder(contextId);

@@ -119,7 +119,7 @@ export async function initBuildSystemV2(
   // Step 5: Build anything that's missing from the store
   const buildableNodes = graph
     .allNodes()
-    .filter((n) => n.kind !== "package"); // Only panels and agents
+    .filter((n) => n.kind !== "package"); // Panels, agents, and workers
 
   let buildCount = 0;
   for (const node of buildableNodes) {

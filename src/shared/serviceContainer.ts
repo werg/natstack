@@ -77,8 +77,10 @@ export class ServiceContainer {
         // Auto-register RPC service definition if available
         if (this.dispatcher && service.getServiceDefinition) {
           const def = service.getServiceDefinition();
-          this.dispatcher.registerService(def);
-          log.info(`[${name}] Registered RPC service "${def.name}"`);
+          if (def) {
+            this.dispatcher.registerService(def);
+            log.info(`[${name}] Registered RPC service "${def.name}"`);
+          }
         }
       }
 

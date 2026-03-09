@@ -142,7 +142,7 @@ function createWorkspaceResolvePlugin(
   return {
     name: "workspace-packages",
     setup(build) {
-      // Match @workspace/*, @workspace-panels/*, @workspace-about/*, @workspace-agents/*
+      // Match @workspace/*, @workspace-panels/*, @workspace-about/*, @workspace-agents/*, @workspace-workers/*
       build.onResolve({ filter: /^@workspace[-/]/ }, (args) => {
         const parsed = parseWorkspaceImport(args.path);
         if (!parsed) return null;
@@ -272,7 +272,7 @@ function createTsExtensionPlugin(sourceRoot: string): esbuild.Plugin {
 function parseWorkspaceImport(
   importPath: string,
 ): { packageName: string; subpath: string } | null {
-  // Match @workspace/name, @workspace-panels/name, @workspace-about/name, @workspace-agents/name
+  // Match @workspace/name, @workspace-panels/name, @workspace-about/name, @workspace-agents/name, @workspace-workers/name
   const match = importPath.match(/^(@workspace(?:-\w+)?)\/([^/]+)(\/.*)?$/);
   if (!match) return null;
 
@@ -762,6 +762,8 @@ async function doBuild(
   try {
     if (node.kind === "agent") {
       return await buildAgent(node, ev, buildKey, graph, workspaceRoot, sourcemap, extracted.sourceRoot);
+    } else if (node.kind === "worker") {
+      return await buildWorker(node, ev, buildKey, graph, workspaceRoot, sourcemap, extracted.sourceRoot);
     } else {
       return await buildPanel(node, ev, buildKey, graph, workspaceRoot, sourcemap, extracted.sourceRoot);
     }
@@ -769,6 +771,93 @@ async function doBuild(
     releaseSemaphore();
     extracted.cleanup();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Shared Build Environment
+// ---------------------------------------------------------------------------
+
+interface BuildEnv {
+  outdir: string;
+  sourcePath: string;
+  entryFile: string;
+  nodePaths: string[];
+  nodeModulesDir: string | null;
+  externalDeps: Record<string, string>;
+  resolveDir: string;
+  cleanup: () => void;
+}
+
+/**
+ * Prepare the common build environment shared by panel, agent, and worker builds.
+ * Creates temp output dir, resolves entry point, collects external deps, and
+ * assembles nodePaths. Returns a cleanup function for the temp dir.
+ */
+async function prepareBuildEnv(
+  node: GraphNode,
+  buildKey: string,
+  graph: PackageGraph,
+  workspaceRoot: string,
+  sourceRoot: string,
+): Promise<BuildEnv> {
+  const outdir = path.join(
+    require("os").tmpdir(),
+    "natstack-builds",
+    `build-${buildKey}`,
+  );
+  fs.mkdirSync(outdir, { recursive: true });
+
+  const sourcePath = remapPath(node.path, workspaceRoot, sourceRoot);
+  const entryFile = resolveEntryPoint(node, sourcePath);
+
+  const externalDeps = collectTransitiveExternalDeps(node, graph);
+  const nodeModulesDir = await ensureExternalDeps(externalDeps);
+  const nodePaths = nodeModulesDir ? [nodeModulesDir] : [];
+
+  const rootNodeModules = path.join(workspaceRoot, "..", "node_modules");
+  if (fs.existsSync(rootNodeModules)) {
+    nodePaths.push(rootNodeModules);
+  }
+
+  const resolveDir = pickResolveDir(nodePaths, workspaceRoot);
+
+  return {
+    outdir,
+    sourcePath,
+    entryFile,
+    nodePaths,
+    nodeModulesDir,
+    externalDeps,
+    resolveDir,
+    cleanup: () => {
+      try {
+        fs.rmSync(outdir, { recursive: true, force: true });
+      } catch {
+        // Ignore
+      }
+    },
+  };
+}
+
+/**
+ * Store a simple bundle-only build result (used by agent and worker builds).
+ */
+function storeSimpleBuild(
+  buildKey: string,
+  bundle: string,
+  node: GraphNode,
+  ev: string,
+  sourcemap: boolean,
+): BuildResult {
+  const artifacts: BuildArtifacts = { bundle };
+  const metadata: BuildMetadata = {
+    kind: node.kind as BuildMetadata["kind"],
+    name: node.name,
+    ev,
+    sourcemap,
+    builtAt: new Date().toISOString(),
+  };
+  return buildStore.put(buildKey, artifacts, metadata);
 }
 
 // ---------------------------------------------------------------------------
@@ -784,27 +873,8 @@ async function buildPanel(
   sourcemap: boolean,
   sourceRoot: string,
 ): Promise<BuildResult> {
-  const outdir = path.join(
-    require("os").tmpdir(),
-    "natstack-builds",
-    `build-${buildKey}`,
-  );
-  fs.mkdirSync(outdir, { recursive: true });
-
-  // Resolve entry point from extracted source
-  const sourcePath = remapPath(node.path, workspaceRoot, sourceRoot);
-  const entryFile = resolveEntryPoint(node, sourcePath);
-
-  // Collect and install external deps (from real filesystem, not git)
-  const externalDeps = collectTransitiveExternalDeps(node, graph);
-  const nodeModulesDir = await ensureExternalDeps(externalDeps);
-  const nodePaths = nodeModulesDir ? [nodeModulesDir] : [];
-
-  // Also add the root node_modules for @workspace packages that might need it
-  const rootNodeModules = path.join(workspaceRoot, "..", "node_modules");
-  if (fs.existsSync(rootNodeModules)) {
-    nodePaths.push(rootNodeModules);
-  }
+  const env = await prepareBuildEnv(node, buildKey, graph, workspaceRoot, sourceRoot);
+  const { outdir, sourcePath, entryFile, nodePaths } = env;
 
   const manifestExternals = node.manifest.externals ?? {};
   const externalSpecifiers = expandExternalSpecifiers(manifestExternals);
@@ -813,8 +883,8 @@ async function buildPanel(
     ...DEFAULT_DEDUPE_PACKAGES,
     ...(node.manifest.dedupeModules ?? []),
   ]);
-  const forcedSplitModules = pickForcedSplitModules(externalDeps, exposeModules);
-  const resolveDir = pickResolveDir(nodePaths, workspaceRoot);
+  const forcedSplitModules = pickForcedSplitModules(env.externalDeps, exposeModules);
+  const { resolveDir } = env;
 
   // Check for React
   const hasReact = "@workspace/react" in node.dependencies;
@@ -956,12 +1026,7 @@ async function buildPanel(
 
     return buildStore.put(buildKey, artifacts, metadata);
   } finally {
-    // Clean up temp dir
-    try {
-      fs.rmSync(outdir, { recursive: true, force: true });
-    } catch {
-      // Ignore
-    }
+    env.cleanup();
   }
 }
 
@@ -978,26 +1043,8 @@ async function buildAgent(
   sourcemap: boolean,
   sourceRoot: string,
 ): Promise<BuildResult> {
-  const outdir = path.join(
-    require("os").tmpdir(),
-    "natstack-builds",
-    `build-${buildKey}`,
-  );
-  fs.mkdirSync(outdir, { recursive: true });
-
-  // Resolve entry point from extracted source
-  const sourcePath = remapPath(node.path, workspaceRoot, sourceRoot);
-  const entryFile = resolveEntryPoint(node, sourcePath);
-
-  // Collect and install external deps (from real filesystem, not git)
-  const externalDeps = collectTransitiveExternalDeps(node, graph);
-  const nodeModulesDir = await ensureExternalDeps(externalDeps);
-  const nodePaths = nodeModulesDir ? [nodeModulesDir] : [];
-
-  const rootNodeModules = path.join(workspaceRoot, "..", "node_modules");
-  if (fs.existsSync(rootNodeModules)) {
-    nodePaths.push(rootNodeModules);
-  }
+  const env = await prepareBuildEnv(node, buildKey, graph, workspaceRoot, sourceRoot);
+  const { outdir, entryFile, nodePaths, nodeModulesDir } = env;
 
   // Respect manifest.externals for agents (same as panels)
   const manifestExternals = node.manifest.externals ?? {};
@@ -1006,7 +1053,6 @@ async function buildAgent(
     ...expandExternalSpecifiers(manifestExternals),
   ];
 
-  // Resolve plugin uses extracted source paths — node conditions for agent builds
   const plugins: esbuild.Plugin[] = [
     createWorkspaceResolvePlugin(graph, workspaceRoot, sourceRoot, NODE_CONDITIONS),
     createTsExtensionPlugin(sourceRoot),
@@ -1033,16 +1079,7 @@ async function buildAgent(
     const bundlePath = path.join(outdir, "bundle.mjs");
     const bundle = fs.readFileSync(bundlePath, "utf-8");
 
-    const artifacts: BuildArtifacts = { bundle };
-    const metadata: BuildMetadata = {
-      kind: "agent",
-      name: node.name,
-      ev,
-      sourcemap,
-      builtAt: new Date().toISOString(),
-    };
-
-    const result = buildStore.put(buildKey, artifacts, metadata);
+    const result = storeSimpleBuild(buildKey, bundle, node, ev, sourcemap);
 
     // Symlink external deps into the build dir so NODE_PATH resolution works at runtime
     if (nodeModulesDir) {
@@ -1058,11 +1095,69 @@ async function buildAgent(
 
     return result;
   } finally {
-    try {
-      fs.rmSync(outdir, { recursive: true, force: true });
-    } catch {
-      // Ignore
-    }
+    env.cleanup();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Worker Build
+// ---------------------------------------------------------------------------
+
+const WORKER_CONDITIONS = ["worker", "workerd", "import", "default"] as const;
+
+async function buildWorker(
+  node: GraphNode,
+  ev: string,
+  buildKey: string,
+  graph: PackageGraph,
+  workspaceRoot: string,
+  sourcemap: boolean,
+  sourceRoot: string,
+): Promise<BuildResult> {
+  const env = await prepareBuildEnv(node, buildKey, graph, workspaceRoot, sourceRoot);
+  const { outdir, entryFile, nodePaths, resolveDir } = env;
+
+  // Workers run as a single inline esModule in workerd — no module filesystem
+  // or package resolution at runtime. All dependencies must be bundled inline.
+  // manifest.externals is intentionally ignored (unlike panels which can use
+  // import maps, workers have no way to resolve external imports).
+
+  const dedupePackages = normalizeManifestSpecList(node.manifest.dedupeModules);
+
+  const plugins: esbuild.Plugin[] = [
+    createWorkspaceResolvePlugin(graph, workspaceRoot, sourceRoot, WORKER_CONDITIONS),
+    createTsExtensionPlugin(sourceRoot),
+  ];
+  const dedupePlugin = createDedupePlugin(resolveDir, dedupePackages);
+  if (dedupePlugin) {
+    plugins.push(dedupePlugin);
+  }
+
+  try {
+    await esbuild.build({
+      entryPoints: [entryFile],
+      bundle: true,
+      platform: "neutral",
+      target: "es2022",
+      format: "esm",
+      splitting: false,
+      outfile: path.join(outdir, "bundle.js"),
+      sourcemap: sourcemap ? "inline" : false,
+      metafile: true,
+      logLevel: "warning",
+      conditions: [...WORKER_CONDITIONS],
+      plugins,
+      nodePaths,
+      // No externals — workers must be fully self-contained
+      tsconfigRaw: { compilerOptions: {} },
+    });
+
+    const bundlePath = path.join(outdir, "bundle.js");
+    const bundle = fs.readFileSync(bundlePath, "utf-8");
+
+    return storeSimpleBuild(buildKey, bundle, node, ev, sourcemap);
+  } finally {
+    env.cleanup();
   }
 }
 

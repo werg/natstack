@@ -11,7 +11,7 @@ export function createAiService(deps: {
   return {
     name: "ai",
     description: "AI/LLM operations",
-    policy: { allowed: ["shell", "panel", "server"] },
+    policy: { allowed: ["shell", "panel", "server", "worker"] },
     methods: {
       listRoles: { args: z.tuple([]) },
       streamCancel: { args: z.tuple([z.string()]) },

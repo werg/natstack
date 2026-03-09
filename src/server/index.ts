@@ -362,6 +362,7 @@ async function main() {
   // ── RPC-only services (replacing serverServiceRegistry.ts) ──
 
   const { createBuildService } = await import("./services/buildService.js");
+  const { createWorkerdService } = await import("./services/workerdService.js");
   const { createTokensService } = await import("./services/tokensService.js");
   const { createGitService } = await import("./services/gitService.js");
   const { createTestService } = await import("./services/testService.js");
@@ -524,8 +525,8 @@ async function main() {
         // Wire disconnect handler: panelLifecycle (high-level) subscribes to
         // rpcServer (low-level) events — dependency flows in the right direction.
         rpcServer.setOnClientDisconnect((callerId, callerKind) => {
-          const handleKey = callerKind === "panel" ? callerId : `server:${callerId}`;
-          fsService.closeHandlesForPanel(handleKey);
+          const handleKey = callerKind === "panel" || callerKind === "worker" ? callerId : `server:${callerId}`;
+          fsService.closeHandlesForCaller(handleKey);
           if (callerKind === "panel") {
             lifecycle.closePanel(callerId);
           }
@@ -713,7 +714,7 @@ async function main() {
           return {
             name: "fs",
             description: "Per-context filesystem operations (sandboxed to context folder)",
-            policy: { allowed: ["panel", "server"] },
+            policy: { allowed: ["panel", "server", "worker"] },
             methods: {
               readFile: fsMethodSchema, writeFile: fsMethodSchema,
               readdir: fsMethodSchema, mkdir: fsMethodSchema,
@@ -724,6 +725,45 @@ async function main() {
               return handleFsCall(fsServiceInstance, ctx, method, serviceArgs as unknown[]);
             },
           };
+        },
+      });
+    }
+
+    // WorkerdManager — manages workerd process and worker instances
+    {
+      let workerdManagerInstance: import("./workerdManager.js").WorkerdManager | null = null;
+      let buildSystemForWorkerd: import("./buildV2/index.js").BuildSystemV2 | null = null;
+      container.register({
+        name: "workerdManager",
+        dependencies: ["buildSystem", "rpcServer", "fsService"],
+        async start(resolve) {
+          const { WorkerdManager } = await import("./workerdManager.js");
+          buildSystemForWorkerd = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
+          const { port: rpcPort } = resolve<{ port: number }>("rpcServer")!;
+          const fsServiceInst = resolve<import("../shared/fsService.js").FsService>("fsService")!;
+
+          workerdManagerInstance = new WorkerdManager({
+            tokenManager,
+            fsService: fsServiceInst,
+            rpcPort,
+            getBuild: (unitPath) => buildSystemForWorkerd!.getBuild(unitPath),
+          });
+
+          // Wire push trigger to restart workers on source rebuild
+          buildSystemForWorkerd.onPushBuild((source) => {
+            workerdManagerInstance?.onSourceRebuilt(source).catch((err) => {
+              console.error(`[WorkerdManager] Failed to handle rebuilt source ${source}:`, err);
+            });
+          });
+
+          return workerdManagerInstance;
+        },
+        async stop(instance: import("./workerdManager.js").WorkerdManager | null) {
+          await instance?.shutdown();
+        },
+        getServiceDefinition() {
+          if (!workerdManagerInstance || !buildSystemForWorkerd) return undefined as any;
+          return createWorkerdService({ workerdManager: workerdManagerInstance, buildSystem: buildSystemForWorkerd });
         },
       });
     }
@@ -741,7 +781,7 @@ async function main() {
     const { SERVER_SERVICE_NAMES } = await import("@natstack/rpc");
     const sharedSet = new Set<string>(SERVER_SERVICE_NAMES);
     // Services that intentionally live on both Electron and server (not routed via SERVER_SERVICE_NAMES)
-    const dualHosted = new Set(["events", "bridge", "browser", "fs"]);
+    const dualHosted = new Set(["events", "bridge", "browser", "fs", "workerd"]);
     for (const name of dispatcher.getServices()) {
       if (!sharedSet.has(name) && !dualHosted.has(name)) {
         console.warn(

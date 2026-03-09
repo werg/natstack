@@ -8,7 +8,7 @@ export function createBuildService(deps: {
   return {
     name: "build",
     description: "Build system (getBuild, recompute, gc, getAboutPages)",
-    policy: { allowed: ["panel", "shell", "server"] },
+    policy: { allowed: ["panel", "shell", "server", "worker"] },
     methods: {
       getBuild: { args: z.tuple([z.string()]) },
       getEffectiveVersion: { args: z.tuple([z.string()]) },

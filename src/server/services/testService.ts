@@ -10,7 +10,7 @@ export function createTestService(deps: {
   return {
     name: "test",
     description: "Run tests on workspace panels/packages",
-    policy: { allowed: ["panel", "server"] },
+    policy: { allowed: ["panel", "server", "worker"] },
     methods: {
       run: { args: z.tuple([z.string()]).rest(z.unknown()) },
     },

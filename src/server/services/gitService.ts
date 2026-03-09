@@ -12,7 +12,7 @@ export function createGitService(deps: {
   return {
     name: "git",
     description: "Git operations and scoped filesystem access for panels",
-    policy: { allowed: ["shell", "panel", "server"] },
+    policy: { allowed: ["shell", "panel", "server", "worker"] },
     methods: {
       getWorkspaceTree: { args: z.tuple([]) },
       listBranches: { args: z.tuple([z.string()]) },

@@ -405,8 +405,8 @@ app.on("ready", async () => {
       dispatcher,
       panelManager: panelRegistry, // PanelRegistry implements PanelRelationshipProvider
       onClientDisconnect: (callerId, callerKind) => {
-        const handleKey = callerKind === "panel" ? callerId : `server:${callerId}`;
-        fsService.closeHandlesForPanel(handleKey);
+        const handleKey = callerKind === "panel" || callerKind === "worker" ? callerId : `server:${callerId}`;
+        fsService.closeHandlesForCaller(handleKey);
       },
     });
     const rpcPort = await rpcServer.start();

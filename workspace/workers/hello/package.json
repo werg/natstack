@@ -1,0 +1,15 @@
+{
+  "name": "@workspace-workers/hello",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "type": "worker",
+    "entry": "index.ts",
+    "title": "Hello Worker",
+    "sourcemap": true
+  },
+  "dependencies": {
+    "@workspace/runtime": "workspace:*"
+  }
+}

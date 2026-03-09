@@ -98,7 +98,7 @@ Called via `rpc.call("main", "service.method", ...args)`:
 
 #### project.create
 
-Scaffold a new workspace project. Supported types: `panel`, `package`, `skill`, `agent`.
+Scaffold a new workspace project. Supported types: `panel`, `package`, `skill`, `agent`, `worker`.
 
 ```
 // Create a panel
@@ -118,9 +118,47 @@ eval({ code: `
   import { rpc } from "@workspace/runtime";
   await rpc.call("main", "project.create", contextId, "agent", "my-agent", "My Agent");
 `, timeout: 30000 })
+
+// Create a worker
+eval({ code: `
+  import { rpc } from "@workspace/runtime";
+  await rpc.call("main", "project.create", contextId, "worker", "my-worker", "My Worker");
+`, timeout: 30000 })
 ```
 
-Each type scaffolds into its directory (`panels/`, `packages/`, `agents/`, `skills/`), initializes git, commits, and pushes.
+Each type scaffolds into its directory (`panels/`, `packages/`, `agents/`, `skills/`, `workers/`), initializes git, commits, and pushes.
+
+#### workerd (Worker Management)
+
+Manage worker instances. Available to panels, workers, and server callers. **Limits are mandatory.**
+
+```
+// Create a worker instance
+eval({ code: `
+  import { workers } from "@workspace/runtime";
+  const instance = await workers.create({
+    source: "workers/my-worker",
+    contextId,
+    limits: { cpuMs: 100 },
+  });
+  console.log("Worker started:", instance.name, "on port", await workers.getPort());
+`, timeout: 30000 })
+
+// List running workers
+eval({ code: `
+  import { workers } from "@workspace/runtime";
+  const list = await workers.list();
+  console.log(list.map(w => w.name + " (" + w.status + ")"));
+`, timeout: 10000 })
+
+// Destroy a worker
+eval({ code: `
+  import { workers } from "@workspace/runtime";
+  await workers.destroy("my-worker");
+`, timeout: 10000 })
+```
+
+Methods: `create(options)`, `destroy(name)`, `update(name, updates)`, `list()`, `status(name)`, `listSources()`, `getPort()`, `restartAll()`. See [WORKERS.md](WORKERS.md) for full API.
 
 #### git.contextOp
 

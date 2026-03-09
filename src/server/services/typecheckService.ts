@@ -9,7 +9,7 @@ export function createTypecheckService(deps: {
   return {
     name: "typecheck",
     description: "Type definition fetching for panels",
-    policy: { allowed: ["panel", "server"] },
+    policy: { allowed: ["panel", "server", "worker"] },
     methods: {
       getPackageTypes: { args: z.tuple([z.string(), z.string()]) },
       getPackageTypesBatch: { args: z.tuple([z.string(), z.array(z.string())]) },

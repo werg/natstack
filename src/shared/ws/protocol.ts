@@ -30,6 +30,14 @@ export interface WsToolResultMessage {
   result: ToolExecutionResult;
 }
 
+/** Caller-to-caller routed message (panel→panel, worker→panel, etc.) */
+export interface WsRouteMessage {
+  type: "ws:route";
+  targetId: string;
+  message: RpcMessage;
+}
+
+/** @deprecated Use WsRouteMessage. Kept for backward compatibility. */
 export interface WsPanelRpcMessage {
   type: "ws:panel-rpc";
   targetId: string;
@@ -40,6 +48,7 @@ export type WsClientMessage =
   | WsAuthMessage
   | WsRpcMessage
   | WsToolResultMessage
+  | WsRouteMessage
   | WsPanelRpcMessage;
 
 // =============================================================================
@@ -84,6 +93,14 @@ export interface WsEventMessage {
   payload: unknown;
 }
 
+/** Delivery of a routed caller-to-caller message */
+export interface WsRoutedMessage {
+  type: "ws:routed";
+  fromId: string;
+  message: RpcMessage;
+}
+
+/** @deprecated Use WsRoutedMessage. Kept for backward compatibility. */
 export interface WsPanelRpcDeliveryMessage {
   type: "ws:panel-rpc-delivery";
   fromId: string;
@@ -97,4 +114,5 @@ export type WsServerMessage =
   | WsStreamEndMessage
   | WsToolExecMessage
   | WsEventMessage
+  | WsRoutedMessage
   | WsPanelRpcDeliveryMessage;

@@ -1,15 +1,17 @@
-import { createRpcBridge, type RpcBridge, type RpcTransport } from "@natstack/rpc";
-import { createRoutingBridge } from "../shared/routingBridge.js";
-import { createDbClient } from "../shared/database.js";
+/**
+ * Panel runtime factory — extends createBaseRuntime with panel-specific features.
+ *
+ * Adds: stateArgs bridge, parent handles, panel lifecycle methods.
+ */
+
+import type { RpcTransport } from "@natstack/rpc";
+import { createBaseRuntime, type BaseRuntimeDeps } from "./createBaseRuntime.js";
 import {
   noopParent,
   type PanelContract,
   type EndpointInfo,
   type GitConfig,
   type PubSubConfig,
-  type WorkspaceTree,
-  type BranchInfo,
-  type CommitInfo,
   type Rpc,
 } from "../core/index.js";
 import { createParentHandle, createParentHandleFromContract } from "../shared/handles.js";
@@ -32,36 +34,12 @@ export interface RuntimeDeps {
 }
 
 export function createRuntime(deps: RuntimeDeps) {
-  deps.setupGlobals?.();
-
-  const electronTransport = deps.createTransport();
-  const electronBridge = createRpcBridge({ selfId: deps.selfId, transport: electronTransport });
-
-  // Create server bridge if available (may not exist in chooser mode)
-  let rpc: RpcBridge = electronBridge;
-  if (deps.createServerTransport) {
-    const serverTransport = deps.createServerTransport();
-    if (serverTransport) {
-      const serverBridge = createRpcBridge({
-        selfId: deps.selfId,
-        transport: serverTransport,
-        callTimeoutMs: 30000,
-        aiCallTimeoutMs: 300000,
-      });
-      rpc = createRoutingBridge(electronBridge, serverBridge);
-    }
-  }
-
-  const fs = deps.fs;
-
-  const callMain = <T>(method: string, ...args: unknown[]) => rpc.call<T>("main", method, ...args);
+  const base = createBaseRuntime(deps);
 
   // Initialize the stateArgs bridge for setStateArgs() function
-  _initStateArgsBridge((updates) => callMain<Record<string, unknown>>("bridge.setStateArgs", updates));
+  _initStateArgsBridge((updates) => base.callMain<Record<string, unknown>>("bridge.setStateArgs", updates));
 
-  const db = createDbClient(rpc);
-
-  const parentHandleOrNull = deps.parentId ? createParentHandle({ rpc, parentId: deps.parentId }) : null;
+  const parentHandleOrNull = deps.parentId ? createParentHandle({ rpc: base.rpc, parentId: deps.parentId }) : null;
   const parent: ParentHandle = parentHandleOrNull ?? noopParent;
 
   const getParent = <
@@ -76,100 +54,38 @@ export function createRuntime(deps: RuntimeDeps) {
     return createParentHandleFromContract(getParent(), contract);
   };
 
-  let currentTheme: ThemeAppearance = deps.initialTheme;
-  const themeListeners = new Set<(theme: ThemeAppearance) => void>();
-
-  const parseThemeAppearance = (payload: unknown): ThemeAppearance | null => {
-    const appearance =
-      typeof payload === "string"
-        ? payload
-        : typeof (payload as { theme?: unknown } | null)?.theme === "string"
-          ? ((payload as { theme: ThemeAppearance }).theme)
-          : null;
-    if (appearance === "light" || appearance === "dark") return appearance;
-    return null;
-  };
-
-  const onThemeEvent = (_fromId: string, payload: unknown) => {
-    const theme = parseThemeAppearance(payload);
-    if (!theme) return;
-    currentTheme = theme;
-    for (const listener of themeListeners) listener(currentTheme);
-  };
-
-  const themeUnsubscribers = [rpc.onEvent("runtime:theme", onThemeEvent)];
-
-  const focusUnsubscribers: Array<() => void> = [];
-
-  const onFocus = (callback: () => void) => {
-    const unsub = rpc.onEvent("runtime:focus", () => callback());
-    focusUnsubscribers.push(unsub);
-    return () => {
-      unsub();
-      const idx = focusUnsubscribers.indexOf(unsub);
-      if (idx !== -1) focusUnsubscribers.splice(idx, 1);
-    };
-  };
-
-  const destroy = () => {
-    for (const unsub of themeUnsubscribers) unsub();
-    for (const unsub of focusUnsubscribers) unsub();
-    focusUnsubscribers.length = 0;
-    themeListeners.clear();
-  };
-
-  const onConnectionError = (
-    callback: (error: { code: number; reason: string; source?: "electron" | "server" }) => void
-  ): (() => void) => {
-    return rpc.onEvent("runtime:connection-error", (fromId, payload) => {
-      if (fromId !== "main") return;
-      const data = payload as { code?: unknown; reason?: unknown; source?: unknown } | null;
-      if (!data || typeof data.code !== "number" || typeof data.reason !== "string") return;
-      callback({
-        code: data.code,
-        reason: data.reason,
-        source: data.source === "electron" || data.source === "server" ? data.source : undefined,
-      });
-    });
-  };
-
   return {
-    id: deps.id,
+    id: base.id,
     parentId: deps.parentId,
 
-    rpc,
-    db,
-    fs,
+    rpc: base.rpc,
+    db: base.db,
+    fs: base.fs,
+    workers: base.workers,
 
     parent,
     getParent,
     getParentWithContract,
 
-    onConnectionError,
+    onConnectionError: base.onConnectionError,
 
-    getInfo: () => callMain<EndpointInfo>("bridge.getInfo"),
-    closeSelf: () => callMain<void>("bridge.closeSelf"),
-    focusPanel: (panelId: string) => callMain<void>("bridge.focusPanel", panelId),
-    getWorkspaceTree: () => callMain<WorkspaceTree>("bridge.getWorkspaceTree"),
-    listBranches: (repoPath: string) => callMain<BranchInfo[]>("bridge.listBranches", repoPath),
-    listCommits: (repoPath: string, ref?: string, limit?: number) =>
-      callMain<CommitInfo[]>("bridge.listCommits", repoPath, ref, limit),
+    getInfo: () => base.callMain<EndpointInfo>("bridge.getInfo"),
+    closeSelf: () => base.callMain<void>("bridge.closeSelf"),
+    focusPanel: (panelId: string) => base.callMain<void>("bridge.focusPanel", panelId),
+    getWorkspaceTree: base.getWorkspaceTree,
+    listBranches: base.listBranches,
+    listCommits: base.listCommits,
 
-    getTheme: () => currentTheme,
-    onThemeChange: (callback: (theme: ThemeAppearance) => void) => {
-      callback(currentTheme);
-      themeListeners.add(callback);
-      return () => { themeListeners.delete(callback); };
-    },
+    getTheme: base.getTheme,
+    onThemeChange: base.onThemeChange,
 
-    onFocus,
+    onFocus: base.onFocus,
 
-    exposeMethod: rpc.exposeMethod.bind(rpc),
+    exposeMethod: base.exposeMethod,
 
-    gitConfig: deps.gitConfig ?? null,
-    pubsubConfig: deps.pubsubConfig ?? null,
-    /** Context ID for storage partition (format: {mode}_{type}_{identifier}) */
-    contextId: deps.contextId,
+    gitConfig: base.gitConfig,
+    pubsubConfig: base.pubsubConfig,
+    contextId: base.contextId,
   };
 }
 

@@ -67,7 +67,8 @@ export const {
 
 export { runtimeParentId as parentId };
 
-export { fs, gitConfig, pubsubConfig, env, aiClient as ai };
+const { workers } = runtime;
+export { fs, gitConfig, pubsubConfig, env, workers, aiClient as ai };
 
 // Path utilities for cross-platform path handling
 export { normalizePath, getFileName, resolvePath } from "../shared/pathUtils.js";

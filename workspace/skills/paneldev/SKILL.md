@@ -11,8 +11,9 @@ Documentation for developing NatStack panels.
 
 | Document | Content |
 |----------|---------|
-| [PANEL_DEVELOPMENT.md](PANEL_DEVELOPMENT.md) | Hooks, fs, workers, templates |
+| [PANEL_DEVELOPMENT.md](PANEL_DEVELOPMENT.md) | Hooks, fs, templates |
 | [PANEL_SYSTEM.md](PANEL_SYSTEM.md) | API reference |
+| [WORKERS.md](WORKERS.md) | Worker development, management API, limits |
 | [RPC.md](RPC.md) | Typed parent-child contracts |
 | [AI.md](AI.md) | AI and browser automation |
 | [TOOLS.md](TOOLS.md) | Agent tools reference |
@@ -61,6 +62,8 @@ eval({ code: `
 | Create panel | `eval` — `rpc.call("main", "project.create", contextId, "panel", "my-app")` |
 | Create package | `eval` — `rpc.call("main", "project.create", contextId, "package", "utils")` |
 | Create agent | `eval` — `rpc.call("main", "project.create", contextId, "agent", "my-agent")` |
+| Create worker | `eval` — `rpc.call("main", "project.create", contextId, "worker", "my-worker")` |
+| Launch worker | `eval` — `workers.create({ source: "workers/my-worker", contextId, limits: { cpuMs: 100 } })` |
 | Read a file | `Read({ file_path: "panels/my-app/index.tsx" })` |
 | Edit a file | `Edit({ file_path: "panels/my-app/index.tsx", old_string: "...", new_string: "..." })` |
 | Check types | `eval` — `rpc.call("main", "typecheck.check", "panels/my-app")` |

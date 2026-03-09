@@ -10,6 +10,16 @@
       "types": "./dist/panel/index.d.ts",
       "natstack-panel": "./dist/panel/index.js",
       "default": "./dist/panel/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker/index.d.ts",
+      "worker": "./dist/worker/index.js",
+      "workerd": "./dist/worker/index.js",
+      "default": "./dist/worker/index.js"
+    },
+    "./workerd-client": {
+      "types": "./dist/shared/workerd.d.ts",
+      "default": "./dist/shared/workerd.js"
     }
   },
   "scripts": {

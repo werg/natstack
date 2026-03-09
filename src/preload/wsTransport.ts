@@ -169,6 +169,7 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
         break;
       }
 
+      case "ws:routed":
       case "ws:panel-rpc-delivery": {
         deliver(msg.fromId, msg.message);
         break;
@@ -284,8 +285,8 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
       return;
     }
 
-    // Message to another panel
-    wsSend({ type: "ws:panel-rpc", targetId: normalized, message: rpcMessage });
+    // Message to another caller (panel, worker, etc.)
+    wsSend({ type: "ws:route", targetId: normalized, message: rpcMessage });
   };
 
   return {

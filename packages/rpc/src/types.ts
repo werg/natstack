@@ -153,6 +153,7 @@ export const SERVER_SERVICE_NAMES = [
   "test",
   "tokens",
   "typecheck",
+  "workerd",
 ] as const;
 
 export type ServerServiceName = (typeof SERVER_SERVICE_NAMES)[number];

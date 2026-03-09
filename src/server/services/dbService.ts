@@ -8,7 +8,7 @@ export function createDbService(deps: {
   return {
     name: "db",
     description: "Database operations",
-    policy: { allowed: ["shell", "panel", "server"] },
+    policy: { allowed: ["shell", "panel", "server", "worker"] },
     methods: {
       open: { args: z.tuple([z.string(), z.boolean().optional()]) },
       query: { args: z.tuple([z.string(), z.string(), z.array(z.unknown()).optional()]) },
