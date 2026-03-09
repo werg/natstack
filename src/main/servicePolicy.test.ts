@@ -57,8 +57,10 @@ describe("checkServiceAccess", () => {
     );
   });
 
-  it("returns void (no throw) for unknown services", () => {
-    expect(() => checkServiceAccess("nonexistent", "panel", registry)).not.toThrow();
+  it("throws for unknown services", () => {
+    expect(() => checkServiceAccess("nonexistent", "panel", registry)).toThrow(
+      "Unknown service 'nonexistent'"
+    );
   });
 
   it("uses registry for policy lookup", () => {

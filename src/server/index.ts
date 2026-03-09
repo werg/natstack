@@ -421,16 +421,21 @@ async function main() {
   // ── AI RPC (depends on rpcServer + ai) ──
 
   const { createAiService } = await import("./services/aiService.js");
-  container.register({
-    name: "aiRpc",
-    dependencies: ["rpcServer", "ai"],
-    async start(resolve) {
-      const { server: rpcServer } = resolve<{ server: import("./rpcServer.js").RpcServer; port: number }>("rpcServer")!;
-      const aiHandler = resolve<import("../shared/ai/aiHandler.js").AIHandler>("ai")!;
-      const def = createAiService({ aiHandler, rpcServer });
-      dispatcher.registerService(def);
-    },
-  });
+  {
+    let aiServiceDef: import("../shared/serviceDefinition.js").ServiceDefinition;
+    container.register({
+      name: "aiRpc",
+      dependencies: ["rpcServer", "ai"],
+      async start(resolve) {
+        const { server: rpcServer } = resolve<{ server: import("./rpcServer.js").RpcServer; port: number }>("rpcServer")!;
+        const aiHandler = resolve<import("../shared/ai/aiHandler.js").AIHandler>("ai")!;
+        aiServiceDef = createAiService({ aiHandler, rpcServer });
+      },
+      getServiceDefinition() {
+        return aiServiceDef;
+      },
+    });
+  }
 
   // ===========================================================================
   // Standalone-mode services (conditionally registered)
@@ -531,45 +536,51 @@ async function main() {
     });
 
     // Bridge RPC service
-    container.register({
-      name: "bridge",
-      dependencies: ["panelLifecycle", "agentDiscovery"],
-      optionalDependencies: ["panelServing"],
-      async start(resolve) {
-        const lifecycle = resolve<import("../shared/panelLifecycle.js").PanelLifecycle>("panelLifecycle")!;
-        const agentDiscovery = resolve<import("../shared/agentDiscovery.js").AgentDiscovery>("agentDiscovery")!;
-        const panelServingResult = resolve<{ cdpBridge: import("./cdpBridge.js").CdpBridge }>("panelServing", true);
-        const cdpBridge = panelServingResult?.cdpBridge ?? null;
-        const deps = { pm: lifecycle, gitServer, agentDiscovery, cdpBridge };
-        dispatcher.registerService({
-          name: "bridge",
-          description: "Panel lifecycle (headless mode)",
-          policy: { allowed: ["panel", "shell", "server"] },
-          methods: {
-            closeSelf: { args: z.tuple([]) },
-            getInfo: { args: z.tuple([]) },
-            setStateArgs: { args: z.tuple([z.record(z.unknown())]) },
-            focusPanel: { args: z.tuple([z.string().optional()]) },
-            getBootstrapConfig: { args: z.tuple([]) },
-            getWorkspaceTree: { args: z.tuple([]) },
-            listBranches: { args: z.tuple([z.string()]) },
-            listCommits: { args: z.tuple([z.string(), z.string().optional(), z.number().optional()]) },
-            listAgents: { args: z.tuple([]) },
-            openDevtools: { args: z.tuple([]) },
-            openFolderDialog: { args: z.tuple([z.object({ title: z.string().optional() }).optional()]) },
-            createBrowserPanel: { args: z.tuple([z.string(), z.object({ name: z.string().optional(), focus: z.boolean().optional() }).optional()]) },
-            closeChild: { args: z.tuple([z.string()]) },
-            openExternal: { args: z.tuple([z.string()]) },
-          },
-          handler: async (ctx, method, serviceArgs) => {
-            return handleHeadlessBridgeCall(deps, ctx.callerId, method, serviceArgs as unknown[]);
-          },
-        });
-      },
-    });
+    {
+      let bridgeDeps: Parameters<typeof handleHeadlessBridgeCall>[0];
+      container.register({
+        name: "bridge",
+        dependencies: ["panelLifecycle", "agentDiscovery"],
+        optionalDependencies: ["panelServing"],
+        async start(resolve) {
+          const lifecycle = resolve<import("../shared/panelLifecycle.js").PanelLifecycle>("panelLifecycle")!;
+          const agentDiscovery = resolve<import("../shared/agentDiscovery.js").AgentDiscovery>("agentDiscovery")!;
+          const panelServingResult = resolve<{ cdpBridge: import("./cdpBridge.js").CdpBridge }>("panelServing", true);
+          const cdpBridge = panelServingResult?.cdpBridge ?? null;
+          bridgeDeps = { pm: lifecycle, gitServer, agentDiscovery, cdpBridge };
+        },
+        getServiceDefinition() {
+          return {
+            name: "bridge",
+            description: "Panel lifecycle (headless mode)",
+            policy: { allowed: ["panel", "shell", "server"] },
+            methods: {
+              closeSelf: { args: z.tuple([]) },
+              getInfo: { args: z.tuple([]) },
+              setStateArgs: { args: z.tuple([z.record(z.unknown())]) },
+              focusPanel: { args: z.tuple([z.string().optional()]) },
+              getBootstrapConfig: { args: z.tuple([]) },
+              getWorkspaceTree: { args: z.tuple([]) },
+              listBranches: { args: z.tuple([z.string()]) },
+              listCommits: { args: z.tuple([z.string(), z.string().optional(), z.number().optional()]) },
+              listAgents: { args: z.tuple([]) },
+              openDevtools: { args: z.tuple([]) },
+              openFolderDialog: { args: z.tuple([z.object({ title: z.string().optional() }).optional()]) },
+              createBrowserPanel: { args: z.tuple([z.string(), z.object({ name: z.string().optional(), focus: z.boolean().optional() }).optional()]) },
+              closeChild: { args: z.tuple([z.string()]) },
+              openExternal: { args: z.tuple([z.string()]) },
+            },
+            handler: async (ctx, method, serviceArgs) => {
+              return handleHeadlessBridgeCall(bridgeDeps, ctx.callerId, method, serviceArgs as unknown[]);
+            },
+          };
+        },
+      });
+    }
 
     // On-demand panel wiring + CDP bridge + browser service (when --serve-panels)
     if (args.servePanels) {
+      let panelServingCdpBridge: import("./cdpBridge.js").CdpBridge;
       container.register({
         name: "panelServing",
         dependencies: ["panelHttpServer", "panelLifecycle", "panelRegistry", "buildSystem"],
@@ -636,9 +647,15 @@ async function main() {
             port: panelHttpPort,
           });
           panelHttpServer.setCdpBridge(cdpBridge);
+          panelServingCdpBridge = cdpBridge;
 
-          // Browser RPC service
-          dispatcher.registerService({
+          return { cdpBridge };
+        },
+        async stop(instance: { cdpBridge: { stop(): Promise<void> } } | undefined) {
+          await instance?.cdpBridge?.stop();
+        },
+        getServiceDefinition() {
+          return {
             name: "browser",
             description: "CDP/browser automation (headless mode)",
             policy: { allowed: ["shell", "panel", "server"] },
@@ -654,68 +671,86 @@ async function main() {
               const a = serviceArgs as unknown[];
               switch (method) {
                 case "getCdpEndpoint": {
-                  const endpoint = cdpBridge.getCdpEndpoint(a[0] as string, ctx.callerId);
+                  const endpoint = panelServingCdpBridge.getCdpEndpoint(a[0] as string, ctx.callerId);
                   if (!endpoint) throw new Error(`Access denied or browser not found: ${a[0]}`);
                   return endpoint;
                 }
                 case "navigate": case "goBack": case "goForward": case "reload": case "stop":
-                  return cdpBridge.sendBrowserCommand(a[0] as string, ctx.callerId, method, a.slice(1));
+                  return panelServingCdpBridge.sendBrowserCommand(a[0] as string, ctx.callerId, method, a.slice(1));
                 default: throw new Error(`Unknown browser method: ${method}`);
               }
             },
-          });
-
-          return { cdpBridge };
-        },
-        async stop(instance: { cdpBridge: { stop(): Promise<void> } } | undefined) {
-          await instance?.cdpBridge?.stop();
+          };
         },
       });
     } else {
       // Stub browser service when --serve-panels is off
       container.register({
         name: "browserStub",
-        async start() {
-          dispatcher.registerService({
+        getServiceDefinition() {
+          return {
             name: "browser",
             description: "CDP/browser automation (headless mode - unavailable)",
             policy: { allowed: ["shell", "panel", "server"] },
             methods: {},
             handler: async () => { throw new Error("browser service requires --serve-panels mode"); },
-          });
+          };
         },
       });
     }
 
     // FS RPC service
-    container.register({
-      name: "fsRpc",
-      dependencies: ["fsService"],
-      async start(resolve) {
-        const fsService = resolve<import("../shared/fsService.js").FsService>("fsService")!;
-        const fsMethodSchema = { args: z.tuple([z.string()]).rest(z.unknown()) };
-        dispatcher.registerService({
-          name: "fs",
-          description: "Per-context filesystem operations (sandboxed to context folder)",
-          policy: { allowed: ["panel", "server"] },
-          methods: {
-            readFile: fsMethodSchema, writeFile: fsMethodSchema,
-            readdir: fsMethodSchema, mkdir: fsMethodSchema,
-            stat: fsMethodSchema, open: fsMethodSchema,
-            close: fsMethodSchema, read: fsMethodSchema, write: fsMethodSchema,
-          },
-          handler: async (ctx, method, serviceArgs) => {
-            return handleFsCall(fsService, ctx, method, serviceArgs as unknown[]);
-          },
-        });
-      },
-    });
+    {
+      let fsServiceInstance: import("../shared/fsService.js").FsService;
+      container.register({
+        name: "fsRpc",
+        dependencies: ["fsService"],
+        async start(resolve) {
+          fsServiceInstance = resolve<import("../shared/fsService.js").FsService>("fsService")!;
+        },
+        getServiceDefinition() {
+          const fsMethodSchema = { args: z.tuple([z.string()]).rest(z.unknown()) };
+          return {
+            name: "fs",
+            description: "Per-context filesystem operations (sandboxed to context folder)",
+            policy: { allowed: ["panel", "server"] },
+            methods: {
+              readFile: fsMethodSchema, writeFile: fsMethodSchema,
+              readdir: fsMethodSchema, mkdir: fsMethodSchema,
+              stat: fsMethodSchema, open: fsMethodSchema,
+              close: fsMethodSchema, read: fsMethodSchema, write: fsMethodSchema,
+            },
+            handler: async (ctx, method, serviceArgs) => {
+              return handleFsCall(fsServiceInstance, ctx, method, serviceArgs as unknown[]);
+            },
+          };
+        },
+      });
+    }
   }
 
   // ── Start all services in dependency order ──
   await container.startAll();
 
   dispatcher.markInitialized();
+
+  // Validate that SERVER_SERVICE_NAMES covers all server-side services.
+  // This catches drift where a new service is added to the server but not
+  // to the shared constant (which would cause silent misrouting in Electron mode).
+  {
+    const { SERVER_SERVICE_NAMES } = await import("@natstack/rpc");
+    const sharedSet = new Set<string>(SERVER_SERVICE_NAMES);
+    // Services that intentionally live on both Electron and server (not routed via SERVER_SERVICE_NAMES)
+    const dualHosted = new Set(["events", "bridge", "browser", "fs"]);
+    for (const name of dispatcher.getServices()) {
+      if (!sharedSet.has(name) && !dualHosted.has(name)) {
+        console.warn(
+          `[Server] Service "${name}" is registered on the server but missing from SERVER_SERVICE_NAMES in @natstack/rpc. ` +
+          `Panel calls to this service will be misrouted in Electron mode.`
+        );
+      }
+    }
+  }
 
   // ===========================================================================
   // Report ready

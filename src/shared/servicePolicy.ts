@@ -37,8 +37,9 @@ export function checkServiceAccess(
   const policy = registry.getPolicy(service);
 
   if (!policy) {
-    // Unknown service - let the dispatcher handle it
-    return;
+    throw new Error(
+      `Unknown service '${service}'`
+    );
   }
 
   if (!policy.allowed.includes(callerKind)) {

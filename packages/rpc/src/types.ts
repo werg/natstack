@@ -130,6 +130,34 @@ export interface RpcBridgeInternal extends RpcBridge {
 }
 
 // =============================================================================
+// Server Service Names — single source of truth for routing
+// =============================================================================
+
+/**
+ * Services that run on the server process (backend compute).
+ *
+ * Used by the routing bridge to decide whether an RPC call should go to the
+ * server (WebSocket) or Electron (IPC). Any service registered on the server
+ * that panels/shell may call must be listed here.
+ *
+ * IMPORTANT: When adding a new server service, add its name here — otherwise
+ * panel calls will be silently misrouted to Electron IPC.
+ */
+export const SERVER_SERVICE_NAMES = [
+  "ai",
+  "agentSettings",
+  "build",
+  "db",
+  "git",
+  "project",
+  "test",
+  "tokens",
+  "typecheck",
+] as const;
+
+export type ServerServiceName = (typeof SERVER_SERVICE_NAMES)[number];
+
+// =============================================================================
 // IPC Envelope Types
 // =============================================================================
 
