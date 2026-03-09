@@ -46,9 +46,9 @@ export interface WorkerCreateOptions {
   env?: Record<string, string>;
   bindings?: Record<string, WorkerBinding>;
   stateArgs?: Record<string, unknown>;
-  /** Pin this instance to its current build version. Pinned instances are
-   *  never auto-updated on source rebuild — they must be explicitly updated. */
-  pin?: boolean;
+  /** Build at a specific git ref (branch, tag, or commit SHA).
+   *  Use a commit SHA for immutable pinning (content-addressed cache guarantees same build). */
+  ref?: string;
 }
 
 export interface WorkerInstance {
@@ -61,10 +61,9 @@ export interface WorkerInstance {
   bindings: Record<string, WorkerBinding>;
   stateArgs?: Record<string, unknown>;
   limits?: WorkerLimits;
-  pinned: boolean;
   buildKey?: string;
-  /** Pinned bundle content (never auto-updated). */
-  pinnedBundle?: string;
+  /** Git ref this instance is built at (branch, tag, or commit SHA). */
+  ref?: string;
   status: "building" | "starting" | "running" | "stopped" | "error";
 }
 
@@ -72,7 +71,7 @@ export interface WorkerdManagerDeps {
   tokenManager: TokenManager;
   fsService: FsService;
   rpcPort: number;
-  getBuild: (unitPath: string) => Promise<BuildResult>;
+  getBuild: (unitPath: string, ref?: string) => Promise<BuildResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -150,7 +149,7 @@ export class WorkerdManager {
       bindings: options.bindings ?? {},
       stateArgs: options.stateArgs,
       limits: options.limits,  // mandatory — always present
-      pinned: options.pin ?? false,
+      ref: options.ref,
       status: "building",
     };
 
@@ -158,13 +157,8 @@ export class WorkerdManager {
 
     // Trigger build
     try {
-      const buildResult = await this.deps.getBuild(options.source);
+      const buildResult = await this.deps.getBuild(options.source, options.ref);
       instance.buildKey = buildResult.metadata.ev;
-      // Pin the bundle content so config regeneration never silently
-      // moves this instance to a newer build.
-      if (instance.pinned) {
-        instance.pinnedBundle = buildResult.bundle;
-      }
       instance.status = "starting";
 
       // Restart workerd process with updated config
@@ -219,18 +213,7 @@ export class WorkerdManager {
     if (updates.bindings) instance.bindings = updates.bindings;
     if (updates.stateArgs !== undefined) instance.stateArgs = updates.stateArgs;
     if (updates.limits !== undefined) instance.limits = updates.limits;
-    if (updates.pin !== undefined) {
-      instance.pinned = updates.pin;
-      if (updates.pin) {
-        // Pin to current build
-        const buildResult = await this.deps.getBuild(instance.source);
-        instance.pinnedBundle = buildResult.bundle;
-        instance.buildKey = buildResult.metadata.ev;
-      } else {
-        // Unpin — will use latest on next restart
-        instance.pinnedBundle = undefined;
-      }
-    }
+    if (updates.ref !== undefined) instance.ref = updates.ref || undefined;
 
     // Restart workerd with new config
     await this.restartWorkerd();
@@ -263,19 +246,14 @@ export class WorkerdManager {
     const instanceNames: string[] = [];
 
     for (const [name, instance] of this.instances) {
-      // Get the build for this instance.
-      // Ref-pinned instances use their snapshot — never auto-updated.
+      // Get the build for this instance (content-addressed — ref builds are cached).
       let bundleContent: string;
-      if (instance.pinnedBundle) {
-        bundleContent = instance.pinnedBundle;
-      } else {
-        try {
-          const buildResult = await this.deps.getBuild(instance.source);
-          bundleContent = buildResult.bundle;
-        } catch (err) {
-          log.warn(`Skipping worker "${name}" — build not available:`, err);
-          continue;
-        }
+      try {
+        const buildResult = await this.deps.getBuild(instance.source, instance.ref);
+        bundleContent = buildResult.bundle;
+      } catch (err) {
+        log.warn(`Skipping worker "${name}" — build not available:`, err);
+        continue;
       }
 
       instanceNames.push(name);
@@ -483,13 +461,14 @@ ${cases.join("\n")}
 
   /**
    * Called by push trigger when a worker source is rebuilt.
-   * Restarts unpinned instances running the given source.
+   * Restarts HEAD-tracking instances (no ref) running the given source.
    */
   async onSourceRebuilt(source: string): Promise<void> {
     let needsRestart = false;
 
     for (const instance of this.instances.values()) {
-      if (instance.source === source && !instance.pinned) {
+      // Only auto-restart workers tracking HEAD (no ref set)
+      if (instance.source === source && !instance.ref) {
         instance.status = "starting";
         needsRestart = true;
       }
@@ -500,14 +479,14 @@ ${cases.join("\n")}
       try {
         await this.restartWorkerd();
         for (const instance of this.instances.values()) {
-          if (instance.source === source && !instance.pinned && instance.status === "starting") {
+          if (instance.source === source && !instance.ref && instance.status === "starting") {
             instance.status = "running";
           }
         }
       } catch (err) {
         log.error(`Failed to restart workers for ${source}:`, err);
         for (const instance of this.instances.values()) {
-          if (instance.source === source && !instance.pinned && instance.status === "starting") {
+          if (instance.source === source && !instance.ref && instance.status === "starting") {
             instance.status = "error";
           }
         }

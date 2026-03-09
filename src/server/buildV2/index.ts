@@ -27,6 +27,8 @@ import {
   persistRefState,
   diffEvMaps,
   computeBuildKey,
+  getCommitAt,
+  resolveDepRefToGitRef,
   type EffectiveVersionMap,
   type ContentHashMap,
   type ChangeSet,
@@ -49,8 +51,8 @@ export interface AboutPageMeta {
 }
 
 export interface BuildSystemV2 {
-  /** Get build result for a panel/agent */
-  getBuild(unitPath: string): Promise<BuildResult>;
+  /** Get build result for a panel/agent. Optional ref builds at a specific git ref. */
+  getBuild(unitPath: string, ref?: string): Promise<BuildResult>;
 
   /** Get effective version for a unit */
   getEffectiveVersion(unitName: string): string | null;
@@ -183,7 +185,7 @@ export async function initBuildSystemV2(
   // ---------------------------------------------------------------------------
 
   return {
-    async getBuild(unitPath: string): Promise<BuildResult> {
+    async getBuild(unitPath: string, ref?: string): Promise<BuildResult> {
       // unitPath can be a package name or workspace-relative path
       let node = resolveUnit(currentGraph, unitPath, workspaceRoot);
       if (!node) {
@@ -203,6 +205,51 @@ export async function initBuildSystemV2(
           throw new Error(`Unknown build unit: ${unitPath}`);
         }
       }
+
+      // ── Ref-specific build path ──
+      if (ref) {
+        const commitSha = getCommitAt(node.path, ref);
+        if (!commitSha) {
+          throw new Error(`Ref not found: ${ref}`);
+        }
+
+        // Build commitMap by walking the dep tree parent-by-parent.
+        // Each parent resolves its own children's refs via internalDepRefs,
+        // so transitive deps (A→B→C) correctly use B's ref spec for C.
+        const commitMap = new Map<string, string>();
+        commitMap.set(node.name, commitSha);
+
+        function walkDeps(parent: GraphNode): void {
+          for (const depName of parent.internalDeps) {
+            if (commitMap.has(depName)) continue;
+            const dep = currentGraph.tryGet(depName);
+            if (!dep) continue;
+            const depRef = parent.internalDepRefs[depName];
+            const gitRef = resolveDepRefToGitRef(dep.path, depRef);
+            const depCommit = getCommitAt(dep.path, gitRef);
+            if (depCommit) commitMap.set(dep.name, depCommit);
+            walkDeps(dep);
+          }
+        }
+        walkDeps(node);
+
+        // Recompute EV at the requested ref
+        const refResult = recomputeFromNode(currentGraph, node.name, currentEvMap, currentContentHashes, commitSha);
+        const ev = refResult.evMap[node.name];
+        if (!ev) {
+          throw new Error(`No effective version for ${node.name} at ref ${ref}`);
+        }
+
+        const sourcemap = node.manifest.sourcemap !== false;
+        const buildKey = computeBuildKey(node.name, ev, sourcemap);
+
+        const cached = buildStore.get(buildKey);
+        if (cached) return cached;
+
+        return buildUnit(node, ev, currentGraph, workspaceRoot, commitMap);
+      }
+
+      // ── HEAD build path (existing behavior) ──
 
       // Check if the git tree hash has changed since the last EV computation.
       // This catches the race where commit_and_push returns before the push
@@ -339,41 +386,6 @@ export async function initBuildSystemV2(
       pushTrigger.stop();
       console.log("[BuildV2] Shut down");
     },
-  };
-}
-
-// ---------------------------------------------------------------------------
-// RPC Service Handler
-// ---------------------------------------------------------------------------
-
-/**
- * Create an RPC service handler for the build system.
- * Register this on the service dispatcher as "build".
- */
-export function createBuildServiceHandler(
-  buildSystem: BuildSystemV2,
-): (
-  ctx: { callerId: string; callerKind: string },
-  method: string,
-  args: unknown[],
-) => Promise<unknown> {
-  return async (_ctx, method, args) => {
-    switch (method) {
-      case "getBuild":
-        return buildSystem.getBuild(args[0] as string);
-      case "getEffectiveVersion":
-        return buildSystem.getEffectiveVersion(args[0] as string);
-      case "recompute":
-        return buildSystem.recompute();
-      case "gc":
-        return buildSystem.gc(args[0] as string[]);
-      case "getAboutPages":
-        return buildSystem.getAboutPages();
-      case "hasUnit":
-        return buildSystem.hasUnit(args[0] as string);
-      default:
-        throw new Error(`Unknown build method: ${method}`);
-    }
   };
 }
 

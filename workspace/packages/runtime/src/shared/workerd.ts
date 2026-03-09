@@ -50,8 +50,9 @@ export interface WorkerCreateOptions {
   bindings?: Record<string, WorkerBindingDef>;
   /** Initial state args (available via STATE_ARGS binding) */
   stateArgs?: Record<string, unknown>;
-  /** Pin this instance to its current build version */
-  pin?: boolean;
+  /** Build at a specific git ref (branch, tag, or commit SHA).
+   *  Use a commit SHA for immutable pinning (content-addressed cache guarantees same build). */
+  ref?: string;
 }
 
 export interface WorkerUpdateOptions {
@@ -59,7 +60,8 @@ export interface WorkerUpdateOptions {
   bindings?: Record<string, WorkerBindingDef>;
   stateArgs?: Record<string, unknown>;
   limits?: WorkerLimits;
-  pin?: boolean;
+  /** Change the git ref this instance builds at */
+  ref?: string;
 }
 
 export interface WorkerInstanceInfo {
@@ -71,8 +73,9 @@ export interface WorkerInstanceInfo {
   bindings: Record<string, WorkerBindingDef>;
   stateArgs?: Record<string, unknown>;
   limits?: WorkerLimits;
-  pinned: boolean;
   buildKey?: string;
+  /** Git ref this instance is built at. */
+  ref?: string;
   status: "building" | "starting" | "running" | "stopped" | "error";
 }
 

@@ -104,7 +104,7 @@ export function getCommitAt(repoPath: string, ref?: string): string | null {
   } catch { return null; }
 }
 
-function resolveDepRefToGitRef(repoPath: string, depRef?: InternalDepRef): string {
+export function resolveDepRefToGitRef(repoPath: string, depRef?: InternalDepRef): string {
   if (!depRef || depRef.mode === "default") return resolveMainRef(repoPath);
   if (depRef.mode === "branch") return `refs/heads/${depRef.branch ?? "main"}`;
   if (depRef.mode === "ref") return depRef.ref ?? resolveMainRef(repoPath);

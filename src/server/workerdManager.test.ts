@@ -145,29 +145,27 @@ describe("WorkerdManager", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Pinning
+  // Ref-specific builds
   // -------------------------------------------------------------------------
-  describe("pinning", () => {
-    it("snapshots bundle when pin=true", async () => {
+  describe("ref builds", () => {
+    it("stores ref when provided", async () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
-      const instance = await mgr.createInstance(defaultCreateOptions({ pin: true }));
+      const instance = await mgr.createInstance(defaultCreateOptions({ ref: "abc123" }));
 
-      expect(instance.pinned).toBe(true);
-      expect(instance.pinnedBundle).toBe(
-        'export default { fetch() { return new Response("ok"); } };',
-      );
+      expect(instance.ref).toBe("abc123");
+      expect(deps.getBuild).toHaveBeenCalledWith("workers/hello", "abc123");
     });
 
-    it("does not snapshot when pin=false", async () => {
+    it("passes undefined ref when not provided", async () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
-      const instance = await mgr.createInstance(defaultCreateOptions({ pin: false }));
+      const instance = await mgr.createInstance(defaultCreateOptions());
 
-      expect(instance.pinned).toBe(false);
-      expect(instance.pinnedBundle).toBeUndefined();
+      expect(instance.ref).toBeUndefined();
+      expect(deps.getBuild).toHaveBeenCalledWith("workers/hello", undefined);
     });
   });
 
@@ -212,26 +210,24 @@ describe("WorkerdManager", () => {
       expect(updated.limits).toEqual({ cpuMs: 200, subrequests: 5 });
     });
 
-    it("pins on update when pin=true", async () => {
+    it("sets ref on update", async () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
       await mgr.createInstance(defaultCreateOptions());
-      const updated = await mgr.updateInstance("hello", { pin: true });
+      const updated = await mgr.updateInstance("hello", { ref: "feature/x" });
 
-      expect(updated.pinned).toBe(true);
-      expect(updated.pinnedBundle).toBeDefined();
+      expect(updated.ref).toBe("feature/x");
     });
 
-    it("unpins on update when pin=false", async () => {
+    it("clears ref on update with empty string", async () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
-      await mgr.createInstance(defaultCreateOptions({ pin: true }));
-      const updated = await mgr.updateInstance("hello", { pin: false });
+      await mgr.createInstance(defaultCreateOptions({ ref: "abc123" }));
+      const updated = await mgr.updateInstance("hello", { ref: "" });
 
-      expect(updated.pinned).toBe(false);
-      expect(updated.pinnedBundle).toBeUndefined();
+      expect(updated.ref).toBeUndefined();
     });
   });
 
@@ -246,7 +242,7 @@ describe("WorkerdManager", () => {
       const list = mgr.listInstances();
       expect(list).toHaveLength(1);
       expect(list[0]).not.toHaveProperty("token");
-      expect(list[0].name).toBe("hello");
+      expect(list[0]!.name).toBe("hello");
     });
 
     it("getInstanceStatus strips token", async () => {
@@ -268,7 +264,7 @@ describe("WorkerdManager", () => {
   // onSourceRebuilt
   // -------------------------------------------------------------------------
   describe("onSourceRebuilt", () => {
-    it("restarts unpinned instances for matching source", async () => {
+    it("restarts HEAD-tracking instances for matching source", async () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
@@ -279,18 +275,20 @@ describe("WorkerdManager", () => {
       expect(status?.status).toBe("running");
     });
 
-    it("skips pinned instances", async () => {
+    it("skips ref-targeted instances", async () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
-      await mgr.createInstance(defaultCreateOptions({ pin: true }));
-      // Pinned instance should not restart
+      await mgr.createInstance(defaultCreateOptions({ ref: "abc123" }));
+      const callsBefore = vi.mocked(deps.getBuild).mock.calls.length;
+
+      // Ref-targeted instance should not restart on HEAD push
       await mgr.onSourceRebuilt("workers/hello");
 
       const status = mgr.getInstanceStatus("hello");
       expect(status?.status).toBe("running");
-      // getBuild called once at create, not again for rebuild
-      expect(deps.getBuild).toHaveBeenCalledTimes(1);
+      // No additional getBuild calls — rebuild was skipped
+      expect(deps.getBuild).toHaveBeenCalledTimes(callsBefore);
     });
 
     it("sets status to error on restart failure", async () => {

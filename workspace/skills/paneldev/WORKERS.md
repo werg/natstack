@@ -82,7 +82,7 @@ const instance = await runtime.workers.create({
   limits: { cpuMs: 100, subrequests: 10 },  // limits are mandatory
   name: "my-hello",         // optional, defaults to source basename
   env: { API_KEY: "..." },  // optional text bindings
-  pin: true,                // optional, pin to current build version
+  ref: "abc123",            // optional, build at specific git ref
 });
 ```
 
@@ -108,16 +108,26 @@ Limits are **mandatory** when creating workers. workerd enforces them per reques
 | `cpuMs` | number (required) | CPU time limit per request in milliseconds |
 | `subrequests` | number (optional) | Max outbound fetch requests per invocation |
 
-### Pinning
+### Ref-Specific Builds
 
-Pinned instances (`pin: true`) snapshot their bundle at creation and never auto-update when the source is rebuilt. Use pinning for stability — unpinned instances auto-restart on push.
+Workers can target a specific git ref (branch, tag, or commit SHA). Workers with `ref` set don't auto-restart on HEAD push — they track their specified ref.
+
+Use a commit SHA as `ref` for immutable pinning (content-addressed cache guarantees the same build):
 
 ```typescript
-// Pin to current build
-await runtime.workers.update("my-hello", { pin: true });
+// Build at a specific commit (effectively pinned)
+await runtime.workers.create({
+  source: "workers/hello",
+  contextId: "ctx-1",
+  limits: { cpuMs: 100 },
+  ref: "abc123def456",
+});
 
-// Unpin — will use latest build on next restart
-await runtime.workers.update("my-hello", { pin: false });
+// Change ref on existing instance
+await runtime.workers.update("my-hello", { ref: "feature/new-api" });
+
+// Clear ref — track HEAD again (auto-restarts on push)
+await runtime.workers.update("my-hello", { ref: "" });
 ```
 
 ## Cross-Caller RPC

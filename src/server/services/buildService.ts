@@ -10,7 +10,7 @@ export function createBuildService(deps: {
     description: "Build system (getBuild, recompute, gc, getAboutPages)",
     policy: { allowed: ["panel", "shell", "server", "worker"] },
     methods: {
-      getBuild: { args: z.tuple([z.string()]) },
+      getBuild: { args: z.tuple([z.string(), z.string().optional()]) },
       getEffectiveVersion: { args: z.tuple([z.string()]) },
       recompute: { args: z.tuple([]) },
       gc: { args: z.tuple([z.array(z.string())]) },
@@ -20,7 +20,7 @@ export function createBuildService(deps: {
     handler: async (_ctx, method, args) => {
       const bs = deps.buildSystem;
       switch (method) {
-        case "getBuild": return bs.getBuild(args[0] as string);
+        case "getBuild": return bs.getBuild(args[0] as string, args[1] as string | undefined);
         case "getEffectiveVersion": return bs.getEffectiveVersion(args[0] as string);
         case "recompute": return bs.recompute();
         case "gc": return bs.gc(args[0] as string[]);

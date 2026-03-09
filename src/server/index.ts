@@ -628,7 +628,7 @@ async function main() {
               return { panelId, rpcPort, rpcToken, serverRpcPort: rpcPort, serverRpcToken: rpcToken };
             },
             listPanels: () => lifecycle.listPanels(),
-            getBuild: (source) => buildSystem.getBuild(source),
+            getBuild: (source, ref) => buildSystem.getBuild(source, ref),
           });
 
           buildSystem.onPushBuild((source) => { panelHttpServer.invalidateBuild(source); });
@@ -746,7 +746,7 @@ async function main() {
             tokenManager,
             fsService: fsServiceInst,
             rpcPort,
-            getBuild: (unitPath) => buildSystemForWorkerd!.getBuild(unitPath),
+            getBuild: (unitPath, ref) => buildSystemForWorkerd!.getBuild(unitPath, ref),
           });
 
           // Wire push trigger to restart workers on source rebuild

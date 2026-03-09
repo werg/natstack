@@ -9,11 +9,11 @@ function createMockRpc() {
 
   return {
     rpc: {
-      call: vi.fn(async <T>(target: string, method: string, ...args: unknown[]): Promise<T> => {
+      call: vi.fn(async (target: string, method: string, ...args: unknown[]) => {
         calls.push({ target, method, args });
-        return undefined as T;
+        return undefined;
       }),
-    },
+    } as any,
     calls,
   };
 }

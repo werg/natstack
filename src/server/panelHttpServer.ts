@@ -100,7 +100,7 @@ export interface PanelHttpCallbacks {
   onBuildComplete?(source: string, error?: string): void;
 
   /** Build trigger */
-  getBuild(source: string): Promise<BuildResult>;
+  getBuild(source: string, ref?: string): Promise<BuildResult>;
 }
 
 /** Build output cached by source path (shared across panels) */
@@ -448,17 +448,20 @@ export class PanelHttpServer {
 
         // ── Authenticated: serve static resource ──
         // HTML (page load): always resolve through getBuild to ensure freshness.
-        // Sub-resources (JS/CSS/assets): serve from buildCache (loaded same page).
+        // Sub-resources (JS/CSS/assets): serve from servingCache (keyed by source).
+        const ref = url.searchParams.get("ref") || undefined;
         const isHtmlRequest = parsed.resource === "/" || parsed.resource === "/index.html";
         if (isHtmlRequest) {
-          await this.resolveAndServeBuild(res, parsed.source, subdomain);
+          await this.resolveAndServeBuild(res, parsed.source, subdomain, true, ref);
         } else {
+          // Sub-resources don't carry ?ref= — look up by plain source.
+          // The most recent build (HEAD or ref) stored by resolveAndServeBuild wins.
           const build = this.servingCache.get(parsed.source);
           if (build) {
             this.servePanelResource(res, build, parsed.resource);
           } else {
             // Sub-resource arrived before HTML resolved — trigger build, don't wait
-            await this.resolveAndServeBuild(res, parsed.source, subdomain, false);
+            await this.resolveAndServeBuild(res, parsed.source, subdomain, false, ref);
           }
         }
         return;
@@ -553,27 +556,32 @@ export class PanelHttpServer {
     source: string,
     subdomain: string,
     waitForResult = true,
+    ref?: string,
   ): Promise<void> {
+    // Composite key for in-flight dedup and error tracking — isolates ref from HEAD.
+    // servingCache uses plain source (sub-resources don't carry ?ref=).
+    const flightKey = ref ? `${source}@${ref}` : source;
+
     // Start build if not already in flight (dedup concurrent requests).
     // Always start a fresh getBuild — errors from previous attempts are
     // cleared when the new build completes or fails again.
-    if (!this.buildInFlight.has(source)) {
+    if (!this.buildInFlight.has(flightKey)) {
       if (!this.callbacks?.getBuild) {
         this.servePanelClosedPage(res, subdomain);
         return;
       }
-      const promise = this.callbacks.getBuild(source).then((result) => {
+      const promise = this.callbacks.getBuild(source, ref).then((result) => {
         this.storeBuild(source, result);
-        this.buildErrors.delete(source);
-        this.buildInFlight.delete(source);
+        this.buildErrors.delete(flightKey);
+        this.buildInFlight.delete(flightKey);
       }).catch((err) => {
         const msg = err instanceof Error ? err.message : String(err);
-        log.info(`Build failed for ${source}: ${msg}`);
-        this.buildErrors.set(source, msg);
-        this.buildInFlight.delete(source);
+        log.info(`Build failed for ${flightKey}: ${msg}`);
+        this.buildErrors.set(flightKey, msg);
+        this.buildInFlight.delete(flightKey);
         this.callbacks?.onBuildComplete?.(source, msg);
       });
-      this.buildInFlight.set(source, promise);
+      this.buildInFlight.set(flightKey, promise);
     }
 
     if (!waitForResult) {
@@ -584,7 +592,7 @@ export class PanelHttpServer {
     // Wait briefly — if build is already cached in buildStore, getBuild returns fast
     const FAST_RESOLVE_MS = 500;
     const resolved = await Promise.race([
-      this.buildInFlight.get(source)!.then(() => true),
+      this.buildInFlight.get(flightKey)!.then(() => true),
       new Promise<false>((r) => setTimeout(() => r(false), FAST_RESOLVE_MS)),
     ]);
 
@@ -593,7 +601,7 @@ export class PanelHttpServer {
       if (build) {
         this.servePanelResource(res, build, "/");
       } else {
-        const error = this.buildErrors.get(source);
+        const error = this.buildErrors.get(flightKey);
         if (error) {
           this.serveBuildErrorPage(res, source, error);
         } else {
