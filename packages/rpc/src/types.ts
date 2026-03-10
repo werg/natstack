@@ -32,6 +32,8 @@ export interface RpcResponseError {
   type: "response";
   requestId: string;
   error: string;
+  /** Original error code (e.g. "ENOENT", "EACCES") preserved across the RPC boundary */
+  errorCode?: string;
 }
 
 /**

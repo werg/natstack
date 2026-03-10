@@ -1,19 +1,52 @@
-// Create a new workspace project.
-// Usage: prepend variable definitions, then eval this script:
-//
-//   eval({ code: `
-//     const PROJECT_TYPE = "panel";
-//     const PROJECT_NAME = "my-app";
-//     const PROJECT_TITLE = "My App";
-//     ${scriptContents}
-//   `, timeout: 30000 })
+import { fs, gitConfig } from "@workspace/runtime";
+import { GitClient, initAndPush } from "@natstack/git";
 
-import { fs, rpc } from "@workspace/runtime";
+// ---------------------------------------------------------------------------
+// Shared git client helper
+// ---------------------------------------------------------------------------
 
-declare const PROJECT_TYPE: string;
-declare const PROJECT_NAME: string;
-declare const PROJECT_TITLE: string;
-declare const contextId: string;
+function createGit(): GitClient {
+  if (!gitConfig) throw new Error("Git config not available");
+  return new GitClient(fs, {
+    serverUrl: gitConfig.serverUrl,
+    token: gitConfig.token,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// commitAndPush — stage, commit, and push changes to the git server
+// ---------------------------------------------------------------------------
+
+/**
+ * Stage all changes in a repo directory, commit, and push to the git server.
+ * Context folders include .git with shared object store, so this works on
+ * any pre-existing repo. Adds the "origin" remote if not configured yet.
+ */
+export async function commitAndPush(
+  dir: string,
+  message: string,
+): Promise<string> {
+  const git = createGit();
+
+  // Ensure remote is configured (context folders copy .git but workspace
+  // repos don't have remotes — the remote path matches the repo path)
+  const remotes = await git.listRemotes(dir);
+  if (!remotes.some((r) => r.remote === "origin")) {
+    await git.addRemote(dir, "origin", dir);
+  }
+
+  await git.addAll(dir);
+
+  const status = await git.status(dir);
+  const hasChanges = status.files.some(
+    (f) => f.status !== "unmodified" && f.status !== "ignored",
+  );
+  if (!hasChanges) return "Nothing to commit";
+
+  const sha = await git.commit({ dir, message });
+  await git.push({ dir, ref: "main" });
+  return `Committed ${sha.slice(0, 7)} and pushed to origin/main`;
+}
 
 const TYPE_DIRS: Record<string, string> = {
   panel: "panels",
@@ -35,109 +68,121 @@ function toPascalCase(str: string): string {
   return str.split(/[-_]/).map(s => s.charAt(0).toUpperCase() + s.slice(1)).join("");
 }
 
-const typeDir = TYPE_DIRS[PROJECT_TYPE];
-if (!typeDir) throw new Error(`Unknown project type: ${PROJECT_TYPE}. Must be one of: panel, package, skill, agent, worker`);
+export async function createProject(
+  params: { projectType: string; name: string; title?: string },
+): Promise<{ created: string; files: string[] }> {
+  const { projectType, name, title = name } = params;
 
-const scope = PACKAGE_SCOPES[PROJECT_TYPE];
-const projectPath = `${typeDir}/${PROJECT_NAME}`;
+  const typeDir = TYPE_DIRS[projectType];
+  if (!typeDir) throw new Error(`Unknown project type: ${projectType}. Must be one of: panel, package, skill, agent, worker`);
 
-// Check if already exists
-if (await fs.exists(projectPath)) {
-  throw new Error(`Project already exists: ${projectPath}`);
-}
+  const scope = PACKAGE_SCOPES[projectType];
+  const projectPath = `${typeDir}/${name}`;
 
-// Create directory
-await fs.mkdir(projectPath, { recursive: true });
+  // Check if already exists
+  if (await fs.exists(projectPath)) {
+    throw new Error(`Project already exists: ${projectPath}`);
+  }
 
-// Generate and write template files
-const files: Record<string, string> = {};
+  // Generate template files
+  const files: Record<string, string> = {};
 
-switch (PROJECT_TYPE) {
-  case "panel":
-    files["package.json"] = JSON.stringify({
-      name: `${scope}/${PROJECT_NAME}`,
-      version: "0.1.0",
-      private: true,
-      type: "module",
-      natstack: { title: PROJECT_TITLE },
-      dependencies: {
-        "@workspace/runtime": "workspace:*",
-        "@workspace/react": "workspace:*",
-        "@radix-ui/themes": "^3.2.1",
-      },
-    }, null, 2);
-    files["index.tsx"] = `import { usePanelTheme } from "@workspace/react";
+  switch (projectType) {
+    case "panel":
+      files["package.json"] = JSON.stringify({
+        name: `${scope}/${name}`,
+        version: "0.1.0",
+        private: true,
+        type: "module",
+        natstack: { title },
+        dependencies: {
+          "@workspace/runtime": "workspace:*",
+          "@workspace/react": "workspace:*",
+          "@radix-ui/themes": "^3.2.1",
+        },
+      }, null, 2);
+      files["index.tsx"] = `import { usePanelTheme } from "@workspace/react";
 import { Flex, Text, Theme } from "@radix-ui/themes";
 
-export default function ${toPascalCase(PROJECT_NAME)}() {
+export default function ${toPascalCase(name)}() {
   const theme = usePanelTheme();
 
   return (
     <Theme appearance={theme}>
       <Flex direction="column" align="center" justify="center" style={{ height: "100vh" }}>
-        <Text size="5">${PROJECT_TITLE}</Text>
+        <Text size="5">${title}</Text>
       </Flex>
     </Theme>
   );
 }
 `;
-    break;
+      break;
 
-  case "package":
-    files["package.json"] = JSON.stringify({
-      name: `${scope}/${PROJECT_NAME}`,
-      version: "0.1.0",
-      private: true,
-      type: "module",
-      exports: { ".": "./index.ts" },
-    }, null, 2);
-    files["index.ts"] = `/**\n * ${PROJECT_TITLE}\n */\n\nexport {};\n`;
-    break;
+    case "package":
+      files["package.json"] = JSON.stringify({
+        name: `${scope}/${name}`,
+        version: "0.1.0",
+        private: true,
+        type: "module",
+        exports: { ".": "./index.ts" },
+      }, null, 2);
+      files["index.ts"] = `/**\n * ${title}\n */\n\nexport {};\n`;
+      break;
 
-  case "skill":
-    files["package.json"] = JSON.stringify({
-      name: `${scope}/${PROJECT_NAME}`,
-      version: "0.1.0",
-    }, null, 2);
-    files["SKILL.md"] = `---\nname: ${PROJECT_NAME}\ndescription: ${PROJECT_TITLE}\n---\n\n# ${PROJECT_TITLE}\n`;
-    break;
+    case "skill":
+      files["package.json"] = JSON.stringify({
+        name: `${scope}/${name}`,
+        version: "0.1.0",
+        private: true,
+        type: "module",
+        exports: { ".": "./index.ts" },
+        dependencies: { "@workspace/runtime": "workspace:*" },
+      }, null, 2);
+      files["index.ts"] = `/**\n * ${title}\n */\n\nexport {};\n`;
+      files["SKILL.md"] = `---\nname: ${name}\ndescription: ${title}\n---\n\n# ${title}\n`;
+      break;
 
-  case "agent":
-    files["package.json"] = JSON.stringify({
-      name: `${scope}/${PROJECT_NAME}`,
-      version: "0.1.0",
-      natstack: { type: "agent", title: PROJECT_TITLE },
-    }, null, 2);
-    files["index.ts"] = `/**\n * ${PROJECT_TITLE} agent\n */\n\nconsole.log("${PROJECT_TITLE} agent started");\n`;
-    break;
+    case "agent":
+      files["package.json"] = JSON.stringify({
+        name: `${scope}/${name}`,
+        version: "0.1.0",
+        natstack: { type: "agent", title },
+      }, null, 2);
+      files["index.ts"] = `/**\n * ${title} agent\n */\n\nconsole.log("${title} agent started");\n`;
+      break;
 
-  case "worker":
-    files["package.json"] = JSON.stringify({
-      name: `${scope}/${PROJECT_NAME}`,
-      version: "0.1.0",
-      private: true,
-      type: "module",
-      natstack: { type: "worker", entry: "index.ts", title: PROJECT_TITLE },
-      dependencies: { "@workspace/runtime": "workspace:*" },
-    }, null, 2);
-    files["index.ts"] = `import { createWorkerRuntime } from "@workspace/runtime/worker";
+    case "worker":
+      files["package.json"] = JSON.stringify({
+        name: `${scope}/${name}`,
+        version: "0.1.0",
+        private: true,
+        type: "module",
+        natstack: { type: "worker", entry: "index.ts", title },
+        dependencies: { "@workspace/runtime": "workspace:*" },
+      }, null, 2);
+      files["index.ts"] = `import { createWorkerRuntime } from "@workspace/runtime/worker";
 import type { WorkerEnv, ExecutionContext } from "@workspace/runtime/worker";
 
 export default {
   async fetch(request: Request, env: WorkerEnv, _ctx: ExecutionContext) {
     const runtime = createWorkerRuntime(env);
-    return new Response("Hello from ${PROJECT_TITLE}!");
+    return new Response("Hello from ${title}!");
   },
 };
 `;
-    break;
+      break;
+  }
+
+  // Use isomorphic-git to init repo, write files, commit, and push
+  // This goes directly to the git server over HTTP — no server-side RPC needed
+  const git = createGit();
+
+  await initAndPush(git, fs, {
+    dir: projectPath,
+    remote: projectPath,
+    initialFiles: files,
+    message: `Create ${projectType}: ${title}`,
+  });
+
+  return { created: projectPath, files: Object.keys(files) };
 }
-
-for (const [fileName, content] of Object.entries(files)) {
-  await fs.writeFile(`${projectPath}/${fileName}`, content);
-}
-
-// Commit and push (git is auto-initialized on first contextOp)
-await rpc.call("main", "git.contextOp", contextId, "commit_and_push", projectPath, `Create ${PROJECT_TYPE}: ${PROJECT_TITLE}`);
-
-console.log(`Created ${projectPath} with files: ${Object.keys(files).join(", ")}`);

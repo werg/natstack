@@ -16,6 +16,7 @@
 import * as esbuild from "esbuild";
 import * as fs from "fs";
 import * as path from "path";
+import { createHash } from "crypto";
 import type { GraphNode, PackageGraph } from "./packageGraph.js";
 import * as buildStore from "./buildStore.js";
 import type { BuildArtifacts, BuildMetadata, BuildResult } from "./buildStore.js";
@@ -709,13 +710,21 @@ export interface BuildOptions {
   sourcemap: boolean;
 }
 
+export interface BuildUnitOptions {
+  /** Build as a CJS library bundle instead of a standalone app */
+  library?: boolean;
+  /** Externals for library builds — specifiers to emit as require() calls */
+  externals?: string[];
+}
+
 /**
- * Build a single unit (panel, about page, or agent).
+ * Build a single unit (panel, about page, agent, or library).
  * Returns a BuildResult from the content-addressed store.
  *
  * @param commitMap - Optional map of unit name → commit SHA for source extraction.
  *   When provided (from push trigger), ensures extraction uses the same commits
  *   that EVs were derived from. When absent, extraction snapshots from git on the spot.
+ * @param options - Optional build options (library mode, externals).
  */
 export async function buildUnit(
   node: GraphNode,
@@ -723,9 +732,13 @@ export async function buildUnit(
   graph: PackageGraph,
   workspaceRoot: string,
   commitMap?: Map<string, string>,
+  options?: BuildUnitOptions,
 ): Promise<BuildResult> {
-  const sourcemap = node.manifest.sourcemap !== false;
-  const buildKey = computeBuildKey(node.name, ev, sourcemap);
+  const sourcemap = options?.library ? false : (node.manifest.sourcemap !== false);
+  const effectiveEv = options?.library
+    ? `${ev}:lib:${createHash("sha256").update(JSON.stringify(options.externals ?? [])).digest("hex").slice(0, 12)}`
+    : ev;
+  const buildKey = computeBuildKey(node.name, effectiveEv, sourcemap);
 
   // Check store first
   const cached = buildStore.get(buildKey);
@@ -735,7 +748,7 @@ export async function buildUnit(
   const inFlight = inFlightBuilds.get(buildKey);
   if (inFlight) return inFlight;
 
-  const buildPromise = doBuild(node, ev, buildKey, graph, workspaceRoot, sourcemap, commitMap);
+  const buildPromise = doBuild(node, ev, buildKey, graph, workspaceRoot, sourcemap, commitMap, options);
   inFlightBuilds.set(buildKey, buildPromise);
 
   try {
@@ -753,6 +766,7 @@ async function doBuild(
   workspaceRoot: string,
   sourcemap: boolean,
   commitMap?: Map<string, string>,
+  options?: BuildUnitOptions,
 ): Promise<BuildResult> {
   await acquireSemaphore();
 
@@ -760,7 +774,9 @@ async function doBuild(
   const extracted = extractSourceForBuild(node, graph, workspaceRoot, commitMap);
 
   try {
-    if (node.kind === "agent") {
+    if (options?.library) {
+      return await buildLibraryBundle(node, ev, buildKey, graph, workspaceRoot, extracted.sourceRoot, options.externals ?? []);
+    } else if (node.kind === "agent") {
       return await buildAgent(node, ev, buildKey, graph, workspaceRoot, sourcemap, extracted.sourceRoot);
     } else if (node.kind === "worker") {
       return await buildWorker(node, ev, buildKey, graph, workspaceRoot, sourcemap, extracted.sourceRoot);
@@ -1156,6 +1172,48 @@ async function buildWorker(
     const bundle = fs.readFileSync(bundlePath, "utf-8");
 
     return storeSimpleBuild(buildKey, bundle, node, ev, sourcemap);
+  } finally {
+    env.cleanup();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Library Build
+// ---------------------------------------------------------------------------
+
+async function buildLibraryBundle(
+  node: GraphNode,
+  ev: string,
+  buildKey: string,
+  graph: PackageGraph,
+  workspaceRoot: string,
+  sourceRoot: string,
+  externals: string[],
+): Promise<BuildResult> {
+  const env = await prepareBuildEnv(node, buildKey, graph, workspaceRoot, sourceRoot);
+
+  try {
+    await esbuild.build({
+      entryPoints: [env.entryFile],
+      bundle: true,
+      format: "cjs",
+      platform: "browser",
+      outfile: path.join(env.outdir, "bundle.js"),
+      write: true,
+      external: externals,
+      plugins: [
+        createWorkspaceResolvePlugin(graph, workspaceRoot, sourceRoot, PANEL_CONDITIONS),
+        createTsExtensionPlugin(sourceRoot),
+        createFsShimPlugin(env.resolveDir),
+        createPathShimPlugin(env.resolveDir),
+      ],
+      nodePaths: env.nodePaths,
+      logLevel: "warning",
+      tsconfigRaw: { compilerOptions: { jsx: "react-jsx" } },
+    });
+
+    const bundleContent = fs.readFileSync(path.join(env.outdir, "bundle.js"), "utf-8");
+    return storeSimpleBuild(buildKey, bundleContent, node, ev, false);
   } finally {
     env.cleanup();
   }

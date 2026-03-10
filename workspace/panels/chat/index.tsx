@@ -95,6 +95,8 @@ IMPORTANT: Use static import syntax, NOT dynamic await import().`,
         code: z.string().describe("The TypeScript/JavaScript code to execute"),
         syntax: z.enum(["typescript", "jsx", "tsx"]).default("tsx").describe("Target syntax"),
         timeout: z.number().default(EVAL_DEFAULT_TIMEOUT_MS).describe(`Timeout in ms (default: ${EVAL_DEFAULT_TIMEOUT_MS}, max: ${EVAL_MAX_TIMEOUT_MS}).`),
+        imports: z.record(z.string(), z.string()).optional()
+          .describe("Workspace packages to build on-demand. Values: \"latest\" (current HEAD) or a git ref (branch/tag/SHA). E.g. { \"@workspace-skills/paneldev\": \"latest\" }"),
       }),
       streaming: true,
       timeout: EVAL_FRAMEWORK_TIMEOUT_MS,
@@ -110,8 +112,9 @@ IMPORTANT: Use static import syntax, NOT dynamic await import().`,
         // The panel's contextId (from runtime) IS the channel contextId because
         // ChatSetup replaced this panel with contextId = channel contextId.
         // Inject it so eval code can use it directly.
-        const codeWithContext = `const contextId = ${JSON.stringify(contextId)};\n${(args as { code: string }).code}`;
-        const evalArgs = { ...(args as { code: string; syntax?: "typescript" | "jsx" | "tsx"; timeout?: number }), code: codeWithContext };
+        const typedArgs = args as { code: string; syntax?: "typescript" | "jsx" | "tsx"; timeout?: number; imports?: Record<string, string> };
+        const codeWithContext = `const contextId = ${JSON.stringify(contextId)};\n${typedArgs.code}`;
+        const evalArgs = { ...typedArgs, code: codeWithContext };
 
         const result = await executeEvalTool(evalArgs, ctx, {
           onConsoleEntry: (formatted: string) => {

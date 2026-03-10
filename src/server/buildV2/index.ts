@@ -35,7 +35,7 @@ import {
 } from "./effectiveVersion.js";
 import * as buildStore from "./buildStore.js";
 import type { BuildResult } from "./buildStore.js";
-import { buildUnit } from "./builder.js";
+import { buildUnit, type BuildUnitOptions } from "./builder.js";
 import { PushTrigger } from "./pushTrigger.js";
 import type { GitServer } from "@natstack/git-server";
 
@@ -50,9 +50,11 @@ export interface AboutPageMeta {
   hiddenInLauncher: boolean;
 }
 
+export type { BuildUnitOptions } from "./builder.js";
+
 export interface BuildSystemV2 {
-  /** Get build result for a panel/agent. Optional ref builds at a specific git ref. */
-  getBuild(unitPath: string, ref?: string): Promise<BuildResult>;
+  /** Get build result for a panel/agent/worker/library. Optional ref builds at a specific git ref. */
+  getBuild(unitPath: string, ref?: string, options?: BuildUnitOptions): Promise<BuildResult>;
 
   /** Get effective version for a unit */
   getEffectiveVersion(unitName: string): string | null;
@@ -185,7 +187,7 @@ export async function initBuildSystemV2(
   // ---------------------------------------------------------------------------
 
   return {
-    async getBuild(unitPath: string, ref?: string): Promise<BuildResult> {
+    async getBuild(unitPath: string, ref?: string, options?: BuildUnitOptions): Promise<BuildResult> {
       // unitPath can be a package name or workspace-relative path
       let node = resolveUnit(currentGraph, unitPath, workspaceRoot);
       if (!node) {
@@ -240,13 +242,7 @@ export async function initBuildSystemV2(
           throw new Error(`No effective version for ${node.name} at ref ${ref}`);
         }
 
-        const sourcemap = node.manifest.sourcemap !== false;
-        const buildKey = computeBuildKey(node.name, ev, sourcemap);
-
-        const cached = buildStore.get(buildKey);
-        if (cached) return cached;
-
-        return buildUnit(node, ev, currentGraph, workspaceRoot, commitMap);
+        return buildUnit(node, ev, currentGraph, workspaceRoot, commitMap, options);
       }
 
       // ── HEAD build path (existing behavior) ──
@@ -277,15 +273,8 @@ export async function initBuildSystemV2(
         throw new Error(`No effective version for ${node.name}`);
       }
 
-      const sourcemap = node.manifest.sourcemap !== false;
-      const buildKey = computeBuildKey(node.name, ev, sourcemap);
-
-      // Check store
-      const cached = buildStore.get(buildKey);
-      if (cached) return cached;
-
-      // Build on demand (push trigger should have caught this, but fallback)
-      return buildUnit(node, ev, currentGraph, workspaceRoot);
+      // Build on demand (buildUnit handles cache + coalescing internally)
+      return buildUnit(node, ev, currentGraph, workspaceRoot, undefined, options);
     },
 
     getEffectiveVersion(unitName: string): string | null {

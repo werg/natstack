@@ -3,6 +3,7 @@ export type ThemeAppearance = "light" | "dark";
 export interface FileStats {
   isFile(): boolean;
   isDirectory(): boolean;
+  isSymbolicLink(): boolean;
   size: number;
   mtime: string;
   ctime: string;

@@ -283,12 +283,14 @@ export class RpcServer {
         message: { type: "response", requestId: request.requestId, result },
       });
     } catch (error) {
+      const errorCode = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
       this.sendToWs(client.ws, {
         type: "ws:rpc",
         message: {
           type: "response",
           requestId: request.requestId,
           error: error instanceof Error ? error.message : String(error),
+          ...(errorCode ? { errorCode } : {}),
         },
       });
     }

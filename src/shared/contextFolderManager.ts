@@ -2,10 +2,11 @@
  * ContextFolderManager — Manages per-context directories on disk.
  *
  * Each context gets a real folder at `{workspace.path}/.contexts/{contextId}/`
- * that starts as a copy of all workspace git repos (excluding .git/,
- * node_modules/, .cache/, .databases/). Panel fs calls are routed to these
- * folders via RPC, making files visible on disk and accessible to server-side
- * tools and agents.
+ * that starts as a copy of all workspace git repos. Working tree files and
+ * mutable git state (HEAD, index, refs, config) are copied per-context, while
+ * the immutable object store (.git/objects/) is symlinked to share storage.
+ * Panel fs calls are routed to these folders via RPC, making files visible on
+ * disk and accessible to server-side tools and agents.
  */
 
 import * as fs from "fs/promises";
@@ -16,8 +17,15 @@ import type { WorkspaceNode } from "./types.js";
 
 const log = createDevLogger("ContextFolderManager");
 
-/** Directories to skip when copying repos into context folders. */
+/** Directories to skip when copying working tree files. */
 const SKIP_DIRS = new Set([".git", "node_modules", ".cache", ".databases"]);
+
+/**
+ * Mutable git entries to copy into context .git/ (everything else is symlinked).
+ * These are the files/dirs that change per-working-tree: staging area, branch
+ * pointers, reflogs, config, and local excludes.
+ */
+const GIT_MUTABLE = new Set(["HEAD", "index", "refs", "logs", "config", "packed-refs", "COMMIT_EDITMSG", "info"]);
 
 /**
  * Validate that a context ID is DNS-safe (lowercase alphanumeric + hyphens).
@@ -40,6 +48,34 @@ function copyFilter(src: string): boolean {
   return !SKIP_DIRS.has(base);
 }
 
+/**
+ * Create a context-local .git directory that shares the immutable object store
+ * with the source repo via symlink, while copying mutable state (HEAD, index,
+ * refs, config, etc.) so each context can commit independently.
+ */
+async function setupContextGit(srcGit: string, destGit: string): Promise<void> {
+  await fs.mkdir(destGit, { recursive: true });
+
+  const entries = await fs.readdir(srcGit, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = path.join(srcGit, entry.name);
+    const destPath = path.join(destGit, entry.name);
+
+    if (GIT_MUTABLE.has(entry.name)) {
+      // Copy mutable state — each context needs its own
+      if (entry.isDirectory()) {
+        await fs.cp(srcPath, destPath, { recursive: true });
+      } else {
+        await fs.copyFile(srcPath, destPath);
+      }
+    } else {
+      // Symlink immutable content (objects/, hooks/, description, etc.)
+      const relTarget = path.relative(destGit, srcPath);
+      await fs.symlink(relTarget, destPath);
+    }
+  }
+}
+
 export class ContextFolderManager {
   private readonly contextsRoot: string;
   private readonly workspacePath: string;
@@ -58,8 +94,9 @@ export class ContextFolderManager {
   }
 
   /**
-   * Returns absolute path to the context folder, creating it and copying
-   * workspace git repos into it if it doesn't exist yet.
+   * Returns absolute path to the context folder, creating it if needed.
+   * Copies working tree files and sets up .git with shared object store
+   * (symlinked) and per-context mutable state (copied).
    */
   async ensureContextFolder(contextId: string): Promise<string> {
     validateContextId(contextId);
@@ -87,12 +124,21 @@ export class ContextFolderManager {
         const tree = await this.getWorkspaceTree();
         const repos = this.collectRepos(tree.children);
 
-        // Copy each repo (minus excluded dirs)
+        // Copy each repo: working tree files + context-local git state
         for (const repoPath of repos) {
           const src = path.join(this.workspacePath, repoPath);
           const dest = path.join(contextPath, repoPath);
           await fs.mkdir(path.dirname(dest), { recursive: true });
+          // Copy working tree (skip .git, node_modules, etc.)
           await fs.cp(src, dest, { recursive: true, filter: copyFilter });
+          // Set up .git with shared objects + copied mutable state
+          const srcGit = path.join(src, ".git");
+          try {
+            await fs.access(srcGit);
+            await setupContextGit(srcGit, path.join(dest, ".git"));
+          } catch {
+            // Source repo has no .git (shouldn't happen for isGitRepo, but be safe)
+          }
         }
 
         // Generate Claude Code plugin manifest so skills/ is discovered as a plugin.

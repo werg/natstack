@@ -170,6 +170,12 @@ export interface EvalToolArgs {
    * - Set to 0 to skip waiting for async operations (returns immediately after sync execution)
    */
   timeout?: number;
+  /**
+   * Workspace packages to build and load before execution.
+   * Values are git refs (branch, tag, SHA) or "latest" for current HEAD.
+   * E.g. { "@workspace-skills/paneldev": "latest" }
+   */
+  imports?: Record<string, string>;
 }
 
 export interface EvalToolResult {
@@ -193,7 +199,9 @@ export interface EvalToolResult {
 export async function executeEvalTool(
   args: EvalToolArgs,
   ctx: MethodExecutionContext,
-  options?: { onConsoleEntry?: (formatted: string) => void }
+  options?: {
+    onConsoleEntry?: (formatted: string) => void;
+  },
 ): Promise<EvalToolResult> {
   const { code, syntax = "tsx" } = args;
 
@@ -241,6 +249,11 @@ export async function executeEvalTool(
   });
 
   try {
+    // Preload on-demand library imports
+    if (args.imports) {
+      await loadImports(args.imports);
+    }
+
     const transformed = await transformCode(code, { syntax });
 
     // Use unified require validation from @workspace/eval
@@ -323,4 +336,57 @@ export async function executeEvalTool(
       tracking.stop(trackingContext);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Module map helpers
+// ---------------------------------------------------------------------------
+
+function getModuleMap(): Record<string, unknown> {
+  return ((globalThis as Record<string, unknown>)["__natstackModuleMap__"] ??= {}) as Record<string, unknown>;
+}
+
+/**
+ * Build and load workspace packages into the panel's module map.
+ * Values are git refs or "latest" for current HEAD.
+ * Returns the module map so callers can read loaded exports.
+ */
+async function loadImports(imports: Record<string, string>): Promise<void> {
+  const moduleMap = getModuleMap();
+  const runtime = moduleMap["@workspace/runtime"] as { rpc: { call: (target: string, method: string, ...args: unknown[]) => Promise<unknown> } } | undefined;
+  if (!runtime) throw new Error("@workspace/runtime not loaded — cannot build on-demand imports");
+  for (const [specifier, refValue] of Object.entries(imports)) {
+    const ref = refValue === "latest" ? undefined : refValue;
+    // Recompute externals each iteration so earlier imports are externalized
+    // by later builds (avoids bundling duplicates when B depends on A).
+    const externals = Object.keys(moduleMap);
+    const result = await runtime.rpc.call("main", "build.getBuild", specifier, ref, { library: true, externals }) as { bundle: string };
+    loadLibraryBundle(specifier, result.bundle);
+  }
+}
+
+/**
+ * Tracks the bundle content last loaded for each specifier.
+ * Used to skip re-executing identical bundles on repeat calls.
+ */
+const loadedBundleContent = new Map<string, string>();
+
+/**
+ * Load a CJS library bundle into the panel's module map.
+ * Externalized deps resolve through __natstackRequire__.
+ * Skips re-execution if the bundle content is identical to what's already loaded.
+ */
+function loadLibraryBundle(specifier: string, bundleCode: string): void {
+  if (loadedBundleContent.get(specifier) === bundleCode) return;
+
+  const moduleMap = getModuleMap();
+  const requireFn = (globalThis as Record<string, unknown>)["__natstackRequire__"] as ((id: string) => unknown) | undefined;
+  if (!requireFn) throw new Error("__natstackRequire__ not available");
+
+  const exports: Record<string, unknown> = {};
+  const module = { exports };
+  const fn = new Function("require", "exports", "module", bundleCode);
+  fn(requireFn, exports, module);
+  moduleMap[specifier] = module.exports;
+  loadedBundleContent.set(specifier, bundleCode);
 }

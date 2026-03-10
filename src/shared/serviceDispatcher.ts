@@ -68,11 +68,14 @@ export type ServiceHandler = (
 export class ServiceError extends Error {
   public readonly service: string;
   public readonly method: string;
+  /** Preserved error code from the original error (e.g. "ENOENT") */
+  public readonly code?: string;
 
-  constructor(service: string, method: string, message: string) {
+  constructor(service: string, method: string, message: string, code?: string) {
     super(`[${service}.${method}] ${message}`);
     this.service = service;
     this.method = method;
+    this.code = code;
     this.name = "ServiceError";
   }
 }
@@ -154,7 +157,8 @@ export class ServiceDispatcher {
       throw new ServiceError(
         service,
         method,
-        error instanceof Error ? error.message : String(error)
+        error instanceof Error ? error.message : String(error),
+        error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined,
       );
     }
   }

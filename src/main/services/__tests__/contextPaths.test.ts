@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveWithinContext, validateFilePathWithinRoot, validateProjectName } from "../../../shared/contextPaths";
+import { resolveWithinContext, validateFilePathWithinRoot } from "../../../shared/contextPaths";
 
 describe("resolveWithinContext", () => {
   const root = "/workspace/.contexts/abc";
@@ -30,58 +30,6 @@ describe("resolveWithinContext", () => {
     expect(() => resolveWithinContext(root, "/etc/passwd")).toThrow(
       "Path escapes context root",
     );
-  });
-});
-
-describe("validateProjectName", () => {
-  it("accepts valid names", () => {
-    expect(() => validateProjectName("my-app")).not.toThrow();
-    expect(() => validateProjectName("utils")).not.toThrow();
-    expect(() => validateProjectName("my_app_v2")).not.toThrow();
-  });
-
-  it("rejects empty name", () => {
-    expect(() => validateProjectName("")).toThrow("Invalid project name");
-  });
-
-  it("rejects '.'", () => {
-    expect(() => validateProjectName(".")).toThrow("Invalid project name");
-  });
-
-  it("rejects '..'", () => {
-    expect(() => validateProjectName("..")).toThrow("Invalid project name");
-  });
-
-  it("rejects forward slashes", () => {
-    expect(() => validateProjectName("a/b")).toThrow("path separators");
-  });
-
-  it("rejects backslashes", () => {
-    expect(() => validateProjectName("a\\b")).toThrow("path separators");
-  });
-
-  it("rejects names containing '..'", () => {
-    expect(() => validateProjectName("foo..bar")).toThrow("must not contain '..'");
-  });
-
-  it("rejects names with spaces", () => {
-    expect(() => validateProjectName("my app")).toThrow("must start with a lowercase letter");
-  });
-
-  it("rejects names starting with a digit", () => {
-    expect(() => validateProjectName("2fast")).toThrow("must start with a lowercase letter");
-  });
-
-  it("rejects uppercase names", () => {
-    expect(() => validateProjectName("MyApp")).toThrow("must start with a lowercase letter");
-  });
-
-  it("rejects names with special characters", () => {
-    expect(() => validateProjectName("my@app")).toThrow("must start with a lowercase letter");
-  });
-
-  it("rejects names starting with a hyphen", () => {
-    expect(() => validateProjectName("-app")).toThrow("must start with a lowercase letter");
   });
 });
 

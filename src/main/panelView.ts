@@ -38,6 +38,7 @@ interface PanelLifecycleLike {
     callerId: string, url: string,
     options?: { name?: string; focus?: boolean },
   ): Promise<{ id: string; title: string }>;
+  updatePanelContext(panelId: string, contextId: string): void;
 }
 
 interface AutofillManagerLike {
@@ -535,6 +536,9 @@ export class PanelView implements PanelViewLike {
       panel.snapshot.source = source;
       if (stateArgs !== undefined) panel.snapshot.stateArgs = stateArgs;
 
+      // Update fsService mapping so RPC-backed fs calls route to the new context
+      this.panelLifecycle.updatePanelContext(panelId, newContextId);
+
       await this.viewManager.navigateView(panelId, authUrl);
 
       this.panelRegistry.persistPanel(panel, this.panelRegistry.findParentId(panelId));
@@ -543,6 +547,8 @@ export class PanelView implements PanelViewLike {
       panel.snapshot.contextId = oldContextId;
       panel.snapshot.source = oldSource;
       panel.snapshot.stateArgs = oldStateArgs;
+      // Restore old fs context mapping on failure
+      if (oldContextId) this.panelLifecycle.updatePanelContext(panelId, oldContextId);
       throw err;
     }
   }

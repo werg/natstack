@@ -63,31 +63,25 @@ Grep({ pattern: "import.*runtime", type: "ts" })
 
 ## Creating Projects
 
-Create new projects by reading the `create-project.ts` script from this skill and eval'ing it with variable definitions prepended. The script scaffolds files, initializes git, commits, and pushes — all in one eval call.
+Create new projects via eval with the `imports` parameter. The `imports` parameter triggers an on-demand library build and loads the skill package before code execution.
 
 Supported types: `panel`, `package`, `skill`, `agent`, `worker`. Each scaffolds into its directory (`panels/`, `packages/`, `skills/`, `agents/`, `workers/`).
 
 ### Usage
 
-1. Read the script:
-
-```
-Read({ file_path: "skills/paneldev/create-project.ts" })
-```
-
-2. Eval it with variables prepended (replace the declare lines and top comment with actual values):
-
 ```
 eval({ code: `
-  const PROJECT_TYPE = "panel";
-  const PROJECT_NAME = "my-app";
-  const PROJECT_TITLE = "My App";
-
-  ${scriptContents}
-`, timeout: 30000 })
+  import { createProject } from "@workspace-skills/paneldev";
+  await createProject({ projectType: "panel", name: "my-app", title: "My App" });
+`, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
 ```
 
-Replace `${scriptContents}` with the script body (everything after the `declare` lines).
+**`createProject(params)` parameters:**
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `projectType` | string | Yes | One of: `panel`, `package`, `skill`, `agent`, `worker` |
+| `name` | string | Yes | Project name (kebab-case) |
+| `title` | string | No | Human-readable title (defaults to name) |
 
 ---
 
@@ -105,6 +99,7 @@ Execute TypeScript/JavaScript code in the panel runtime. Runtime APIs are availa
 | `code` | string | Yes | Code to execute |
 | `syntax` | `"typescript"` \| `"tsx"` \| `"jsx"` | No | Syntax mode (default: `"tsx"`) |
 | `timeout` | number | No | Max async wait in ms (default: 10000, max: 90000) |
+| `imports` | `Record<string, string>` | No | Workspace packages to build on-demand. Values: `"latest"` or a git ref |
 
 ### Runtime APIs
 
@@ -158,26 +153,20 @@ eval({ code: `
 
 Methods: `create(options)`, `destroy(name)`, `update(name, updates)`, `list()`, `status(name)`, `listSources()`, `getPort()`, `restartAll()`. See [WORKERS.md](WORKERS.md) for full API.
 
-#### git.contextOp
+#### Git (via `@workspace-skills/paneldev`)
 
-Git operations scoped to the current context.
+Git operations use `@natstack/git` (isomorphic-git) through the skill package. All operations go directly to the git server over HTTP — no server-side RPC needed.
 
 ```
-// Status
-eval({ code: `
-  import { rpc } from "@workspace/runtime";
-  const status = await rpc.call("main", "git.contextOp", contextId, "status");
-  console.log(status);
-`, timeout: 30000 })
-
 // Commit and push
 eval({ code: `
-  import { rpc } from "@workspace/runtime";
-  await rpc.call("main", "git.contextOp", contextId, "commit_and_push", "panels/my-app", "Update");
-`, timeout: 30000 })
+  import { commitAndPush } from "@workspace-skills/paneldev";
+  const result = await commitAndPush("panels/my-app", "Update");
+  console.log(result);
+`, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
 ```
 
-Operations: `status`, `diff`, `log`, `commit`, `push`, `commit_and_push`
+**`commitAndPush(dir, message)`** — stages all changes, commits, and pushes. Auto-initializes git if the directory doesn't have `.git` yet.
 
 #### typecheck.check
 
@@ -285,10 +274,11 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { rpc, buildPanelLink } from "@workspace/runtime";
-  await rpc.call("main", "git.contextOp", contextId, "commit_and_push", "panels/my-app", "Initial");
+  import { commitAndPush } from "@workspace-skills/paneldev";
+  import { buildPanelLink } from "@workspace/runtime";
+  await commitAndPush("panels/my-app", "Initial");
   window.open(buildPanelLink("panels/my-app", { contextId }));
-`, timeout: 30000 })
+`, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
 ```
 
 `window.open` creates a child panel (like target="_blank"). The host intercepts the open and creates a proper panel view.
@@ -297,10 +287,11 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { rpc, buildPanelLink } from "@workspace/runtime";
-  await rpc.call("main", "git.contextOp", contextId, "commit_and_push", "panels/my-app", "Update");
+  import { commitAndPush } from "@workspace-skills/paneldev";
+  import { buildPanelLink } from "@workspace/runtime";
+  await commitAndPush("panels/my-app", "Update");
   window.open(buildPanelLink("panels/my-app", { contextId }));
-`, timeout: 30000 })
+`, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
 ```
 
 ---

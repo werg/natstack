@@ -31,27 +31,3 @@ export function validateFilePathWithinRoot(rootPath: string, filePath: string): 
     throw new Error(`file_path escapes panel root: ${filePath}`);
   }
 }
-
-/**
- * Validate a project name — rejects path separators and traversal patterns.
- *
- * @throws Error if the name contains invalid characters.
- */
-export function validateProjectName(name: string): void {
-  if (!name || name === "." || name === "..") {
-    throw new Error(`Invalid project name: ${name}`);
-  }
-  if (/[/\\]/.test(name)) {
-    throw new Error(`Project name must not contain path separators: ${name}`);
-  }
-  if (name.includes("..")) {
-    throw new Error(`Project name must not contain '..': ${name}`);
-  }
-  // Must be a valid npm package name segment and produce a valid PascalCase identifier.
-  // Lowercase alphanumeric, hyphens, underscores; must start with a letter.
-  if (!/^[a-z][a-z0-9_-]*$/.test(name)) {
-    throw new Error(
-      `Project name must start with a lowercase letter and contain only lowercase letters, digits, hyphens, or underscores: ${name}`,
-    );
-  }
-}

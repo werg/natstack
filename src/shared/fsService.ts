@@ -102,6 +102,7 @@ function serializeStat(stats: fsSync.Stats) {
   return {
     isFile: stats.isFile(),
     isDirectory: stats.isDirectory(),
+    isSymbolicLink: stats.isSymbolicLink(),
     size: stats.size,
     mtime: stats.mtime.toISOString(),
     ctime: stats.ctime.toISOString(),

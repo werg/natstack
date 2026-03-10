@@ -25,9 +25,13 @@ export function toFileStats(stats: unknown): FileStats {
   // These include the file type bits that isomorphic-git expects
   const defaultMode = isDirBool ? 0o40755 : 0o100644;
 
+  const isSymlinkFn = s?.["isSymbolicLink"];
+  const isSymlinkBool = typeof isSymlinkFn === "function" ? (isSymlinkFn as () => boolean).call(s) : !!isSymlinkFn;
+
   return {
     isFile: () => isFileBool,
     isDirectory: () => isDirBool,
+    isSymbolicLink: () => isSymlinkBool,
     size: typeof sizeVal === "number" ? sizeVal : 0,
     mtime: mtimeVal instanceof Date ? mtimeVal.toISOString() : String(mtimeVal ?? ""),
     ctime: ctimeVal instanceof Date ? ctimeVal.toISOString() : String(ctimeVal ?? ""),

@@ -553,6 +553,13 @@ export class PanelLifecycle implements BridgePanelManager {
   }
 
   /**
+   * Update the FS context mapping for a panel (e.g. after a cross-context navigation).
+   */
+  updatePanelContext(panelId: string, contextId: string): void {
+    this.fsService?.registerPanelContext(panelId, contextId);
+  }
+
+  /**
    * Unload a panel and its descendants: release resources but keep in tree.
    * The panel stays in the database and rebuilds when focused.
    */

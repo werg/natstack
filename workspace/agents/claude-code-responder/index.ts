@@ -81,6 +81,7 @@ import {
   createContextTracker,
   findPanelParticipant,
   discoverPubsubTools,
+  buildPubsubToolRegistry,
   toClaudeMcpTools,
   createCanUseToolGate,
   type MessageQueue,
@@ -909,11 +910,22 @@ class ClaudeCodeResponder extends Agent<ClaudeCodeState> {
         this.log.debug(`Resuming session: ${resumeSessionId}`);
       }
 
-      // Discover pubsub tools
-      pubsubRegistry = await discoverPubsubTools(client, {
-        allowlist: ["feedback_form", "feedback_custom", "eval"],
+      // Wait for the panel to advertise eval (return value discarded — we
+      // rebuild the registry below with a provider-based trust filter).
+      await discoverPubsubTools(client, {
+        required: ["eval"],
         timeoutMs: 1500,
         log: (msg) => this.log.debug(msg),
+      });
+
+      // Build registry filtered to only the panel's tools (trust boundary).
+      const panel = findPanelParticipant(client);
+      if (!panel) {
+        throw new Error("No panel participant found after eval was advertised");
+      }
+
+      pubsubRegistry = buildPubsubToolRegistry(client, {
+        filter: (method) => method.providerId === panel.id,
       });
 
       if (pubsubRegistry.tools.length > 0) {

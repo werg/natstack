@@ -392,7 +392,7 @@ async function main() {
     });
   }
   container.register(rpcService(createTokensService({ tokenManager }), ["tokenManager"]));
-  container.register(rpcService(createGitService({ gitServer, tokenManager, contextFolderManager }), ["gitServer"]));
+  container.register(rpcService(createGitService({ gitServer, tokenManager }), ["gitServer"]));
   container.register(rpcService(createTestService({ contextFolderManager, workspacePath, panelTestSetupPath })));
   container.register(rpcService(createDbService({ databaseManager }), ["databaseManager"]));
   container.register(rpcService(createTypecheckService({ contextFolderManager })));

@@ -4,7 +4,7 @@
 
 Your working directory is the **context folder** — an isolated copy of the workspace. All paths are relative to this root. **Never use absolute paths or Bash for file/git operations.**
 
-All runtime operations (project creation, git, typecheck, tests, launching) are done via **eval** with `@workspace/runtime`. Use **static imports** and note that `contextId` is **pre-injected** (do NOT import it).
+Runtime operations (project creation, git, typecheck, tests, launching) are done via **eval** with `@workspace/runtime`. Use **static imports** and note that `contextId` is **pre-injected** (do NOT import it).
 
 ---
 
@@ -12,25 +12,20 @@ All runtime operations (project creation, git, typecheck, tests, launching) are 
 
 ### 1. Create
 
-Read the `create-project.ts` script and eval it with your project details (see [TOOLS.md](TOOLS.md)):
+Scaffold a new project via eval with the `imports` parameter. This writes template files, initializes git, and pushes directly to the internal git server:
 
 ```
-Read({ file_path: "skills/paneldev/create-project.ts" })
-
 eval({ code: `
-  const PROJECT_TYPE = "panel";
-  const PROJECT_NAME = "my-app";
-  const PROJECT_TITLE = "My App";
-
-  ${scriptBody}
-`, timeout: 30000 })
+  import { createProject } from "@workspace-skills/paneldev";
+  await createProject({ projectType: "panel", name: "my-app", title: "My App" });
+`, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
 ```
 
-This creates the directory, writes template files, initializes git, commits, and pushes. After creation, the files are available in your working directory at `panels/my-app/`.
+After creation, the files are available in your working directory at `panels/my-app/`.
 
 ### 2. Develop
 
-Read existing code, then edit or write changes:
+Read existing code, then edit or write changes using the **filesystem tools** (Read, Edit, Write — NOT eval):
 
 ```
 Read({ file_path: "panels/my-app/index.tsx" })
@@ -66,24 +61,26 @@ Commit, push, and open as a child panel (build happens on-demand):
 
 ```
 eval({ code: `
-  import { rpc, buildPanelLink } from "@workspace/runtime";
-  await rpc.call("main", "git.contextOp", contextId, "commit_and_push", "panels/my-app", "Initial launch");
+  import { commitAndPush } from "@workspace-skills/paneldev";
+  import { buildPanelLink } from "@workspace/runtime";
+  await commitAndPush("panels/my-app", "Initial launch");
   window.open(buildPanelLink("panels/my-app", { contextId }));
-`, timeout: 30000 })
+`, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
 ```
 
 `window.open` creates a child panel view. The host intercepts the open and creates a proper panel.
 
 ### 5. Iterate
 
-Edit files, then commit+push and re-open (rebuild happens on-demand):
+Edit files with Edit/Write tools, then commit+push and re-open (rebuild happens on-demand):
 
 ```
 eval({ code: `
-  import { rpc, buildPanelLink } from "@workspace/runtime";
-  await rpc.call("main", "git.contextOp", contextId, "commit_and_push", "panels/my-app", "Update");
+  import { commitAndPush } from "@workspace-skills/paneldev";
+  import { buildPanelLink } from "@workspace/runtime";
+  await commitAndPush("panels/my-app", "Update");
   window.open(buildPanelLink("panels/my-app", { contextId }));
-`, timeout: 30000 })
+`, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
 ```
 
 ---
@@ -92,15 +89,14 @@ eval({ code: `
 
 ### New Panel
 
-1. Run `create-project.ts` via eval with `PROJECT_TYPE="panel"`
-2. Edit the generated `index.tsx`
-3. Launch via eval (`commit_and_push` + `window.open(buildPanelLink(...))`)
+1. `eval` with `imports: { "@workspace-skills/paneldev": "latest" }` — call `createProject({ ... })`
+2. Edit the generated `index.tsx` using Edit/Write tools
+3. Launch via eval (`commitAndPush(...)` + `window.open(buildPanelLink(...))`)
 
 ### Iterating on Code
 
-1. Edit files with `Edit`
-2. Rebuild via eval (`commit_and_push` + `window.open(buildPanelLink(...))`)
-
+1. Edit files with `Edit` / `Write`
+2. Launch via eval (`commitAndPush(...)` + `window.open(buildPanelLink(...))`)
 3. Read the error or inspect the panel
 4. Edit again, rebuild again
 
@@ -115,9 +111,11 @@ eval({ code: `
 ## Tips
 
 1. **Read before editing** — Understand the code
-2. **Use static imports in eval** — `import { rpc } from "@workspace/runtime"`, NOT `await import(...)`
-3. **contextId is pre-injected** — Use it directly, do NOT import it from the runtime
-4. **Relative paths only** — All paths are relative to your working directory
-5. **Check types early** — Catch errors before launching
-6. **Read build errors** — If launch fails, the error tells you what to fix
-7. **Use buildPanelLink for navigation** — `buildPanelLink(source, { contextId })` builds the correct URL
+2. **Use filesystem tools for file edits** — Read, Edit, Write (not eval)
+3. **Use eval only for runtime operations** — git, typecheck, tests, launching
+4. **Use static imports in eval** — `import { rpc } from "@workspace/runtime"`, NOT `await import(...)`
+5. **contextId is pre-injected** — Use it directly, do NOT import it from the runtime
+6. **Relative paths only** — All paths are relative to your working directory
+7. **Check types early** — Catch errors before launching
+8. **Read build errors** — If launch fails, the error tells you what to fix
+9. **Use buildPanelLink for navigation** — `buildPanelLink(source, { contextId })` builds the correct URL

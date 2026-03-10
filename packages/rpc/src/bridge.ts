@@ -79,7 +79,11 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
     clearTimeout(pending.timeout);
 
     if ("error" in response) {
-      pending.reject(new Error(response.error));
+      const err = new Error(response.error) as NodeJS.ErrnoException;
+      if (response.errorCode) {
+        err.code = response.errorCode;
+      }
+      pending.reject(err);
       return;
     }
     pending.resolve(response.result);

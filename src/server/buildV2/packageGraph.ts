@@ -156,7 +156,7 @@ export class PackageGraph {
 // Discovery
 // ---------------------------------------------------------------------------
 
-const WORKSPACE_SCOPES = ["@workspace/", "@workspace-panels/", "@workspace-about/", "@workspace-agents/", "@workspace-workers/"];
+const WORKSPACE_SCOPES = ["@workspace/", "@workspace-panels/", "@workspace-about/", "@workspace-agents/", "@workspace-workers/", "@workspace-skills/"];
 
 function isInternalDep(name: string): boolean {
   return WORKSPACE_SCOPES.some((scope) => name.startsWith(scope));
@@ -295,6 +295,11 @@ export function discoverPackageGraph(workspaceRoot: string): PackageGraph {
     graph.addNode(node);
   }
   for (const node of scanDirectory(workersDir, workspaceRoot, "worker")) {
+    graph.addNode(node);
+  }
+
+  const skillsDir = path.join(workspaceRoot, "skills");
+  for (const node of scanDirectory(skillsDir, workspaceRoot, "package")) {
     graph.addNode(node);
   }
 

@@ -2,12 +2,9 @@ import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { GitServer } from "@natstack/git-server";
 import type { TokenManager } from "../../shared/tokenManager.js";
-import type { ContextFolderManager } from "../../shared/contextFolderManager.js";
-
 export function createGitService(deps: {
   gitServer: GitServer;
   tokenManager: TokenManager;
-  contextFolderManager: ContextFolderManager;
 }): ServiceDefinition {
   return {
     name: "git",
@@ -24,14 +21,6 @@ export function createGitService(deps: {
     },
     handler: async (_ctx, method, args) => {
       const g = deps.gitServer;
-
-      // Context-scoped git operations (from agentic tools)
-      if (method.startsWith("context")) {
-        const { handleGitContextCall } = await import("../../shared/services/gitContextService.js");
-        return handleGitContextCall(
-          deps.contextFolderManager, g, deps.tokenManager, method, args as unknown[],
-        );
-      }
 
       switch (method) {
         case "getWorkspaceTree": return g.getWorkspaceTree();
