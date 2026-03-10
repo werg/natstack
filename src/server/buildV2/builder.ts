@@ -1,9 +1,9 @@
 /**
- * Builder — esbuild orchestration for panels, about pages, and agents.
+ * Builder — esbuild orchestration for panels, about pages, and workers.
  *
  * Two build strategies:
  *   - Panel/About (browser target): ESM, code splitting, fs/path shims
- *   - Agent (node target): ESM, no splitting, full Node.js access
+ *   - Worker (workerd target): ESM, no splitting
  *
  * Build options are manifest-derived, not caller-supplied.
  * Concurrency: semaphore with MAX_CONCURRENT_BUILDS = 4.
@@ -143,7 +143,7 @@ function createWorkspaceResolvePlugin(
   return {
     name: "workspace-packages",
     setup(build) {
-      // Match @workspace/*, @workspace-panels/*, @workspace-about/*, @workspace-agents/*, @workspace-workers/*
+      // Match @workspace/*, @workspace-panels/*, @workspace-about/*, @workspace-workers/*
       build.onResolve({ filter: /^@workspace[-/]/ }, (args) => {
         const parsed = parseWorkspaceImport(args.path);
         if (!parsed) return null;
@@ -273,7 +273,7 @@ function createTsExtensionPlugin(sourceRoot: string): esbuild.Plugin {
 function parseWorkspaceImport(
   importPath: string,
 ): { packageName: string; subpath: string } | null {
-  // Match @workspace/name, @workspace-panels/name, @workspace-about/name, @workspace-agents/name, @workspace-workers/name
+  // Match @workspace/name, @workspace-panels/name, @workspace-about/name, @workspace-workers/name
   const match = importPath.match(/^(@workspace(?:-\w+)?)\/([^/]+)(\/.*)?$/);
   if (!match) return null;
 
@@ -718,7 +718,7 @@ export interface BuildUnitOptions {
 }
 
 /**
- * Build a single unit (panel, about page, agent, or library).
+ * Build a single unit (panel, about page, worker, or library).
  * Returns a BuildResult from the content-addressed store.
  *
  * @param commitMap - Optional map of unit name → commit SHA for source extraction.
@@ -776,8 +776,6 @@ async function doBuild(
   try {
     if (options?.library) {
       return await buildLibraryBundle(node, ev, buildKey, graph, workspaceRoot, extracted.sourceRoot, options.externals ?? []);
-    } else if (node.kind === "agent") {
-      return await buildAgent(node, ev, buildKey, graph, workspaceRoot, sourcemap, extracted.sourceRoot);
     } else if (node.kind === "worker") {
       return await buildWorker(node, ev, buildKey, graph, workspaceRoot, sourcemap, extracted.sourceRoot);
     } else {
@@ -805,7 +803,7 @@ interface BuildEnv {
 }
 
 /**
- * Prepare the common build environment shared by panel, agent, and worker builds.
+ * Prepare the common build environment shared by panel and worker builds.
  * Creates temp output dir, resolves entry point, collects external deps, and
  * assembles nodePaths. Returns a cleanup function for the temp dir.
  */
@@ -856,7 +854,7 @@ async function prepareBuildEnv(
 }
 
 /**
- * Store a simple bundle-only build result (used by agent and worker builds).
+ * Store a simple bundle-only build result (used by worker builds).
  */
 function storeSimpleBuild(
   buildKey: string,
@@ -1041,75 +1039,6 @@ async function buildPanel(
     };
 
     return buildStore.put(buildKey, artifacts, metadata);
-  } finally {
-    env.cleanup();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Agent Build
-// ---------------------------------------------------------------------------
-
-async function buildAgent(
-  node: GraphNode,
-  ev: string,
-  buildKey: string,
-  graph: PackageGraph,
-  workspaceRoot: string,
-  sourcemap: boolean,
-  sourceRoot: string,
-): Promise<BuildResult> {
-  const env = await prepareBuildEnv(node, buildKey, graph, workspaceRoot, sourceRoot);
-  const { outdir, entryFile, nodePaths, nodeModulesDir } = env;
-
-  // Respect manifest.externals for agents (same as panels)
-  const manifestExternals = node.manifest.externals ?? {};
-  const externalSpecifiers = [
-    ...KNOWN_NATIVE_EXTERNALS,
-    ...expandExternalSpecifiers(manifestExternals),
-  ];
-
-  const plugins: esbuild.Plugin[] = [
-    createWorkspaceResolvePlugin(graph, workspaceRoot, sourceRoot, NODE_CONDITIONS),
-    createTsExtensionPlugin(sourceRoot),
-  ];
-
-  try {
-    await esbuild.build({
-      entryPoints: [entryFile],
-      bundle: true,
-      platform: "node",
-      target: "node20",
-      format: "esm",
-      splitting: false,
-      outfile: path.join(outdir, "bundle.mjs"),
-      sourcemap: sourcemap ? "inline" : false,
-      metafile: true,
-      logLevel: "warning",
-      plugins,
-      nodePaths,
-      external: externalSpecifiers,
-      tsconfigRaw: { compilerOptions: {} },
-    });
-
-    const bundlePath = path.join(outdir, "bundle.mjs");
-    const bundle = fs.readFileSync(bundlePath, "utf-8");
-
-    const result = storeSimpleBuild(buildKey, bundle, node, ev, sourcemap);
-
-    // Symlink external deps into the build dir so NODE_PATH resolution works at runtime
-    if (nodeModulesDir) {
-      const targetLink = path.join(result.dir, "node_modules");
-      try {
-        if (!fs.existsSync(targetLink)) {
-          fs.symlinkSync(nodeModulesDir, targetLink, "dir");
-        }
-      } catch {
-        // Race or already exists — ignore
-      }
-    }
-
-    return result;
   } finally {
     env.cleanup();
   }

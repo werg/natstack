@@ -25,7 +25,6 @@ describe("bridgeService", () => {
     listCommits: vi.fn(),
     unloadPanel: vi.fn(),
     focusPanel: vi.fn(),
-    listAgents: vi.fn(),
     reloadPanel: vi.fn(),
     closePanel: vi.fn(),
     getInfo: vi.fn(),

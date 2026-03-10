@@ -90,12 +90,6 @@ export function buildCommonMenuItems(
         eventService().emit("navigate-about", { page: "model-provider-config" });
       },
     },
-    {
-      label: "Agent Settings...",
-      click: () => {
-        eventService().emit("navigate-about", { page: "agents" });
-      },
-    },
   ];
 
   const edit: MenuItemConstructorOptions[] = [
@@ -281,12 +275,6 @@ export function setupMenu(
           accelerator: "CmdOrCtrl+Shift+M",
           click: () => {
             eventService().emit("navigate-about", { page: "model-provider-config" });
-          },
-        },
-        {
-          label: "Agent Settings...",
-          click: () => {
-            eventService().emit("navigate-about", { page: "agents" });
           },
         },
         { type: "separator" },

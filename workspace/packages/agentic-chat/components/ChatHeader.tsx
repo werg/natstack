@@ -1,5 +1,5 @@
 import React, { useRef } from "react";
-import { Badge, Button, Flex, Text } from "@radix-ui/themes";
+import { Badge, Button, DropdownMenu, Flex, Text } from "@radix-ui/themes";
 import type { Participant } from "@natstack/pubsub";
 import type { ToolApprovalProps } from "@workspace/tool-ui";
 import { useChatContext } from "../context/ChatContext";
@@ -42,6 +42,8 @@ export function ChatHeader() {
     onCallMethod,
     onDebugConsoleChange,
     onAddAgent,
+    availableAgents,
+    onRemoveAgent,
     onReset,
   } = useChatContext();
 
@@ -79,6 +81,8 @@ export function ChatHeader() {
       onCallMethod={onCallMethod}
       toolApproval={toolApproval}
       onAddAgent={onAddAgent}
+      availableAgents={availableAgents}
+      onRemoveAgent={onRemoveAgent}
       onReset={onReset}
       onDebugConsoleChange={onDebugConsoleChange}
     />
@@ -97,7 +101,9 @@ interface ChatHeaderInnerProps {
   pendingAgents: Map<string, PendingAgent>;
   onCallMethod?: (providerId: string, methodName: string, args: unknown) => void;
   toolApproval?: ToolApprovalProps;
-  onAddAgent?: () => void;
+  onAddAgent?: (agentId?: string) => void;
+  availableAgents?: Array<{ id: string; name: string; proposedHandle: string }>;
+  onRemoveAgent?: (handle: string) => void;
   onReset: () => void;
   onDebugConsoleChange?: (agentHandle: string | null) => void;
 }
@@ -113,6 +119,8 @@ function chatHeaderInnerPropsEqual(prev: ChatHeaderInnerProps, next: ChatHeaderI
     prev.onCallMethod === next.onCallMethod &&
     prev.toolApproval === next.toolApproval &&
     prev.onAddAgent === next.onAddAgent &&
+    prev.availableAgents === next.availableAgents &&
+    prev.onRemoveAgent === next.onRemoveAgent &&
     prev.onReset === next.onReset &&
     prev.onDebugConsoleChange === next.onDebugConsoleChange &&
     mapsShallowEqual(prev.participantActiveStatus, next.participantActiveStatus)
@@ -130,6 +138,8 @@ const ChatHeaderInner = React.memo(function ChatHeaderInner({
   onCallMethod,
   toolApproval,
   onAddAgent,
+  availableAgents,
+  onRemoveAgent,
   onReset,
   onDebugConsoleChange,
 }: ChatHeaderInnerProps) {
@@ -157,6 +167,7 @@ const ChatHeaderInner = React.memo(function ChatHeaderInner({
               onCallMethod={onCallMethod ?? NOOP}
               isGranted={toolApproval ? p.id in toolApproval.settings.agentGrants : false}
               onRevokeAgent={toolApproval?.onRevokeAgent}
+              onRemoveAgent={onRemoveAgent}
               onOpenDebugConsole={onDebugConsoleChange ?? undefined}
             />
           );
@@ -172,11 +183,24 @@ const ChatHeaderInner = React.memo(function ChatHeaderInner({
             onOpenDebugConsole={onDebugConsoleChange ?? undefined}
           />
         ))}
-        {onAddAgent && (
-          <Button variant="soft" size="1" onClick={onAddAgent}>
+        {onAddAgent && availableAgents && availableAgents.length > 0 ? (
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger>
+              <Button variant="soft" size="1">Add Agent</Button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Content>
+              {availableAgents.map((agent) => (
+                <DropdownMenu.Item key={agent.id} onSelect={() => onAddAgent(agent.id)}>
+                  {agent.name}
+                </DropdownMenu.Item>
+              ))}
+            </DropdownMenu.Content>
+          </DropdownMenu.Root>
+        ) : onAddAgent ? (
+          <Button variant="soft" size="1" onClick={() => onAddAgent()}>
             Add Agent
           </Button>
-        )}
+        ) : null}
         {toolApproval && (
           <ToolPermissionsDropdown
             settings={toolApproval.settings}

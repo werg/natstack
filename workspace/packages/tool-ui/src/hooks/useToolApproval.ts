@@ -15,8 +15,8 @@ import {
   needsApprovalForTool,
   createApprovalSchema,
   type AgenticClient,
-} from "@workspace/agentic-messaging";
-import { extractMethodName } from "@workspace/agentic-messaging/utils";
+} from "@natstack/agentic-messaging";
+import { extractMethodName } from "@natstack/agentic-messaging/utils";
 import type { FieldValue } from "@natstack/types";
 import type {
   ApprovalLevel,

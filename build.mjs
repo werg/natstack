@@ -49,7 +49,11 @@ const serverElectronConfig = {
   format: "cjs",
   outfile: "dist/server-electron.cjs",
   external: ["electron", "esbuild", "@npmcli/arborist", "better-sqlite3",
-             "node-git-server", "vitest", "vitest/node", "vite"],
+             "node-git-server", "vitest", "vitest/node", "vite",
+             // Agent SDKs: must stay external — they use import.meta.url at module scope
+             // to locate config files, which breaks when bundled into CJS.
+             "@mariozechner/pi-coding-agent", "@mariozechner/pi-ai",
+             "@anthropic-ai/claude-agent-sdk"],
   sourcemap: isDev,
   minify: !isDev,
   logOverride,
@@ -122,7 +126,11 @@ const serverConfig = {
   format: "esm",
   outfile: "dist/server.mjs",
   external: ["esbuild", "@npmcli/arborist",
-             "node-git-server", "vitest", "vitest/node", "vite"],
+             "node-git-server", "vitest", "vitest/node", "vite",
+             // Agent SDKs: must stay external — they use import.meta.url at module scope
+             // to locate config files relative to their install path.
+             "@mariozechner/pi-coding-agent", "@mariozechner/pi-ai",
+             "@anthropic-ai/claude-agent-sdk"],
   plugins: [serverNativePlugin, electronStubPlugin],
   sourcemap: isDev,
   minify: !isDev,

@@ -5,7 +5,7 @@
  * Handles both first-time agent grants and per-call approvals.
  */
 
-import type { MethodDefinition, MethodExecutionContext } from "@workspace/agentic-messaging";
+import type { MethodDefinition, MethodExecutionContext } from "@natstack/agentic-messaging";
 import type { z } from "zod";
 
 /**

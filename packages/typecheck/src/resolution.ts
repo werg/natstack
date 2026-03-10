@@ -329,11 +329,17 @@ export interface NatstackImportParts {
  *
  * Examples:
  *   "@workspace/runtime"             → { packageName: "runtime", subpath: "." }
- *   "@workspace/agentic-messaging/config" → { packageName: "agentic-messaging", subpath: "./config" }
+ *   "@natstack/agentic-messaging/config" → { packageName: "agentic-messaging", subpath: "./config" }
  */
 export function parseWorkspaceImport(specifier: string): NatstackImportParts | null {
-  if (!specifier.startsWith("@workspace/")) return null;
-  const withoutScope = specifier.slice("@workspace/".length);
+  let withoutScope: string;
+  if (specifier.startsWith("@workspace/")) {
+    withoutScope = specifier.slice("@workspace/".length);
+  } else if (specifier.startsWith("@natstack/")) {
+    withoutScope = specifier.slice("@natstack/".length);
+  } else {
+    return null;
+  }
   const slashIndex = withoutScope.indexOf("/");
   if (slashIndex === -1) {
     return { packageName: withoutScope, subpath: "." };

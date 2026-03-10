@@ -1,30 +1,30 @@
 /**
  * Agentic Chat Panel
  *
- * Two modes based on stateArgs:
- * - No channelName: Shows setup phase (agent selection + chat creation)
- * - With channelName: Shows active chat session
- *
- * Setup completes via URL navigation to the same panel with a new contextId
- * (cross-context absolute URL). The browser navigates to a different subdomain,
- * the old panel's WS disconnects and gets cleaned up via grace-period, and the
- * new panel bootstraps with contextId = channel contextId.
+ * On mount without a channelName, auto-generates a channel and spawns the
+ * default agent (claude-code-responder). The panel's own contextId is used
+ * directly — no cross-context navigation needed.
  */
 
-import { pubsubConfig, id as panelClientId, contextId, focusPanel, useStateArgs, buildPanelLink } from "@workspace/runtime";
+import { pubsubConfig, id as panelClientId, contextId, rpc, focusPanel, useStateArgs, buildPanelLink, db } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
-import { useCallback, useMemo, useRef, useState } from "react";
-import { Flex, Theme } from "@radix-ui/themes";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { AgentManifest } from "@natstack/types";
+import { Flex, Spinner, Text, Theme } from "@radix-ui/themes";
 import { AgenticChat, ErrorBoundary } from "@workspace/agentic-chat";
 import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDeps } from "@workspace/agentic-chat";
 import { executeEvalTool, EVAL_DEFAULT_TIMEOUT_MS, EVAL_MAX_TIMEOUT_MS, EVAL_FRAMEWORK_TIMEOUT_MS } from "@workspace/agentic-tools";
 import { z } from "zod";
-import type { MethodDefinition } from "@workspace/agentic-messaging";
-import { ChatSetup } from "./components/ChatSetup";
-import { AddAgentDialog } from "./components/AddAgentDialog";
+import type { MethodDefinition } from "@natstack/agentic-messaging";
+import { setDbOpen } from "@natstack/agentic-messaging";
+// Configure agentic-messaging to use runtime's db (needed for session persistence)
+setDbOpen(db.open);
 
 /** Stable metadata object — avoids creating a new object every render */
 const PANEL_METADATA = { name: "Chat Panel", type: "panel" as const, handle: "user" };
+
+const DEFAULT_AGENT = "claude-code-responder";
+const DEFAULT_HANDLE = "cc";
 
 /** Type for chat panel state args */
 interface ChatStateArgs {
@@ -38,8 +38,28 @@ export default function ChatPanel() {
   const theme = usePanelTheme();
   const stateArgs = useStateArgs<ChatStateArgs>();
 
-  // Add Agent dialog state
-  const [addAgentOpen, setAddAgentOpen] = useState(false);
+  // Auto-bootstrap: when no channelName, generate one and spawn the default agent
+  const [bootstrapChannel, setBootstrapChannel] = useState<string | null>(null);
+  const [bootstrapPending, setBootstrapPending] = useState<Array<{ agentId: string; handle: string }> | null>(null);
+  const bootstrapAttempted = useRef(false);
+
+  useEffect(() => {
+    if (stateArgs.channelName || bootstrapAttempted.current) return;
+    bootstrapAttempted.current = true;
+
+    const channelName = `chat-${crypto.randomUUID().slice(0, 8)}`;
+    const pending = [{ agentId: DEFAULT_AGENT, handle: DEFAULT_HANDLE }];
+
+    // Spawn default agent — fire-and-forget, AgenticChat handles pending display
+    rpc.call("main", "agents.spawn", DEFAULT_AGENT, channelName, DEFAULT_HANDLE, {
+      contextId,
+    }).catch((err: unknown) => {
+      console.warn(`[ChatPanel] Failed to spawn default agent:`, err);
+    });
+
+    setBootstrapChannel(channelName);
+    setBootstrapPending(pending);
+  }, [stateArgs.channelName]);
 
   // Build ConnectionConfig from runtime
   const config: ConnectionConfig = {
@@ -55,13 +75,6 @@ export default function ChatPanel() {
     window.location.href = buildPanelLink("panels/chat") + "?_fresh";
   }, []);
 
-  // Add Agent: open the dialog instead of creating a child panel
-  const resolvedContextIdRef = useRef<string | undefined>(undefined);
-  const handleAddAgent = useCallback(async (_channelName: string, ctxId?: string) => {
-    resolvedContextIdRef.current = ctxId;
-    setAddAgentOpen(true);
-  }, []);
-
   const handleFocusPanel = useCallback((panelId: string) => {
     void focusPanel(panelId);
   }, []);
@@ -70,12 +83,41 @@ export default function ChatPanel() {
     void focusPanel(panelId);
   }, []);
 
+  // Fetch available agents on mount
+  const [availableAgents, setAvailableAgents] = useState<Array<{ id: string; name: string; proposedHandle: string }>>([]);
+  useEffect(() => {
+    rpc.call<AgentManifest[]>("main", "agents.list").then((agents) => {
+      setAvailableAgents(agents.map(a => ({
+        id: a.id,
+        name: a.name,
+        proposedHandle: a.proposedHandle ?? a.id.split("-")[0] ?? a.id,
+      })));
+    }).catch(() => {});
+  }, []);
+
+  const handleAddAgent = useCallback(async (channelName: string, channelContextId?: string, agentId?: string) => {
+    const selectedId = agentId ?? DEFAULT_AGENT;
+    const agent = availableAgents.find(a => a.id === selectedId);
+    const baseHandle = agent?.proposedHandle ?? DEFAULT_HANDLE;
+    const handle = `${baseHandle}-${crypto.randomUUID().slice(0, 4)}`;
+    await rpc.call("main", "agents.spawn", selectedId, channelName, handle, {
+      contextId: channelContextId ?? contextId,
+    });
+    return { agentId: selectedId, handle };
+  }, [availableAgents]);
+
+  const handleRemoveAgent = useCallback(async (channelName: string, handle: string) => {
+    await rpc.call("main", "agents.killByHandle", channelName, handle);
+  }, []);
+
   const chatActions: AgenticChatActions = useMemo(() => ({
     onNewConversation: handleNewConversation,
     onAddAgent: handleAddAgent,
+    onRemoveAgent: handleRemoveAgent,
+    availableAgents,
     onFocusPanel: handleFocusPanel,
     onReloadPanel: handleReloadPanel,
-  }), [handleNewConversation, handleAddAgent, handleFocusPanel, handleReloadPanel]);
+  }), [handleNewConversation, handleAddAgent, handleRemoveAgent, availableAgents, handleFocusPanel, handleReloadPanel]);
 
   // Tool provider: only eval tool — all other operations use eval + runtime APIs
   const toolProvider: ToolProvider = useCallback((_deps: ToolProviderDeps) => {
@@ -109,8 +151,7 @@ IMPORTANT: Use static import syntax, NOT dynamic await import().`,
           lastFlush = now;
         };
 
-        // The panel's contextId (from runtime) IS the channel contextId because
-        // ChatSetup replaced this panel with contextId = channel contextId.
+        // The panel's contextId (from runtime) IS the channel contextId.
         // Inject it so eval code can use it directly.
         const typedArgs = args as { code: string; syntax?: "typescript" | "jsx" | "tsx"; timeout?: number; imports?: Record<string, string> };
         const codeWithContext = `const contextId = ${JSON.stringify(contextId)};\n${typedArgs.code}`;
@@ -136,21 +177,24 @@ IMPORTANT: Use static import syntax, NOT dynamic await import().`,
     return { eval: evalMethodDef };
   }, []);
 
-  // Setup phase — no channelName in stateArgs
-  if (!stateArgs.channelName) {
+  // Resolve channel name: from stateArgs (existing chat) or bootstrap (new chat)
+  const channelName = stateArgs.channelName ?? bootstrapChannel;
+  const pendingAgents = stateArgs.pendingAgents ?? bootstrapPending ?? undefined;
+  const resolvedContextId = stateArgs.contextId ?? contextId;
+
+  // Still bootstrapping — show a brief loading indicator
+  if (!channelName) {
     return (
       <ErrorBoundary>
         <Theme appearance={theme}>
-          <Flex direction="column" style={{ height: "100vh" }}>
-            <ChatSetup />
+          <Flex align="center" justify="center" gap="2" style={{ height: "100vh" }}>
+            <Spinner />
+            <Text size="2" color="gray">Starting chat...</Text>
           </Flex>
         </Theme>
       </ErrorBoundary>
     );
   }
-
-  // Chat phase — channelName present in stateArgs
-  const { channelName, pendingAgents } = stateArgs;
 
   return (
     <>
@@ -158,18 +202,12 @@ IMPORTANT: Use static import syntax, NOT dynamic await import().`,
         config={config}
         channelName={channelName}
         channelConfig={stateArgs.channelConfig}
-        contextId={stateArgs.contextId}
+        contextId={resolvedContextId}
         metadata={PANEL_METADATA}
         tools={toolProvider}
         actions={chatActions}
         theme={theme}
         pendingAgents={pendingAgents}
-      />
-      <AddAgentDialog
-        open={addAgentOpen}
-        onOpenChange={setAddAgentOpen}
-        channelName={channelName}
-        contextId={resolvedContextIdRef.current ?? stateArgs.contextId}
       />
     </>
   );

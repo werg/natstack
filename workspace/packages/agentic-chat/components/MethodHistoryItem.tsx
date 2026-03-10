@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from "react";
 import { Badge, Box, Code, Flex, Text } from "@radix-ui/themes";
 import { ExpandableChevron } from "./shared/Chevron";
-import { prettifyToolName } from "@workspace/agentic-messaging/utils";
+import { prettifyToolName } from "@natstack/agentic-messaging/utils";
 
 export type MethodCallStatus = "pending" | "success" | "error";
 

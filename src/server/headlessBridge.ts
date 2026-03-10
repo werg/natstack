@@ -8,14 +8,12 @@
 
 import type { BridgePanelManager } from "../shared/panelInterfaces.js";
 import type { GitServer } from "@natstack/git-server";
-import type { AgentDiscovery } from "../shared/agentDiscovery.js";
 import type { CdpBridge } from "./cdpBridge.js";
 import { handleCommonBridgeMethod } from "../shared/bridgeHandlersCommon.js";
 
 export type HeadlessBridgeDeps = {
   pm: BridgePanelManager;
   gitServer: GitServer;
-  agentDiscovery: AgentDiscovery | null;
   cdpBridge: CdpBridge | null;
 };
 
@@ -50,14 +48,6 @@ export async function handleHeadlessBridgeCall(
     case "listCommits": {
       const [repoPath, ref, limit] = args as [string, string?, number?];
       return gitServer.listCommits(repoPath, ref ?? "HEAD", limit ?? 50);
-    }
-
-    // =========================================================================
-    // Agent listing (portable)
-    // =========================================================================
-
-    case "listAgents": {
-      return deps.agentDiscovery?.list() ?? [];
     }
 
     // =========================================================================

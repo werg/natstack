@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, type ComponentType } from "react";
 import { Box, Button, Card, Flex, ScrollArea, Text } from "@radix-ui/themes";
-import { prettifyToolName } from "@workspace/agentic-messaging/utils";
+import { prettifyToolName } from "@natstack/agentic-messaging/utils";
 import type { Participant } from "@natstack/pubsub";
 import type { MethodHistoryEntry } from "./MethodHistoryItem";
 import { InlineGroup, type InlineItem } from "./InlineGroup";

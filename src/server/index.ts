@@ -255,34 +255,7 @@ async function main() {
     async stop(instance: import("./buildV2/index.js").BuildSystemV2) { await instance?.shutdown(); },
   });
 
-  // Agent discovery + settings (combined lifecycle + RPC)
-  container.register({
-    name: "agentDiscovery",
-    async start() {
-      const { initAgentDiscovery } = await import("../shared/agentDiscovery.js");
-      return await initAgentDiscovery(workspacePath);
-    },
-    async stop(instance: import("../shared/agentDiscovery.js").AgentDiscovery) { instance?.stopWatching(); },
-  });
-  container.register({
-    name: "agentSettings",
-    dependencies: ["agentDiscovery"],
-    async start(resolve) {
-      const { AgentSettingsService } = await import("../shared/agentSettings.js");
-      const agentDiscovery = resolve<import("../shared/agentDiscovery.js").AgentDiscovery>("agentDiscovery");
-      const service = new AgentSettingsService();
-      await service.initialize(workspacePath, agentDiscovery!);
-      return service;
-    },
-    async stop(instance: import("../shared/agentSettings.js").AgentSettingsService) { instance?.shutdown(); },
-    // getServiceDefinition() is called after start(), so both instances are in the container.
-    getServiceDefinition() {
-      return createAgentSettingsServiceDef({
-        agentSettingsService: container.get<import("../shared/agentSettings.js").AgentSettingsService>("agentSettings"),
-        agentDiscovery: container.has("agentDiscovery") ? container.get<import("../shared/agentDiscovery.js").AgentDiscovery>("agentDiscovery") : null,
-      });
-    },
-  });
+  // (No agent discovery/settings — agents are in-process services)
 
   // Git watcher
   container.register({
@@ -315,48 +288,48 @@ async function main() {
     async stop(instance: { server: import("@natstack/pubsub-server").PubSubServer; port: number }) { await instance?.server?.stop(); },
   });
 
-  // Agent host
-  container.register({
-    name: "agentHost",
-    dependencies: ["pubsub", "agentDiscovery", "tokenManager", "databaseManager", "buildSystem"],
-    async start(resolve) {
-      const { AgentHost } = await import("@natstack/agent-host");
-      const { server: pubsubServer, port: pubsubPort } = resolve<{ server: import("@natstack/pubsub-server").PubSubServer; port: number }>("pubsub")!;
-      const agentDiscovery = resolve<import("../shared/agentDiscovery.js").AgentDiscovery>("agentDiscovery")!;
-      const buildSystem = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
-
-      const host = new AgentHost({
-        workspaceRoot: workspace.path,
-        pubsubUrl: `ws://127.0.0.1:${pubsubPort}`,
-        messageStore: pubsubServer.getMessageStore(),
-        createToken: (instanceId) => tokenManager.createToken(instanceId, "server"),
-        revokeToken: (instanceId) => tokenManager.revokeToken(instanceId),
-        getBuild: (unitPath) => buildSystem.getBuild(unitPath) as Promise<{ bundlePath: string; dir: string; metadata: { kind: string; name: string } }>,
-        contextFolderManager,
-        databaseManager,
-        agentDiscovery,
-      });
-
-      await host.initialize();
-      pubsubServer.setAgentHost(host);
-      pubsubServer.setContextFolderManager(contextFolderManager);
-      return host;
-    },
-    async stop(instance: import("@natstack/agent-host").AgentHost) { instance?.shutdown(); },
-  });
-
   // AI handler (lifecycle only — RPC registered separately because it needs rpcServer)
   container.register({
     name: "ai",
-    dependencies: ["agentHost"],
-    async start(resolve) {
+    async start() {
       const { AIHandler: AIHandlerClass } = await import("../shared/ai/aiHandler.js");
-      const agentHost = resolve<import("@natstack/agent-host").AgentHost>("agentHost")!;
       const aiHandler = new AIHandlerClass(workspacePath);
       await aiHandler.initialize();
-      agentHost.setAiHandler(aiHandler);
       return aiHandler;
     },
+  });
+
+  // Agent manager (in-process agent lifecycle)
+  container.register({
+    name: "agentManager",
+    dependencies: ["pubsub", "tokenManager", "databaseManager", "ai"],
+    async start(resolve) {
+      const { AgentManager } = await import("./agents/agentManager.js");
+      const { server: pubsubServer, port: pubsubPort } = resolve<{ server: import("@natstack/pubsub-server").PubSubServer; port: number }>("pubsub")!;
+      const aiHandler = resolve<import("../shared/ai/aiHandler.js").AIHandler>("ai")!;
+
+      const manager = new AgentManager({
+        pubsubUrl: `ws://127.0.0.1:${pubsubPort}`,
+        databaseManager,
+        aiHandler,
+        messageStore: pubsubServer.getMessageStore(),
+        contextFolderManager,
+        createToken: (instanceId) => tokenManager.createToken(instanceId, "server"),
+        revokeToken: (instanceId) => tokenManager.revokeToken(instanceId),
+      });
+
+      // Wire PubSub message hook for auto-wake and activity tracking
+      // PubSubServer.onChannelMessage() provides the hook for AgentManager
+      if (typeof pubsubServer.onChannelMessage === "function") {
+        pubsubServer.onChannelMessage((channel: string, msg: { persist?: boolean }) => {
+          const persisted = msg.persist !== false;
+          manager.onChannelMessage(channel, persisted);
+        });
+      }
+
+      return manager;
+    },
+    async stop(instance: import("./agents/agentManager.js").AgentManager) { await instance?.shutdown(); },
   });
 
   // ── RPC-only services (replacing serverServiceRegistry.ts) ──
@@ -366,7 +339,7 @@ async function main() {
   const { createTokensService } = await import("./services/tokensService.js");
   const { createGitService } = await import("./services/gitService.js");
   const { createTestService } = await import("./services/testService.js");
-  const { createAgentSettingsService: createAgentSettingsServiceDef } = await import("./services/agentSettingsService.js");
+  const { createAgentService } = await import("./services/agentService.js");
   const { createDbService } = await import("./services/dbService.js");
   const { createTypecheckService } = await import("./services/typecheckService.js");
 
@@ -397,6 +370,21 @@ async function main() {
   container.register(rpcService(createDbService({ databaseManager }), ["databaseManager"]));
   container.register(rpcService(createTypecheckService({ contextFolderManager })));
   container.register(rpcService(createEventsServiceDefinition(eventService)));
+
+  // Agents RPC service (depends on agentManager)
+  {
+    let agentManagerInstance: import("./agents/agentManager.js").AgentManager | null = null;
+    container.register({
+      name: "agentsRpc",
+      dependencies: ["agentManager"],
+      async start(resolve) {
+        agentManagerInstance = resolve<import("./agents/agentManager.js").AgentManager>("agentManager")!;
+      },
+      getServiceDefinition() {
+        return createAgentService({ agentManager: agentManagerInstance! });
+      },
+    });
+  }
 
   // Admin token: use NATSTACK_ADMIN_TOKEN env var if set, otherwise generate random.
   const adminToken = process.env["NATSTACK_ADMIN_TOKEN"] || randomBytes(32).toString("hex");
@@ -539,14 +527,13 @@ async function main() {
       let bridgeDeps: Parameters<typeof handleHeadlessBridgeCall>[0];
       container.register({
         name: "bridge",
-        dependencies: ["panelLifecycle", "agentDiscovery"],
+        dependencies: ["panelLifecycle"],
         optionalDependencies: ["panelServing"],
         async start(resolve) {
           const lifecycle = resolve<import("../shared/panelLifecycle.js").PanelLifecycle>("panelLifecycle")!;
-          const agentDiscovery = resolve<import("../shared/agentDiscovery.js").AgentDiscovery>("agentDiscovery")!;
           const panelServingResult = resolve<{ cdpBridge: import("./cdpBridge.js").CdpBridge }>("panelServing", true);
           const cdpBridge = panelServingResult?.cdpBridge ?? null;
-          bridgeDeps = { pm: lifecycle, gitServer, agentDiscovery, cdpBridge };
+          bridgeDeps = { pm: lifecycle, gitServer, cdpBridge };
         },
         getServiceDefinition() {
           return {
@@ -562,7 +549,6 @@ async function main() {
               getWorkspaceTree: { args: z.tuple([]) },
               listBranches: { args: z.tuple([z.string()]) },
               listCommits: { args: z.tuple([z.string(), z.string().optional(), z.number().optional()]) },
-              listAgents: { args: z.tuple([]) },
               openDevtools: { args: z.tuple([]) },
               openFolderDialog: { args: z.tuple([z.object({ title: z.string().optional() }).optional()]) },
               createBrowserPanel: { args: z.tuple([z.string(), z.object({ name: z.string().optional(), focus: z.boolean().optional() }).optional()]) },

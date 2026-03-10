@@ -1,9 +1,6 @@
-export { PubSubServer, AgentSpawnError } from "./server.js";
+export { PubSubServer } from "./server.js";
 export type {
   PubSubServerOptions,
-  AgentHostLike,
-  ContextFolderManagerLike,
-  StoredSpawnConfig,
   Logger,
   PortFinder,
 } from "./server.js";

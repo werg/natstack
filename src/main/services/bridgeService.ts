@@ -33,7 +33,6 @@ export function createBridgeService(deps: {
       listBranches: { args: z.tuple([z.string()]) },
       listCommits: { args: z.tuple([z.string(), z.string().optional(), z.number().optional()]) },
       openFolderDialog: { args: z.tuple([z.object({ title: z.string().optional() }).optional()]) },
-      listAgents: { args: z.tuple([]) },
       createRepo: { args: z.tuple([z.string()]) },
       openDevtools: { args: z.tuple([]) },
       createBrowserPanel: { args: z.tuple([z.string(), z.object({ name: z.string().optional(), focus: z.boolean().optional() }).optional()]) },
@@ -71,9 +70,6 @@ export function createBridgeService(deps: {
           });
           return result.canceled ? null : result.filePaths[0] ?? null;
         }
-
-        case "listAgents":
-          return deps.serverInfo.listAgents();
 
         case "createRepo": {
           const [repoPath] = args as [string];

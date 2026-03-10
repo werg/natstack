@@ -7,8 +7,6 @@
 
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer, type Server as HttpServer, type IncomingMessage } from "http";
-import type { AgentManifest } from "@natstack/types";
-import type { AgentBuildError } from "@natstack/types";
 import {
   type TokenValidator,
   type ChannelConfig,
@@ -30,61 +28,12 @@ export type { TokenValidator, ChannelConfig, ChannelInfo, ChannelAgentRow, Messa
 // Injectable dependency interfaces
 // =============================================================================
 
-/**
- * Minimal AgentHost interface — the subset that PubSubServer needs.
- */
-export interface AgentHostLike {
-  listAvailableAgents(): AgentManifest[];
-  spawn(agentId: string, options: {
-    channel: string;
-    handle?: string;
-    contextFolderPath?: string;
-    config?: Record<string, unknown>;
-  }): Promise<{ id: string; agentId: string; handle: string; startedAt: number }>;
-  kill(instanceId: string): Promise<boolean>;
-  getChannelAgents(channel: string): Array<{ id: string; agentId: string; handle: string; startedAt: number }>;
-  markChannelActivity(channel: string): void;
-  wakeChannelAgents(channel: string): Promise<void>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  on(event: string, listener: (...args: any[]) => void): void;
-}
-
-/**
- * Error thrown when agent spawn fails due to build/type errors.
- */
-export class AgentSpawnError extends Error {
-  constructor(
-    message: string,
-    public readonly buildLog?: string,
-    public readonly typeErrors?: Array<{ file: string; line: number; column: number; message: string }>,
-    public readonly dirtyRepo?: { modified: string[]; untracked: string[]; staged: string[] }
-  ) {
-    super(message);
-    this.name = "AgentSpawnError";
-  }
-}
-
-/**
- * Minimal ContextFolderManager interface — the subset that PubSubServer needs.
- */
-export interface ContextFolderManagerLike {
-  ensureContextFolder(contextId: string): Promise<string>;
-}
-
 /** Logger interface matching createDevLogger() output shape. */
 export interface Logger {
   verbose(message: string, ...args: unknown[]): void;
   info(message: string, ...args: unknown[]): void;
   warn(message: string, ...args: unknown[]): void;
   error(message: string, ...args: unknown[]): void;
-}
-
-/** Stored spawn config shape for auto-wake registration. */
-export interface StoredSpawnConfig {
-  channel: string;
-  handle: string;
-  config: Record<string, unknown>;
-  contextId: string;
 }
 
 /** Function that finds an available port. */
@@ -147,20 +96,8 @@ interface AttachmentMeta {
   size: number;
 }
 
-/**
- * Agent instance summary for client responses.
- * Maps AgentInstanceInfo.id → instanceId for API clarity.
- */
-interface AgentInstanceSummary {
-  instanceId: string;
-  agentId: string;
-  handle: string;
-  startedAt: number;
-}
-
 interface ServerMessage {
-  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error" | "messages-before"
-    | "list-agents-response" | "invite-agent-response" | "channel-agents-response" | "remove-agent-response";
+  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error" | "messages-before";
   id?: number;
   type?: string;
   payload?: unknown;
@@ -202,14 +139,6 @@ interface ServerMessage {
     ts: number;
     senderMetadata?: Record<string, unknown>;
   }>;
-  /** Agent manifests (list-agents-response) */
-  agents?: AgentManifest[] | AgentInstanceSummary[];
-  /** Whether operation succeeded (invite/remove-agent responses) */
-  success?: boolean;
-  /** Instance ID of spawned agent (invite-agent-response) */
-  instanceId?: string;
-  /** Structured build error with full diagnostics (invite-agent-response on failure) */
-  buildError?: AgentBuildError;
 }
 
 /** Presence event types for join/leave tracking */
@@ -260,47 +189,18 @@ interface GetMessagesBeforeClientMessage {
   ref?: number;
 }
 
-interface ListAgentsClientMessage {
-  action: "list-agents";
-  ref: number; // Required for agent ops
-}
-
-interface InviteAgentClientMessage {
-  action: "invite-agent";
-  ref: number; // Required
-  agentId: string;
-  handle?: string;
-  config?: Record<string, unknown>;
-}
-
-interface ChannelAgentsClientMessage {
-  action: "channel-agents";
-  ref: number; // Required
-}
-
-interface RemoveAgentClientMessage {
-  action: "remove-agent";
-  ref: number; // Required
-  instanceId: string;
-}
-
 type ClientMessage =
   | PublishClientMessage
   | UpdateMetadataClientMessage
   | CloseClientMessage
   | UpdateConfigClientMessage
-  | GetMessagesBeforeClientMessage
-  | ListAgentsClientMessage
-  | InviteAgentClientMessage
-  | ChannelAgentsClientMessage
-  | RemoveAgentClientMessage;
+  | GetMessagesBeforeClientMessage;
 
 export class PubSubServer {
   private wss: WebSocketServer | null = null;
   private httpServer: HttpServer | null = null;
   private port: number | null = null;
   private channels = new Map<string, ChannelState>();
-  private wakeDebounceTimers = new Map<string, NodeJS.Timeout>();
   /** Tracks channels where ghost participants have already been cleaned up (once per server session). */
   private ghostsCleanedChannels = new Set<string>();
 
@@ -308,6 +208,7 @@ export class PubSubServer {
   private messageStore: MessageStore;
   private requestedPort: number | undefined;
   private findPort: PortFinder | undefined;
+  private channelMessageCallback: ((channel: string, msg: { persist?: boolean }) => void) | null = null;
 
   constructor(options: PubSubServerOptions) {
     this.tokenValidator = options.tokenValidator;
@@ -425,9 +326,10 @@ export class PubSubServer {
       }
     } else {
       // Subsequent connections - validate contextId consistency
-      // If client provides a contextId (not undefined), it must match the channel's contextId
-      // Clients can omit contextId (undefined) to join without validation
-      if (contextIdParam !== undefined && contextIdParam !== existingChannel.contextId) {
+      // If client provides a contextId, it must match the channel's contextId
+      // Clients can omit contextId to join without validation
+      // Note: URLSearchParams.get() returns null (not undefined) for absent params
+      if (contextIdParam != null && contextIdParam !== existingChannel.contextId) {
         ws.close(4005, "contextId mismatch");
         return;
       }
@@ -724,27 +626,6 @@ export class PubSubServer {
       return;
     }
 
-    // Agent protocol handlers
-    if (msg.action === "list-agents") {
-      this.handleListAgents(client, ref);
-      return;
-    }
-
-    if (msg.action === "invite-agent") {
-      void this.handleInviteAgent(client, msg as InviteAgentClientMessage, ref);
-      return;
-    }
-
-    if (msg.action === "channel-agents") {
-      this.handleChannelAgents(client, ref);
-      return;
-    }
-
-    if (msg.action === "remove-agent") {
-      void this.handleRemoveAgent(client, msg as RemoveAgentClientMessage, ref);
-      return;
-    }
-
     if (msg.action !== "publish") {
       this.send(client.ws, { kind: "error", error: "unknown action", ref });
       return;
@@ -907,12 +788,11 @@ export class PubSubServer {
     const state = this.channels.get(channel);
     if (!state) return;
 
-    // Mark channel activity for agent inactivity tracking
-    this.agentHost?.markChannelActivity(channel);
-
-    // Schedule wake only for persisted messages (ephemeral messages can't be replayed)
-    if (msg.kind === "persisted") {
-      this.scheduleWake(channel);
+    // Notify channel message callback (for AgentManager auto-wake/activity)
+    if (this.channelMessageCallback) {
+      try {
+        this.channelMessageCallback(channel, { persist: msg.kind === "persisted" });
+      } catch { /* Don't let callback errors break message delivery */ }
     }
 
     // Message without ref for non-senders
@@ -936,290 +816,6 @@ export class PubSubServer {
   }
 
   /**
-   * Schedule a debounced wake for registered agents on a channel.
-   * This is called after messages are persisted to ensure checkpoint availability.
-   */
-  private scheduleWake(channel: string): void {
-    // Skip if already scheduled
-    if (this.wakeDebounceTimers.has(channel)) return;
-
-    const timer = setTimeout(() => {
-      this.wakeDebounceTimers.delete(channel);
-      void this.agentHost?.wakeChannelAgents(channel);
-    }, 100);
-
-    this.wakeDebounceTimers.set(channel, timer);
-  }
-
-  // ===========================================================================
-  // Agent Protocol Handlers
-  // ===========================================================================
-
-  private handleListAgents(client: ClientConnection, ref: number | undefined): void {
-    // Validate ref is present
-    if (ref === undefined) {
-      this.send(client.ws, { kind: "error", error: "ref required for list-agents" });
-      return;
-    }
-
-    if (!this.agentHost) {
-      this.send(client.ws, {
-        kind: "list-agents-response",
-        ref,
-        agents: [],
-      });
-      return;
-    }
-
-    const agents = this.agentHost.listAvailableAgents();
-    this.send(client.ws, {
-      kind: "list-agents-response",
-      ref,
-      agents,
-    });
-  }
-
-  private async handleInviteAgent(
-    client: ClientConnection,
-    msg: InviteAgentClientMessage,
-    ref: number | undefined
-  ): Promise<void> {
-    log.verbose(`[invite-agent] Received request: agentId=${msg.agentId}, handle=${msg.handle}, channel=${client.channel}`);
-
-    // Validate ref is present
-    if (ref === undefined) {
-      log.verbose(`[invite-agent] Error: ref required`);
-      this.send(client.ws, { kind: "error", error: "ref required for invite-agent" });
-      return;
-    }
-
-    if (!this.agentHost) {
-      log.verbose(`[invite-agent] Error: Agent host not initialized`);
-      this.send(client.ws, {
-        kind: "invite-agent-response",
-        ref,
-        success: false,
-        error: "Agent host not initialized",
-      });
-      return;
-    }
-
-    // Note: Manifest constraints (channels, proposedHandle) are not enforced here.
-    // This is intentional to allow flexibility during development. Agents can
-    // validate their own config on startup and reject invalid configurations.
-    // Future: Consider adding optional manifest constraint enforcement.
-    const handle = msg.handle ?? msg.agentId;
-    const config = msg.config ?? {};
-
-    // Look up channel contextId and resolve context folder path
-    const channelInfo = this.messageStore.getChannel(client.channel);
-    if (!channelInfo?.contextId) {
-      this.send(client.ws, {
-        kind: "invite-agent-response",
-        ref,
-        success: false,
-        error: "Channel has no contextId — cannot invite agent",
-      });
-      return;
-    }
-
-    if (!this.contextFolderManager) {
-      this.send(client.ws, {
-        kind: "invite-agent-response",
-        ref,
-        success: false,
-        error: "ContextFolderManager not initialized",
-      });
-      return;
-    }
-
-    let contextFolderPath: string;
-    try {
-      contextFolderPath = await this.contextFolderManager.ensureContextFolder(channelInfo.contextId);
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      this.send(client.ws, {
-        kind: "invite-agent-response",
-        ref,
-        success: false,
-        error: `Failed to resolve context folder: ${errorMsg}`,
-      });
-      return;
-    }
-
-    log.verbose(`[invite-agent] Spawning agent ${msg.agentId} with handle=${handle} on channel=${client.channel}`);
-
-    try {
-      const instance = await this.agentHost.spawn(msg.agentId, {
-        channel: client.channel,
-        handle,
-        config,
-        contextFolderPath,
-      });
-
-      log.verbose(`[invite-agent] Agent spawned successfully: instanceId=${instance.id}`);
-
-      // Register agent for auto-wake (UPSERT - updates config on re-invite)
-      const spawnConfig = JSON.stringify({
-        channel: client.channel,
-        handle,
-        config,
-        contextId: channelInfo.contextId,
-      } satisfies StoredSpawnConfig);
-      this.messageStore.registerChannelAgent(
-        client.channel,
-        msg.agentId,
-        handle,
-        spawnConfig,
-        client.clientId
-      );
-
-      log.verbose(`[invite-agent] Agent registered for auto-wake`);
-
-      this.send(client.ws, {
-        kind: "invite-agent-response",
-        ref,
-        success: true,
-        instanceId: instance.id,
-      });
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      log.verbose(`[invite-agent] Error spawning agent: ${errorMsg}`);
-      if (err instanceof Error && err.stack) {
-        log.verbose(`[invite-agent] Stack: ${err.stack}`);
-      }
-
-      // Extract structured build error if available
-      let buildError: AgentBuildError | undefined;
-      if (err instanceof AgentSpawnError) {
-        buildError = {
-          message: err.message,
-          buildLog: err.buildLog,
-          typeErrors: err.typeErrors,
-          dirtyRepo: err.dirtyRepo,
-        };
-      }
-
-      // Broadcast spawn error to the channel so all participants can see it
-      this.broadcastEphemeralDebug(client.channel, {
-        debugType: "spawn-error",
-        agentId: msg.agentId,
-        handle,
-        error: errorMsg,
-        buildError,
-      });
-
-      this.send(client.ws, {
-        kind: "invite-agent-response",
-        ref,
-        success: false,
-        error: errorMsg,
-        buildError,
-      });
-    }
-  }
-
-  private handleChannelAgents(client: ClientConnection, ref: number | undefined): void {
-    // Validate ref is present
-    if (ref === undefined) {
-      this.send(client.ws, { kind: "error", error: "ref required for channel-agents" });
-      return;
-    }
-
-    if (!this.agentHost) {
-      this.send(client.ws, {
-        kind: "channel-agents-response",
-        ref,
-        agents: [],
-      });
-      return;
-    }
-
-    const agents = this.agentHost.getChannelAgents(client.channel);
-    // Map AgentInstanceInfo.id → AgentInstanceSummary.instanceId
-    this.send(client.ws, {
-      kind: "channel-agents-response",
-      ref,
-      agents: agents.map((a) => ({
-        instanceId: a.id,
-        agentId: a.agentId,
-        handle: a.handle,
-        startedAt: a.startedAt,
-      })),
-    });
-  }
-
-  private async handleRemoveAgent(
-    client: ClientConnection,
-    msg: RemoveAgentClientMessage,
-    ref: number | undefined
-  ): Promise<void> {
-    // Validate ref is present
-    if (ref === undefined) {
-      this.send(client.ws, { kind: "error", error: "ref required for remove-agent" });
-      return;
-    }
-
-    if (!this.agentHost) {
-      this.send(client.ws, {
-        kind: "remove-agent-response",
-        ref,
-        success: false,
-        error: "Agent host not initialized",
-      });
-      return;
-    }
-
-    // Security: Verify the instance belongs to the client's channel
-    // This prevents cross-channel agent termination attacks
-    const channelAgents = this.agentHost.getChannelAgents(client.channel);
-    const agentInstance = channelAgents.find((a) => a.id === msg.instanceId);
-    if (!agentInstance) {
-      this.send(client.ws, {
-        kind: "remove-agent-response",
-        ref,
-        success: false,
-        error: "Agent instance not found on this channel",
-      });
-      return;
-    }
-
-    try {
-      // Kill first - if this fails, agent stays registered for auto-wake
-      const killed = await this.agentHost.kill(msg.instanceId);
-      if (!killed) {
-        this.send(client.ws, {
-          kind: "remove-agent-response",
-          ref,
-          success: false,
-          error: "Agent instance not found",
-        });
-        return;
-      }
-
-      // Only unregister after successful kill (prevents auto-wake)
-      this.messageStore.unregisterChannelAgent(
-        client.channel,
-        agentInstance.agentId,
-        agentInstance.handle
-      );
-
-      this.send(client.ws, {
-        kind: "remove-agent-response",
-        ref,
-        success: true,
-      });
-    } catch (err) {
-      this.send(client.ws, {
-        kind: "remove-agent-response",
-        ref,
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  /**
    * Broadcast a config update to all participants in a channel.
    * Config updates are ephemeral (not persisted) since the config is stored separately.
    */
@@ -1231,12 +827,6 @@ export class PubSubServer {
   ): void {
     const state = this.channels.get(channel);
     if (!state) return;
-
-    // Mark channel activity for agent inactivity tracking
-    this.agentHost?.markChannelActivity(channel);
-
-    // Schedule wake for registered agents
-    this.scheduleWake(channel);
 
     // Config update message format
     const msg = {
@@ -1310,12 +900,11 @@ export class PubSubServer {
     const state = this.channels.get(channel);
     if (!state) return;
 
-    // Mark channel activity for agent inactivity tracking
-    this.agentHost?.markChannelActivity(channel);
-
-    // Schedule wake only for persisted messages (binary messages with attachments are always persisted)
-    if (msg.kind === "persisted") {
-      this.scheduleWake(channel);
+    // Notify channel message callback (for AgentManager auto-wake/activity)
+    if (this.channelMessageCallback) {
+      try {
+        this.channelMessageCallback(channel, { persist: msg.kind === "persisted" });
+      } catch { /* Don't let callback errors break message delivery */ }
     }
 
     const attachments = msg.attachments!;
@@ -1504,87 +1093,12 @@ export class PubSubServer {
     return this.port;
   }
 
-  // ===========================================================================
-  // AgentHost Integration (Phase 4)
-  // ===========================================================================
-
-  private agentHost: AgentHostLike | null = null;
-  private contextFolderManager: ContextFolderManagerLike | null = null;
-
   /**
-   * Set the ContextFolderManager for resolving context folder paths.
+   * Register a callback for all channel messages (persisted and ephemeral).
+   * Used by AgentManager for auto-wake and activity tracking.
    */
-  setContextFolderManager(manager: ContextFolderManagerLike): void {
-    this.contextFolderManager = manager;
-  }
-
-  /**
-   * Set the AgentHost reference for agent lifecycle management.
-   * The full pubsub protocol (invite-agent, list-agents, etc.) is Phase 5.
-   */
-  setAgentHost(host: AgentHostLike): void {
-    this.agentHost = host;
-
-    // Listen for agent events and broadcast as ephemeral debug messages
-    host.on("agentOutput", (data: {
-      channel: string;
-      handle: string;
-      agentId: string;
-      stream: "stdout" | "stderr";
-      content: string;
-      timestamp: number;
-    }) => {
-      this.broadcastEphemeralDebug(data.channel, {
-        debugType: "output",
-        agentId: data.agentId,
-        handle: data.handle,
-        stream: data.stream,
-        content: data.content,
-      });
-    });
-
-    host.on("agentLifecycle", (data: {
-      channel: string;
-      handle: string;
-      agentId: string;
-      event: "spawning" | "started" | "stopped" | "woken";
-      reason?: "timeout" | "explicit" | "crash" | "idle";
-      timestamp: number;
-    }) => {
-      this.broadcastEphemeralDebug(data.channel, {
-        debugType: "lifecycle",
-        agentId: data.agentId,
-        handle: data.handle,
-        event: data.event,
-        reason: data.reason,
-      });
-    });
-
-    host.on("agentLog", (data: {
-      channel: string;
-      handle: string;
-      agentId: string;
-      level: "debug" | "info" | "warn" | "error";
-      message: string;
-      stack?: string;
-      timestamp: number;
-    }) => {
-      this.broadcastEphemeralDebug(data.channel, {
-        debugType: "log",
-        agentId: data.agentId,
-        handle: data.handle,
-        level: data.level,
-        message: data.message,
-        stack: data.stack,
-      });
-    });
-  }
-
-  /**
-   * Get the AgentHost reference.
-   */
-  getAgentHost(): AgentHostLike | null {
-    return this.agentHost;
+  onChannelMessage(callback: (channel: string, msg: { persist?: boolean }) => void): void {
+    this.channelMessageCallback = callback;
   }
 
   /**
@@ -1594,50 +1108,7 @@ export class PubSubServer {
     return this.messageStore;
   }
 
-  /**
-   * Broadcast an ephemeral debug event to a channel (not persisted).
-   */
-  private broadcastEphemeralDebug(channel: string, payload: {
-    debugType: "output" | "lifecycle" | "spawn-error" | "log";
-    agentId: string;
-    handle: string;
-    stream?: "stdout" | "stderr";
-    content?: string;
-    event?: "spawning" | "started" | "stopped" | "woken" | "warning";
-    reason?: "timeout" | "explicit" | "crash" | "idle" | "dirty-repo";
-    details?: unknown;
-    error?: string;
-    buildError?: AgentBuildError;
-    level?: "debug" | "info" | "warn" | "error";
-    message?: string;
-    stack?: string;
-  }): void {
-    const state = this.channels.get(channel);
-    if (!state) return;
-
-    const msg = {
-      kind: "ephemeral" as const,
-      type: "agent-debug" as const,
-      payload,
-      senderId: "system",
-      ts: Date.now(),
-    };
-
-    const data = JSON.stringify(msg);
-    for (const client of state.clients) {
-      if (client.ws.readyState === WebSocket.OPEN) {
-        client.ws.send(data);
-      }
-    }
-  }
-
   async stop(): Promise<void> {
-    // Clear all wake debounce timers
-    for (const timer of this.wakeDebounceTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.wakeDebounceTimers.clear();
-
     // Persist "leave" events for all participants while the message store is still
     // open. We do this synchronously from the server's own in-memory state rather
     // than relying on async WebSocket close handlers (which race with store closure).

@@ -25,7 +25,7 @@ export type {
 } from "./types";
 
 // Re-export from agentic-messaging for convenience
-export type { FeedbackFormArgs } from "@workspace/agentic-messaging";
+export type { FeedbackFormArgs } from "@natstack/agentic-messaging";
 
 // ============================================================================
 // Components

@@ -8,7 +8,7 @@
  */
 
 import { useCallback, useMemo, useRef, useEffect } from "react";
-import type { ChannelConfig, MethodDefinition } from "@workspace/agentic-messaging";
+import type { ChannelConfig, MethodDefinition } from "@natstack/agentic-messaging";
 import { useChatCore, type FeatureEventHandlers, type RosterExtension, type ReconnectExtension } from "./core/useChatCore";
 import { useRosterTracking } from "./features/useRosterTracking";
 import { usePendingAgents } from "./features/usePendingAgents";
@@ -173,14 +173,29 @@ export function useAgenticChat({
   }, [core.resetCore, roster.resetRoster, pending.resetPending, feedback.dismissAll, debug.resetDebug, actions]);
 
   // --- Wrap platform actions ---
-  const handleAddAgent = useCallback(async () => {
+  const handleAddAgent = useCallback(async (agentId?: string) => {
     if (!actions?.onAddAgent) return;
     const launcherContextId = core.clientRef.current?.contextId;
-    await actions.onAddAgent(channelName, launcherContextId);
-  }, [channelName, core.clientRef, actions]);
+    const result = await actions.onAddAgent(channelName, launcherContextId, agentId);
+    // If the callback returns agent info, track it as pending for badge/timeout feedback
+    if (result?.agentId && result?.handle) {
+      pending.setPendingAgents(prev => {
+        const next = new Map(prev);
+        next.set(result.handle, { agentId: result.agentId, status: "starting" });
+        return next;
+      });
+    }
+  }, [channelName, core.clientRef, actions, pending.setPendingAgents]);
+
+  const handleRemoveAgent = useCallback(async (handle: string) => {
+    if (!actions?.onRemoveAgent) return;
+    await actions.onRemoveAgent(channelName, handle);
+  }, [channelName, actions]);
 
   const sessionEnabled = core.clientRef.current?.sessionEnabled;
   const onAddAgent = actions?.onAddAgent ? handleAddAgent : undefined;
+  const availableAgents = actions?.availableAgents;
+  const onRemoveAgent = actions?.onRemoveAgent ? handleRemoveAgent : undefined;
   const onFocusPanel = actions?.onFocusPanel;
   const onReloadPanel = actions?.onReloadPanel;
 
@@ -212,6 +227,8 @@ export function useAgenticChat({
     onDismissDirtyWarning: debug.onDismissDirtyWarning,
     onReset: reset,
     onAddAgent,
+    availableAgents,
+    onRemoveAgent,
     onFocusPanel,
     onReloadPanel,
     toolApproval: chatTools.toolApprovalValue,
@@ -223,7 +240,7 @@ export function useAgenticChat({
     feedback.activeFeedbacks, theme,
     core.loadEarlierMessages, core.handleInterruptAgent, core.handleCallMethod,
     feedback.onFeedbackDismiss, feedback.onFeedbackError, debug.setDebugConsoleAgent, debug.onDismissDirtyWarning, reset,
-    onAddAgent, onFocusPanel, onReloadPanel,
+    onAddAgent, availableAgents, onRemoveAgent, onFocusPanel, onReloadPanel,
     chatTools.toolApprovalValue,
   ]);
 

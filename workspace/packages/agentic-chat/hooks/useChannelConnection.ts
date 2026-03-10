@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, type RefObject } from "react";
-import { connect } from "@workspace/agentic-messaging/client";
+import { connect } from "@natstack/agentic-messaging/client";
 import type {
   AgenticClient,
   RosterUpdate,
@@ -7,8 +7,8 @@ import type {
   AggregatedEvent,
   MethodDefinition,
   ChannelConfig,
-} from "@workspace/agentic-messaging";
-import { isAggregatedEvent } from "@workspace/agentic-messaging";
+} from "@natstack/agentic-messaging";
+import { isAggregatedEvent } from "@natstack/agentic-messaging";
 import type { ChatParticipantMetadata, ConnectionConfig } from "../types";
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";

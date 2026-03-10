@@ -11,11 +11,11 @@ import type {
   MethodExecutionContext,
   FeedbackFormArgs,
   FeedbackCustomArgs,
-} from "@workspace/agentic-messaging";
+} from "@natstack/agentic-messaging";
 import {
   FeedbackFormArgsSchema,
   FeedbackCustomArgsSchema,
-} from "@workspace/agentic-messaging/protocol-schemas";
+} from "@natstack/agentic-messaging/protocol-schemas";
 import {
   useFeedbackManager,
   compileFeedbackComponent,

@@ -1,7 +1,7 @@
 /**
  * Create Approval Schema
  *
- * Re-exports the unified createApprovalSchema from @workspace/agentic-messaging.
+ * Re-exports the unified createApprovalSchema from @natstack/agentic-messaging.
  * This ensures both restricted mode (panel-side) and unrestricted mode (worker-side)
  * use the exact same schema builder.
  *
@@ -16,4 +16,4 @@
 export {
   createApprovalSchema,
   type CreateApprovalSchemaParams,
-} from "@workspace/agentic-messaging";
+} from "@natstack/agentic-messaging";

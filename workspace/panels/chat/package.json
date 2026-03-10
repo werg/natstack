@@ -35,7 +35,7 @@
     "@workspace/runtime": "workspace:*",
     "@workspace/panel-browser": "workspace:*",
     "@workspace/react": "workspace:*",
-    "@workspace/agentic-messaging": "workspace:*",
+    "@natstack/agentic-messaging": "workspace:*",
     "@workspace/agentic-chat": "workspace:*",
     "@workspace/agentic-tools": "workspace:*",
     "@natstack/types": "workspace:*",

@@ -9,14 +9,14 @@
  */
 
 import { useState, useCallback, useMemo, useRef, useEffect, useReducer } from "react";
-import { CONTENT_TYPE_TYPING } from "@workspace/agentic-messaging/utils";
+import { CONTENT_TYPE_TYPING } from "@natstack/agentic-messaging/utils";
 import type {
   IncomingEvent,
   IncomingMethodResult,
   AggregatedEvent,
   TypingData,
   ChannelConfig,
-} from "@workspace/agentic-messaging";
+} from "@natstack/agentic-messaging";
 import type { Participant, RosterUpdate, AttachmentInput } from "@natstack/pubsub";
 import { useChannelConnection } from "../useChannelConnection";
 import type { UseChannelConnectionResult } from "../useChannelConnection";

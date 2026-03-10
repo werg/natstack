@@ -1,4 +1,4 @@
-import type { MethodAdvertisement, ContextWindowUsage, AgentBuildError, AgentDebugPayload, MethodDefinition } from "@workspace/agentic-messaging";
+import type { MethodAdvertisement, ContextWindowUsage, AgentBuildError, AgentDebugPayload, MethodDefinition } from "@natstack/agentic-messaging";
 import type { Attachment, Participant, AttachmentInput } from "@natstack/pubsub";
 import type { ActiveFeedback, ToolApprovalProps } from "@workspace/tool-ui";
 import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
@@ -86,7 +86,9 @@ export interface ConnectionConfig {
 /** Inject platform-specific navigation */
 export interface AgenticChatActions {
   onNewConversation?: () => void;
-  onAddAgent?: (channelName: string, contextId?: string) => Promise<void>;
+  onAddAgent?: (channelName: string, contextId?: string, agentId?: string) => Promise<{ agentId: string; handle: string } | void>;
+  onRemoveAgent?: (channelName: string, handle: string) => Promise<void>;
+  availableAgents?: Array<{ id: string; name: string; proposedHandle: string }>;
   onFocusPanel?: (panelId: string) => void;
   onReloadPanel?: (panelId: string) => Promise<void>;
   onBecomeVisible?: () => void;
@@ -169,7 +171,9 @@ export interface ChatContextValue {
   onReset: () => void;
 
   // Optional actions (platform-specific)
-  onAddAgent?: () => void;
+  onAddAgent?: (agentId?: string) => void;
+  availableAgents?: Array<{ id: string; name: string; proposedHandle: string }>;
+  onRemoveAgent?: (handle: string) => void;
   onFocusPanel?: (panelId: string) => void;
   onReloadPanel?: (panelId: string) => void;
 

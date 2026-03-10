@@ -2,7 +2,7 @@ import { useState, useCallback, useMemo } from "react";
 import { Badge, DropdownMenu, Text } from "@radix-ui/themes";
 import { DotFilledIcon, TriangleDownIcon } from "@radix-ui/react-icons";
 import type { Participant } from "@natstack/pubsub";
-import type { MethodAdvertisement, ContextWindowUsage } from "@workspace/agentic-messaging";
+import type { MethodAdvertisement, ContextWindowUsage } from "@natstack/agentic-messaging";
 import type { ChatParticipantMetadata } from "../types";
 import { MethodArgumentsModal } from "./MethodArgumentsModal";
 import { schemaHasRequiredParams } from "./JsonSchemaForm";
@@ -16,6 +16,8 @@ export interface ParticipantBadgeMenuProps {
   isGranted?: boolean;
   /** Callback to revoke agent's tool access */
   onRevokeAgent?: (agentId: string) => void;
+  /** Callback to remove an agent from the channel */
+  onRemoveAgent?: (handle: string) => void;
   /** Callback to open debug console for this agent */
   onOpenDebugConsole?: (agentHandle: string) => void;
 }
@@ -49,6 +51,7 @@ export function ParticipantBadgeMenu({
   onCallMethod,
   isGranted,
   onRevokeAgent,
+  onRemoveAgent,
   onOpenDebugConsole,
 }: ParticipantBadgeMenuProps) {
   const [modalOpen, setModalOpen] = useState(false);
@@ -150,9 +153,10 @@ export function ParticipantBadgeMenu({
     </Text>
   ) : null;
 
-  // Simple badge without dropdown when no menu items, no grant status, and no debug console
+  // Simple badge without dropdown when no menu items, no grant status, no debug console, no remove
   const showDebugConsole = isAgent && onOpenDebugConsole;
-  if (!hasMenuItems && !showGrantStatus && !showDebugConsole) {
+  const showRemove = isAgent && onRemoveAgent;
+  if (!hasMenuItems && !showGrantStatus && !showDebugConsole && !showRemove) {
     return (
       <span style={{ position: "relative" }}>
         <Badge color={color}>
@@ -227,6 +231,18 @@ export function ParticipantBadgeMenu({
               {(menuMethods.length > 0 || showGrantStatus) && <DropdownMenu.Separator />}
               <DropdownMenu.Item onSelect={() => onOpenDebugConsole(participant.metadata.handle)}>
                 Debug Console
+              </DropdownMenu.Item>
+            </>
+          )}
+          {/* Remove agent from channel */}
+          {showRemove && (
+            <>
+              <DropdownMenu.Separator />
+              <DropdownMenu.Item
+                color="red"
+                onSelect={() => onRemoveAgent(participant.metadata.handle)}
+              >
+                Remove Agent
               </DropdownMenu.Item>
             </>
           )}

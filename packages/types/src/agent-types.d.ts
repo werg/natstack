@@ -32,23 +32,4 @@ export interface AgentManifest {
     capabilities?: string[];
     permissions?: string[];
 }
-export interface AgentState {
-    [key: string]: unknown;
-}
-export interface AgentInstanceInfo {
-    id: string;
-    agentId: string;
-    channel: string;
-    handle: string;
-    startedAt: number;
-}
-export type JsonValue = string | number | boolean | null | JsonValue[] | {
-    [key: string]: JsonValue;
-};
-export interface GlobalAgentSettings {
-    defaultProjectLocation: "external" | "browser";
-    defaultAutonomy: 0 | 1 | 2;
-    defaultAgent: string | null;
-}
-export type AgentSettings = Record<string, JsonValue>;
 //# sourceMappingURL=agent-types.d.ts.map

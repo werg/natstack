@@ -1,0 +1,22 @@
+{
+  "name": "@natstack/agent-patterns",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./queue": "./src/queue/index.ts",
+    "./settings": "./src/settings/index.ts",
+    "./trackers": "./src/trackers/index.ts",
+    "./context": "./src/context/index.ts",
+    "./interrupt": "./src/interrupt/index.ts",
+    "./prompts": "./src/prompts/index.ts"
+  },
+  "dependencies": {
+    "@natstack/agentic-protocol": "workspace:*",
+    "@natstack/agentic-messaging": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^3.0.5"
+  }
+}

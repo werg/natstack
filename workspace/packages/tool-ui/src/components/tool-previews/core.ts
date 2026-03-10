@@ -28,4 +28,4 @@ export {
   type ExitPlanModeArgs,
   type AllowedPrompt,
   type RichPreviewToolName,
-} from "@workspace/agentic-messaging";
+} from "@natstack/agentic-messaging";

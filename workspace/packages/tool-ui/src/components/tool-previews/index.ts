@@ -21,4 +21,4 @@ export {
   // Types
   type BashArgs,
   type RichPreviewToolName,
-} from "@workspace/agentic-messaging";
+} from "@natstack/agentic-messaging";

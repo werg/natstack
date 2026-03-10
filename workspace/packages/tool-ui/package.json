@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@natstack/types": "workspace:*",
-    "@workspace/agentic-messaging": "workspace:*",
+    "@natstack/agentic-messaging": "workspace:*",
     "@workspace/eval": "workspace:*",
     "@workspace/react": "workspace:*",
     "@workspace/runtime": "workspace:*",

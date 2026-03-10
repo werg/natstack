@@ -143,7 +143,7 @@ describe("parseWorkspaceImport", () => {
   });
 
   it("parses subpath import", () => {
-    expect(parseWorkspaceImport("@workspace/agentic-messaging/config")).toEqual({
+    expect(parseWorkspaceImport("@natstack/agentic-messaging/config")).toEqual({
       packageName: "agentic-messaging",
       subpath: "./config",
     });

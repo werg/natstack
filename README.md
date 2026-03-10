@@ -223,9 +223,9 @@ origin isolation.
 See **[BROWSER_EXTENSIONS.md](BROWSER_EXTENSIONS.md)** for installation
 instructions, configuration, and the full connection flow.
 
-### Headless Agents
+### In-Process Agents
 
-Agents run as headless Node.js processes managed by AgentHost. They work
-identically in both Electron and standalone mode — they connect to the RPC
-server with server-kind tokens and communicate via PubSub channels.
+Agents run as in-process services managed by AgentManager. They have direct
+access to DatabaseManager and AIHandler, and communicate via PubSub channels
+using local WebSocket connections.
 

@@ -21,7 +21,7 @@ export interface GraphNode {
   /** Package name from package.json (e.g., "@workspace/core") */
   name: string;
   /** Unit kind */
-  kind: "package" | "panel" | "agent" | "worker";
+  kind: "package" | "panel" | "worker";
   /** All dependencies from package.json (name → version) */
   dependencies: Record<string, string>;
   /** Resolved internal dependency names */
@@ -279,7 +279,6 @@ export function discoverPackageGraph(workspaceRoot: string): PackageGraph {
   const packagesDir = path.join(workspaceRoot, "packages");
   const panelsDir = path.join(workspaceRoot, "panels");
   const aboutDir = path.join(workspaceRoot, "about");
-  const agentsDir = path.join(workspaceRoot, "agents");
   const workersDir = path.join(workspaceRoot, "workers");
 
   for (const node of scanDirectory(packagesDir, workspaceRoot, "package")) {
@@ -289,9 +288,6 @@ export function discoverPackageGraph(workspaceRoot: string): PackageGraph {
     graph.addNode(node);
   }
   for (const node of scanDirectory(aboutDir, workspaceRoot, "panel")) {
-    graph.addNode(node);
-  }
-  for (const node of scanDirectory(agentsDir, workspaceRoot, "agent")) {
     graph.addNode(node);
   }
   for (const node of scanDirectory(workersDir, workspaceRoot, "worker")) {

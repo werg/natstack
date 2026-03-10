@@ -5,7 +5,7 @@
  */
 
 import { useCallback, useMemo, useRef, useEffect } from "react";
-import type { MethodDefinition } from "@workspace/agentic-messaging";
+import type { MethodDefinition } from "@natstack/agentic-messaging";
 import {
   useToolApproval,
   wrapMethodsWithApproval,

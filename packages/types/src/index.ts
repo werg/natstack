@@ -24,19 +24,7 @@ export type {
   MethodAdvertisement,
   RequiredMethodSpec,
   AgentManifest,
-  AgentState,
-  AgentInstanceInfo,
-  JsonValue,
-  GlobalAgentSettings,
-  AgentSettings,
 } from "./agent-types.js";
-
-// IPC protocol types
-export type {
-  AgentInitConfig,
-  HostToAgentMessage,
-  AgentToHostMessage,
-} from "./ipc-protocol.js";
 
 // Config types
 export type { PubSubConfig } from "./config-types.js";

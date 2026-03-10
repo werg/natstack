@@ -18,7 +18,7 @@ const { runtime, config } = initRuntime({
 });
 
 // Configure dependency injection for shared packages
-import { setDbOpen } from "@workspace/agentic-messaging";
+import { setDbOpen } from "@natstack/agentic-messaging";
 import { createAiClient, type AiClient } from "@natstack/ai";
 
 // Inject db opener for agentic-messaging (session persistence, etc.)
