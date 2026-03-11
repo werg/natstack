@@ -24,6 +24,10 @@ const createOptionsSchema = z.object({
   bindings: z.record(z.unknown()).optional(),
   stateArgs: z.record(z.unknown()).optional(),
   ref: z.string().optional(),
+  durable: z.object({
+    className: z.string(),
+    objectKey: z.string(),
+  }).optional(),
 });
 
 export function createWorkerdService(deps: {

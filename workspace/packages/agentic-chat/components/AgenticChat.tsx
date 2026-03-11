@@ -1,4 +1,4 @@
-import type { ChannelConfig } from "@natstack/agentic-messaging";
+import type { ChannelConfig } from "@natstack/pubsub";
 import { Theme } from "@radix-ui/themes";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { ChatLayout } from "./ChatLayout";

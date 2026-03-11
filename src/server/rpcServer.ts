@@ -8,7 +8,8 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer, type Server as HttpServer } from "http";
 import { randomUUID } from "crypto";
-import type { RpcMessage, RpcRequest } from "@natstack/rpc";
+import { createRpcBridge, type RpcBridge, type RpcMessage, type RpcRequest } from "@natstack/rpc";
+import { createWsServerTransport, type WsServerTransportInternal } from "./wsServerTransport.js";
 import type {
   WsClientMessage,
   WsServerMessage,
@@ -58,6 +59,10 @@ export class RpcServer {
   private pendingToolCalls = new Map<string, PendingToolCall>();
   private disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+  // Per-client RPC bridges for server→client calls
+  private clientBridges = new Map<string, RpcBridge>();
+  private clientTransports = new Map<string, WsServerTransportInternal>();
+
   private static readonly DISCONNECT_GRACE_MS = 3000;
 
   private dispatcher: ServiceDispatcher;
@@ -69,6 +74,8 @@ export class RpcServer {
       panelManager?: PanelManagerLike;
       /** Called when an authenticated client disconnects (e.g., for fs handle cleanup) */
       onClientDisconnect?: (callerId: string, callerKind: CallerKind) => void;
+      /** Called when a client successfully authenticates */
+      onClientAuthenticate?: (callerId: string, callerKind: CallerKind) => void;
     }
   ) {
     this.dispatcher = deps.dispatcher;
@@ -77,6 +84,11 @@ export class RpcServer {
   /** Register a callback for client disconnect events. */
   setOnClientDisconnect(handler: (callerId: string, callerKind: CallerKind) => void): void {
     this.deps.onClientDisconnect = handler;
+  }
+
+  /** Register a callback for client authentication events. */
+  setOnClientAuthenticate(handler: (callerId: string, callerKind: CallerKind) => void): void {
+    this.deps.onClientAuthenticate = handler;
   }
 
   async start(): Promise<number> {
@@ -195,6 +207,15 @@ export class RpcServer {
     this.clients.set(ws, client);
     this.callerToClient.set(callerId, client);
 
+    // Create per-client RPC bridge for server→client calls
+    const transport = createWsServerTransport({ ws, clientId: callerId });
+    const bridge = createRpcBridge({
+      selfId: "server",
+      transport,
+    });
+    this.clientTransports.set(callerId, transport);
+    this.clientBridges.set(callerId, bridge);
+
     // Send auth result
     const authResult: WsServerMessage = {
       type: "ws:auth-result",
@@ -203,6 +224,9 @@ export class RpcServer {
       callerKind,
     };
     ws.send(JSON.stringify(authResult));
+
+    // Notify auth callback (e.g., for HarnessManager bridge resolution)
+    this.deps.onClientAuthenticate?.(callerId, callerKind);
 
     // Set up message handling
     ws.on("message", (data) => this.handleMessage(client, data));
@@ -219,6 +243,18 @@ export class RpcServer {
 
     switch (msg.type) {
       case "ws:rpc":
+        // If the message is a response or event, it may be for a server-initiated
+        // call via the client's RPC bridge. Route it to the bridge transport.
+        if (msg.message.type === "response" || msg.message.type === "event") {
+          const transport = this.clientTransports.get(client.callerId);
+          if (transport) {
+            transport.deliver(client.callerId, msg.message);
+            // For responses, we're done — don't also process as a new request.
+            // For events, deliver to bridge and also fall through would be harmless,
+            // but there's no server-side event handling for client events currently.
+            return;
+          }
+        }
         void this.handleRpc(client, msg.message);
         break;
       case "ws:tool-result":
@@ -368,6 +404,12 @@ export class RpcServer {
       }
     }
 
+    // Clean up the old client's bridge transport (it's bound to the closed WebSocket).
+    // If the client was replaced, cleanupClient already handles this; if not, do it now.
+    if (!wasReplaced) {
+      this.cleanupClientBridge(client.callerId);
+    }
+
     // If this socket was replaced (code 4002), don't start cleanup timer —
     // the replacement is already connected.
     if (wasReplaced) return;
@@ -394,11 +436,36 @@ export class RpcServer {
       this.callerToClient.delete(client.callerId);
     }
     this.clients.delete(client.ws);
+
+    // Clean up the client's RPC bridge and transport
+    this.cleanupClientBridge(client.callerId);
+  }
+
+  /** Close and remove the RPC bridge/transport for a client */
+  private cleanupClientBridge(callerId: string): void {
+    const transport = this.clientTransports.get(callerId);
+    if (transport) {
+      transport.close();
+      this.clientTransports.delete(callerId);
+    }
+    this.clientBridges.delete(callerId);
   }
 
   // ===========================================================================
   // Public API for server-side pushes
   // ===========================================================================
+
+  /**
+   * Get the RPC bridge for a connected client.
+   * Returns undefined if the client is not connected.
+   *
+   * The server can use this bridge to call methods exposed by the client:
+   *   const bridge = rpcServer.getClientBridge(callerId);
+   *   const result = await bridge.call(callerId, "someMethod", arg1, arg2);
+   */
+  getClientBridge(callerId: string): RpcBridge | undefined {
+    return this.clientBridges.get(callerId);
+  }
 
   /** Send a message to a specific caller by ID */
   sendToClient(callerId: string, msg: WsServerMessage): void {
@@ -485,6 +552,13 @@ export class RpcServer {
 
   /** Shut down the server */
   async stop(): Promise<void> {
+    // Close all client bridges and transports
+    for (const [, transport] of this.clientTransports) {
+      transport.close();
+    }
+    this.clientTransports.clear();
+    this.clientBridges.clear();
+
     // Close all client connections
     for (const [ws] of this.clients) {
       ws.close(1001, "Server shutting down");

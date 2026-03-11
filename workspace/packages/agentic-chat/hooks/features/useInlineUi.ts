@@ -6,7 +6,7 @@
  */
 
 import { useState, useEffect, useRef } from "react";
-import { CONTENT_TYPE_INLINE_UI } from "@natstack/agentic-messaging/utils";
+import { CONTENT_TYPE_INLINE_UI } from "@natstack/pubsub";
 import {
   compileInlineUiComponent,
   cleanupInlineUiComponent,

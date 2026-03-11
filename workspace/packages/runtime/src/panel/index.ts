@@ -17,12 +17,7 @@ const { runtime, config } = initRuntime({
   fs,
 });
 
-// Configure dependency injection for shared packages
-import { setDbOpen } from "@natstack/agentic-messaging";
 import { createAiClient, type AiClient } from "@natstack/ai";
-
-// Inject db opener for agentic-messaging (session persistence, etc.)
-setDbOpen(runtime.db.open);
 
 // Create AI client with the runtime's RPC bridge
 const aiClient: AiClient = createAiClient(runtime.rpc);

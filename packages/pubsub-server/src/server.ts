@@ -22,7 +22,7 @@ import {
 
 // Re-export message store types and classes for convenience
 export { SqliteMessageStore, InMemoryMessageStore, TestTokenValidator } from "./messageStore.js";
-export type { TokenValidator, ChannelConfig, ChannelInfo, ChannelAgentRow, MessageStore, MessageRow, ServerAttachment, DatabaseManagerLike } from "./messageStore.js";
+export type { TokenValidator, ChannelConfig, ChannelInfo, ChannelForkInfo, ForkSegment, ChannelAgentRow, MessageStore, MessageRow, ServerAttachment, DatabaseManagerLike } from "./messageStore.js";
 
 // =============================================================================
 // Injectable dependency interfaces
@@ -83,6 +83,8 @@ interface ParticipantState {
 interface ChannelState {
   clients: Set<ClientConnection>;
   participants: Map<string, ParticipantState>;
+  /** Callback participants (server-side, no WebSocket connection) */
+  callbacks: Map<string, CallbackParticipant>;
   /** Counter for generating unique attachment IDs within this channel */
   nextAttachmentId: number;
 }
@@ -155,6 +157,57 @@ interface PresencePayload {
   leaveReason?: LeaveReason;
 }
 
+// =============================================================================
+// Channel event + callback participant API
+// =============================================================================
+
+/** Event emitted to channel event listeners after a message is broadcast. */
+export interface ChannelBroadcastEvent {
+  id: number;
+  type: string;
+  payload: string;
+  senderId: string;
+  ts: number;
+  senderMetadata?: string;
+  persist: boolean;
+  attachments?: ServerAttachment[];
+}
+
+/** Callback interface for server-side participants receiving channel events. */
+export interface ParticipantCallback {
+  onEvent(event: ChannelBroadcastEvent): void;
+}
+
+/** Options for sending a message via ParticipantHandle. */
+export interface SendMessageOptions {
+  /** Semantic content type (e.g., "thinking", "action", "typing").
+   *  Embedded as payload.contentType — NOT used as the PubSub event type. */
+  contentType?: string;
+  persist?: boolean;
+  senderMetadata?: Record<string, unknown>;
+  replyTo?: string;
+}
+
+/** Handle returned by registerParticipant for sending messages and managing lifecycle.
+ *  Methods match the client-side protocol (sendMessage/updateMessage/completeMessage)
+ *  so callers can't accidentally misuse the wire format. */
+export interface ParticipantHandle {
+  sendMessage(messageId: string, content: string, options?: SendMessageOptions): void;
+  updateMessage(messageId: string, content: string): void;
+  completeMessage(messageId: string): void;
+  sendMethodCall(callId: string, providerId: string, methodName: string, args: unknown): void;
+  sendMethodResult(callId: string, content: unknown, isError?: boolean): void;
+  updateMetadata(metadata: Record<string, unknown>): void;
+  leave(): void;
+}
+
+/** A callback-based participant registered on a channel. */
+export interface CallbackParticipant {
+  id: string;
+  metadata: Record<string, unknown>;
+  callback: ParticipantCallback;
+}
+
 interface PublishClientMessage {
   action: "publish";
   persist?: boolean;
@@ -208,7 +261,7 @@ export class PubSubServer {
   private messageStore: MessageStore;
   private requestedPort: number | undefined;
   private findPort: PortFinder | undefined;
-  private channelMessageCallback: ((channel: string, msg: { persist?: boolean }) => void) | null = null;
+  private channelEventListeners: Array<(channel: string, event: ChannelBroadcastEvent) => void> = [];
 
   constructor(options: PubSubServerOptions) {
     this.tokenValidator = options.tokenValidator;
@@ -252,7 +305,7 @@ export class PubSubServer {
     if (!state) {
       // Initialize counter from database to ensure continuity after restarts
       const maxId = this.messageStore.getMaxAttachmentIdNumber(channel);
-      state = { clients: new Set(), participants: new Map(), nextAttachmentId: maxId + 1 };
+      state = { clients: new Set(), participants: new Map(), callbacks: new Map(), nextAttachmentId: maxId + 1 };
       this.channels.set(channel, state);
     }
     return state;
@@ -449,48 +502,56 @@ export class PubSubServer {
         }
       }
 
-      if (state.clients.size === 0) {
+      if (state.clients.size === 0 && state.callbacks.size === 0) {
         this.channels.delete(channel);
       }
     });
   }
 
   private replayMessages(ws: WebSocket, channel: string, sinceId: number): void {
-    const rows = this.messageStore.query(channel, sinceId);
+    // Resolve fork chain and replay across all segments
+    const segments = this.messageStore.resolveForkedSegments(channel);
 
-    for (const row of rows) {
-      // Skip presence events — they're already fully covered by replayRosterOps()
-      // which replays ALL presence from the beginning. Including them here would
-      // send duplicates that the client has to dedup via rosterOpIds.
-      if (row.type === "presence") continue;
+    for (const seg of segments) {
+      // sinceId works because IDs are globally monotonic — it naturally filters
+      // out messages the client has already seen, even across fork boundaries.
+      const rows = this.messageStore.queryRange(seg.channel, sinceId, seg.upToId);
 
-      const payload = JSON.parse(row.payload);
-      const senderMetadata = row.sender_metadata ? JSON.parse(row.sender_metadata) : undefined;
-      const attachments = deserializeAttachments(row.attachment);
+      for (const row of rows) {
+        // Skip presence events — they're already fully covered by replayRosterOps()
+        // which replays ALL presence from the beginning. Including them here would
+        // send duplicates that the client has to dedup via rosterOpIds.
+        // Presence is NOT inherited from parent channels.
+        if (row.type === "presence") continue;
 
-      if (attachments && attachments.length > 0) {
-        // Message with attachments - send as binary frame
-        this.sendBinary(ws, {
-          kind: "replay",
-          id: row.id,
-          type: row.type,
-          payload,
-          senderId: row.sender_id,
-          ts: row.ts,
-          senderMetadata,
-          attachments,
-        });
-      } else {
-        // Text message - send as JSON
-        this.send(ws, {
-          kind: "replay",
-          id: row.id,
-          type: row.type,
-          payload,
-          senderId: row.sender_id,
-          ts: row.ts,
-          senderMetadata,
-        });
+        const payload = JSON.parse(row.payload);
+        const senderMetadata = row.sender_metadata ? JSON.parse(row.sender_metadata) : undefined;
+        const attachments = deserializeAttachments(row.attachment);
+
+        if (attachments && attachments.length > 0) {
+          // Message with attachments - send as binary frame
+          this.sendBinary(ws, {
+            kind: "replay",
+            id: row.id,
+            type: row.type,
+            payload,
+            senderId: row.sender_id,
+            ts: row.ts,
+            senderMetadata,
+            attachments,
+          });
+        } else {
+          // Text message - send as JSON
+          this.send(ws, {
+            kind: "replay",
+            id: row.id,
+            type: row.type,
+            payload,
+            senderId: row.sender_id,
+            ts: row.ts,
+            senderMetadata,
+          });
+        }
       }
     }
   }
@@ -782,17 +843,30 @@ export class PubSubServer {
   private broadcast(
     channel: string,
     msg: ServerMessage,
-    senderWs: WebSocket,
+    senderWs: WebSocket | null,
     senderRef?: number
   ): void {
     const state = this.channels.get(channel);
     if (!state) return;
 
-    // Notify channel message callback (for AgentManager auto-wake/activity)
-    if (this.channelMessageCallback) {
+    // Build ChannelBroadcastEvent for listeners and callbacks
+    const isPersisted = msg.kind === "persisted";
+    const event: ChannelBroadcastEvent = {
+      id: msg.id ?? 0,
+      type: msg.type ?? "",
+      payload: typeof msg.payload === "string" ? msg.payload : JSON.stringify(msg.payload),
+      senderId: msg.senderId ?? "",
+      ts: msg.ts ?? 0,
+      senderMetadata: msg.senderMetadata ? JSON.stringify(msg.senderMetadata) : undefined,
+      persist: isPersisted,
+      attachments: msg.attachments,
+    };
+
+    // Notify channel event listeners
+    for (const listener of this.channelEventListeners) {
       try {
-        this.channelMessageCallback(channel, { persist: msg.kind === "persisted" });
-      } catch { /* Don't let callback errors break message delivery */ }
+        listener(channel, event);
+      } catch (err) { console.error(`[PubSub] Channel event listener error:`, err); }
     }
 
     // Message without ref for non-senders
@@ -805,6 +879,14 @@ export class PubSubServer {
       if (client.ws.readyState === WebSocket.OPEN) {
         const data = client.ws === senderWs ? dataForSender : dataForOthers;
         client.ws.send(data);
+      }
+    }
+
+    // Notify callback participants (skip sender to avoid echo)
+    const senderParticipantId = msg.senderId;
+    for (const [cbId, cb] of state.callbacks) {
+      if (cbId !== senderParticipantId) {
+        try { cb.callback.onEvent(event); } catch (err) { console.error(`[PubSub] Callback participant ${cbId} onEvent error:`, err); }
       }
     }
   }
@@ -894,17 +976,30 @@ export class PubSubServer {
   private broadcastBinary(
     channel: string,
     msg: ServerMessage,
-    senderWs: WebSocket,
+    senderWs: WebSocket | null,
     senderRef?: number
   ): void {
     const state = this.channels.get(channel);
     if (!state) return;
 
-    // Notify channel message callback (for AgentManager auto-wake/activity)
-    if (this.channelMessageCallback) {
+    // Build ChannelBroadcastEvent for listeners and callbacks
+    const isPersisted = msg.kind === "persisted";
+    const event: ChannelBroadcastEvent = {
+      id: msg.id ?? 0,
+      type: msg.type ?? "",
+      payload: typeof msg.payload === "string" ? msg.payload : JSON.stringify(msg.payload),
+      senderId: msg.senderId ?? "",
+      ts: msg.ts ?? 0,
+      senderMetadata: msg.senderMetadata ? JSON.stringify(msg.senderMetadata) : undefined,
+      persist: isPersisted,
+      attachments: msg.attachments,
+    };
+
+    // Notify channel event listeners
+    for (const listener of this.channelEventListeners) {
       try {
-        this.channelMessageCallback(channel, { persist: msg.kind === "persisted" });
-      } catch { /* Don't let callback errors break message delivery */ }
+        listener(channel, event);
+      } catch (err) { console.error(`[PubSub] Channel event listener error:`, err); }
     }
 
     const attachments = msg.attachments!;
@@ -958,6 +1053,14 @@ export class PubSubServer {
         client.ws.send(buffer);
       }
     }
+
+    // Notify callback participants (skip sender to avoid echo)
+    const senderParticipantId = msg.senderId;
+    for (const [cbId, cb] of state.callbacks) {
+      if (cbId !== senderParticipantId) {
+        try { cb.callback.onEvent(event); } catch (err) { console.error(`[PubSub] Callback participant ${cbId} onEvent error:`, err); }
+      }
+    }
   }
 
   /**
@@ -987,13 +1090,14 @@ export class PubSubServer {
       }
     }
 
-    // Compare against live participants — anyone in the DB but not connected is a ghost
+    // Compare against live participants (WS + callback) — anyone in the DB but not connected is a ghost
     const channelState = this.channels.get(channel);
     const liveParticipants = channelState?.participants ?? new Map();
+    const liveCallbacks = channelState?.callbacks ?? new Map();
     let cleanedCount = 0;
 
     for (const [senderId, metadata] of rosterFromDb) {
-      if (!liveParticipants.has(senderId)) {
+      if (!liveParticipants.has(senderId) && !liveCallbacks.has(senderId)) {
         // Ghost participant — persist a synthetic leave event
         const ts = Date.now();
         const payload: PresencePayload = {
@@ -1094,11 +1198,178 @@ export class PubSubServer {
   }
 
   /**
-   * Register a callback for all channel messages (persisted and ephemeral).
-   * Used by AgentManager for auto-wake and activity tracking.
+   * Get metadata for all participants (both WebSocket and callback) on a channel.
+   * Returns array of { participantId, metadata } for roster introspection.
    */
-  onChannelMessage(callback: (channel: string, msg: { persist?: boolean }) => void): void {
-    this.channelMessageCallback = callback;
+  getChannelParticipants(channel: string): Array<{ participantId: string; metadata: Record<string, unknown> }> {
+    const state = this.channels.get(channel);
+    if (!state) return [];
+
+    const result: Array<{ participantId: string; metadata: Record<string, unknown> }> = [];
+    for (const [pid, ps] of state.participants) {
+      result.push({ participantId: pid, metadata: ps.metadata });
+    }
+    for (const [pid, cb] of state.callbacks) {
+      result.push({ participantId: pid, metadata: cb.metadata });
+    }
+    return result;
+  }
+
+  /**
+   * Register a listener for all channel broadcast events (persisted and ephemeral).
+   * Returns an unsubscribe function. Supports multiple subscribers.
+   */
+  onChannelEvent(callback: (channel: string, event: ChannelBroadcastEvent) => void): () => void {
+    this.channelEventListeners.push(callback);
+    return () => {
+      const idx = this.channelEventListeners.indexOf(callback);
+      if (idx >= 0) this.channelEventListeners.splice(idx, 1);
+    };
+  }
+
+  /**
+   * Register a callback-based participant on a channel.
+   * The participant appears in the roster like any WebSocket participant.
+   * Returns a ParticipantHandle for sending messages and managing lifecycle.
+   */
+  registerParticipant(
+    channel: string,
+    participantId: string,
+    metadata: Record<string, unknown>,
+    callback: ParticipantCallback,
+  ): ParticipantHandle {
+    const state = this.getOrCreateChannelState(channel);
+    const cbEntry: CallbackParticipant = { id: participantId, metadata, callback };
+    state.callbacks.set(participantId, cbEntry);
+
+    // Emit join presence event
+    this.publishPresenceEventForParticipant(channel, participantId, "join", metadata);
+
+    const handle: ParticipantHandle = {
+      sendMessage: (messageId: string, content: string, options?: SendMessageOptions) => {
+        const persist = options?.persist !== false;
+        const ts = Date.now();
+        const payloadObj: Record<string, unknown> = { id: messageId, content };
+        if (options?.replyTo) payloadObj["replyTo"] = options.replyTo;
+        if (options?.contentType) payloadObj["contentType"] = options.contentType;
+        const payloadJson = JSON.stringify(payloadObj);
+        const senderMeta = options?.senderMetadata ?? cbEntry.metadata;
+
+        if (persist) {
+          const id = this.messageStore.insert(channel, "message", payloadJson, participantId, ts, senderMeta);
+          this.broadcast(channel, {
+            kind: "persisted", id, type: "message", payload: payloadObj, senderId: participantId, ts, senderMetadata: senderMeta,
+          }, null);
+        } else {
+          this.broadcast(channel, {
+            kind: "ephemeral", type: "message", payload: payloadObj, senderId: participantId, ts, senderMetadata: senderMeta,
+          }, null);
+        }
+      },
+
+      updateMessage: (messageId: string, content: string) => {
+        const ts = Date.now();
+        const payloadObj: Record<string, unknown> = { id: messageId, content };
+        const payloadJson = JSON.stringify(payloadObj);
+        const id = this.messageStore.insert(channel, "update-message", payloadJson, participantId, ts, cbEntry.metadata);
+        this.broadcast(channel, {
+          kind: "persisted", id, type: "update-message", payload: payloadObj, senderId: participantId, ts, senderMetadata: cbEntry.metadata,
+        }, null);
+      },
+
+      completeMessage: (messageId: string) => {
+        const ts = Date.now();
+        const payloadObj: Record<string, unknown> = { id: messageId, complete: true };
+        const payloadJson = JSON.stringify(payloadObj);
+        const id = this.messageStore.insert(channel, "update-message", payloadJson, participantId, ts, cbEntry.metadata);
+        this.broadcast(channel, {
+          kind: "persisted", id, type: "update-message", payload: payloadObj, senderId: participantId, ts, senderMetadata: cbEntry.metadata,
+        }, null);
+      },
+
+      sendMethodCall: (callId: string, providerId: string, methodName: string, args: unknown) => {
+        // Broadcast method-call with MethodCallSchema-compatible payload
+        const ts = Date.now();
+        const payloadObj = { callId, providerId, methodName, args };
+        const payloadJson = JSON.stringify(payloadObj);
+        this.broadcast(channel, {
+          kind: "ephemeral", type: "method-call", payload: payloadObj, senderId: participantId, ts, senderMetadata: cbEntry.metadata,
+        }, null);
+      },
+
+      sendMethodResult: (callId: string, content: unknown, isError?: boolean) => {
+        const ts = Date.now();
+        const payloadObj = { callId, content, complete: true, isError: isError ?? false };
+        const payloadJson = JSON.stringify(payloadObj);
+        const id = this.messageStore.insert(channel, "method-result", payloadJson, participantId, ts, cbEntry.metadata);
+        this.broadcast(channel, {
+          kind: "persisted", id, type: "method-result", payload: payloadObj, senderId: participantId, ts, senderMetadata: cbEntry.metadata,
+        }, null);
+      },
+
+      updateMetadata: (newMetadata: Record<string, unknown>) => {
+        cbEntry.metadata = newMetadata;
+        this.publishPresenceEventForParticipant(channel, participantId, "update", newMetadata);
+      },
+
+      leave: () => {
+        const st = this.channels.get(channel);
+        if (st) {
+          st.callbacks.delete(participantId);
+          this.publishPresenceEventForParticipant(channel, participantId, "leave", cbEntry.metadata, "graceful");
+          // Clean up channel state if empty
+          if (st.clients.size === 0 && st.callbacks.size === 0) {
+            this.channels.delete(channel);
+          }
+        }
+      },
+    };
+
+    return handle;
+  }
+
+  /**
+   * Persist and broadcast a presence event for a callback participant (no WebSocket).
+   */
+  private publishPresenceEventForParticipant(
+    channel: string,
+    participantId: string,
+    action: PresenceAction,
+    metadata: Record<string, unknown>,
+    leaveReason?: LeaveReason
+  ): void {
+    const ts = Date.now();
+    const payload: PresencePayload = {
+      action,
+      metadata,
+      ...(leaveReason && { leaveReason }),
+    };
+
+    let messageId: number;
+    try {
+      messageId = this.messageStore.insert(
+        channel,
+        "presence",
+        JSON.stringify(payload),
+        participantId,
+        ts,
+        metadata
+      );
+    } catch {
+      return;
+    }
+
+    const msg: ServerMessage = {
+      kind: "persisted",
+      id: messageId,
+      type: "presence",
+      payload,
+      senderId: participantId,
+      ts,
+      senderMetadata: metadata,
+    };
+
+    this.broadcast(channel, msg, null);
   }
 
   /**
@@ -1130,6 +1401,23 @@ export class PubSubServer {
         }
       }
       state.participants.clear();
+
+      // Also persist leave events for callback participants
+      for (const [cbId, cb] of state.callbacks) {
+        const payload: PresencePayload = {
+          action: "leave",
+          metadata: cb.metadata,
+          leaveReason: "disconnect",
+        };
+        try {
+          this.messageStore.insert(
+            channel, "presence", JSON.stringify(payload), cbId, ts, cb.metadata
+          );
+        } catch {
+          // Best-effort — don't block shutdown
+        }
+      }
+      state.callbacks.clear();
     }
 
     // Now terminate connections and close the store

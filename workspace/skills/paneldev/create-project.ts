@@ -69,9 +69,9 @@ function toPascalCase(str: string): string {
 }
 
 export async function createProject(
-  params: { projectType: string; name: string; title?: string },
+  params: { projectType: string; name: string; title?: string; template?: string },
 ): Promise<{ created: string; files: string[] }> {
-  const { projectType, name, title = name } = params;
+  const { projectType, name, title = name, template } = params;
 
   const typeDir = TYPE_DIRS[projectType];
   if (!typeDir) throw new Error(`Unknown project type: ${projectType}. Must be one of: panel, package, skill, agent, worker`);
@@ -152,15 +152,217 @@ export default function ${toPascalCase(name)}() {
       break;
 
     case "worker":
-      files["package.json"] = JSON.stringify({
-        name: `${scope}/${name}`,
-        version: "0.1.0",
-        private: true,
-        type: "module",
-        natstack: { type: "worker", entry: "index.ts", title },
-        dependencies: { "@workspace/runtime": "workspace:*" },
-      }, null, 2);
-      files["index.ts"] = `import { createWorkerRuntime } from "@workspace/runtime/worker";
+      if (template === "agentic") {
+        // Agentic worker template — DO extending AgentWorkerBase
+        const className = toPascalCase(name) + "Worker";
+        const workerFileName = `${name}-worker`;
+
+        files["package.json"] = JSON.stringify({
+          name: `${scope}/${name}`,
+          version: "0.1.0",
+          private: true,
+          type: "module",
+          natstack: {
+            type: "worker",
+            entry: "index.ts",
+            durable: {
+              classes: [{ className }],
+            },
+          },
+          dependencies: {
+            "@workspace/runtime": "workspace:*",
+            "@natstack/harness": "workspace:*",
+          },
+        }, null, 2);
+
+        files["index.ts"] = `export { ${className} } from "./${workerFileName}.js";
+export default { fetch(_req: Request) { return new Response("${name} DO service"); } };
+`;
+
+        files[`${workerFileName}.ts`] = `import { AgentWorkerBase } from "@workspace/runtime/worker";
+import type {
+  ChannelEvent,
+  HarnessConfig,
+  HarnessOutput,
+  ParticipantDescriptor,
+  WorkerActions,
+} from "@natstack/harness";
+
+export class ${className} extends AgentWorkerBase {
+  static override schemaVersion = 1;
+
+  // --- Hook: Harness configuration ---
+  // Override to set system prompt, model, temperature, MCP servers, etc.
+  protected override getHarnessConfig(): HarnessConfig {
+    return {
+      systemPrompt: "You are a helpful AI assistant.",
+    };
+  }
+
+  // --- Hook: Participant identity ---
+  // Override to set the handle, name, type, and callable methods.
+  protected override getParticipantInfo(): ParticipantDescriptor {
+    return {
+      handle: "${name}",
+      name: "${title}",
+      type: "agent",
+      methods: [],
+    };
+  }
+
+  // --- Hook: Event filter ---
+  // Override to control which channel events trigger an AI turn.
+  // Default: only panel-sent messages.
+  // protected override shouldProcess(event: ChannelEvent): boolean {
+  //   return event.senderType === 'panel' && event.type === 'message';
+  // }
+
+  // --- Hook: Turn input builder ---
+  // Override to transform a channel event into AI turn input.
+  // protected override buildTurnInput(event: ChannelEvent): TurnInput {
+  //   const payload = event.payload as { content?: string };
+  //   return { content: payload.content ?? '', senderId: event.senderId };
+  // }
+
+  // --- Hook: Harness type ---
+  // Override to use a different AI provider.
+  // protected override getHarnessType(): string { return 'claude-sdk'; }
+
+  // --- Channel event handler ---
+  async onChannelEvent(
+    channelId: string,
+    event: ChannelEvent,
+  ): Promise<WorkerActions> {
+    const $ = this.actions();
+
+    if (!this.shouldProcess(event)) {
+      this.advanceCheckpoint(channelId, null, event.id);
+      return $.result();
+    }
+
+    const input = this.buildTurnInput(event);
+    const harnessId = this.getHarnessForChannel(channelId);
+
+    if (!harnessId) {
+      // No active harness — spawn one with the first turn
+      const contextId = this.getContextId(channelId);
+      $.spawnHarness({
+        type: this.getHarnessType(),
+        channelId,
+        contextId,
+        config: this.getHarnessConfig(),
+        initialTurn: {
+          input,
+          triggerMessageId: event.messageId,
+          triggerPubsubId: event.id,
+        },
+      });
+    } else {
+      // Existing harness — start a new turn
+      $.harness(harnessId).startTurn(input);
+      $.channel(channelId).sendEphemeral(
+        JSON.stringify({ senderId: harnessId }),
+        "typing",
+      );
+      this.setActiveTurn(harnessId, channelId, event.messageId);
+      this.setInFlightTurn(channelId, harnessId, event.messageId, event.id, input);
+      this.advanceCheckpoint(channelId, harnessId, event.id);
+    }
+
+    return $.result();
+  }
+
+  // --- Harness event handler ---
+  async onHarnessEvent(
+    harnessId: string,
+    event: HarnessOutput,
+  ): Promise<WorkerActions> {
+    const $ = this.actions();
+    const turn = this.getActiveTurn(harnessId);
+    const channelId = turn?.channelId ?? this.getChannelForHarness(harnessId);
+    if (!channelId) return $.result();
+
+    if (turn) {
+      const writer = $.channel(channelId).streamFor(harnessId, turn);
+
+      switch (event.type) {
+        case "text-start": writer.startText(); break;
+        case "text-delta": writer.updateText(event.content); break;
+        case "text-end": writer.complete(); break;
+        case "turn-complete": {
+          const at = this.getActiveTurn(harnessId);
+          if (at?.turnMessageId) {
+            const inf = this.getInFlightTurn(channelId, harnessId);
+            this.recordTurn(harnessId, at.turnMessageId, inf?.triggerPubsubId ?? 0, event.sessionId);
+          }
+          this.clearActiveTurn(harnessId);
+          this.clearInFlightTurn(channelId, harnessId);
+          break;
+        }
+        case "ready":
+          this.sql.exec(\`UPDATE harnesses SET status = 'active' WHERE id = ?\`, harnessId);
+          break;
+      }
+    }
+
+    return $.result();
+  }
+}
+`;
+
+        files[`${workerFileName}.test.ts`] = `import { describe, it, expect } from "vitest";
+import type { ChannelEvent, WorkerAction } from "@natstack/harness";
+import { createTestDO } from "@workspace/runtime/worker";
+import { ${className} } from "./${workerFileName}.js";
+
+function makeEvent(overrides: Partial<ChannelEvent> = {}): ChannelEvent {
+  return {
+    id: 1,
+    messageId: "msg-1",
+    type: "message",
+    payload: { content: "Hello" },
+    senderId: "user-1",
+    senderType: "panel",
+    ts: Date.now(),
+    persist: true,
+    ...overrides,
+  };
+}
+
+describe("${className}", () => {
+  it("spawns harness on first message", async () => {
+    const { instance } = await createTestDO(${className});
+    await instance.subscribeChannel({ channelId: "ch-1", contextId: "ctx-1" });
+
+    const result = await instance.onChannelEvent("ch-1", makeEvent({ id: 10 }));
+
+    const spawn = result.actions.find(
+      (a) => "op" in a && a.op === "spawn-harness",
+    ) as Extract<WorkerAction, { op: "spawn-harness" }>;
+    expect(spawn).toBeDefined();
+    expect(spawn.initialTurn!.input.content).toBe("Hello");
+  });
+
+  it("filters non-panel events", async () => {
+    const { instance } = await createTestDO(${className});
+    await instance.subscribeChannel({ channelId: "ch-1", contextId: "ctx-1" });
+
+    const result = await instance.onChannelEvent("ch-1", makeEvent({ senderType: "agent" }));
+    expect(result.actions).toHaveLength(0);
+  });
+});
+`;
+      } else {
+        // Default stateless worker template
+        files["package.json"] = JSON.stringify({
+          name: `${scope}/${name}`,
+          version: "0.1.0",
+          private: true,
+          type: "module",
+          natstack: { type: "worker", entry: "index.ts", title },
+          dependencies: { "@workspace/runtime": "workspace:*" },
+        }, null, 2);
+        files["index.ts"] = `import { createWorkerRuntime } from "@workspace/runtime/worker";
 import type { WorkerEnv, ExecutionContext } from "@workspace/runtime/worker";
 
 export default {
@@ -170,6 +372,7 @@ export default {
   },
 };
 `;
+      }
       break;
   }
 

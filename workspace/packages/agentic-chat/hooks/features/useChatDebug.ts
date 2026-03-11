@@ -5,7 +5,7 @@
  */
 
 import { useState, useCallback } from "react";
-import type { AgentDebugPayload } from "@natstack/agentic-messaging";
+import type { AgentDebugPayload } from "@natstack/pubsub";
 import type { DirtyRepoDetails } from "../useAgentEvents";
 
 export interface ChatDebugState {

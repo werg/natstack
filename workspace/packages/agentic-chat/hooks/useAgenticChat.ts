@@ -8,7 +8,7 @@
  */
 
 import { useCallback, useMemo, useRef, useEffect } from "react";
-import type { ChannelConfig, MethodDefinition } from "@natstack/agentic-messaging";
+import type { ChannelConfig, MethodDefinition } from "@natstack/pubsub";
 import { useChatCore, type FeatureEventHandlers, type RosterExtension, type ReconnectExtension } from "./core/useChatCore";
 import { useRosterTracking } from "./features/useRosterTracking";
 import { usePendingAgents } from "./features/usePendingAgents";
@@ -145,10 +145,12 @@ export function useAgenticChat({
       try {
         const feedbackMethods = feedbackRef.current.buildFeedbackMethods();
         const toolMethods = chatToolsRef.current.buildToolMethods();
+        const approvalMethod = chatToolsRef.current.buildApprovalMethod();
 
         const methods: Record<string, MethodDefinition> = {
           ...feedbackMethods,
           ...toolMethods,
+          ...approvalMethod,
         };
 
         await core.connectToChannel({ channelId: channelName, methods, channelConfig, contextId });
@@ -192,7 +194,7 @@ export function useAgenticChat({
     await actions.onRemoveAgent(channelName, handle);
   }, [channelName, actions]);
 
-  const sessionEnabled = core.clientRef.current?.sessionEnabled;
+  const sessionEnabled = true; // Always persistent — messages stored in PubSub messageStore
   const onAddAgent = actions?.onAddAgent ? handleAddAgent : undefined;
   const availableAgents = actions?.availableAgents;
   const onRemoveAgent = actions?.onRemoveAgent ? handleRemoveAgent : undefined;

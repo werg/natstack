@@ -763,7 +763,7 @@ export class TypeCheckService {
         const fullPkgName = `@workspace/${result.packageName}`;
         const pkgData = this.natstackPackageTypes[fullPkgName];
         if (pkgData) {
-          // Extract subpath from module name (e.g., @natstack/agentic-messaging/registry -> /registry)
+          // Extract subpath from module name (e.g., @natstack/pubsub/protocol -> /protocol)
           const afterPkg = moduleName.slice(fullPkgName.length);
           // Convert /registry to ./registry to match package.json exports format
           const subpath = afterPkg.startsWith("/") ? "." + afterPkg : null;

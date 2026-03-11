@@ -19,13 +19,6 @@ export type {
   FormSchema,
 } from "./form-schema.js";
 
-// Agent types
-export type {
-  MethodAdvertisement,
-  RequiredMethodSpec,
-  AgentManifest,
-} from "./agent-types.js";
-
 // Config types
 export type { PubSubConfig } from "./config-types.js";
 

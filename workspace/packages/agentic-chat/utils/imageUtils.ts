@@ -9,9 +9,9 @@ import {
   MAX_TOTAL_BYTES,
   isImageMimeType,
   formatBytes,
-} from "@natstack/agentic-messaging/image-utils";
+} from "@natstack/pubsub";
 
-// Re-export constants and utilities from agentic-messaging
+// Re-export constants and utilities from pubsub
 export { SUPPORTED_IMAGE_TYPES, MAX_IMAGE_BYTES, MAX_TOTAL_BYTES, isImageMimeType, formatBytes };
 export type { AttachmentInput, Attachment };
 export type SupportedImageType = (typeof SUPPORTED_IMAGE_TYPES)[number];

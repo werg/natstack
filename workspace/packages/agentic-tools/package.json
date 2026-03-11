@@ -7,7 +7,7 @@
     "./types": "./types.ts"
   },
   "dependencies": {
-    "@natstack/agentic-messaging": "workspace:*",
+    "@natstack/pubsub": "workspace:*",
     "@workspace/eval": "workspace:*",
     "@workspace/runtime": "workspace:*",
     "zod": "^3.22.0"

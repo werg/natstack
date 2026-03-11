@@ -8,6 +8,7 @@
     "composite": true,
     "baseUrl": ".",
     "paths": {
+      "@natstack/harness": ["../../../packages/harness/src/index.ts"],
       "@natstack/rpc": ["../../../packages/rpc/src/index.ts"],
       "@natstack/git": ["../../../packages/git/src/index.ts"],
       "@natstack/types": ["../../../packages/types/src/index.ts"]

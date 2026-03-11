@@ -17,6 +17,10 @@
       "workerd": "./dist/worker/index.js",
       "default": "./dist/worker/index.js"
     },
+    "./worker/test-utils": {
+      "types": "./src/worker/durable-test-utils.d.ts",
+      "default": "./src/worker/durable-test-utils.js"
+    },
     "./workerd-client": {
       "types": "./dist/shared/workerd.d.ts",
       "default": "./dist/shared/workerd.js"
@@ -27,13 +31,16 @@
     "dev": "tsc --project tsconfig.build.json --watch"
   },
   "dependencies": {
-    "@natstack/agentic-messaging": "workspace:*",
     "@natstack/ai": "workspace:*",
     "@natstack/git": "workspace:*",
+    "@natstack/harness": "workspace:*",
     "@natstack/rpc": "workspace:*",
     "@natstack/types": "workspace:*",
     "buffer": "^6.0.3",
     "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "sql.js": "^1.14.0"
   },
   "files": [
     "dist"

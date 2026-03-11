@@ -1,14 +1,13 @@
 import { useState, useRef, useCallback, useEffect, type RefObject } from "react";
-import { connect } from "@natstack/agentic-messaging/client";
+import { connect, isAggregatedEvent } from "@natstack/pubsub";
 import type {
-  AgenticClient,
+  PubSubClient,
   RosterUpdate,
   IncomingEvent,
   AggregatedEvent,
   MethodDefinition,
   ChannelConfig,
-} from "@natstack/agentic-messaging";
-import { isAggregatedEvent } from "@natstack/agentic-messaging";
+} from "@natstack/pubsub";
 import type { ChatParticipantMetadata, ConnectionConfig } from "../types";
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
@@ -39,15 +38,15 @@ export interface ConnectOptions {
 }
 
 export interface UseChannelConnectionResult {
-  client: AgenticClient<ChatParticipantMetadata> | null;
-  clientRef: RefObject<AgenticClient<ChatParticipantMetadata> | null>;
+  client: PubSubClient<ChatParticipantMetadata> | null;
+  clientRef: RefObject<PubSubClient<ChatParticipantMetadata> | null>;
   status: ConnectionStatus;
   connected: boolean;
   /** The client's ID on the channel (available after connection) */
   clientId: string | null;
   /** The static client ID from the connection config */
   panelClientId: string;
-  connect: (options: ConnectOptions) => Promise<AgenticClient<ChatParticipantMetadata>>;
+  connect: (options: ConnectOptions) => Promise<PubSubClient<ChatParticipantMetadata>>;
   disconnect: () => void;
 }
 
@@ -60,9 +59,9 @@ export function useChannelConnection({
   onError,
   onReconnect,
 }: UseChannelConnectionOptions): UseChannelConnectionResult {
-  const [client, setClient] = useState<AgenticClient<ChatParticipantMetadata> | null>(null);
+  const [client, setClient] = useState<PubSubClient<ChatParticipantMetadata> | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("disconnected");
-  const clientRef = useRef<AgenticClient<ChatParticipantMetadata> | null>(null);
+  const clientRef = useRef<PubSubClient<ChatParticipantMetadata> | null>(null);
   const unsubscribersRef = useRef<Array<() => void>>([]);
 
   // Keep callbacks in refs to avoid dependency issues
@@ -79,7 +78,7 @@ export function useChannelConnection({
     unsubscribersRef.current = [];
 
     if (clientRef.current) {
-      void clientRef.current.close();
+      clientRef.current.close();
     }
     clientRef.current = null;
     setClient(null);
@@ -87,7 +86,7 @@ export function useChannelConnection({
   }, []);
 
   const connectToChannel = useCallback(
-    async (options: ConnectOptions): Promise<AgenticClient<ChatParticipantMetadata>> => {
+    async (options: ConnectOptions): Promise<PubSubClient<ChatParticipantMetadata>> => {
       const { channelId, methods, channelConfig, contextId } = options;
 
       if (!config.serverUrl || !config.token) {
@@ -103,7 +102,7 @@ export function useChannelConnection({
       setStatus("connecting");
 
       try {
-        const newClient = await connect<ChatParticipantMetadata>({
+        const newClient = connect<ChatParticipantMetadata>({
           serverUrl: config.serverUrl,
           token: config.token,
           channel: channelId,
@@ -121,6 +120,9 @@ export function useChannelConnection({
           replayMessageLimit: 200,
         });
 
+        // Wait for the initial replay to complete
+        await newClient.ready();
+
         clientRef.current = newClient;
 
         const unsubs: Array<() => void> = [];
@@ -129,7 +131,7 @@ export function useChannelConnection({
         // includeEphemeral: true is required to receive agent-debug events (logs, lifecycle)
         const eventIterator = newClient.events({ includeReplay: true, includeEphemeral: true });
         let eventLoopRunning = true;
-        // Store iterator ref for explicit cleanup - cast to any to avoid EventStreamItem vs IncomingEvent type mismatch
+        // Store iterator ref for explicit cleanup
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         let eventIteratorRef: AsyncIterableIterator<any> | null = eventIterator;
 

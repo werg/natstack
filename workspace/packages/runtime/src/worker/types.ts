@@ -27,3 +27,6 @@ export interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
   passThroughOnException(): void;
 }
+
+// Re-export harness types used by DO workers
+export type { ParticipantDescriptor, MethodAdvertisement } from "@natstack/harness";

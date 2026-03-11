@@ -317,7 +317,7 @@ export const WORKSPACE_CONDITIONS = ["types", "default"] as const;
  * Parsed result of a @workspace/* import specifier.
  */
 export interface NatstackImportParts {
-  /** Package directory name (e.g., "agentic-messaging") */
+  /** Package directory name (e.g., "pubsub") */
   packageName: string;
   /** Subpath in exports-map format (e.g., "." or "./config") */
   subpath: string;
@@ -329,7 +329,7 @@ export interface NatstackImportParts {
  *
  * Examples:
  *   "@workspace/runtime"             → { packageName: "runtime", subpath: "." }
- *   "@natstack/agentic-messaging/config" → { packageName: "agentic-messaging", subpath: "./config" }
+ *   "@natstack/pubsub/protocol" → { packageName: "pubsub", subpath: "./protocol" }
  */
 export function parseWorkspaceImport(specifier: string): NatstackImportParts | null {
   let withoutScope: string;

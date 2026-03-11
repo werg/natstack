@@ -14,9 +14,8 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import {
   needsApprovalForTool,
   createApprovalSchema,
-  type AgenticClient,
-} from "@natstack/agentic-messaging";
-import { extractMethodName } from "@natstack/agentic-messaging/utils";
+  extractMethodName,
+} from "@natstack/pubsub";
 import type { FieldValue } from "@natstack/types";
 import type {
   ApprovalLevel,
@@ -69,8 +68,17 @@ export interface FeedbackFunctions {
   removeFeedback: (callId: string) => void;
 }
 
+/**
+ * Minimal client interface for tool approval settings persistence.
+ * Accepts both PubSubClient and AgenticClient.
+ */
+interface SettingsClient {
+  getSettings?<T>(): Promise<T | null>;
+  updateSettings?(settings: Record<string, unknown>): Promise<void>;
+}
+
 export function useToolApproval(
-  client: AgenticClient | null,
+  client: SettingsClient | null,
   feedback?: FeedbackFunctions
 ): UseToolApprovalResult {
   const [settings, setSettings] = useState<ToolApprovalSettings>(DEFAULT_SETTINGS);
@@ -83,7 +91,7 @@ export function useToolApproval(
   }, [settings]);
 
   // Track client changes to reload settings
-  const clientRef = useRef<AgenticClient | null>(null);
+  const clientRef = useRef<SettingsClient | null>(null);
   const loadedRef = useRef(false);
 
   // Load settings from client when client changes
@@ -99,9 +107,15 @@ export function useToolApproval(
       return;
     }
 
+    // Only load settings if client supports getSettings
+    if (!client.getSettings) {
+      loadedRef.current = true;
+      return;
+    }
+
     const loadSettings = async () => {
       try {
-        const stored = await client.getSettings<{ [SETTINGS_KEY]: ToolApprovalSettings }>();
+        const stored = await client.getSettings!<{ [SETTINGS_KEY]: ToolApprovalSettings }>();
         if (stored?.[SETTINGS_KEY]) {
           setSettings(stored[SETTINGS_KEY]);
         }
@@ -119,7 +133,7 @@ export function useToolApproval(
   const persistSettings = useCallback(
     async (newSettings: ToolApprovalSettings) => {
       const currentClient = clientRef.current;
-      if (!currentClient || !loadedRef.current) return;
+      if (!currentClient || !loadedRef.current || !currentClient.updateSettings) return;
       try {
         await currentClient.updateSettings({ [SETTINGS_KEY]: newSettings });
       } catch (err) {

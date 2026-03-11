@@ -48,7 +48,7 @@ function normalizeArgs(args: unknown[], schema: z.ZodType): unknown[] {
   });
 }
 
-export type CallerKind = "panel" | "shell" | "server" | "worker";
+export type CallerKind = "panel" | "shell" | "server" | "worker" | "harness";
 
 export type ServiceContext = {
   /** The caller ID (panel/worker tree node ID, or "shell" for the shell renderer) */

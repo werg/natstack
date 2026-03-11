@@ -31,6 +31,13 @@ import type { WorkerEnv } from "./types.js";
 import type { RuntimeFs, ThemeAppearance } from "../types.js";
 
 export type { WorkerEnv, ExecutionContext } from "./types.js";
+export { AgentWorkerBase } from "./durable.js";
+export type { DurableObjectContext, SqlStorage, SqlResult, AlignmentState } from "./durable.js";
+export { ActionCollector, ChannelActions, HarnessActions } from "./action-collector.js";
+export { StreamWriter } from "./stream-writer.js";
+// Note: createTestDO is intentionally NOT exported here — it depends on better-sqlite3
+// which is a Node.js-only dependency that can't be bundled for workerd.
+// Import directly from "@workspace/runtime/src/worker/durable-test-utils" in tests.
 
 // Cache runtime per worker ID to avoid creating multiple connections
 let cachedRuntime: WorkerRuntime | null = null;

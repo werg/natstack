@@ -1,0 +1,17 @@
+{
+  "name": "@workspace-workers/agent-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "type": "worker",
+    "entry": "index.ts",
+    "durable": {
+      "classes": [{ "className": "AiChatWorker" }]
+    }
+  },
+  "dependencies": {
+    "@workspace/runtime": "workspace:*",
+    "@natstack/harness": "workspace:*"
+  }
+}

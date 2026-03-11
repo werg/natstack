@@ -7,7 +7,7 @@
 
 import { Badge, DropdownMenu, Text } from "@radix-ui/themes";
 import { ExclamationTriangleIcon, ReloadIcon, TriangleDownIcon } from "@radix-ui/react-icons";
-import type { AgentBuildError } from "@natstack/agentic-messaging";
+import type { AgentBuildError } from "@natstack/pubsub";
 import type { PendingAgentStatus } from "../types";
 
 export interface PendingAgentBadgeProps {

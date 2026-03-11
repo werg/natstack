@@ -1,0 +1,527 @@
+# Worker Authoring Guide
+
+This guide covers building Durable Object (DO) workers that participate in AI chat channels. Workers run in workerd (Cloudflare's V8 isolate runtime) and use SQLite-backed state that survives across invocations.
+
+## 1. Quick Start
+
+### Directory Structure
+
+```
+workspace/workers/my-agent/
+  package.json       # manifest with durable class declarations
+  index.ts           # entry point — exports DO class + default fetch handler
+  my-agent-worker.ts # DO implementation extending AgentWorkerBase
+  my-agent-worker.test.ts  # tests using createTestDO()
+```
+
+### Manifest (package.json)
+
+```json
+{
+  "name": "@workspace-workers/my-agent",
+  "natstack": {
+    "type": "worker",
+    "entry": "index.ts",
+    "durable": {
+      "classes": [{ "className": "MyAgentWorker" }]
+    }
+  },
+  "dependencies": {
+    "@workspace/runtime": "workspace:*",
+    "@natstack/harness": "workspace:*"
+  }
+}
+```
+
+The `durable.classes` array declares which exported classes are DurableObjects. The `className` must match the exported class name exactly.
+
+### Entry Point (index.ts)
+
+```typescript
+export { MyAgentWorker } from "./my-agent-worker.js";
+export default { fetch(_req: Request) { return new Response("my-agent DO service"); } };
+```
+
+The entry point must:
+1. Re-export all DO classes by name
+2. Export a default fetch handler (required by workerd)
+
+## 2. The Five Hooks
+
+`AgentWorkerBase` provides five hooks you can override to customize behavior:
+
+### getHarnessType(): string
+
+Returns the harness type identifier. Default: `"claude-sdk"`.
+
+```typescript
+protected getHarnessType(): string {
+  return 'claude-sdk'; // or 'openai', 'custom', etc.
+}
+```
+
+### getHarnessConfig(): HarnessConfig
+
+Returns configuration passed to the harness on spawn. Override to set system prompts, model, temperature, MCP servers, etc.
+
+```typescript
+protected getHarnessConfig(): HarnessConfig {
+  return {
+    systemPrompt: 'You are a helpful coding assistant.',
+    model: 'claude-sonnet-4-20250514',
+    temperature: 0.7,
+    maxTokens: 4096,
+    mcpServers: [{ name: 'fs', tools: [...] }],
+  };
+}
+```
+
+### shouldProcess(event: ChannelEvent): boolean
+
+Filter which channel events trigger an AI turn. Default: only `panel`-sent `message` events.
+
+```typescript
+protected shouldProcess(event: ChannelEvent): boolean {
+  // Process messages from panels and also handle @mentions
+  return event.senderType === 'panel' && event.type === 'message';
+}
+```
+
+### buildTurnInput(event: ChannelEvent): TurnInput
+
+Transform a channel event into the input for an AI turn. Default extracts content, senderId, and attachments.
+
+```typescript
+protected buildTurnInput(event: ChannelEvent): TurnInput {
+  const payload = event.payload as { content?: string };
+  return {
+    content: payload.content ?? '',
+    senderId: event.senderId,
+    attachments: event.attachments,
+    context: 'Additional context injected here',
+  };
+}
+```
+
+### getParticipantInfo(channelId, config?): ParticipantDescriptor
+
+Declare the PubSub identity for a channel. Controls what handle, name, and callable methods are advertised.
+
+```typescript
+protected getParticipantInfo(): ParticipantDescriptor {
+  return {
+    handle: 'my-agent',
+    name: 'My Agent',
+    type: 'agent',
+    methods: [
+      { name: 'pause', description: 'Pause the current turn' },
+    ],
+  };
+}
+```
+
+## 3. ActionCollector API
+
+Every handler creates an `ActionCollector` via `this.actions()` and returns `$.result()`:
+
+```typescript
+async onChannelEvent(channelId: string, event: ChannelEvent): Promise<WorkerActions> {
+  const $ = this.actions();
+  // ... add actions ...
+  return $.result();
+}
+```
+
+### Channel Operations — `$.channel(channelId)`
+
+| Method | Description |
+|--------|-------------|
+| `.send(content, options?)` | Send a new message |
+| `.update(messageId, content)` | Update a streaming message |
+| `.complete(messageId)` | Mark a message as complete |
+| `.sendEphemeral(content, contentType)` | Send ephemeral event (typing, etc.) |
+| `.updateMetadata(metadata)` | Update channel metadata |
+| `.methodResult(callId, content, isError?)` | Reply to a method call |
+| `.callMethod(callId, participantId, method, args)` | Call another participant's method |
+| `.streamFor(harnessId, turn)` | Create a StreamWriter (see below) |
+
+### Harness Operations — `$.harness(harnessId)`
+
+| Method | Description |
+|--------|-------------|
+| `.startTurn(input)` | Start a new AI turn |
+| `.approveTool(toolUseId, allow, alwaysAllow?)` | Approve/deny a tool use |
+| `.interrupt()` | Interrupt the current turn |
+| `.fork(forkPointMessageId, turnSessionId)` | Fork the conversation |
+| `.dispose()` | Dispose the harness |
+
+### System Operations
+
+| Method | Description |
+|--------|-------------|
+| `$.spawnHarness(opts)` | Spawn a new harness process |
+| `$.respawnHarness(opts)` | Respawn a crashed harness |
+| `$.forkChannel(source, forkPointId)` | Fork a channel |
+| `$.spawnSubagent(opts)` | Spawn a subagent |
+| `$.cleanupSubagent(toolUseId, reason)` | Clean up a subagent |
+| `$.setAlarm(delayMs)` | Set a timed alarm |
+
+All methods are fluent-chainable:
+```typescript
+$.channel(channelId).send("hello").send("world");
+$.harness(harnessId).startTurn(input);
+$.spawnSubagent({ toolUseId: "t-1", channelId, description: "sub" });
+return $.result();
+```
+
+## 4. StreamWriter
+
+`StreamWriter` handles the send -> update -> complete lifecycle of streaming messages. Created via the ActionCollector:
+
+```typescript
+const turn = this.getActiveTurn(harnessId);
+if (turn) {
+  const writer = $.channel(channelId).streamFor(harnessId, turn);
+  writer.startText();           // sends a new message
+  writer.updateText("chunk");   // updates the message content
+  writer.completeText();        // marks message as complete
+}
+```
+
+### StreamWriter Methods
+
+| Method | Description |
+|--------|-------------|
+| `startThinking()` | Begin a thinking block |
+| `updateThinking(content)` | Update thinking content |
+| `endThinking()` | End thinking block |
+| `startText(metadata?)` | Begin a text message |
+| `updateText(content)` | Append text content |
+| `complete()` | Complete current message |
+| `startAction(tool, description)` | Begin a tool action |
+| `endAction()` | End tool action |
+| `sendInlineUi(data)` | Send inline UI component |
+| `sendTyping()` | Send typing indicator |
+
+### Auto-Persistence
+
+When you call `$.result()`, the ActionCollector automatically persists all StreamWriter message IDs back to the `active_turns` table. No manual `persistStreamState` calls needed.
+
+## 5. ParticipantDescriptor
+
+```typescript
+interface ParticipantDescriptor {
+  handle: string;                    // unique identifier in the channel
+  name: string;                      // display name
+  type: string;                      // 'agent', 'panel', etc.
+  metadata?: Record<string, unknown>;
+  methods?: MethodAdvertisement[];   // callable methods
+}
+
+interface MethodAdvertisement {
+  name: string;
+  description: string;
+  parameters?: unknown;  // JSON Schema for method args
+}
+```
+
+## 6. AgentWorkerBase Internals
+
+### SQLite Tables
+
+The base class creates 8 tables on initialization:
+
+| Table | Purpose |
+|-------|---------|
+| `state` | Key-value store (schema version, custom state) |
+| `subscriptions` | Channel subscriptions with config + participant ID |
+| `harnesses` | Harness instances (id, type, channel, status) |
+| `turn_map` | Completed turn records for fork resolution |
+| `checkpoints` | Last-processed pubsub ID per channel/harness |
+| `in_flight_turns` | Currently executing turns (for crash retry) |
+| `active_turns` | Currently streaming turns (replyToId, turnMessageId, senderParticipantId) |
+| `pending_calls` | Continuation state for async method calls (survives hibernation) |
+
+### Helper Methods
+
+| Method | Description |
+|--------|-------------|
+| `getHarnessForChannel(channelId)` | Find active harness for a channel |
+| `getChannelForHarness(harnessId)` | Find channel for a harness |
+| `getContextId(channelId)` | Get context ID from subscription |
+| `getSubscriptionConfig(channelId)` | Get per-channel config |
+| `setActiveTurn(harnessId, channelId, replyToId, turnMessageId?)` | Record active turn |
+| `getActiveTurn(harnessId)` | Get active turn state |
+| `clearActiveTurn(harnessId)` | Clear active turn |
+| `setInFlightTurn(channelId, harnessId, messageId, pubsubId, input)` | Record in-flight turn |
+| `getInFlightTurn(channelId, harnessId)` | Get in-flight turn |
+| `clearInFlightTurn(channelId, harnessId)` | Clear in-flight turn |
+| `advanceCheckpoint(channelId, harnessId, pubsubId)` | Advance checkpoint |
+| `getCheckpoint(channelId, harnessId)` | Get checkpoint |
+| `recordTurn(harnessId, messageId, triggerPubsubId, sessionId)` | Record completed turn |
+| `getResumeSessionId(harnessId)` | Get session ID for conversation resume |
+| `getAlignment(harnessId)` | Get alignment state |
+| `registerHarness(harnessId, channelId, type)` | Register a new harness |
+| `reactivateHarness(harnessId)` | Reactivate a harness |
+| `recordTurnStart(harnessId, channelId, input, messageId, pubsubId, senderParticipantId?)` | Convenience: set active + in-flight + checkpoint |
+| `pendingCall(callId, channelId, type, context)` | Store a continuation (survives hibernation) |
+| `consumePendingCall(callId)` | Load and delete a continuation |
+| `getParticipantId(channelId)` | Get this DO's PubSub participant ID |
+
+### Schema Versioning
+
+Override `static schemaVersion` to trigger table re-creation:
+
+```typescript
+export class MyWorker extends AgentWorkerBase {
+  static schemaVersion = 2; // bump when schema changes
+  // ...
+}
+```
+
+The base class checks the stored version against `schemaVersion` on construction and re-runs `createTables()` if needed.
+
+## 7. Testing with createTestDO()
+
+`createTestDO()` creates a DO instance backed by in-memory SQLite (sql.js / WASM), eliminating the need for workerd or native modules in unit tests.
+
+```typescript
+import { describe, it, expect } from "vitest";
+import { createTestDO } from "@workspace/runtime/worker";
+import { MyWorker } from "./my-worker.js";
+
+describe("MyWorker", () => {
+  it("spawns harness on first message", async () => {
+    const { instance, sql } = await createTestDO(MyWorker);
+    await instance.subscribeChannel({ channelId: "ch-1", contextId: "ctx-1" });
+
+    const event = {
+      id: 1, messageId: "msg-1", type: "message",
+      payload: { content: "Hello" }, senderId: "user-1",
+      senderType: "panel", ts: Date.now(), persist: true,
+    };
+
+    const result = await instance.onChannelEvent("ch-1", event);
+    const spawn = result.actions.find(a => "op" in a && a.op === "spawn-harness");
+    expect(spawn).toBeDefined();
+  });
+});
+```
+
+The `sql` object exposes `exec(query, ...bindings)` for direct database inspection:
+
+```typescript
+const rows = sql.exec(`SELECT * FROM active_turns`).toArray();
+expect(rows).toHaveLength(1);
+```
+
+## 8. Debugging
+
+In development, the server exposes a debug endpoint for inspecting DO state:
+
+```
+GET /_do/:className/:objectKey/state
+```
+
+This calls `getState()` on the DO and returns all table contents as JSON.
+
+## 9. Per-Channel Config
+
+Subscription config is passed during `subscribeChannel()` and stored in the `subscriptions` table. Access it in your hooks:
+
+```typescript
+const config = this.getSubscriptionConfig(channelId);
+if (config?.model) {
+  // use per-channel model override
+}
+```
+
+The `AiChatWorker` merges subscription config with `getHarnessConfig()` automatically — per-channel overrides for `systemPrompt`, `model`, `temperature`, and `maxTokens` take precedence.
+
+## 10. Full Annotated AiChatWorker Walkthrough
+
+The built-in `AiChatWorker` (in `workspace/workers/agent-worker/`) implements all three event handlers. Here is the complete flow:
+
+### Channel Event Flow
+
+```
+User sends message
+  -> onChannelEvent(channelId, event)
+    -> Does shouldProcess() pass?
+       No  -> Advance checkpoint, return empty actions
+       Yes -> Build TurnInput from event
+              -> Is there an active harness?
+                 No  -> $.spawnHarness() with initialTurn
+                 Yes -> $.harness(id).startTurn(input)
+                        + typing indicator
+                        + record active/in-flight turns
+```
+
+### Harness Event Flow
+
+```
+Harness emits event
+  -> onHarnessEvent(harnessId, event)
+    -> Look up active turn + channel
+    -> Create StreamWriter via $.channel(id).streamFor(harnessId, turn)
+    -> Map event type to StreamWriter calls:
+       thinking-start  -> writer.startThinking()
+       thinking-delta  -> writer.updateThinking(content)
+       thinking-end    -> writer.endThinking()
+       text-start      -> writer.startText(metadata)
+       text-delta      -> writer.updateText(content)
+       text-end        -> writer.completeText()
+       action-start    -> writer.startAction(tool, description)
+       action-end      -> writer.endAction()
+       inline-ui       -> writer.sendInlineUi(data)
+       turn-complete   -> recordTurn(), clearActiveTurn(), clearInFlightTurn()
+       error           -> Mark crashed, complete partial, $.respawnHarness()
+       approval-needed -> Store continuation + $.channel(id).callMethod(request_tool_approval)
+       metadata-update -> $.channel(id).updateMetadata()
+       ready           -> Set harness status to 'active'
+```
+
+### Crash Recovery
+
+When a harness sends an `error` event:
+1. Harness is marked `crashed` in SQLite with the error message
+2. Any partial streaming message is completed
+3. The resume session ID is looked up from turn_map
+4. The in-flight turn is read for retry
+5. Active turn state is cleared
+6. A `respawn-harness` action is returned with the retry turn
+
+## 11. Custom Worker Example: CodeReviewWorker
+
+```typescript
+import { AgentWorkerBase } from "@workspace/runtime/worker";
+import type {
+  ChannelEvent, HarnessConfig, HarnessOutput,
+  ParticipantDescriptor, TurnInput, WorkerActions,
+} from "@natstack/harness";
+
+export class CodeReviewWorker extends AgentWorkerBase {
+  static schemaVersion = 1;
+
+  protected getHarnessConfig(): HarnessConfig {
+    return {
+      systemPrompt: `You are a code review assistant. When given a diff or code snippet,
+        provide constructive feedback on: correctness, performance, readability, and security.
+        Format your response as a structured review with sections.`,
+      model: 'claude-sonnet-4-20250514',
+      temperature: 0.3,
+    };
+  }
+
+  protected getParticipantInfo(): ParticipantDescriptor {
+    return {
+      handle: 'code-reviewer',
+      name: 'Code Reviewer',
+      type: 'agent',
+      methods: [
+        { name: 'set-strictness', description: 'Set review strictness (1-5)' },
+      ],
+    };
+  }
+
+  protected shouldProcess(event: ChannelEvent): boolean {
+    // Only process messages that contain code (fenced blocks or file references)
+    if (event.senderType !== 'panel' || event.type !== 'message') return false;
+    const content = (event.payload as { content?: string })?.content ?? '';
+    return content.includes('```') || content.includes('diff --git');
+  }
+
+  protected buildTurnInput(event: ChannelEvent): TurnInput {
+    const payload = event.payload as { content?: string };
+    return {
+      content: `Please review the following code:\n\n${payload.content ?? ''}`,
+      senderId: event.senderId,
+      attachments: event.attachments,
+    };
+  }
+
+  async onChannelEvent(channelId: string, event: ChannelEvent): Promise<WorkerActions> {
+    const $ = this.actions();
+
+    if (!this.shouldProcess(event)) {
+      this.advanceCheckpoint(channelId, null, event.id);
+      return $.result();
+    }
+
+    const input = this.buildTurnInput(event);
+    const harnessId = this.getHarnessForChannel(channelId);
+
+    if (!harnessId) {
+      const contextId = this.getContextId(channelId);
+      $.spawnHarness({
+        type: this.getHarnessType(),
+        channelId,
+        contextId,
+        config: this.getHarnessConfig(),
+        initialTurn: {
+          input,
+          triggerMessageId: event.messageId,
+          triggerPubsubId: event.id,
+        },
+      });
+    } else {
+      $.harness(harnessId).startTurn(input);
+      this.setActiveTurn(harnessId, channelId, event.messageId);
+      this.setInFlightTurn(channelId, harnessId, event.messageId, event.id, input);
+      this.advanceCheckpoint(channelId, harnessId, event.id);
+    }
+
+    return $.result();
+  }
+
+  async onHarnessEvent(harnessId: string, event: HarnessOutput): Promise<WorkerActions> {
+    const $ = this.actions();
+    const turn = this.getActiveTurn(harnessId);
+    const channelId = turn?.channelId ?? this.getChannelForHarness(harnessId);
+    if (!channelId) return $.result();
+
+    if (turn) {
+      const writer = $.channel(channelId).streamFor(harnessId, turn);
+
+      switch (event.type) {
+        case 'text-start': writer.startText(); break;
+        case 'text-delta': writer.updateText(event.content); break;
+        case 'text-end': writer.completeText(); break;
+        case 'turn-complete': {
+          const at = this.getActiveTurn(harnessId);
+          if (at?.turnMessageId) {
+            const inf = this.getInFlightTurn(channelId, harnessId);
+            this.recordTurn(harnessId, at.turnMessageId, inf?.triggerPubsubId ?? 0, event.sessionId);
+          }
+          this.clearActiveTurn(harnessId);
+          this.clearInFlightTurn(channelId, harnessId);
+          break;
+        }
+        case 'ready':
+          this.sql.exec(`UPDATE harnesses SET status = 'active' WHERE id = ?`, harnessId);
+          break;
+      }
+    }
+
+    return $.result();
+  }
+
+  override async onMethodCall(
+    channelId: string, callId: string, methodName: string, args: unknown,
+  ): Promise<WorkerActions> {
+    const $ = this.actions();
+    if (methodName === 'set-strictness') {
+      const level = (args as { level?: number })?.level ?? 3;
+      // Store in state table for use in buildTurnInput
+      this.sql.exec(
+        `INSERT OR REPLACE INTO state (key, value) VALUES ('strictness', ?)`,
+        String(level),
+      );
+      $.channel(channelId).methodResult(callId, { strictness: level });
+    } else {
+      $.channel(channelId).methodResult(callId, { error: 'unknown method' }, true);
+    }
+    return $.result();
+  }
+}
+```

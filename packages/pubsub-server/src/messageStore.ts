@@ -55,6 +55,23 @@ export interface ChannelInfo {
 }
 
 /**
+ * Fork metadata for a channel — links to the parent channel and the fork point.
+ */
+export interface ChannelForkInfo {
+  parentChannel: string;
+  forkPointId: number;
+}
+
+/**
+ * A segment in a resolved fork chain — channel name + upper bound message ID.
+ * The chain is ordered root-first: [{ channel: "root", upToId: 50 }, { channel: "fork", upToId: Infinity }]
+ */
+export interface ForkSegment {
+  channel: string;
+  upToId: number;
+}
+
+/**
  * A registered agent for a channel (persisted for auto-wake).
  */
 export interface ChannelAgentRow {
@@ -115,6 +132,17 @@ export interface MessageStore {
   getMaxAttachmentIdNumber(channel: string): number;
   /** Get the minimum message ID for a channel, optionally filtered by type. Returns undefined if no matching messages. */
   getMinMessageId(channel: string, type?: string): number | undefined;
+  /** Set fork metadata on a channel (parent channel and fork point message ID). */
+  setChannelFork(channel: string, parentChannel: string, forkPointId: number): void;
+  /** Get fork metadata for a channel, or null if this is a root channel. */
+  getChannelFork(channel: string): ChannelForkInfo | null;
+  /**
+   * Walk the parent_channel chain and collect segments. Max depth: 10.
+   * Returns root-first order, e.g. [{ channel: "root", upToId: 50 }, { channel: "fork-1", upToId: Infinity }]
+   */
+  resolveForkedSegments(channel: string): ForkSegment[];
+  /** Query messages in a specific channel within a range (sinceId, upToId]. */
+  queryRange(channel: string, sinceId: number, upToId: number): MessageRow[];
   /** Register an agent for a channel (UPSERT - updates config if already exists) */
   registerChannelAgent(channel: string, agentId: string, handle: string, config: string, registeredBy?: string): void;
   /** Unregister an agent from a channel */
@@ -249,11 +277,131 @@ abstract class BaseMessageStore implements MessageStore {
 
   protected abstract doQueryByType(channel: string, types: string[], sinceId: number): MessageRow[];
   abstract getMaxAttachmentIdNumber(channel: string): number;
-  abstract queryBefore(channel: string, beforeId: number, limit?: number): MessageRow[];
-  abstract getMessageCount(channel: string, type?: string): number;
-  abstract getAnchorId(channel: string, type: string, offset: number): number | null;
-  abstract getMinMessageId(channel: string, type?: string): number | undefined;
-  abstract queryTrailingUpdates(channel: string, messageUuids: string[], atOrAfterId: number): MessageRow[];
+
+  // --- Fork-aware methods (delegate to per-segment queries) ---
+
+  abstract setChannelFork(channel: string, parentChannel: string, forkPointId: number): void;
+  abstract getChannelFork(channel: string): ChannelForkInfo | null;
+  abstract resolveForkedSegments(channel: string): ForkSegment[];
+  abstract queryRange(channel: string, sinceId: number, upToId: number): MessageRow[];
+
+  /** Fork-aware: sum counts across all segments. */
+  getMessageCount(channel: string, type?: string): number {
+    const segments = this.resolveForkedSegments(channel);
+    let total = 0;
+    for (const seg of segments) {
+      total += this.getMessageCountSingle(seg.channel, type);
+      // For non-leaf segments, we need to filter by upToId
+      if (seg.upToId !== Infinity) {
+        // Subtract messages beyond the fork point
+        total -= this.getMessageCountBeyond(seg.channel, seg.upToId, type);
+      }
+    }
+    return total;
+  }
+
+  /** Fork-aware: get min message ID across all segments. */
+  getMinMessageId(channel: string, type?: string): number | undefined {
+    const segments = this.resolveForkedSegments(channel);
+    let minId: number | undefined;
+    for (const seg of segments) {
+      const segMin = this.getMinMessageIdSingle(seg.channel, type);
+      if (segMin !== undefined && (minId === undefined || segMin < minId)) {
+        // Validate it's within the segment's range
+        if (seg.upToId === Infinity || segMin <= seg.upToId) {
+          minId = segMin;
+        }
+      }
+    }
+    return minId;
+  }
+
+  /** Fork-aware: paginate across segments (query current channel first, walk up chain if limit not satisfied). */
+  queryBefore(channel: string, beforeId: number, limit = 100): MessageRow[] {
+    const segments = this.resolveForkedSegments(channel);
+    const results: MessageRow[] = [];
+    let remaining = limit;
+
+    // Walk segments from leaf (last) to root (first)
+    for (let i = segments.length - 1; i >= 0 && remaining > 0; i--) {
+      const seg = segments[i]!;
+      // Effective beforeId: the lower of the requested beforeId and the segment's upper bound + 1
+      const effectiveBefore = seg.upToId === Infinity ? beforeId : Math.min(beforeId, seg.upToId + 1);
+      const rows = this.queryBeforeSingle(seg.channel, effectiveBefore, remaining);
+      if (rows.length > 0) {
+        results.unshift(...rows);
+        remaining -= rows.length;
+        // For the next (parent) segment, use the lowest ID we found as the new beforeId
+        beforeId = rows[0]!.id;
+      }
+    }
+
+    // If we fetched more than the limit (from multiple segments), take the last `limit` rows
+    if (results.length > limit) {
+      return results.slice(results.length - limit);
+    }
+    return results;
+  }
+
+  /** Fork-aware: query trailing updates across all segments. */
+  queryTrailingUpdates(channel: string, messageUuids: string[], atOrAfterId: number): MessageRow[] {
+    if (messageUuids.length === 0) return [];
+    const segments = this.resolveForkedSegments(channel);
+    const results: MessageRow[] = [];
+    for (const seg of segments) {
+      const effectiveUpTo = seg.upToId === Infinity ? Infinity : seg.upToId;
+      const rows = this.queryTrailingUpdatesSingle(seg.channel, messageUuids, atOrAfterId);
+      for (const row of rows) {
+        if (effectiveUpTo === Infinity || row.id <= effectiveUpTo) {
+          results.push(row);
+        }
+      }
+    }
+    // Sort by id ascending
+    results.sort((a, b) => a.id - b.id);
+    return results;
+  }
+
+  /** Fork-aware: walk segments to find Nth-from-last message of a given type. */
+  getAnchorId(channel: string, type: string, offset: number): number | null {
+    const segments = this.resolveForkedSegments(channel);
+    // Walk from leaf to root, counting matches
+    let remaining = offset;
+    for (let i = segments.length - 1; i >= 0; i--) {
+      const seg = segments[i]!;
+      // Count how many matching messages are in this segment
+      let segCount: number;
+      if (seg.upToId === Infinity) {
+        segCount = this.getMessageCountSingle(seg.channel, type);
+      } else {
+        segCount = this.getMessageCountSingle(seg.channel, type) - this.getMessageCountBeyond(seg.channel, seg.upToId, type);
+      }
+
+      if (remaining < segCount) {
+        // The answer is in this segment
+        if (seg.upToId === Infinity) {
+          return this.getAnchorIdSingle(seg.channel, type, remaining);
+        }
+        // Need to find within bounded segment — get all matching IDs desc, skip `remaining`
+        return this.getAnchorIdBounded(seg.channel, type, seg.upToId, remaining);
+      }
+      remaining -= segCount;
+    }
+    return null;
+  }
+
+  // --- Single-channel (non-fork-aware) primitives that subclasses implement ---
+
+  protected abstract getMessageCountSingle(channel: string, type?: string): number;
+  /** Count messages in a channel with id > upToId, optionally filtered by type. */
+  protected abstract getMessageCountBeyond(channel: string, upToId: number, type?: string): number;
+  protected abstract getMinMessageIdSingle(channel: string, type?: string): number | undefined;
+  protected abstract queryBeforeSingle(channel: string, beforeId: number, limit: number): MessageRow[];
+  protected abstract queryTrailingUpdatesSingle(channel: string, messageUuids: string[], atOrAfterId: number): MessageRow[];
+  protected abstract getAnchorIdSingle(channel: string, type: string, offset: number): number | null;
+  /** Get the Nth-from-last message of type within id <= upToId. */
+  protected abstract getAnchorIdBounded(channel: string, type: string, upToId: number, offset: number): number | null;
+
   abstract registerChannelAgent(channel: string, agentId: string, handle: string, config: string, registeredBy?: string): void;
   abstract unregisterChannelAgent(channel: string, agentId: string, handle: string): boolean;
   abstract getChannelAgents(channel: string): ChannelAgentRow[];
@@ -317,6 +465,23 @@ export class SqliteMessageStore extends BaseMessageStore {
       CREATE INDEX IF NOT EXISTS idx_channel_agents_channel ON channel_agents(channel);
     `
     );
+
+    // Migration: add fork columns to channels table if they don't exist
+    try {
+      dbManager.exec(this.dbHandle, `ALTER TABLE channels ADD COLUMN parent_channel TEXT`);
+    } catch {
+      // Column already exists — ignore
+    }
+    try {
+      dbManager.exec(this.dbHandle, `ALTER TABLE channels ADD COLUMN fork_point_id INTEGER`);
+    } catch {
+      // Column already exists — ignore
+    }
+    try {
+      dbManager.exec(this.dbHandle, `CREATE INDEX IF NOT EXISTS idx_channels_parent ON channels(parent_channel)`);
+    } catch {
+      // Index already exists — ignore
+    }
 
   }
 
@@ -438,7 +603,82 @@ export class SqliteMessageStore extends BaseMessageStore {
     return maxId;
   }
 
-  queryBefore(channel: string, beforeId: number, limit = 100): MessageRow[] {
+  // --- Fork methods ---
+
+  setChannelFork(channel: string, parentChannel: string, forkPointId: number): void {
+    if (!this.dbHandle) throw new Error("Store not initialized");
+    const db = this.dbManager;
+    db.run(
+      this.dbHandle,
+      "UPDATE channels SET parent_channel = ?, fork_point_id = ? WHERE channel = ?",
+      [parentChannel, forkPointId, channel]
+    );
+  }
+
+  getChannelFork(channel: string): ChannelForkInfo | null {
+    if (!this.dbHandle) return null;
+    const db = this.dbManager;
+    const row = db.query<{ parent_channel: string | null; fork_point_id: number | null }>(
+      this.dbHandle,
+      "SELECT parent_channel, fork_point_id FROM channels WHERE channel = ?",
+      [channel]
+    )[0];
+    if (!row || row.parent_channel === null || row.fork_point_id === null) return null;
+    return { parentChannel: row.parent_channel, forkPointId: row.fork_point_id };
+  }
+
+  resolveForkedSegments(channel: string): ForkSegment[] {
+    // Walk from channel up to root, collecting (channel, forkPointId) pairs
+    const chain: Array<{ channel: string; forkPointId: number }> = [];
+    let current: string | null = channel;
+    let depth = 0;
+    while (current && depth < 10) {
+      const fork = this.getChannelFork(current);
+      if (!fork) break;
+      chain.push({ channel: current, forkPointId: fork.forkPointId });
+      current = fork.parentChannel;
+      depth++;
+    }
+    // `current` is now the root channel (no fork metadata)
+    if (chain.length === 0) {
+      return [{ channel, upToId: Infinity }];
+    }
+    // Build segments root-first
+    const result: ForkSegment[] = [];
+    // Root segment: from root channel up to the first fork point
+    const rootFork = chain[chain.length - 1]!;
+    result.push({ channel: current!, upToId: rootFork.forkPointId });
+    // Intermediate segments
+    for (let i = chain.length - 1; i > 0; i--) {
+      const seg = chain[i]!;
+      const parentFork = chain[i - 1]!;
+      result.push({ channel: seg.channel, upToId: parentFork.forkPointId });
+    }
+    // Leaf segment
+    result.push({ channel: chain[0]!.channel, upToId: Infinity });
+    return result;
+  }
+
+  queryRange(channel: string, sinceId: number, upToId: number): MessageRow[] {
+    if (!this.dbHandle) return [];
+    const db = this.dbManager;
+    if (upToId === Infinity) {
+      return db.query<MessageRow>(
+        this.dbHandle,
+        "SELECT * FROM messages WHERE channel = ? AND id > ? ORDER BY id ASC",
+        [channel, sinceId]
+      );
+    }
+    return db.query<MessageRow>(
+      this.dbHandle,
+      "SELECT * FROM messages WHERE channel = ? AND id > ? AND id <= ? ORDER BY id ASC",
+      [channel, sinceId, upToId]
+    );
+  }
+
+  // --- Single-channel primitives for fork-aware base methods ---
+
+  protected queryBeforeSingle(channel: string, beforeId: number, limit: number): MessageRow[] {
     if (!this.dbHandle) return [];
     const db = this.dbManager;
     const rows = db.query<MessageRow>(
@@ -449,7 +689,7 @@ export class SqliteMessageStore extends BaseMessageStore {
     return rows.reverse();
   }
 
-  queryTrailingUpdates(channel: string, messageUuids: string[], atOrAfterId: number): MessageRow[] {
+  protected queryTrailingUpdatesSingle(channel: string, messageUuids: string[], atOrAfterId: number): MessageRow[] {
     if (!this.dbHandle || messageUuids.length === 0) return [];
     const db = this.dbManager;
     const placeholders = messageUuids.map(() => "?").join(", ");
@@ -465,7 +705,7 @@ export class SqliteMessageStore extends BaseMessageStore {
     );
   }
 
-  getMessageCount(channel: string, type?: string): number {
+  protected getMessageCountSingle(channel: string, type?: string): number {
     if (!this.dbHandle) return 0;
     const db = this.dbManager;
     if (type) {
@@ -484,7 +724,26 @@ export class SqliteMessageStore extends BaseMessageStore {
     return result[0]?.count ?? 0;
   }
 
-  getAnchorId(channel: string, type: string, offset: number): number | null {
+  protected getMessageCountBeyond(channel: string, upToId: number, type?: string): number {
+    if (!this.dbHandle) return 0;
+    const db = this.dbManager;
+    if (type) {
+      const result = db.query<{ count: number }>(
+        this.dbHandle,
+        "SELECT COUNT(*) as count FROM messages WHERE channel = ? AND type = ? AND id > ?",
+        [channel, type, upToId]
+      );
+      return result[0]?.count ?? 0;
+    }
+    const result = db.query<{ count: number }>(
+      this.dbHandle,
+      "SELECT COUNT(*) as count FROM messages WHERE channel = ? AND id > ?",
+      [channel, upToId]
+    );
+    return result[0]?.count ?? 0;
+  }
+
+  protected getAnchorIdSingle(channel: string, type: string, offset: number): number | null {
     if (!this.dbHandle) return null;
     const db = this.dbManager;
     const result = db.query<{ id: number }>(
@@ -495,7 +754,18 @@ export class SqliteMessageStore extends BaseMessageStore {
     return result[0]?.id ?? null;
   }
 
-  getMinMessageId(channel: string, type?: string): number | undefined {
+  protected getAnchorIdBounded(channel: string, type: string, upToId: number, offset: number): number | null {
+    if (!this.dbHandle) return null;
+    const db = this.dbManager;
+    const result = db.query<{ id: number }>(
+      this.dbHandle,
+      "SELECT id FROM messages WHERE channel = ? AND type = ? AND id <= ? ORDER BY id DESC LIMIT 1 OFFSET ?",
+      [channel, type, upToId, offset]
+    );
+    return result[0]?.id ?? null;
+  }
+
+  protected getMinMessageIdSingle(channel: string, type?: string): number | undefined {
     if (!this.dbHandle) return undefined;
     const db = this.dbManager;
     if (type) {
@@ -591,6 +861,7 @@ export class SqliteMessageStore extends BaseMessageStore {
 export class InMemoryMessageStore extends BaseMessageStore {
   private messages: MessageRow[] = [];
   private channels = new Map<string, ChannelInfo>();
+  private channelForks = new Map<string, ChannelForkInfo>();
   private channelAgents: ChannelAgentRow[] = [];
   private nextId = 1;
   private nextAgentId = 1;
@@ -664,7 +935,60 @@ export class InMemoryMessageStore extends BaseMessageStore {
     return maxId;
   }
 
-  queryBefore(channel: string, beforeId: number, limit = 100): MessageRow[] {
+  // --- Fork methods ---
+
+  setChannelFork(channel: string, parentChannel: string, forkPointId: number): void {
+    this.channelForks.set(channel, { parentChannel, forkPointId });
+  }
+
+  getChannelFork(channel: string): ChannelForkInfo | null {
+    return this.channelForks.get(channel) ?? null;
+  }
+
+  resolveForkedSegments(channel: string): ForkSegment[] {
+    const chain: Array<{ channel: string; forkPointId: number }> = [];
+    let current: string | null = channel;
+    let depth = 0;
+
+    while (current && depth < 10) {
+      const fork = this.channelForks.get(current);
+      if (!fork) break;
+      chain.push({ channel: current, forkPointId: fork.forkPointId });
+      current = fork.parentChannel;
+      depth++;
+    }
+
+    if (chain.length === 0) {
+      return [{ channel, upToId: Infinity }];
+    }
+
+    const result: ForkSegment[] = [];
+    // Root segment
+    const rootFork = chain[chain.length - 1]!;
+    result.push({ channel: current!, upToId: rootFork.forkPointId });
+    // Intermediate segments
+    for (let i = chain.length - 1; i > 0; i--) {
+      const seg = chain[i]!;
+      const parentFork = chain[i - 1]!;
+      result.push({ channel: seg.channel, upToId: parentFork.forkPointId });
+    }
+    // Leaf segment
+    result.push({ channel: chain[0]!.channel, upToId: Infinity });
+    return result;
+  }
+
+  queryRange(channel: string, sinceId: number, upToId: number): MessageRow[] {
+    return this.messages.filter((m) => {
+      if (m.channel !== channel) return false;
+      if (m.id <= sinceId) return false;
+      if (upToId !== Infinity && m.id > upToId) return false;
+      return true;
+    });
+  }
+
+  // --- Single-channel primitives for fork-aware base methods ---
+
+  protected queryBeforeSingle(channel: string, beforeId: number, limit: number): MessageRow[] {
     const channelMessages = this.messages.filter(
       (m) => m.channel === channel && m.id < beforeId
     );
@@ -674,7 +998,7 @@ export class InMemoryMessageStore extends BaseMessageStore {
       .reverse();
   }
 
-  queryTrailingUpdates(channel: string, messageUuids: string[], atOrAfterId: number): MessageRow[] {
+  protected queryTrailingUpdatesSingle(channel: string, messageUuids: string[], atOrAfterId: number): MessageRow[] {
     const uuidSet = new Set(messageUuids);
     return this.messages.filter(m => {
       if (m.channel !== channel || m.id < atOrAfterId) return false;
@@ -686,18 +1010,29 @@ export class InMemoryMessageStore extends BaseMessageStore {
     });
   }
 
-  getMessageCount(channel: string, type?: string): number {
+  protected getMessageCountSingle(channel: string, type?: string): number {
     return this.messages.filter((m) => m.channel === channel && (!type || m.type === type)).length;
   }
 
-  getAnchorId(channel: string, type: string, offset: number): number | null {
+  protected getMessageCountBeyond(channel: string, upToId: number, type?: string): number {
+    return this.messages.filter((m) => m.channel === channel && m.id > upToId && (!type || m.type === type)).length;
+  }
+
+  protected getAnchorIdSingle(channel: string, type: string, offset: number): number | null {
     const matching = this.messages
       .filter((m) => m.channel === channel && m.type === type)
       .reverse();
     return matching[offset]?.id ?? null;
   }
 
-  getMinMessageId(channel: string, type?: string): number | undefined {
+  protected getAnchorIdBounded(channel: string, type: string, upToId: number, offset: number): number | null {
+    const matching = this.messages
+      .filter((m) => m.channel === channel && m.type === type && m.id <= upToId)
+      .reverse();
+    return matching[offset]?.id ?? null;
+  }
+
+  protected getMinMessageIdSingle(channel: string, type?: string): number | undefined {
     let minId: number | undefined;
     for (const m of this.messages) {
       if (m.channel !== channel) continue;
@@ -761,6 +1096,7 @@ export class InMemoryMessageStore extends BaseMessageStore {
   private reset(): void {
     this.messages = [];
     this.channels.clear();
+    this.channelForks.clear();
     this.channelAgents = [];
     this.nextId = 1;
     this.nextAgentId = 1;

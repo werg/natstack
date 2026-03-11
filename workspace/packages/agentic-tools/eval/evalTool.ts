@@ -1,4 +1,4 @@
-import type { MethodExecutionContext } from "@natstack/agentic-messaging";
+import type { MethodExecutionContext } from "@natstack/pubsub";
 
 // Lazy-loaded @workspace/eval (~460KB sucrase deferred until first eval tool invocation)
 let evalModule: typeof import("@workspace/eval") | null = null;

@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { ContextWindowUsage } from "@natstack/agentic-messaging";
+import type { ContextWindowUsage } from "@natstack/pubsub";
 import { Tooltip } from "@radix-ui/themes";
 
 export interface ContextUsageRingProps {

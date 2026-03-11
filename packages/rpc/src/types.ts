@@ -146,15 +146,17 @@ export interface RpcBridgeInternal extends RpcBridge {
  * panel calls will be silently misrouted to Electron IPC.
  */
 export const SERVER_SERVICE_NAMES = [
-  "agents",
   "ai",
   "build",
+  "channels",
   "db",
   "git",
+  "harness",
   "test",
   "tokens",
   "typecheck",
   "workerd",
+  "workers",
 ] as const;
 
 export type ServerServiceName = (typeof SERVER_SERVICE_NAMES)[number];

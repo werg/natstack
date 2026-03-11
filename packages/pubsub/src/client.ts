@@ -11,6 +11,7 @@ import type {
   PublishOptions,
   UpdateMetadataOptions,
   ConnectOptions,
+  FullConnectOptions,
   ReconnectConfig,
   RosterUpdate,
   ParticipantMetadata,
@@ -18,6 +19,38 @@ import type {
   Attachment,
   ChannelConfig,
 } from "./types.js";
+import type {
+  IncomingEvent,
+  AggregatedEvent,
+  EventStreamItem,
+  EventStreamOptions,
+  IncomingNewMessage,
+  IncomingUpdateMessage,
+  IncomingErrorMessage,
+  IncomingMethodCallEvent,
+  IncomingMethodResultEvent,
+  IncomingPresenceEventWithType,
+  IncomingExecutionPauseEvent,
+  IncomingAgentDebugEvent,
+  MethodCallHandle,
+  MethodResultChunk,
+  MethodResultValue,
+} from "./protocol-types.js";
+import { AgenticError } from "./protocol-types.js";
+import type { MethodDefinition, MethodAdvertisement, JsonSchema, MethodExecutionContext } from "./protocol-types.js";
+import { zodToJsonSchema as convertZodToJsonSchema } from "zod-to-json-schema";
+import { z } from "zod";
+import {
+  NewMessageSchema,
+  UpdateMessageSchema,
+  ErrorMessageSchema,
+  MethodCallSchema,
+  MethodResultSchema,
+  ExecutionPauseSchema,
+} from "./protocol.js";
+import { aggregateReplayEvents } from "./aggregation.js";
+import { createFanout } from "./async-queue.js";
+import type { AttachmentInput } from "./types.js";
 
 /**
  * Server message envelope.
@@ -165,6 +198,68 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
     hasMore: boolean;
   }>;
 
+  /**
+   * Async iterator for typed protocol events (IncomingEvent | AggregatedEvent).
+   *
+   * Higher-level than messages() — parses PubSubMessages into typed IncomingEvent
+   * objects and optionally aggregates replay events into AggregatedEvent objects.
+   *
+   * @param options.includeReplay - Include replay events (default: false)
+   * @param options.includeEphemeral - Include ephemeral events (default: false)
+   */
+  events(options?: EventStreamOptions): AsyncIterableIterator<EventStreamItem>;
+
+  // === Agentic convenience methods ===
+
+  /** This client's ID (from ConnectOptions.clientId) */
+  readonly clientId: string | undefined;
+
+  /**
+   * Send a new chat message. Convenience wrapper around publish("message", ...).
+   * Returns the message UUID and server-assigned pubsub ID.
+   */
+  send(
+    content: string,
+    options?: {
+      replyTo?: string;
+      persist?: boolean;
+      attachments?: import("./types.js").AttachmentInput[];
+      contentType?: string;
+      at?: string[];
+      metadata?: Record<string, unknown>;
+    }
+  ): Promise<{ messageId: string; pubsubId: number | undefined }>;
+
+  /**
+   * Update an existing message (for streaming). Convenience wrapper around publish("update-message", ...).
+   */
+  update(
+    id: string,
+    content: string,
+    options?: { complete?: boolean; persist?: boolean; attachments?: import("./types.js").AttachmentInput[]; contentType?: string }
+  ): Promise<number | undefined>;
+
+  /**
+   * Mark a message as complete. Convenience wrapper around publish("update-message", { id, complete: true }).
+   */
+  complete(id: string): Promise<number | undefined>;
+
+  /**
+   * Publish an error for a message. Convenience wrapper around publish("error", ...).
+   */
+  error(id: string, error: string, code?: string): Promise<number | undefined>;
+
+  /**
+   * Call a method on a remote provider. Publishes a method-call message and
+   * tracks the result via method-result messages.
+   */
+  callMethod(
+    providerId: string,
+    methodName: string,
+    args?: unknown,
+    options?: { timeoutMs?: number }
+  ): import("./protocol-types.js").MethodCallHandle;
+
 }
 
 /** Default reconnection configuration */
@@ -177,17 +272,90 @@ const DEFAULT_RECONNECT_CONFIG: Required<ReconnectConfig> = {
 /**
  * Connect to a PubSub channel.
  *
- * @param serverUrl - WebSocket server URL (e.g., "ws://127.0.0.1:49452")
- * @param token - Authentication token
- * @param options - Connection options including channel and optional sinceId
- * @returns A PubSubClient instance
+ * Supports two call signatures:
+ * - `connect(serverUrl, token, options)` — three-arg form
+ * - `connect(options)` — single-arg form with serverUrl and token in options
  */
+export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
+  options: FullConnectOptions<T>
+): PubSubClient<T>;
 export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   serverUrl: string,
   token: string,
   options: ConnectOptions<T>
+): PubSubClient<T>;
+export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
+  serverUrlOrOptions: string | FullConnectOptions<T>,
+  token?: string,
+  options?: ConnectOptions<T>
 ): PubSubClient<T> {
-  const { channel, contextId, channelConfig, sinceId: initialSinceId, replayMessageLimit, reconnect, metadata, clientId, skipOwnMessages } = options;
+  let serverUrl: string;
+  let actualToken: string;
+  let actualOptions: ConnectOptions<T>;
+
+  if (typeof serverUrlOrOptions === "string") {
+    serverUrl = serverUrlOrOptions;
+    actualToken = token!;
+    actualOptions = options!;
+  } else {
+    const { serverUrl: url, token: tok, ...rest } = serverUrlOrOptions;
+    serverUrl = url;
+    actualToken = tok;
+    actualOptions = rest;
+  }
+
+  return connectImpl<T>(serverUrl, actualToken, actualOptions);
+}
+
+function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
+  serverUrl: string,
+  token: string,
+  options: ConnectOptions<T>
+): PubSubClient<T> {
+  const { channel, contextId, channelConfig, sinceId: initialSinceId, replayMessageLimit, reconnect, clientId, skipOwnMessages, replayMode = "stream", methods: providedMethods } = options;
+
+  // Convert MethodDefinitions to MethodAdvertisements for metadata
+  function toMethodAdvertisements(methods: Record<string, MethodDefinition>): MethodAdvertisement[] {
+    // Internal methods are registered (callable) but not advertised in metadata.
+    // This prevents them from being discovered by harnesses as AI model tools.
+    return Object.entries(methods).filter(([, def]) => !def.internal).map(([methodName, def]) => {
+      // Handle both Zod schemas and plain JSON schema objects
+      const parameters = def.parameters && typeof def.parameters === "object" && !("_def" in def.parameters)
+        ? (def.parameters as JsonSchema)
+        : convertZodToJsonSchema(def.parameters as z.ZodTypeAny, { target: "openApi3" }) as JsonSchema;
+
+      const returns = def.returns
+        ? (def.returns && typeof def.returns === "object" && !("_def" in def.returns)
+          ? (def.returns as JsonSchema)
+          : convertZodToJsonSchema(def.returns as z.ZodTypeAny, { target: "openApi3" }) as JsonSchema)
+        : undefined;
+
+      return {
+        name: methodName,
+        description: def.description,
+        parameters,
+        returns,
+        streaming: def.streaming,
+        timeout: def.timeout,
+        menu: def.menu,
+      };
+    });
+  }
+
+  // Auto-pack handle/name/type/methods into metadata when provided as convenience fields
+  const metadata: T | undefined = (() => {
+    const { handle, name, type } = options;
+    if (!handle && !name && !type && !providedMethods) return options.metadata;
+    const base = (options.metadata ?? {}) as Record<string, unknown>;
+    const packed: Record<string, unknown> = { ...base };
+    if (handle) packed["handle"] = handle;
+    if (name) packed["name"] = name;
+    if (type) packed["type"] = type;
+    if (providedMethods && Object.keys(providedMethods).length > 0) {
+      packed["methods"] = toMethodAdvertisements(providedMethods);
+    }
+    return packed as T;
+  })();
 
   // Parse reconnection config
   const reconnectEnabled = reconnect !== undefined && reconnect !== false;
@@ -212,6 +380,11 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
   // Message queue for the async iterator
   const messageQueue: Message[] = [];
   let messageResolve: ((msg: Message | null) => void) | null = null;
+
+  // Raw PubSubMessage notification callbacks (used by events() infrastructure)
+  const rawMessageCallbacks = new Set<(msg: PubSubMessage) => void>();
+  // Ready signal callbacks (used by events() infrastructure)
+  const readySignalCallbacks = new Set<() => void>();
 
   // Pending publish tracking
   const pendingPublishes = new Map<
@@ -409,6 +582,8 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
         readyReject = null;
         enqueueMessage({ kind: "ready", totalCount: serverTotalCount, chatMessageCount: serverChatMessageCount, firstChatMessageId: serverFirstChatMessageId });
         for (const handler of readyHandlers) handler();
+        // Notify events infrastructure about ready signal
+        for (const cb of readySignalCallbacks) cb();
         break;
 
       case "messages-before": {
@@ -586,13 +761,7 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
           break;
         }
 
-        // Don't leak presence events into the consumer message stream — they're
-        // fully handled by the roster handlers above. Enqueueing them is redundant
-        // and forces consumers to filter/re-parse events already processed here.
-        if (isPresence) {
-          break;
-        }
-
+        // Build the PubSubMessage for all events (including presence)
         const message: PubSubMessage = {
           kind: msg.kind,
           id: msg.id,
@@ -603,6 +772,18 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
           attachments: msg.attachments,
           senderMetadata: msg.senderMetadata,
         };
+
+        // Notify raw message callbacks (for events() infrastructure)
+        for (const cb of rawMessageCallbacks) {
+          cb(message);
+        }
+
+        // Don't leak presence events into the consumer message stream — they're
+        // fully handled by the roster handlers above. Enqueueing them is redundant
+        // and forces consumers to filter/re-parse events already processed here.
+        if (isPresence) {
+          break;
+        }
 
         enqueueMessage(message);
         break;
@@ -989,6 +1170,8 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
       clearTimeout(reconnectTimeoutId);
       reconnectTimeoutId = null;
     }
+    // Close the events fanout so events() iterators complete
+    eventsFanout.close();
     // Send a graceful close action before closing the WebSocket. TCP ordering
     // guarantees the server processes this before the close frame, so it can
     // record a "graceful" leave reason instead of "disconnect". Fire-and-forget:
@@ -1037,6 +1220,571 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     });
   }
 
+  // =========================================================================
+  // events() infrastructure — typed event stream over raw messages()
+  // =========================================================================
+
+  function normalizeSenderMetadata(
+    meta: Record<string, unknown> | undefined
+  ): { name?: string; type?: string; handle?: string } | undefined {
+    if (!meta) return undefined;
+    const result: { name?: string; type?: string; handle?: string } = {};
+    if (typeof meta["name"] === "string") result.name = meta["name"] as string;
+    if (typeof meta["type"] === "string") result.type = meta["type"] as string;
+    if (typeof meta["handle"] === "string") result.handle = meta["handle"] as string;
+    return Object.keys(result).length > 0 ? result : undefined;
+  }
+
+  function parseIncoming(pubsubMsg: PubSubMessage): IncomingEvent | null {
+    const {
+      type: msgType,
+      payload,
+      attachments: msgAttachments,
+      senderId,
+      ts,
+      kind,
+      id: pubsubId,
+      senderMetadata,
+    } = pubsubMsg;
+    const normalizedSender = normalizeSenderMetadata(senderMetadata);
+
+    if (msgType === "message") {
+      const parsed = NewMessageSchema.safeParse(payload);
+      if (!parsed.success) return null;
+      return {
+        type: "message",
+        kind,
+        senderId,
+        ts,
+        attachments: msgAttachments,
+        pubsubId,
+        senderMetadata: normalizedSender,
+        id: parsed.data.id,
+        content: parsed.data.content,
+        replyTo: parsed.data.replyTo,
+        contentType: parsed.data.contentType,
+        at: parsed.data.at,
+        metadata: parsed.data.metadata,
+      } as IncomingNewMessage;
+    }
+
+    if (msgType === "update-message") {
+      const parsed = UpdateMessageSchema.safeParse(payload);
+      if (!parsed.success) return null;
+      return {
+        type: "update-message",
+        kind,
+        senderId,
+        ts,
+        attachments: msgAttachments,
+        pubsubId,
+        senderMetadata: normalizedSender,
+        id: parsed.data.id,
+        content: parsed.data.content,
+        complete: parsed.data.complete,
+        contentType: parsed.data.contentType,
+      } as IncomingUpdateMessage;
+    }
+
+    if (msgType === "error") {
+      const parsed = ErrorMessageSchema.safeParse(payload);
+      if (!parsed.success) return null;
+      return {
+        type: "error",
+        kind,
+        senderId,
+        ts,
+        attachments: msgAttachments,
+        pubsubId,
+        senderMetadata: normalizedSender,
+        id: parsed.data.id,
+        error: parsed.data.error,
+        code: parsed.data.code,
+      } as IncomingErrorMessage;
+    }
+
+    if (msgType === "method-call") {
+      const parsed = MethodCallSchema.safeParse(payload);
+      if (!parsed.success) return null;
+      return {
+        type: "method-call",
+        kind,
+        senderId,
+        ts,
+        pubsubId,
+        senderMetadata: normalizedSender,
+        callId: parsed.data.callId,
+        methodName: parsed.data.methodName,
+        providerId: parsed.data.providerId,
+        args: parsed.data.args,
+      } as IncomingMethodCallEvent;
+    }
+
+    if (msgType === "method-result") {
+      const parsed = MethodResultSchema.safeParse(payload);
+      if (!parsed.success) return null;
+      return {
+        type: "method-result",
+        kind,
+        senderId,
+        ts,
+        pubsubId,
+        senderMetadata: normalizedSender,
+        callId: parsed.data.callId,
+        content: parsed.data.content,
+        contentType: parsed.data.contentType,
+        complete: parsed.data.complete ?? false,
+        isError: parsed.data.isError ?? false,
+        progress: parsed.data.progress,
+        attachments: msgAttachments,
+      } as IncomingMethodResultEvent;
+    }
+
+    if (msgType === "execution-pause") {
+      const parsed = ExecutionPauseSchema.safeParse(payload);
+      if (!parsed.success) return null;
+      return {
+        type: "execution-pause",
+        kind,
+        senderId,
+        ts,
+        pubsubId,
+        senderMetadata: normalizedSender,
+        messageId: parsed.data.messageId,
+        status: parsed.data.status,
+        reason: parsed.data.reason,
+      } as IncomingExecutionPauseEvent;
+    }
+
+    if (msgType === "presence") {
+      const presencePayload = payload as { action?: string; metadata?: Record<string, unknown>; leaveReason?: string };
+      if (!presencePayload.action || !presencePayload.metadata) return null;
+      return {
+        type: "presence",
+        kind,
+        senderId,
+        ts,
+        pubsubId,
+        senderMetadata: normalizedSender,
+        action: presencePayload.action,
+        leaveReason: presencePayload.leaveReason,
+        metadata: presencePayload.metadata,
+      } as IncomingPresenceEventWithType;
+    }
+
+    if (msgType === "agent-debug") {
+      return {
+        type: "agent-debug",
+        kind,
+        senderId,
+        ts,
+        pubsubId,
+        senderMetadata: normalizedSender,
+        payload,
+      } as unknown as IncomingAgentDebugEvent;
+    }
+
+    return null;
+  }
+
+  // Events fanout — broadcasts parsed IncomingEvents to all events() subscribers
+  const eventsFanout = createFanout<IncomingEvent>();
+  // Replay buffering for collect mode
+  let bufferingReplay = replayMode !== "skip";
+  let pendingReplay: IncomingEvent[] = [];
+  let aggregatedReplay: AggregatedEvent[] = [];
+  let initialReplayComplete = false;
+  // Stream mode: raw replay events stored for yielding
+  const streamReplayEvents: IncomingEvent[] = [];
+
+  // Method auto-execution for provided methods
+  const registeredMethods: Record<string, MethodDefinition> = { ...(providedMethods ?? {}) };
+
+  async function handleMethodCallExec(event: IncomingMethodCallEvent): Promise<void> {
+    // Only handle calls targeting this client
+    if (!clientId || event.providerId !== clientId) {
+      if (clientId && event.providerId) {
+        console.warn(`[PubSubClient] Ignoring method-call "${event.methodName}" — target mismatch (target=${event.providerId}, self=${clientId}, callId=${event.callId})`);
+      }
+      return;
+    }
+
+    const methodDef = registeredMethods[event.methodName];
+    if (!methodDef) {
+      console.warn(`[PubSubClient] Received method-call for unregistered method "${event.methodName}" (callId=${event.callId}, from=${event.senderId})`);
+      // Send error response so the caller doesn't hang waiting
+      try {
+        await publish("method-result", {
+          callId: event.callId,
+          content: { error: `Method "${event.methodName}" not registered on this client` },
+          complete: true,
+          isError: true,
+        }, { persist: true });
+      } catch { /* best effort */ }
+      return;
+    }
+
+    const abortController = new AbortController();
+    const ctx: MethodExecutionContext = {
+      callId: event.callId,
+      callerId: event.senderId,
+      signal: abortController.signal,
+      stream: async (content: unknown) => {
+        await publish("method-result", {
+          callId: event.callId,
+          content,
+          complete: false,
+          isError: false,
+        }, { persist: true });
+      },
+      streamWithAttachments: async (content: unknown, attachments: AttachmentInput[], streamOpts?: { contentType?: string }) => {
+        await publish("method-result", {
+          callId: event.callId,
+          content,
+          contentType: streamOpts?.contentType,
+          complete: false,
+          isError: false,
+        }, { persist: true, attachments });
+      },
+      resultWithAttachments: <R>(content: R, attachments: AttachmentInput[], resultOpts?: { contentType?: string }) => ({
+        content,
+        attachments,
+        contentType: resultOpts?.contentType,
+      }),
+      progress: async (percent: number) => {
+        await publish("method-result", {
+          callId: event.callId,
+          complete: false,
+          isError: false,
+          progress: percent,
+        }, { persist: false });
+      },
+    };
+
+    try {
+      // Validate and execute
+      let args = event.args;
+      if (methodDef.parameters && "_def" in methodDef.parameters) {
+        args = (methodDef.parameters as z.ZodTypeAny).parse(args);
+      }
+
+      const result = await methodDef.execute(args, ctx);
+
+      // Check if result has attachments (from resultWithAttachments)
+      if (result && typeof result === "object" && "attachments" in (result as Record<string, unknown>) && "content" in (result as Record<string, unknown>)) {
+        const withAttachments = result as { content: unknown; attachments: AttachmentInput[]; contentType?: string };
+        await publish("method-result", {
+          callId: event.callId,
+          content: withAttachments.content,
+          contentType: withAttachments.contentType,
+          complete: true,
+          isError: false,
+        }, { persist: true, attachments: withAttachments.attachments });
+      } else {
+        await publish("method-result", {
+          callId: event.callId,
+          content: result,
+          complete: true,
+          isError: false,
+        }, { persist: true });
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      await publish("method-result", {
+        callId: event.callId,
+        content: { error: errorMsg },
+        complete: true,
+        isError: true,
+      }, { persist: true }).catch(() => {});
+    }
+  }
+
+  // Process raw PubSubMessages for the events() infrastructure
+  // This is callback-based (not iterator-based) to avoid competing with messages()
+  rawMessageCallbacks.add((pubsubMsg: PubSubMessage) => {
+    try {
+      const event = parseIncoming(pubsubMsg);
+      if (!event) return;
+
+      // Auto-execute incoming method calls targeting this client
+      if (event.type === "method-call" && event.kind !== "replay") {
+        handleMethodCallExec(event as IncomingMethodCallEvent)
+          .catch((err) => console.error(`[PubSubClient] Method execution failed:`, err));
+      }
+
+      // Buffer replay events
+      if (event.kind === "replay") {
+        if (replayMode === "skip") return;
+        if (!bufferingReplay) {
+          bufferingReplay = true;
+          pendingReplay = [];
+        }
+        pendingReplay.push(event);
+        if (replayMode === "stream") {
+          streamReplayEvents.push(event);
+        }
+        return;
+      }
+
+      // Emit live events to all subscribers
+      eventsFanout.emit(event);
+    } catch {
+      // Don't let a single bad message kill the processing
+    }
+  });
+
+  // Handle ready signal for events infrastructure
+  readySignalCallbacks.add(() => {
+    if (replayMode !== "skip") {
+      const aggregated = aggregateReplayEvents(pendingReplay);
+      if (!initialReplayComplete) {
+        aggregatedReplay = aggregated;
+      } else if (aggregated.length > 0) {
+        aggregatedReplay = [...aggregatedReplay, ...aggregated];
+      }
+    }
+    bufferingReplay = false;
+    pendingReplay = [];
+    initialReplayComplete = true;
+  });
+
+  // Handle reconnection: reset replay buffering
+  reconnectHandlers.add(() => {
+    if (replayMode === "skip") return;
+    bufferingReplay = true;
+    pendingReplay = [];
+  });
+
+  function events(evtOptions?: EventStreamOptions): AsyncIterableIterator<EventStreamItem> {
+    const source = eventsFanout.subscribe();
+    const includeReplay = evtOptions?.includeReplay ?? false;
+    const includeEphemeral = evtOptions?.includeEphemeral ?? false;
+
+    function isIncomingEvent(event: EventStreamItem): event is IncomingEvent {
+      return !("aggregated" in event);
+    }
+
+    return (async function* () {
+      // Yield replay events first if requested
+      if (includeReplay && replayMode !== "skip") {
+        const replaySeed: EventStreamItem[] =
+          replayMode === "stream" ? streamReplayEvents : aggregatedReplay;
+        for (const item of replaySeed) {
+          if (isIncomingEvent(item)) {
+            if (!includeEphemeral && item.kind === "ephemeral") continue;
+          }
+          yield item;
+        }
+      }
+
+      // Then yield live events
+      for await (const event of source) {
+        if (!includeEphemeral && event.kind === "ephemeral") continue;
+        yield event;
+      }
+    })();
+  }
+
+  // =========================================================================
+  // Agentic convenience methods — thin wrappers around publish()
+  // =========================================================================
+
+  function randomId(): string {
+    const cryptoObj = (globalThis as unknown as { crypto?: { randomUUID(): string } }).crypto;
+    if (cryptoObj?.randomUUID) return cryptoObj.randomUUID();
+    // Fallback for environments without crypto.randomUUID
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+    });
+  }
+
+  async function sendMessage(
+    content: string,
+    sendOptions?: {
+      replyTo?: string;
+      persist?: boolean;
+      attachments?: AttachmentInput[];
+      contentType?: string;
+      at?: string[];
+      metadata?: Record<string, unknown>;
+    }
+  ): Promise<{ messageId: string; pubsubId: number | undefined }> {
+    const id = randomId();
+    const payload: Record<string, unknown> = {
+      id,
+      content,
+    };
+    if (sendOptions?.replyTo) payload["replyTo"] = sendOptions.replyTo;
+    if (sendOptions?.contentType) payload["contentType"] = sendOptions.contentType;
+    if (sendOptions?.at) payload["at"] = sendOptions.at;
+    if (sendOptions?.metadata) payload["metadata"] = sendOptions.metadata;
+
+    const pubsubId = await publish("message", payload, {
+      persist: sendOptions?.persist ?? true,
+      attachments: sendOptions?.attachments,
+    });
+    return { messageId: id, pubsubId };
+  }
+
+  async function updateMessage(
+    id: string,
+    content: string,
+    updateOptions?: { complete?: boolean; persist?: boolean; attachments?: AttachmentInput[]; contentType?: string }
+  ): Promise<number | undefined> {
+    const payload: Record<string, unknown> = { id, content };
+    if (updateOptions?.complete !== undefined) payload["complete"] = updateOptions.complete;
+    if (updateOptions?.contentType) payload["contentType"] = updateOptions.contentType;
+    return await publish("update-message", payload, {
+      persist: updateOptions?.persist ?? true,
+      attachments: updateOptions?.attachments,
+    });
+  }
+
+  async function completeMessage(id: string): Promise<number | undefined> {
+    return await publish("update-message", { id, complete: true }, { persist: true });
+  }
+
+  async function errorMessage(id: string, errorMsg: string, code?: string): Promise<number | undefined> {
+    const payload: Record<string, unknown> = { id, error: errorMsg };
+    if (code) payload["code"] = code;
+    return await publish("error", payload, { persist: true });
+  }
+
+  // Method call tracking for callMethod()
+  interface MethodCallState {
+    readonly callId: string;
+    readonly stream: ReturnType<typeof createFanout<MethodResultChunk>>;
+    readonly resolve: (value: MethodResultValue) => void;
+    readonly reject: (error: Error) => void;
+    complete: boolean;
+    isError: boolean;
+  }
+
+  const methodCallStates = new Map<string, MethodCallState>();
+
+  // Subscribe to the events fanout to intercept method-result events
+  const methodResultSource = eventsFanout.subscribe();
+  void (async () => {
+    try {
+      for await (const event of methodResultSource) {
+        if (event.type !== "method-result") continue;
+        const result = event as IncomingMethodResultEvent;
+        const state = methodCallStates.get(result.callId);
+        if (!state) continue;
+
+        const chunk: MethodResultChunk = {
+          content: result.content,
+          attachments: result.attachments,
+          contentType: result.contentType,
+          complete: result.complete,
+          isError: result.isError,
+          progress: result.progress,
+        };
+
+        state.stream.emit(chunk);
+
+        if (chunk.complete) {
+          state.complete = true;
+          state.isError = chunk.isError;
+          state.stream.close();
+
+          if (chunk.isError) {
+            const content = chunk.content;
+            let errorMsg = "method execution failed";
+            if (content && typeof content === "object" && typeof (content as Record<string, unknown>)["error"] === "string") {
+              errorMsg = (content as Record<string, unknown>)["error"] as string;
+            }
+            state.reject(new AgenticError(errorMsg, "execution-error", content));
+          } else {
+            state.resolve({
+              content: chunk.content,
+              attachments: chunk.attachments,
+              contentType: chunk.contentType,
+            });
+          }
+          methodCallStates.delete(result.callId);
+        }
+      }
+    } catch {
+      // Stream closed
+    }
+  })();
+
+  function callMethod(
+    providerId: string,
+    methodName: string,
+    args?: unknown,
+    callOptions?: { timeoutMs?: number }
+  ): MethodCallHandle {
+    const callId = randomId();
+
+    let resolveResult!: (value: MethodResultValue) => void;
+    let rejectResult!: (error: Error) => void;
+    const result = new Promise<MethodResultValue>((res, rej) => {
+      resolveResult = res;
+      rejectResult = rej;
+    });
+
+    const stream = createFanout<MethodResultChunk>();
+    const state: MethodCallState = {
+      callId,
+      stream,
+      resolve: resolveResult,
+      reject: rejectResult,
+      complete: false,
+      isError: false,
+    };
+    methodCallStates.set(callId, state);
+
+    // Publish the method-call message
+    void publish("method-call", { callId, methodName, providerId, args: args ?? {} }, { persist: true }).catch((e: unknown) => {
+      const err = e instanceof Error ? e : new Error(String(e));
+      state.complete = true;
+      state.isError = true;
+      stream.close(err);
+      rejectResult(new AgenticError(err.message, "connection-error", err));
+      methodCallStates.delete(callId);
+    });
+
+    // Timeout
+    const timeoutMs = callOptions?.timeoutMs;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    if (timeoutMs && timeoutMs > 0) {
+      timeoutId = setTimeout(() => {
+        if (!state.complete) {
+          state.complete = true;
+          state.isError = true;
+          stream.close();
+          rejectResult(new AgenticError("method call timeout", "timeout"));
+          methodCallStates.delete(callId);
+        }
+      }, timeoutMs);
+    }
+
+    // Clean up timeout when result arrives
+    void result.finally(() => {
+      if (timeoutId) clearTimeout(timeoutId);
+    });
+
+    return {
+      callId,
+      result,
+      stream: stream.subscribe(),
+      cancel: async () => {
+        if (state.complete) return;
+        state.complete = true;
+        state.isError = true;
+        stream.close();
+        rejectResult(new AgenticError("cancelled", "cancelled"));
+        methodCallStates.delete(callId);
+        await publish("method-cancel", { callId }, { persist: true }).catch(() => {});
+      },
+      get complete() { return state.complete; },
+      get isError() { return state.isError; },
+    };
+  }
+
   return {
     messages,
     publish,
@@ -1044,6 +1792,15 @@ export function connect<T extends ParticipantMetadata = ParticipantMetadata>(
     ready,
     close,
     sendRaw,
+    events,
+    send: sendMessage,
+    update: updateMessage,
+    complete: completeMessage,
+    error: errorMessage,
+    callMethod,
+    get clientId() {
+      return clientId;
+    },
     get connected() {
       return ws.readyState === WebSocket.OPEN;
     },

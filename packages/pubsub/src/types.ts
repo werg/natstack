@@ -227,5 +227,30 @@ export interface ConnectOptions<T extends ParticipantMetadata = ParticipantMetad
   clientId?: string;
   /** Skip messages sent by this client (echo suppression). Requires clientId to be set. Default: false */
   skipOwnMessages?: boolean;
+
+  // === Agentic convenience fields ===
+  // When provided, these are packed into metadata automatically.
+
+  /** Participant display name (packed into metadata.name) */
+  name?: string;
+  /** Participant type (packed into metadata.type) */
+  type?: string;
+  /** Unique handle for @-mentions (packed into metadata.handle) */
+  handle?: string;
+  /** Replay behavior: "collect" aggregates replay into AggregatedEvents, "stream" emits raw IncomingEvents, "skip" suppresses replay. Default: "stream" */
+  replayMode?: "collect" | "stream" | "skip";
+  /** Methods this participant provides. When provided, method-call events targeting this client are auto-executed, and methods are advertised in metadata. */
+  methods?: Record<string, import("./protocol-types.js").MethodDefinition>;
+}
+
+/**
+ * Options for single-arg connect() overload.
+ * Includes serverUrl and token alongside all ConnectOptions fields.
+ */
+export interface FullConnectOptions<T extends ParticipantMetadata = ParticipantMetadata> extends ConnectOptions<T> {
+  /** WebSocket server URL (e.g., "ws://127.0.0.1:49452") */
+  serverUrl: string;
+  /** Authentication token */
+  token: string;
 }
 

@@ -12,7 +12,7 @@ import type {
   AgentDebugPayload,
   AgentBuildError,
   AggregatedMessage,
-} from "@natstack/agentic-messaging";
+} from "@natstack/pubsub";
 import type { Participant, Attachment } from "@natstack/pubsub";
 import type { MethodHistoryEntry } from "../components/MethodHistoryItem";
 import type { ChatParticipantMetadata, ChatMessage, PendingAgent } from "../types";

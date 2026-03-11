@@ -5,7 +5,7 @@
  * - Locating the workerd binary
  * - Worker instance lifecycle (create, update, destroy)
  * - Context/token provisioning per instance
- * - JSON config generation with auto-generated router worker
+ * - Cap'n Proto text config generation with auto-generated router worker
  * - workerd child process management (start, restart, stop)
  */
 
@@ -49,6 +49,13 @@ export interface WorkerCreateOptions {
   /** Build at a specific git ref (branch, tag, or commit SHA).
    *  Use a commit SHA for immutable pinning (content-addressed cache guarantees same build). */
   ref?: string;
+  /** When present, creates a Durable Object instance instead of a regular worker. */
+  durable?: {
+    /** DO class name (must match the worker source's exported class). */
+    className: string;
+    /** Stable instance identifier — maps to workerd's idFromName(objectKey). */
+    objectKey: string;
+  };
 }
 
 export interface WorkerInstance {
@@ -72,6 +79,8 @@ export interface WorkerdManagerDeps {
   fsService: FsService;
   rpcPort: number;
   getBuild: (unitPath: string, ref?: string) => Promise<BuildResult>;
+  /** Workspace root path — used for DO storage (localDisk). */
+  workspacePath: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -85,6 +94,12 @@ export class WorkerdManager {
   private port: number | null = null;
   private deps: WorkerdManagerDeps;
   private workerdBinary: string | null = null;
+
+  // DO support: shared services (one per source) and individual DO instances
+  /** Shared DO services — keyed by className. One workerd service per source, multiple DO instances per service. */
+  private doServices = new Map<string, { buildKey: string; className: string; serviceName: string; source: string }>();
+  /** Individual DO instances — keyed by `${className}/${objectKey}`. */
+  private doInstances = new Map<string, { source: string; objectKey: string; contextId: string; className: string }>();
 
   constructor(deps: WorkerdManagerDeps) {
     this.deps = deps;
@@ -122,6 +137,15 @@ export class WorkerdManager {
   // =========================================================================
 
   async createInstance(options: WorkerCreateOptions): Promise<WorkerInstance> {
+    if (options.durable) {
+      return this.createDurableInstance(options, options.durable);
+    }
+    return this.createRegularInstance(options);
+  }
+
+  // ── Regular (non-durable) worker creation ──
+
+  private async createRegularInstance(options: WorkerCreateOptions): Promise<WorkerInstance> {
     const rawName = options.name ?? options.source.split("/").pop() ?? "worker";
     // Sanitize name — used in generated JS router code and workerd config keys
     const name = rawName.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -179,6 +203,103 @@ export class WorkerdManager {
     return instance;
   }
 
+  // ── Durable Object instance creation ──
+
+  private async createDurableInstance(
+    options: WorkerCreateOptions,
+    durable: { className: string; objectKey: string },
+  ): Promise<WorkerInstance> {
+    const { className, objectKey } = durable;
+    const doKey = `${className}/${objectKey}`;
+
+    // Validate className uniqueness: if a service exists for this className, it must use the same source
+    const existingService = this.doServices.get(className);
+    if (existingService && existingService.source !== options.source) {
+      throw new Error(
+        `DO className "${className}" is already registered with source "${existingService.source}", ` +
+        `cannot register with different source "${options.source}"`,
+      );
+    }
+
+    if (this.doInstances.has(doKey)) {
+      throw new Error(`DO instance "${doKey}" already exists`);
+    }
+
+    // Use className as the service name in workerd config (sanitized)
+    const serviceName = `do_${className.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+    // Instance name for the WorkerInstance map — unique per DO instance
+    const name = `do_${className}_${objectKey}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+
+    const callerId = `worker:${name}`;
+    const contextId = options.contextId;
+
+    // Create auth token
+    const token = this.deps.tokenManager.ensureToken(callerId, "worker");
+
+    // Register context with FsService
+    this.deps.fsService.registerCallerContext(callerId, contextId);
+
+    const instance: WorkerInstance = {
+      name,
+      source: options.source,
+      contextId,
+      callerId,
+      token,
+      env: options.env ?? {},
+      bindings: options.bindings ?? {},
+      stateArgs: options.stateArgs,
+      limits: options.limits,
+      ref: options.ref,
+      status: "building",
+    };
+
+    let needsRestart = false;
+
+    try {
+      // If no shared service exists for this className, build the source and create one
+      if (!existingService) {
+        const buildResult = await this.deps.getBuild(options.source, options.ref);
+        this.doServices.set(className, {
+          buildKey: buildResult.metadata.ev,
+          className,
+          serviceName,
+          source: options.source,
+        });
+        needsRestart = true;
+      }
+
+      // Register the DO instance
+      this.doInstances.set(doKey, { source: options.source, objectKey, contextId, className });
+
+      // Track as a regular instance too (for lifecycle, listing, etc.)
+      this.instances.set(name, instance);
+
+      instance.status = "starting";
+
+      // Only restart workerd if a new service was created (not for each new DO instance)
+      if (needsRestart) {
+        await this.restartWorkerd();
+      }
+
+      instance.status = "running";
+      log.info(`DO instance "${className}/${objectKey}" started (source: ${options.source})`);
+    } catch (error) {
+      instance.status = "error";
+      this.instances.delete(name);
+      this.doInstances.delete(doKey);
+      // Roll back service registration if we just created it
+      if (needsRestart && !existingService) {
+        this.doServices.delete(className);
+      }
+      this.deps.tokenManager.revokeToken(callerId);
+      this.deps.fsService.unregisterCallerContext(callerId);
+      log.error(`Failed to start DO instance "${className}/${objectKey}":`, error);
+      throw error;
+    }
+
+    return instance;
+  }
+
   async destroyInstance(name: string): Promise<void> {
     const instance = this.instances.get(name);
     if (!instance) {
@@ -193,9 +314,32 @@ export class WorkerdManager {
 
     instance.status = "stopped";
 
-    // Restart workerd if there are remaining instances
+    // Clean up DO tracking if this was a DO instance
+    let doServiceRemoved = false;
+    for (const [doKey, doInst] of this.doInstances) {
+      // Match by finding the DO instance whose generated name matches
+      const expectedName = `do_${doInst.className}_${doInst.objectKey}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+      if (expectedName === name) {
+        this.doInstances.delete(doKey);
+        // If no more DO instances reference this className, remove the shared service
+        const hasOtherInstances = Array.from(this.doInstances.values()).some(
+          (d) => d.className === doInst.className,
+        );
+        if (!hasOtherInstances) {
+          this.doServices.delete(doInst.className);
+          doServiceRemoved = true;
+        }
+        break;
+      }
+    }
+
+    // Restart workerd if there are remaining instances (or if a DO service was removed)
     if (this.instances.size > 0) {
-      await this.restartWorkerd();
+      // Only restart if this was a regular worker or a DO service was removed
+      // (removing a DO instance without removing its service doesn't need a restart)
+      if (doServiceRemoved || !name.startsWith("do_")) {
+        await this.restartWorkerd();
+      }
     } else {
       this.stopWorkerd();
     }
@@ -245,7 +389,64 @@ export class WorkerdManager {
     const services: object[] = [];
     const instanceNames: string[] = [];
 
+    // Collect DO service names that have been emitted (to avoid duplicating in regular loop)
+    const doServiceNames = new Set<string>();
+
+    // ── DO services (one workerd service per className) ──
+    for (const [className, doService] of this.doServices) {
+      let bundleContent: string;
+      try {
+        const buildResult = await this.deps.getBuild(doService.source);
+        bundleContent = buildResult.bundle;
+      } catch (err) {
+        log.warn(`Skipping DO service "${className}" — build not available:`, err);
+        continue;
+      }
+
+      doServiceNames.add(doService.serviceName);
+
+      // Collect bindings from the first DO instance of this className (for RPC credentials, etc.)
+      const representativeInstance = Array.from(this.instances.values()).find(
+        (inst) => inst.name.startsWith(`do_${className}_`),
+      );
+
+      const bindings: object[] = [
+        { name: "RPC_WS_URL", text: `ws://127.0.0.1:${this.deps.rpcPort}` },
+      ];
+
+      if (representativeInstance) {
+        bindings.push(
+          { name: "RPC_AUTH_TOKEN", text: representativeInstance.token },
+          { name: "CONTEXT_ID", text: representativeInstance.contextId },
+        );
+      }
+
+      // DO storage: create a disk service and reference it by name
+      const diskServiceName = `${doService.serviceName}_disk`;
+      const doStoragePath = path.join(this.deps.workspacePath, ".databases", "workerd-do");
+      fs.mkdirSync(doStoragePath, { recursive: true });
+
+      const workerDef: Record<string, unknown> = {
+        modules: [{ name: "worker.js", esModule: bundleContent }],
+        bindings,
+        compatibilityDate: "2024-01-01",
+        durableObjectNamespaces: [
+          { className, uniqueKey: className, enableSql: true },
+        ],
+        durableObjectStorage: {
+          localDisk: diskServiceName,
+        },
+      };
+
+      services.push({ name: doService.serviceName, worker: workerDef });
+      services.push({ name: diskServiceName, disk: { path: doStoragePath, writable: true } });
+    }
+
+    // ── Regular (non-durable) worker services ──
     for (const [name, instance] of this.instances) {
+      // Skip DO instances — their services are already emitted above
+      if (this.isDurableInstance(name)) continue;
+
       // Get the build for this instance (content-addressed — ref builds are cached).
       let bundleContent: string;
       try {
@@ -315,14 +516,28 @@ export class WorkerdManager {
       services.push({ name, worker: workerDef });
     }
 
+    // Collect DO class names for router generation (only those whose service was successfully built)
+    const doClassNames = Array.from(this.doServices.entries())
+      .filter(([, svc]) => doServiceNames.has(svc.serviceName))
+      .map(([cn, svc]) => ({ className: cn, serviceName: svc.serviceName }));
+
     // Auto-generate router worker
-    if (instanceNames.length > 0) {
-      const routerBindings = instanceNames.map((name) => ({
+    const hasAnyService = instanceNames.length > 0 || doClassNames.length > 0;
+    if (hasAnyService) {
+      const routerBindings: object[] = instanceNames.map((name) => ({
         name: `worker_${name.replace(/[^a-zA-Z0-9_]/g, "_")}`,
         service: { name },
       }));
 
-      const routerCode = this.generateRouterCode(instanceNames);
+      // Add DO namespace bindings for the router (durableObjectNamespace, not service)
+      for (const { className, serviceName } of doClassNames) {
+        routerBindings.push({
+          name: `do_${className.replace(/[^a-zA-Z0-9_]/g, "_")}`,
+          durableObjectNamespace: { className, serviceName },
+        });
+      }
+
+      const routerCode = this.generateRouterCode(instanceNames, doClassNames);
 
       services.push({
         name: "router",
@@ -342,7 +557,7 @@ export class WorkerdManager {
 
     return {
       services,
-      sockets: instanceNames.length > 0
+      sockets: hasAnyService
         ? [{
             name: "http",
             address: `*:${this.port}`,
@@ -353,11 +568,52 @@ export class WorkerdManager {
     };
   }
 
-  private generateRouterCode(instanceNames: string[]): string {
+  /** Returns true if the instance name belongs to a DO instance. */
+  private isDurableInstance(name: string): boolean {
+    for (const doInst of this.doInstances.values()) {
+      const expectedName = `do_${doInst.className}_${doInst.objectKey}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+      if (expectedName === name) return true;
+    }
+    return false;
+  }
+
+  private generateRouterCode(
+    instanceNames: string[],
+    doClassNames: { className: string; serviceName: string }[] = [],
+  ): string {
     const cases = instanceNames.map((name) => {
       const bindingName = `worker_${name.replace(/[^a-zA-Z0-9_]/g, "_")}`;
       return `    if (prefix === ${JSON.stringify(name)}) return env.${bindingName}.fetch(new Request(newUrl, request));`;
     });
+
+    // Generate DO routing block for /_do/{className}/{objectKey}/{method?}
+    let doBlock = "";
+    if (doClassNames.length > 0) {
+      const doCases = doClassNames.map(({ className }) => {
+        const bindingName = `do_${className.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+        return `      if (doClass === ${JSON.stringify(className)}) {
+        const id = env.${bindingName}.idFromName(objectKey);
+        const stub = env.${bindingName}.get(id);
+        const doUrl = new URL("/" + doRest.join("/"), url.origin);
+        doUrl.search = url.search;
+        return stub.fetch(new Request(doUrl, request));
+      }`;
+      });
+
+      doBlock = `
+    // /_do/{className}/{objectKey}/{...rest} — debug routes for Durable Objects
+    if (prefix === "_do") {
+      const doClass = parts[1] || "";
+      const objectKey = parts[2] || "";
+      const doRest = parts.slice(3);
+      if (!doClass || !objectKey) {
+        return new Response("Usage: /_do/{className}/{objectKey}/{method?}", { status: 400 });
+      }
+${doCases.join("\n")}
+      return new Response("DO class not found: " + doClass, { status: 404 });
+    }
+`;
+    }
 
     return `export default {
   async fetch(request, env) {
@@ -367,11 +623,65 @@ export class WorkerdManager {
     const rest = "/" + parts.slice(1).join("/");
     const newUrl = new URL(rest, url.origin);
     newUrl.search = url.search;
-${cases.join("\n")}
+${doBlock}${cases.join("\n")}
     return new Response("Worker not found: " + prefix, { status: 404 });
   }
 };
 `;
+  }
+
+  // =========================================================================
+  // Cap'n Proto text config generation
+  // =========================================================================
+
+  /**
+   * Convert the JSON config object to Cap'n Proto text format.
+   * Workerd's JSON config was removed; the native format is capnp text.
+   * Bundle code is written to separate files and referenced via `embed`.
+   */
+  private toCapnpText(config: Record<string, unknown>): string {
+    this.bundleFileCounter = 0;
+    const body = this.capnpValue(config, 1);
+    return `using Workerd = import "/workerd/workerd.capnp";\n\nconst config :Workerd.Config = ${body};\n`;
+  }
+
+  private bundleFileCounter = 0;
+
+  private capnpValue(value: unknown, depth: number): string {
+    if (value === null || value === undefined) return "void";
+    if (typeof value === "boolean") return value ? "true" : "false";
+    if (typeof value === "number") return String(value);
+    if (typeof value === "string") {
+      // Escape for Cap'n Proto text strings (same as JSON string escaping)
+      return JSON.stringify(value);
+    }
+
+    if (Array.isArray(value)) {
+      if (value.length === 0) return "[]";
+      const indent = "  ".repeat(depth);
+      const items = value.map((v) => `${indent}${this.capnpValue(v, depth + 1)},`);
+      return `[\n${items.join("\n")}\n${"  ".repeat(depth - 1)}]`;
+    }
+
+    if (typeof value === "object") {
+      const obj = value as Record<string, unknown>;
+      const entries = Object.entries(obj);
+      if (entries.length === 0) return "()";
+
+      const indent = "  ".repeat(depth);
+      const fields = entries.map(([k, v]) => {
+        // esModule bundles: write to file, reference via embed
+        if (k === "esModule" && typeof v === "string") {
+          const filename = `bundle-${this.bundleFileCounter++}.js`;
+          fs.writeFileSync(path.join(this.configDir, filename), v);
+          return `${indent}${k} = embed "${filename}",`;
+        }
+        return `${indent}${k} = ${this.capnpValue(v, depth + 1)},`;
+      });
+      return `(\n${fields.join("\n")}\n${"  ".repeat(depth - 1)})`;
+    }
+
+    return String(value);
   }
 
   // =========================================================================
@@ -384,12 +694,13 @@ ${cases.join("\n")}
     if (this.instances.size === 0) return;
 
     const config = await this.generateConfig();
-    const configPath = path.join(this.configDir, "config.json");
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    const configPath = path.join(this.configDir, "config.capnp");
+    const capnpText = this.toCapnpText(config as Record<string, unknown>);
+    fs.writeFileSync(configPath, capnpText);
 
     const binary = this.findWorkerdBinary();
 
-    this.process = spawn(binary, ["serve", "--experimental-json-config", configPath], {
+    this.process = spawn(binary, ["serve", configPath], {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env },
     });
@@ -404,18 +715,51 @@ ${cases.join("\n")}
       if (line) log.warn(`[workerd] ${line}`);
     });
 
-    this.process.on("exit", (code, signal) => {
-      log.info(`workerd exited (code=${code}, signal=${signal})`);
-      this.process = null;
-    });
+    // Wait for startup, detecting early failures (ENOENT, crash, etc.)
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
 
-    this.process.on("error", (err) => {
-      log.error("workerd process error:", err);
-      this.process = null;
-    });
+      const onExit = (code: number | null, signal: string | null) => {
+        log.info(`workerd exited (code=${code}, signal=${signal})`);
+        this.process = null;
+        if (!settled) {
+          settled = true;
+          reject(new Error(`workerd exited immediately (code=${code}, signal=${signal})`));
+        }
+      };
 
-    // Wait briefly for startup
-    await new Promise((resolve) => setTimeout(resolve, 500));
+      const onError = (err: Error) => {
+        log.error("workerd process error:", err);
+        this.process = null;
+        if (!settled) {
+          settled = true;
+          reject(new Error(`workerd failed to start: ${err.message}`));
+        }
+      };
+
+      this.process!.on("exit", onExit);
+      this.process!.on("error", onError);
+
+      // If the process survives 500ms, consider it started
+      setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          // Keep the exit/error handlers for ongoing monitoring, but replace
+          // them with non-rejecting versions since the promise is settled
+          this.process?.removeListener("exit", onExit);
+          this.process?.removeListener("error", onError);
+          this.process?.on("exit", (code, signal) => {
+            log.info(`workerd exited (code=${code}, signal=${signal})`);
+            this.process = null;
+          });
+          this.process?.on("error", (err) => {
+            log.error("workerd process error:", err);
+            this.process = null;
+          });
+          resolve();
+        }
+      }, 500);
+    });
 
     log.info(`workerd started on port ${this.port} with ${this.instances.size} worker(s)`);
   }
@@ -449,6 +793,10 @@ ${cases.join("\n")}
     }
     this.instances.clear();
 
+    // Cleanup DO tracking
+    this.doServices.clear();
+    this.doInstances.clear();
+
     // Clean up config dir
     try {
       fs.rmSync(this.configDir, { recursive: true, force: true });
@@ -471,6 +819,19 @@ ${cases.join("\n")}
       if (instance.source === source && !instance.ref) {
         instance.status = "starting";
         needsRestart = true;
+      }
+    }
+
+    // Also check DO services tracking this source
+    for (const [className, doService] of this.doServices) {
+      if (doService.source === source) {
+        needsRestart = true;
+        // Mark all DO instances of this class as starting
+        for (const instance of this.instances.values()) {
+          if (instance.name.startsWith(`do_${className}_`) && !instance.ref) {
+            instance.status = "starting";
+          }
+        }
       }
     }
 

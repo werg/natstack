@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, type ComponentType } from "react";
 import { Box, Button, Card, Flex, ScrollArea, Text } from "@radix-ui/themes";
-import { prettifyToolName } from "@natstack/agentic-messaging/utils";
+import { prettifyToolName } from "@natstack/pubsub";
 import type { Participant } from "@natstack/pubsub";
 import type { MethodHistoryEntry } from "./MethodHistoryItem";
 import { InlineGroup, type InlineItem } from "./InlineGroup";
@@ -106,15 +106,23 @@ function fullGroupComputation(
   methodEntries?: Map<string, MethodHistoryEntry>,
 ): GroupedItem[] {
   const lastTypingIndexBySender = new Map<string, number>();
+  const lastNonTypingIndexBySender = new Map<string, number>();
   messages.forEach((msg, index) => {
     if (msg.contentType === "typing" && !msg.complete) {
       lastTypingIndexBySender.set(msg.senderId, index);
+    } else if (msg.contentType !== "typing") {
+      lastNonTypingIndexBySender.set(msg.senderId, index);
     }
   });
   const isSupersededTyping = (msg: ChatMessage, index: number): boolean => {
     if (msg.contentType !== "typing" || msg.complete) return false;
-    const lastIndex = lastTypingIndexBySender.get(msg.senderId);
-    return lastIndex !== undefined && index !== lastIndex;
+    // Superseded by a later typing indicator from the same sender
+    const lastTypingIdx = lastTypingIndexBySender.get(msg.senderId);
+    if (lastTypingIdx !== undefined && index !== lastTypingIdx) return true;
+    // Auto-dismiss: a non-typing message from the same sender appeared after this typing
+    const lastNonTypingIdx = lastNonTypingIndexBySender.get(msg.senderId);
+    if (lastNonTypingIdx !== undefined && lastNonTypingIdx > index) return true;
+    return false;
   };
 
   const result: GroupedItem[] = [];
@@ -517,9 +525,12 @@ export const MessageList = React.memo(function MessageList({
         // Recompute typing dedup for new messages only (approximate — full dedup
         // is only needed for the typing subset which is typically small)
         const lastTypingBySender = new Map<string, number>();
+        const lastNonTypingBySender = new Map<string, number>();
         messages.forEach((msg, index) => {
           if (msg.contentType === "typing" && !msg.complete) {
             lastTypingBySender.set(msg.senderId, index);
+          } else if (msg.contentType !== "typing") {
+            lastNonTypingBySender.set(msg.senderId, index);
           }
         });
 
@@ -527,10 +538,12 @@ export const MessageList = React.memo(function MessageList({
           const msg = messages[i]!;
           // Skip completed typing indicators (same filter as fullGroupComputation)
           if (msg.contentType === "typing" && msg.complete) continue;
-          // Skip superseded typing
+          // Skip superseded typing (by later typing or by non-typing content)
           if (msg.contentType === "typing" && !msg.complete) {
             const last = lastTypingBySender.get(msg.senderId);
             if (last !== undefined && i !== last) continue;
+            const lastNonTyping = lastNonTypingBySender.get(msg.senderId);
+            if (lastNonTyping !== undefined && lastNonTyping > i) continue;
           }
 
           const inlineType = getInlineItemType(msg);

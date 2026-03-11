@@ -2,29 +2,35 @@
  * Agentic Chat Panel
  *
  * On mount without a channelName, auto-generates a channel and spawns the
- * default agent (claude-code-responder). The panel's own contextId is used
+ * default agent DO (AiChatWorker). The panel's own contextId is used
  * directly — no cross-context navigation needed.
  */
 
-import { pubsubConfig, id as panelClientId, contextId, rpc, focusPanel, useStateArgs, buildPanelLink, db } from "@workspace/runtime";
+import { pubsubConfig, id as panelClientId, contextId, rpc, focusPanel, useStateArgs, setStateArgs, buildPanelLink, workers } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AgentManifest } from "@natstack/types";
 import { Flex, Spinner, Text, Theme } from "@radix-ui/themes";
 import { AgenticChat, ErrorBoundary } from "@workspace/agentic-chat";
 import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDeps } from "@workspace/agentic-chat";
 import { executeEvalTool, EVAL_DEFAULT_TIMEOUT_MS, EVAL_MAX_TIMEOUT_MS, EVAL_FRAMEWORK_TIMEOUT_MS } from "@workspace/agentic-tools";
 import { z } from "zod";
-import type { MethodDefinition } from "@natstack/agentic-messaging";
-import { setDbOpen } from "@natstack/agentic-messaging";
-// Configure agentic-messaging to use runtime's db (needed for session persistence)
-setDbOpen(db.open);
+import type { MethodDefinition } from "@natstack/pubsub";
 
 /** Stable metadata object — avoids creating a new object every render */
 const PANEL_METADATA = { name: "Chat Panel", type: "panel" as const, handle: "user" };
 
-const DEFAULT_AGENT = "claude-code-responder";
-const DEFAULT_HANDLE = "cc";
+/** Default DO worker source and class for the AI chat agent */
+const DEFAULT_WORKER_SOURCE = "workers/agent-worker";
+const DEFAULT_CLASS_NAME = "AiChatWorker";
+const DEFAULT_HANDLE = "ai-chat";
+
+/** Response shape from workers.listSources */
+interface WorkerSourceEntry {
+  name: string;
+  source: string;
+  title?: string;
+  classes: Array<{ className: string }>;
+}
 
 /** Type for chat panel state args */
 interface ChatStateArgs {
@@ -32,6 +38,53 @@ interface ChatStateArgs {
   channelConfig?: Record<string, unknown>;
   contextId?: string;
   pendingAgents?: Array<{ agentId: string; handle: string }>;
+}
+
+/**
+ * Subscribe a DO to a channel via the workers service.
+ * Creates the worker instance (if not already running) then calls subscribeChannel.
+ */
+async function subscribeDOToChannel(
+  className: string,
+  objectKey: string,
+  channelId: string,
+  channelContextId: string,
+  config?: Record<string, unknown>,
+): Promise<{ ok: boolean; participantId?: string }> {
+  // Ensure the DO worker instance exists
+  await workers.create({
+    source: DEFAULT_WORKER_SOURCE,
+    contextId: channelContextId,
+    limits: { cpuMs: 30_000 },
+    name: objectKey,
+    stateArgs: config,
+    durable: { className, objectKey },
+  }).catch(() => {
+    // Instance may already exist — that's fine
+  });
+
+  // Subscribe the DO to the channel
+  return rpc.call<{ ok: boolean; participantId?: string }>(
+    "main",
+    "workers.callDO",
+    className,
+    objectKey,
+    "subscribeChannel",
+    channelId,
+    channelContextId,
+    config,
+  );
+}
+
+/**
+ * Unsubscribe a DO from a channel via the workers service.
+ */
+async function unsubscribeDOFromChannel(
+  className: string,
+  objectKey: string,
+  channelId: string,
+): Promise<void> {
+  await rpc.call("main", "workers.callDO", className, objectKey, "unsubscribeChannel", channelId);
 }
 
 export default function ChatPanel() {
@@ -48,13 +101,15 @@ export default function ChatPanel() {
     bootstrapAttempted.current = true;
 
     const channelName = `chat-${crypto.randomUUID().slice(0, 8)}`;
-    const pending = [{ agentId: DEFAULT_AGENT, handle: DEFAULT_HANDLE }];
+    const objectKey = `${DEFAULT_HANDLE}-${crypto.randomUUID().slice(0, 8)}`;
+    const pending = [{ agentId: DEFAULT_CLASS_NAME, handle: DEFAULT_HANDLE }];
 
-    // Spawn default agent — fire-and-forget, AgenticChat handles pending display
-    rpc.call("main", "agents.spawn", DEFAULT_AGENT, channelName, DEFAULT_HANDLE, {
-      contextId,
-    }).catch((err: unknown) => {
-      console.warn(`[ChatPanel] Failed to spawn default agent:`, err);
+    // Persist channel name to stateArgs so reloads reconnect to the same channel
+    void setStateArgs({ channelName, pendingAgents: pending });
+
+    // Subscribe default DO agent — fire-and-forget, AgenticChat handles pending display
+    subscribeDOToChannel(DEFAULT_CLASS_NAME, objectKey, channelName, contextId).catch((err: unknown) => {
+      console.warn(`[ChatPanel] Failed to subscribe default agent DO:`, err);
     });
 
     setBootstrapChannel(channelName);
@@ -83,31 +138,65 @@ export default function ChatPanel() {
     void focusPanel(panelId);
   }, []);
 
-  // Fetch available agents on mount
-  const [availableAgents, setAvailableAgents] = useState<Array<{ id: string; name: string; proposedHandle: string }>>([]);
+  // Fetch available worker sources (DO agents) on mount
+  const [availableAgents, setAvailableAgents] = useState<Array<{ id: string; name: string; proposedHandle: string; className: string }>>([]);
   useEffect(() => {
-    rpc.call<AgentManifest[]>("main", "agents.list").then((agents) => {
-      setAvailableAgents(agents.map(a => ({
-        id: a.id,
-        name: a.name,
-        proposedHandle: a.proposedHandle ?? a.id.split("-")[0] ?? a.id,
-      })));
+    rpc.call<WorkerSourceEntry[]>("main", "workers.listSources").then((sources) => {
+      const agents: Array<{ id: string; name: string; proposedHandle: string; className: string }> = [];
+      for (const source of sources) {
+        for (const cls of source.classes) {
+          agents.push({
+            id: source.source,
+            name: source.title ?? source.name,
+            proposedHandle: source.name.split("-")[0] ?? source.name,
+            className: cls.className,
+          });
+        }
+      }
+      setAvailableAgents(agents);
     }).catch(() => {});
   }, []);
 
   const handleAddAgent = useCallback(async (channelName: string, channelContextId?: string, agentId?: string) => {
-    const selectedId = agentId ?? DEFAULT_AGENT;
-    const agent = availableAgents.find(a => a.id === selectedId);
+    const agent = agentId
+      ? availableAgents.find(a => a.id === agentId || a.className === agentId)
+      : availableAgents[0];
+    const className = agent?.className ?? DEFAULT_CLASS_NAME;
     const baseHandle = agent?.proposedHandle ?? DEFAULT_HANDLE;
     const handle = `${baseHandle}-${crypto.randomUUID().slice(0, 4)}`;
-    await rpc.call("main", "agents.spawn", selectedId, channelName, handle, {
-      contextId: channelContextId ?? contextId,
-    });
-    return { agentId: selectedId, handle };
+    const objectKey = `${handle}-${crypto.randomUUID().slice(0, 8)}`;
+    await subscribeDOToChannel(
+      className,
+      objectKey,
+      channelName,
+      channelContextId ?? contextId,
+    );
+    return { agentId: agent?.id ?? DEFAULT_WORKER_SOURCE, handle };
   }, [availableAgents]);
 
   const handleRemoveAgent = useCallback(async (channelName: string, handle: string) => {
-    await rpc.call("main", "agents.killByHandle", channelName, handle);
+    // Find the DO participant on this channel that matches the handle.
+    // getChannelWorkers returns all DO participants subscribed to the channel.
+    const channelWorkers = await rpc.call<Array<{
+      participantId: string;
+      className: string;
+      objectKey: string;
+      channelId: string;
+    }>>("main", "workers.getChannelWorkers", channelName);
+
+    // Match by objectKey containing the handle prefix (objectKey is "{handle}-{uuid}")
+    const match = channelWorkers.find(w => w.objectKey.startsWith(handle));
+    if (match) {
+      await unsubscribeDOFromChannel(match.className, match.objectKey, channelName);
+    } else {
+      // Fallback: try to unsubscribe the first worker if only one is present
+      // TODO: improve handle-to-objectKey resolution when multiple DOs are present
+      console.warn(`[ChatPanel] No DO found matching handle "${handle}" on channel "${channelName}"`);
+      if (channelWorkers.length === 1) {
+        const w = channelWorkers[0]!;
+        await unsubscribeDOFromChannel(w.className, w.objectKey, channelName);
+      }
+    }
   }, []);
 
   const chatActions: AgenticChatActions = useMemo(() => ({

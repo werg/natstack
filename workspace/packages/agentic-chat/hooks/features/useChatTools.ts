@@ -2,10 +2,13 @@
  * useChatTools — Tool provider wrapping with approval middleware.
  *
  * Wraps raw tool method definitions with the approval system.
+ * Also provides `buildApprovalMethod()` which registers the
+ * `request_tool_approval` PubSub method that DO-side agents call
+ * when they need tool approval from the panel.
  */
 
 import { useCallback, useMemo, useRef, useEffect } from "react";
-import type { MethodDefinition } from "@natstack/agentic-messaging";
+import type { MethodDefinition } from "@natstack/pubsub";
 import {
   useToolApproval,
   wrapMethodsWithApproval,
@@ -24,6 +27,8 @@ interface UseChatToolsOptions {
 export interface ChatToolsState {
   /** Build tool method definitions wrapped with approval */
   buildToolMethods: () => Record<string, MethodDefinition>;
+  /** Build the request_tool_approval method for DO-originated approval requests */
+  buildApprovalMethod: () => Record<string, MethodDefinition>;
   /** Memoized tool approval props for UI */
   toolApprovalValue: ToolApprovalProps;
 }
@@ -34,7 +39,9 @@ export function useChatTools({
   addFeedback,
   removeFeedback,
 }: UseChatToolsOptions): ChatToolsState {
-  const approval = useToolApproval(clientRef.current, { addFeedback, removeFeedback });
+  // PubSubClient doesn't have getSettings/updateSettings — approval settings won't persist
+  // across sessions, but the approval system works fine without persistence.
+  const approval = useToolApproval(clientRef.current as Parameters<typeof useToolApproval>[0], { addFeedback, removeFeedback });
   const approvalRef = useRef(approval);
   useEffect(() => { approvalRef.current = approval; }, [approval]);
 
@@ -52,6 +59,47 @@ export function useChatTools({
     );
   }, [tools, clientRef]);
 
+  /**
+   * Build the request_tool_approval method — called by DO agents when
+   * a harness tool needs approval. Routes through the panel's approval
+   * policy layer (auto-approve via checkToolApproval, UI prompt via
+   * requestApproval with per-agent grants and floor levels).
+   */
+  const buildApprovalMethod = useCallback((): Record<string, MethodDefinition> => {
+    return {
+      request_tool_approval: {
+        description: "Request approval for a tool call from an AI agent",
+        parameters: {} as never,
+        internal: true, // Only callable by DOs via callMethod, not discoverable as an AI tool
+        execute: async (rawArgs) => {
+          const args = rawArgs as {
+            agentId: string;
+            agentName: string;
+            toolName: string;
+            toolArgs: unknown;
+          };
+
+          // Check auto-approve — if the panel's approval level allows this tool,
+          // return immediately without showing UI.
+          if (approvalRef.current.checkToolApproval(args.agentId, args.toolName)) {
+            return { allow: true, alwaysAllow: true };
+          }
+
+          // Show approval UI and wait for user decision
+          const allow = await approvalRef.current.requestApproval({
+            callId: crypto.randomUUID(),
+            agentId: args.agentId,
+            agentName: args.agentName,
+            methodName: args.toolName,
+            args: args.toolArgs,
+          });
+
+          return { allow, alwaysAllow: false };
+        },
+      },
+    };
+  }, []);
+
   const toolApprovalValue: ToolApprovalProps = useMemo(() => ({
     settings: approval.settings,
     onSetFloor: approval.setGlobalFloor,
@@ -62,6 +110,7 @@ export function useChatTools({
 
   return {
     buildToolMethods,
+    buildApprovalMethod,
     toolApprovalValue,
   };
 }

@@ -24,8 +24,8 @@ export type {
   FeedbackUiToolResult,
 } from "./types";
 
-// Re-export from agentic-messaging for convenience
-export type { FeedbackFormArgs } from "@natstack/agentic-messaging";
+// Re-export from pubsub for convenience
+export type { FeedbackFormArgs } from "@natstack/pubsub";
 
 // ============================================================================
 // Components

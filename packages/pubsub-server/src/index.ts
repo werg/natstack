@@ -3,6 +3,11 @@ export type {
   PubSubServerOptions,
   Logger,
   PortFinder,
+  ChannelBroadcastEvent,
+  ParticipantCallback,
+  ParticipantHandle,
+  CallbackParticipant,
+  SendMessageOptions,
 } from "./server.js";
 
 export {
@@ -18,6 +23,8 @@ export type {
   TokenValidator,
   ChannelConfig,
   ChannelInfo,
+  ChannelForkInfo,
+  ForkSegment,
   ChannelAgentRow,
   MessageStore,
   MessageRow,

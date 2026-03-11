@@ -10,7 +10,7 @@ export { ExitPlanModePreview, type ExitPlanModePreviewProps } from "./ExitPlanMo
 export { EnterPlanModePreview, type EnterPlanModePreviewProps } from "./EnterPlanModePreview.js";
 
 // ============================================================================
-// Re-export types and type guards from agentic-messaging
+// Re-export types and type guards from pubsub
 // ============================================================================
 
 // These are the canonical definitions - we re-export them for convenience
@@ -28,4 +28,4 @@ export {
   type ExitPlanModeArgs,
   type AllowedPrompt,
   type RichPreviewToolName,
-} from "@natstack/agentic-messaging";
+} from "@natstack/pubsub";

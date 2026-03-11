@@ -1,5 +1,4 @@
-import type { MethodAdvertisement, ContextWindowUsage, AgentBuildError, AgentDebugPayload, MethodDefinition } from "@natstack/agentic-messaging";
-import type { Attachment, Participant, AttachmentInput } from "@natstack/pubsub";
+import type { MethodAdvertisement, ContextWindowUsage, AgentBuildError, AgentDebugPayload, MethodDefinition, Attachment, Participant, AttachmentInput } from "@natstack/pubsub";
 import type { ActiveFeedback, ToolApprovalProps } from "@workspace/tool-ui";
 import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
 import type { PendingImage } from "./utils/imageUtils";

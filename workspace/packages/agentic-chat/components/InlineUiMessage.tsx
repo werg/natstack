@@ -5,7 +5,7 @@
 import { Component, Suspense, useMemo, type ComponentType, type ReactNode } from "react";
 import { Box, Callout, Spinner, Text } from "@radix-ui/themes";
 import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
-import type { InlineUiData } from "@natstack/agentic-messaging";
+import type { InlineUiData } from "@natstack/pubsub";
 
 /**
  * Error boundary for inline UI components.

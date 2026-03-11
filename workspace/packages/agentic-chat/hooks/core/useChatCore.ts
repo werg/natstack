@@ -9,14 +9,15 @@
  */
 
 import { useState, useCallback, useMemo, useRef, useEffect, useReducer } from "react";
-import { CONTENT_TYPE_TYPING } from "@natstack/agentic-messaging/utils";
+import { CONTENT_TYPE_TYPING } from "@natstack/pubsub";
 import type {
   IncomingEvent,
   IncomingMethodResult,
   AggregatedEvent,
+  AggregatedMessage,
   TypingData,
   ChannelConfig,
-} from "@natstack/agentic-messaging";
+} from "@natstack/pubsub";
 import type { Participant, RosterUpdate, AttachmentInput } from "@natstack/pubsub";
 import { useChannelConnection } from "../useChannelConnection";
 import type { UseChannelConnectionResult } from "../useChannelConnection";
@@ -400,12 +401,39 @@ export function useChatCore({
       let hasMore = true;
 
       while (hasMore && olderMessages.length === 0) {
-        const result = await client.getAggregatedMessagesBefore(currentBeforeId, 50);
-        olderMessages = result.messages.map(aggregatedToChatMessage);
+        const result = await client.getMessagesBefore(currentBeforeId, 50);
+        // Convert raw messages to AggregatedMessage for aggregatedToChatMessage
+        olderMessages = result.messages
+          .filter((msg) => msg.type === "message")
+          .map((msg) => {
+            const payload = typeof msg.payload === "string" ? JSON.parse(msg.payload as string) : msg.payload;
+            const p = payload as Record<string, unknown> | null;
+            const meta = msg.senderMetadata as Record<string, unknown> | undefined;
+            const aggregated: AggregatedMessage = {
+              kind: "replay",
+              aggregated: true,
+              type: "message",
+              id: (p?.["id"] as string) ?? String(msg.id),
+              pubsubId: msg.id,
+              content: (p?.["content"] as string) ?? "",
+              complete: (p?.["complete"] as boolean) ?? true,
+              incomplete: false,
+              replyTo: p?.["replyTo"] as string | undefined,
+              contentType: p?.["contentType"] as string | undefined,
+              metadata: p?.["metadata"] as Record<string, unknown> | undefined,
+              error: p?.["error"] as string | undefined,
+              senderId: msg.senderId,
+              senderName: meta?.["name"] as string | undefined,
+              senderType: meta?.["type"] as string | undefined,
+              senderHandle: meta?.["handle"] as string | undefined,
+              ts: msg.ts,
+            };
+            return aggregatedToChatMessage(aggregated);
+          });
         hasMore = result.hasMore;
 
-        if (result.nextBeforeId !== undefined) {
-          currentBeforeId = result.nextBeforeId;
+        if (result.messages.length > 0) {
+          currentBeforeId = result.messages[0]!.id;
         } else {
           hasMore = false;
           break;
@@ -429,7 +457,9 @@ export function useChatCore({
     if (!client || !connected) return;
     const initialTitle = client.channelConfig?.title;
     if (initialTitle) document.title = initialTitle;
-    const unsubscribe = client.onTitleChange((title: string) => { document.title = title; });
+    const unsubscribe = client.onConfigChange((cfg: ChannelConfig) => {
+      if (cfg.title) document.title = cfg.title;
+    });
     return () => { unsubscribe(); };
   }, [connected, clientRef]);
 
@@ -573,7 +603,7 @@ export function useChatCore({
     stopTyping,
     resetCore,
     selfIdRef,
-    sessionEnabled: clientRef.current?.sessionEnabled,
+    sessionEnabled: true,
     channelName,
     theme,
     config,

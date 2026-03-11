@@ -8,7 +8,7 @@
 export { BashPreview, type BashPreviewProps } from "./BashPreview";
 
 // ============================================================================
-// Re-export types and type guards from agentic-messaging
+// Re-export types and type guards from pubsub
 // ============================================================================
 
 // These are the canonical definitions - we re-export them for convenience
@@ -21,4 +21,4 @@ export {
   // Types
   type BashArgs,
   type RichPreviewToolName,
-} from "@natstack/agentic-messaging";
+} from "@natstack/pubsub";

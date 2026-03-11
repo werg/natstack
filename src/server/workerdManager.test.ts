@@ -8,10 +8,19 @@ import { WorkerdManager, type WorkerdManagerDeps, type WorkerCreateOptions } fro
 // Mock child_process to prevent actual workerd spawning
 vi.mock("child_process", () => ({
   spawn: vi.fn(() => {
+    const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
     const proc = {
       stdout: { on: vi.fn() },
       stderr: { on: vi.fn() },
-      on: vi.fn(),
+      on: vi.fn((event: string, fn: (...args: unknown[]) => void) => {
+        if (!listeners.has(event)) listeners.set(event, new Set());
+        listeners.get(event)!.add(fn);
+        return proc;
+      }),
+      removeListener: vi.fn((event: string, fn: (...args: unknown[]) => void) => {
+        listeners.get(event)?.delete(fn);
+        return proc;
+      }),
       kill: vi.fn(),
       pid: 12345,
     };
@@ -40,6 +49,7 @@ function createMockDeps(overrides: Partial<WorkerdManagerDeps> = {}): WorkerdMan
       bundle: 'export default { fetch() { return new Response("ok"); } };',
       metadata: { ev: "abc123" },
     }),
+    workspacePath: "/tmp/test-workspace",
     ...overrides,
   };
 }
