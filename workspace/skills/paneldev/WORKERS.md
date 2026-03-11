@@ -133,7 +133,7 @@ Every handler creates an `ActionCollector` via `this.actions()` and returns `$.r
 | `.sendEphemeral(content, contentType)` | Send ephemeral event (typing, etc.) |
 | `.updateMetadata(metadata)` | Update channel metadata |
 | `.methodResult(callId, content, isError?)` | Reply to a method call |
-| `.callMethod(participantId, method, args)` | Call another participant's method |
+| `.callMethod(callId, participantId, method, args)` | Call another participant's method |
 | `.streamFor(harnessId, turn)` | Create a StreamWriter |
 
 ### Harness Operations -- `$.harness(harnessId)`
@@ -153,8 +153,6 @@ Every handler creates an `ActionCollector` via `this.actions()` and returns `$.r
 | `$.spawnHarness(opts)` | Spawn a new harness process |
 | `$.respawnHarness(opts)` | Respawn a crashed harness |
 | `$.forkChannel(source, forkPointId)` | Fork a channel |
-| `$.spawnSubagent(opts)` | Spawn a subagent |
-| `$.cleanupSubagent(toolUseId, reason)` | Clean up a subagent |
 | `$.setAlarm(delayMs)` | Set a timed alarm |
 
 All methods support fluent chaining:
@@ -174,33 +172,34 @@ if (turn) {
   const writer = $.channel(channelId).streamFor(harnessId, turn);
   writer.startText();           // sends a new message
   writer.updateText("chunk");   // updates content
-  writer.complete();            // marks complete
+  writer.completeText();        // marks complete
 }
 ```
 
 | Method | Description |
 |--------|-------------|
-| `startThinking()` / `updateThinking()` / `endThinking()` | Thinking block lifecycle |
-| `startText(metadata?)` / `updateText(content)` / `complete()` | Text message lifecycle |
-| `startAction(tool, description)` / `endAction()` | Tool action lifecycle |
+| `startThinking()` / `updateThinking(content)` / `endThinking()` | Thinking block lifecycle |
+| `startText(metadata?)` / `updateText(content)` / `completeText()` | Text message lifecycle |
+| `startAction(tool, description, toolUseId?)` / `endAction()` | Tool action lifecycle |
 | `sendInlineUi(data)` | Send inline UI component |
-| `sendTyping()` | Send typing indicator |
+| `startTyping()` / `stopTyping()` | Typing indicator lifecycle |
 
 StreamWriter auto-persists via `$.result()` -- no manual `persistStreamState` calls needed.
 
 ## 6. SQLite Tables (AgentWorkerBase Internals)
 
-The base class creates 7 tables on initialization:
+The base class creates 8 tables on initialization:
 
 | Table | Purpose |
 |-------|---------|
 | `state` | Key-value store (schema version, custom state) |
-| `subscriptions` | Channel subscriptions with per-channel config |
+| `subscriptions` | Channel subscriptions with config + participant ID |
 | `harnesses` | Harness instances (id, type, channel, status) |
 | `turn_map` | Completed turn records for fork resolution |
 | `checkpoints` | Last-processed pubsub ID per channel/harness |
 | `in_flight_turns` | Currently executing turns (for crash retry) |
-| `active_turns` | Currently streaming turns (replyToId, turnMessageId) |
+| `active_turns` | Currently streaming turns (replyToId, turnMessageId, senderParticipantId) |
+| `pending_calls` | Continuation state for async method calls (survives hibernation) |
 
 ### Schema Versioning
 
@@ -220,12 +219,75 @@ export class MyWorker extends AgentWorkerBase {
 | `getChannelForHarness(harnessId)` | Find channel for a harness |
 | `getContextId(channelId)` | Get context ID from subscription |
 | `getSubscriptionConfig(channelId)` | Get per-channel config |
-| `setActiveTurn() / getActiveTurn() / clearActiveTurn()` | Turn state |
+| `setActiveTurn() / getActiveTurn() / clearActiveTurn()` | Turn state (includes `senderParticipantId`) |
 | `setInFlightTurn() / getInFlightTurn() / clearInFlightTurn()` | In-flight turn |
 | `advanceCheckpoint() / getCheckpoint()` | Checkpoint tracking |
 | `recordTurn()` | Record completed turn |
 | `getResumeSessionId(harnessId)` | Get session ID for resume |
-| `recordTurnStart()` | Convenience: set active + in-flight + checkpoint |
+| `recordTurnStart(harnessId, channelId, input, messageId, pubsubId, senderParticipantId?)` | Convenience: set active + in-flight + checkpoint |
+| `pendingCall(callId, channelId, type, context)` | Store async call continuation (survives hibernation) |
+| `consumePendingCall(callId)` | Load and delete a continuation |
+| `getParticipantId(channelId)` | Get this DO's PubSub participant ID |
+
+### Additional Hooks (override in subclass)
+
+| Hook | Default | Purpose |
+|------|---------|---------|
+| `handleCallResult(type, context, channelId, result, isError)` | no-op | Handle method-call results (used for approval flow) |
+| `onMethodCall(channelId, callId, methodName, args)` | returns error | Handle incoming method calls from other participants |
+| `onOutgoingMethodCall(channelId, callId, participantId, methodName, args)` | pass-through | Intercept harness method calls before broadcasting |
+| `onChannelForked(sourceChannel, forkedChannelId, forkPointId)` | no-op | Called when a channel fork completes |
+| `onAlarm()` | no-op | Called when a set-alarm timer fires |
+
+### Tool Approval via Continuations
+
+Tool approval uses **continuation-based PubSub RPC** -- the DO stores pending call state in SQLite so it survives hibernation, then receives the result via `onCallResult()` → `handleCallResult()`.
+
+```typescript
+// In your onHarnessEvent handler for "approval-needed":
+case "approval-needed": {
+  const callId = crypto.randomUUID();
+  const turn = this.getActiveTurn(harnessId);
+  const panelId = turn?.senderParticipantId;
+  if (!panelId) {
+    $.harness(harnessId).approveTool(event.toolUseId, false);
+    break;
+  }
+  // Store continuation in SQLite (survives hibernation)
+  this.pendingCall(callId, channelId, 'approval', {
+    harnessId, toolUseId: event.toolUseId,
+  });
+  // Call the panel's request_tool_approval method via standard PubSub RPC
+  $.channel(channelId).callMethod(callId, panelId, 'request_tool_approval', {
+    agentId: this.getParticipantId(channelId) ?? harnessId,
+    agentName: this.getParticipantInfo(channelId).name,
+    toolName: event.toolName,
+    toolArgs: event.input,
+  });
+  break;
+}
+```
+
+```typescript
+// Override handleCallResult to process the approval response:
+protected override handleCallResult(
+  type: string, context: Record<string, unknown>,
+  channelId: string, result: unknown, isError: boolean,
+): WorkerActions {
+  const $ = this.actions();
+  if (type === 'approval') {
+    const { harnessId, toolUseId } = context as { harnessId: string; toolUseId: string };
+    let allow = false;
+    if (!isError && result && typeof result === 'object') {
+      allow = (result as Record<string, unknown>)["allow"] === true;
+    }
+    $.harness(harnessId).approveTool(toolUseId, allow);
+  }
+  return $.result();
+}
+```
+
+The built-in `AiChatWorker` implements this pattern -- see `workspace/workers/agent-worker/ai-chat-worker.ts` for the full reference implementation.
 
 ## 7. Testing with createTestDO()
 
@@ -279,7 +341,8 @@ This calls `getState()` on the DO and returns all table contents as JSON:
   "harnesses": [...],
   "activeTurns": [...],
   "checkpoints": [...],
-  "inFlightTurns": [...]
+  "inFlightTurns": [...],
+  "pendingCalls": [...]
 }
 ```
 

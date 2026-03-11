@@ -13,7 +13,7 @@ Documentation for developing NatStack panels.
 |----------|---------|
 | [PANEL_DEVELOPMENT.md](PANEL_DEVELOPMENT.md) | Hooks, fs, templates |
 | [PANEL_SYSTEM.md](PANEL_SYSTEM.md) | API reference |
-| [WORKERS.md](WORKERS.md) | Worker development, management API, limits |
+| [WORKERS.md](WORKERS.md) | Workers & Durable Objects: AgentWorkerBase, ActionCollector, StreamWriter, approval continuations |
 | [RPC.md](RPC.md) | Typed parent-child contracts |
 | [AI.md](AI.md) | AI and browser automation |
 | [TOOLS.md](TOOLS.md) | Agent tools reference |

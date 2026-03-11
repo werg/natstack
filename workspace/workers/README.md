@@ -162,15 +162,13 @@ async onChannelEvent(channelId: string, event: ChannelEvent): Promise<WorkerActi
 | `$.spawnHarness(opts)` | Spawn a new harness process |
 | `$.respawnHarness(opts)` | Respawn a crashed harness |
 | `$.forkChannel(source, forkPointId)` | Fork a channel |
-| `$.spawnSubagent(opts)` | Spawn a subagent |
-| `$.cleanupSubagent(toolUseId, reason)` | Clean up a subagent |
 | `$.setAlarm(delayMs)` | Set a timed alarm |
 
 All methods are fluent-chainable:
 ```typescript
 $.channel(channelId).send("hello").send("world");
 $.harness(harnessId).startTurn(input);
-$.spawnSubagent({ toolUseId: "t-1", channelId, description: "sub" });
+$.setAlarm(5000);
 return $.result();
 ```
 
@@ -197,11 +195,11 @@ if (turn) {
 | `endThinking()` | End thinking block |
 | `startText(metadata?)` | Begin a text message |
 | `updateText(content)` | Append text content |
-| `complete()` | Complete current message |
-| `startAction(tool, description)` | Begin a tool action |
+| `completeText()` | Complete current text message |
+| `startAction(tool, description, toolUseId?)` | Begin a tool action |
 | `endAction()` | End tool action |
 | `sendInlineUi(data)` | Send inline UI component |
-| `sendTyping()` | Send typing indicator |
+| `startTyping()` / `stopTyping()` | Typing indicator lifecycle |
 
 ### Auto-Persistence
 
