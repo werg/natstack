@@ -1,4 +1,5 @@
-import type { ChannelEvent, HarnessConfig, HarnessOutput, TurnInput, ParticipantDescriptor, UnsubscribeResult, Attachment } from "@natstack/harness";
+import type { ChannelEvent, HarnessConfig, HarnessOutput, TurnInput, ParticipantDescriptor, UnsubscribeResult, Attachment, ChannelBroadcastEventRaw } from "@natstack/harness/types";
+import { toChannelEvent } from "@natstack/harness/types";
 import { PubSubDOClient } from "./pubsub-client.js";
 import { ServerDOClient } from "./server-client.js";
 import { StreamWriter, type PersistedStreamState } from "./stream-writer.js";
@@ -635,61 +636,6 @@ export abstract class AgentWorkerBase {
   webSocketError(_ws: unknown, _error: unknown): void {}
 
   /**
-   * Transform a raw PubSub ChannelBroadcastEvent into the ChannelEvent shape
-   * that onChannelEvent expects. Extracts senderType from senderMetadata,
-   * contentType and messageId from payload — the same transformation the
-   * old PubSubFacade performed.
-   */
-  private transformBroadcastEvent(raw: Record<string, unknown>): ChannelEvent {
-    // Parse senderMetadata (JSON string) to extract senderType
-    let senderType: string | undefined;
-    const rawMeta = raw["senderMetadata"];
-    if (typeof rawMeta === "string") {
-      try {
-        const meta = JSON.parse(rawMeta) as Record<string, unknown>;
-        senderType = meta["type"] as string | undefined;
-      } catch { /* invalid metadata */ }
-    } else if (rawMeta && typeof rawMeta === "object") {
-      senderType = (rawMeta as Record<string, unknown>)["type"] as string | undefined;
-    }
-
-    // Parse payload (may be JSON string or object)
-    let parsedPayload = raw["payload"];
-    if (typeof parsedPayload === "string") {
-      try { parsedPayload = JSON.parse(parsedPayload); } catch { /* keep as string */ }
-    }
-
-    // Extract messageId and contentType from payload
-    const payloadObj = parsedPayload && typeof parsedPayload === "object"
-      ? parsedPayload as Record<string, unknown>
-      : null;
-    const messageId = (payloadObj?.["id"] as string | undefined) ?? `${raw["id"]}`;
-    const contentType = payloadObj?.["contentType"] as string | undefined;
-
-    // Map stored attachments to the ChannelEvent attachment format
-    const rawAttachments = raw["attachments"] as Array<{ mimeType?: string; data: unknown; name?: string }> | undefined;
-    const attachments = rawAttachments?.map(att => ({
-      type: (att.mimeType?.startsWith("image/") ? "image" : "file"),
-      data: typeof att.data === "string" ? att.data : "",
-      mimeType: att.mimeType,
-      filename: att.name,
-    }));
-
-    return {
-      id: raw["id"] as number,
-      messageId,
-      type: raw["type"] as string,
-      payload: parsedPayload,
-      senderId: raw["senderId"] as string,
-      senderType,
-      ...(contentType ? { contentType } : {}),
-      ts: raw["ts"] as number,
-      persist: raw["persist"] as boolean,
-      ...(attachments && attachments.length > 0 ? { attachments } : {}),
-    };
-  }
-
-  /**
    * HTTP fetch handler — routes /{method} POST requests to DO methods.
    * Called by workerd when the router worker proxies to this DO.
    *
@@ -719,7 +665,7 @@ export abstract class AgentWorkerBase {
       // PubSub POST-back sends [channelId, ChannelBroadcastEvent] where the broadcast event
       // has senderMetadata (JSON string) instead of senderType, and payload may be a JSON string.
       if (method === "onChannelEvent" && args.length === 2) {
-        args[1] = this.transformBroadcastEvent(args[1] as Record<string, unknown>);
+        args[1] = toChannelEvent(args[1] as ChannelBroadcastEventRaw);
       }
 
       // Route to the appropriate method

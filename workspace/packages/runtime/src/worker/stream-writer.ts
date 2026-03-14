@@ -1,4 +1,5 @@
-import type { PubSubDOClient, PubSubSendOptions } from "./pubsub-client.js";
+import type { SendMessageOptions } from "@natstack/harness/types";
+import type { PubSubDOClient } from "./pubsub-client.js";
 
 export interface PersistedStreamState {
   responseMessageId: string | null;
@@ -27,7 +28,7 @@ export class StreamWriter {
     this.state = { ...initialState };
   }
 
-  private async send(messageId: string, content: string, options?: PubSubSendOptions): Promise<void> {
+  private async send(messageId: string, content: string, options?: SendMessageOptions): Promise<void> {
     await this.pubsub.send(
       this.participantId,
       this.channelId,
@@ -100,7 +101,7 @@ export class StreamWriter {
     await this.stopTyping();
     if (this.state.responseMessageId) return;
     const messageId = crypto.randomUUID();
-    const options: PubSubSendOptions = { persist: true, replyTo: this.replyToId };
+    const options: SendMessageOptions = { persist: true, replyTo: this.replyToId };
     if (metadata) options.senderMetadata = metadata as Record<string, unknown>;
     this.state.responseMessageId = messageId;
     await this.send(messageId, "", options);

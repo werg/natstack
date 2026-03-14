@@ -4,7 +4,7 @@ import type {
   HarnessConfig,
   HarnessOutput,
   ParticipantDescriptor,
-} from "@natstack/harness";
+} from "@natstack/harness/types";
 
 /**
  * TestAgentWorker — Minimal agent DO for testing the harness pipeline.

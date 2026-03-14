@@ -7,18 +7,13 @@
  * All operations are HTTP POST to the PubSub server's HTTP API.
  */
 
-export interface PubSubSendOptions {
-  contentType?: string;
-  persist?: boolean;
-  senderMetadata?: Record<string, unknown>;
-  replyTo?: string;
-}
+import type { SendMessageOptions } from "@natstack/harness/types";
+import { HttpClient } from "./http-client.js";
 
-export class PubSubDOClient {
-  constructor(
-    private baseUrl: string,
-    private authToken: string,
-  ) {}
+export class PubSubDOClient extends HttpClient {
+  constructor(baseUrl: string, authToken: string) {
+    super(baseUrl, authToken, "PubSub HTTP");
+  }
 
   // ── Channel operations ──────────────────────────────────────────────────
 
@@ -27,7 +22,7 @@ export class PubSubDOClient {
     channelId: string,
     messageId: string,
     content: string,
-    opts?: PubSubSendOptions,
+    opts?: SendMessageOptions,
   ): Promise<void> {
     await this.post(`/channel/${enc(channelId)}/send`, {
       participantId,
@@ -146,42 +141,6 @@ export class PubSubDOClient {
   ): Promise<Array<{ participantId: string; metadata: Record<string, unknown> }>> {
     const resp = await this.get(`/channel/${enc(channelId)}/participants`);
     return resp as Array<{ participantId: string; metadata: Record<string, unknown> }>;
-  }
-
-  // ── HTTP helpers ────────────────────────────────────────────────────────
-
-  private async post(path: string, body: unknown): Promise<unknown> {
-    const resp = await fetch(`${this.baseUrl}${path}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${this.authToken}`,
-      },
-      body: JSON.stringify(body),
-    });
-    if (!resp.ok) {
-      const text = await resp.text();
-      throw new Error(`PubSub HTTP ${resp.status}: ${text}`);
-    }
-    const ct = resp.headers.get("content-type") ?? "";
-    if (ct.includes("application/json")) {
-      return resp.json();
-    }
-    return undefined;
-  }
-
-  private async get(path: string): Promise<unknown> {
-    const resp = await fetch(`${this.baseUrl}${path}`, {
-      method: "GET",
-      headers: {
-        "Authorization": `Bearer ${this.authToken}`,
-      },
-    });
-    if (!resp.ok) {
-      const text = await resp.text();
-      throw new Error(`PubSub HTTP ${resp.status}: ${text}`);
-    }
-    return resp.json();
   }
 }
 

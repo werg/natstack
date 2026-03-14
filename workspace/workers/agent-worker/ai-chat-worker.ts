@@ -1,5 +1,5 @@
 import { AgentWorkerBase } from "@workspace/runtime/worker";
-import type { ChannelEvent, HarnessConfig, HarnessOutput, ParticipantDescriptor } from "@natstack/harness";
+import type { ChannelEvent, HarnessConfig, HarnessOutput, ParticipantDescriptor } from "@natstack/harness/types";
 
 
 /**

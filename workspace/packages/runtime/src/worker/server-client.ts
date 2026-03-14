@@ -7,7 +7,8 @@
  */
 
 import type { DORef } from "./durable.js";
-import type { HarnessConfig } from "@natstack/harness";
+import type { HarnessConfig } from "@natstack/harness/types";
+import { HttpClient } from "./http-client.js";
 
 export interface SpawnOpts {
   doRef: DORef;
@@ -29,11 +30,10 @@ export interface HarnessCommand {
   [key: string]: unknown;
 }
 
-export class ServerDOClient {
-  constructor(
-    private baseUrl: string,
-    private authToken: string,
-  ) {}
+export class ServerDOClient extends HttpClient {
+  constructor(baseUrl: string, authToken: string) {
+    super(baseUrl, authToken, "Server HTTP");
+  }
 
   async spawnHarness(opts: SpawnOpts): Promise<{ harnessId: string }> {
     return this.post("/harness/spawn", opts) as Promise<{ harnessId: string }>;
@@ -57,28 +57,6 @@ export class ServerDOClient {
       sourceChannel,
       forkPointId,
     }) as Promise<{ forkedChannelId: string }>;
-  }
-
-  // ── HTTP helper ─────────────────────────────────────────────────────────
-
-  private async post(path: string, body: unknown): Promise<unknown> {
-    const resp = await fetch(`${this.baseUrl}${path}`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${this.authToken}`,
-      },
-      body: JSON.stringify(body),
-    });
-    if (!resp.ok) {
-      const text = await resp.text();
-      throw new Error(`Server HTTP ${resp.status}: ${text}`);
-    }
-    const ct = resp.headers.get("content-type") ?? "";
-    if (ct.includes("application/json")) {
-      return resp.json();
-    }
-    return undefined;
   }
 }
 
