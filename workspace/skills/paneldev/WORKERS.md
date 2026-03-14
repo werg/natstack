@@ -90,21 +90,17 @@ All agentic workers extend `AgentWorkerBase` from `@workspace/runtime/worker`:
 
 ```typescript
 import { AgentWorkerBase } from "@workspace/runtime/worker";
-import type { ChannelEvent, HarnessOutput, WorkerActions } from "@natstack/harness";
+import type { ChannelEvent, HarnessOutput } from "@natstack/harness";
 
 export class MyWorker extends AgentWorkerBase {
   static schemaVersion = 1;
 
-  async onChannelEvent(channelId: string, event: ChannelEvent): Promise<WorkerActions> {
-    const $ = this.actions();
-    // handle event...
-    return $.result();
+  async onChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
+    // Handle event — call this.pubsub.* and this.server.* directly
   }
 
-  async onHarnessEvent(harnessId: string, event: HarnessOutput): Promise<WorkerActions> {
-    const $ = this.actions();
-    // handle event...
-    return $.result();
+  async onHarnessEvent(harnessId: string, event: HarnessOutput): Promise<void> {
+    // Handle harness output — call this.pubsub.* and this.server.* directly
   }
 }
 ```
@@ -119,62 +115,49 @@ export class MyWorker extends AgentWorkerBase {
 | `buildTurnInput(event)` | Extracts content/senderId | Transform event to TurnInput |
 | `getParticipantInfo()` | Generic agent identity | PubSub handle, name, methods |
 
-## 4. ActionCollector API
+## 4. Direct Communication APIs
 
-Every handler creates an `ActionCollector` via `this.actions()` and returns `$.result()`:
+DOs are autonomous -- they call PubSub and server APIs directly via HTTP POST. No action-return pattern.
 
-### Channel Operations -- `$.channel(channelId)`
-
-| Method | Description |
-|--------|-------------|
-| `.send(content, options?)` | Send a new message |
-| `.update(messageId, content)` | Update a streaming message |
-| `.complete(messageId)` | Mark a message as complete |
-| `.sendEphemeral(content, contentType)` | Send ephemeral event (typing, etc.) |
-| `.updateMetadata(metadata)` | Update channel metadata |
-| `.methodResult(callId, content, isError?)` | Reply to a method call |
-| `.callMethod(callId, participantId, method, args)` | Call another participant's method |
-| `.streamFor(harnessId, turn)` | Create a StreamWriter |
-
-### Harness Operations -- `$.harness(harnessId)`
+### PubSub Operations -- `this.pubsub`
 
 | Method | Description |
 |--------|-------------|
-| `.startTurn(input)` | Start a new AI turn |
-| `.approveTool(toolUseId, allow, alwaysAllow?)` | Approve/deny a tool use |
-| `.interrupt()` | Interrupt the current turn |
-| `.fork(forkPointMessageId, turnSessionId)` | Fork the conversation |
-| `.dispose()` | Dispose the harness |
+| `.send(participantId, channelId, messageId, content, opts?)` | Send a new message |
+| `.update(participantId, channelId, messageId, content)` | Update a streaming message |
+| `.complete(participantId, channelId, messageId)` | Mark a message as complete |
+| `.sendEphemeral(participantId, channelId, content, contentType?)` | Send ephemeral event |
+| `.updateMetadata(participantId, channelId, metadata)` | Update channel metadata |
+| `.subscribe(channelId, participantId, metadata, callbackUrl)` | Subscribe to channel |
+| `.unsubscribe(channelId, participantId)` | Unsubscribe from channel |
+| `.callMethod(channelId, callerPid, callerCallbackUrl, targetPid, callId, method, args)` | Async method call |
+| `.getParticipants(channelId)` | Get channel roster |
 
-### System Operations
+### Server Operations -- `this.server`
 
 | Method | Description |
 |--------|-------------|
-| `$.spawnHarness(opts)` | Spawn a new harness process |
-| `$.respawnHarness(opts)` | Respawn a crashed harness |
-| `$.forkChannel(source, forkPointId)` | Fork a channel |
-| `$.setAlarm(delayMs)` | Set a timed alarm |
+| `.spawnHarness(opts)` | Spawn a new harness process |
+| `.sendHarnessCommand(harnessId, command)` | Send command to harness (start-turn, approve-tool, interrupt, etc.) |
+| `.stopHarness(harnessId)` | Stop a harness process |
+| `.forkChannel(doRef, sourceChannel, forkPointId)` | Fork a channel |
 
-All methods support fluent chaining:
-```typescript
-$.channel(channelId).send("hello").send("world");
-$.harness(harnessId).startTurn(input);
-return $.result();
-```
-
-## 5. StreamWriter
-
-`StreamWriter` handles the send -> update -> complete lifecycle of streaming messages:
+### StreamWriter -- `this.createWriter(channelId, turn)`
 
 ```typescript
 const turn = this.getActiveTurn(harnessId);
 if (turn) {
-  const writer = $.channel(channelId).streamFor(harnessId, turn);
-  writer.startText();           // sends a new message
-  writer.updateText("chunk");   // updates content
-  writer.completeText();        // marks complete
+  const writer = this.createWriter(channelId, turn);
+  await writer.startText();           // sends a new message
+  await writer.updateText("chunk");   // updates content
+  await writer.completeText();        // marks complete
+  this.persistStreamState(harnessId, writer);
 }
 ```
+
+## 5. StreamWriter
+
+All StreamWriter methods are async (HTTP calls to PubSub):
 
 | Method | Description |
 |--------|-------------|
@@ -184,7 +167,7 @@ if (turn) {
 | `sendInlineUi(data)` | Send inline UI component |
 | `startTyping()` / `stopTyping()` | Typing indicator lifecycle |
 
-StreamWriter auto-persists via `$.result()` -- no manual `persistStreamState` calls needed.
+Call `this.persistStreamState(harnessId, writer)` after using the writer to save message IDs to SQLite.
 
 ## 6. SQLite Tables (AgentWorkerBase Internals)
 
@@ -233,15 +216,13 @@ export class MyWorker extends AgentWorkerBase {
 
 | Hook | Default | Purpose |
 |------|---------|---------|
-| `handleCallResult(type, context, channelId, result, isError)` | no-op | Handle method-call results (used for approval flow) |
+| `handleCallResult(type, context, channelId, result, isError)` | no-op | Handle async method-call results (used for approval/tool-call flow) |
 | `onMethodCall(channelId, callId, methodName, args)` | returns error | Handle incoming method calls from other participants |
-| `onOutgoingMethodCall(channelId, callId, participantId, methodName, args)` | pass-through | Intercept harness method calls before broadcasting |
 | `onChannelForked(sourceChannel, forkedChannelId, forkPointId)` | no-op | Called when a channel fork completes |
-| `onAlarm()` | no-op | Called when a set-alarm timer fires |
 
 ### Tool Approval via Continuations
 
-Tool approval uses **continuation-based PubSub RPC** -- the DO stores pending call state in SQLite so it survives hibernation, then receives the result via `onCallResult()` → `handleCallResult()`.
+Tool approval uses the **async continuation pattern** -- the DO stores pending call state in SQLite (survives hibernation), calls PubSub's `callMethod` (async), and receives the result via POST-back to `onCallResult()` → `handleCallResult()`.
 
 ```typescript
 // In your onHarnessEvent handler for "approval-needed":
@@ -250,40 +231,43 @@ case "approval-needed": {
   const turn = this.getActiveTurn(harnessId);
   const panelId = turn?.senderParticipantId;
   if (!panelId) {
-    $.harness(harnessId).approveTool(event.toolUseId, false);
+    await this.server.sendHarnessCommand(harnessId, {
+      type: "approve-tool", toolUseId: event.toolUseId, allow: false,
+    });
     break;
   }
   // Store continuation in SQLite (survives hibernation)
   this.pendingCall(callId, channelId, 'approval', {
     harnessId, toolUseId: event.toolUseId,
   });
-  // Call the panel's request_tool_approval method via standard PubSub RPC
-  $.channel(channelId).callMethod(callId, panelId, 'request_tool_approval', {
-    agentId: this.getParticipantId(channelId) ?? harnessId,
-    agentName: this.getParticipantInfo(channelId).name,
-    toolName: event.toolName,
-    toolArgs: event.input,
-  });
+  // Async call via PubSub — result arrives at onCallResult
+  await this.pubsub.callMethod(
+    channelId,
+    this.getParticipantId(channelId)!,
+    this.callbackBaseUrl + "/onCallResult",
+    panelId, callId, 'request_tool_approval',
+    { agentId: this.getParticipantId(channelId), toolName: event.toolName, toolArgs: event.input },
+  );
   break;
 }
 ```
 
 ```typescript
 // Override handleCallResult to process the approval response:
-protected override handleCallResult(
+protected override async handleCallResult(
   type: string, context: Record<string, unknown>,
   channelId: string, result: unknown, isError: boolean,
-): WorkerActions {
-  const $ = this.actions();
+): Promise<void> {
   if (type === 'approval') {
     const { harnessId, toolUseId } = context as { harnessId: string; toolUseId: string };
     let allow = false;
     if (!isError && result && typeof result === 'object') {
       allow = (result as Record<string, unknown>)["allow"] === true;
     }
-    $.harness(harnessId).approveTool(toolUseId, allow);
+    await this.server.sendHarnessCommand(harnessId, {
+      type: "approve-tool", toolUseId, allow,
+    });
   }
-  return $.result();
 }
 ```
 

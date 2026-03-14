@@ -306,7 +306,6 @@ async function main() {
   const { createTestService } = await import("./services/testService.js");
   const { createDbService } = await import("./services/dbService.js");
   const { createTypecheckService } = await import("./services/typecheckService.js");
-  const { createChannelService } = await import("./services/channelService.js");
   const { createHarnessService } = await import("./services/harnessService.js");
   const { createWorkerService } = await import("./services/workerService.js");
 
@@ -338,38 +337,36 @@ async function main() {
   container.register(rpcService(createTypecheckService({ contextFolderManager })));
   container.register(rpcService(createEventsServiceDefinition(eventService)));
 
-  // ── WorkerRouter (central registry for DO/participant/harness mappings) ──
+  // ── DODispatch (source-scoped HTTP dispatch to Durable Objects) ──
 
   container.register({
-    name: "workerRouter",
+    name: "doDispatch",
     dependencies: ["workerdManager"],
     async start(resolve) {
-      const { WorkerRouter } = await import("./workerRouter.js");
-      const router = new WorkerRouter();
+      const { DODispatch } = await import("./doDispatch.js");
+      const doDispatch = new DODispatch();
 
-      // Dispatch DO method calls via HTTP to the workerd router.
-      // The workerd router worker has /_do/{className}/{objectKey}/{method} routes
-      // that proxy to the DO instance via stub.fetch().
+      // Dispatch DO method calls via HTTP POST to the workerd /_w/ URL scheme.
       const workerdManager = resolve<import("./workerdManager.js").WorkerdManager>("workerdManager")!;
-      router.setDispatcher(async (className, objectKey, method, ...args) => {
+      doDispatch.setDispatcher(async (urlPath, args) => {
         const port = workerdManager.getPort();
         if (!port) {
-          throw new Error(`workerd not running — cannot dispatch to DO class ${className}`);
+          throw new Error(`workerd not running — cannot dispatch to ${urlPath}`);
         }
-        const url = `http://127.0.0.1:${port}/_do/${encodeURIComponent(className)}/${encodeURIComponent(objectKey)}/${encodeURIComponent(method)}`;
+        const url = `http://127.0.0.1:${port}${urlPath}`;
         const resp = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(args.length === 1 ? args[0] : args),
+          body: JSON.stringify(args),
         });
         if (!resp.ok) {
           const body = await resp.text();
           throw new Error(`DO dispatch failed (${resp.status}): ${body}`);
         }
-        return await resp.json() as import("@natstack/harness").WorkerActions;
+        return await resp.json();
       });
 
-      return router;
+      return doDispatch;
     },
   });
 
@@ -394,18 +391,13 @@ async function main() {
 
   // ── HarnessManager (harness process lifecycle) ──
 
-  // Late-binding reference for crash recovery action execution.
-  // harnessManager starts before pubsubFacade in the dependency graph,
-  // but onCrash fires at runtime when all services are up.
-  let crashExecuteActions: ((actions: import("@natstack/harness").WorkerActions, ctx: { participantId: string }) => Promise<void>) | null = null;
-
   container.register({
     name: "harnessManager",
-    dependencies: ["rpcServer", "workerRouter"],
+    dependencies: ["rpcServer", "doDispatch"],
     async start(resolve) {
       const { HarnessManager } = await import("./harnessManager.js");
       const { server: rpcServer, port: rpcPort } = resolve<{ server: import("./rpcServer.js").RpcServer; port: number }>("rpcServer")!;
-      const workerRouter = resolve<import("./workerRouter.js").WorkerRouter>("workerRouter")!;
+      const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
 
       const manager = new HarnessManager({
         getRpcWsUrl: () => `ws://127.0.0.1:${rpcPort}`,
@@ -413,40 +405,22 @@ async function main() {
         revokeToken: (callerId) => tokenManager.revokeToken(callerId),
         getClientBridge: (callerId) => rpcServer.getClientBridge(callerId),
         onCrash: (harnessId) => {
-          // Notify the owning DO of the crash and execute recovery actions
-          const doReg = workerRouter.getDOForHarness(harnessId);
-          if (!doReg) {
+          // Notify the owning DO of the crash via DODispatch.
+          // The DO handles all recovery internally (respawn, channel cleanup, etc.)
+          const doRef = manager.getDOForHarness(harnessId);
+          if (!doRef) {
             console.error(`[HarnessManager] onCrash: no DO registration for harness ${harnessId}`);
-            workerRouter.unregisterHarness(harnessId);
             return;
           }
 
-          // Dispatch crash event WITHOUT code — triggers the crash recovery path
-          // (with code it would go to the turn-level error path which does NOT respawn)
           void (async () => {
             try {
-              const actions = await workerRouter.dispatch(
-                doReg.className, doReg.objectKey,
-                "onHarnessEvent", harnessId,
+              await doDispatch.dispatch(
+                doRef, "onHarnessEvent", harnessId,
                 { type: "error", error: "harness process crashed" },
               );
-
-              // Unregister AFTER dispatch (respawn will re-register)
-              workerRouter.unregisterHarness(harnessId);
-
-              // Execute returned actions (contains respawnHarness, channel cleanup, etc.)
-              if (actions?.actions?.length > 0 && crashExecuteActions) {
-                const participants = workerRouter.getParticipantsForDO(doReg.className, doReg.objectKey);
-                const participantId = participants[0];
-                if (participantId) {
-                  await crashExecuteActions(actions, { participantId });
-                } else {
-                  console.error(`[HarnessManager] onCrash: no participantId for DO ${doReg.className}/${doReg.objectKey}, recovery actions dropped`);
-                }
-              }
             } catch (err) {
-              console.error(`[HarnessManager] onCrash: crash recovery failed for ${harnessId}:`, err);
-              workerRouter.unregisterHarness(harnessId);
+              console.error(`[HarnessManager] onCrash: crash notification failed for ${harnessId}:`, err);
             }
           })();
         },
@@ -469,75 +443,60 @@ async function main() {
     async stop(instance: import("./harnessManager.js").HarnessManager) { await instance?.stopAll(); },
   });
 
-  // ── PubSubFacade (glue between PubSub callback participants and DO dispatch) ──
+  // ── Harness HTTP API server (DOs call this to manage harness processes) ──
+  // Starts early (before workerdManager) so the port is known.
+  // Deps are wired lazily — they resolve after container.startAll() completes,
+  // and no requests arrive until workerd is up.
+
+  let harnessApiDeps: import("./harnessApi.js").HarnessApiDeps | null = null;
 
   container.register({
-    name: "pubsubFacade",
-    dependencies: ["pubsub", "workerRouter", "harnessManager"],
-    async start(resolve) {
-      const { PubSubFacade } = await import("./services/pubsubFacade.js");
-      const { executeActions } = await import("./executeActions.js");
-      const { server: pubsubServer } = resolve<{ server: import("@natstack/pubsub-server").PubSubServer }>("pubsub")!;
-      const workerRouter = resolve<import("./workerRouter.js").WorkerRouter>("workerRouter")!;
-      const harnessManager = resolve<import("./harnessManager.js").HarnessManager>("harnessManager")!;
+    name: "harnessApiServer",
+    async start() {
+      const http = await import("node:http");
+      const { handleHarnessApiRequest } = await import("./harnessApi.js");
 
-      const facade = new PubSubFacade(
-        pubsubServer,
-        workerRouter,
-        async (actions, ctx) => {
-          await executeActions(actions, {
-            facade,
-            harnessManager,
-            router: workerRouter,
-            ensureContextFolder: (ctxId) => contextFolderManager.ensureContextFolder(ctxId),
-            participantId: ctx.participantId,
-          });
-        },
-      );
+      const server = http.createServer(async (req, res) => {
+        try {
+          if (!harnessApiDeps) {
+            res.writeHead(503, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Server not ready" }));
+            return;
+          }
+          const handled = await handleHarnessApiRequest(req, res, harnessApiDeps);
+          if (!handled) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Not found" }));
+          }
+        } catch (err) {
+          console.error("[HarnessApiServer] Unhandled error:", err);
+          if (!res.headersSent) {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Internal server error" }));
+          }
+        }
+      });
 
-      // Wire up late-binding reference for crash recovery action execution
-      crashExecuteActions = async (actions, ctx) => {
-        await executeActions(actions, {
-          facade,
-          harnessManager,
-          router: workerRouter,
-          ensureContextFolder: (ctxId) => contextFolderManager.ensureContextFolder(ctxId),
-          participantId: ctx.participantId,
+      const port = await new Promise<number>((resolve, reject) => {
+        server.listen(0, "127.0.0.1", () => {
+          const addr = server.address();
+          if (addr && typeof addr === "object") {
+            resolve(addr.port);
+          } else {
+            reject(new Error("Failed to get harness API server address"));
+          }
         });
-      };
+        server.once("error", reject);
+      });
 
-      return facade;
+      return { server, port };
     },
-    async stop(instance: import("./services/pubsubFacade.js").PubSubFacade) {
-      await instance?.flushAll();
-      instance?.unsubscribeAll();
+    async stop(instance: { server: import("node:http").Server; port: number }) {
+      await new Promise<void>((resolve) => {
+        instance?.server?.close(() => resolve());
+      });
     },
   });
-
-  // ── Channels RPC service ──
-
-  {
-    let channelServiceDef: import("../shared/serviceDefinition.js").ServiceDefinition;
-    container.register({
-      name: "channelsRpc",
-      dependencies: ["pubsub", "workerRouter", "pubsubFacade", "harnessManager"],
-      async start(resolve) {
-        const { server: pubsubServer } = resolve<{ server: import("@natstack/pubsub-server").PubSubServer }>("pubsub")!;
-        const workerRouter = resolve<import("./workerRouter.js").WorkerRouter>("workerRouter")!;
-        const pubsubFacade = resolve<import("./services/pubsubFacade.js").PubSubFacade>("pubsubFacade")!;
-        const harnessManager = resolve<import("./harnessManager.js").HarnessManager>("harnessManager")!;
-        channelServiceDef = createChannelService({
-          pubsub: pubsubServer,
-          router: workerRouter,
-          facade: pubsubFacade,
-          harnessManager,
-        });
-      },
-      getServiceDefinition() {
-        return channelServiceDef;
-      },
-    });
-  }
 
   // ── Harness RPC service ──
 
@@ -545,31 +504,14 @@ async function main() {
     let harnessServiceDef: import("../shared/serviceDefinition.js").ServiceDefinition;
     container.register({
       name: "harnessRpc",
-      dependencies: ["workerRouter", "pubsubFacade", "harnessManager"],
+      dependencies: ["doDispatch", "harnessManager"],
       async start(resolve) {
-        const workerRouter = resolve<import("./workerRouter.js").WorkerRouter>("workerRouter")!;
-        const pubsubFacade = resolve<import("./services/pubsubFacade.js").PubSubFacade>("pubsubFacade")!;
+        const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
         const harnessManagerInst = resolve<import("./harnessManager.js").HarnessManager>("harnessManager")!;
-        const { executeActions } = await import("./executeActions.js");
 
         harnessServiceDef = createHarnessService({
-          router: workerRouter,
-          executeActions: async (actions, ctx) => {
-            await executeActions(actions, {
-              facade: pubsubFacade,
-              harnessManager: harnessManagerInst,
-              router: workerRouter,
-              ensureContextFolder: (ctxId) => contextFolderManager.ensureContextFolder(ctxId),
-              participantId: ctx.participantId,
-            });
-          },
-          resolveParticipantForHarness: (harnessId) => {
-            const doReg = workerRouter.getDOForHarness(harnessId);
-            if (!doReg) return undefined;
-            // Find a participant for this DO
-            const participants = workerRouter.getParticipantsForDO(doReg.className, doReg.objectKey);
-            return participants[0]; // Return the first (primary) participant
-          },
+          doDispatch,
+          harnessManager: harnessManagerInst,
         });
       },
       getServiceDefinition() {
@@ -584,18 +526,16 @@ async function main() {
     let workerServiceDef: import("../shared/serviceDefinition.js").ServiceDefinition;
     container.register({
       name: "workersRpc",
-      dependencies: ["workerRouter", "pubsubFacade", "harnessManager", "buildSystem"],
+      dependencies: ["doDispatch", "buildSystem", "pubsub"],
       async start(resolve) {
-        const workerRouter = resolve<import("./workerRouter.js").WorkerRouter>("workerRouter")!;
-        const pubsubFacade = resolve<import("./services/pubsubFacade.js").PubSubFacade>("pubsubFacade")!;
-        const harnessManagerInst = resolve<import("./harnessManager.js").HarnessManager>("harnessManager")!;
+        const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
         const buildSystemInst = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
+        const { server: pubsubServer } = resolve<{ server: import("@natstack/pubsub-server").PubSubServer }>("pubsub")!;
 
         workerServiceDef = createWorkerService({
-          router: workerRouter,
-          facade: pubsubFacade,
-          harnessManager: harnessManagerInst,
+          doDispatch,
           buildSystem: buildSystemInst,
+          pubsub: pubsubServer,
         });
       },
       getServiceDefinition() {
@@ -645,12 +585,14 @@ async function main() {
     let buildSystemForWorkerd: import("./buildV2/index.js").BuildSystemV2 | null = null;
     container.register({
       name: "workerdManager",
-      dependencies: ["buildSystem", "rpcServer", "fsService"],
+      dependencies: ["buildSystem", "rpcServer", "fsService", "pubsub", "harnessApiServer"],
       async start(resolve) {
         const { WorkerdManager } = await import("./workerdManager.js");
         buildSystemForWorkerd = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
         const { port: rpcPort } = resolve<{ port: number }>("rpcServer")!;
         const fsServiceInst = resolve<import("../shared/fsService.js").FsService>("fsService")!;
+        const { port: pubsubPort } = resolve<{ port: number }>("pubsub")!;
+        const { port: harnessApiPort } = resolve<{ port: number }>("harnessApiServer")!;
 
         workerdManagerInstance = new WorkerdManager({
           tokenManager,
@@ -658,6 +600,8 @@ async function main() {
           rpcPort,
           getBuild: (unitPath, ref) => buildSystemForWorkerd!.getBuild(unitPath, ref),
           workspacePath,
+          pubsubUrl: `http://127.0.0.1:${pubsubPort}`,
+          serverUrl: `http://127.0.0.1:${harnessApiPort}`,
         });
 
         // Wire push trigger to restart workers on source rebuild
@@ -968,6 +912,17 @@ async function main() {
   // ── Start all services in dependency order ──
   await container.startAll();
 
+  // Wire harness API deps now that all services are up.
+  // No requests can arrive before workerd starts (which depends on harnessApiServer),
+  // and workerd is what routes DO outbound fetch() calls to this server.
+  harnessApiDeps = {
+    harnessManager: container.get<import("./harnessManager.js").HarnessManager>("harnessManager"),
+    doDispatch: container.get<import("./doDispatch.js").DODispatch>("doDispatch"),
+    contextFolderManager,
+    pubsub: container.get<{ server: import("@natstack/pubsub-server").PubSubServer }>("pubsub").server,
+    validateToken: (token) => tokenManager.validateToken(token) != null,
+  };
+
   dispatcher.markInitialized();
 
   // Validate that SERVER_SERVICE_NAMES covers all server-side services.
@@ -1023,10 +978,13 @@ async function main() {
       console.warn("[Server] Failed to register headless service:", err);
     }
 
+    const harnessApiPort = container.get<{ port: number }>("harnessApiServer").port;
+
     console.log("natstack-server ready:");
     console.log(`  Git:       http://127.0.0.1:${gitServer.getPort()}`);
     console.log(`  PubSub:    ws://127.0.0.1:${pubsubPort}`);
     console.log(`  RPC:       ws://127.0.0.1:${rpcPort}`);
+    console.log(`  Harness:   http://127.0.0.1:${harnessApiPort}`);
     if (panelHttpPort) {
       console.log(`  Panels:    http://127.0.0.1:${panelHttpPort}`);
       console.log(`  Panel API: http://127.0.0.1:${panelHttpPort}/api/panels`);

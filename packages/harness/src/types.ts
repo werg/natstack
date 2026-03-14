@@ -23,7 +23,9 @@ export type HarnessOutput =
   | { type: 'error'; error: string; code?: string }
   | { type: 'interleave-point' }
   | { type: 'metadata-update'; metadata: Record<string, unknown> }
-  | { type: 'ready' };
+  | { type: 'ready' }
+  | { type: 'tool-call'; callId: string; participantId: string; method: string; args: unknown }
+  | { type: 'discover-methods' };
 
 /** Per-turn settings the panel can pass to influence harness behavior */
 export interface HarnessSettings {
@@ -83,15 +85,6 @@ export interface ChannelEvent {
   attachments?: Attachment[];
 }
 
-/** Options for channel send actions */
-export interface SendOptions {
-  type?: string;
-  persist?: boolean;
-  metadata?: Record<string, unknown>;
-  senderMetadata?: Record<string, unknown>;
-  replyTo?: string;
-}
-
 /** Input for starting a new AI turn */
 export interface TurnInput {
   content: string;
@@ -107,29 +100,9 @@ export type HarnessCommand =
   | { type: 'approve-tool'; toolUseId: string; allow: boolean; alwaysAllow?: boolean }
   | { type: 'interrupt' }
   | { type: 'fork'; forkPointMessageId: number; turnSessionId: string }
-  | { type: 'dispose' };
-
-/** Actions returned by worker DOs for the server to execute */
-export interface WorkerActions {
-  actions: WorkerAction[];
-}
-
-export type WorkerAction =
-  // Channel operations
-  | { target: 'channel'; channelId: string; op: 'send'; messageId: string; content: string; options?: SendOptions }
-  | { target: 'channel'; channelId: string; op: 'update'; messageId: string; content: string }
-  | { target: 'channel'; channelId: string; op: 'complete'; messageId: string }
-  | { target: 'channel'; channelId: string; op: 'call-method'; callId: string; participantId: string; method: string; args: unknown }
-  | { target: 'channel'; channelId: string; op: 'method-result'; callId: string; content: unknown; isError?: boolean }
-  | { target: 'channel'; channelId: string; op: 'update-metadata'; metadata: Record<string, unknown> }
-  | { target: 'channel'; channelId: string; op: 'send-ephemeral'; content: string; contentType: string }
-  // Harness operations
-  | { target: 'harness'; harnessId: string; command: HarnessCommand }
-  // System operations
-  | { target: 'system'; op: 'spawn-harness'; type: string; channelId: string; contextId: string; config?: HarnessConfig; senderParticipantId?: string; initialTurn?: { input: TurnInput; triggerMessageId: string; triggerPubsubId: number } }
-  | { target: 'system'; op: 'respawn-harness'; harnessId: string; channelId: string; contextId: string; resumeSessionId?: string; senderParticipantId?: string; retryTurn?: { input: TurnInput; triggerMessageId: string; triggerPubsubId: number } }
-  | { target: 'system'; op: 'fork-channel'; sourceChannel: string; forkPointId: number }
-  | { target: 'system'; op: 'set-alarm'; delayMs: number };
+  | { type: 'dispose' }
+  | { type: 'tool-result'; callId: string; result: unknown; isError?: boolean }
+  | { type: 'discover-methods-result'; methods: Array<{ participantId: string; name: string; description: string; parameters?: unknown }> };
 
 /** PubSub participant identity — returned by subscribeChannel() */
 export interface ParticipantDescriptor {
@@ -147,37 +120,8 @@ export interface MethodAdvertisement {
   parameters?: unknown;
 }
 
-/** Options for spawning a fresh harness */
-export interface SpawnHarnessOpts {
-  type: string;
-  channelId: string;
-  contextId: string;
-  config?: HarnessConfig;
-  senderParticipantId?: string;
-  initialTurn?: {
-    input: TurnInput;
-    triggerMessageId: string;
-    triggerPubsubId: number;
-    typingMessageId?: string;
-  };
-}
-
-/** Options for respawning a crashed harness */
-export interface RespawnHarnessOpts {
-  harnessId: string;
-  channelId: string;
-  contextId: string;
-  resumeSessionId?: string;
-  senderParticipantId?: string;
-  retryTurn?: {
-    input: TurnInput;
-    triggerMessageId: string;
-    triggerPubsubId: number;
-    typingMessageId?: string;
-  };
-}
-
 /** Result from unsubscribing a channel */
 export interface UnsubscribeResult {
   harnessIds: string[];
 }
+

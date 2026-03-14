@@ -6,7 +6,7 @@
  */
 
 import { WebSocketServer, WebSocket } from "ws";
-import { createServer, type Server as HttpServer, type IncomingMessage } from "http";
+import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from "http";
 import {
   type TokenValidator,
   type ChannelConfig,
@@ -208,6 +208,28 @@ export interface CallbackParticipant {
   callback: ParticipantCallback;
 }
 
+/** Tracked state for a POST-back participant registered via HTTP. */
+interface PostbackParticipant {
+  participantId: string;
+  channelId: string;
+  callbackUrl: string;
+  handle: ParticipantHandle;
+  queue: { enqueue(fn: () => Promise<void>): void };
+}
+
+// ─── Async queue (ordered delivery for POST-back participants) ──────────────
+
+function createPostbackQueue() {
+  let chain = Promise.resolve();
+  return {
+    enqueue(fn: () => Promise<void>): void {
+      chain = chain.then(fn).catch((err) => {
+        log.error("[PubSub] POST-back queue item error:", err);
+      });
+    },
+  };
+}
+
 interface PublishClientMessage {
   action: "publish";
   persist?: boolean;
@@ -262,6 +284,10 @@ export class PubSubServer {
   private requestedPort: number | undefined;
   private findPort: PortFinder | undefined;
   private channelEventListeners: Array<(channel: string, event: ChannelBroadcastEvent) => void> = [];
+  /** POST-back participants registered via HTTP, keyed by participantId */
+  private postbackParticipants = new Map<string, PostbackParticipant>();
+  /** In-flight async method calls — keyed by callId, abortable via cancel-call */
+  private pendingCallAborts = new Map<string, AbortController>();
 
   constructor(options: PubSubServerOptions) {
     this.tokenValidator = options.tokenValidator;
@@ -277,8 +303,8 @@ export class PubSubServer {
       this.port = await this.findPort();
     }
 
-    // Create HTTP server for WebSocket upgrade
-    this.httpServer = createServer();
+    // Create HTTP server for WebSocket upgrade and HTTP API endpoints
+    this.httpServer = createServer((req, res) => this.handleHttpRequest(req, res));
     this.wss = new WebSocketServer({ server: this.httpServer });
     this.messageStore.init();
 
@@ -1193,6 +1219,617 @@ export class PubSubServer {
     this.broadcast(client.channel, msg, client.ws, senderRef);
   }
 
+  // ===========================================================================
+  // HTTP API endpoints
+  // ===========================================================================
+
+  /**
+   * Read the full request body as a string. Returns "" for GET requests.
+   */
+  private readBody(req: IncomingMessage): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
+      req.on("error", reject);
+    });
+  }
+
+  /**
+   * Send a JSON response.
+   */
+  private jsonResponse(res: ServerResponse, status: number, body: unknown): void {
+    const data = JSON.stringify(body);
+    res.writeHead(status, { "Content-Type": "application/json" });
+    res.end(data);
+  }
+
+  /**
+   * Validate Bearer token from Authorization header.
+   * Returns callerId on success, or sends 401 and returns null.
+   */
+  private validateHttpAuth(req: IncomingMessage, res: ServerResponse): string | null {
+    const authHeader = req.headers["authorization"];
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      this.jsonResponse(res, 401, { error: "missing or invalid Authorization header" });
+      return null;
+    }
+    const token = authHeader.slice(7);
+    const entry = this.tokenValidator.validateToken(token);
+    if (!entry?.callerId) {
+      this.jsonResponse(res, 401, { error: "unauthorized" });
+      return null;
+    }
+    return entry.callerId;
+  }
+
+  /**
+   * Route incoming HTTP requests to the appropriate handler.
+   * Handles /channel/{channelId}/{action} endpoints.
+   */
+  private async handleHttpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    try {
+      const url = new URL(req.url || "", "http://localhost");
+      const parts = url.pathname.split("/").filter(Boolean);
+
+      // Route: /channel/{channelId}/{action}
+      if (parts.length === 3 && parts[0] === "channel") {
+        const channelId = decodeURIComponent(parts[1]!);
+        const action = parts[2]!;
+
+        // Validate auth for all channel endpoints
+        const callerId = this.validateHttpAuth(req, res);
+        if (!callerId) return;
+
+        if (req.method === "GET" && action === "participants") {
+          return this.handleGetParticipants(res, channelId);
+        }
+
+        if (req.method === "POST") {
+          const bodyStr = await this.readBody(req);
+          let body: Record<string, unknown>;
+          try {
+            body = JSON.parse(bodyStr) as Record<string, unknown>;
+          } catch {
+            this.jsonResponse(res, 400, { error: "invalid JSON body" });
+            return;
+          }
+
+          switch (action) {
+            case "send":
+              return this.handleSend(res, channelId, body);
+            case "update":
+              return this.handleUpdate(res, channelId, body);
+            case "complete":
+              return this.handleComplete(res, channelId, body);
+            case "send-ephemeral":
+              return this.handleSendEphemeral(res, channelId, body);
+            case "update-metadata":
+              return this.handleUpdateMetadata(res, channelId, body);
+            case "subscribe":
+              return this.handleSubscribe(res, channelId, body);
+            case "unsubscribe":
+              return this.handleUnsubscribe(res, channelId, body);
+            case "call-method":
+              return this.handleCallMethod(res, channelId, body);
+            case "cancel-call":
+              return this.handleCancelCall(res, channelId, body);
+            default:
+              this.jsonResponse(res, 404, { error: `unknown action: ${action}` });
+              return;
+          }
+        }
+
+        this.jsonResponse(res, 405, { error: "method not allowed" });
+        return;
+      }
+
+      this.jsonResponse(res, 404, { error: "not found" });
+    } catch (err) {
+      log.error("[PubSub] HTTP handler error:", err);
+      if (!res.headersSent) {
+        this.jsonResponse(res, 500, { error: "internal server error" });
+      }
+    }
+  }
+
+  // ─── Channel operation handlers ───────────────────────────────────────────
+
+  /**
+   * POST /channel/{channelId}/send
+   * Body: { participantId, messageId, content, contentType?, persist?, senderMetadata?, replyTo? }
+   */
+  private handleSend(res: ServerResponse, channelId: string, body: Record<string, unknown>): void {
+    const { participantId, messageId, content, contentType, persist, senderMetadata, replyTo } = body as {
+      participantId: string; messageId: string; content: string;
+      contentType?: string; persist?: boolean; senderMetadata?: Record<string, unknown>; replyTo?: string;
+    };
+    if (!participantId || !messageId || content === undefined) {
+      this.jsonResponse(res, 400, { error: "participantId, messageId, and content are required" });
+      return;
+    }
+
+    // Find the ParticipantHandle — check postback first, then channel callbacks
+    const handle = this.findParticipantHandle(channelId, participantId);
+    if (!handle) {
+      this.jsonResponse(res, 404, { error: `participant ${participantId} not found on channel ${channelId}` });
+      return;
+    }
+
+    handle.sendMessage(messageId, String(content), {
+      contentType: contentType as string | undefined,
+      persist: persist as boolean | undefined,
+      senderMetadata: senderMetadata as Record<string, unknown> | undefined,
+      replyTo: replyTo as string | undefined,
+    });
+    this.jsonResponse(res, 200, { ok: true });
+  }
+
+  /**
+   * POST /channel/{channelId}/update
+   * Body: { participantId, messageId, content }
+   */
+  private handleUpdate(res: ServerResponse, channelId: string, body: Record<string, unknown>): void {
+    const { participantId, messageId, content } = body as {
+      participantId: string; messageId: string; content: string;
+    };
+    if (!participantId || !messageId || content === undefined) {
+      this.jsonResponse(res, 400, { error: "participantId, messageId, and content are required" });
+      return;
+    }
+
+    const handle = this.findParticipantHandle(channelId, participantId);
+    if (!handle) {
+      this.jsonResponse(res, 404, { error: `participant ${participantId} not found on channel ${channelId}` });
+      return;
+    }
+
+    handle.updateMessage(messageId, String(content));
+    this.jsonResponse(res, 200, { ok: true });
+  }
+
+  /**
+   * POST /channel/{channelId}/complete
+   * Body: { participantId, messageId }
+   */
+  private handleComplete(res: ServerResponse, channelId: string, body: Record<string, unknown>): void {
+    const { participantId, messageId } = body as { participantId: string; messageId: string };
+    if (!participantId || !messageId) {
+      this.jsonResponse(res, 400, { error: "participantId and messageId are required" });
+      return;
+    }
+
+    const handle = this.findParticipantHandle(channelId, participantId);
+    if (!handle) {
+      this.jsonResponse(res, 404, { error: `participant ${participantId} not found on channel ${channelId}` });
+      return;
+    }
+
+    handle.completeMessage(messageId);
+    this.jsonResponse(res, 200, { ok: true });
+  }
+
+  /**
+   * POST /channel/{channelId}/send-ephemeral
+   * Body: { participantId, content, contentType? }
+   */
+  private handleSendEphemeral(res: ServerResponse, channelId: string, body: Record<string, unknown>): void {
+    const { participantId, content, contentType } = body as {
+      participantId: string; content: string; contentType?: string;
+    };
+    if (!participantId || content === undefined) {
+      this.jsonResponse(res, 400, { error: "participantId and content are required" });
+      return;
+    }
+
+    const handle = this.findParticipantHandle(channelId, participantId);
+    if (!handle) {
+      this.jsonResponse(res, 404, { error: `participant ${participantId} not found on channel ${channelId}` });
+      return;
+    }
+
+    // Generate a unique messageId for the ephemeral message, send with persist=false
+    const ephemeralId = `eph_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    handle.sendMessage(ephemeralId, String(content), {
+      contentType: contentType as string | undefined,
+      persist: false,
+    });
+    this.jsonResponse(res, 200, { ok: true });
+  }
+
+  /**
+   * POST /channel/{channelId}/update-metadata
+   * Body: { participantId, metadata }
+   */
+  private handleUpdateMetadata(res: ServerResponse, channelId: string, body: Record<string, unknown>): void {
+    const { participantId, metadata } = body as {
+      participantId: string; metadata: Record<string, unknown>;
+    };
+    if (!participantId || !metadata || typeof metadata !== "object") {
+      this.jsonResponse(res, 400, { error: "participantId and metadata (object) are required" });
+      return;
+    }
+
+    const handle = this.findParticipantHandle(channelId, participantId);
+    if (!handle) {
+      this.jsonResponse(res, 404, { error: `participant ${participantId} not found on channel ${channelId}` });
+      return;
+    }
+
+    handle.updateMetadata(metadata);
+    this.jsonResponse(res, 200, { ok: true });
+  }
+
+  /**
+   * GET /channel/{channelId}/participants
+   * Returns [{ participantId, metadata }]
+   */
+  private handleGetParticipants(res: ServerResponse, channelId: string): void {
+    const participants = this.getChannelParticipants(channelId);
+    this.jsonResponse(res, 200, participants);
+  }
+
+  // ─── Subscription management handlers ─────────────────────────────────────
+
+  /**
+   * POST /channel/{channelId}/subscribe
+   * Body: { participantId, metadata, callbackUrl }
+   *
+   * Registers a POST-back participant. Events are delivered via HTTP POST
+   * to the callbackUrl with ordered delivery (async queue per participant).
+   */
+  private handleSubscribe(res: ServerResponse, channelId: string, body: Record<string, unknown>): void {
+    const { participantId, metadata, callbackUrl } = body as {
+      participantId: string; metadata: Record<string, unknown>; callbackUrl: string;
+    };
+    if (!participantId || !metadata || !callbackUrl) {
+      this.jsonResponse(res, 400, { error: "participantId, metadata, and callbackUrl are required" });
+      return;
+    }
+
+    // If already subscribed, unsubscribe first
+    const existing = this.postbackParticipants.get(participantId);
+    if (existing) {
+      existing.handle.leave();
+      this.postbackParticipants.delete(participantId);
+    }
+
+    const queue = createPostbackQueue();
+
+    // Register as a callback participant using the existing mechanism.
+    // The onEvent callback POSTs events to the callbackUrl via the async queue.
+    const handle = this.registerParticipant(channelId, participantId, metadata, {
+      onEvent: (event: ChannelBroadcastEvent) => {
+        // Skip events from this participant (same as existing callback behavior)
+        if (event.senderId === participantId) return;
+
+        queue.enqueue(async () => {
+          log.verbose(`[PubSub] POST-back delivering event to ${participantId} at ${callbackUrl} (type=${event.type}, sender=${event.senderId})`);
+          const postBody = JSON.stringify([channelId, event]);
+          try {
+            await httpPost(callbackUrl, postBody);
+          } catch (err) {
+            // Retry once after a brief delay — transient failures (workerd restart, etc.)
+            log.warn(`[PubSub] POST-back delivery failed for ${participantId}, retrying in 500ms:`, err);
+            await new Promise(r => setTimeout(r, 500));
+            try {
+              await httpPost(callbackUrl, postBody);
+            } catch (retryErr) {
+              log.error(`[PubSub] POST-back delivery failed after retry for ${participantId} -> ${callbackUrl} (event type=${event.type}, id=${event.id}):`, retryErr);
+            }
+          }
+        });
+      },
+    });
+
+    const entry: PostbackParticipant = {
+      participantId,
+      channelId,
+      callbackUrl,
+      handle,
+      queue,
+    };
+    this.postbackParticipants.set(participantId, entry);
+    log.info(`[PubSub] POST-back participant registered: ${participantId} on channel ${channelId} -> ${callbackUrl}`);
+
+    this.jsonResponse(res, 200, { ok: true });
+  }
+
+  /**
+   * POST /channel/{channelId}/unsubscribe
+   * Body: { participantId }
+   */
+  private handleUnsubscribe(res: ServerResponse, channelId: string, body: Record<string, unknown>): void {
+    const { participantId } = body as { participantId: string };
+    if (!participantId) {
+      this.jsonResponse(res, 400, { error: "participantId is required" });
+      return;
+    }
+
+    const entry = this.postbackParticipants.get(participantId);
+    if (!entry || entry.channelId !== channelId) {
+      this.jsonResponse(res, 404, { error: `POST-back participant ${participantId} not found on channel ${channelId}` });
+      return;
+    }
+
+    entry.handle.leave();
+    this.postbackParticipants.delete(participantId);
+    this.jsonResponse(res, 200, { ok: true });
+  }
+
+  // ─── Method call handlers ────────────────────────────────────────────────
+
+  /**
+   * POST /channel/{channelId}/call-method
+   * Body: { callerParticipantId, callerCallbackUrl, targetParticipantId, callId, method, args }
+   *
+   * Async: returns 200 immediately. Result delivered via POST to callerCallbackUrl + "/onCallResult".
+   */
+  private handleCallMethod(res: ServerResponse, channelId: string, body: Record<string, unknown>): void {
+    const { callerParticipantId, callerCallbackUrl, targetParticipantId, callId, method, args } = body as {
+      callerParticipantId: string; callerCallbackUrl: string;
+      targetParticipantId: string; callId: string; method: string; args: unknown;
+    };
+    if (!callerParticipantId || !callerCallbackUrl || !targetParticipantId || !callId || !method) {
+      this.jsonResponse(res, 400, { error: "callerParticipantId, callerCallbackUrl, targetParticipantId, callId, and method are required" });
+      return;
+    }
+
+    // Return 200 immediately — result delivered asynchronously
+    this.jsonResponse(res, 200, { ok: true, callId });
+
+    // Track for cancellation, fire async — deliver result via POST-back
+    const abort = new AbortController();
+    this.pendingCallAborts.set(callId, abort);
+    void this.executeCallMethod(channelId, callerParticipantId, callerCallbackUrl, targetParticipantId, callId, method, args, abort.signal)
+      .finally(() => this.pendingCallAborts.delete(callId));
+  }
+
+  /**
+   * Execute a method call against a target participant and POST the result back to the caller.
+   */
+  private async executeCallMethod(
+    channelId: string,
+    callerParticipantId: string,
+    callerCallbackUrl: string,
+    targetParticipantId: string,
+    callId: string,
+    method: string,
+    args: unknown,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const resultUrl = callerCallbackUrl.replace(/\/$/, "") + "/onCallResult";
+
+    try {
+      if (signal.aborted) throw new Error("Call cancelled before execution");
+
+      // Check if target is a POST-back participant
+      const targetPostback = this.postbackParticipants.get(targetParticipantId);
+      if (targetPostback) {
+        // Target is a POST-back participant — POST to its callbackUrl + "/onMethodCall"
+        const methodCallUrl = targetPostback.callbackUrl.replace(/\/$/, "") + "/onMethodCall";
+        const methodCallBody = JSON.stringify([channelId, callId, method, args]);
+        const response = await httpPost(methodCallUrl, methodCallBody);
+        if (signal.aborted) throw new Error("Call cancelled");
+        // The response body is the method result
+        const resultBody = await readFetchBody(response);
+        let result: unknown;
+        try { result = JSON.parse(resultBody); } catch { result = resultBody; }
+
+        // POST result back to caller
+        await httpPost(resultUrl, JSON.stringify([callId, result, false]));
+        return;
+      }
+
+      // Target is a WebSocket participant — broadcast method-call, wait for method-result
+      const callerHandle = this.findParticipantHandle(channelId, callerParticipantId);
+      if (!callerHandle) {
+        await httpPost(resultUrl, JSON.stringify([callId, `caller ${callerParticipantId} not found`, true]));
+        return;
+      }
+
+      const result = await new Promise<unknown>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          cleanup();
+          reject(new Error(`Method call ${method} timed out after 5m (callId=${callId})`));
+        }, 300_000);
+
+        const unsub = this.onChannelEvent((ch, event) => {
+          if (ch !== channelId || event.type !== "method-result") return;
+          try {
+            const payload = typeof event.payload === "string"
+              ? JSON.parse(event.payload) as Record<string, unknown>
+              : event.payload as Record<string, unknown>;
+            if (payload && payload["callId"] === callId) {
+              cleanup();
+              if (payload["isError"]) {
+                reject(new Error(typeof payload["content"] === "string" ? payload["content"] : JSON.stringify(payload["content"])));
+              } else {
+                resolve(payload["content"]);
+              }
+            }
+          } catch { /* ignore parse errors */ }
+        });
+
+        // Abort handler — cancels the pending call
+        const onAbort = () => {
+          cleanup();
+          reject(new Error(`Call cancelled (callId=${callId})`));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+
+        const cleanup = () => {
+          clearTimeout(timeout);
+          unsub();
+          signal.removeEventListener("abort", onAbort);
+        };
+
+        // Broadcast method-call via caller's handle
+        callerHandle.sendMethodCall(callId, targetParticipantId, method, args);
+      });
+
+      // POST result to caller
+      await httpPost(resultUrl, JSON.stringify([callId, result, false]));
+    } catch (err) {
+      // Don't deliver error for cancelled calls — the caller already moved on
+      if (signal.aborted) return;
+
+      // Deliver error to caller
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      log.error(`[PubSub] call-method failed (callId=${callId}, method=${method}):`, err);
+      try {
+        await httpPost(resultUrl, JSON.stringify([callId, errorMsg, true]));
+      } catch (postErr) {
+        log.error(`[PubSub] Failed to deliver call-method error to caller:`, postErr);
+      }
+    }
+  }
+
+  /**
+   * POST /channel/{channelId}/cancel-call
+   * Body: { callId }
+   *
+   * Currently a no-op placeholder — cancellation is not yet implemented
+   * for in-flight method calls. Returns 200 to acknowledge the request.
+   */
+  private handleCancelCall(res: ServerResponse, _channelId: string, body: Record<string, unknown>): void {
+    const { callId } = body as { callId: string };
+    if (!callId) {
+      this.jsonResponse(res, 400, { error: "callId is required" });
+      return;
+    }
+    const abort = this.pendingCallAborts.get(callId);
+    if (abort) {
+      abort.abort();
+      this.pendingCallAborts.delete(callId);
+    }
+    this.jsonResponse(res, 200, { ok: true, callId, cancelled: !!abort });
+  }
+
+  // ─── Handle lookup helpers ────────────────────────────────────────────────
+
+  /**
+   * Find the ParticipantHandle for a given participant on a channel.
+   * Checks POST-back participants first, then in-process callback participants.
+   */
+  private findParticipantHandle(channelId: string, participantId: string): ParticipantHandle | null {
+    // Check POST-back participants
+    const postback = this.postbackParticipants.get(participantId);
+    if (postback && postback.channelId === channelId) {
+      return postback.handle;
+    }
+
+    // The caller might also be using an in-process callback participant
+    // registered directly (not through HTTP). We don't have direct access to
+    // those handles here since they're returned to the caller of
+    // registerParticipant(). For channel operations via HTTP, the participant
+    // must have been registered via POST /subscribe (which stores the handle).
+    // If the participant exists but wasn't registered via HTTP, we need to
+    // create a temporary handle-like adapter.
+    //
+    // For now: if the participant exists in channel state, create a direct
+    // handle by re-using the internal broadcast/insert machinery.
+    const state = this.channels.get(channelId);
+    if (!state) return null;
+
+    // Check if participant is in callbacks or WS participants
+    const isCallback = state.callbacks.has(participantId);
+    const isWsParticipant = state.participants.has(participantId);
+    if (!isCallback && !isWsParticipant) return null;
+
+    // Get metadata from whichever participant type matches
+    const metadata = isCallback
+      ? state.callbacks.get(participantId)!.metadata
+      : state.participants.get(participantId)!.metadata;
+
+    // Create an ad-hoc handle that uses internal broadcast/insert
+    return this.createAdHocHandle(channelId, participantId, metadata);
+  }
+
+  /**
+   * Create an ad-hoc ParticipantHandle for an existing participant.
+   * Used when HTTP endpoints need to act on behalf of a participant that was
+   * not registered via POST /subscribe.
+   */
+  private createAdHocHandle(channelId: string, participantId: string, metadata: Record<string, unknown>): ParticipantHandle {
+    return {
+      sendMessage: (messageId: string, content: string, options?: SendMessageOptions) => {
+        const persist = options?.persist !== false;
+        const ts = Date.now();
+        const payloadObj: Record<string, unknown> = { id: messageId, content };
+        if (options?.replyTo) payloadObj["replyTo"] = options.replyTo;
+        if (options?.contentType) payloadObj["contentType"] = options.contentType;
+        const payloadJson = JSON.stringify(payloadObj);
+        const senderMeta = options?.senderMetadata ?? metadata;
+
+        if (persist) {
+          const id = this.messageStore.insert(channelId, "message", payloadJson, participantId, ts, senderMeta);
+          this.broadcast(channelId, {
+            kind: "persisted", id, type: "message", payload: payloadObj, senderId: participantId, ts, senderMetadata: senderMeta,
+          }, null);
+        } else {
+          this.broadcast(channelId, {
+            kind: "ephemeral", type: "message", payload: payloadObj, senderId: participantId, ts, senderMetadata: senderMeta,
+          }, null);
+        }
+      },
+
+      updateMessage: (messageId: string, content: string) => {
+        const ts = Date.now();
+        const payloadObj: Record<string, unknown> = { id: messageId, content };
+        const payloadJson = JSON.stringify(payloadObj);
+        const id = this.messageStore.insert(channelId, "update-message", payloadJson, participantId, ts, metadata);
+        this.broadcast(channelId, {
+          kind: "persisted", id, type: "update-message", payload: payloadObj, senderId: participantId, ts, senderMetadata: metadata,
+        }, null);
+      },
+
+      completeMessage: (messageId: string) => {
+        const ts = Date.now();
+        const payloadObj: Record<string, unknown> = { id: messageId, complete: true };
+        const payloadJson = JSON.stringify(payloadObj);
+        const id = this.messageStore.insert(channelId, "update-message", payloadJson, participantId, ts, metadata);
+        this.broadcast(channelId, {
+          kind: "persisted", id, type: "update-message", payload: payloadObj, senderId: participantId, ts, senderMetadata: metadata,
+        }, null);
+      },
+
+      sendMethodCall: (callId: string, providerId: string, methodName: string, args: unknown) => {
+        const ts = Date.now();
+        const payloadObj = { callId, providerId, methodName, args };
+        this.broadcast(channelId, {
+          kind: "ephemeral", type: "method-call", payload: payloadObj, senderId: participantId, ts, senderMetadata: metadata,
+        }, null);
+      },
+
+      sendMethodResult: (callId: string, content: unknown, isError?: boolean) => {
+        const ts = Date.now();
+        const payloadObj = { callId, content, complete: true, isError: isError ?? false };
+        const payloadJson = JSON.stringify(payloadObj);
+        const id = this.messageStore.insert(channelId, "method-result", payloadJson, participantId, ts, metadata);
+        this.broadcast(channelId, {
+          kind: "persisted", id, type: "method-result", payload: payloadObj, senderId: participantId, ts, senderMetadata: metadata,
+        }, null);
+      },
+
+      updateMetadata: (newMetadata: Record<string, unknown>) => {
+        // Update metadata in channel state
+        const state = this.channels.get(channelId);
+        if (state) {
+          const cb = state.callbacks.get(participantId);
+          if (cb) cb.metadata = newMetadata;
+          const ws = state.participants.get(participantId);
+          if (ws) ws.metadata = newMetadata;
+        }
+        this.publishPresenceEventForParticipant(channelId, participantId, "update", newMetadata);
+      },
+
+      leave: () => {
+        // No-op for ad-hoc handles — the real leave happens via unsubscribe
+      },
+    };
+  }
+
   getPort(): number | null {
     return this.port;
   }
@@ -1420,6 +2057,9 @@ export class PubSubServer {
       state.callbacks.clear();
     }
 
+    // Clear POST-back participant tracking
+    this.postbackParticipants.clear();
+
     // Now terminate connections and close the store
     if (this.wss) {
       for (const client of this.wss.clients) {
@@ -1446,3 +2086,30 @@ export class PubSubServer {
   }
 }
 
+// =============================================================================
+// Module-level HTTP helpers for POST-back delivery
+// =============================================================================
+
+/**
+ * POST JSON to a URL using the built-in fetch API.
+ * Returns the Response object for the caller to inspect if needed.
+ */
+async function httpPost(url: string, body: string): Promise<Response> {
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`POST ${url} failed with ${resp.status}: ${text}`);
+  }
+  return resp;
+}
+
+/**
+ * Read the full body of a fetch Response as text.
+ */
+async function readFetchBody(response: Response): Promise<string> {
+  return response.text();
+}

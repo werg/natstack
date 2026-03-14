@@ -14,11 +14,19 @@ import type { CallerKind } from "../shared/serviceDispatcher.js";
 
 // ─── Public types ────────────────────────────────────────────────────────────
 
+/** DO identity — source-scoped */
+export interface DORef {
+  source: string;
+  className: string;
+  objectKey: string;
+}
+
 export interface HarnessProcess {
   id: string;
   type: string;           // e.g. 'claude-sdk', 'pi'
-  workerId: string;       // which worker DO owns this (className:objectKey)
+  workerId: string;       // DO identifier (source:className:objectKey)
   channel: string;        // primary channel
+  doRef?: DORef;          // source-scoped DO identity
   pid?: number;           // OS process ID
   status: "starting" | "running" | "stopped";
 }
@@ -111,8 +119,15 @@ export class HarnessManager {
       ...extraEnv,
     };
 
+    // Parse DORef from workerId if it has the source:className:objectKey format
+    let doRef: DORef | undefined;
+    const parts = workerId.split(":");
+    if (parts.length >= 3) {
+      doRef = { source: parts[0]!, className: parts[1]!, objectKey: parts[2]! };
+    }
+
     // Record the process entry
-    const proc: HarnessProcess = { id, type, workerId, channel, status: "starting" };
+    const proc: HarnessProcess = { id, type, workerId, channel, doRef, status: "starting" };
     this.processes.set(id, proc);
 
     // Spawn Node.js child process via fork
@@ -221,6 +236,11 @@ export class HarnessManager {
   /** Get the RPC bridge for a running harness */
   getHarnessBridge(id: string): RpcBridge | undefined {
     return this.deps.getClientBridge(id);
+  }
+
+  /** Get the DORef for a harness */
+  getDOForHarness(id: string): DORef | undefined {
+    return this.processes.get(id)?.doRef;
   }
 
   /** Get harness info by ID */

@@ -1,4 +1,4 @@
-import type { WorkerAction, SendOptions } from "@natstack/harness";
+import type { PubSubDOClient, PubSubSendOptions } from "./pubsub-client.js";
 
 export interface PersistedStreamState {
   responseMessageId: string | null;
@@ -8,143 +8,143 @@ export interface PersistedStreamState {
 }
 
 /**
- * StreamWriter mirrors the old tracker semantics while keeping state
- * durable across DO invocations.
+ * StreamWriter — async streaming message lifecycle manager.
+ *
+ * All methods are async because they call PubSub HTTP directly
+ * instead of appending to a synchronous WorkerAction array.
  */
 export class StreamWriter {
   private state: PersistedStreamState;
 
   constructor(
+    private pubsub: PubSubDOClient,
+    private participantId: string,
     private channelId: string,
     private replyToId: string,
     private typingContent: string,
     initialState: PersistedStreamState,
-    private actions: WorkerAction[],
   ) {
     this.state = { ...initialState };
   }
 
-  private send(messageId: string, content: string, options?: SendOptions): void {
-    this.actions.push({
-      target: "channel",
-      channelId: this.channelId,
-      op: "send",
+  private async send(messageId: string, content: string, options?: PubSubSendOptions): Promise<void> {
+    await this.pubsub.send(
+      this.participantId,
+      this.channelId,
       messageId,
       content,
-      ...(options ? { options } : {}),
-    });
+      options,
+    );
   }
 
-  private update(messageId: string, content: string): void {
-    this.actions.push({
-      target: "channel",
-      channelId: this.channelId,
-      op: "update",
+  private async update(messageId: string, content: string): Promise<void> {
+    await this.pubsub.update(
+      this.participantId,
+      this.channelId,
       messageId,
       content,
-    });
+    );
   }
 
-  private complete(messageId: string): void {
-    this.actions.push({
-      target: "channel",
-      channelId: this.channelId,
-      op: "complete",
+  private async complete(messageId: string): Promise<void> {
+    await this.pubsub.complete(
+      this.participantId,
+      this.channelId,
       messageId,
-    });
+    );
   }
 
-  startTyping(): void {
+  async startTyping(): Promise<void> {
     if (this.state.typingMessageId) return;
     const messageId = crypto.randomUUID();
     this.state.typingMessageId = messageId;
-    this.send(messageId, this.typingContent, {
-      type: "typing",
+    await this.send(messageId, this.typingContent, {
+      contentType: "typing",
       persist: false,
       replyTo: this.replyToId,
     });
   }
 
-  stopTyping(): void {
+  async stopTyping(): Promise<void> {
     if (!this.state.typingMessageId) return;
-    this.complete(this.state.typingMessageId);
+    await this.complete(this.state.typingMessageId);
     this.state.typingMessageId = null;
   }
 
-  startThinking(): void {
-    this.stopTyping();
+  async startThinking(): Promise<void> {
+    await this.stopTyping();
     if (this.state.thinkingMessageId) {
-      this.endThinking();
+      await this.endThinking();
     }
     const messageId = crypto.randomUUID();
     this.state.thinkingMessageId = messageId;
-    this.send(messageId, "", {
-      type: "thinking",
+    await this.send(messageId, "", {
+      contentType: "thinking",
       persist: true,
       replyTo: this.replyToId,
     });
   }
 
-  updateThinking(content: string): void {
+  async updateThinking(content: string): Promise<void> {
     if (!this.state.thinkingMessageId || !content) return;
-    this.update(this.state.thinkingMessageId, content);
+    await this.update(this.state.thinkingMessageId, content);
   }
 
-  endThinking(): void {
+  async endThinking(): Promise<void> {
     if (!this.state.thinkingMessageId) return;
-    this.complete(this.state.thinkingMessageId);
+    await this.complete(this.state.thinkingMessageId);
     this.state.thinkingMessageId = null;
   }
 
-  startText(metadata?: unknown): void {
-    this.stopTyping();
+  async startText(metadata?: unknown): Promise<void> {
+    await this.stopTyping();
     if (this.state.responseMessageId) return;
     const messageId = crypto.randomUUID();
-    const options: SendOptions = { persist: true, replyTo: this.replyToId };
-    if (metadata) options.metadata = metadata as Record<string, unknown>;
+    const options: PubSubSendOptions = { persist: true, replyTo: this.replyToId };
+    if (metadata) options.senderMetadata = metadata as Record<string, unknown>;
     this.state.responseMessageId = messageId;
-    this.send(messageId, "", options);
+    await this.send(messageId, "", options);
   }
 
-  updateText(content: string): void {
+  async updateText(content: string): Promise<void> {
     if (!this.state.responseMessageId) return;
-    this.update(this.state.responseMessageId, content);
+    await this.update(this.state.responseMessageId, content);
   }
 
-  completeText(): void {
+  async completeText(): Promise<void> {
     if (!this.state.responseMessageId) return;
-    this.complete(this.state.responseMessageId);
+    await this.complete(this.state.responseMessageId);
     this.state.responseMessageId = null;
   }
 
-  startAction(tool: string, description: string, toolUseId?: string): void {
-    this.stopTyping();
+  async startAction(tool: string, description: string, toolUseId?: string): Promise<void> {
+    await this.stopTyping();
     if (this.state.actionMessageId) {
-      this.endAction();
+      await this.endAction();
     }
     const messageId = crypto.randomUUID();
     this.state.actionMessageId = messageId;
-    this.send(
+    await this.send(
       messageId,
       JSON.stringify({ type: tool, description, toolUseId, status: "pending" }),
       {
-        type: "action",
+        contentType: "action",
         persist: true,
         replyTo: this.replyToId,
       },
     );
   }
 
-  endAction(): void {
+  async endAction(): Promise<void> {
     if (!this.state.actionMessageId) return;
-    this.complete(this.state.actionMessageId);
+    await this.complete(this.state.actionMessageId);
     this.state.actionMessageId = null;
   }
 
-  sendInlineUi(data: unknown): void {
+  async sendInlineUi(data: unknown): Promise<void> {
     const messageId = crypto.randomUUID();
-    this.send(messageId, JSON.stringify(data), {
-      type: "inline_ui",
+    await this.send(messageId, JSON.stringify(data), {
+      contentType: "inline_ui",
       persist: true,
     });
   }

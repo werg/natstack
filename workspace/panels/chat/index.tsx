@@ -63,16 +63,16 @@ async function subscribeDOToChannel(
     // Instance may already exist — that's fine
   });
 
-  // Subscribe the DO to the channel
+  // Subscribe the DO to the channel (callDO now takes source as first arg).
+  // subscribeChannel expects a single opts object, not positional args.
   return rpc.call<{ ok: boolean; participantId?: string }>(
     "main",
     "workers.callDO",
+    DEFAULT_WORKER_SOURCE,
     className,
     objectKey,
     "subscribeChannel",
-    channelId,
-    channelContextId,
-    config,
+    { channelId, contextId: channelContextId, config },
   );
 }
 
@@ -80,11 +80,12 @@ async function subscribeDOToChannel(
  * Unsubscribe a DO from a channel via the workers service.
  */
 async function unsubscribeDOFromChannel(
+  source: string,
   className: string,
   objectKey: string,
   channelId: string,
 ): Promise<void> {
-  await rpc.call("main", "workers.callDO", className, objectKey, "unsubscribeChannel", channelId);
+  await rpc.call("main", "workers.callDO", source, className, objectKey, "unsubscribeChannel", channelId);
 }
 
 export default function ChatPanel() {
@@ -179,6 +180,7 @@ export default function ChatPanel() {
     // getChannelWorkers returns all DO participants subscribed to the channel.
     const channelWorkers = await rpc.call<Array<{
       participantId: string;
+      source: string;
       className: string;
       objectKey: string;
       channelId: string;
@@ -187,14 +189,14 @@ export default function ChatPanel() {
     // Match by objectKey containing the handle prefix (objectKey is "{handle}-{uuid}")
     const match = channelWorkers.find(w => w.objectKey.startsWith(handle));
     if (match) {
-      await unsubscribeDOFromChannel(match.className, match.objectKey, channelName);
+      await unsubscribeDOFromChannel(match.source, match.className, match.objectKey, channelName);
     } else {
       // Fallback: try to unsubscribe the first worker if only one is present
       // TODO: improve handle-to-objectKey resolution when multiple DOs are present
       console.warn(`[ChatPanel] No DO found matching handle "${handle}" on channel "${channelName}"`);
       if (channelWorkers.length === 1) {
         const w = channelWorkers[0]!;
-        await unsubscribeDOFromChannel(w.className, w.objectKey, channelName);
+        await unsubscribeDOFromChannel(w.source, w.className, w.objectKey, channelName);
       }
     }
   }, []);

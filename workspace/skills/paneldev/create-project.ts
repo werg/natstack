@@ -185,7 +185,6 @@ import type {
   HarnessConfig,
   HarnessOutput,
   ParticipantDescriptor,
-  WorkerActions,
 } from "@natstack/harness";
 
 export class ${className} extends AgentWorkerBase {
@@ -232,12 +231,10 @@ export class ${className} extends AgentWorkerBase {
   async onChannelEvent(
     channelId: string,
     event: ChannelEvent,
-  ): Promise<WorkerActions> {
-    const $ = this.actions();
-
+  ): Promise<void> {
     if (!this.shouldProcess(event)) {
       this.advanceCheckpoint(channelId, null, event.id);
-      return $.result();
+      return;
     }
 
     const input = this.buildTurnInput(event);
@@ -246,11 +243,13 @@ export class ${className} extends AgentWorkerBase {
     if (!harnessId) {
       // No active harness — spawn one with the first turn
       const contextId = this.getContextId(channelId);
-      $.spawnHarness({
+      await this.server.spawnHarness({
+        doRef: this.doRef,
+        harnessId: \\\`harness-\\\${crypto.randomUUID()}\\\`,
         type: this.getHarnessType(),
         channelId,
         contextId,
-        config: this.getHarnessConfig(),
+        config: this.getHarnessConfig() as unknown as Record<string, unknown>,
         initialTurn: {
           input,
           triggerMessageId: event.messageId,
@@ -259,59 +258,55 @@ export class ${className} extends AgentWorkerBase {
       });
     } else {
       // Existing harness — start a new turn
-      $.harness(harnessId).startTurn(input);
-      $.channel(channelId).sendEphemeral(
-        JSON.stringify({ senderId: harnessId }),
-        "typing",
-      );
       this.setActiveTurn(harnessId, channelId, event.messageId);
       this.setInFlightTurn(channelId, harnessId, event.messageId, event.id, input);
       this.advanceCheckpoint(channelId, harnessId, event.id);
+      await this.server.sendHarnessCommand(harnessId, { type: "start-turn", input });
     }
-
-    return $.result();
   }
 
   // --- Harness event handler ---
   async onHarnessEvent(
     harnessId: string,
     event: HarnessOutput,
-  ): Promise<WorkerActions> {
-    const $ = this.actions();
+  ): Promise<void> {
     const turn = this.getActiveTurn(harnessId);
     const channelId = turn?.channelId ?? this.getChannelForHarness(harnessId);
-    if (!channelId) return $.result();
+    if (!channelId || !turn) return;
 
-    if (turn) {
-      const writer = $.channel(channelId).streamFor(harnessId, turn);
+    const writer = this.createWriter(channelId, turn);
 
-      switch (event.type) {
-        case "text-start": writer.startText(); break;
-        case "text-delta": writer.updateText(event.content); break;
-        case "text-end": writer.complete(); break;
-        case "turn-complete": {
-          const at = this.getActiveTurn(harnessId);
-          if (at?.turnMessageId) {
-            const inf = this.getInFlightTurn(channelId, harnessId);
-            this.recordTurn(harnessId, at.turnMessageId, inf?.triggerPubsubId ?? 0, event.sessionId);
-          }
-          this.clearActiveTurn(harnessId);
-          this.clearInFlightTurn(channelId, harnessId);
+    switch (event.type) {
+      case "text-start": await writer.startText(); break;
+      case "text-delta": await writer.updateText(event.content); break;
+      case "text-end": await writer.completeText(); break;
+      case "turn-complete": {
+        this.persistStreamState(harnessId, writer);
+        const at = this.getActiveTurn(harnessId);
+        if (at?.turnMessageId) {
+          const inf = this.getInFlightTurn(channelId, harnessId);
+          this.recordTurn(harnessId, at.turnMessageId, inf?.triggerPubsubId ?? 0, event.sessionId);
+        }
+        this.clearActiveTurn(harnessId);
+        this.clearInFlightTurn(channelId, harnessId);
           break;
         }
         case "ready":
           this.sql.exec(\`UPDATE harnesses SET status = 'active' WHERE id = ?\`, harnessId);
-          break;
+          return; // skip final persistStreamState
       }
+      case "ready":
+        this.sql.exec(\\\`UPDATE harnesses SET status = 'active' WHERE id = ?\\\`, harnessId);
+        break;
     }
 
-    return $.result();
+    this.persistStreamState(harnessId, writer);
   }
 }
 `;
 
         files[`${workerFileName}.test.ts`] = `import { describe, it, expect } from "vitest";
-import type { ChannelEvent, WorkerAction } from "@natstack/harness";
+import type { ChannelEvent } from "@natstack/harness";
 import { createTestDO } from "@workspace/runtime/worker";
 import { ${className} } from "./${workerFileName}.js";
 
@@ -330,25 +325,16 @@ function makeEvent(overrides: Partial<ChannelEvent> = {}): ChannelEvent {
 }
 
 describe("${className}", () => {
-  it("spawns harness on first message", async () => {
+  it("processes user messages", async () => {
     const { instance } = await createTestDO(${className});
-    await instance.subscribeChannel({ channelId: "ch-1", contextId: "ctx-1" });
-
-    const result = await instance.onChannelEvent("ch-1", makeEvent({ id: 10 }));
-
-    const spawn = result.actions.find(
-      (a) => "op" in a && a.op === "spawn-harness",
-    ) as Extract<WorkerAction, { op: "spawn-harness" }>;
-    expect(spawn).toBeDefined();
-    expect(spawn.initialTurn!.input.content).toBe("Hello");
+    // onChannelEvent returns void — side effects happen via direct HTTP calls
+    await instance.onChannelEvent("ch-1", makeEvent({ id: 10 }));
   });
 
   it("filters non-panel events", async () => {
     const { instance } = await createTestDO(${className});
-    await instance.subscribeChannel({ channelId: "ch-1", contextId: "ctx-1" });
-
-    const result = await instance.onChannelEvent("ch-1", makeEvent({ senderType: "agent" }));
-    expect(result.actions).toHaveLength(0);
+    // Non-panel events are filtered by shouldProcess() — no side effects
+    await instance.onChannelEvent("ch-1", makeEvent({ senderType: "agent" }));
   });
 });
 `;

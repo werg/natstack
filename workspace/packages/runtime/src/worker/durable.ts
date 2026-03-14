@@ -1,5 +1,6 @@
-import type { ChannelEvent, HarnessConfig, HarnessOutput, TurnInput, WorkerActions, ParticipantDescriptor, UnsubscribeResult, Attachment } from "@natstack/harness";
-import { ActionCollector } from "./action-collector.js";
+import type { ChannelEvent, HarnessConfig, HarnessOutput, TurnInput, ParticipantDescriptor, UnsubscribeResult, Attachment } from "@natstack/harness";
+import { PubSubDOClient } from "./pubsub-client.js";
+import { ServerDOClient } from "./server-client.js";
 import { StreamWriter, type PersistedStreamState } from "./stream-writer.js";
 
 // Minimal types for workerd DurableObject context (cannot import cloudflare:workers in Node)
@@ -22,19 +23,55 @@ interface AlignmentState {
   lastAlignedMessageId: number | null;
 }
 
+// Hibernation API types (infrastructure added now, used later)
+interface WebSocketMessage {
+  data: string | ArrayBuffer;
+}
+
+export interface DORef {
+  source: string;
+  className: string;
+  objectKey: string;
+}
+
 export type { DurableObjectContext, SqlStorage, SqlResult, AlignmentState };
 
 export abstract class AgentWorkerBase {
   protected ctx: DurableObjectContext;
   protected sql: SqlStorage;
+  protected pubsub: PubSubDOClient;
+  protected server: ServerDOClient;
 
-  constructor(ctx: DurableObjectContext, _env: unknown) {
+  /** DO identity — set by bootstrap(), stored in SQLite */
+  protected doRef!: DORef;
+  protected callbackBaseUrl!: string;
+
+  constructor(ctx: DurableObjectContext, env: unknown) {
     this.ctx = ctx;
     this.sql = ctx.storage.sql;
     this.ensureSchema();
+
+    // Initialize clients from env bindings — these are required for autonomous DOs
+    const e = env as Record<string, string>;
+    const pubsubUrl = e["PUBSUB_URL"];
+    const serverUrl = e["SERVER_URL"];
+    const authToken = e["RPC_AUTH_TOKEN"];
+
+    if (!pubsubUrl || !serverUrl || !authToken) {
+      throw new Error(
+        `AgentWorkerBase requires PUBSUB_URL, SERVER_URL, and RPC_AUTH_TOKEN env bindings. ` +
+        `Missing: ${[!pubsubUrl && "PUBSUB_URL", !serverUrl && "SERVER_URL", !authToken && "RPC_AUTH_TOKEN"].filter(Boolean).join(", ")}`,
+      );
+    }
+
+    this.pubsub = new PubSubDOClient(pubsubUrl, authToken);
+    this.server = new ServerDOClient(serverUrl, authToken);
+
+    // Restore identity from SQLite if previously bootstrapped
+    this.restoreIdentity();
   }
 
-  static schemaVersion = 2;
+  static schemaVersion = 3;
 
   protected ensureSchema(): void {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
@@ -132,6 +169,43 @@ export abstract class AgentWorkerBase {
         created_at INTEGER NOT NULL
       )
     `);
+    // DO identity table (bootstrapped by workerdManager)
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS do_identity (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    `);
+  }
+
+  // --- Identity bootstrap (called by workerdManager after instance creation) ---
+
+  async bootstrap(doRef: DORef, callbackBaseUrl: string): Promise<void> {
+    this.sql.exec(
+      `INSERT OR REPLACE INTO do_identity (key, value) VALUES ('doRef', ?)`,
+      JSON.stringify(doRef),
+    );
+    this.sql.exec(
+      `INSERT OR REPLACE INTO do_identity (key, value) VALUES ('callbackBaseUrl', ?)`,
+      callbackBaseUrl,
+    );
+    this.doRef = doRef;
+    this.callbackBaseUrl = callbackBaseUrl;
+  }
+
+  private restoreIdentity(): void {
+    try {
+      const rows = this.sql.exec(`SELECT key, value FROM do_identity`).toArray();
+      for (const row of rows) {
+        const key = row["key"] as string;
+        const value = row["value"] as string;
+        if (key === "doRef") {
+          try { this.doRef = JSON.parse(value); }
+          catch (e) { console.error(`[AgentWorkerBase] Corrupt doRef in do_identity: ${value}`, e); }
+        }
+        if (key === "callbackBaseUrl") this.callbackBaseUrl = value;
+      }
+    } catch { /* identity table may not exist yet — first run before bootstrap */ }
   }
 
   // --- 5 Customization Hooks ---
@@ -168,18 +242,56 @@ export abstract class AgentWorkerBase {
     };
   }
 
-  // --- ActionCollector factory ---
-  protected actions(): ActionCollector {
-    return new ActionCollector(this);
+  // --- StreamWriter factory ---
+  protected createWriter(
+    channelId: string,
+    turn: { replyToId: string; typingContent: string; streamState: PersistedStreamState },
+  ): StreamWriter {
+    const participantId = this.getParticipantId(channelId);
+    if (!participantId) throw new Error(`No participant ID for channel ${channelId}`);
+    return new StreamWriter(
+      this.pubsub,
+      participantId,
+      channelId,
+      turn.replyToId,
+      turn.typingContent,
+      turn.streamState,
+    );
   }
 
   // --- Subscription lifecycle ---
-  async subscribeChannel(opts: { channelId: string; contextId: string; config?: unknown }): Promise<ParticipantDescriptor> {
+
+  async subscribeChannel(opts: { channelId: string; contextId: string; config?: unknown }): Promise<{ ok: boolean; participantId: string }> {
     this.sql.exec(
       `INSERT OR REPLACE INTO subscriptions (channel_id, context_id, subscribed_at, config) VALUES (?, ?, ?, ?)`,
       opts.channelId, opts.contextId, Date.now(), opts.config ? JSON.stringify(opts.config) : null
     );
-    return this.getParticipantInfo(opts.channelId, opts.config);
+
+    const descriptor = this.getParticipantInfo(opts.channelId, opts.config);
+    const participantId = `do:${this.doRef.source}:${this.doRef.className}:${this.doRef.objectKey}:${opts.channelId}`;
+
+    // Build metadata from descriptor
+    const metadata: Record<string, unknown> = {
+      name: descriptor.name,
+      type: descriptor.type,
+      handle: descriptor.handle,
+      ...descriptor.metadata,
+    };
+    if (descriptor.methods && descriptor.methods.length > 0) {
+      metadata["methods"] = descriptor.methods;
+    }
+
+    // Subscribe to PubSub directly with callback URL
+    const callbackUrl = `${this.callbackBaseUrl}/onChannelEvent`;
+    await this.pubsub.subscribe(opts.channelId, participantId, metadata, callbackUrl);
+
+    // Store participant ID
+    this.sql.exec(
+      `UPDATE subscriptions SET participant_id = ? WHERE channel_id = ?`,
+      participantId, opts.channelId,
+    );
+
+    return { ok: true, participantId };
   }
 
   async unsubscribeChannel(channelId: string): Promise<UnsubscribeResult> {
@@ -188,7 +300,17 @@ export abstract class AgentWorkerBase {
     ).toArray() as Array<{ id: string }>;
     const harnessIds = harnesses.map(h => h.id);
 
+    // Unsubscribe from PubSub
+    const participantId = this.getParticipantId(channelId);
+    if (participantId) {
+      await this.pubsub.unsubscribe(channelId, participantId);
+    }
+
+    // Stop harnesses via server API
     for (const hid of harnessIds) {
+      try {
+        await this.server.stopHarness(hid);
+      } catch { /* harness may already be stopped */ }
       this.sql.exec(`DELETE FROM active_turns WHERE harness_id = ?`, hid);
       this.sql.exec(`DELETE FROM in_flight_turns WHERE harness_id = ?`, hid);
       this.sql.exec(`DELETE FROM turn_map WHERE harness_id = ?`, hid);
@@ -252,7 +374,6 @@ export abstract class AgentWorkerBase {
     this.setActiveTurn(harnessId, channelId, triggerMessageId, undefined, senderParticipantId, typingContent);
 
     // Adopt any bootstrap typing message (sent during spawn) into the stream state.
-    // This lets the StreamWriter complete it by ID when the first content event arrives.
     const bootstrapKey = `bootstrap_typing:${channelId}`;
     const bootstrapRow = this.sql.exec(`SELECT value FROM state WHERE key = ?`, bootstrapKey).toArray();
     if (bootstrapRow.length > 0) {
@@ -299,8 +420,6 @@ export abstract class AgentWorkerBase {
     ).toArray();
     if (row.length === 0) return null;
     const defaultState: PersistedStreamState = { responseMessageId: null, thinkingMessageId: null, actionMessageId: null, typingMessageId: null };
-    // Fall back to turn_message_id as responseMessageId when stream_state is absent
-    // (handles rows created before stream_state was introduced, or manual SQL inserts in tests)
     const turnMsgId = (row[0]!["turn_message_id"] as string | null);
     const streamState: PersistedStreamState = row[0]!["stream_state"]
       ? JSON.parse(row[0]!["stream_state"] as string)
@@ -414,15 +533,7 @@ export abstract class AgentWorkerBase {
     return { lastAlignedMessageId: row.length > 0 ? (row[0]!["last_aligned_message_id"] as number | null) : null };
   }
 
-  // --- Participant ID (stored after server-side subscription) ---
-
-  async setParticipantId(channelId: string, participantId: string): Promise<WorkerActions> {
-    this.sql.exec(
-      `UPDATE subscriptions SET participant_id = ? WHERE channel_id = ?`,
-      participantId, channelId,
-    );
-    return { actions: [] };
-  }
+  // --- Participant ID ---
 
   protected getParticipantId(channelId: string): string | null {
     const row = this.sql.exec(
@@ -458,25 +569,24 @@ export abstract class AgentWorkerBase {
     };
   }
 
-  /** Entry point called by server when a method-call result arrives. */
+  /** Entry point called when an async method-call result arrives from PubSub. */
   async onCallResult(
     callId: string, result: unknown, isError: boolean,
-  ): Promise<WorkerActions> {
+  ): Promise<void> {
     const pending = this.consumePendingCall(callId);
     if (!pending) {
-      console.warn(`[AgentWorkerBase] onCallResult: no pending call for callId=${callId} (isError=${isError}) — may have been consumed already or callId mismatch`);
-      return { actions: [] };
+      console.warn(`[AgentWorkerBase] onCallResult: no pending call for callId=${callId} (isError=${isError})`);
+      return;
     }
-    console.log(`[AgentWorkerBase] onCallResult: processing ${pending.type} result for callId=${callId} (isError=${isError})`);
-    return this.handleCallResult(pending.type, pending.context, pending.channelId, result, isError);
+    await this.handleCallResult(pending.type, pending.context, pending.channelId, result, isError);
   }
 
   /** Override in subclasses to handle different continuation types. */
-  protected handleCallResult(
+  protected async handleCallResult(
     _type: string, _context: Record<string, unknown>,
     _channelId: string, _result: unknown, _isError: boolean,
-  ): WorkerActions | Promise<WorkerActions> {
-    return { actions: [] };
+  ): Promise<void> {
+    // Default: no-op
   }
 
   // --- StreamWriter persistence ---
@@ -491,45 +601,22 @@ export abstract class AgentWorkerBase {
   }
 
   // --- Abstract methods (subclasses implement these) ---
-  abstract onChannelEvent(channelId: string, event: ChannelEvent): Promise<WorkerActions>;
-  abstract onHarnessEvent(harnessId: string, event: HarnessOutput): Promise<WorkerActions>;
+  // Return void — DOs handle all side effects via direct outbound calls
+  abstract onChannelEvent(channelId: string, event: ChannelEvent): Promise<void>;
+  abstract onHarnessEvent(harnessId: string, event: HarnessOutput): Promise<void>;
 
   /**
-   * Middleware hook for harness-originated outbound method calls.
-   *
-   * The default behavior is a direct pass-through to the target participant.
-   * Subclasses can override to short-circuit, rewrite, or persist their own
-   * continuations before issuing the external call.
+   * Called when a method call arrives from another participant via PubSub.
+   * Returns the result directly (not WorkerActions).
    */
-  async onOutgoingMethodCall(
-    channelId: string,
-    callId: string,
-    participantId: string,
-    methodName: string,
-    args: unknown,
-  ): Promise<WorkerActions> {
-    const $ = this.actions();
-    $.channel(channelId).callMethod(callId, participantId, methodName, args);
-    return $.result();
-  }
-
-  async onMethodCall(_channelId: string, callId: string, _methodName: string, _args: unknown): Promise<WorkerActions> {
-    const $ = this.actions();
-    $.channel(_channelId).methodResult(callId, { error: 'not implemented' }, true);
-    return $.result();
+  async onMethodCall(_channelId: string, _callId: string, _methodName: string, _args: unknown): Promise<{ result: unknown; isError?: boolean }> {
+    return { result: { error: 'not implemented' }, isError: true };
   }
 
   // --- Optional event hooks (subclasses may override) ---
 
-  /** Called when a channel fork completes. Override to subscribe to the new channel. */
-  async onChannelForked(_sourceChannel: string, _forkedChannelId: string, _forkPointId: number): Promise<WorkerActions> {
-    return { actions: [] };
-  }
-
-  /** Called when a set-alarm timer fires. Override for deferred work (e.g., GC). */
-  async onAlarm(): Promise<WorkerActions> {
-    return { actions: [] };
-  }
+  /** Called when a channel fork completes. */
+  async onChannelForked(_sourceChannel: string, _forkedChannelId: string, _forkPointId: number): Promise<void> {}
 
   async getState(): Promise<Record<string, unknown>> {
     const subscriptions = this.sql.exec(`SELECT * FROM subscriptions`).toArray();
@@ -541,17 +628,84 @@ export abstract class AgentWorkerBase {
     return { subscriptions, harnesses, activeTurns, checkpoints, inFlightTurns, pendingCalls };
   }
 
+  // --- Hibernation API stubs (infrastructure for future WebSocket support) ---
+
+  webSocketMessage(_ws: unknown, _message: WebSocketMessage): void {}
+  webSocketClose(_ws: unknown, _code: number, _reason: string, _wasClean: boolean): void {}
+  webSocketError(_ws: unknown, _error: unknown): void {}
+
+  /**
+   * Transform a raw PubSub ChannelBroadcastEvent into the ChannelEvent shape
+   * that onChannelEvent expects. Extracts senderType from senderMetadata,
+   * contentType and messageId from payload — the same transformation the
+   * old PubSubFacade performed.
+   */
+  private transformBroadcastEvent(raw: Record<string, unknown>): ChannelEvent {
+    // Parse senderMetadata (JSON string) to extract senderType
+    let senderType: string | undefined;
+    const rawMeta = raw["senderMetadata"];
+    if (typeof rawMeta === "string") {
+      try {
+        const meta = JSON.parse(rawMeta) as Record<string, unknown>;
+        senderType = meta["type"] as string | undefined;
+      } catch { /* invalid metadata */ }
+    } else if (rawMeta && typeof rawMeta === "object") {
+      senderType = (rawMeta as Record<string, unknown>)["type"] as string | undefined;
+    }
+
+    // Parse payload (may be JSON string or object)
+    let parsedPayload = raw["payload"];
+    if (typeof parsedPayload === "string") {
+      try { parsedPayload = JSON.parse(parsedPayload); } catch { /* keep as string */ }
+    }
+
+    // Extract messageId and contentType from payload
+    const payloadObj = parsedPayload && typeof parsedPayload === "object"
+      ? parsedPayload as Record<string, unknown>
+      : null;
+    const messageId = (payloadObj?.["id"] as string | undefined) ?? `${raw["id"]}`;
+    const contentType = payloadObj?.["contentType"] as string | undefined;
+
+    // Map stored attachments to the ChannelEvent attachment format
+    const rawAttachments = raw["attachments"] as Array<{ mimeType?: string; data: unknown; name?: string }> | undefined;
+    const attachments = rawAttachments?.map(att => ({
+      type: (att.mimeType?.startsWith("image/") ? "image" : "file"),
+      data: typeof att.data === "string" ? att.data : "",
+      mimeType: att.mimeType,
+      filename: att.name,
+    }));
+
+    return {
+      id: raw["id"] as number,
+      messageId,
+      type: raw["type"] as string,
+      payload: parsedPayload,
+      senderId: raw["senderId"] as string,
+      senderType,
+      ...(contentType ? { contentType } : {}),
+      ts: raw["ts"] as number,
+      persist: raw["persist"] as boolean,
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
+    };
+  }
+
   /**
    * HTTP fetch handler — routes /{method} POST requests to DO methods.
-   * Called by workerd when the router worker proxies to this DO via stub.fetch().
-   * The server dispatches DO calls via HTTP POST to /_do/{className}/{objectKey}/{method}.
+   * Called by workerd when the router worker proxies to this DO.
+   *
+   * Uses the /_w/ URL scheme (source-scoped).
    */
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const method = url.pathname.replace(/^\/+/, "") || "getState";
 
+    // WebSocket upgrade handling (Hibernation API infrastructure)
+    if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
+      return new Response("WebSocket support not yet implemented", { status: 501 });
+    }
+
     try {
-      // Parse args from request body (POST with JSON array) or empty
+      // Parse args from request body (POST with JSON array or object)
       let args: unknown[] = [];
       if (request.method === "POST") {
         const body = await request.text();
@@ -559,6 +713,13 @@ export abstract class AgentWorkerBase {
           const parsed = JSON.parse(body);
           args = Array.isArray(parsed) ? parsed : [parsed];
         }
+      }
+
+      // For onChannelEvent, transform the raw PubSub broadcast event into a ChannelEvent.
+      // PubSub POST-back sends [channelId, ChannelBroadcastEvent] where the broadcast event
+      // has senderMetadata (JSON string) instead of senderType, and payload may be a JSON string.
+      if (method === "onChannelEvent" && args.length === 2) {
+        args[1] = this.transformBroadcastEvent(args[1] as Record<string, unknown>);
       }
 
       // Route to the appropriate method

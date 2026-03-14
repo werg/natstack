@@ -81,6 +81,10 @@ export interface WorkerdManagerDeps {
   getBuild: (unitPath: string, ref?: string) => Promise<BuildResult>;
   /** Workspace root path — used for DO storage (localDisk). */
   workspacePath: string;
+  /** PubSub HTTP base URL — injected as PUBSUB_URL binding for DOs */
+  pubsubUrl?: string;
+  /** Server HTTP base URL (for harness API) — injected as SERVER_URL binding for DOs */
+  serverUrl?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -96,9 +100,9 @@ export class WorkerdManager {
   private workerdBinary: string | null = null;
 
   // DO support: shared services (one per source) and individual DO instances
-  /** Shared DO services — keyed by className. One workerd service per source, multiple DO instances per service. */
+  /** Shared DO services — keyed by `${source}:${className}`. Source-scoped: two workers CAN have same className if different source. */
   private doServices = new Map<string, { buildKey: string; className: string; serviceName: string; source: string }>();
-  /** Individual DO instances — keyed by `${className}/${objectKey}`. */
+  /** Individual DO instances — keyed by `${source}:${className}/${objectKey}`. */
   private doInstances = new Map<string, { source: string; objectKey: string; contextId: string; className: string }>();
 
   constructor(deps: WorkerdManagerDeps) {
@@ -210,25 +214,33 @@ export class WorkerdManager {
     durable: { className: string; objectKey: string },
   ): Promise<WorkerInstance> {
     const { className, objectKey } = durable;
-    const doKey = `${className}/${objectKey}`;
 
-    // Validate className uniqueness: if a service exists for this className, it must use the same source
-    const existingService = this.doServices.get(className);
-    if (existingService && existingService.source !== options.source) {
+    // Source paths must be exactly 2 segments (e.g., "workers/agent-worker").
+    // The /_w/ URL scheme and generated workerd router parse deterministically
+    // based on this: segments[0]+segments[1]=source, segment[2]=className.
+    const sourceSegments = options.source.split("/").filter(Boolean);
+    if (sourceSegments.length !== 2) {
       throw new Error(
-        `DO className "${className}" is already registered with source "${existingService.source}", ` +
-        `cannot register with different source "${options.source}"`,
+        `DO source path must be exactly 2 segments (e.g., "workers/my-worker"), ` +
+        `got ${sourceSegments.length} segment(s): "${options.source}"`,
       );
     }
+
+    const serviceKey = `${options.source}:${className}`;
+    const doKey = `${options.source}:${className}/${objectKey}`;
+
+    // Source-scoped: two workers CAN have same className if different source
+    const existingService = this.doServices.get(serviceKey);
 
     if (this.doInstances.has(doKey)) {
       throw new Error(`DO instance "${doKey}" already exists`);
     }
 
-    // Use className as the service name in workerd config (sanitized)
-    const serviceName = `do_${className.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+    // Use source + className as the service name in workerd config (sanitized)
+    const sourceSanitized = options.source.replace(/[^a-zA-Z0-9_]/g, "_");
+    const serviceName = `do_${sourceSanitized}_${className.replace(/[^a-zA-Z0-9_]/g, "_")}`;
     // Instance name for the WorkerInstance map — unique per DO instance
-    const name = `do_${className}_${objectKey}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const name = `do_${sourceSanitized}_${className}_${objectKey}`.replace(/[^a-zA-Z0-9_-]/g, "_");
 
     const callerId = `worker:${name}`;
     const contextId = options.contextId;
@@ -256,10 +268,10 @@ export class WorkerdManager {
     let needsRestart = false;
 
     try {
-      // If no shared service exists for this className, build the source and create one
+      // If no shared service exists for this source:className, build the source and create one
       if (!existingService) {
         const buildResult = await this.deps.getBuild(options.source, options.ref);
-        this.doServices.set(className, {
+        this.doServices.set(serviceKey, {
           buildKey: buildResult.metadata.ev,
           className,
           serviceName,
@@ -283,13 +295,17 @@ export class WorkerdManager {
 
       instance.status = "running";
       log.info(`DO instance "${className}/${objectKey}" started (source: ${options.source})`);
+
+      // Bootstrap the DO with its identity (doRef + callbackBaseUrl)
+      // This is a direct HTTP POST, not via DODispatch (avoids circular dependency)
+      await this.bootstrapDO(options.source, className, objectKey);
     } catch (error) {
       instance.status = "error";
       this.instances.delete(name);
       this.doInstances.delete(doKey);
       // Roll back service registration if we just created it
       if (needsRestart && !existingService) {
-        this.doServices.delete(className);
+        this.doServices.delete(serviceKey);
       }
       this.deps.tokenManager.revokeToken(callerId);
       this.deps.fsService.unregisterCallerContext(callerId);
@@ -318,15 +334,19 @@ export class WorkerdManager {
     let doServiceRemoved = false;
     for (const [doKey, doInst] of this.doInstances) {
       // Match by finding the DO instance whose generated name matches
-      const expectedName = `do_${doInst.className}_${doInst.objectKey}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const srcSan = doInst.source.replace(/[^a-zA-Z0-9_]/g, "_");
+      const expectedName = `do_${srcSan}_${doInst.className}_${doInst.objectKey}`.replace(/[^a-zA-Z0-9_-]/g, "_");
       if (expectedName === name) {
         this.doInstances.delete(doKey);
-        // If no more DO instances reference this className, remove the shared service
+        // If no more DO instances reference this source:className, remove the shared service + token
         const hasOtherInstances = Array.from(this.doInstances.values()).some(
-          (d) => d.className === doInst.className,
+          (d) => d.className === doInst.className && d.source === doInst.source,
         );
         if (!hasOtherInstances) {
-          this.doServices.delete(doInst.className);
+          // Find and remove the source-scoped service key + revoke service token
+          const serviceKey = `${doInst.source}:${doInst.className}`;
+          this.doServices.delete(serviceKey);
+          this.deps.tokenManager.revokeToken(`do-service:${serviceKey}`);
           doServiceRemoved = true;
         }
         break;
@@ -392,33 +412,40 @@ export class WorkerdManager {
     // Collect DO service names that have been emitted (to avoid duplicating in regular loop)
     const doServiceNames = new Set<string>();
 
-    // ── DO services (one workerd service per className) ──
-    for (const [className, doService] of this.doServices) {
+    // ── DO services (one workerd service per source:className) ──
+    for (const [serviceKey, doService] of this.doServices) {
+      const { className } = doService;
       let bundleContent: string;
       try {
         const buildResult = await this.deps.getBuild(doService.source);
         bundleContent = buildResult.bundle;
       } catch (err) {
-        log.warn(`Skipping DO service "${className}" — build not available:`, err);
+        log.warn(`Skipping DO service "${serviceKey}" — build not available:`, err);
         continue;
       }
 
       doServiceNames.add(doService.serviceName);
 
-      // Collect bindings from the first DO instance of this className (for RPC credentials, etc.)
-      const representativeInstance = Array.from(this.instances.values()).find(
-        (inst) => inst.name.startsWith(`do_${className}_`),
-      );
+      // Service-level auth token — shared by all DO instances of this source:className.
+      // Created once when the service is first built, revoked only when the last instance is destroyed.
+      // NOT tied to any individual instance's lifecycle.
+      const serviceCallerId = `do-service:${serviceKey}`;
+      const serviceToken = this.deps.tokenManager.ensureToken(serviceCallerId, "worker");
 
       const bindings: object[] = [
         { name: "RPC_WS_URL", text: `ws://127.0.0.1:${this.deps.rpcPort}` },
+        { name: "RPC_AUTH_TOKEN", text: serviceToken },
+        // Source-scoped class identity
+        { name: "WORKER_SOURCE", text: doService.source },
+        { name: "WORKER_CLASS_NAME", text: className },
       ];
 
-      if (representativeInstance) {
-        bindings.push(
-          { name: "RPC_AUTH_TOKEN", text: representativeInstance.token },
-          { name: "CONTEXT_ID", text: representativeInstance.contextId },
-        );
+      // PubSub and Server URLs for direct DO communication
+      if (this.deps.pubsubUrl) {
+        bindings.push({ name: "PUBSUB_URL", text: this.deps.pubsubUrl });
+      }
+      if (this.deps.serverUrl) {
+        bindings.push({ name: "SERVER_URL", text: this.deps.serverUrl });
       }
 
       // DO storage: create a disk service and reference it by name
@@ -426,12 +453,17 @@ export class WorkerdManager {
       const doStoragePath = path.join(this.deps.workspacePath, ".databases", "workerd-do");
       fs.mkdirSync(doStoragePath, { recursive: true });
 
+      // Network service for outbound fetch (PubSub HTTP, Server harness API).
+      // DOs are autonomous — they make direct HTTP calls to localhost services.
+      const networkServiceName = `${doService.serviceName}_network`;
+
       const workerDef: Record<string, unknown> = {
         modules: [{ name: "worker.js", esModule: bundleContent }],
         bindings,
-        compatibilityDate: "2024-01-01",
+        compatibilityDate: "2025-12-01",
+        globalOutbound: networkServiceName,
         durableObjectNamespaces: [
-          { className, uniqueKey: className, enableSql: true },
+          { className, uniqueKey: `${doService.source.replace(/\//g, "_")}:${className}`, enableSql: true },
         ],
         durableObjectStorage: {
           localDisk: diskServiceName,
@@ -440,6 +472,7 @@ export class WorkerdManager {
 
       services.push({ name: doService.serviceName, worker: workerDef });
       services.push({ name: diskServiceName, disk: { path: doStoragePath, writable: true } });
+      services.push({ name: networkServiceName, network: { allow: ["public", "local"], deny: [] } });
     }
 
     // ── Regular (non-durable) worker services ──
@@ -516,10 +549,12 @@ export class WorkerdManager {
       services.push({ name, worker: workerDef });
     }
 
-    // Collect DO class names for router generation (only those whose service was successfully built)
+    // Collect DO class info for router generation (only those whose service was successfully built).
+    // Each entry carries both the actual className (for workerd namespace binding) and the source
+    // (for the /_w/ lookup key, so same-named classes from different sources don't collide).
     const doClassNames = Array.from(this.doServices.entries())
       .filter(([, svc]) => doServiceNames.has(svc.serviceName))
-      .map(([cn, svc]) => ({ className: cn, serviceName: svc.serviceName }));
+      .map(([, svc]) => ({ className: svc.className, source: svc.source, serviceName: svc.serviceName }));
 
     // Auto-generate router worker
     const hasAnyService = instanceNames.length > 0 || doClassNames.length > 0;
@@ -529,10 +564,12 @@ export class WorkerdManager {
         service: { name },
       }));
 
-      // Add DO namespace bindings for the router (durableObjectNamespace, not service)
-      for (const { className, serviceName } of doClassNames) {
+      // Add DO namespace bindings for the router (durableObjectNamespace, not service).
+      // Binding names are source-scoped to match the generated router lookup.
+      for (const { className, source, serviceName } of doClassNames) {
+        const bindingName = `do_${source.replace(/[^a-zA-Z0-9_]/g, "_")}_${className.replace(/[^a-zA-Z0-9_]/g, "_")}`;
         routerBindings.push({
-          name: `do_${className.replace(/[^a-zA-Z0-9_]/g, "_")}`,
+          name: bindingName,
           durableObjectNamespace: { className, serviceName },
         });
       }
@@ -571,7 +608,8 @@ export class WorkerdManager {
   /** Returns true if the instance name belongs to a DO instance. */
   private isDurableInstance(name: string): boolean {
     for (const doInst of this.doInstances.values()) {
-      const expectedName = `do_${doInst.className}_${doInst.objectKey}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+      const srcSan = doInst.source.replace(/[^a-zA-Z0-9_]/g, "_");
+      const expectedName = `do_${srcSan}_${doInst.className}_${doInst.objectKey}`.replace(/[^a-zA-Z0-9_-]/g, "_");
       if (expectedName === name) return true;
     }
     return false;
@@ -579,38 +617,48 @@ export class WorkerdManager {
 
   private generateRouterCode(
     instanceNames: string[],
-    doClassNames: { className: string; serviceName: string }[] = [],
+    doClassNames: { className: string; source: string; serviceName: string }[] = [],
   ): string {
     const cases = instanceNames.map((name) => {
       const bindingName = `worker_${name.replace(/[^a-zA-Z0-9_]/g, "_")}`;
       return `    if (prefix === ${JSON.stringify(name)}) return env.${bindingName}.fetch(new Request(newUrl, request));`;
     });
 
-    // Generate DO routing block for /_do/{className}/{objectKey}/{method?}
+    // Build DO lookup map: "source:className" → binding name.
+    // The lookup key combines source + className so same-named classes from different sources
+    // dispatch to different workerd services.
+    const doLookupEntries = doClassNames.map(({ className, source }) => {
+      const bindingName = `do_${source.replace(/[^a-zA-Z0-9_]/g, "_")}_${className.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+      const lookupKey = `${source}:${className}`;
+      return `      ${JSON.stringify(lookupKey)}: env.${bindingName}`;
+    });
+
+    // Generate DO routing block for /_w/{source0}/{source1}/{className}/{objectKey}/{method...}
+    // Source path is always exactly 2 segments (e.g., "workers/agent-worker")
     let doBlock = "";
     if (doClassNames.length > 0) {
-      const doCases = doClassNames.map(({ className }) => {
-        const bindingName = `do_${className.replace(/[^a-zA-Z0-9_]/g, "_")}`;
-        return `      if (doClass === ${JSON.stringify(className)}) {
-        const id = env.${bindingName}.idFromName(objectKey);
-        const stub = env.${bindingName}.get(id);
+      doBlock = `
+    // /_w/{source0}/{source1}/{className}/{objectKey}/{...method} — source-scoped DO routes
+    if (prefix === "_w") {
+      const source = parts[1] + "/" + parts[2];
+      const doClass = parts[3] || "";
+      const objectKey = parts[4] || "";
+      const doRest = parts.slice(5);
+      if (!doClass || !objectKey) {
+        return new Response("Usage: /_w/{source0}/{source1}/{className}/{objectKey}/{method}", { status: 400 });
+      }
+      const doLookup = {
+${doLookupEntries.join(",\n")}
+      };
+      const ns = doLookup[source + ":" + doClass];
+      if (ns) {
+        const id = ns.idFromName(objectKey);
+        const stub = ns.get(id);
         const doUrl = new URL("/" + doRest.join("/"), url.origin);
         doUrl.search = url.search;
         return stub.fetch(new Request(doUrl, request));
-      }`;
-      });
-
-      doBlock = `
-    // /_do/{className}/{objectKey}/{...rest} — debug routes for Durable Objects
-    if (prefix === "_do") {
-      const doClass = parts[1] || "";
-      const objectKey = parts[2] || "";
-      const doRest = parts.slice(3);
-      if (!doClass || !objectKey) {
-        return new Response("Usage: /_do/{className}/{objectKey}/{method?}", { status: 400 });
       }
-${doCases.join("\n")}
-      return new Response("DO class not found: " + doClass, { status: 404 });
+      return new Response("DO class not found: " + doClass + " (source: " + source + ")", { status: 404 });
     }
 `;
     }
@@ -778,6 +826,31 @@ ${doBlock}${cases.join("\n")}
     await this.restartWorkerd();
   }
 
+  /**
+   * Bootstrap a DO with its identity. Called directly after instance creation.
+   * The DO stores doRef + callbackBaseUrl in SQLite for future use.
+   * Throws on failure — the caller rolls back the instance creation.
+   */
+  private async bootstrapDO(source: string, className: string, objectKey: string): Promise<void> {
+    if (!this.port) {
+      throw new Error(`Cannot bootstrap DO ${source}:${className}/${objectKey}: workerd port not available`);
+    }
+
+    const doRef = { source, className, objectKey };
+    const callbackBaseUrl = `http://127.0.0.1:${this.port}/_w/${source}/${encodeURIComponent(className)}/${encodeURIComponent(objectKey)}`;
+
+    const url = `${callbackBaseUrl}/bootstrap`;
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify([doRef, callbackBaseUrl]),
+    });
+    if (!resp.ok) {
+      const body = await resp.text();
+      throw new Error(`DO bootstrap failed (${resp.status}): ${body}`);
+    }
+  }
+
   // =========================================================================
   // Shutdown
   // =========================================================================
@@ -793,7 +866,10 @@ ${doBlock}${cases.join("\n")}
     }
     this.instances.clear();
 
-    // Cleanup DO tracking
+    // Cleanup DO tracking — revoke service-level tokens
+    for (const [serviceKey] of this.doServices) {
+      this.deps.tokenManager.revokeToken(`do-service:${serviceKey}`);
+    }
     this.doServices.clear();
     this.doInstances.clear();
 
@@ -823,12 +899,13 @@ ${doBlock}${cases.join("\n")}
     }
 
     // Also check DO services tracking this source
-    for (const [className, doService] of this.doServices) {
+    for (const [_serviceKey, doService] of this.doServices) {
       if (doService.source === source) {
         needsRestart = true;
         // Mark all DO instances of this class as starting
+        const srcSan = doService.source.replace(/[^a-zA-Z0-9_]/g, "_");
         for (const instance of this.instances.values()) {
-          if (instance.name.startsWith(`do_${className}_`) && !instance.ref) {
+          if (instance.name.startsWith(`do_${srcSan}_${doService.className}_`) && !instance.ref) {
             instance.status = "starting";
           }
         }

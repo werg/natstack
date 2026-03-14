@@ -148,7 +148,6 @@ export interface RpcBridgeInternal extends RpcBridge {
 export const SERVER_SERVICE_NAMES = [
   "ai",
   "build",
-  "channels",
   "db",
   "git",
   "harness",

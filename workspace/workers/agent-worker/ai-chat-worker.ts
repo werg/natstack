@@ -1,5 +1,5 @@
 import { AgentWorkerBase } from "@workspace/runtime/worker";
-import type { ChannelEvent, HarnessConfig, HarnessOutput, WorkerActions, ParticipantDescriptor } from "@natstack/harness";
+import type { ChannelEvent, HarnessConfig, HarnessOutput, ParticipantDescriptor } from "@natstack/harness";
 
 
 /**
@@ -10,22 +10,21 @@ import type { ChannelEvent, HarnessConfig, HarnessOutput, WorkerActions, Partici
  * that no instance fields need to survive across DO invocations.
  *
  * Key flows:
- *   1. First user message → spawnHarness with initialTurn
- *   2. Subsequent messages → startTurn on existing harness
- *   3. Harness events → streamed to channel via StreamWriter
- *   4. Crash recovery → respawnHarness with retryTurn from in_flight_turns
- *   5. Tool approval → routed through feedback_form continuations
+ *   1. First user message → spawn harness via this.server.spawnHarness()
+ *   2. Subsequent messages → start-turn command via this.server.sendHarnessCommand()
+ *   3. Harness events → streamed to channel via StreamWriter (async PubSub HTTP)
+ *   4. Crash recovery → respawn via this.server.spawnHarness()
+ *   5. Tool approval → async via PubSub callMethod + onCallResult continuation
+ *
+ * All methods return void — side effects are direct HTTP calls, not action arrays.
  */
 export class AiChatWorker extends AgentWorkerBase {
-  static override schemaVersion = 2;
+  static override schemaVersion = 3;
 
   // --- Hook overrides ---
 
   protected override getHarnessConfig(): HarnessConfig {
     return {
-      // Only expose the eval tool to the model — other methods
-      // (feedback_form, feedback_custom, request_tool_approval)
-      // are callable via callMethod but not as AI model tools.
       toolAllowlist: ["eval"],
     };
   }
@@ -46,22 +45,20 @@ export class AiChatWorker extends AgentWorkerBase {
     };
   }
 
-  // --- Channel events ---
+  // --- Channel events (returns void) ---
 
   async onChannelEvent(
     channelId: string,
     event: ChannelEvent,
-  ): Promise<WorkerActions> {
-    const $ = this.actions();
-
-    // Filter: only process events that match shouldProcess
+  ): Promise<void> {
     if (!this.shouldProcess(event)) {
       this.advanceCheckpoint(channelId, null, event.id);
-      return $.result();
+      return;
     }
 
     const input = this.buildTurnInput(event);
     const harnessId = this.getHarnessForChannel(channelId);
+    const participantId = this.getParticipantId(channelId);
 
     // Build typing data with proper display name
     const participantInfo = this.getParticipantInfo(channelId);
@@ -73,18 +70,27 @@ export class AiChatWorker extends AgentWorkerBase {
 
     if (!harnessId) {
       // No active harness — spawn one with the first turn bundled.
-      // Send a tracked typing indicator so the user sees immediate feedback
-      // during the multi-step harness bootstrap. The message ID is stored
-      // so recordTurnStart can adopt it into the StreamWriter for cleanup.
       const contextId = this.getContextId(channelId);
       const config = this.buildHarnessConfig(channelId);
+
+      // Send bootstrap typing indicator directly
       const bootstrapTypingId = crypto.randomUUID();
       this.sql.exec(
         `INSERT OR REPLACE INTO state (key, value) VALUES (?, ?)`,
         `bootstrap_typing:${channelId}`, bootstrapTypingId,
       );
-      $.channel(channelId).sendTracked(bootstrapTypingId, typingContent, { type: "typing", persist: false });
-      $.spawnHarness({
+      if (participantId) {
+        await this.pubsub.send(participantId, channelId, bootstrapTypingId, typingContent, {
+          contentType: "typing",
+          persist: false,
+          replyTo: event.messageId,
+        });
+      }
+
+      // Spawn harness via server API
+      await this.server.spawnHarness({
+        doRef: this.doRef,
+        harnessId: `harness-${crypto.randomUUID()}`,
         type: this.getHarnessType(),
         channelId,
         contextId,
@@ -97,119 +103,100 @@ export class AiChatWorker extends AgentWorkerBase {
         },
       });
     } else {
-      // Existing harness — start a new turn with managed typing lifecycle
-      $.harness(harnessId).startTurn(input);
-
-      // Record turn state in SQLite (includes sender participant ID for approval routing)
+      // Existing harness — start a new turn
       this.setActiveTurn(harnessId, channelId, event.messageId, undefined, event.senderId, typingContent);
 
-      // Start typing via StreamWriter so it's properly tracked and stopped
-      // when the first content event (thinking-start, text-start, etc.) arrives
+      // Start typing via StreamWriter
       const newTurn = this.getActiveTurn(harnessId)!;
-      const turnWriter = $.channel(channelId).streamFor(harnessId, newTurn);
-      turnWriter.startTyping();
+      const turnWriter = this.createWriter(channelId, newTurn);
+      await turnWriter.startTyping();
+      this.persistStreamState(harnessId, turnWriter);
 
-      this.setInFlightTurn(
-        channelId,
-        harnessId,
-        event.messageId,
-        event.id,
-        input,
-      );
+      this.setInFlightTurn(channelId, harnessId, event.messageId, event.id, input);
       this.advanceCheckpoint(channelId, harnessId, event.id);
-    }
 
-    return $.result();
+      // Send start-turn command to harness
+      await this.server.sendHarnessCommand(harnessId, {
+        type: "start-turn",
+        input,
+      });
+    }
   }
 
-  // --- Harness events ---
+  // --- Harness events (returns void) ---
 
   async onHarnessEvent(
     harnessId: string,
     event: HarnessOutput,
-  ): Promise<WorkerActions> {
-    const $ = this.actions();
+  ): Promise<void> {
     const turn = this.getActiveTurn(harnessId);
     const channelId =
       turn?.channelId ?? this.getChannelForHarness(harnessId);
 
-    if (!channelId) {
-      // Orphan event — harness has no associated channel
-      return $.result();
-    }
+    if (!channelId) return;
 
     // Create a StreamWriter for events that produce channel output
-    const writer =
-      turn
-        ? $.channel(channelId).streamFor(harnessId, turn)
-        : null;
+    const writer = turn ? this.createWriter(channelId, turn) : null;
 
     switch (event.type) {
       // --- Thinking lifecycle ---
       case "thinking-start":
-        writer?.startThinking();
+        await writer?.startThinking();
         break;
 
       case "thinking-delta":
-        writer?.updateThinking(event.content);
+        await writer?.updateThinking(event.content);
         break;
 
       case "thinking-end":
-        writer?.endThinking();
+        await writer?.endThinking();
         break;
 
       // --- Text streaming ---
       case "text-start":
-        writer?.startText(event.metadata);
+        await writer?.startText(event.metadata);
         break;
 
       case "text-delta":
-        writer?.updateText(event.content);
+        await writer?.updateText(event.content);
         break;
 
       case "text-end":
-        writer?.completeText();
+        await writer?.completeText();
         break;
 
       // --- Tool actions ---
       case "action-start":
-        writer?.startAction(event.tool, event.description, event.toolUseId);
+        await writer?.startAction(event.tool, event.description, event.toolUseId);
         break;
 
       case "action-end":
-        writer?.endAction();
-        // Restart typing — model is now processing the tool result
-        writer?.startTyping();
+        await writer?.endAction();
+        await writer?.startTyping();
         break;
 
       // --- Inline UI ---
       case "inline-ui":
-        writer?.sendInlineUi(event.data);
+        await writer?.sendInlineUi(event.data);
         break;
 
       // --- Message / turn completion ---
       case "message-complete":
-        // Message boundary within a multi-message turn — no-op for now
         break;
 
       case "turn-complete": {
         console.log(`[AiChatWorker] Turn complete: harnessId=${harnessId}, sessionId=${event.sessionId}, channelId=${channelId}`);
-        // Finalize any outstanding stream artifacts before clearing state
         if (writer) {
-          writer.stopTyping();
-          writer.endThinking();
-          writer.endAction();
-          writer.completeText();
+          await writer.stopTyping();
+          await writer.endThinking();
+          await writer.endAction();
+          await writer.completeText();
+          this.persistStreamState(harnessId, writer);
         }
 
-        // Record turn in turn_map for fork resolution (read AFTER finalization
-        // so persistStreamState has updated turn_message_id)
         const activeTurn = this.getActiveTurn(harnessId);
         if (activeTurn?.turnMessageId) {
-          const inFlight = this.getInFlightTurn(
-            channelId,
-            harnessId,
-          );
+          const inFlight = this.getInFlightTurn(channelId, harnessId);
           this.recordTurn(
             harnessId,
             activeTurn.turnMessageId,
@@ -217,7 +204,6 @@ export class AiChatWorker extends AgentWorkerBase {
             event.sessionId,
           );
         }
-        // Clear turn state
         this.clearActiveTurn(harnessId);
         this.clearInFlightTurn(channelId, harnessId);
         break;
@@ -226,74 +212,136 @@ export class AiChatWorker extends AgentWorkerBase {
       // --- Error handling ---
       case "error":
         if (event.code) {
-          // Turn-level error (e.g., error_max_turns, error_during_execution).
-          // The harness process is still alive — complete partial output and
-          // send an error message, but do NOT respawn. The subsequent
-          // turn-complete event will record the turn and clean up state.
+          // Turn-level error — complete partial output, send error message
           if (writer) {
-            writer.stopTyping();
-            writer.endThinking();
-            writer.endAction();
-            writer.completeText();
+            await writer.stopTyping();
+            await writer.endThinking();
+            await writer.endAction();
+            await writer.completeText();
+            this.persistStreamState(harnessId, writer);
           }
-          this.cleanupBootstrapTyping($, channelId);
-          $.channel(channelId).send(
-            JSON.stringify({ error: event.error, code: event.code }),
-            { type: "error", persist: true, replyTo: turn?.replyToId },
-          );
+          await this.cleanupBootstrapTyping(channelId);
+          const participantId = this.getParticipantId(channelId);
+          if (participantId) {
+            await this.pubsub.send(
+              participantId, channelId, crypto.randomUUID(),
+              JSON.stringify({ error: event.error, code: event.code }),
+              { contentType: "error", persist: true, replyTo: turn?.replyToId },
+            );
+          }
         } else {
-          // Process-level crash (no code) — full crash recovery
-          return this.handleHarnessCrashWithActions(
-            $,
-            harnessId,
-            channelId,
-            event.error,
-          );
+          // Process-level crash — full crash recovery
+          await this.handleHarnessCrash(harnessId, channelId, event.error);
         }
         break;
 
-      // --- Approval (via PubSub RPC + continuation) ---
+      // --- Approval (async via PubSub callMethod + continuation) ---
       case "approval-needed": {
-        // Stop typing — user is seeing an approval dialog, not a "thinking" state
-        writer?.stopTyping();
+        await writer?.stopTyping();
+        if (writer) this.persistStreamState(harnessId, writer);
+
         const callId = crypto.randomUUID();
         const activeTurnForApproval = this.getActiveTurn(harnessId);
         const panelId = activeTurnForApproval?.senderParticipantId;
         if (!panelId) {
-          // No panel to ask — deny by default
-          $.harness(harnessId).approveTool(event.toolUseId, false);
+          await this.server.sendHarnessCommand(harnessId, {
+            type: "approve-tool",
+            toolUseId: event.toolUseId,
+            allow: false,
+          });
           break;
         }
-        // Store continuation — survives hibernation
         this.pendingCall(callId, channelId, 'approval', {
           harnessId,
           toolUseId: event.toolUseId,
         });
         const approvalParticipantInfo = this.getParticipantInfo(channelId);
-        console.log(`[AiChatWorker] Requesting tool approval: tool=${event.toolName}, target=${panelId}, callId=${callId}, harnessId=${harnessId}`);
+        console.log(`[AiChatWorker] Requesting tool approval: tool=${event.toolName}, target=${panelId}, callId=${callId}`);
 
-        // Call request_tool_approval on the panel — routes through the
-        // panel's approval policy layer (checkToolApproval for auto-approve,
-        // requestApproval for UI prompt with per-agent grants).
-        $.channel(channelId).callMethod(callId, panelId, 'request_tool_approval', {
-          agentId: this.getParticipantId(channelId) ?? harnessId,
-          agentName: approvalParticipantInfo.name,
-          toolName: event.toolName,
-          toolArgs: event.input,
+        // Async call via PubSub — result arrives at onCallResult
+        await this.pubsub.callMethod(
+          channelId,
+          this.getParticipantId(channelId)!,
+          this.callbackBaseUrl,
+          panelId,
+          callId,
+          'request_tool_approval',
+          {
+            agentId: this.getParticipantId(channelId) ?? harnessId,
+            agentName: approvalParticipantInfo.name,
+            toolName: event.toolName,
+            toolArgs: event.input,
+          },
+        );
+        break;
+      }
+
+      // --- Tool call from harness (async tool execution) ---
+      case "tool-call": {
+        await writer?.stopTyping();
+        if (writer) this.persistStreamState(harnessId, writer);
+
+        this.pendingCall(event.callId, channelId, 'tool-call', {
+          harnessId,
+          callId: event.callId,
+        });
+
+        // Route tool call through PubSub callMethod
+        await this.pubsub.callMethod(
+          channelId,
+          this.getParticipantId(channelId)!,
+          this.callbackBaseUrl,
+          event.participantId,
+          event.callId,
+          event.method,
+          event.args,
+        );
+        break;
+      }
+
+      // --- Discover methods request from harness ---
+      case "discover-methods": {
+        // Query PubSub roster for methods
+        const participants = await this.pubsub.getParticipants(channelId);
+        const selfId = this.getParticipantId(channelId);
+        const methods: Array<{ participantId: string; name: string; description: string; parameters?: unknown }> = [];
+        for (const p of participants) {
+          if (p.participantId === selfId) continue;
+          const advertised = p.metadata["methods"];
+          if (Array.isArray(advertised)) {
+            for (const m of advertised) {
+              const method = m as Record<string, unknown>;
+              methods.push({
+                participantId: p.participantId,
+                name: method["name"] as string,
+                description: (method["description"] as string) ?? "",
+                ...(method["parameters"] ? { parameters: method["parameters"] } : {}),
+              });
+            }
+          }
+        }
+
+        await this.server.sendHarnessCommand(harnessId, {
+          type: "discover-methods-result",
+          methods,
         });
         break;
       }
 
       // --- Metadata ---
-      case "metadata-update":
-        $.channel(channelId).updateMetadata(event.metadata);
+      case "metadata-update": {
+        const participantId = this.getParticipantId(channelId);
+        if (participantId) {
+          await this.pubsub.updateMetadata(participantId, channelId, event.metadata);
+        }
         break;
+      }
 
-      // --- Interleave point (no-op, server handles scheduling) ---
+      // --- Interleave point (no-op) ---
       case "interleave-point":
         break;
 
-      // --- Ready (harness initialized, update status) ---
+      // --- Ready (harness initialized) ---
       case "ready":
         this.sql.exec(
           `UPDATE harnesses SET status = 'active' WHERE id = ?`,
@@ -302,7 +350,10 @@ export class AiChatWorker extends AgentWorkerBase {
         break;
     }
 
-    return $.result();
+    // Persist stream state after every event that has a writer
+    if (writer && event.type !== "turn-complete" && event.type !== "error") {
+      this.persistStreamState(harnessId, writer);
+    }
   }
 
   // --- Method calls ---
@@ -312,52 +363,33 @@ export class AiChatWorker extends AgentWorkerBase {
     callId: string,
     methodName: string,
     _args: unknown,
-  ): Promise<WorkerActions> {
-    const $ = this.actions();
+  ): Promise<{ result: unknown; isError?: boolean }> {
     const harnessId = this.getHarnessForChannel(channelId);
 
     switch (methodName) {
       case "pause":
         if (harnessId) {
-          $.harness(harnessId).interrupt();
-          $.channel(channelId).methodResult(callId, { paused: true });
-        } else {
-          $.channel(channelId).methodResult(
-            callId,
-            { error: "no active harness" },
-            true,
-          );
+          await this.server.sendHarnessCommand(harnessId, { type: "interrupt" });
+          return { result: { paused: true } };
         }
-        break;
+        return { result: { error: "no active harness" }, isError: true };
 
       case "resume":
-        // Resume is a no-op — the next user message will trigger a new turn
-        $.channel(channelId).methodResult(callId, { resumed: true });
-        break;
+        return { result: { resumed: true } };
 
       default:
-        $.channel(channelId).methodResult(
-          callId,
-          { error: `unknown method: ${methodName}` },
-          true,
-        );
-        break;
+        return { result: { error: `unknown method: ${methodName}` }, isError: true };
     }
-
-    return $.result();
   }
 
   // --- Continuation results ---
 
-  protected override handleCallResult(
+  protected override async handleCallResult(
     type: string, context: Record<string, unknown>,
     channelId: string, result: unknown, isError: boolean,
-  ): WorkerActions {
-    const $ = this.actions();
-
+  ): Promise<void> {
     switch (type) {
       case 'approval': {
-        console.log(`[AiChatWorker] Approval result received: harnessId=${(context as any).harnessId}, allow=${!isError && result && typeof result === 'object' && (result as any).allow}, isError=${isError}`);
         const { harnessId, toolUseId } = context as { harnessId: string; toolUseId: string };
         let allow = false;
         let alwaysAllow = false;
@@ -368,38 +400,45 @@ export class AiChatWorker extends AgentWorkerBase {
         }
         const activeHarnessId = this.getHarnessForChannel(channelId);
         if (activeHarnessId === harnessId) {
-          console.log(`[AiChatWorker] Forwarding approval to harness: toolUseId=${toolUseId}, allow=${allow}, alwaysAllow=${alwaysAllow}`);
-          $.harness(harnessId).approveTool(toolUseId, allow, alwaysAllow);
-        } else {
-          console.warn(`[AiChatWorker] Approval result for stale harness: expected=${activeHarnessId}, got=${harnessId}, callId context dropped`);
+          await this.server.sendHarnessCommand(harnessId, {
+            type: "approve-tool",
+            toolUseId,
+            allow,
+            alwaysAllow,
+          });
         }
         break;
       }
-    }
 
-    return $.result();
+      case 'tool-call': {
+        const { harnessId, callId } = context as { harnessId: string; callId: string };
+        // Deliver tool result back to harness
+        await this.server.sendHarnessCommand(harnessId, {
+          type: "tool-result",
+          callId,
+          result,
+          isError,
+        });
+        break;
+      }
+    }
   }
 
   // --- Private helpers ---
 
-  /**
-   * Complete and remove any bootstrap typing message for a channel.
-   * Called during error/crash paths in case recordTurnStart never adopted it.
-   */
-  private cleanupBootstrapTyping($: ReturnType<typeof this.actions>, channelId: string): void {
+  private async cleanupBootstrapTyping(channelId: string): Promise<void> {
     const key = `bootstrap_typing:${channelId}`;
     const row = this.sql.exec(`SELECT value FROM state WHERE key = ?`, key).toArray();
     if (row.length > 0) {
       const typingMsgId = row[0]!["value"] as string;
-      $.channel(channelId).complete(typingMsgId);
+      const participantId = this.getParticipantId(channelId);
+      if (participantId) {
+        await this.pubsub.complete(participantId, channelId, typingMsgId);
+      }
       this.sql.exec(`DELETE FROM state WHERE key = ?`, key);
     }
   }
 
-  /**
-   * Build the full HarnessConfig, merging base config with any
-   * per-channel subscription config overrides.
-   */
   private buildHarnessConfig(channelId: string): HarnessConfig {
     const base = this.getHarnessConfig();
     const sub = this.getSubscriptionConfig(channelId);
@@ -418,47 +457,35 @@ export class AiChatWorker extends AgentWorkerBase {
     };
   }
 
-  /**
-   * Handle a harness crash: mark it crashed, complete any partial stream,
-   * and return a respawn action with the in-flight turn for retry.
-   */
-  private handleHarnessCrashWithActions(
-    $: ReturnType<typeof this.actions>,
+  private async handleHarnessCrash(
     harnessId: string,
     channelId: string,
     error: string,
-  ): WorkerActions {
-    // Mark harness as crashed
+  ): Promise<void> {
     this.sql.exec(
       `UPDATE harnesses SET status = 'crashed', state = ? WHERE id = ?`,
       JSON.stringify({ error, crashedAt: Date.now() }),
       harnessId,
     );
 
-    // Finalize any partial streaming messages
     const activeTurn = this.getActiveTurn(harnessId);
     if (activeTurn) {
-      const writer = $.channel(channelId).streamFor(harnessId, activeTurn);
-      writer.stopTyping();
-      writer.endThinking();
-      writer.endAction();
-      writer.completeText();
+      const writer = this.createWriter(channelId, activeTurn);
+      await writer.stopTyping();
+      await writer.endThinking();
+      await writer.endAction();
+      await writer.completeText();
     }
-    // Clean up bootstrap typing in case spawn failed before recordTurnStart
-    this.cleanupBootstrapTyping($, channelId);
+    await this.cleanupBootstrapTyping(channelId);
 
-    // Capture sender before clearing turn state (needed for approval during retry)
     const senderParticipantId = activeTurn?.senderParticipantId ?? undefined;
-
-    // Get resume session ID for conversation continuity
     const resumeSessionId = this.getResumeSessionId(harnessId);
-    console.log(`[AiChatWorker] Crash recovery: harnessId=${harnessId}, resumeSessionId=${resumeSessionId ?? 'NONE (first turn never completed)'}`);
+    console.log(`[AiChatWorker] Crash recovery: harnessId=${harnessId}, resumeSessionId=${resumeSessionId ?? 'NONE'}`);
 
-    // Read in-flight turn for retry
     const inFlight = this.getInFlightTurn(channelId, harnessId);
     const contextId = this.getContextId(channelId);
 
-    const retryTurn = inFlight
+    const initialTurn = inFlight
       ? {
           input: inFlight.turnInput,
           triggerMessageId: inFlight.triggerMessageId,
@@ -466,20 +493,18 @@ export class AiChatWorker extends AgentWorkerBase {
         }
       : undefined;
 
-    // Clear turn state before respawn
     this.clearActiveTurn(harnessId);
-    // Keep in_flight_turns — the server will clear on successful respawn
 
-    $.respawnHarness({
+    // Respawn via server API
+    await this.server.spawnHarness({
+      doRef: this.doRef,
       harnessId,
+      type: this.getHarnessType(),
       channelId,
       contextId,
-      resumeSessionId,
+      config: { ...this.buildHarnessConfig(channelId), extraEnv: { RESUME_SESSION_ID: resumeSessionId ?? "" } },
       senderParticipantId,
-      retryTurn,
+      initialTurn,
     });
-
-    return $.result();
   }
-
 }

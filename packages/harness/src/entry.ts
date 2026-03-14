@@ -11,17 +11,19 @@
  * 5. Exposes RPC methods the server can call (startTurn, interrupt, etc.)
  * 6. Pushes a `ready` event to signal successful startup
  *
- * If the WebSocket drops, the process logs and exits. The HarnessManager
- * detects the crash and handles respawn logic.
+ * Tool execution is async: the adapter emits `tool-call` events via pushEvent,
+ * the DO orchestrates the actual call via PubSub, and the result arrives back
+ * as a `toolResult` RPC call that resolves the pending promise.
  *
  * @module
  */
 
+import { randomUUID } from "node:crypto";
 import { createRpcBridge } from "@natstack/rpc";
 import type { RpcBridge } from "@natstack/rpc";
 import { createHarnessTransport } from "./harness-transport.js";
 import { ClaudeSdkAdapter } from "./claude-sdk-adapter.js";
-import type { ClaudeAdapterDeps } from "./claude-sdk-adapter.js";
+import type { ClaudeAdapterDeps, DiscoveredMethod } from "./claude-sdk-adapter.js";
 import { PiAdapter } from "./pi-adapter.js";
 import type { PiAdapterDeps, PiSession, PiSessionManager } from "./pi-adapter.js";
 import type { HarnessCommand, HarnessConfig, HarnessOutput, TurnInput } from "./types.js";
@@ -163,9 +165,6 @@ async function createAdapter(
       };
 
       // Resource loader with skills enabled.
-      // The context folder is a copy of the workspace and contains skills/ at its root.
-      // Pi SDK doesn't auto-discover bare `skills/` — only `.pi/skills/` and `.agents/skills/` —
-      // so we point it there explicitly via additionalSkillPaths.
       const resourceLoader = new piSdk.DefaultResourceLoader({
         cwd,
         additionalSkillPaths: [join(cwd, "skills")],
@@ -186,12 +185,12 @@ async function createAdapter(
       const piDeps: PiAdapterDeps = {
         pushEvent: deps.pushEvent,
         callMethod: deps.callMethod,
-        discoverMethods: deps.discoverMethods,
+        discoverMethods: deps.discoverMethods as unknown as PiAdapterDeps["discoverMethods"],
         createSession: async (options) => {
           const model = resolveModel();
           const { session } = await piSdk.createAgentSession({
             cwd: options.cwd,
-            ...(model && { model: model as never }),
+            ...(model ? { model: model as never } : {}),
             thinkingLevel: ((options.thinkingLevel as string) ?? resolveThinkingLevel()) as never,
             customTools: (options.customTools ?? []) as never[],
             sessionManager: options.sessionManager as never,
@@ -250,7 +249,19 @@ async function main(): Promise<void> {
   const selfId = env.harnessId;
   const bridge: RpcBridge = createRpcBridge({ selfId, transport });
 
-  // 3. Wire adapter deps — all external calls go through the RPC bridge
+  // 3. Pending maps for async tool execution and method discovery
+  //    Tool calls and discover-methods are now async: the adapter emits events
+  //    via pushEvent, the DO orchestrates, and results arrive as RPC calls.
+  const pendingToolResults = new Map<string, {
+    resolve: (result: unknown) => void;
+    reject: (err: Error) => void;
+  }>();
+  const pendingDiscoverResults: Array<{
+    resolve: (methods: DiscoveredMethod[]) => void;
+    reject: (err: Error) => void;
+  }> = [];
+
+  // 4. Wire adapter deps — pushEvent through RPC, callMethod/discoverMethods via emit+wait
   const pushEvent = async (event: HarnessOutput): Promise<void> => {
     await bridge.call("main", "harness.pushEvent", env.harnessId, event);
   };
@@ -262,26 +273,51 @@ async function main(): Promise<void> {
       method: string,
       args: unknown,
     ): Promise<unknown> => {
-      log.info(`callMethod: ${method} -> ${participantId} on ${env.channelId}`);
-      try {
-        const result = await bridge.call("main", "channel.callMethod", env.channelId, participantId, method, args);
-        log.info(`callMethod result: ${method} (type: ${typeof result})`);
-        return result;
-      } catch (err) {
-        log.error(`callMethod failed: ${method} -> ${participantId}:`, err);
-        throw err;
-      }
+      // Async tool execution: emit tool-call event, wait for tool-result.
+      // Register the pending entry BEFORE emitting — the result may arrive
+      // during the pushEvent await (synchronous dispatch through DO back to harness).
+      const callId = randomUUID();
+      log.info(`callMethod (async): ${method} -> ${participantId} (callId=${callId})`);
+      const resultPromise = new Promise<unknown>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          log.error(`callMethod STALLED: ${method} -> ${participantId} (callId=${callId}) — waiting >60s for tool-result. Promise is still pending.`);
+        }, 60_000);
+        pendingToolResults.set(callId, {
+          resolve: (v) => { clearTimeout(timer); resolve(v); },
+          reject: (e) => { clearTimeout(timer); reject(e); },
+        });
+      });
+      await pushEvent({
+        type: 'tool-call',
+        callId,
+        participantId,
+        method,
+        args,
+      });
+      return resultPromise;
     },
-    discoverMethods: async () => {
-      return bridge.call("main", "channel.discoverMethods", env.channelId);
+    discoverMethods: async (): Promise<DiscoveredMethod[]> => {
+      log.info("discoverMethods (async): emitting discover-methods event");
+      // Register pending BEFORE emitting — result may arrive during pushEvent.
+      const resultPromise = new Promise<DiscoveredMethod[]>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          log.error(`discoverMethods STALLED — waiting >10s for discover-methods-result. Promise is still pending.`);
+        }, 10_000);
+        pendingDiscoverResults.push({
+          resolve: (v) => { clearTimeout(timer); resolve(v); },
+          reject: (e) => { clearTimeout(timer); reject(e); },
+        });
+      });
+      await pushEvent({ type: 'discover-methods' });
+      return resultPromise;
     },
     log,
   };
 
-  // 4. Instantiate the adapter (async for Pi's dynamic SDK import)
+  // 5. Instantiate the adapter (async for Pi's dynamic SDK import)
   const adapter = await createAdapter(env, deps, log);
 
-  // 5. Expose RPC methods the server can call
+  // 6. Expose RPC methods the server can call
   //
   // startTurn and approveTool are fire-and-forget: they return immediately
   // so the server's RPC call resolves without blocking on the full AI turn.
@@ -317,6 +353,15 @@ async function main(): Promise<void> {
 
   bridge.exposeMethod("interrupt", async () => {
     await adapter.handleCommand({ type: "interrupt" });
+    // Reject all pending tool results on interrupt
+    for (const [callId, pending] of pendingToolResults) {
+      pending.reject(new Error("Turn interrupted"));
+      pendingToolResults.delete(callId);
+    }
+    for (const pending of pendingDiscoverResults) {
+      pending.reject(new Error("Turn interrupted"));
+    }
+    pendingDiscoverResults.length = 0;
   });
 
   bridge.exposeMethod(
@@ -336,13 +381,44 @@ async function main(): Promise<void> {
     setTimeout(() => process.exit(0), 100);
   });
 
-  // 6. Handle WebSocket close — log and exit
+  // New: tool-result command — resolves pending callMethod promise
+  bridge.exposeMethod(
+    "toolResult",
+    async (callId: string, result: unknown, isError?: boolean) => {
+      const pending = pendingToolResults.get(callId);
+      if (pending) {
+        pendingToolResults.delete(callId);
+        if (isError) {
+          pending.reject(new Error(typeof result === "string" ? result : JSON.stringify(result)));
+        } else {
+          pending.resolve(result);
+        }
+      } else {
+        log.info(`toolResult: no pending call for callId=${callId} (may have been cancelled)`);
+      }
+    },
+  );
+
+  // New: discover-methods-result — resolves pending discoverMethods promise
+  bridge.exposeMethod(
+    "discoverMethodsResult",
+    async (methods: DiscoveredMethod[]) => {
+      const pending = pendingDiscoverResults.shift();
+      if (pending) {
+        pending.resolve(methods);
+      } else {
+        log.info("discoverMethodsResult: no pending discover request");
+      }
+    },
+  );
+
+  // 7. Handle WebSocket close — log and exit
   ws.on("close", (code, reason) => {
     log.error(`WebSocket closed (code=${code} reason=${reason.toString()})`);
     process.exit(1);
   });
 
-  // 7. Handle graceful shutdown
+  // 8. Handle graceful shutdown
   const shutdown = async () => {
     log.info("Received shutdown signal, disposing adapter...");
     try {
@@ -357,7 +433,7 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => void shutdown());
   process.on("SIGINT", () => void shutdown());
 
-  // 8. Signal ready
+  // 9. Signal ready
   await pushEvent({ type: "ready" });
   log.info("Harness ready");
 }

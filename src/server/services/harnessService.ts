@@ -1,18 +1,16 @@
 /**
  * Harness RPC Service -- receives HarnessOutput events from harness processes
- * and routes them to the owning DO.
+ * and routes them to the owning DO via DODispatch.
  *
- * When a harness pushes an event, we:
- * 1. Look up the owning DO via router.getDOForHarness()
- * 2. Dispatch to the DO's onHarnessEvent method
- * 3. Execute any returned actions
+ * Simplified: no action execution — just forwards the event to the DO.
+ * The DO handles all side effects via direct outbound HTTP calls.
  */
 
 import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { WorkerRouter } from "../workerRouter.js";
+import type { DODispatch } from "../doDispatch.js";
+import type { HarnessManager } from "../harnessManager.js";
 import type { HarnessOutput } from "@natstack/harness";
-import type { ExecuteActionsFn } from "./pubsubFacade.js";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("HarnessService");
@@ -33,12 +31,10 @@ function createAsyncQueue() {
 }
 
 export function createHarnessService(deps: {
-  router: WorkerRouter;
-  executeActions: ExecuteActionsFn;
-  /** Resolve which participantId owns a harness's DO (for action context) */
-  resolveParticipantForHarness: (harnessId: string) => string | undefined;
+  doDispatch: DODispatch;
+  harnessManager: HarnessManager;
 }): ServiceDefinition {
-  const { router, executeActions, resolveParticipantForHarness } = deps;
+  const { doDispatch, harnessManager } = deps;
   const queues = new Map<string, ReturnType<typeof createAsyncQueue>>();
 
   return {
@@ -64,36 +60,14 @@ export function createHarnessService(deps: {
 
           try {
             await queue.enqueue(async () => {
-              // Look up the owning DO
-              const doReg = router.getDOForHarness(harnessId);
-              if (!doReg) {
-                log.warn(`pushEvent: no DO registration for harness ${harnessId}`);
-                return;
+              // Look up the owning DO via HarnessManager
+              const doRef = harnessManager.getDOForHarness(harnessId);
+              if (!doRef) {
+                throw new Error(`No DO registration for harness ${harnessId}`);
               }
 
-              const { className, objectKey } = doReg;
-
-              // Dispatch to the DO
-              const actions = await router.dispatch(
-                className,
-                objectKey,
-                "onHarnessEvent",
-                harnessId,
-                event,
-              );
-
-              // Execute returned actions
-              if (actions && actions.actions && actions.actions.length > 0) {
-                // Find the participant ID for action context
-                const participantId = resolveParticipantForHarness(harnessId);
-                if (participantId) {
-                  await executeActions(actions, { participantId });
-                } else {
-                  log.error(
-                    `pushEvent: no participantId for harness ${harnessId} — ${actions.actions.length} actions DROPPED (types: ${actions.actions.map(a => `${a.target}:${(a as any).op ?? (a as any).command?.type}`).join(', ')})`,
-                  );
-                }
-              }
+              // Dispatch to the DO — returns void (no actions to execute)
+              await doDispatch.dispatch(doRef, "onHarnessEvent", harnessId, event);
             });
 
             return { ok: true };

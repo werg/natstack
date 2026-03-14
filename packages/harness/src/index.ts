@@ -5,15 +5,10 @@ export type {
   HarnessConfig,
   Attachment,
   ChannelEvent,
-  SendOptions,
   TurnInput,
   HarnessCommand,
-  WorkerActions,
-  WorkerAction,
   ParticipantDescriptor,
   MethodAdvertisement,
-  SpawnHarnessOpts,
-  RespawnHarnessOpts,
   UnsubscribeResult,
 } from './types.js';
 
