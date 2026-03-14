@@ -14,10 +14,6 @@
  *   rest = method path
  */
 
-import { createDevLogger } from "@natstack/dev-log";
-
-const log = createDevLogger("DODispatch");
-
 // ---------------------------------------------------------------------------
 // DORef — source-scoped Durable Object identity
 // ---------------------------------------------------------------------------
@@ -74,7 +70,6 @@ export class DODispatch {
       throw new Error("DODispatch: no dispatcher configured");
     }
     const urlPath = doRefUrl(ref, method);
-    log.verbose(`Dispatch: ${doRefKey(ref)}.${method}`);
     return this.dispatcher(urlPath, args);
   }
 }
