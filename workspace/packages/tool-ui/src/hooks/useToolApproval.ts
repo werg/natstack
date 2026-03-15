@@ -1,21 +1,21 @@
 /**
  * Hook for managing tool approval workflow.
  *
- * Provides state management for:
- * - Global approval level (Ask All, Auto-Safe, Full Auto)
- * - Per-agent access grants
- * - Integration with feedback system for approval prompts
+ * Approval level is channel-global: it lives in channel config and applies
+ * to all agents on the channel. The panel reads/writes it via
+ * `updateChannelConfig({ approvalLevel })`.
  *
- * This hook now uses the unified feedback_form system for approval UI,
- * eliminating the need for separate PendingApproval state.
+ * The DO receives config updates and caches the level. When approval-needed
+ * fires and the level says auto-approve, the DO approves immediately —
+ * zero panel roundtrip.
  */
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import {
   needsApprovalForTool,
   createApprovalSchema,
-  extractMethodName,
 } from "@natstack/pubsub";
+import type { ChannelConfig } from "@natstack/pubsub";
 import type { FieldValue } from "@natstack/types";
 import type {
   ApprovalLevel,
@@ -52,11 +52,8 @@ export const APPROVAL_LEVELS: Record<ApprovalLevel, {
 };
 
 const DEFAULT_SETTINGS: ToolApprovalSettings = {
-  globalFloor: 1, // Default: Auto-Safe
-  agentGrants: {},
+  globalFloor: 2, // Default: Full Auto
 };
-
-const SETTINGS_KEY = "toolApproval";
 
 /**
  * Feedback functions needed by the hook to show approval UI.
@@ -69,164 +66,84 @@ export interface FeedbackFunctions {
 }
 
 /**
- * Minimal client interface for tool approval settings persistence.
- * Accepts both PubSubClient and AgenticClient.
+ * Minimal client interface for channel config access.
+ * Accepts PubSubClient.
  */
-interface SettingsClient {
-  getSettings?<T>(): Promise<T | null>;
-  updateSettings?(settings: Record<string, unknown>): Promise<void>;
+interface ConfigClient {
+  channelConfig?: ChannelConfig;
+  updateChannelConfig?(config: Partial<ChannelConfig>): Promise<ChannelConfig>;
+  onConfigChange?(handler: (config: ChannelConfig) => void): () => void;
 }
 
 export function useToolApproval(
-  client: SettingsClient | null,
+  client: ConfigClient | null,
   feedback?: FeedbackFunctions
 ): UseToolApprovalResult {
   const [settings, setSettings] = useState<ToolApprovalSettings>(DEFAULT_SETTINGS);
 
   // Use ref for settings so callbacks can always read current state
-  // This fixes the stale closure issue when functions are captured at wrap time
   const settingsRef = useRef<ToolApprovalSettings>(settings);
   useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
 
-  // Track client changes to reload settings
-  const clientRef = useRef<SettingsClient | null>(null);
-  const loadedRef = useRef(false);
+  // Ref for setGlobalFloor to avoid circular dependency in requestApproval
+  const setGlobalFloorRef = useRef<(level: ApprovalLevel) => void>(() => {});
 
-  // Load settings from client when client changes
+  // Track pending approval completers so we can auto-resolve them when
+  // the floor changes to Full Auto (e.g. concurrent tool calls where
+  // user clicks "Always Allow" on one while the other is still pending).
+  const pendingApprovals = useRef<Map<string, (result: FeedbackResult) => void>>(new Map());
+
+  // Sync approval level from channel config
   useEffect(() => {
-    // Skip if same client
-    if (client === clientRef.current) return;
-    clientRef.current = client;
-    loadedRef.current = false;
+    if (!client?.onConfigChange) return;
 
-    if (!client) {
-      // Reset to defaults when client disconnects
-      setSettings(DEFAULT_SETTINGS);
-      return;
-    }
+    // onConfigChange fires immediately with current config if available,
+    // so no separate initial read is needed.
+    const unsub = client.onConfigChange((config: ChannelConfig) => {
+      const level = config.approvalLevel ?? 2;
+      setSettings({ globalFloor: level as ApprovalLevel });
+    });
 
-    // Only load settings if client supports getSettings
-    if (!client.getSettings) {
-      loadedRef.current = true;
-      return;
-    }
-
-    const loadSettings = async () => {
-      try {
-        const stored = await client.getSettings!<{ [SETTINGS_KEY]: ToolApprovalSettings }>();
-        if (stored?.[SETTINGS_KEY]) {
-          setSettings(stored[SETTINGS_KEY]);
-        }
-        loadedRef.current = true;
-      } catch (err) {
-        console.warn("[useToolApproval] Failed to load settings:", err);
-        loadedRef.current = true;
-      }
-    };
-
-    void loadSettings();
+    return unsub;
   }, [client]);
-
-  // Persist settings helper - uses ref to get current client
-  const persistSettings = useCallback(
-    async (newSettings: ToolApprovalSettings) => {
-      const currentClient = clientRef.current;
-      if (!currentClient || !loadedRef.current || !currentClient.updateSettings) return;
-      try {
-        await currentClient.updateSettings({ [SETTINGS_KEY]: newSettings });
-      } catch (err) {
-        console.warn("[useToolApproval] Failed to persist settings:", err);
-      }
-    },
-    []
-  );
 
   const setGlobalFloor = useCallback(
     (level: ApprovalLevel) => {
-      setSettings((prev) => {
-        const next = { ...prev, globalFloor: level };
-        void persistSettings(next);
-        return next;
-      });
+      const newSettings = { globalFloor: level };
+      // Update ref immediately so sync readers (checkToolApproval) see the
+      // new value before React re-renders. Without this, a callMethod that
+      // arrives between setSettings and the next useEffect would read stale state.
+      settingsRef.current = newSettings;
+      setSettings(newSettings);
+      // Write to channel config — this propagates to all participants
+      if (client?.updateChannelConfig) {
+        void client.updateChannelConfig({ approvalLevel: level });
+      }
+      // When switching to Full Auto, auto-resolve all pending approval prompts
+      if (level >= 2) {
+        for (const [, complete] of pendingApprovals.current) {
+          complete({ type: "submit", value: { decision: "allow" } });
+        }
+        // Map is cleared by each complete handler via removePending
+      }
     },
-    [persistSettings]
+    [client]
   );
 
-  // grantAgent and setGlobalFloor need to be defined before they're used in resolveApproval
-  // Using ref pattern to avoid circular dependency
-  const grantAgentRef = useRef<(agentId: string) => void>(() => {});
-  const setGlobalFloorRef = useRef<(level: ApprovalLevel) => void>(() => {});
-
-  const grantAgent = useCallback(
-    (agentId: string) => {
-      setSettings((prev) => {
-        const next = {
-          ...prev,
-          agentGrants: { ...prev.agentGrants, [agentId]: Date.now() },
-        };
-        void persistSettings(next);
-        return next;
-      });
-    },
-    [persistSettings]
-  );
-
-  // Update refs after functions are defined
-  useEffect(() => {
-    grantAgentRef.current = grantAgent;
-  }, [grantAgent]);
-
+  // Update ref after function is defined
   useEffect(() => {
     setGlobalFloorRef.current = setGlobalFloor;
   }, [setGlobalFloor]);
 
-  const revokeAgent = useCallback(
-    (agentId: string) => {
-      setSettings((prev) => {
-        const { [agentId]: _, ...rest } = prev.agentGrants;
-        const next = { ...prev, agentGrants: rest };
-        void persistSettings(next);
-        return next;
-      });
-    },
-    [persistSettings]
-  );
-
-  const revokeAll = useCallback(() => {
-    setSettings((prev) => {
-      const next = { ...prev, agentGrants: {} };
-      void persistSettings(next);
-      return next;
-    });
-  }, [persistSettings]);
-
   /**
-   * Check if agent is granted - STABLE function that reads from ref.
-   * Safe to capture in closures that outlive render cycles.
-   */
-  const isAgentGranted = useCallback(
-    (agentId: string): boolean => {
-      return agentId in settingsRef.current.agentGrants;
-    },
-    [] // No dependencies - reads from ref
-  );
-
-  /**
-   * Check if a tool call from an agent needs approval.
-   * Returns true if the call can proceed without prompt.
+   * Check if a tool call can proceed without approval prompt.
    * STABLE function that reads from ref.
    */
   const checkToolApproval = useCallback(
-    (agentId: string, methodName: string): boolean => {
-      const currentSettings = settingsRef.current;
-      // Agent must be granted first
-      if (!(agentId in currentSettings.agentGrants)) return false;
-
-      // Use the approval level logic
-      const actualMethod = extractMethodName(methodName);
-      return !needsApprovalForTool(actualMethod, currentSettings.globalFloor);
+    (toolName: string): boolean => {
+      return !needsApprovalForTool(toolName, settingsRef.current.globalFloor);
     },
     [] // No dependencies - reads from ref
   );
@@ -261,19 +178,23 @@ export function useToolApproval(
         }
 
         const currentSettings = settingsRef.current;
-        const isFirstTimeGrant = !(params.agentId in currentSettings.agentGrants);
+
+        const removePending = () => {
+          pendingApprovals.current.delete(params.callId);
+        };
 
         // Build the approval schema
         const fields = createApprovalSchema({
           agentName: params.agentName,
           toolName: params.methodName,
           args: params.args,
-          isFirstTimeGrant,
+          isFirstTimeGrant: false,
           floorLevel: currentSettings.globalFloor,
         });
 
         // Create the complete handler that processes the decision
         const complete = (result: FeedbackResult) => {
+          removePending();
           // Remove from feedback state
           currentFeedback.removeFeedback(params.callId);
 
@@ -282,15 +203,10 @@ export function useToolApproval(
             const decision = value?.["decision"];
 
             if (decision === "allow") {
-              // If approving a first-time grant, add agent to grants
-              if (isFirstTimeGrant) {
-                grantAgentRef.current(params.agentId);
-              }
               resolve(true);
             } else if (decision === "always") {
-              // "Always Allow" - grant agent AND set to Full Auto mode
-              grantAgentRef.current(params.agentId);
-              setGlobalFloorRef.current(2); // Full Auto
+              // "Always Allow" - set channel to Full Auto via config
+              setGlobalFloorRef.current(2);
               resolve(true);
             } else {
               // Deny
@@ -301,6 +217,9 @@ export function useToolApproval(
             resolve(false);
           }
         };
+
+        // Track this pending approval so setGlobalFloor can auto-resolve it
+        pendingApprovals.current.set(params.callId, complete);
 
         // Create the ActiveFeedbackSchema entry
         const feedbackSchema: ActiveFeedbackSchema = {
@@ -326,10 +245,6 @@ export function useToolApproval(
   return {
     settings,
     setGlobalFloor,
-    grantAgent,
-    revokeAgent,
-    revokeAll,
-    isAgentGranted,
     checkToolApproval,
     requestApproval,
   };

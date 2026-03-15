@@ -11,10 +11,6 @@ export interface ParticipantBadgeMenuProps {
   participant: Participant<ChatParticipantMetadata>;
   hasActiveMessage: boolean;
   onCallMethod: (providerId: string, methodName: string, args: unknown) => void;
-  /** Whether this agent has been granted tool access */
-  isGranted?: boolean;
-  /** Callback to revoke agent's tool access */
-  onRevokeAgent?: (agentId: string) => void;
   /** Callback to remove an agent from the channel */
   onRemoveAgent?: (handle: string) => void;
   /** Callback to open debug console for this agent */
@@ -48,8 +44,6 @@ export function ParticipantBadgeMenu({
   participant,
   hasActiveMessage,
   onCallMethod,
-  isGranted,
-  onRevokeAgent,
   onRemoveAgent,
   onOpenDebugConsole,
 }: ParticipantBadgeMenuProps) {
@@ -90,7 +84,6 @@ export function ParticipantBadgeMenu({
   const color = getParticipantColor(participant.metadata.type);
   const hasMenuItems = menuMethods.length > 0;
   const isAgent = participant.metadata.type !== "panel";
-  const showGrantStatus = isAgent && isGranted !== undefined;
   const isPlanMode = participant.metadata.executionMode === "plan";
   const activeModel = participant.metadata.activeModel;
 
@@ -152,10 +145,10 @@ export function ParticipantBadgeMenu({
     </Text>
   ) : null;
 
-  // Simple badge without dropdown when no menu items, no grant status, no debug console, no remove
+  // Simple badge without dropdown when no menu items, no debug console, no remove
   const showDebugConsole = isAgent && onOpenDebugConsole;
   const showRemove = isAgent && onRemoveAgent;
-  if (!hasMenuItems && !showGrantStatus && !showDebugConsole && !showRemove) {
+  if (!hasMenuItems && !showDebugConsole && !showRemove) {
     return (
       <span style={{ position: "relative" }}>
         <Badge color={color}>
@@ -194,23 +187,6 @@ export function ParticipantBadgeMenu({
           </DropdownMenu.Trigger>
 
         <DropdownMenu.Content>
-          {/* Show tool access status for agents (non-panel participants) */}
-          {showGrantStatus && (
-            <>
-              <DropdownMenu.Label>
-                Tool Access: {isGranted ? "Granted" : "Not granted"}
-              </DropdownMenu.Label>
-              {isGranted && onRevokeAgent && (
-                <DropdownMenu.Item
-                  color="red"
-                  onSelect={() => onRevokeAgent(participant.id)}
-                >
-                  Revoke Access
-                </DropdownMenu.Item>
-              )}
-              {menuMethods.length > 0 && <DropdownMenu.Separator />}
-            </>
-          )}
           {menuMethods.map((method) => (
             <DropdownMenu.Item
               key={method.name}
@@ -227,7 +203,7 @@ export function ParticipantBadgeMenu({
           {/* Debug Console for agents */}
           {showDebugConsole && (
             <>
-              {(menuMethods.length > 0 || showGrantStatus) && <DropdownMenu.Separator />}
+              {menuMethods.length > 0 && <DropdownMenu.Separator />}
               <DropdownMenu.Item onSelect={() => onOpenDebugConsole(participant.metadata.handle)}>
                 Debug Console
               </DropdownMenu.Item>

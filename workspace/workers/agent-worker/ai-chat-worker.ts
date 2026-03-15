@@ -240,6 +240,21 @@ export class AiChatWorker extends AgentWorkerBase {
         await writer?.stopTyping();
         if (writer) this.persistStreamState(harnessId, writer);
 
+        // Check if channel's approval level allows auto-approval
+        if (this.shouldAutoApprove(channelId, event.toolName)) {
+          await this.server.sendHarnessCommand(harnessId, {
+            type: "approve-tool",
+            toolUseId: event.toolUseId,
+            allow: true,
+          });
+          if (writer) {
+            await writer.startTyping();
+            this.persistStreamState(harnessId, writer);
+          }
+          break;
+        }
+
+        // Needs user input — route to panel
         const callId = crypto.randomUUID();
         const activeTurnForApproval = this.getActiveTurn(harnessId);
         const panelId = activeTurnForApproval?.senderParticipantId;

@@ -1,17 +1,17 @@
 /**
- * useChatTools — Tool provider wrapping with approval middleware.
+ * useChatTools — Tool provider and approval method builder.
  *
- * Wraps raw tool method definitions with the approval system.
- * Also provides `buildApprovalMethod()` which registers the
- * `request_tool_approval` PubSub method that DO-side agents call
- * when they need tool approval from the panel.
+ * Provides raw tool method definitions (no approval middleware wrapping —
+ * the DO handles approval based on channel config) and
+ * `buildApprovalMethod()` which registers the `request_tool_approval`
+ * PubSub method that DO-side agents call when they need tool approval
+ * from the panel.
  */
 
 import { useCallback, useMemo, useRef, useEffect } from "react";
 import type { MethodDefinition } from "@natstack/pubsub";
 import {
   useToolApproval,
-  wrapMethodsWithApproval,
 } from "@workspace/tool-ui";
 import type { ToolApprovalProps, useFeedbackManager } from "@workspace/tool-ui";
 import type { UseChannelConnectionResult } from "../useChannelConnection";
@@ -25,7 +25,7 @@ interface UseChatToolsOptions {
 }
 
 export interface ChatToolsState {
-  /** Build tool method definitions wrapped with approval */
+  /** Build tool method definitions (raw, no approval wrapping) */
   buildToolMethods: () => Record<string, MethodDefinition>;
   /** Build the request_tool_approval method for DO-originated approval requests */
   buildApprovalMethod: () => Record<string, MethodDefinition>;
@@ -39,31 +39,20 @@ export function useChatTools({
   addFeedback,
   removeFeedback,
 }: UseChatToolsOptions): ChatToolsState {
-  // PubSubClient doesn't have getSettings/updateSettings — approval settings won't persist
-  // across sessions, but the approval system works fine without persistence.
   const approval = useToolApproval(clientRef.current as Parameters<typeof useToolApproval>[0], { addFeedback, removeFeedback });
   const approvalRef = useRef(approval);
   useEffect(() => { approvalRef.current = approval; }, [approval]);
 
   const buildToolMethods = useCallback((): Record<string, MethodDefinition> => {
     if (!tools) return {};
-    const rawTools = tools({ clientRef });
-    return wrapMethodsWithApproval(
-      rawTools,
-      {
-        isAgentGranted: (...args) => approvalRef.current.isAgentGranted(...args),
-        checkToolApproval: (...args) => approvalRef.current.checkToolApproval(...args),
-        requestApproval: (...args) => approvalRef.current.requestApproval(...args),
-      },
-      (agentId) => clientRef.current?.roster[agentId]?.metadata.name ?? agentId,
-    );
+    return tools({ clientRef });
   }, [tools, clientRef]);
 
   /**
    * Build the request_tool_approval method — called by DO agents when
-   * a harness tool needs approval. Routes through the panel's approval
-   * policy layer (auto-approve via checkToolApproval, UI prompt via
-   * requestApproval with per-agent grants and floor levels).
+   * a harness tool needs approval. The DO already checked the channel's
+   * approval level and determined this tool needs user input. Show the
+   * approval UI and return the user's decision.
    */
   const buildApprovalMethod = useCallback((): Record<string, MethodDefinition> => {
     return {
@@ -79,10 +68,11 @@ export function useChatTools({
             toolArgs: unknown;
           };
 
-          // Check auto-approve — if the panel's approval level allows this tool,
-          // return immediately without showing UI.
-          if (approvalRef.current.checkToolApproval(args.agentId, args.toolName)) {
-            return { allow: true, alwaysAllow: true };
+          // Fast path: if the panel's current approval level allows this
+          // tool, return immediately. This catches the case where a prior
+          // "Always Allow" click already set the floor to Full Auto.
+          if (approvalRef.current.checkToolApproval(args.toolName)) {
+            return { allow: true };
           }
 
           // Show approval UI and wait for user decision
@@ -94,7 +84,7 @@ export function useChatTools({
             args: args.toolArgs,
           });
 
-          return { allow, alwaysAllow: false };
+          return { allow };
         },
       },
     };
@@ -103,10 +93,7 @@ export function useChatTools({
   const toolApprovalValue: ToolApprovalProps = useMemo(() => ({
     settings: approval.settings,
     onSetFloor: approval.setGlobalFloor,
-    onGrantAgent: approval.grantAgent,
-    onRevokeAgent: approval.revokeAgent,
-    onRevokeAll: approval.revokeAll,
-  }), [approval.settings, approval.setGlobalFloor, approval.grantAgent, approval.revokeAgent, approval.revokeAll]);
+  }), [approval.settings, approval.setGlobalFloor]);
 
   return {
     buildToolMethods,

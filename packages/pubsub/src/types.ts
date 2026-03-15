@@ -12,6 +12,7 @@
  */
 export interface ChannelConfig {
   title?: string;
+  approvalLevel?: 0 | 1 | 2;  // 0=Ask All, 1=Auto-Safe, 2=Full Auto (default)
 }
 
 /**

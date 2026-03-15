@@ -1,5 +1,6 @@
 import type { ChannelEvent, HarnessConfig, HarnessOutput, TurnInput, ParticipantDescriptor, UnsubscribeResult, Attachment, ChannelBroadcastEventRaw } from "@natstack/harness/types";
 import { toChannelEvent } from "@natstack/harness/types";
+import { needsApprovalForTool } from "@natstack/pubsub";
 import { PubSubDOClient } from "./pubsub-client.js";
 import { ServerDOClient } from "./server-client.js";
 import { StreamWriter, type PersistedStreamState } from "./stream-writer.js";
@@ -284,7 +285,12 @@ export abstract class AgentWorkerBase {
 
     // Subscribe to PubSub directly with callback URL
     const callbackUrl = `${this.callbackBaseUrl}/onChannelEvent`;
-    await this.pubsub.subscribe(opts.channelId, participantId, metadata, callbackUrl);
+    const subResult = await this.pubsub.subscribe(opts.channelId, participantId, metadata, callbackUrl);
+
+    // Cache approval level from channel config if present
+    if (subResult?.channelConfig?.["approvalLevel"] != null) {
+      this.setApprovalLevel(opts.channelId, subResult.channelConfig["approvalLevel"] as number);
+    }
 
     // Store participant ID
     this.sql.exec(
@@ -543,6 +549,62 @@ export abstract class AgentWorkerBase {
     return row.length > 0 ? (row[0]!["participant_id"] as string | null) : null;
   }
 
+  // --- Approval level caching ---
+
+  protected setApprovalLevel(channelId: string, level: number): void {
+    this.sql.exec(
+      `INSERT OR REPLACE INTO state (key, value) VALUES (?, ?)`,
+      `approvalLevel:${channelId}`, String(level),
+    );
+  }
+
+  protected getApprovalLevel(channelId: string): number {
+    const row = this.sql.exec(
+      `SELECT value FROM state WHERE key = ?`, `approvalLevel:${channelId}`
+    ).toArray();
+    if (row.length === 0) return 2; // Default: Full Auto
+    return parseInt(row[0]!["value"] as string, 10);
+  }
+
+  protected shouldAutoApprove(channelId: string, toolName: string): boolean {
+    return !needsApprovalForTool(toolName, this.getApprovalLevel(channelId));
+  }
+
+  /**
+   * Re-evaluate all pending approval calls for a channel.
+   * Called when approval level changes — the DO is the single authority,
+   * so it actively resolves any in-flight approvals that the new level permits.
+   */
+  protected async reevaluatePendingApprovals(channelId: string): Promise<void> {
+    const rows = this.sql.exec(
+      `SELECT call_id, context FROM pending_calls WHERE channel_id = ? AND call_type = 'approval'`,
+      channelId,
+    ).toArray();
+
+    for (const row of rows) {
+      const callId = row["call_id"] as string;
+      const context = JSON.parse(row["context"] as string) as { harnessId: string; toolUseId: string };
+
+      // Check if the new level auto-approves (for Full Auto this is always true)
+      const activeHarnessId = this.getHarnessForChannel(channelId);
+      if (activeHarnessId === context.harnessId) {
+        // Consume the pending call and approve the tool
+        this.sql.exec(`DELETE FROM pending_calls WHERE call_id = ?`, callId);
+        await this.server.sendHarnessCommand(context.harnessId, {
+          type: "approve-tool",
+          toolUseId: context.toolUseId,
+          allow: true,
+        });
+        // Cancel the in-flight PubSub callMethod — the panel may have already
+        // shown a prompt; cancelling dismisses it. If the result already came
+        // back, onCallResult finds no pending call and harmlessly drops it.
+        try {
+          await this.pubsub.cancelCall(channelId, callId);
+        } catch { /* best-effort — call may already be completed */ }
+      }
+    }
+  }
+
   // --- Pending call continuations (survives hibernation) ---
 
   protected pendingCall(
@@ -661,11 +723,36 @@ export abstract class AgentWorkerBase {
         }
       }
 
+
       // For onChannelEvent, transform the raw PubSub broadcast event into a ChannelEvent.
       // PubSub POST-back sends [channelId, ChannelBroadcastEvent] where the broadcast event
       // has senderMetadata (JSON string) instead of senderType, and payload may be a JSON string.
       if (method === "onChannelEvent" && args.length === 2) {
-        args[1] = toChannelEvent(args[1] as ChannelBroadcastEventRaw);
+        const rawEvent = args[1] as ChannelBroadcastEventRaw;
+
+        // Intercept config-update events: cache approval level, re-evaluate
+        // pending approvals, don't forward to subclass
+        if (rawEvent.type === "config-update") {
+          const channelId = args[0] as string;
+          try {
+            const config = typeof rawEvent.payload === "string" ? JSON.parse(rawEvent.payload) : rawEvent.payload;
+            if (config && typeof config === "object" && "approvalLevel" in (config as Record<string, unknown>)) {
+              const newLevel = (config as Record<string, unknown>)["approvalLevel"] as number;
+              this.setApprovalLevel(channelId, newLevel);
+              // The DO is the single authority on approval. When the level
+              // changes, re-evaluate all in-flight approval calls so none
+              // are left dangling if the new level permits auto-approval.
+              if (newLevel >= 2) {
+                await this.reevaluatePendingApprovals(channelId);
+              }
+            }
+          } catch { /* ignore parse errors */ }
+          return new Response(JSON.stringify(null), {
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+
+        args[1] = toChannelEvent(rawEvent);
       }
 
       // Route to the appropriate method

@@ -52,12 +52,6 @@ export { useFeedbackManager, type UseFeedbackManagerResult } from "./hooks/useFe
 export { useToolApproval, APPROVAL_LEVELS, type FeedbackFunctions } from "./hooks/useToolApproval";
 
 // ============================================================================
-// Middleware
-// ============================================================================
-export { wrapMethodsWithApproval } from "./middleware/approval-middleware";
-export type { ApprovalFunctions } from "./middleware/approval-middleware";
-
-// ============================================================================
 // Custom Feedback (TSX)
 // ============================================================================
 export {

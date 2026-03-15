@@ -165,8 +165,6 @@ const ChatHeaderInner = React.memo(function ChatHeaderInner({
               participant={p}
               hasActiveMessage={hasActive}
               onCallMethod={onCallMethod ?? NOOP}
-              isGranted={toolApproval ? p.id in toolApproval.settings.agentGrants : false}
-              onRevokeAgent={toolApproval?.onRevokeAgent}
               onRemoveAgent={onRemoveAgent}
               onOpenDebugConsole={onDebugConsoleChange ?? undefined}
             />
@@ -204,11 +202,7 @@ const ChatHeaderInner = React.memo(function ChatHeaderInner({
         {toolApproval && (
           <ToolPermissionsDropdown
             settings={toolApproval.settings}
-            participants={participants}
             onSetFloor={toolApproval.onSetFloor}
-            onGrantAgent={toolApproval.onGrantAgent}
-            onRevokeAgent={toolApproval.onRevokeAgent}
-            onRevokeAll={toolApproval.onRevokeAll}
           />
         )}
         <Button variant="soft" onClick={onReset}>

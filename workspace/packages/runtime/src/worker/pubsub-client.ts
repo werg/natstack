@@ -87,12 +87,13 @@ export class PubSubDOClient extends HttpClient {
     participantId: string,
     metadata: Record<string, unknown>,
     callbackUrl: string,
-  ): Promise<void> {
-    await this.post(`/channel/${enc(channelId)}/subscribe`, {
+  ): Promise<{ channelConfig?: Record<string, unknown> }> {
+    const result = await this.post(`/channel/${enc(channelId)}/subscribe`, {
       participantId,
       metadata,
       callbackUrl,
     });
+    return (result as { channelConfig?: Record<string, unknown> }) ?? {};
   }
 
   async unsubscribe(

@@ -196,17 +196,10 @@ export class ClaudeSdkAdapter {
 
   /** Pending tool approval requests — resolved when approve-tool arrives */
   private pendingApprovals = new Map<string, {
-    resolve: (result: { behavior: 'allow'; updatedInput: Record<string, unknown>; updatedPermissions?: unknown[] } | { behavior: 'deny'; message: string }) => void;
+    resolve: (result: { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }) => void;
     toolName: string;
     input: Record<string, unknown>;
-    suggestions?: unknown[];
   }>();
-
-  /** Tools auto-approved by the user via "Always Allow" — persists for the process lifetime */
-  private autoApprovedTools = new Set<string>();
-
-  /** Tool names discovered from channel participants (PubSub/MCP tools) */
-  private channelToolNames = new Set<string>();
 
   /** Resolved SDK module (lazy-loaded to support environments without the SDK) */
   private sdkModule: {
@@ -246,17 +239,9 @@ export class ClaudeSdkAdapter {
         if (pending) {
           this.pendingApprovals.delete(command.toolUseId);
           if (command.allow) {
-            // "Always Allow" — remember this tool so future calls auto-approve
-            if (command.alwaysAllow) {
-              this.autoApprovedTools.add(pending.toolName);
-            }
             pending.resolve({
               behavior: 'allow',
               updatedInput: pending.input,
-              // Forward suggestions as updatedPermissions for "Always Allow"
-              ...(command.alwaysAllow && pending.suggestions
-                ? { updatedPermissions: pending.suggestions }
-                : {}),
             });
           } else {
             pending.resolve({ behavior: 'deny', message: 'User denied tool use' });
@@ -364,31 +349,20 @@ export class ClaudeSdkAdapter {
         // or {behavior: 'deny', message}.
         canUseTool: async (toolName: string, toolInput: Record<string, unknown>, options: { toolUseID: string; signal: AbortSignal; suggestions?: unknown[] }) => {
           const toolUseId = options.toolUseID;
-          // Channel-provided tools already flow through the DO -> PubSub -> panel
-          // method-call path, which owns approval on the panel side.
-          if (this.channelToolNames.has(toolName)) {
-            this.log('info', `canUseTool: auto-approve channel tool "${toolName}"`);
-            return { behavior: 'allow' as const, updatedInput: toolInput };
-          }
-          // Tools previously granted via "Always Allow" skip the approval prompt
-          if (this.autoApprovedTools.has(toolName)) {
-            this.log('info', `canUseTool: auto-approve always-allowed tool "${toolName}"`);
-            return { behavior: 'allow' as const, updatedInput: toolInput };
-          }
+          // All approval decisions are made by the DO based on channel config.
+          // Always emit approval-needed and let the DO decide.
           this.log('info', `canUseTool: requesting approval for "${toolName}" (toolUseId=${toolUseId})`);
-          await this.emit({
-            type: 'approval-needed',
-            toolUseId,
-            toolName,
-            input: toolInput,
-          });
-          // Block until approve-tool command arrives or the signal aborts
-          return new Promise((resolve) => {
+
+          // Register the pending approval BEFORE emitting the event.
+          // The DO may auto-approve synchronously during the emit() await,
+          // sending approve-tool back before emit returns. If we registered
+          // after emit, the approve-tool would find no pending entry and be
+          // silently dropped — causing the turn to hang forever.
+          const approvalPromise = new Promise<{ behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }>((resolve) => {
             this.pendingApprovals.set(toolUseId, {
               resolve,
               toolName,
               input: toolInput,
-              suggestions: options.suggestions,
             });
             // Clean up if the SDK aborts while waiting (e.g., interrupt, timeout)
             if (options.signal.aborted) {
@@ -404,6 +378,15 @@ export class ClaudeSdkAdapter {
             };
             options.signal.addEventListener('abort', onAbort, { once: true });
           });
+
+          await this.emit({
+            type: 'approval-needed',
+            toolUseId,
+            toolName,
+            input: toolInput,
+          });
+
+          return approvalPromise;
         },
       };
 
@@ -807,13 +790,6 @@ export class ClaudeSdkAdapter {
         this.log('info', `Tool allowlist active: ${before} discovered → ${methods.length} allowed (allowlist: [${allowlist.join(', ')}])`);
       }
 
-      // Store both raw names and MCP-prefixed names. The SDK prefixes MCP tools
-      // as mcp__{serverName}__{toolName}, so canUseTool receives the prefixed form.
-      this.channelToolNames = new Set<string>();
-      for (const method of methods) {
-        this.channelToolNames.add(method.name);
-        this.channelToolNames.add(`mcp__workspace__${method.name}`);
-      }
       if (methods.length === 0) {
         this.log('info', 'No channel methods discovered');
         return servers;

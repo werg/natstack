@@ -953,6 +953,20 @@ export class PubSubServer {
         client.ws.send(data);
       }
     }
+
+    // Notify callback participants of config update
+    for (const [, cb] of state.callbacks) {
+      try {
+        cb.callback.onEvent({
+          id: 0,
+          type: "config-update",
+          payload: JSON.stringify(config),
+          senderId: "",
+          ts: Date.now(),
+          persist: false,
+        });
+      } catch (err) { console.error(`[PubSub] Callback participant config-update error:`, err); }
+    }
   }
 
   private sendBinary(ws: WebSocket, msg: ServerMessage): void {
@@ -1532,7 +1546,10 @@ export class PubSubServer {
     this.postbackParticipants.set(participantId, entry);
     log.info(`[PubSub] POST-back participant registered: ${participantId} on channel ${channelId} -> ${callbackUrl}`);
 
-    this.jsonResponse(res, 200, { ok: true });
+    // Return channel config so the subscriber knows the current approval level
+    const channelInfo = this.messageStore.getChannel(channelId);
+    const channelConfig = channelInfo?.config ?? {};
+    this.jsonResponse(res, 200, { ok: true, channelConfig });
   }
 
   /**

@@ -97,29 +97,23 @@ export type ActiveFeedback = ActiveFeedbackTsx | ActiveFeedbackSchema;
 export type ApprovalLevel = 0 | 1 | 2;
 
 /**
- * Tool approval settings stored in panel session.
+ * Tool approval settings — channel-global approval level.
  */
 export interface ToolApprovalSettings {
   /** Global floor: 0=Ask All, 1=Auto-Safe, 2=Full Auto */
   globalFloor: ApprovalLevel;
-  /** Per-agent access grants (agent ID -> granted timestamp) */
-  agentGrants: Record<string, number>;
 }
 
 /**
  * Return type of useToolApproval hook.
  *
- * Note: Pending approvals are now handled via the feedback system (ActiveFeedbackSchema),
- * so pendingApprovals, resolveApproval, and denyAllPending have been removed.
+ * Approval level is channel-global and stored in channel config.
+ * Per-agent grants have been removed — one level applies to all agents.
  */
 export interface UseToolApprovalResult {
   settings: ToolApprovalSettings;
   setGlobalFloor: (level: ApprovalLevel) => void;
-  grantAgent: (agentId: string) => void;
-  revokeAgent: (agentId: string) => void;
-  revokeAll: () => void;
-  isAgentGranted: (agentId: string) => boolean;
-  checkToolApproval: (agentId: string, methodName: string) => boolean;
+  checkToolApproval: (toolName: string) => boolean;
   requestApproval: (params: {
     callId: string;
     agentId: string;
@@ -135,9 +129,6 @@ export interface UseToolApprovalResult {
 export interface ToolApprovalProps {
   settings: ToolApprovalSettings;
   onSetFloor: (level: ApprovalLevel) => void;
-  onGrantAgent: (agentId: string) => void;
-  onRevokeAgent: (agentId: string) => void;
-  onRevokeAll: () => void;
 }
 
 // ============================================================================
