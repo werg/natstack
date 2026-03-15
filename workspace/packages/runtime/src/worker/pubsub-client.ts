@@ -86,12 +86,10 @@ export class PubSubDOClient extends HttpClient {
     channelId: string,
     participantId: string,
     metadata: Record<string, unknown>,
-    callbackUrl: string,
   ): Promise<{ channelConfig?: Record<string, unknown> }> {
     const result = await this.post(`/channel/${enc(channelId)}/subscribe`, {
       participantId,
       metadata,
-      callbackUrl,
     });
     return (result as { channelConfig?: Record<string, unknown> }) ?? {};
   }
@@ -110,7 +108,6 @@ export class PubSubDOClient extends HttpClient {
   async callMethod(
     channelId: string,
     callerParticipantId: string,
-    callerCallbackUrl: string,
     targetParticipantId: string,
     callId: string,
     method: string,
@@ -118,7 +115,6 @@ export class PubSubDOClient extends HttpClient {
   ): Promise<void> {
     await this.post(`/channel/${enc(channelId)}/call-method`, {
       callerParticipantId,
-      callerCallbackUrl,
       targetParticipantId,
       callId,
       method,

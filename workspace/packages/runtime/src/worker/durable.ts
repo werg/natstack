@@ -46,7 +46,8 @@ export abstract class AgentWorkerBase {
 
   /** DO identity — set by bootstrap(), stored in SQLite */
   protected doRef!: DORef;
-  protected callbackBaseUrl!: string;
+  /** Session ID from last bootstrap — used for restart detection */
+  protected workerdSessionId: string | null = null;
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     this.ctx = ctx;
@@ -182,17 +183,29 @@ export abstract class AgentWorkerBase {
 
   // --- Identity bootstrap (called by workerdManager after instance creation) ---
 
-  async bootstrap(doRef: DORef, callbackBaseUrl: string): Promise<void> {
+  async bootstrap(doRef: DORef, sessionId: string): Promise<void> {
     this.sql.exec(
       `INSERT OR REPLACE INTO do_identity (key, value) VALUES ('doRef', ?)`,
       JSON.stringify(doRef),
     );
-    this.sql.exec(
-      `INSERT OR REPLACE INTO do_identity (key, value) VALUES ('callbackBaseUrl', ?)`,
-      callbackBaseUrl,
-    );
     this.doRef = doRef;
-    this.callbackBaseUrl = callbackBaseUrl;
+
+    // Detect restart: sessionId is generated once per workerdManager lifetime.
+    // Same sessionId = same process = idempotent no-op.
+    // Different sessionId = new process = old harnesses are dead.
+    const previousSessionId = this.workerdSessionId;
+    this.sql.exec(
+      `INSERT OR REPLACE INTO do_identity (key, value) VALUES ('workerdSessionId', ?)`,
+      sessionId,
+    );
+    this.workerdSessionId = sessionId;
+
+    if (previousSessionId && previousSessionId !== sessionId) {
+      this.sql.exec(`UPDATE harnesses SET status = 'crashed' WHERE status IN ('active', 'starting')`);
+      this.sql.exec(`DELETE FROM active_turns`);
+      this.sql.exec(`DELETE FROM in_flight_turns`);
+      this.sql.exec(`DELETE FROM pending_calls`);
+    }
   }
 
   private restoreIdentity(): void {
@@ -205,7 +218,7 @@ export abstract class AgentWorkerBase {
           try { this.doRef = JSON.parse(value); }
           catch (e) { console.error(`[AgentWorkerBase] Corrupt doRef in do_identity: ${value}`, e); }
         }
-        if (key === "callbackBaseUrl") this.callbackBaseUrl = value;
+        if (key === "workerdSessionId") this.workerdSessionId = value;
       }
     } catch { /* identity table may not exist yet — first run before bootstrap */ }
   }
@@ -270,22 +283,25 @@ export abstract class AgentWorkerBase {
     );
 
     const descriptor = this.getParticipantInfo(opts.channelId, opts.config);
-    const participantId = `do:${this.doRef.source}:${this.doRef.className}:${this.doRef.objectKey}:${opts.channelId}`;
+    // Participant ID IS the route path — must match the URL scheme workerd serves.
+    // className and objectKey are percent-encoded (consistent with doRefUrl and bootstrapDO).
+    // source is always 2 clean path segments (e.g. "workers/agent-worker") — no encoding needed.
+    const participantId = `/_w/${this.doRef.source}/${encodeURIComponent(this.doRef.className)}/${encodeURIComponent(this.doRef.objectKey)}`;
 
-    // Build metadata from descriptor
+    // Build metadata from descriptor — transport: "post" tells PubSub to deliver via HTTP POST
     const metadata: Record<string, unknown> = {
       name: descriptor.name,
       type: descriptor.type,
       handle: descriptor.handle,
+      transport: "post",
       ...descriptor.metadata,
     };
     if (descriptor.methods && descriptor.methods.length > 0) {
       metadata["methods"] = descriptor.methods;
     }
 
-    // Subscribe to PubSub directly with callback URL
-    const callbackUrl = `${this.callbackBaseUrl}/onChannelEvent`;
-    const subResult = await this.pubsub.subscribe(opts.channelId, participantId, metadata, callbackUrl);
+    // Subscribe to PubSub — no callbackUrl needed, PubSub resolves from participant ID + port
+    const subResult = await this.pubsub.subscribe(opts.channelId, participantId, metadata);
 
     // Cache approval level from channel config if present
     if (subResult?.channelConfig?.["approvalLevel"] != null) {
@@ -530,6 +546,18 @@ export abstract class AgentWorkerBase {
 
   protected getResumeSessionId(harnessId: string): string | undefined {
     return this.getLatestTurn(harnessId)?.externalSessionId;
+  }
+
+  /** Find the most recent session ID across all harnesses on a channel (for restart recovery). */
+  protected getResumeSessionIdForChannel(channelId: string): string | undefined {
+    const row = this.sql.exec(
+      `SELECT t.external_session_id FROM turn_map t
+       JOIN harnesses h ON t.harness_id = h.id
+       WHERE h.channel_id = ?
+       ORDER BY t.created_at DESC LIMIT 1`,
+      channelId,
+    ).toArray();
+    return row.length > 0 ? (row[0]!["external_session_id"] as string) : undefined;
   }
 
   // --- Alignment ---

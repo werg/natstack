@@ -82,15 +82,16 @@ export function createWorkerService(deps: {
           // Query PubSub roster for DO participants
           const participants = pubsub.getChannelParticipants(channelId);
           return participants
-            .filter((p) => p.participantId.startsWith("do:"))
+            .filter((p) => p.participantId.startsWith("/_w/"))
             .map((p) => {
-              // Parse participantId format: do:{source}:{className}:{objectKey}:{channelId}
-              const parts = p.participantId.split(":");
+              // Parse participantId format: /_w/{source0}/{source1}/{className}/{objectKey}
+              // className and objectKey are percent-encoded in the participant ID
+              const parts = p.participantId.split("/").filter(Boolean);
               return {
                 participantId: p.participantId,
-                source: parts[1] ?? "",
-                className: parts[2] ?? "",
-                objectKey: parts[3] ?? "",
+                source: `${parts[1]}/${parts[2]}`,
+                className: decodeURIComponent(parts[3] ?? ""),
+                objectKey: decodeURIComponent(parts[4] ?? ""),
                 channelId,
               };
             });

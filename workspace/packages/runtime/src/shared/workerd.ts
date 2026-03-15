@@ -53,13 +53,6 @@ export interface WorkerCreateOptions {
   /** Build at a specific git ref (branch, tag, or commit SHA).
    *  Use a commit SHA for immutable pinning (content-addressed cache guarantees same build). */
   ref?: string;
-  /** When present, creates a Durable Object instance instead of a regular worker. */
-  durable?: {
-    /** DO class name (must match the worker source's exported class). */
-    className: string;
-    /** Stable instance identifier — maps to workerd's idFromName(objectKey). */
-    objectKey: string;
-  };
 }
 
 export interface WorkerUpdateOptions {

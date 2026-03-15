@@ -208,15 +208,6 @@ export interface CallbackParticipant {
   callback: ParticipantCallback;
 }
 
-/** Tracked state for a POST-back participant registered via HTTP. */
-interface PostbackParticipant {
-  participantId: string;
-  channelId: string;
-  callbackUrl: string;
-  handle: ParticipantHandle;
-  queue: { enqueue(fn: () => Promise<void>): void };
-}
-
 // ─── Async queue (ordered delivery for POST-back participants) ──────────────
 
 function createPostbackQueue() {
@@ -284,10 +275,12 @@ export class PubSubServer {
   private requestedPort: number | undefined;
   private findPort: PortFinder | undefined;
   private channelEventListeners: Array<(channel: string, event: ChannelBroadcastEvent) => void> = [];
-  /** POST-back participants registered via HTTP, keyed by participantId */
-  private postbackParticipants = new Map<string, PostbackParticipant>();
   /** In-flight async method calls — keyed by callId, abortable via cancel-call */
   private pendingCallAborts = new Map<string, AbortController>();
+  /** Resolves the current workerd port for POST-back URL construction */
+  private getPostbackPort: (() => number | null) | null = null;
+  /** Callback to ensure a DO is reachable (service registered, process alive, bootstrapped) */
+  private ensureDOFn: ((source: string, className: string, objectKey: string) => Promise<void>) | null = null;
 
   constructor(options: PubSubServerOptions) {
     this.tokenValidator = options.tokenValidator;
@@ -324,6 +317,94 @@ export class PubSubServer {
 
     log.verbose(`[PubSub] Server listening on port ${this.port}`);
     return this.port!;
+  }
+
+  /** Set the port resolver for constructing POST-back URLs at delivery time. */
+  setPostbackPortResolver(fn: () => number | null): void {
+    this.getPostbackPort = fn;
+  }
+
+  /** Set the ensureDO callback for ghost cleanup (fire-and-forget DO recovery). */
+  setEnsureDO(fn: (source: string, className: string, objectKey: string) => Promise<void>): void {
+    this.ensureDOFn = fn;
+  }
+
+  /** Resolve the full POST-back URL for a participant ID at delivery time. Returns null if port not yet available. */
+  private resolvePostbackUrl(participantId: string): string | null {
+    const port = this.getPostbackPort?.();
+    if (!port) return null;
+    return `http://127.0.0.1:${port}${participantId}/onChannelEvent`;
+  }
+
+  /** Check if a participant on a channel is a POST-back participant. */
+  private isPostbackParticipant(channelId: string, participantId: string): boolean {
+    const state = this.channels.get(channelId);
+    const cb = state?.callbacks.get(participantId);
+    return cb?.metadata["transport"] === "post";
+  }
+
+  /**
+   * Register a POST-back callback participant — shared by subscribe and ghost cleanup.
+   * When emitPresence is true, a join event is published. When false (ghost recovery),
+   * the participant is silently added to callbacks without a join event.
+   */
+  private registerPostbackCallback(
+    channelId: string,
+    participantId: string,
+    metadata: Record<string, unknown>,
+    emitPresence: boolean,
+  ): void {
+    const queue = createPostbackQueue();
+
+    const onEvent = (event: ChannelBroadcastEvent) => {
+      if (event.senderId === participantId) return;
+      queue.enqueue(async () => {
+        const body = JSON.stringify([channelId, event]);
+
+        // Attempt delivery — resolve URL, POST
+        let url = this.resolvePostbackUrl(participantId);
+        let delivered = false;
+        if (url) {
+          try {
+            await httpPost(url, body);
+            delivered = true;
+          } catch { /* fall through to recovery */ }
+        }
+
+        if (!delivered) {
+          // Port not available or POST failed — ensure the DO is alive, then retry
+          try { await this.ensureDOForParticipant(participantId); } catch { /* best-effort */ }
+          url = this.resolvePostbackUrl(participantId);
+          if (url) {
+            try { await httpPost(url, body); }
+            catch (retryErr) { log.error(`[PubSub] POST-back retry failed for ${participantId}:`, retryErr); }
+          } else {
+            log.error(`[PubSub] POST-back failed for ${participantId}: workerd port still unavailable after ensureDO`);
+          }
+        }
+      });
+    };
+
+    if (emitPresence) {
+      this.registerParticipant(channelId, participantId, metadata, { onEvent });
+    } else {
+      const state = this.getOrCreateChannelState(channelId);
+      state.callbacks.set(participantId, { id: participantId, metadata, callback: { onEvent } });
+    }
+  }
+
+  /**
+   * Parse a participant ID into DO components and call ensureDO.
+   * Participant ID format: /_w/{source0}/{source1}/{className}/{objectKey}
+   */
+  private async ensureDOForParticipant(participantId: string): Promise<void> {
+    const parts = participantId.split("/").filter(Boolean);
+    if (parts.length < 5 || parts[0] !== "_w" || !this.ensureDOFn) return;
+    const source = `${parts[1]}/${parts[2]}`;
+    // Participant IDs have percent-encoded className/objectKey — decode for ensureDO
+    const className = decodeURIComponent(parts[3]!);
+    const objectKey = decodeURIComponent(parts[4]!);
+    await this.ensureDOFn(source, className, objectKey);
   }
 
   private getOrCreateChannelState(channel: string): ChannelState {
@@ -1130,39 +1211,26 @@ export class PubSubServer {
       }
     }
 
-    // Compare against live participants (WS + callback) — anyone in the DB but not connected is a ghost
+    // Compare against live participants (WS + callback)
     const channelState = this.channels.get(channel);
     const liveParticipants = channelState?.participants ?? new Map();
     const liveCallbacks = channelState?.callbacks ?? new Map();
-    let cleanedCount = 0;
 
     for (const [senderId, metadata] of rosterFromDb) {
-      if (!liveParticipants.has(senderId) && !liveCallbacks.has(senderId)) {
-        // Ghost participant — persist a synthetic leave event
-        const ts = Date.now();
-        const payload: PresencePayload = {
-          action: "leave",
-          metadata,
-          leaveReason: "disconnect",
-        };
-        try {
-          this.messageStore.insert(
-            channel,
-            "presence",
-            JSON.stringify(payload),
-            senderId,
-            ts,
-            metadata
-          );
-          cleanedCount++;
-        } catch {
-          // Ignore — best effort cleanup
-        }
-      }
-    }
+      if (liveParticipants.has(senderId) || liveCallbacks.has(senderId)) continue;
 
-    if (cleanedCount > 0) {
-      log.verbose(`Cleaned up ${cleanedCount} ghost participant(s) on channel ${channel}`);
+      if (metadata["transport"] === "post") {
+        // POST-back participant from previous session — set up delivery (no join event).
+        // ensureDO is NOT called eagerly — the first delivery attempt triggers it on failure.
+        this.registerPostbackCallback(channel, senderId, metadata, false);
+      } else {
+        // WebSocket ghost — synthetic leave
+        const ts = Date.now();
+        const payload: PresencePayload = { action: "leave", metadata, leaveReason: "disconnect" };
+        try {
+          this.messageStore.insert(channel, "presence", JSON.stringify(payload), senderId, ts, metadata);
+        } catch { /* best-effort */ }
+      }
     }
   }
 
@@ -1493,60 +1561,28 @@ export class PubSubServer {
    * to the callbackUrl with ordered delivery (async queue per participant).
    */
   private handleSubscribe(res: ServerResponse, channelId: string, body: Record<string, unknown>): void {
-    const { participantId, metadata, callbackUrl } = body as {
-      participantId: string; metadata: Record<string, unknown>; callbackUrl: string;
+    const { participantId, metadata } = body as {
+      participantId: string; metadata: Record<string, unknown>;
     };
-    if (!participantId || !metadata || !callbackUrl) {
-      this.jsonResponse(res, 400, { error: "participantId, metadata, and callbackUrl are required" });
+    if (!participantId || !metadata) {
+      this.jsonResponse(res, 400, { error: "participantId and metadata are required" });
       return;
     }
 
-    // If already subscribed, unsubscribe first
-    const existing = this.postbackParticipants.get(participantId);
-    if (existing) {
-      existing.handle.leave();
-      this.postbackParticipants.delete(participantId);
+    // Idempotent re-subscribe: emit leave for old, then re-register with join
+    const state = this.channels.get(channelId);
+    if (state?.callbacks.has(participantId)) {
+      const old = state.callbacks.get(participantId)!;
+      this.publishPresenceEventForParticipant(channelId, participantId, "leave", old.metadata, "graceful");
+      state.callbacks.delete(participantId);
     }
 
-    const queue = createPostbackQueue();
+    if (metadata["transport"] === "post") {
+      this.registerPostbackCallback(channelId, participantId, metadata, true);
+    } else {
+      this.registerParticipant(channelId, participantId, metadata, { onEvent: () => {} });
+    }
 
-    // Register as a callback participant using the existing mechanism.
-    // The onEvent callback POSTs events to the callbackUrl via the async queue.
-    const handle = this.registerParticipant(channelId, participantId, metadata, {
-      onEvent: (event: ChannelBroadcastEvent) => {
-        // Skip events from this participant (same as existing callback behavior)
-        if (event.senderId === participantId) return;
-
-        queue.enqueue(async () => {
-          log.verbose(`[PubSub] POST-back delivering event to ${participantId} at ${callbackUrl} (type=${event.type}, sender=${event.senderId})`);
-          const postBody = JSON.stringify([channelId, event]);
-          try {
-            await httpPost(callbackUrl, postBody);
-          } catch (err) {
-            // Retry once after a brief delay — transient failures (workerd restart, etc.)
-            log.warn(`[PubSub] POST-back delivery failed for ${participantId}, retrying in 500ms:`, err);
-            await new Promise(r => setTimeout(r, 500));
-            try {
-              await httpPost(callbackUrl, postBody);
-            } catch (retryErr) {
-              log.error(`[PubSub] POST-back delivery failed after retry for ${participantId} -> ${callbackUrl} (event type=${event.type}, id=${event.id}):`, retryErr);
-            }
-          }
-        });
-      },
-    });
-
-    const entry: PostbackParticipant = {
-      participantId,
-      channelId,
-      callbackUrl,
-      handle,
-      queue,
-    };
-    this.postbackParticipants.set(participantId, entry);
-    log.info(`[PubSub] POST-back participant registered: ${participantId} on channel ${channelId} -> ${callbackUrl}`);
-
-    // Return channel config so the subscriber knows the current approval level
     const channelInfo = this.messageStore.getChannel(channelId);
     const channelConfig = channelInfo?.config ?? {};
     this.jsonResponse(res, 200, { ok: true, channelConfig });
@@ -1563,14 +1599,19 @@ export class PubSubServer {
       return;
     }
 
-    const entry = this.postbackParticipants.get(participantId);
-    if (!entry || entry.channelId !== channelId) {
-      this.jsonResponse(res, 404, { error: `POST-back participant ${participantId} not found on channel ${channelId}` });
+    const state = this.channels.get(channelId);
+    const cb = state?.callbacks.get(participantId);
+    if (!cb) {
+      this.jsonResponse(res, 404, { error: `participant ${participantId} not found on channel ${channelId}` });
       return;
     }
 
-    entry.handle.leave();
-    this.postbackParticipants.delete(participantId);
+    this.publishPresenceEventForParticipant(channelId, participantId, "leave", cb.metadata, "graceful");
+    state!.callbacks.delete(participantId);
+    if (state!.clients.size === 0 && state!.callbacks.size === 0) {
+      this.channels.delete(channelId);
+    }
+
     this.jsonResponse(res, 200, { ok: true });
   }
 
@@ -1584,11 +1625,21 @@ export class PubSubServer {
    */
   private handleCallMethod(res: ServerResponse, channelId: string, body: Record<string, unknown>): void {
     const { callerParticipantId, callerCallbackUrl, targetParticipantId, callId, method, args } = body as {
-      callerParticipantId: string; callerCallbackUrl: string;
+      callerParticipantId: string; callerCallbackUrl?: string;
       targetParticipantId: string; callId: string; method: string; args: unknown;
     };
-    if (!callerParticipantId || !callerCallbackUrl || !targetParticipantId || !callId || !method) {
-      this.jsonResponse(res, 400, { error: "callerParticipantId, callerCallbackUrl, targetParticipantId, callId, and method are required" });
+    if (!callerParticipantId || !targetParticipantId || !callId || !method) {
+      this.jsonResponse(res, 400, { error: "callerParticipantId, targetParticipantId, callId, and method are required" });
+      return;
+    }
+
+    // Derive caller result URL: from explicit callerCallbackUrl, or from participant ID
+    const resolvedCallerCallbackUrl = callerCallbackUrl
+      ?? (this.isPostbackParticipant(channelId, callerParticipantId)
+        ? this.resolvePostbackUrl(callerParticipantId)?.replace("/onChannelEvent", "") ?? null
+        : null);
+    if (!resolvedCallerCallbackUrl) {
+      this.jsonResponse(res, 400, { error: "callerCallbackUrl required for non-POST-back callers" });
       return;
     }
 
@@ -1598,7 +1649,7 @@ export class PubSubServer {
     // Track for cancellation, fire async — deliver result via POST-back
     const abort = new AbortController();
     this.pendingCallAborts.set(callId, abort);
-    void this.executeCallMethod(channelId, callerParticipantId, callerCallbackUrl, targetParticipantId, callId, method, args, abort.signal)
+    void this.executeCallMethod(channelId, callerParticipantId, resolvedCallerCallbackUrl, targetParticipantId, callId, method, args, abort.signal)
       .finally(() => this.pendingCallAborts.delete(callId));
   }
 
@@ -1620,11 +1671,14 @@ export class PubSubServer {
     try {
       if (signal.aborted) throw new Error("Call cancelled before execution");
 
-      // Check if target is a POST-back participant
-      const targetPostback = this.postbackParticipants.get(targetParticipantId);
-      if (targetPostback) {
-        // Target is a POST-back participant — POST to its callbackUrl + "/onMethodCall"
-        const methodCallUrl = targetPostback.callbackUrl.replace(/\/$/, "") + "/onMethodCall";
+      // Check if target is a POST-back participant (transport: "post" in metadata)
+      const state = this.channels.get(channelId);
+      const targetCb = state?.callbacks.get(targetParticipantId);
+      if (targetCb?.metadata["transport"] === "post") {
+        // Target is a POST-back participant — derive URL from participant ID
+        const baseUrl = this.resolvePostbackUrl(targetParticipantId);
+        if (!baseUrl) throw new Error("workerd port not available for method call target");
+        const methodCallUrl = baseUrl.replace("/onChannelEvent", "/onMethodCall");
         const methodCallBody = JSON.stringify([channelId, callId, method, args]);
         const response = await httpPost(methodCallUrl, methodCallBody);
         if (signal.aborted) throw new Error("Call cancelled");
@@ -1633,8 +1687,12 @@ export class PubSubServer {
         let result: unknown;
         try { result = JSON.parse(resultBody); } catch { result = resultBody; }
 
-        // POST result back to caller
-        await httpPost(resultUrl, JSON.stringify([callId, result, false]));
+        // POST result back to caller — derive URL from caller's participant ID if POST-back
+        const callerCb = state?.callbacks.get(callerParticipantId);
+        const callerUrl = callerCb?.metadata["transport"] === "post"
+          ? this.resolvePostbackUrl(callerParticipantId)?.replace("/onChannelEvent", "/onCallResult") ?? null
+          : null;
+        await httpPost(callerUrl ?? resultUrl, JSON.stringify([callId, result, false]));
         return;
       }
 
@@ -1730,22 +1788,6 @@ export class PubSubServer {
    * Checks POST-back participants first, then in-process callback participants.
    */
   private findParticipantHandle(channelId: string, participantId: string): ParticipantHandle | null {
-    // Check POST-back participants
-    const postback = this.postbackParticipants.get(participantId);
-    if (postback && postback.channelId === channelId) {
-      return postback.handle;
-    }
-
-    // The caller might also be using an in-process callback participant
-    // registered directly (not through HTTP). We don't have direct access to
-    // those handles here since they're returned to the caller of
-    // registerParticipant(). For channel operations via HTTP, the participant
-    // must have been registered via POST /subscribe (which stores the handle).
-    // If the participant exists but wasn't registered via HTTP, we need to
-    // create a temporary handle-like adapter.
-    //
-    // For now: if the participant exists in channel state, create a direct
-    // handle by re-using the internal broadcast/insert machinery.
     const state = this.channels.get(channelId);
     if (!state) return null;
 
@@ -1830,11 +1872,14 @@ export class PubSubServer {
       },
 
       updateMetadata: (newMetadata: Record<string, unknown>) => {
-        // Update metadata in channel state
+        // Preserve transport from existing metadata — it's a registration-time field
         const state = this.channels.get(channelId);
         if (state) {
           const cb = state.callbacks.get(participantId);
-          if (cb) cb.metadata = newMetadata;
+          if (cb) {
+            if (cb.metadata["transport"]) newMetadata["transport"] = cb.metadata["transport"];
+            cb.metadata = newMetadata;
+          }
           const ws = state.participants.get(participantId);
           if (ws) ws.metadata = newMetadata;
         }
@@ -1962,6 +2007,10 @@ export class PubSubServer {
       },
 
       updateMetadata: (newMetadata: Record<string, unknown>) => {
+        // Preserve transport from existing metadata — it's a registration-time field
+        if (cbEntry.metadata["transport"]) {
+          newMetadata["transport"] = cbEntry.metadata["transport"];
+        }
         cbEntry.metadata = newMetadata;
         this.publishPresenceEventForParticipant(channel, participantId, "update", newMetadata);
       },
@@ -2056,8 +2105,9 @@ export class PubSubServer {
       }
       state.participants.clear();
 
-      // Also persist leave events for callback participants
+      // Also persist leave events for callback participants — skip POST-back participants (they survive restart)
       for (const [cbId, cb] of state.callbacks) {
+        if (cb.metadata["transport"] === "post") continue; // survives restart
         const payload: PresencePayload = {
           action: "leave",
           metadata: cb.metadata,
@@ -2073,9 +2123,6 @@ export class PubSubServer {
       }
       state.callbacks.clear();
     }
-
-    // Clear POST-back participant tracking
-    this.postbackParticipants.clear();
 
     // Now terminate connections and close the store
     if (this.wss) {

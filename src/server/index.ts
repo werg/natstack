@@ -923,6 +923,15 @@ async function main() {
     validateToken: (token) => tokenManager.validateToken(token) != null,
   };
 
+  // Wire PubSub and DODispatch to workerdManager for restart recovery
+  const pubsubServer = container.get<{ server: import("@natstack/pubsub-server").PubSubServer }>("pubsub").server;
+  const workerdManager = container.get<import("./workerdManager.js").WorkerdManager>("workerdManager");
+  const doDispatchInst = container.get<import("./doDispatch.js").DODispatch>("doDispatch");
+
+  pubsubServer.setPostbackPortResolver(() => workerdManager.getPort());
+  pubsubServer.setEnsureDO((source, className, objectKey) => workerdManager.ensureDO(source, className, objectKey));
+  doDispatchInst.setEnsureDO((source, className, objectKey) => workerdManager.ensureDO(source, className, objectKey));
+
   dispatcher.markInitialized();
 
   // Validate that SERVER_SERVICE_NAMES covers all server-side services.

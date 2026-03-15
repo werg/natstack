@@ -73,6 +73,12 @@ export class AiChatWorker extends AgentWorkerBase {
       const contextId = this.getContextId(channelId);
       const config = this.buildHarnessConfig(channelId);
 
+      // Resume from the most recent session on this channel (restart recovery)
+      const resumeSessionId = this.getResumeSessionIdForChannel(channelId);
+      if (resumeSessionId) {
+        config.extraEnv = { ...config.extraEnv, RESUME_SESSION_ID: resumeSessionId };
+      }
+
       // Send bootstrap typing indicator directly
       const bootstrapTypingId = crypto.randomUUID();
       this.sql.exec(
@@ -277,7 +283,6 @@ export class AiChatWorker extends AgentWorkerBase {
         await this.pubsub.callMethod(
           channelId,
           this.getParticipantId(channelId)!,
-          this.callbackBaseUrl,
           panelId,
           callId,
           'request_tool_approval',
@@ -305,7 +310,6 @@ export class AiChatWorker extends AgentWorkerBase {
         await this.pubsub.callMethod(
           channelId,
           this.getParticipantId(channelId)!,
-          this.callbackBaseUrl,
           event.participantId,
           event.callId,
           event.method,

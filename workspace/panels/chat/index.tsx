@@ -6,7 +6,7 @@
  * directly — no cross-context navigation needed.
  */
 
-import { pubsubConfig, id as panelClientId, contextId, rpc, focusPanel, useStateArgs, setStateArgs, buildPanelLink, workers } from "@workspace/runtime";
+import { pubsubConfig, id as panelClientId, contextId, rpc, focusPanel, useStateArgs, setStateArgs, buildPanelLink } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Flex, Spinner, Text, Theme } from "@radix-ui/themes";
@@ -42,33 +42,22 @@ interface ChatStateArgs {
 
 /**
  * Subscribe a DO to a channel via the workers service.
- * Creates the worker instance (if not already running) then calls subscribeChannel.
+ * Ensures the DO is reachable (idempotent) then calls subscribeChannel.
  */
 async function subscribeDOToChannel(
+  source: string,
   className: string,
   objectKey: string,
   channelId: string,
   channelContextId: string,
   config?: Record<string, unknown>,
 ): Promise<{ ok: boolean; participantId?: string }> {
-  // Ensure the DO worker instance exists
-  await workers.create({
-    source: DEFAULT_WORKER_SOURCE,
-    contextId: channelContextId,
-    limits: { cpuMs: 30_000 },
-    name: objectKey,
-    stateArgs: config,
-    durable: { className, objectKey },
-  }).catch(() => {
-    // Instance may already exist — that's fine
-  });
-
-  // Subscribe the DO to the channel (callDO now takes source as first arg).
-  // subscribeChannel expects a single opts object, not positional args.
+  // callDO dispatches via DODispatch which internally ensures the DO is alive
+  // on failure (ensureDO + retry). No eager setup needed.
   return rpc.call<{ ok: boolean; participantId?: string }>(
     "main",
     "workers.callDO",
-    DEFAULT_WORKER_SOURCE,
+    source,
     className,
     objectKey,
     "subscribeChannel",
@@ -106,10 +95,10 @@ export default function ChatPanel() {
     const pending = [{ agentId: DEFAULT_CLASS_NAME, handle: DEFAULT_HANDLE }];
 
     // Persist channel name to stateArgs so reloads reconnect to the same channel
-    void setStateArgs({ channelName, pendingAgents: pending });
+    void setStateArgs({ channelName });
 
     // Subscribe default DO agent — fire-and-forget, AgenticChat handles pending display
-    subscribeDOToChannel(DEFAULT_CLASS_NAME, objectKey, channelName, contextId).catch((err: unknown) => {
+    subscribeDOToChannel(DEFAULT_WORKER_SOURCE, DEFAULT_CLASS_NAME, objectKey, channelName, contextId).catch((err: unknown) => {
       console.warn(`[ChatPanel] Failed to subscribe default agent DO:`, err);
     });
 
@@ -167,6 +156,7 @@ export default function ChatPanel() {
     const handle = `${baseHandle}-${crypto.randomUUID().slice(0, 4)}`;
     const objectKey = `${handle}-${crypto.randomUUID().slice(0, 8)}`;
     await subscribeDOToChannel(
+      agent?.id ?? DEFAULT_WORKER_SOURCE,
       className,
       objectKey,
       channelName,

@@ -19,6 +19,8 @@ let server: PubSubServer;
 let store: InMemoryMessageStore;
 let port: number;
 let baseUrl: string;
+/** Port of the current callback server — used by the port resolver for POST-back URL construction */
+let callbackPort: number | null = null;
 const token = "test-token-123";
 
 /** Tiny HTTP servers used as POST-back callback targets. */
@@ -36,6 +38,10 @@ beforeEach(async () => {
   });
   port = await server.start();
   baseUrl = `http://127.0.0.1:${port}`;
+
+  // Wire up a port resolver for POST-back delivery.
+  // callbackPort is set by tests that create callback servers.
+  server.setPostbackPortResolver(() => callbackPort);
 });
 
 afterEach(async () => {
@@ -47,6 +53,7 @@ afterEach(async () => {
     )
   );
   callbackServers.length = 0;
+  callbackPort = null;
 });
 
 async function post(path: string, body: unknown) {
@@ -98,7 +105,7 @@ function startCallbackServer(): Promise<{
         }
         received.push({ path: req.url || "/", body });
 
-        if (req.url === "/onMethodCall" && methodCallHandler) {
+        if ((req.url || "").endsWith("/onMethodCall") && methodCallHandler) {
           const result = methodCallHandler(body);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(result));
@@ -340,12 +347,12 @@ describe("HTTP API roster", () => {
 describe("HTTP API subscribe and event delivery", () => {
   it("POST /channel/{id}/subscribe registers a POST-back participant", async () => {
     const cb = await startCallbackServer();
+    callbackPort = cb.port;
     const channelId = "sub-ch";
 
     const res = await post(`/channel/${channelId}/subscribe`, {
       participantId: "postback-1",
-      metadata: { kind: "test" },
-      callbackUrl: cb.url,
+      metadata: { kind: "test", transport: "post" },
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean };
@@ -359,13 +366,15 @@ describe("HTTP API subscribe and event delivery", () => {
 
   it("events are delivered via HTTP POST to callbackUrl", async () => {
     const cb = await startCallbackServer();
+    callbackPort = cb.port;
     const channelId = "delivery-ch";
+    // Participant ID is a route path — callback server receives at this path
+    const listenerId = "/_w/test/worker/Listener/inst1";
 
-    // Subscribe the callback target
+    // Subscribe the callback target (transport: "post" triggers POST-back delivery)
     await post(`/channel/${channelId}/subscribe`, {
-      participantId: "listener",
-      metadata: { kind: "listener" },
-      callbackUrl: cb.url,
+      participantId: listenerId,
+      metadata: { kind: "listener", transport: "post" },
     });
 
     // Register a second participant that will send a message
@@ -400,13 +409,13 @@ describe("HTTP API subscribe and event delivery", () => {
 
   it("events from self are NOT delivered to own callbackUrl", async () => {
     const cb = await startCallbackServer();
+    callbackPort = cb.port;
     const channelId = "self-skip-ch";
 
     // Subscribe
     await post(`/channel/${channelId}/subscribe`, {
       participantId: "self-poster",
-      metadata: { kind: "test" },
-      callbackUrl: cb.url,
+      metadata: { kind: "test", transport: "post" },
     });
 
     // Send via HTTP using the subscribed participant's own ID
@@ -437,11 +446,12 @@ describe("HTTP API unsubscribe", () => {
     const cb = await startCallbackServer();
     const channelId = "unsub-ch";
 
+    callbackPort = cb.port;
+
     // Subscribe first
     await post(`/channel/${channelId}/subscribe`, {
       participantId: "temp-sub",
-      metadata: { kind: "temp" },
-      callbackUrl: cb.url,
+      metadata: { kind: "temp", transport: "post" },
     });
 
     // Unsubscribe
@@ -506,8 +516,12 @@ describe("HTTP API cancel-call", () => {
 describe("HTTP API call-method (POST-back to POST-back)", () => {
   it("call-method with POST-back target: posts to target, delivers result to caller", async () => {
     const channelId = "method-ch";
-    const callerCb = await startCallbackServer();
     const targetCb = await startCallbackServer();
+
+    // For this test, both caller and target are POST-back participants
+    // that route to the same callback server (different participant IDs).
+    // The port resolver returns the target's port for URL construction.
+    callbackPort = targetCb.port;
 
     // Target returns a result from /onMethodCall
     targetCb.setMethodCallHandler((body) => {
@@ -516,23 +530,24 @@ describe("HTTP API call-method (POST-back to POST-back)", () => {
       return { computed: `${method}(${JSON.stringify(args)})` };
     });
 
-    // Subscribe both as POST-back participants
+    // Subscribe both as POST-back participants (both route to same callback server)
+    // Participant IDs must start with / (they're route paths in the real system)
+    const callerId = "/_w/test/worker/Caller/inst1";
+    const targetId = "/_w/test/worker/Target/inst1";
+
     await post(`/channel/${channelId}/subscribe`, {
-      participantId: "caller-p",
-      metadata: { role: "caller" },
-      callbackUrl: callerCb.url,
+      participantId: callerId,
+      metadata: { role: "caller", transport: "post" },
     });
     await post(`/channel/${channelId}/subscribe`, {
-      participantId: "target-p",
-      metadata: { role: "target" },
-      callbackUrl: targetCb.url,
+      participantId: targetId,
+      metadata: { role: "target", transport: "post" },
     });
 
-    // Initiate the method call
+    // Initiate the method call (callerCallbackUrl is now derived from participant ID)
     const res = await post(`/channel/${channelId}/call-method`, {
-      callerParticipantId: "caller-p",
-      callerCallbackUrl: callerCb.url,
-      targetParticipantId: "target-p",
+      callerParticipantId: callerId,
+      targetParticipantId: targetId,
       callId: "call-001",
       method: "doSomething",
       args: { x: 42 },
@@ -542,9 +557,9 @@ describe("HTTP API call-method (POST-back to POST-back)", () => {
     expect(body.ok).toBe(true);
     expect(body.callId).toBe("call-001");
 
-    // Wait for the target to receive /onMethodCall
-    await targetCb.waitForRequests(1);
-    const methodCallReq = targetCb.received.find((r) => r.path === "/onMethodCall");
+    // Wait for the target to receive /onMethodCall (presence events may arrive first)
+    await new Promise((r) => setTimeout(r, 500));
+    const methodCallReq = targetCb.received.find((r) => (r.path || "").endsWith("/onMethodCall"));
     expect(methodCallReq).toBeDefined();
     const [mcChannel, mcCallId, mcMethod, mcArgs] = methodCallReq!.body as [string, string, string, unknown];
     expect(mcChannel).toBe(channelId);
@@ -553,12 +568,10 @@ describe("HTTP API call-method (POST-back to POST-back)", () => {
     expect(mcArgs).toEqual({ x: 42 });
 
     // Wait for the caller to receive /onCallResult
-    // The caller may also receive presence events on /, so filter for /onCallResult
-    await callerCb.waitForRequests(1);
-    // Give a bit more time for the result POST to arrive
-    await new Promise((r) => setTimeout(r, 200));
+    // Give time for the result POST to arrive
+    await new Promise((r) => setTimeout(r, 500));
 
-    const callResultReq = callerCb.received.find((r) => r.path === "/onCallResult");
+    const callResultReq = targetCb.received.find((r) => (r.path || "").endsWith("/onCallResult"));
     expect(callResultReq).toBeDefined();
     const [crCallId, crResult, crIsError] = callResultReq!.body as [string, unknown, boolean];
     expect(crCallId).toBe("call-001");
@@ -569,7 +582,7 @@ describe("HTTP API call-method (POST-back to POST-back)", () => {
   it("call-method missing required fields returns 400", async () => {
     const res = await post(`/channel/ch/call-method`, {
       callerParticipantId: "caller",
-      // missing callerCallbackUrl, targetParticipantId, callId, method
+      // missing targetParticipantId, callId, method
     });
     expect(res.status).toBe(400);
   });
@@ -632,7 +645,7 @@ describe("HTTP API error cases", () => {
   it("subscribe with missing fields returns 400", async () => {
     const res = await post(`/channel/some-ch/subscribe`, {
       participantId: "p1",
-      // missing metadata and callbackUrl
+      // missing metadata
     });
     expect(res.status).toBe(400);
   });

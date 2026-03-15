@@ -52,6 +52,7 @@ export type HttpDispatcher = (
 
 export class DODispatch {
   private dispatcher: HttpDispatcher | null = null;
+  private ensureDOFn: ((source: string, className: string, objectKey: string) => Promise<void>) | null = null;
 
   /**
    * Set the HTTP dispatcher function used by dispatch().
@@ -62,14 +63,37 @@ export class DODispatch {
   }
 
   /**
+   * Set the ensureDO callback for retry-on-failure.
+   * When a dispatch fails with a retryable error, ensureDO is called to
+   * re-register the service and restart workerd before retrying.
+   */
+  setEnsureDO(fn: (source: string, className: string, objectKey: string) => Promise<void>): void {
+    this.ensureDOFn = fn;
+  }
+
+  /**
    * Dispatch a method call to a DO via HTTP POST.
    * Returns the parsed JSON response (type depends on the DO method).
+   * On retryable errors (DO class not found, ECONNREFUSED), calls ensureDO and retries once.
    */
   async dispatch(ref: DORef, method: string, ...args: unknown[]): Promise<unknown> {
     if (!this.dispatcher) {
       throw new Error("DODispatch: no dispatcher configured");
     }
     const urlPath = doRefUrl(ref, method);
-    return this.dispatcher(urlPath, args);
+    try {
+      return await this.dispatcher(urlPath, args);
+    } catch (err) {
+      if (this.ensureDOFn && this.isRetryable(err)) {
+        await this.ensureDOFn(ref.source, ref.className, ref.objectKey);
+        return await this.dispatcher(urlPath, args);
+      }
+      throw err;
+    }
+  }
+
+  private isRetryable(err: unknown): boolean {
+    const msg = String(err);
+    return msg.includes("DO class not found") || msg.includes("ECONNREFUSED");
   }
 }

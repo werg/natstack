@@ -10,6 +10,7 @@
  */
 
 import { spawn, type ChildProcess } from "child_process";
+import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -49,13 +50,6 @@ export interface WorkerCreateOptions {
   /** Build at a specific git ref (branch, tag, or commit SHA).
    *  Use a commit SHA for immutable pinning (content-addressed cache guarantees same build). */
   ref?: string;
-  /** When present, creates a Durable Object instance instead of a regular worker. */
-  durable?: {
-    /** DO class name (must match the worker source's exported class). */
-    className: string;
-    /** Stable instance identifier — maps to workerd's idFromName(objectKey). */
-    objectKey: string;
-  };
 }
 
 export interface WorkerInstance {
@@ -99,11 +93,11 @@ export class WorkerdManager {
   private deps: WorkerdManagerDeps;
   private workerdBinary: string | null = null;
 
-  // DO support: shared services (one per source) and individual DO instances
+  // DO support: shared services (one per source)
   /** Shared DO services — keyed by `${source}:${className}`. Source-scoped: two workers CAN have same className if different source. */
   private doServices = new Map<string, { buildKey: string; className: string; serviceName: string; source: string }>();
-  /** Individual DO instances — keyed by `${source}:${className}/${objectKey}`. */
-  private doInstances = new Map<string, { source: string; objectKey: string; contextId: string; className: string }>();
+  /** Session ID — generated once per WorkerdManager lifetime, used for restart detection in bootstrap. */
+  private sessionId = crypto.randomUUID();
 
   constructor(deps: WorkerdManagerDeps) {
     this.deps = deps;
@@ -141,9 +135,6 @@ export class WorkerdManager {
   // =========================================================================
 
   async createInstance(options: WorkerCreateOptions): Promise<WorkerInstance> {
-    if (options.durable) {
-      return this.createDurableInstance(options, options.durable);
-    }
     return this.createRegularInstance(options);
   }
 
@@ -207,115 +198,6 @@ export class WorkerdManager {
     return instance;
   }
 
-  // ── Durable Object instance creation ──
-
-  private async createDurableInstance(
-    options: WorkerCreateOptions,
-    durable: { className: string; objectKey: string },
-  ): Promise<WorkerInstance> {
-    const { className, objectKey } = durable;
-
-    // Source paths must be exactly 2 segments (e.g., "workers/agent-worker").
-    // The /_w/ URL scheme and generated workerd router parse deterministically
-    // based on this: segments[0]+segments[1]=source, segment[2]=className.
-    const sourceSegments = options.source.split("/").filter(Boolean);
-    if (sourceSegments.length !== 2) {
-      throw new Error(
-        `DO source path must be exactly 2 segments (e.g., "workers/my-worker"), ` +
-        `got ${sourceSegments.length} segment(s): "${options.source}"`,
-      );
-    }
-
-    const serviceKey = `${options.source}:${className}`;
-    const doKey = `${options.source}:${className}/${objectKey}`;
-
-    // Source-scoped: two workers CAN have same className if different source
-    const existingService = this.doServices.get(serviceKey);
-
-    if (this.doInstances.has(doKey)) {
-      throw new Error(`DO instance "${doKey}" already exists`);
-    }
-
-    // Use source + className as the service name in workerd config (sanitized)
-    const sourceSanitized = options.source.replace(/[^a-zA-Z0-9_]/g, "_");
-    const serviceName = `do_${sourceSanitized}_${className.replace(/[^a-zA-Z0-9_]/g, "_")}`;
-    // Instance name for the WorkerInstance map — unique per DO instance
-    const name = `do_${sourceSanitized}_${className}_${objectKey}`.replace(/[^a-zA-Z0-9_-]/g, "_");
-
-    const callerId = `worker:${name}`;
-    const contextId = options.contextId;
-
-    // Create auth token
-    const token = this.deps.tokenManager.ensureToken(callerId, "worker");
-
-    // Register context with FsService
-    this.deps.fsService.registerCallerContext(callerId, contextId);
-
-    const instance: WorkerInstance = {
-      name,
-      source: options.source,
-      contextId,
-      callerId,
-      token,
-      env: options.env ?? {},
-      bindings: options.bindings ?? {},
-      stateArgs: options.stateArgs,
-      limits: options.limits,
-      ref: options.ref,
-      status: "building",
-    };
-
-    let needsRestart = false;
-
-    try {
-      // If no shared service exists for this source:className, build the source and create one
-      if (!existingService) {
-        const buildResult = await this.deps.getBuild(options.source, options.ref);
-        this.doServices.set(serviceKey, {
-          buildKey: buildResult.metadata.ev,
-          className,
-          serviceName,
-          source: options.source,
-        });
-        needsRestart = true;
-      }
-
-      // Register the DO instance
-      this.doInstances.set(doKey, { source: options.source, objectKey, contextId, className });
-
-      // Track as a regular instance too (for lifecycle, listing, etc.)
-      this.instances.set(name, instance);
-
-      instance.status = "starting";
-
-      // Only restart workerd if a new service was created (not for each new DO instance)
-      if (needsRestart) {
-        await this.restartWorkerd();
-      }
-
-      instance.status = "running";
-      log.info(`DO instance "${className}/${objectKey}" started (source: ${options.source})`);
-
-      // Bootstrap the DO with its identity (doRef + callbackBaseUrl)
-      // This is a direct HTTP POST, not via DODispatch (avoids circular dependency)
-      await this.bootstrapDO(options.source, className, objectKey);
-    } catch (error) {
-      instance.status = "error";
-      this.instances.delete(name);
-      this.doInstances.delete(doKey);
-      // Roll back service registration if we just created it
-      if (needsRestart && !existingService) {
-        this.doServices.delete(serviceKey);
-      }
-      this.deps.tokenManager.revokeToken(callerId);
-      this.deps.fsService.unregisterCallerContext(callerId);
-      log.error(`Failed to start DO instance "${className}/${objectKey}":`, error);
-      throw error;
-    }
-
-    return instance;
-  }
-
   async destroyInstance(name: string): Promise<void> {
     const instance = this.instances.get(name);
     if (!instance) {
@@ -330,36 +212,9 @@ export class WorkerdManager {
 
     instance.status = "stopped";
 
-    // Clean up DO tracking if this was a DO instance
-    let doServiceRemoved = false;
-    for (const [doKey, doInst] of this.doInstances) {
-      // Match by finding the DO instance whose generated name matches
-      const srcSan = doInst.source.replace(/[^a-zA-Z0-9_]/g, "_");
-      const expectedName = `do_${srcSan}_${doInst.className}_${doInst.objectKey}`.replace(/[^a-zA-Z0-9_-]/g, "_");
-      if (expectedName === name) {
-        this.doInstances.delete(doKey);
-        // If no more DO instances reference this source:className, remove the shared service + token
-        const hasOtherInstances = Array.from(this.doInstances.values()).some(
-          (d) => d.className === doInst.className && d.source === doInst.source,
-        );
-        if (!hasOtherInstances) {
-          // Find and remove the source-scoped service key + revoke service token
-          const serviceKey = `${doInst.source}:${doInst.className}`;
-          this.doServices.delete(serviceKey);
-          this.deps.tokenManager.revokeToken(`do-service:${serviceKey}`);
-          doServiceRemoved = true;
-        }
-        break;
-      }
-    }
-
-    // Restart workerd if there are remaining instances (or if a DO service was removed)
-    if (this.instances.size > 0) {
-      // Only restart if this was a regular worker or a DO service was removed
-      // (removing a DO instance without removing its service doesn't need a restart)
-      if (doServiceRemoved || !name.startsWith("do_")) {
-        await this.restartWorkerd();
-      }
+    // Restart workerd if there are remaining instances or DO services
+    if (this.instances.size > 0 || this.doServices.size > 0) {
+      await this.restartWorkerd();
     } else {
       this.stopWorkerd();
     }
@@ -477,9 +332,6 @@ export class WorkerdManager {
 
     // ── Regular (non-durable) worker services ──
     for (const [name, instance] of this.instances) {
-      // Skip DO instances — their services are already emitted above
-      if (this.isDurableInstance(name)) continue;
-
       // Get the build for this instance (content-addressed — ref builds are cached).
       let bundleContent: string;
       try {
@@ -603,16 +455,6 @@ export class WorkerdManager {
           }]
         : [],
     };
-  }
-
-  /** Returns true if the instance name belongs to a DO instance. */
-  private isDurableInstance(name: string): boolean {
-    for (const doInst of this.doInstances.values()) {
-      const srcSan = doInst.source.replace(/[^a-zA-Z0-9_]/g, "_");
-      const expectedName = `do_${srcSan}_${doInst.className}_${doInst.objectKey}`.replace(/[^a-zA-Z0-9_-]/g, "_");
-      if (expectedName === name) return true;
-    }
-    return false;
   }
 
   private generateRouterCode(
@@ -739,7 +581,7 @@ ${doBlock}${cases.join("\n")}
   private async restartWorkerd(): Promise<void> {
     this.stopWorkerd();
 
-    if (this.instances.size === 0) return;
+    if (this.instances.size === 0 && this.doServices.size === 0) return;
 
     const config = await this.generateConfig();
     const configPath = path.join(this.configDir, "config.capnp");
@@ -827,9 +669,42 @@ ${doBlock}${cases.join("\n")}
   }
 
   /**
-   * Bootstrap a DO with its identity. Called directly after instance creation.
-   * The DO stores doRef + callbackBaseUrl in SQLite for future use.
-   * Throws on failure — the caller rolls back the instance creation.
+   * Ensure a Durable Object is reachable: service registered, process alive, identity bootstrapped.
+   * Idempotent — always safe to call. The single codepath for making a DO available.
+   */
+  async ensureDO(source: string, className: string, objectKey: string): Promise<void> {
+    // Ensure service class is registered (idempotent)
+    const serviceKey = `${source}:${className}`;
+    if (!this.doServices.has(serviceKey)) {
+      const sourceSegments = source.split("/").filter(Boolean);
+      if (sourceSegments.length !== 2) {
+        throw new Error(`DO source path must be exactly 2 segments, got: "${source}"`);
+      }
+      const buildResult = await this.deps.getBuild(source);
+      const sourceSanitized = source.replace(/[^a-zA-Z0-9_]/g, "_");
+      const serviceName = `do_${sourceSanitized}_${className.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+      this.doServices.set(serviceKey, {
+        buildKey: buildResult.metadata.ev,
+        className,
+        serviceName,
+        source,
+      });
+      await this.restartWorkerd();
+    }
+
+    // Ensure workerd process is alive (may have crashed since service was registered)
+    if (!this.process || this.process.exitCode !== null) {
+      await this.restartWorkerd();
+    }
+
+    // Bootstrap identity (idempotent — same sessionId = no-op for cleanup)
+    await this.bootstrapDO(source, className, objectKey);
+  }
+
+  /**
+   * Bootstrap a DO with its identity. Called by ensureDO after service registration.
+   * The DO stores doRef + sessionId in SQLite for restart detection.
+   * Same sessionId = no cleanup (idempotent). Different sessionId = restart detected.
    */
   private async bootstrapDO(source: string, className: string, objectKey: string): Promise<void> {
     if (!this.port) {
@@ -837,13 +712,12 @@ ${doBlock}${cases.join("\n")}
     }
 
     const doRef = { source, className, objectKey };
-    const callbackBaseUrl = `http://127.0.0.1:${this.port}/_w/${source}/${encodeURIComponent(className)}/${encodeURIComponent(objectKey)}`;
-
-    const url = `${callbackBaseUrl}/bootstrap`;
+    const basePath = `/_w/${source}/${encodeURIComponent(className)}/${encodeURIComponent(objectKey)}`;
+    const url = `http://127.0.0.1:${this.port}${basePath}/bootstrap`;
     const resp = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify([doRef, callbackBaseUrl]),
+      body: JSON.stringify([doRef, this.sessionId]),
     });
     if (!resp.ok) {
       const body = await resp.text();
@@ -871,7 +745,6 @@ ${doBlock}${cases.join("\n")}
       this.deps.tokenManager.revokeToken(`do-service:${serviceKey}`);
     }
     this.doServices.clear();
-    this.doInstances.clear();
 
     // Clean up config dir
     try {
@@ -902,13 +775,6 @@ ${doBlock}${cases.join("\n")}
     for (const [_serviceKey, doService] of this.doServices) {
       if (doService.source === source) {
         needsRestart = true;
-        // Mark all DO instances of this class as starting
-        const srcSan = doService.source.replace(/[^a-zA-Z0-9_]/g, "_");
-        for (const instance of this.instances.values()) {
-          if (instance.name.startsWith(`do_${srcSan}_${doService.className}_`) && !instance.ref) {
-            instance.status = "starting";
-          }
-        }
       }
     }
 
