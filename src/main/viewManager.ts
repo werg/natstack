@@ -101,6 +101,8 @@ export class ViewManager {
   };
   /** ID of the currently visible panel (to apply bounds updates) */
   private visiblePanelId: string | null = null;
+  /** Whether a shell overlay (dialog) is active — panel views are hidden while true */
+  private shellOverlayActive = false;
 
   // View protection state
   private protectedViewIds = new Set<string>();
@@ -431,7 +433,6 @@ export class ViewManager {
     }
 
     managed.visible = visible;
-    managed.view.setVisible(visible);
 
     // Track visible panel and apply calculated bounds
     if (visible && managed.type !== "shell") {
@@ -439,13 +440,48 @@ export class ViewManager {
       const bounds = this.calculatePanelBounds();
       managed.bounds = bounds;
       managed.view.setBounds(bounds);
-      this.bringToFront(id);
-    } else if (!visible && this.visiblePanelId === id) {
-      this.visiblePanelId = null;
-      // Notify listeners (e.g., autofill overlay dismissal)
-      for (const cb of this.viewHiddenCallbacks) {
-        cb(id);
+
+      // If shell overlay is active, keep tracking but don't actually show
+      if (this.shellOverlayActive) {
+        managed.view.setVisible(false);
+      } else {
+        managed.view.setVisible(true);
+        this.bringToFront(id);
       }
+    } else {
+      managed.view.setVisible(visible);
+      if (!visible && this.visiblePanelId === id) {
+        this.visiblePanelId = null;
+        // Notify listeners (e.g., autofill overlay dismissal)
+        for (const cb of this.viewHiddenCallbacks) {
+          cb(id);
+        }
+      }
+    }
+  }
+
+  /**
+   * Toggle shell overlay mode. When active, the visible panel is hidden so
+   * shell-rendered dialogs (workspace chooser, wizard, etc.) are not obscured
+   * by the native-layer panel WebContentsView. When deactivated, the panel
+   * is re-shown at its previous bounds.
+   */
+  setShellOverlayActive(active: boolean): void {
+    if (this.shellOverlayActive === active) return;
+    this.shellOverlayActive = active;
+
+    if (!this.visiblePanelId) return;
+    const managed = this.views.get(this.visiblePanelId);
+    if (!managed) return;
+
+    if (active) {
+      // Hide the panel view so the shell dialog shows through
+      managed.view.setVisible(false);
+    } else {
+      // Re-show the panel and restore z-order
+      managed.view.setVisible(true);
+      managed.view.setBounds(managed.bounds);
+      this.bringToFront(this.visiblePanelId);
     }
   }
 

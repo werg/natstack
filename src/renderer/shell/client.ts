@@ -109,6 +109,8 @@ export const view = {
   setThemeCss: (css: string) => rpc.call<void>("main", "view.setThemeCss", css),
   updateLayout: (layout: { titleBarHeight?: number; sidebarVisible?: boolean; sidebarWidth?: number; saveBarHeight?: number }) =>
     rpc.call<void>("main", "view.updateLayout", layout),
+  setShellOverlay: (active: boolean) =>
+    rpc.call<void>("main", "view.setShellOverlay", active),
   browserNavigate: (browserId: string, url: string) =>
     rpc.call<void>("main", "view.browserNavigate", browserId, url),
   browserGoBack: (browserId: string) => rpc.call<void>("main", "view.browserGoBack", browserId),

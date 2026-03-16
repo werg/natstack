@@ -26,6 +26,7 @@ import { createRpcBridge, type RpcBridge } from "@natstack/rpc";
 import { createDbClient } from "../shared/database.js";
 import { createRpcFs } from "../shared/rpcFs.js";
 import { createWorkerdClient, type WorkerdClient } from "../shared/workerd.js";
+import { createWorkspaceClient, type WorkspaceClient } from "../shared/workspace.js";
 import { createWorkerWsTransport } from "./transport.js";
 import type { WorkerEnv } from "./types.js";
 import type { RuntimeFs, ThemeAppearance } from "../types.js";
@@ -49,6 +50,7 @@ export interface WorkerRuntime {
   readonly db: ReturnType<typeof createDbClient>;
   readonly fs: RuntimeFs;
   readonly workers: WorkerdClient;
+  readonly workspace: WorkspaceClient;
   readonly contextId: string;
   readonly gitConfig: null;
   readonly pubsubConfig: null;
@@ -91,6 +93,7 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
   const fs = createRpcFs(rpc);
   const db = createDbClient(rpc);
   const workers = createWorkerdClient(rpc);
+  const workspaceApi = createWorkspaceClient(rpc);
 
   const callMain = <T>(method: string, ...args: unknown[]) =>
     rpc.call<T>("main", method, ...args);
@@ -116,6 +119,7 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     db,
     fs,
     workers,
+    workspace: workspaceApi,
     contextId: env.CONTEXT_ID,
     gitConfig: null,
     pubsubConfig: null,

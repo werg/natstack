@@ -81,3 +81,9 @@ export type { BrowserHandle } from "./browser.js";
 import { createAdBlockApi } from "./adblock.js";
 export type { AdBlockStats, AdBlockApi } from "./adblock.js";
 export const adblock = createAdBlockApi(rpc);
+
+// Workspace management
+import { createWorkspaceClient } from "../shared/workspace.js";
+export type { WorkspaceClient, WorkspaceEntry, WorkspaceConfig } from "../shared/workspace.js";
+const workspaceClient = createWorkspaceClient(rpc);
+export { workspaceClient as workspace };

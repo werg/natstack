@@ -238,6 +238,11 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
     devTools: false,
   });
 
+  // Set native window title for OS taskbar / window switcher (Alt+Tab / dock)
+  if (workspace) {
+    mainWindow.setTitle(`NatStack — ${workspace.config.id}`);
+  }
+
   mainWindow.on("closed", () => {
     mainWindow = null;
     viewManager = null;
@@ -553,7 +558,16 @@ app.on("ready", async () => {
     electronContainer.register(rpcService(createMenuService({
       panelLifecycle, panelRegistry, getViewManager, serverClient,
     })));
-    electronContainer.register(rpcService(createWorkspaceService({ centralData, activeWorkspaceName: workspace!.config.id })));
+    // Workspace config manager for atomic config reads/writes
+    const { createWorkspaceConfigManager } = await import("./workspaceOps.js");
+    const wsConfigPath = path.join(workspace!.path, "natstack.yml");
+    const wsConfigManager = createWorkspaceConfigManager(wsConfigPath, workspace!.config);
+    electronContainer.register(rpcService(createWorkspaceService({
+      centralData,
+      activeWorkspaceName: workspace!.config.id,
+      getWorkspaceConfig: wsConfigManager.get,
+      setWorkspaceConfigField: wsConfigManager.set,
+    })));
     electronContainer.register(rpcService(createSettingsService({ serverClient })));
     electronContainer.register(rpcService(createAdblockService({ adBlockManager })));
 

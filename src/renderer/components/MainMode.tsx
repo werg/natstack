@@ -1,7 +1,10 @@
+import { useEffect } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { Dialog } from "@radix-ui/themes";
 
-import { workspaceChooserDialogOpenAtom } from "../state/appModeAtoms";
+import { workspaceChooserDialogOpenAtom, shellOverlayActiveAtom } from "../state/appModeAtoms";
+import { view } from "../shell/client";
+import { useShellOverlay } from "../shell/useShellOverlay";
 import { PanelApp } from "./PanelApp";
 import { WorkspaceChooser } from "./WorkspaceChooser";
 import { WorkspaceWizard } from "./WorkspaceWizard";
@@ -14,6 +17,15 @@ import { WorkspaceWizard } from "./WorkspaceWizard";
 export default function MainMode() {
   const workspaceChooserOpen = useAtomValue(workspaceChooserDialogOpenAtom);
   const setWorkspaceChooserOpen = useSetAtom(workspaceChooserDialogOpenAtom);
+  const shellOverlayActive = useAtomValue(shellOverlayActiveAtom);
+
+  // Register shell overlays — hides panel views so dialogs aren't obscured
+  useShellOverlay(workspaceChooserOpen);
+
+  // Sync overlay state to main process
+  useEffect(() => {
+    void view.setShellOverlay(shellOverlayActive);
+  }, [shellOverlayActive]);
 
   return (
     <>

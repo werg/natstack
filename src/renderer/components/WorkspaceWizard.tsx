@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { Box, Button, Callout, Dialog, Flex, Select, Spinner, Text, TextField } from "@radix-ui/themes";
 import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
@@ -12,9 +13,11 @@ import {
   recentWorkspacesAtom,
   activeWorkspaceNameAtom,
 } from "../state/appModeAtoms";
+import { useShellOverlay } from "../shell/useShellOverlay";
 
 export function WorkspaceWizard() {
   const isOpen = useAtomValue(wizardDialogOpenAtom);
+  useShellOverlay(isOpen);
   const formData = useAtomValue(wizardFormDataAtom);
   const isCreating = useAtomValue(wizardCreatingAtom);
   const error = useAtomValue(wizardErrorAtom);
@@ -26,6 +29,15 @@ export function WorkspaceWizard() {
   const resetWizard = useSetAtom(resetWizardAtom);
   const createWorkspace = useSetAtom(createWorkspaceAtom);
 
+  const nameError = useMemo(() => {
+    const name = formData.workspaceName;
+    if (!name) return null;
+    if (name.length > 64) return "Name too long (max 64 characters)";
+    if (/\s/.test(name)) return "Spaces are not allowed — use hyphens instead";
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) return "Only letters, numbers, hyphens, and underscores";
+    return null;
+  }, [formData.workspaceName]);
+
   const handleClose = () => {
     setIsOpen(false);
     resetWizard();
@@ -35,15 +47,12 @@ export function WorkspaceWizard() {
     await createWorkspace();
   };
 
-  // Determine source mode: fork takes precedence over gitUrl
-  const sourceMode = formData.forkFrom ? "fork" : formData.gitUrl ? "git" : "blank";
-
   return (
     <Dialog.Root open={isOpen} onOpenChange={(open) => !open && handleClose()}>
       <Dialog.Content maxWidth="450px">
         <Dialog.Title>Create New Workspace</Dialog.Title>
         <Dialog.Description size="2" color="gray" mb="4">
-          Give your workspace a name and optionally fork from an existing one or clone a git template.
+          Create a new workspace. Fork from an existing workspace to copy its panels and packages, or start with an empty workspace.
         </Dialog.Description>
 
         <Flex direction="column" gap="4">
@@ -57,8 +66,8 @@ export function WorkspaceWizard() {
               placeholder="my-workspace"
               autoFocus
             />
-            <Text size="1" color="gray">
-              Letters, numbers, hyphens, and underscores only.
+            <Text size="1" color={nameError ? "red" : "gray"}>
+              {nameError ?? "Letters, numbers, hyphens, and underscores only."}
             </Text>
           </Flex>
 
@@ -74,9 +83,9 @@ export function WorkspaceWizard() {
                   setFormData({ ...formData, forkFrom: value === "__none__" ? "" : value, gitUrl: value !== "__none__" ? "" : formData.gitUrl })
                 }
               >
-                <Select.Trigger placeholder="Start from scratch" />
+                <Select.Trigger placeholder="Empty workspace (no panels)" />
                 <Select.Content>
-                  <Select.Item value="__none__">Start from scratch</Select.Item>
+                  <Select.Item value="__none__">Empty workspace (no panels)</Select.Item>
                   {workspaces.map((ws) => (
                     <Select.Item key={ws.name} value={ws.name}>
                       {ws.name}{ws.name === activeWorkspaceName ? " (current)" : ""}
@@ -138,7 +147,7 @@ export function WorkspaceWizard() {
 
           <Button
             onClick={handleCreate}
-            disabled={isCreating || !formData.workspaceName}
+            disabled={isCreating || !formData.workspaceName || !!nameError}
             color="green"
           >
             {isCreating ? "Creating..." : "Create Workspace"}

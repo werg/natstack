@@ -22,6 +22,11 @@ export const workspacesLoadingAtom = atom(false);
 export const activeWorkspaceNameAtom = atom<string | null>(null);
 
 /**
+ * Transient error for workspace operations (dismissable)
+ */
+export const workspaceErrorAtom = atom<string | null>(null);
+
+/**
  * Load workspaces from main process
  */
 export const loadRecentWorkspacesAtom = atom(null, async (_get, set) => {
@@ -41,18 +46,26 @@ export const loadRecentWorkspacesAtom = atom(null, async (_get, set) => {
 });
 
 /**
- * Delete a workspace
+ * Delete a workspace — reloads full list on success, sets error on failure.
  */
-export const removeRecentWorkspaceAtom = atom(null, async (get, set, name: string) => {
+export const removeRecentWorkspaceAtom = atom(null, async (_get, set, name: string) => {
   try {
     await workspace.delete(name);
-    const current = get(recentWorkspacesAtom);
-    set(
-      recentWorkspacesAtom,
-      current.filter((w) => w.name !== name)
-    );
+    set(workspaceErrorAtom, null);
+    // Reload full list to ensure consistency with disk state
+    const [workspaces, activeName] = await Promise.all([
+      workspace.list(),
+      workspace.getActive(),
+    ]);
+    set(recentWorkspacesAtom, workspaces);
+    set(activeWorkspaceNameAtom, activeName);
   } catch (error) {
-    console.error("Failed to delete workspace:", error);
+    set(workspaceErrorAtom, `Failed to delete "${name}": ${error instanceof Error ? error.message : String(error)}`);
+    // Reload list anyway to sync with disk
+    try {
+      const workspaces = await workspace.list();
+      set(recentWorkspacesAtom, workspaces);
+    } catch {}
   }
 });
 
@@ -205,6 +218,18 @@ export const workspaceChooserDialogOpenAtom = atom(false);
  * Whether workspace wizard dialog is open
  */
 export const wizardDialogOpenAtom = atom(false);
+
+// =============================================================================
+// Shell Overlay State
+// =============================================================================
+
+/**
+ * Ref-counted overlay tracker. Each shell dialog increments on open,
+ * decrements on close via useShellOverlay(isOpen). Panel views are hidden
+ * when count > 0. No central enumeration — each dialog self-registers.
+ */
+export const shellOverlayCountAtom = atom(0);
+export const shellOverlayActiveAtom = atom((get) => get(shellOverlayCountAtom) > 0);
 
 /**
  * Wizard form data

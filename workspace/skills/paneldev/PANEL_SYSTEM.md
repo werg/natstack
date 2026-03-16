@@ -46,7 +46,7 @@ import {
   rpc,
 
   // Services
-  db, fs, ai, workers, gitConfig, pubsubConfig, env,
+  db, fs, ai, workers, workspace, gitConfig, pubsubConfig, env,
 
   // Lifecycle
   closeSelf, focusPanel, getInfo, getTheme, onThemeChange, onFocus, exposeMethod,
@@ -132,6 +132,57 @@ Panels have isolated storage based on context ID:
 | `@workspace-panels/*` | `workspace/panels/` |
 | `@workspace-about/*` | `workspace/about/` |
 | `@workspace-agents/*` | `workspace/agents/` |
+
+## Workspace Management
+
+Panels can list, create, configure, and switch workspaces programmatically:
+
+```typescript
+import { workspace } from "@workspace/runtime";
+
+// List all workspaces (sorted by last opened)
+const workspaces = await workspace.list();
+// => [{ name: "default", lastOpened: 1710000000000 }, ...]
+
+// Get current workspace name
+const name = await workspace.getActive();
+// => "default"
+
+// Get full entry (for metadata)
+const active = await workspace.getActiveEntry();
+// => { name: "default", lastOpened: 1710000000000 }
+
+// Read workspace config (natstack.yml)
+const config = await workspace.getConfig();
+// => { id: "default", rootPanel: "panels/chat", git: { port: 63524 } }
+
+// Create a new workspace (fork from current)
+const entry = await workspace.create("experiment", { forkFrom: name });
+
+// Set the default panel for this workspace
+await workspace.setRootPanel("panels/my-app");
+
+// Switch to a workspace (triggers app relaunch)
+await workspace.switchTo("experiment");
+```
+
+### workspace.create Options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `forkFrom` | string | Copy panels, packages, and agents from an existing workspace |
+| `gitUrl` | string | Clone from a remote git template URL |
+
+If neither option is given, creates an empty workspace.
+
+### workspace.setRootPanel / workspace.setInitPanels
+
+Field-specific setters that update `natstack.yml` safely. Each setter updates one field, preserving all other config. The workspace `id` and `git` config are not writable via RPC.
+
+### Restrictions
+
+- Panels **cannot** delete workspaces — deletion is only available through the workspace switcher UI.
+- `getConfig`, `setRootPanel`, and `setInitPanels` operate on the **active** workspace only — no cross-workspace access.
 
 ## Related Docs
 

@@ -138,6 +138,14 @@ export class CentralDataManager {
   }
 
   /**
+   * Get the full entry for a workspace by name.
+   * Returns null if not found in registry.
+   */
+  getWorkspaceEntry(name: string): WorkspaceEntry | null {
+    return this.data.workspaces.find((w) => w.name === name) ?? null;
+  }
+
+  /**
    * Get the last-opened workspace that still exists on disk.
    * Returns null if no valid workspaces exist.
    */

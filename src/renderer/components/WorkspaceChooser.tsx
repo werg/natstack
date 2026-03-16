@@ -1,7 +1,7 @@
-import { useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
-import { Box, Button, Card, Flex, Heading, IconButton, Separator, Text } from "@radix-ui/themes";
-import { Cross2Icon, GearIcon, PlusIcon } from "@radix-ui/react-icons";
+import { AlertDialog, Box, Button, Callout, Card, Flex, Heading, IconButton, Spinner, Text } from "@radix-ui/themes";
+import { Cross2Icon, ExclamationTriangleIcon, PlusIcon } from "@radix-ui/react-icons";
 
 import {
   recentWorkspacesAtom,
@@ -10,11 +10,24 @@ import {
   loadRecentWorkspacesAtom,
   removeRecentWorkspaceAtom,
   selectWorkspaceAtom,
-  settingsDialogOpenAtom,
+  workspaceChooserDialogOpenAtom,
   wizardDialogOpenAtom,
   wizardFormDataAtom,
+  workspaceErrorAtom,
 } from "../state/appModeAtoms";
 import type { WorkspaceEntry } from "../../shared/types";
+
+function formatRelativeTime(timestamp: number): string {
+  const seconds = Math.floor((Date.now() - timestamp) / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(timestamp).toLocaleDateString();
+}
 
 export function WorkspaceChooser() {
   const recentWorkspaces = useAtomValue(recentWorkspacesAtom);
@@ -23,16 +36,25 @@ export function WorkspaceChooser() {
   const loadRecentWorkspaces = useSetAtom(loadRecentWorkspacesAtom);
   const removeRecentWorkspace = useSetAtom(removeRecentWorkspaceAtom);
   const selectWorkspace = useSetAtom(selectWorkspaceAtom);
-  const setSettingsDialogOpen = useSetAtom(settingsDialogOpenAtom);
+  const setWorkspaceChooserOpen = useSetAtom(workspaceChooserDialogOpenAtom);
   const setWizardDialogOpen = useSetAtom(wizardDialogOpenAtom);
   const setWizardFormData = useSetAtom(wizardFormDataAtom);
+  const workspaceError = useAtomValue(workspaceErrorAtom);
+  const setWorkspaceError = useSetAtom(workspaceErrorAtom);
 
-  // Load workspaces on mount
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+
+  // Load workspaces on mount and clear stale errors
   useEffect(() => {
+    setWorkspaceError(null);
     void loadRecentWorkspaces();
-  }, [loadRecentWorkspaces]);
+  }, [loadRecentWorkspaces, setWorkspaceError]);
 
   const handleSelectWorkspace = async (ws: WorkspaceEntry) => {
+    if (ws.name === activeWorkspaceName) {
+      setWorkspaceChooserOpen(false);
+      return;
+    }
     try {
       await selectWorkspace(ws.name);
     } catch (error) {
@@ -40,8 +62,15 @@ export function WorkspaceChooser() {
     }
   };
 
-  const handleRemoveWorkspace = async (e: React.MouseEvent, name: string) => {
+  const handleRemoveWorkspace = (e: React.MouseEvent, name: string) => {
     e.stopPropagation();
+    setPendingDelete(name);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!pendingDelete) return;
+    const name = pendingDelete;
+    setPendingDelete(null);
     await removeRecentWorkspace(name);
   };
 
@@ -52,10 +81,6 @@ export function WorkspaceChooser() {
       forkFrom: "",
     });
     setWizardDialogOpen(true);
-  };
-
-  const handleOpenSettings = () => {
-    setSettingsDialogOpen(true);
   };
 
   return (
@@ -92,6 +117,14 @@ export function WorkspaceChooser() {
             )}
           </Flex>
 
+          {/* Error display */}
+          {workspaceError && (
+            <Callout.Root color="red" mb="2" style={{ cursor: "pointer" }} onClick={() => setWorkspaceError(null)}>
+              <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
+              <Callout.Text>{workspaceError}</Callout.Text>
+            </Callout.Root>
+          )}
+
           <Box
             style={{
               flex: 1,
@@ -102,9 +135,11 @@ export function WorkspaceChooser() {
           >
             {recentWorkspaces.length === 0 ? (
               <Flex align="center" justify="center" style={{ height: "100%", minHeight: "120px" }}>
-                <Text size="2" color="gray">
-                  No workspaces yet
-                </Text>
+                {isLoading ? (
+                  <Spinner size="2" />
+                ) : (
+                  <Text size="2" color="gray">Could not load workspaces</Text>
+                )}
               </Flex>
             ) : (
               <Flex direction="column" gap="2">
@@ -131,15 +166,23 @@ export function WorkspaceChooser() {
         </Button>
       </Flex>
 
-      {/* Settings */}
-      <Separator size="4" my="4" />
-
-      <Flex justify="center">
-        <Button variant="ghost" size="2" onClick={handleOpenSettings}>
-          <GearIcon />
-          Settings
-        </Button>
-      </Flex>
+      {/* Delete confirmation dialog */}
+      <AlertDialog.Root open={!!pendingDelete} onOpenChange={(open) => !open && setPendingDelete(null)}>
+        <AlertDialog.Content maxWidth="400px">
+          <AlertDialog.Title>Delete workspace</AlertDialog.Title>
+          <AlertDialog.Description>
+            Permanently delete &ldquo;{pendingDelete}&rdquo;? All panels, packages, agents, and data will be removed. This cannot be undone.
+          </AlertDialog.Description>
+          <Flex gap="3" mt="4" justify="end">
+            <AlertDialog.Cancel>
+              <Button variant="soft" color="gray">Cancel</Button>
+            </AlertDialog.Cancel>
+            <AlertDialog.Action>
+              <Button color="red" onClick={handleConfirmDelete}>Delete</Button>
+            </AlertDialog.Action>
+          </Flex>
+        </AlertDialog.Content>
+      </AlertDialog.Root>
     </Box>
   );
 }
@@ -177,6 +220,9 @@ function WorkspaceItem({ workspace, isActive, onSelect, onRemove }: WorkspaceIte
                 {workspace.gitUrl}
               </Text>
             )}
+            <Text size="1" color="gray">
+              {formatRelativeTime(workspace.lastOpened)}
+            </Text>
           </Flex>
           {!isActive && (
             <IconButton

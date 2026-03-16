@@ -4,11 +4,12 @@ import { Theme, Flex, Spinner } from "@radix-ui/themes";
 
 import {
   workspaceChooserDialogOpenAtom,
+  activeWorkspaceNameAtom,
 } from "../state/appModeAtoms";
 import { effectiveThemeAtom, loadThemePreferenceAtom } from "../state/themeAtoms";
 import { useAtomValue } from "jotai";
 import { useShellEvent } from "../shell/useShellEvent";
-import { panel } from "../shell/client";
+import { panel, workspace } from "../shell/client";
 import { ChunkErrorBoundary } from "./ChunkErrorBoundary";
 
 // Lazy-load MainMode — this creates a separate chunk containing PanelApp,
@@ -31,6 +32,7 @@ export function App() {
   const effectiveTheme = useAtomValue(effectiveThemeAtom);
   const loadThemePreference = useSetAtom(loadThemePreferenceAtom);
   const setWorkspaceChooserOpen = useSetAtom(workspaceChooserDialogOpenAtom);
+  const setActiveWorkspaceName = useSetAtom(activeWorkspaceNameAtom);
   // Counter to force remount of lazy component after a chunk load failure.
   const [lazyRetryKey, setLazyRetryKey] = useState(0);
 
@@ -38,6 +40,13 @@ export function App() {
   useEffect(() => {
     loadThemePreference();
   }, [loadThemePreference]);
+
+  // Eagerly load active workspace name on mount (independent of chooser dialog)
+  useEffect(() => {
+    workspace.getActive().then((name) => {
+      setActiveWorkspaceName(name);
+    }).catch(() => {});
+  }, [setActiveWorkspaceName]);
 
   // Listen for system theme changes via shell event
   const handleThemeChanged = useCallback(() => {

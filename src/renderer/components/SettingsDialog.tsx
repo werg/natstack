@@ -28,6 +28,7 @@ import {
   enableProviderAtom,
   disableProviderAtom,
 } from "../state/appModeAtoms";
+import { useShellOverlay } from "../shell/useShellOverlay";
 import type { ProviderInfo } from "../../shared/types";
 
 const MODEL_ROLES = ["smart", "coding", "fast", "cheap"] as const;
@@ -47,6 +48,7 @@ export function SettingsDialog({ isSetupMode = false }: SettingsDialogProps) {
 
   // In setup mode, always open; in normal mode, use atom state
   const effectiveIsOpen = isSetupMode || isOpen;
+  useShellOverlay(effectiveIsOpen);
 
   // Load settings when dialog opens
   useEffect(() => {

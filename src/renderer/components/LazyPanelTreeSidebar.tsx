@@ -9,10 +9,12 @@
  */
 
 import { useState, useCallback, useEffect, useMemo, useRef, memo, type CSSProperties } from "react";
+import { useAtomValue, useSetAtom } from "jotai";
 import {
   CaretRightIcon,
   Cross2Icon,
   PlusIcon,
+  UpdateIcon,
 } from "@radix-ui/react-icons";
 import {
   Badge,
@@ -34,6 +36,7 @@ import {
 } from "../shell/hooks/index.js";
 import type { PanelContextMenuAction } from "../../shared/types.js";
 import { menu, panel } from "../shell/client.js";
+import { activeWorkspaceNameAtom, workspaceChooserDialogOpenAtom } from "../state/appModeAtoms.js";
 
 // ============================================================================
 // Style Constants
@@ -443,6 +446,9 @@ export function LazyPanelTreeSidebar({
   onPanelAction,
   onArchive,
 }: LazyPanelTreeSidebarProps) {
+  const activeWorkspaceName = useAtomValue(activeWorkspaceNameAtom);
+  const setWorkspaceChooserOpen = useSetAtom(workspaceChooserDialogOpenAtom);
+
   const {
     flattenedItems,
     collapsedIds,
@@ -509,6 +515,16 @@ export function LazyPanelTreeSidebar({
           <Text color="gray">No panels yet</Text>
         </Flex>
         <Box p="2" style={{ borderTop: "1px solid var(--gray-6)" }}>
+          {activeWorkspaceName && (
+            <Flex align="center" justify="between" mb="1">
+              <Text size="1" color="gray" truncate style={{ flex: 1 }}>
+                {activeWorkspaceName}
+              </Text>
+              <IconButton variant="ghost" size="1" onClick={() => setWorkspaceChooserOpen(true)} aria-label="Switch workspace">
+                <UpdateIcon />
+              </IconButton>
+            </Flex>
+          )}
           <IconButton
             variant="ghost"
             size="1"
@@ -594,6 +610,16 @@ export function LazyPanelTreeSidebar({
         </Box>
       </div>
       <Box p="2" style={{ borderTop: "1px solid var(--gray-6)" }}>
+        {activeWorkspaceName && (
+          <Flex align="center" justify="between" mb="1">
+            <Text size="1" color="gray" truncate style={{ flex: 1 }}>
+              {activeWorkspaceName}
+            </Text>
+            <IconButton variant="ghost" size="1" onClick={() => setWorkspaceChooserOpen(true)} aria-label="Switch workspace">
+              <UpdateIcon />
+            </IconButton>
+          </Flex>
+        )}
         <IconButton
           variant="ghost"
           size="1"

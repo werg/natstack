@@ -3,9 +3,11 @@
  * main-process-only registry (CentralDataManager).
  */
 
+import * as fs from "fs";
+import YAML from "yaml";
 import { initWorkspace, deleteWorkspaceDir } from "../shared/workspace/loader.js";
 import type { CentralDataManager } from "./centralData.js";
-import type { WorkspaceEntry } from "../shared/workspace/types.js";
+import type { WorkspaceEntry, WorkspaceConfig } from "../shared/workspace/types.js";
 
 /**
  * Create a new workspace and register it in the central data store.
@@ -31,6 +33,25 @@ export function createAndRegisterWorkspace(
     name,
     lastOpened: Date.now(),
     ...(opts?.gitUrl ? { gitUrl: opts.gitUrl } : {}),
+  };
+}
+
+/**
+ * Manages atomic reads/writes of workspace config fields.
+ * Updates both the in-memory config and disk (natstack.yml).
+ */
+export function createWorkspaceConfigManager(configPath: string, config: WorkspaceConfig) {
+  return {
+    get: () => config,
+    set(key: "rootPanel" | "initPanels", value: unknown): void {
+      // Write disk first — if I/O fails, in-memory config stays consistent
+      const content = fs.readFileSync(configPath, "utf-8");
+      const onDisk = (YAML.parse(content) as Record<string, unknown>) ?? {};
+      onDisk[key] = value;
+      fs.writeFileSync(configPath, YAML.stringify(onDisk), "utf-8");
+      // Only mutate in-memory after successful disk write
+      (config as unknown as Record<string, unknown>)[key] = value;
+    },
   };
 }
 
