@@ -29,7 +29,7 @@ export interface TestApp {
 }
 
 export interface LaunchOptions {
-  /** Use an existing workspace path instead of creating a new one */
+  /** Use an existing managed workspace directory instead of creating a new one */
   workspace?: string;
   /** Initial panel source to load (defaults to shell:new launcher if no panels exist) */
   initialPanel?: string;
@@ -41,29 +41,110 @@ export interface LaunchOptions {
   launchTimeout?: number;
 }
 
-/**
- * Create a minimal test workspace with required config files.
- * Note: On startup with no existing panels, the app shows shell:new (panel launcher).
- */
-function createTestWorkspace(basePath?: string): string {
-  const workspacePath =
-    basePath ?? fs.mkdtempSync(path.join(os.tmpdir(), "natstack-e2e-test-"));
+interface ManagedWorkspaceInfo {
+  workspaceName: string;
+  testRoot: string;
+  env: Record<string, string>;
+}
 
-  // Create .natstack directory for config
-  const natstackDir = path.join(workspacePath, ".natstack");
-  fs.mkdirSync(natstackDir, { recursive: true });
+const SOURCE_DIRS = ["panels", "packages", "agents", "workers", "skills", "about"];
+const STATE_DIRS = [".cache", ".databases", ".contexts"];
 
-  // Create panels directory
-  fs.mkdirSync(path.join(workspacePath, "panels"), { recursive: true });
+function getTestEnv(testRoot: string): Record<string, string> {
+  switch (process.platform) {
+    case "win32":
+      return { APPDATA: path.join(testRoot, "appdata") };
+    case "darwin":
+      return { HOME: path.join(testRoot, "home") };
+    default:
+      return {
+        HOME: path.join(testRoot, "home"),
+        XDG_CONFIG_HOME: path.join(testRoot, "xdg"),
+      };
+  }
+}
 
-  // Create minimal natstack.yml config
-  const workspaceId = `test-${crypto.randomBytes(8).toString("hex")}`;
-  const config = `id: ${workspaceId}
-name: E2E Test Workspace
-`;
-  fs.writeFileSync(path.join(workspacePath, "natstack.yml"), config);
+function getCentralDataDirFromEnv(env: Record<string, string>): string {
+  switch (process.platform) {
+    case "win32":
+      return path.join(env.APPDATA!, "natstack");
+    case "darwin":
+      return path.join(env.HOME!, "Library", "Application Support", "natstack");
+    default:
+      return path.join(env.XDG_CONFIG_HOME!, "natstack");
+  }
+}
 
-  return workspacePath;
+function getWorkspaceInfo(workspaceDir: string): ManagedWorkspaceInfo {
+  const workspaceName = path.basename(workspaceDir);
+  let testRoot: string;
+
+  switch (process.platform) {
+    case "win32":
+      testRoot = path.dirname(path.dirname(path.dirname(workspaceDir)));
+      break;
+    case "darwin":
+      testRoot = path.dirname(path.dirname(path.dirname(path.dirname(path.dirname(workspaceDir)))));
+      break;
+    default:
+      testRoot = path.dirname(path.dirname(path.dirname(workspaceDir)));
+      break;
+  }
+
+  return {
+    workspaceName,
+    testRoot,
+    env: getTestEnv(testRoot),
+  };
+}
+
+function getWorkspaceTemplateDir(projectRoot: string): string {
+  const templateDir = path.join(projectRoot, "workspace");
+  if (!fs.existsSync(path.join(templateDir, "natstack.yml"))) {
+    throw new Error(`Workspace template not found at ${templateDir}`);
+  }
+  return templateDir;
+}
+
+export function createManagedTestWorkspace(projectRoot?: string): string {
+  const resolvedProjectRoot = projectRoot ?? path.resolve(__dirname, "../..");
+  const templateDir = getWorkspaceTemplateDir(resolvedProjectRoot);
+  const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-e2e-"));
+  const env = getTestEnv(testRoot);
+  const workspaceName = `e2e_${crypto.randomBytes(6).toString("hex")}`;
+  const workspaceDir = path.join(getCentralDataDirFromEnv(env), "workspaces", workspaceName);
+  const sourceRoot = path.join(workspaceDir, "source");
+  const stateRoot = path.join(workspaceDir, "state");
+
+  for (const dir of Object.values(env)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+
+  fs.mkdirSync(sourceRoot, { recursive: true });
+  fs.mkdirSync(stateRoot, { recursive: true });
+
+  for (const dir of SOURCE_DIRS) {
+    const src = path.join(templateDir, dir);
+    const dest = path.join(sourceRoot, dir);
+    if (fs.existsSync(src)) {
+      fs.cpSync(src, dest, { recursive: true });
+    } else {
+      fs.mkdirSync(dest, { recursive: true });
+    }
+  }
+
+  fs.copyFileSync(path.join(templateDir, "natstack.yml"), path.join(sourceRoot, "natstack.yml"));
+
+  for (const dir of STATE_DIRS) {
+    fs.mkdirSync(path.join(stateRoot, dir), { recursive: true });
+  }
+
+  return workspaceDir;
+}
+
+export function removeManagedTestWorkspace(workspaceDir: string): void {
+  const { testRoot } = getWorkspaceInfo(workspaceDir);
+  fs.rmSync(testRoot, { recursive: true, force: true });
 }
 
 /**
@@ -83,16 +164,10 @@ name: E2E Test Workspace
 export async function launchTestApp(options: LaunchOptions = {}): Promise<TestApp> {
   const { workspace, initialPanel, devTools = false, env = {}, launchTimeout = 30000 } = options;
 
-  // Determine the project root and default workspace
   const projectRoot = path.resolve(__dirname, "../..");
-  const defaultWorkspace = path.join(projectRoot, "workspace");
-
-  // Use specified workspace, or default to the project's real workspace/ directory
-  // This ensures tests use real panels with proper git repos
-  const workspacePath = workspace ?? defaultWorkspace;
-
-  // Only cleanup if an explicit custom workspace was provided (not the default)
-  const shouldCleanupWorkspace = workspace !== undefined && workspace !== defaultWorkspace;
+  const workspacePath = workspace ?? createManagedTestWorkspace(projectRoot);
+  const workspaceInfo = getWorkspaceInfo(workspacePath);
+  const ownsWorkspace = workspace === undefined;
 
   // Determine the main entry point
   const mainPath = path.resolve(projectRoot, "dist", "main.cjs");
@@ -107,7 +182,7 @@ export async function launchTestApp(options: LaunchOptions = {}): Promise<TestAp
   const electronPath = require("electron") as string;
 
   // Build electron args - first arg is the app entry point
-  const args = [mainPath, `--workspace=${workspacePath}`];
+  const args = [mainPath, `--workspace=${workspaceInfo.workspaceName}`];
   if (initialPanel) {
     args.push(`--panel=${initialPanel}`);
   }
@@ -122,6 +197,7 @@ export async function launchTestApp(options: LaunchOptions = {}): Promise<TestAp
       NATSTACK_TEST_MODE: "1",
       // Disable GPU acceleration for CI environments
       ELECTRON_DISABLE_GPU: "1",
+      ...workspaceInfo.env,
       ...env,
     },
     timeout: launchTimeout,
@@ -167,9 +243,9 @@ export async function launchTestApp(options: LaunchOptions = {}): Promise<TestAp
       }
     }
 
-    if (shouldCleanupWorkspace) {
+    if (ownsWorkspace) {
       try {
-        fs.rmSync(workspacePath, { recursive: true, force: true });
+        removeManagedTestWorkspace(workspacePath);
       } catch (error) {
         console.warn("[TestSetup] Error removing workspace:", error);
       }

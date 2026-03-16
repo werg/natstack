@@ -370,8 +370,8 @@ function copyDirRecursive(src: string, dest: string): void {
 
 /**
  * Initialize git repos for all immediate subdirectories within each source dir.
- * Mirrors the commit-workspace.sh pattern: each panel/package/agent/worker/skill/about-page
- * becomes its own git repo with an initial commit.
+ * Each panel/package/agent/worker/skill/about-page becomes its own git repo
+ * with an initial commit.
  */
 function initGitRepos(wsDir: string): void {
   // Verify git is available before attempting repo initialization

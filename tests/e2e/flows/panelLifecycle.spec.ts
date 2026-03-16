@@ -13,6 +13,8 @@ import {
   createPanel,
   closePanel,
   isPanelLoaded,
+  createManagedTestWorkspace,
+  removeManagedTestWorkspace,
   type TestApp,
 } from "../../setup/electronSetup";
 
@@ -94,8 +96,10 @@ test.describe("Panel Persistence", () => {
   // This test launches the app twice, so it needs a longer timeout
   test("panels persist across app restarts", async () => {
     test.setTimeout(120000); // 2 minutes for double app launch
+    const workspacePath = createManagedTestWorkspace();
+
     // First session: create panels
-    let testApp = await launchTestApp();
+    let testApp = await launchTestApp({ workspace: workspacePath });
 
     // Wait for initialization
     await new Promise((resolve) => setTimeout(resolve, 3000));
@@ -104,8 +108,6 @@ test.describe("Panel Persistence", () => {
     const initialTree = await getPanelTree(testApp.app);
 
     // Save workspace path for restart
-    const workspacePath = testApp.workspacePath;
-
     // Close app using cleanup (which has a timeout to prevent hanging)
     await testApp.cleanup();
 
@@ -122,5 +124,6 @@ test.describe("Panel Persistence", () => {
     expect(restoredTree.length).toBeGreaterThanOrEqual(0);
 
     await testApp.cleanup();
+    removeManagedTestWorkspace(workspacePath);
   });
 });
