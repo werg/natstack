@@ -1,142 +1,67 @@
-import * as path from "path";
-import * as fs from "fs";
-import { app, dialog } from "electron";
+import { app } from "electron";
 import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { WorkspaceValidation } from "../../shared/types.js";
-import { loadWorkspaceConfig } from "../../shared/workspace/loader.js";
 import type { CentralDataManager } from "../centralData.js";
+import { createAndRegisterWorkspace, deleteWorkspaceDir } from "../workspaceOps.js";
 
 export function createWorkspaceService(deps: {
   centralData: CentralDataManager;
+  activeWorkspaceName: string;
 }): ServiceDefinition {
   return {
     name: "workspace",
-    description: "Workspace CRUD, folder dialogs",
+    description: "Workspace management (list, create, select, delete)",
     policy: { allowed: ["shell"] },
     methods: {
-      validatePath: { args: z.tuple([z.string()]) },
-      openFolderDialog: { args: z.tuple([]) },
-      create: { args: z.tuple([z.string(), z.string()]) },
+      list: { args: z.tuple([]) },
+      create: { args: z.tuple([z.string(), z.object({ gitUrl: z.string().optional(), forkFrom: z.string().optional() }).optional()]) },
       select: { args: z.tuple([z.string()]) },
+      delete: { args: z.tuple([z.string()]) },
+      getActive: { args: z.tuple([]) },
     },
     handler: async (_ctx, method, args) => {
       switch (method) {
-        case "validatePath": {
-          const workspacePath = args[0] as string;
-          const resolvedPath = path.resolve(workspacePath);
-          const configPath = path.join(resolvedPath, "natstack.yml");
-
-          if (!fs.existsSync(resolvedPath)) {
-            return {
-              path: resolvedPath,
-              name: path.basename(resolvedPath),
-              isValid: false,
-              hasConfig: false,
-              error: "Directory does not exist",
-            } as WorkspaceValidation;
-          }
-
-          try {
-            const stats = fs.statSync(resolvedPath);
-            if (!stats.isDirectory()) {
-              return {
-                path: resolvedPath,
-                name: path.basename(resolvedPath),
-                isValid: false,
-                hasConfig: false,
-                error: "Path is not a directory",
-              } as WorkspaceValidation;
-            }
-          } catch (error) {
-            return {
-              path: resolvedPath,
-              name: path.basename(resolvedPath),
-              isValid: false,
-              hasConfig: false,
-              error: error instanceof Error ? error.message : "Failed to access path",
-            } as WorkspaceValidation;
-          }
-
-          const hasConfig = fs.existsSync(configPath);
-          let name = path.basename(resolvedPath);
-          let errorMessage: string | undefined;
-
-          if (hasConfig) {
-            try {
-              const config = loadWorkspaceConfig(resolvedPath, { createIfMissing: false });
-              name = config.id || name;
-            } catch (error) {
-              errorMessage = `Invalid workspace config: ${error instanceof Error ? error.message : String(error)}`;
-            }
-          }
-
-          return {
-            path: resolvedPath,
-            name,
-            isValid: !errorMessage,
-            hasConfig,
-            error: errorMessage,
-          } as WorkspaceValidation;
-        }
-
-        case "openFolderDialog": {
-          const result = await dialog.showOpenDialog({
-            properties: ["openDirectory", "createDirectory"],
-            title: "Select Workspace Folder",
-          });
-          return result.canceled ? null : result.filePaths[0] ?? null;
-        }
+        case "list":
+          return deps.centralData.listWorkspaces();
 
         case "create": {
-          const [workspacePath, name] = args as [string, string];
-          const resolvedPath = path.resolve(workspacePath);
-
-          try {
-            fs.mkdirSync(resolvedPath, { recursive: true });
-            fs.mkdirSync(path.join(resolvedPath, "panels"), { recursive: true });
-            fs.mkdirSync(path.join(resolvedPath, ".cache"), { recursive: true });
-
-            const randomPort = 49152 + Math.floor(Math.random() * 16383);
-            const configContent = `# NatStack Workspace Configuration
-id: ${name}
-
-git:
-  port: ${randomPort}
-`;
-            fs.writeFileSync(path.join(resolvedPath, "natstack.yml"), configContent, "utf-8");
-
-            return {
-              path: resolvedPath,
-              name,
-              isValid: true,
-              hasConfig: true,
-            } as WorkspaceValidation;
-          } catch (error) {
-            return {
-              path: resolvedPath,
-              name,
-              isValid: false,
-              hasConfig: false,
-              error: error instanceof Error ? error.message : String(error),
-            } as WorkspaceValidation;
-          }
+          const [name, opts] = args as [string, { gitUrl?: string; forkFrom?: string } | undefined];
+          return createAndRegisterWorkspace(name, deps.centralData, opts);
         }
 
         case "select": {
-          const workspacePath = args[0] as string;
-          const centralData = deps.centralData;
-          try {
-            const config = loadWorkspaceConfig(workspacePath, { createIfMissing: false });
-            centralData.addRecentWorkspace(workspacePath, config.id);
-          } catch {
-            centralData.addRecentWorkspace(workspacePath, path.basename(workspacePath));
+          const name = args[0] as string;
+          deps.centralData.touchWorkspace(name);
+          // Strip existing --workspace=... or --workspace <value> args, then add the new one
+          const filteredArgs: string[] = [];
+          const rawArgs = process.argv.slice(1);
+          for (let i = 0; i < rawArgs.length; i++) {
+            const a = rawArgs[i]!;
+            if (a.startsWith("--workspace=")) continue;
+            if (a === "--workspace" && i + 1 < rawArgs.length && !rawArgs[i + 1]!.startsWith("--")) {
+              i++; // skip the value too
+              continue;
+            }
+            filteredArgs.push(a);
           }
-
-          app.relaunch({ args: [...process.argv.slice(1), `--workspace=${workspacePath}`] });
+          filteredArgs.push(`--workspace=${name}`);
+          app.relaunch({ args: filteredArgs });
           app.exit(0);
           return;
         }
+
+        case "delete": {
+          const name = args[0] as string;
+          if (name === deps.activeWorkspaceName) {
+            throw new Error("Cannot delete the currently running workspace");
+          }
+          deleteWorkspaceDir(name);
+          deps.centralData.removeWorkspace(name);
+          return;
+        }
+
+        case "getActive":
+          return deps.activeWorkspaceName;
 
         default:
           throw new Error(`Unknown workspace method: ${method}`);

@@ -12,13 +12,14 @@ import { PanelRegistry } from "../shared/panelRegistry.js";
 import { PanelLifecycle } from "../shared/panelLifecycle.js";
 import { PanelView } from "./panelView.js";
 import { setupMenu, setMenuPanelLifecycle, setMenuPanelRegistry, setMenuViewManager, setMenuEventService } from "./menu.js";
-import { getAppRoot } from "./paths.js";
+import { getAppRoot, getWorkspaceTemplateDir } from "./paths.js";
 import {
-  parseCliWorkspacePath,
-  discoverWorkspace,
+  resolveWorkspaceName,
+  initWorkspace,
   createWorkspace,
   loadCentralEnv,
 } from "../shared/workspace/loader.js";
+import { getWorkspaceDir } from "@natstack/env-paths";
 import type { Workspace } from "../shared/workspace/types.js";
 import { CentralDataManager } from "./centralData.js";
 import { CdpServer } from "./cdpServer.js";
@@ -83,24 +84,59 @@ if (process.env["NATSTACK_DEBUG_PATHS"] === "1") {
 // Load central environment variables first (.env and .secrets.yml from ~/.config/natstack/)
 loadCentralEnv();
 
-// Parse CLI arguments
-const cliWorkspacePath = parseCliWorkspacePath();
+// Resolve workspace: --workspace=name → env NATSTACK_WORKSPACE → last-opened → auto-create "default"
+const wsName = resolveWorkspaceName();
+const centralData = new CentralDataManager();
+let wsDir: string;
 
-// Determine startup workspace (CLI > env > walk-up > default), but only if config exists
-const discoveredWorkspacePath = discoverWorkspace(cliWorkspacePath);
-const configPath = path.join(discoveredWorkspacePath, "natstack.yml");
-const hasWorkspaceConfig = fs.existsSync(configPath);
-
-// Workspace is always required — fail fast if not found
-if (!hasWorkspaceConfig) {
-  console.error(`[Error] Workspace config not found at ${discoveredWorkspacePath}`);
-  console.error(`[Error] Expected natstack.yml at: ${configPath}`);
-  app.quit();
-  process.exit(1);
+if (wsName) {
+  // Managed workspace by name — must exist on disk
+  const dir = getWorkspaceDir(wsName);
+  if (!fs.existsSync(path.join(dir, "natstack.yml"))) {
+    console.error(`[Error] Workspace "${wsName}" does not exist.`);
+    app.quit();
+    process.exit(1);
+  }
+  wsDir = dir;
+  if (!centralData.hasWorkspace(wsName)) {
+    centralData.addWorkspace(wsName);
+  } else {
+    centralData.touchWorkspace(wsName);
+  }
+} else {
+  // No explicit workspace — try last-opened from registry
+  const last = centralData.getLastOpenedWorkspace();
+  if (last) {
+    wsDir = getWorkspaceDir(last.name);
+    centralData.touchWorkspace(last.name);
+  } else {
+    // First run: auto-create "default" workspace from the shipped template
+    const defaultName = "default";
+    const defaultDir = getWorkspaceDir(defaultName);
+    try {
+      if (!fs.existsSync(path.join(defaultDir, "natstack.yml"))) {
+        // Clean up partial directory from a previously interrupted create
+        if (fs.existsSync(defaultDir)) {
+          fs.rmSync(defaultDir, { recursive: true, force: true });
+        }
+        const templateDir = getWorkspaceTemplateDir();
+        initWorkspace(defaultName, templateDir ? { templateDir } : undefined);
+        log.info(`[Workspace] Auto-created "default" workspace${templateDir ? " from template" : ""}`);
+      }
+      centralData.addWorkspace(defaultName);
+      wsDir = defaultDir;
+    } catch (error) {
+      console.error("[Workspace] Failed to auto-create default workspace:", error);
+      app.quit();
+      process.exit(1);
+    }
+  }
 }
 
+// Set Electron's userData to the workspace dir — all internal storage scoped here
+app.setPath("userData", wsDir);
+
 let workspace: Workspace | null = null;
-let centralData: CentralDataManager | null = null;
 const tokenManager = new TokenManager();
 let cdpServer: CdpServer | null = null;
 let panelRegistry: PanelRegistry | null = null;
@@ -122,18 +158,13 @@ function requireServerClient(): ServerClient {
   return serverClient;
 }
 
-
 // =============================================================================
 // Main Mode Initialization
 // =============================================================================
 
 try {
-  workspace = createWorkspace(discoveredWorkspacePath);
+  workspace = createWorkspace(wsDir);
   log.info(`[Workspace] Loaded: ${workspace.path} (id: ${workspace.config.id})`);
-
-  // Add to recent workspaces
-  centralData = new CentralDataManager();
-  centralData.addRecentWorkspace(workspace.path, workspace.config.id);
 } catch (error) {
   console.error("[Workspace] Failed to initialize workspace:", error);
   app.quit();
@@ -495,7 +526,6 @@ app.on("ready", async () => {
     const { createViewService } = await import("./services/viewService.js");
     const { createMenuService } = await import("./services/menuService.js");
     const { createWorkspaceService } = await import("./services/workspaceService.js");
-    const { createCentralService } = await import("./services/centralService.js");
     const { createSettingsService } = await import("./services/settingsService.js");
     const { createAdblockService } = await import("./services/adblockService.js");
     const { createBridgeService } = await import("./services/bridgeService.js");
@@ -521,8 +551,7 @@ app.on("ready", async () => {
     electronContainer.register(rpcService(createMenuService({
       panelLifecycle, panelRegistry, getViewManager, serverClient,
     })));
-    electronContainer.register(rpcService(createWorkspaceService({ centralData: centralData! })));
-    electronContainer.register(rpcService(createCentralService({ centralData: centralData! })));
+    electronContainer.register(rpcService(createWorkspaceService({ centralData, activeWorkspaceName: workspace!.config.id })));
     electronContainer.register(rpcService(createSettingsService({ serverClient })));
     electronContainer.register(rpcService(createAdblockService({ adBlockManager })));
 

@@ -41,7 +41,8 @@ export function collectTransitiveExternalDeps(
         const dep = graph.tryGet(name);
         if (dep) walk(dep);
       } else {
-        // Skip workspace:* deps — these are internal packages resolvable via rootNodeModules
+        // Skip workspace:* deps — these are @natstack/* platform packages
+        // resolved via appNodeModules (declared in builder.initBuilder()).
         if (version.startsWith("workspace:")) continue;
         // External dependency — take higher version if conflict
         if (!externals[name] || compareVersions(version, externals[name]!) > 0) {

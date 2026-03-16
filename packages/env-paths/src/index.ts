@@ -9,7 +9,8 @@ export function setUserDataPath(p: string): void {
 }
 
 /**
- * Get the platform-specific user-data directory.
+ * Get the per-workspace user-data directory.
+ * After app.setPath('userData', workspaceDir), this returns the workspace dir.
  * Resolution order:
  *   1. Explicitly set via setUserDataPath()
  *   2. Lazy require("electron").app.getPath("userData")
@@ -26,7 +27,26 @@ export function getUserDataPath(): string {
   }
 }
 
-/** Mirrors the fallback logic already in paths.ts and loader.ts */
+/**
+ * Get the central NatStack config directory (shared across all workspaces).
+ * Always returns ~/.config/natstack/ (or platform equivalent).
+ * Never returns Electron's app.getPath('userData') — that may point to a workspace.
+ */
+export function getCentralDataPath(): string {
+  return platformDefault();
+}
+
+/** Get the directory containing all managed workspaces. */
+export function getWorkspacesDir(): string {
+  return path.join(getCentralDataPath(), "workspaces");
+}
+
+/** Get the directory for a specific managed workspace by name. */
+export function getWorkspaceDir(name: string): string {
+  return path.join(getWorkspacesDir(), name);
+}
+
+/** Platform-conventional config directory for NatStack. */
 function platformDefault(): string {
   const home = os.homedir();
   try {

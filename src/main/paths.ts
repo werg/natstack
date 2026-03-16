@@ -1,7 +1,7 @@
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
-import { getUserDataPath } from "@natstack/env-paths";
+import { getCentralDataPath } from "@natstack/env-paths";
 import { isDev } from "./utils.js";
 
 // Derive __dirname in a way that works in CJS builds
@@ -74,7 +74,7 @@ export function getCentralConfigDirectory(): string {
   };
 
   try {
-    return ensureDir(getUserDataPath());
+    return ensureDir(getCentralDataPath());
   } catch (error) {
     console.warn("Failed to create config directory, using temp dir:", error);
     return ensureDir(path.join(os.tmpdir(), "natstack"));
@@ -231,6 +231,23 @@ export function getUnpackedPath(relativePath: string): string {
       "getUnpackedPath(): NATSTACK_APP_ROOT must be set when running without Electron in production mode"
     );
   }
+}
+
+/**
+ * Get the workspace template directory for first-run workspace creation.
+ *
+ * In development: workspace/ at app root (the dev workspace)
+ * In production: workspace-template/ in resources directory
+ *
+ * Returns null if no template directory exists.
+ */
+export function getWorkspaceTemplateDir(): string | null {
+  if (isDev()) {
+    const devPath = path.join(getAppRoot(), "workspace");
+    return fs.existsSync(path.join(devPath, "natstack.yml")) ? devPath : null;
+  }
+  const prodPath = path.join(getResourcesPath(), "workspace-template");
+  return fs.existsSync(path.join(prodPath, "natstack.yml")) ? prodPath : null;
 }
 
 /**

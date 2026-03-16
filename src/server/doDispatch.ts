@@ -85,6 +85,7 @@ export class DODispatch {
       return await this.dispatcher(urlPath, args);
     } catch (err) {
       if (this.ensureDOFn && this.isRetryable(err)) {
+        console.warn(`[DODispatch] ${doRefKey(ref)}.${method} failed (${err instanceof Error ? err.message : String(err)}), calling ensureDO and retrying`);
         await this.ensureDOFn(ref.source, ref.className, ref.objectKey);
         return await this.dispatcher(urlPath, args);
       }
@@ -94,6 +95,6 @@ export class DODispatch {
 
   private isRetryable(err: unknown): boolean {
     const msg = String(err);
-    return msg.includes("DO class not found") || msg.includes("ECONNREFUSED");
+    return msg.includes("DO class not found") || msg.includes("ECONNREFUSED") || msg.includes("workerd not running");
   }
 }

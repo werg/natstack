@@ -161,7 +161,7 @@ export interface Workspace {
   panelsPath: string;
   /** Absolute path to packages directory (workspace/packages) */
   packagesPath: string;
-  /** Absolute path to contexts directory (workspace/contexts) */
+  /** Absolute path to contexts directory (workspace/.contexts) */
   contextsPath: string;
   /** Absolute path to git repos directory (workspace) */
   gitReposPath: string;
@@ -193,18 +193,17 @@ export interface CentralConfigPaths {
 
 // Re-export shared IPC types for convenience
 export type {
-  RecentWorkspace,
-  WorkspaceValidation,
+  WorkspaceEntry,
   SettingsData,
 } from "../types.js";
 
 // Import for use in CentralData
-import type { RecentWorkspace } from "../types.js";
+import type { WorkspaceEntry } from "../types.js";
 
 /**
  * Central data persisted in ~/.config/natstack/data.json
  */
 export interface CentralData {
-  /** Recently opened workspaces (max 10, sorted by lastOpened desc) */
-  recentWorkspaces: RecentWorkspace[];
+  /** Managed workspaces (sorted by lastOpened desc) */
+  workspaces: WorkspaceEntry[];
 }

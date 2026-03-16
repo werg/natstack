@@ -1,27 +1,27 @@
 import { useAtomValue, useSetAtom } from "jotai";
-import { Box, Button, Callout, Dialog, Flex, Spinner, Text, TextField } from "@radix-ui/themes";
-import { ExclamationTriangleIcon, FileIcon } from "@radix-ui/react-icons";
+import { Box, Button, Callout, Dialog, Flex, Select, Spinner, Text, TextField } from "@radix-ui/themes";
+import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
 
 import {
   wizardDialogOpenAtom,
-  wizardStepAtom,
   wizardFormDataAtom,
   wizardCreatingAtom,
   wizardErrorAtom,
   resetWizardAtom,
   createWorkspaceAtom,
+  recentWorkspacesAtom,
+  activeWorkspaceNameAtom,
 } from "../state/appModeAtoms";
-import { workspace } from "../shell/client";
 
 export function WorkspaceWizard() {
   const isOpen = useAtomValue(wizardDialogOpenAtom);
-  const step = useAtomValue(wizardStepAtom);
   const formData = useAtomValue(wizardFormDataAtom);
   const isCreating = useAtomValue(wizardCreatingAtom);
   const error = useAtomValue(wizardErrorAtom);
+  const workspaces = useAtomValue(recentWorkspacesAtom);
+  const activeWorkspaceName = useAtomValue(activeWorkspaceNameAtom);
 
   const setIsOpen = useSetAtom(wizardDialogOpenAtom);
-  const setStep = useSetAtom(wizardStepAtom);
   const setFormData = useSetAtom(wizardFormDataAtom);
   const resetWizard = useSetAtom(resetWizardAtom);
   const createWorkspace = useSetAtom(createWorkspaceAtom);
@@ -31,91 +31,78 @@ export function WorkspaceWizard() {
     resetWizard();
   };
 
-  const handleSelectFolder = async () => {
-    try {
-      const folderPath = await workspace.openFolderDialog();
-      if (folderPath) {
-        const validation = await workspace.validatePath(folderPath);
-        setFormData({
-          ...formData,
-          folderPath: validation.path,
-          workspaceName: formData.workspaceName || validation.name,
-        });
-      }
-    } catch (err) {
-      console.error("Failed to select folder:", err);
-    }
-  };
-
-  const handleNext = () => {
-    if (step === 0 && !formData.folderPath) {
-      return; // Require folder path
-    }
-    setStep(step + 1);
-  };
-
-  const handleBack = () => {
-    setStep(Math.max(0, step - 1));
-  };
-
   const handleCreate = async () => {
     await createWorkspace();
   };
 
-  const canProceed = () => {
-    if (step === 0) return !!formData.folderPath;
-    if (step === 1) return !!formData.workspaceName;
-    return true;
-  };
+  // Determine source mode: fork takes precedence over gitUrl
+  const sourceMode = formData.forkFrom ? "fork" : formData.gitUrl ? "git" : "blank";
 
   return (
     <Dialog.Root open={isOpen} onOpenChange={(open) => !open && handleClose()}>
       <Dialog.Content maxWidth="450px">
         <Dialog.Title>Create New Workspace</Dialog.Title>
         <Dialog.Description size="2" color="gray" mb="4">
-          {step === 0 && "Choose a folder for your workspace."}
-          {step === 1 && "Give your workspace a name."}
+          Give your workspace a name and optionally fork from an existing one or clone a git template.
         </Dialog.Description>
 
         <Flex direction="column" gap="4">
-          {/* Step 0: Select Folder */}
-          {step === 0 && (
+          <Flex direction="column" gap="3">
+            <Text size="2" weight="medium">
+              Workspace Name
+            </Text>
+            <TextField.Root
+              value={formData.workspaceName}
+              onChange={(e) => setFormData({ ...formData, workspaceName: e.target.value })}
+              placeholder="my-workspace"
+              autoFocus
+            />
+            <Text size="1" color="gray">
+              Letters, numbers, hyphens, and underscores only.
+            </Text>
+          </Flex>
+
+          {/* Fork from existing workspace */}
+          {workspaces.length > 0 && (
             <Flex direction="column" gap="3">
               <Text size="2" weight="medium">
-                Workspace Folder
+                Fork From <Text size="1" color="gray">(optional)</Text>
               </Text>
-              <Flex gap="2">
-                <TextField.Root
-                  value={formData.folderPath}
-                  onChange={(e) => setFormData({ ...formData, folderPath: e.target.value })}
-                  placeholder="/path/to/workspace"
-                  style={{ flex: 1 }}
-                />
-                <Button variant="soft" onClick={handleSelectFolder}>
-                  <FileIcon />
-                  Browse
-                </Button>
-              </Flex>
+              <Select.Root
+                value={formData.forkFrom || "__none__"}
+                onValueChange={(value) =>
+                  setFormData({ ...formData, forkFrom: value === "__none__" ? "" : value, gitUrl: value !== "__none__" ? "" : formData.gitUrl })
+                }
+              >
+                <Select.Trigger placeholder="Start from scratch" />
+                <Select.Content>
+                  <Select.Item value="__none__">Start from scratch</Select.Item>
+                  {workspaces.map((ws) => (
+                    <Select.Item key={ws.name} value={ws.name}>
+                      {ws.name}{ws.name === activeWorkspaceName ? " (current)" : ""}
+                    </Select.Item>
+                  ))}
+                </Select.Content>
+              </Select.Root>
               <Text size="1" color="gray">
-                This folder will contain your panels, git repositories, and cache.
+                Copy panels, packages, and agents from an existing workspace.
               </Text>
             </Flex>
           )}
 
-          {/* Step 1: Workspace Name */}
-          {step === 1 && (
+          {/* Git URL — only shown when not forking */}
+          {!formData.forkFrom && (
             <Flex direction="column" gap="3">
               <Text size="2" weight="medium">
-                Workspace Name
+                Git Template URL <Text size="1" color="gray">(optional)</Text>
               </Text>
               <TextField.Root
-                value={formData.workspaceName}
-                onChange={(e) => setFormData({ ...formData, workspaceName: e.target.value })}
-                placeholder="my-workspace"
-                autoFocus
+                value={formData.gitUrl}
+                onChange={(e) => setFormData({ ...formData, gitUrl: e.target.value })}
+                placeholder="https://github.com/user/template.git"
               />
               <Text size="1" color="gray">
-                This name will be used to identify the workspace.
+                Clone a template repository to initialize the workspace.
               </Text>
             </Flex>
           )}
@@ -141,7 +128,7 @@ export function WorkspaceWizard() {
           )}
         </Flex>
 
-        {/* Navigation Buttons */}
+        {/* Buttons */}
         <Flex gap="3" mt="4" justify="end">
           <Dialog.Close>
             <Button variant="soft" color="gray" disabled={isCreating}>
@@ -149,40 +136,14 @@ export function WorkspaceWizard() {
             </Button>
           </Dialog.Close>
 
-          {step > 0 && (
-            <Button variant="soft" onClick={handleBack} disabled={isCreating}>
-              Back
-            </Button>
-          )}
-
-          {step < 1 ? (
-            <Button onClick={handleNext} disabled={!canProceed()}>
-              Next
-            </Button>
-          ) : (
-            <Button onClick={handleCreate} disabled={isCreating || !canProceed()} color="green">
-              {isCreating ? "Creating..." : "Create Workspace"}
-            </Button>
-          )}
+          <Button
+            onClick={handleCreate}
+            disabled={isCreating || !formData.workspaceName}
+            color="green"
+          >
+            {isCreating ? "Creating..." : "Create Workspace"}
+          </Button>
         </Flex>
-
-        {/* Step Indicator */}
-        <Box mt="4">
-          <Flex gap="2" justify="center">
-            {[0, 1].map((s) => (
-              <Box
-                key={s}
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: "50%",
-                  backgroundColor:
-                    s === step ? "var(--accent-9)" : s < step ? "var(--accent-6)" : "var(--gray-5)",
-                }}
-              />
-            ))}
-          </Flex>
-        </Box>
       </Dialog.Content>
     </Dialog.Root>
   );

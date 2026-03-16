@@ -2,26 +2,27 @@
  * Central data management for NatStack.
  *
  * Manages persistent data stored in ~/.config/natstack/data.json including:
- * - Recent workspaces list for the workspace chooser
+ * - Workspace registry (authoritative source for workspace metadata)
  */
 
 import * as fs from "fs";
+import * as path from "path";
 import { getCentralConfigPaths } from "../shared/workspace/loader.js";
-import type { CentralData, RecentWorkspace } from "../shared/workspace/types.js";
-
-const MAX_RECENT_WORKSPACES = 10;
+import { getWorkspaceDir } from "@natstack/env-paths";
+import type { CentralData, WorkspaceEntry } from "../shared/workspace/types.js";
 
 /**
  * Default empty central data structure
  */
 function getDefaultData(): CentralData {
   return {
-    recentWorkspaces: [],
+    workspaces: [],
   };
 }
 
 /**
- * CentralDataManager handles persistence of app-level data.
+ * CentralDataManager handles persistence of workspace registry data.
+ * data.json is the sole authoritative source for workspace metadata.
  */
 export class CentralDataManager {
   private dataPath: string;
@@ -34,7 +35,7 @@ export class CentralDataManager {
   }
 
   /**
-   * Load data from disk
+   * Load data from disk, migrating legacy format if needed.
    */
   private load(): CentralData {
     try {
@@ -42,10 +43,13 @@ export class CentralDataManager {
         return getDefaultData();
       }
       const content = fs.readFileSync(this.dataPath, "utf-8");
-      const parsed = JSON.parse(content) as Partial<CentralData>;
-      return {
-        recentWorkspaces: parsed.recentWorkspaces ?? [],
-      };
+      const parsed = JSON.parse(content) as Record<string, unknown>;
+
+      if (Array.isArray(parsed["workspaces"])) {
+        return { workspaces: parsed["workspaces"] as WorkspaceEntry[] };
+      }
+
+      return getDefaultData();
     } catch (error) {
       console.warn("[CentralData] Failed to load:", error);
       return getDefaultData();
@@ -66,45 +70,67 @@ export class CentralDataManager {
   }
 
   /**
-   * Get the list of recent workspaces, sorted by most recently opened first
+   * List workspaces sorted by lastOpened descending (most recent first).
+   * Prunes entries whose directory no longer exists on disk.
    */
-  getRecentWorkspaces(): RecentWorkspace[] {
-    return [...this.data.recentWorkspaces].sort((a, b) => b.lastOpened - a.lastOpened);
+  listWorkspaces(): WorkspaceEntry[] {
+    let pruned = false;
+    this.data.workspaces = this.data.workspaces.filter((w) => {
+      const configPath = path.join(getWorkspaceDir(w.name), "natstack.yml");
+      if (fs.existsSync(configPath)) return true;
+      pruned = true;
+      return false;
+    });
+    if (pruned) this.save();
+    return [...this.data.workspaces].sort((a, b) => b.lastOpened - a.lastOpened);
   }
 
   /**
-   * Add or update a workspace in the recent list
+   * Check if a workspace exists in registry AND on disk.
+   * Prunes stale registry entries (dir gone).
    */
-  addRecentWorkspace(path: string, name: string): void {
-    // Remove existing entry if present
-    this.data.recentWorkspaces = this.data.recentWorkspaces.filter((w) => w.path !== path);
+  hasWorkspace(name: string): boolean {
+    const idx = this.data.workspaces.findIndex((w) => w.name === name);
+    if (idx === -1) return false;
 
-    // Add new entry at the beginning
-    this.data.recentWorkspaces.unshift({
-      path,
+    const configPath = path.join(getWorkspaceDir(name), "natstack.yml");
+    if (fs.existsSync(configPath)) return true;
+
+    // Stale entry — prune it
+    this.data.workspaces.splice(idx, 1);
+    this.save();
+    return false;
+  }
+
+  /**
+   * Add a new workspace to the registry.
+   */
+  addWorkspace(name: string, gitUrl?: string): void {
+    // Remove existing entry if present
+    this.data.workspaces = this.data.workspaces.filter((w) => w.name !== name);
+
+    this.data.workspaces.unshift({
       name,
       lastOpened: Date.now(),
+      ...(gitUrl ? { gitUrl } : {}),
     });
 
-    // Prune to max size
-    this.pruneOldWorkspaces();
-
     this.save();
   }
 
   /**
-   * Remove a workspace from the recent list
+   * Remove a workspace from the registry.
    */
-  removeRecentWorkspace(path: string): void {
-    this.data.recentWorkspaces = this.data.recentWorkspaces.filter((w) => w.path !== path);
+  removeWorkspace(name: string): void {
+    this.data.workspaces = this.data.workspaces.filter((w) => w.name !== name);
     this.save();
   }
 
   /**
-   * Update just the lastOpened timestamp for an existing workspace
+   * Update the lastOpened timestamp for an existing workspace.
    */
-  touchRecentWorkspace(path: string): void {
-    const workspace = this.data.recentWorkspaces.find((w) => w.path === path);
+  touchWorkspace(name: string): void {
+    const workspace = this.data.workspaces.find((w) => w.name === name);
     if (workspace) {
       workspace.lastOpened = Date.now();
       this.save();
@@ -112,14 +138,20 @@ export class CentralDataManager {
   }
 
   /**
-   * Keep only the most recent MAX_RECENT_WORKSPACES entries
+   * Get the last-opened workspace that still exists on disk.
+   * Returns null if no valid workspaces exist.
    */
-  private pruneOldWorkspaces(): void {
-    if (this.data.recentWorkspaces.length > MAX_RECENT_WORKSPACES) {
-      // Sort by lastOpened and keep only the newest
-      this.data.recentWorkspaces.sort((a, b) => b.lastOpened - a.lastOpened);
-      this.data.recentWorkspaces = this.data.recentWorkspaces.slice(0, MAX_RECENT_WORKSPACES);
+  getLastOpenedWorkspace(): WorkspaceEntry | null {
+    const sorted = [...this.data.workspaces].sort((a, b) => b.lastOpened - a.lastOpened);
+    let pruned = false;
+    for (const entry of sorted) {
+      const configPath = path.join(getWorkspaceDir(entry.name), "natstack.yml");
+      if (fs.existsSync(configPath)) return entry;
+      // Stale — prune
+      this.data.workspaces = this.data.workspaces.filter((w) => w.name !== entry.name);
+      pruned = true;
     }
+    if (pruned) this.save();
+    return null;
   }
 }
-

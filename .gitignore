@@ -56,6 +56,33 @@ workspace/.secrets.yml
 workspace/.databases/
 workspace/.contexts
 
+# Workspace runtime artifacts (Electron userData + build cache)
+workspace/builds/
+workspace/external-deps/
+workspace/ev-map.json
+workspace/ref-state.json
+workspace/Cache/
+workspace/Code Cache/
+workspace/Cookies
+workspace/Cookies-journal
+workspace/Crashpad/
+workspace/DIPS
+workspace/DawnGraphiteCache/
+workspace/DawnWebGPUCache/
+workspace/Dictionaries/
+workspace/GPUCache/
+workspace/Local Storage/
+workspace/Network Persistent State
+workspace/Preferences
+workspace/Session Storage/
+workspace/Shared Dictionary/
+workspace/SharedStorage
+workspace/TransportSecurity
+workspace/Trust Tokens
+workspace/Trust Tokens-journal
+workspace/blob_storage/
+workspace/Partitions/
+
 # Playwright
 packages/playwright-core/src/generated/
 

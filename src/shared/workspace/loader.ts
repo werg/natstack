@@ -3,21 +3,18 @@
  *
  * Two configuration sources:
  * 1. Central config (~/.config/natstack/): Models, secrets, env vars (shared)
- * 2. Workspace (project with natstack.yml): ID, git port, root panel, panels
+ * 2. Workspace (~/.config/natstack/workspaces/{name}/): natstack.yml, panels, etc.
  *
- * Discovery priority for workspace:
- * 1. CLI argument: --workspace=/path/to/workspace
- * 2. Environment variable: NATSTACK_WORKSPACE
- * 3. Walk up from cwd looking for natstack.yml
- * 4. Fall back to default workspace in userData directory
+ * Workspace resolution: CLI --workspace=name → NATSTACK_WORKSPACE env → null (show init UI)
  */
 
 import * as fs from "fs";
 import * as path from "path";
-import { getUserDataPath } from "@natstack/env-paths";
+import { getCentralDataPath, getWorkspacesDir, getWorkspaceDir } from "@natstack/env-paths";
 import YAML from "yaml";
 import dotenv from "dotenv";
 import { createDevLogger } from "@natstack/dev-log";
+import { execFileSync } from "child_process";
 
 const log = createDevLogger("Workspace");
 import type { Workspace, WorkspaceConfig, CentralConfig, CentralConfigPaths } from "./types.js";
@@ -32,14 +29,13 @@ const ENV_FILE = ".env";
 // =============================================================================
 
 /**
- * Get the central config directory path.
- * Uses Electron's userData path which is platform-specific:
+ * Get the central config directory path (shared across all workspaces).
  * - Linux: ~/.config/natstack
  * - macOS: ~/Library/Application Support/natstack
  * - Windows: %APPDATA%/natstack
  */
 export function getCentralConfigDir(): string {
-  return getUserDataPath();
+  return getCentralDataPath();
 }
 
 const DATA_FILE = "data.json";
@@ -186,171 +182,241 @@ export function saveCentralConfig(config: CentralConfig): void {
 // Workspace
 // =============================================================================
 
+const WORKSPACE_NAME_RE = /^[a-zA-Z0-9_-]+$/;
+const WORKSPACE_NAME_MAX_LENGTH = 64;
+
 /**
- * Parse --workspace=<path> from command line arguments
+ * Resolve workspace name from CLI --workspace=name or NATSTACK_WORKSPACE env var.
+ * Returns the validated name string or null if neither is set.
+ * Throws if the name is present but invalid (prevents path traversal).
  */
-export function parseCliWorkspacePath(): string | undefined {
+export function resolveWorkspaceName(): string | null {
+  let raw: string | undefined;
+
+  // 1. CLI argument: --workspace=name or --workspace name
   for (const arg of process.argv.slice(2)) {
     if (arg.startsWith("--workspace=")) {
-      return arg.slice("--workspace=".length);
+      raw = arg.slice("--workspace=".length);
+      break;
     }
   }
-  // Handle --workspace <path> format
-  const idx = process.argv.indexOf("--workspace");
-  if (idx !== -1) {
-    const nextArg = process.argv[idx + 1];
-    if (nextArg && !nextArg.startsWith("--")) {
-      return nextArg;
+  if (!raw) {
+    const idx = process.argv.indexOf("--workspace");
+    if (idx !== -1) {
+      const nextArg = process.argv[idx + 1];
+      if (nextArg && !nextArg.startsWith("--")) {
+        raw = nextArg;
+      }
     }
-  }
-  return undefined;
-}
-
-/**
- * Walk up the directory tree looking for natstack.yml
- */
-function findWorkspaceByWalkUp(startDir: string): string | null {
-  let current = path.resolve(startDir);
-  const root = path.parse(current).root;
-
-  while (current !== root) {
-    const configPath = path.join(current, WORKSPACE_CONFIG_FILE);
-    if (fs.existsSync(configPath)) {
-      return current;
-    }
-    current = path.dirname(current);
-  }
-
-  return null;
-}
-
-/**
- * Get the default workspace path in the user's config directory
- */
-function getDefaultWorkspacePath(): string {
-  try {
-    return path.join(getUserDataPath(), "default-workspace");
-  } catch {
-    // Fallback if app not ready
-    return path.join(process.cwd(), ".natstack-workspace");
-  }
-}
-
-/**
- * Create a default workspace configuration with full scaffolding.
- * This is the first-run experience for new users.
- */
-function createDefaultWorkspaceConfig(workspacePath: string): WorkspaceConfig {
-  const configPath = path.join(workspacePath, WORKSPACE_CONFIG_FILE);
-
-  // Generate a simple ID
-  const id = `workspace-${Date.now().toString(36)}`;
-
-  // Create workspace config that references shipped panels
-  // In production, these will be loaded from pre-built bundles
-  const config: WorkspaceConfig = {
-    id,
-    // Root panel to show when workspace opens (chat panel handles both setup and chat phases)
-    rootPanel: "panels/chat",
-  };
-
-  console.log(`[Workspace] Creating default workspace at ${workspacePath}`);
-
-  // Create workspace directory structure
-  fs.mkdirSync(workspacePath, { recursive: true });
-
-  // Core directories
-  fs.mkdirSync(path.join(workspacePath, "panels"), { recursive: true });
-  fs.mkdirSync(path.join(workspacePath, "packages"), { recursive: true });
-  fs.mkdirSync(path.join(workspacePath, "contexts"), { recursive: true });
-  fs.mkdirSync(path.join(workspacePath, ".cache"), { recursive: true });
-  fs.mkdirSync(path.join(workspacePath, ".databases"), { recursive: true });
-
-  // Write config with helpful comments
-  const configContent = `# NatStack Workspace Configuration
-# Generated: ${new Date().toISOString()}
-
-# Unique workspace identifier
-id: ${id}
-
-# Default panel to open when workspace loads
-# Chat panel handles both setup (agent selection) and chat phases
-rootPanel: panels/chat
-
-# Git server configuration (optional)
-# git:
-#   port: 7878
-#   github:
-#     token: \${GITHUB_TOKEN}  # Can use environment variable
-
-# Custom panels can be added to the panels/ directory
-# Each panel needs a package.json with a natstack configuration
-`;
-
-  fs.writeFileSync(configPath, configContent, "utf-8");
-
-  console.log(`[Workspace] Default workspace created successfully`);
-
-  return config;
-}
-
-/**
- * Discover the workspace directory.
- *
- * Priority:
- * 1. CLI argument (--workspace=<path>)
- * 2. Environment variable (NATSTACK_WORKSPACE)
- * 3. Walk up from cwd looking for natstack.yml
- * 4. Default workspace in userData
- */
-export function discoverWorkspace(cliPath?: string): string {
-  // 1. CLI argument
-  if (cliPath) {
-    const resolved = path.resolve(cliPath);
-    if (fs.existsSync(path.join(resolved, WORKSPACE_CONFIG_FILE))) {
-      return resolved;
-    }
-    // If the path exists but no config, we'll create one
-    if (fs.existsSync(resolved)) {
-      return resolved;
-    }
-    console.warn(`[Workspace] CLI path ${cliPath} does not exist, ignoring`);
   }
 
   // 2. Environment variable
-  const envPath = process.env["NATSTACK_WORKSPACE"];
-  if (envPath) {
-    const resolved = path.resolve(envPath);
-    if (fs.existsSync(resolved)) {
-      return resolved;
+  if (!raw) {
+    raw = process.env["NATSTACK_WORKSPACE"];
+  }
+
+  if (!raw) return null;
+
+  // Validate to prevent path traversal (e.g., "../otherdir")
+  validateWorkspaceName(raw);
+  return raw;
+}
+
+/**
+ * Validate a workspace name.
+ * Must be alphanumeric with hyphens/underscores, max 64 chars.
+ */
+function validateWorkspaceName(name: string): void {
+  if (!name) throw new Error("Workspace name cannot be empty");
+  if (name.length > WORKSPACE_NAME_MAX_LENGTH) {
+    throw new Error(`Workspace name too long (max ${WORKSPACE_NAME_MAX_LENGTH} chars)`);
+  }
+  if (!WORKSPACE_NAME_RE.test(name)) {
+    throw new Error("Workspace name must contain only letters, numbers, hyphens, and underscores");
+  }
+}
+
+/** Source directories to copy when forking or creating from a template. */
+const SOURCE_DIRS = ["panels", "packages", "agents", "workers", "skills", "about"];
+
+/** Runtime directories — never copied, always scaffolded fresh. */
+const RUNTIME_DIRS = [".cache", ".databases", ".contexts"];
+
+/**
+ * Initialize a new managed workspace directory.
+ *
+ * Source options (mutually exclusive, at most one):
+ * - `gitUrl`:     Clone from a remote git template
+ * - `templateDir`: Copy source dirs from a local directory (e.g., the shipped workspace template)
+ * - `forkFrom`:   Copy source dirs from another managed workspace by name
+ *
+ * If none are provided, creates a bare workspace with scaffolding.
+ * Fails if the directory already exists on disk.
+ */
+export function initWorkspace(
+  name: string,
+  opts?: { gitUrl?: string; templateDir?: string; forkFrom?: string }
+): void {
+  validateWorkspaceName(name);
+
+  const wsDir = getWorkspaceDir(name);
+
+  if (fs.existsSync(wsDir)) {
+    throw new Error(`Workspace directory already exists: ${wsDir}`);
+  }
+
+  // Ensure parent workspaces/ dir exists
+  fs.mkdirSync(getWorkspacesDir(), { recursive: true });
+
+  // Resolve source directory for template/fork
+  let sourceDir: string | null = null;
+
+  if (opts?.gitUrl) {
+    // Clone from remote — use execFileSync with argv to prevent shell injection
+    try {
+      execFileSync("git", ["clone", opts.gitUrl, wsDir], {
+        stdio: "pipe",
+        timeout: 60000,
+      });
+    } catch (error) {
+      fs.rmSync(wsDir, { recursive: true, force: true });
+      throw new Error(`Failed to clone template: ${error instanceof Error ? error.message : String(error)}`);
     }
-    console.warn(`[Workspace] NATSTACK_WORKSPACE path ${envPath} does not exist, ignoring`);
+  } else if (opts?.templateDir) {
+    sourceDir = opts.templateDir;
+  } else if (opts?.forkFrom) {
+    sourceDir = getWorkspaceDir(opts.forkFrom);
+    if (!fs.existsSync(path.join(sourceDir, WORKSPACE_CONFIG_FILE))) {
+      throw new Error(`Source workspace "${opts.forkFrom}" does not exist`);
+    }
   }
 
-  // 3. Walk up from cwd
-  const walkUpResult = findWorkspaceByWalkUp(process.cwd());
-  if (walkUpResult) {
-    return walkUpResult;
+  // If we have a local source dir (template or fork), copy source dirs
+  if (sourceDir) {
+    fs.mkdirSync(wsDir, { recursive: true });
+    for (const dir of SOURCE_DIRS) {
+      const src = path.join(sourceDir, dir);
+      if (fs.existsSync(src)) {
+        copyDirRecursive(src, path.join(wsDir, dir));
+      }
+    }
+    // Copy natstack.yml if present (will be rewritten below)
+    const srcConfig = path.join(sourceDir, WORKSPACE_CONFIG_FILE);
+    if (fs.existsSync(srcConfig)) {
+      fs.copyFileSync(srcConfig, path.join(wsDir, WORKSPACE_CONFIG_FILE));
+    }
+  } else if (!opts?.gitUrl) {
+    // Bare workspace
+    fs.mkdirSync(wsDir, { recursive: true });
   }
 
-  // 4. Default workspace
-  return getDefaultWorkspacePath();
+  // Scaffold runtime + source directories
+  for (const dir of [...SOURCE_DIRS, ...RUNTIME_DIRS]) {
+    fs.mkdirSync(path.join(wsDir, dir), { recursive: true });
+  }
+
+  // Write/rewrite natstack.yml — always regenerate instance-specific fields
+  const configPath = path.join(wsDir, WORKSPACE_CONFIG_FILE);
+  const randomPort = 49152 + Math.floor(Math.random() * 16383);
+
+  if (fs.existsSync(configPath)) {
+    const content = fs.readFileSync(configPath, "utf-8");
+    const config = YAML.parse(content) as WorkspaceConfig;
+    config.id = name;
+    if (!config.git) config.git = {};
+    config.git.port = randomPort;
+    fs.writeFileSync(configPath, YAML.stringify(config), "utf-8");
+  } else {
+    const configContent = `# NatStack Workspace Configuration
+id: ${name}
+
+rootPanel: panels/chat
+
+git:
+  port: ${randomPort}
+`;
+    fs.writeFileSync(configPath, configContent, "utf-8");
+  }
+
+  // Initialize git repos for all source subdirectories (panels, packages, etc.)
+  // so the build system can extract source and compute effective versions.
+  initGitRepos(wsDir);
+
+  log.info(`[Workspace] Created managed workspace "${name}" at ${wsDir}`);
+}
+
+/** Recursively copy a directory, skipping .git, node_modules, and .cache. */
+function copyDirRecursive(src: string, dest: string): void {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === ".cache") continue;
+      copyDirRecursive(srcPath, destPath);
+    } else if (entry.isFile()) {
+      fs.copyFileSync(srcPath, destPath);
+    }
+  }
+}
+
+/**
+ * Initialize git repos for all immediate subdirectories within each source dir.
+ * Mirrors the commit-workspace.sh pattern: each panel/package/agent/worker/skill/about-page
+ * becomes its own git repo with an initial commit.
+ */
+function initGitRepos(wsDir: string): void {
+  // Verify git is available before attempting repo initialization
+  try {
+    execFileSync("git", ["--version"], { stdio: "pipe" });
+  } catch {
+    throw new Error("git is required but not found on PATH — cannot initialize workspace");
+  }
+
+  for (const sourceDir of SOURCE_DIRS) {
+    const parentDir = path.join(wsDir, sourceDir);
+    if (!fs.existsSync(parentDir)) continue;
+
+    for (const entry of fs.readdirSync(parentDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const repoDir = path.join(parentDir, entry.name);
+
+      // Skip if already a git repo
+      if (fs.existsSync(path.join(repoDir, ".git"))) continue;
+
+      // Skip empty directories
+      const contents = fs.readdirSync(repoDir);
+      if (contents.length === 0) continue;
+
+      execFileSync("git", ["init"], { cwd: repoDir, stdio: "pipe" });
+      execFileSync("git", ["add", "-A"], { cwd: repoDir, stdio: "pipe" });
+      execFileSync(
+        "git",
+        ["-c", "user.email=natstack@local", "-c", "user.name=natstack", "commit", "-m", "Initial workspace"],
+        { cwd: repoDir, stdio: "pipe" },
+      );
+    }
+  }
+}
+
+/**
+ * Delete a managed workspace directory.
+ */
+export function deleteWorkspaceDir(name: string): void {
+  const wsDir = getWorkspaceDir(name);
+  if (fs.existsSync(wsDir)) {
+    fs.rmSync(wsDir, { recursive: true, force: true });
+    log.info(`[Workspace] Deleted workspace directory "${name}"`);
+  }
 }
 
 /**
  * Load and parse natstack.yml from a workspace directory
  */
-export function loadWorkspaceConfig(
-  workspacePath: string,
-  options?: { createIfMissing?: boolean }
-): WorkspaceConfig {
+export function loadWorkspaceConfig(workspacePath: string): WorkspaceConfig {
   const configPath = path.join(workspacePath, WORKSPACE_CONFIG_FILE);
 
   if (!fs.existsSync(configPath)) {
-    if (options?.createIfMissing) {
-      log.verbose(` No ${WORKSPACE_CONFIG_FILE} found, creating default`);
-      return createDefaultWorkspaceConfig(workspacePath);
-    }
     throw new Error(`${WORKSPACE_CONFIG_FILE} not found at ${workspacePath}`);
   }
 
@@ -366,41 +432,24 @@ export function loadWorkspaceConfig(
 }
 
 /**
- * Create a fully resolved Workspace object
+ * Create a fully resolved Workspace object from an existing workspace directory.
  */
-export function createWorkspace(
-  workspacePath: string,
-  options?: { createIfMissing?: boolean }
-): Workspace {
+export function createWorkspace(workspacePath: string): Workspace {
   const resolvedPath = path.resolve(workspacePath);
 
-  // Workspace directories (no state/ prefix)
   const panelsPath = path.join(resolvedPath, "panels");
   const packagesPath = path.join(resolvedPath, "packages");
-  const contextsPath = path.join(resolvedPath, "contexts");
+  const contextsPath = path.join(resolvedPath, ".contexts");
   const gitReposPath = resolvedPath;
   const cachePath = path.join(resolvedPath, ".cache");
   const agentsPath = path.join(resolvedPath, "agents");
 
-  // Only create directories/config when explicitly allowed
-  const configPath = path.join(resolvedPath, WORKSPACE_CONFIG_FILE);
-  const configExists = fs.existsSync(configPath);
-  if (!configExists && !options?.createIfMissing) {
-    throw new Error(`Workspace config not found at ${configPath}`);
-  }
+  // Ensure directory structure exists
+  fs.mkdirSync(panelsPath, { recursive: true });
+  fs.mkdirSync(contextsPath, { recursive: true });
+  fs.mkdirSync(cachePath, { recursive: true });
 
-  // Ensure directory structure when creating/loading explicitly
-  if (options?.createIfMissing || configExists) {
-    fs.mkdirSync(panelsPath, { recursive: true });
-    fs.mkdirSync(contextsPath, { recursive: true });
-    fs.mkdirSync(gitReposPath, { recursive: true });
-    fs.mkdirSync(cachePath, { recursive: true });
-    // Note: packagesPath is not created automatically
-    // It's optional and users create it when needed
-  }
-
-  // Load config (creates default if missing)
-  const config = loadWorkspaceConfig(resolvedPath, { createIfMissing: options?.createIfMissing });
+  const config = loadWorkspaceConfig(resolvedPath);
 
   return {
     path: resolvedPath,

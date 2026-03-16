@@ -1,15 +1,15 @@
 import { atom } from "jotai";
-import type { RecentWorkspace, SettingsData } from "../../shared/types.js";
-import { central, settings, workspace } from "../shell/client.js";
+import type { WorkspaceEntry, SettingsData } from "../../shared/types.js";
+import { settings, workspace } from "../shell/client.js";
 
 // =============================================================================
-// Recent Workspaces State
+// Workspace State
 // =============================================================================
 
 /**
- * List of recently opened workspaces
+ * List of workspaces
  */
-export const recentWorkspacesAtom = atom<RecentWorkspace[]>([]);
+export const recentWorkspacesAtom = atom<WorkspaceEntry[]>([]);
 
 /**
  * Whether workspaces are currently loading
@@ -17,34 +17,42 @@ export const recentWorkspacesAtom = atom<RecentWorkspace[]>([]);
 export const workspacesLoadingAtom = atom(false);
 
 /**
- * Load recent workspaces from main process
+ * Name of the currently active workspace
+ */
+export const activeWorkspaceNameAtom = atom<string | null>(null);
+
+/**
+ * Load workspaces from main process
  */
 export const loadRecentWorkspacesAtom = atom(null, async (_get, set) => {
   set(workspacesLoadingAtom, true);
   try {
-    const workspaces = await central.getRecentWorkspaces();
+    const [workspaces, activeName] = await Promise.all([
+      workspace.list(),
+      workspace.getActive(),
+    ]);
     set(recentWorkspacesAtom, workspaces);
+    set(activeWorkspaceNameAtom, activeName);
   } catch (error) {
-    console.error("Failed to load recent workspaces:", error);
+    console.error("Failed to load workspaces:", error);
   } finally {
     set(workspacesLoadingAtom, false);
   }
 });
 
 /**
- * Remove a workspace from recent list
+ * Delete a workspace
  */
-export const removeRecentWorkspaceAtom = atom(null, async (get, set, path: string) => {
+export const removeRecentWorkspaceAtom = atom(null, async (get, set, name: string) => {
   try {
-    await central.removeRecentWorkspace(path);
-    // Update local state
+    await workspace.delete(name);
     const current = get(recentWorkspacesAtom);
     set(
       recentWorkspacesAtom,
-      current.filter((w) => w.path !== path)
+      current.filter((w) => w.name !== name)
     );
   } catch (error) {
-    console.error("Failed to remove recent workspace:", error);
+    console.error("Failed to delete workspace:", error);
   }
 });
 
@@ -55,9 +63,9 @@ export const removeRecentWorkspaceAtom = atom(null, async (get, set, path: strin
 /**
  * Select and open a workspace (triggers app relaunch)
  */
-export const selectWorkspaceAtom = atom(null, async (_get, _set, path: string) => {
+export const selectWorkspaceAtom = atom(null, async (_get, _set, name: string) => {
   try {
-    await workspace.select(path);
+    await workspace.select(name);
     // App will relaunch, no need to update state
   } catch (error) {
     console.error("Failed to select workspace:", error);
@@ -199,21 +207,18 @@ export const workspaceChooserDialogOpenAtom = atom(false);
 export const wizardDialogOpenAtom = atom(false);
 
 /**
- * Current wizard step (0-indexed)
- */
-export const wizardStepAtom = atom(0);
-
-/**
  * Wizard form data
  */
 export interface WizardFormData {
-  folderPath: string;
   workspaceName: string;
+  gitUrl: string;
+  forkFrom: string;
 }
 
 export const wizardFormDataAtom = atom<WizardFormData>({
-  folderPath: "",
   workspaceName: "",
+  gitUrl: "",
+  forkFrom: "",
 });
 
 /**
@@ -230,8 +235,7 @@ export const wizardErrorAtom = atom<string | null>(null);
  * Reset wizard state
  */
 export const resetWizardAtom = atom(null, (_get, set) => {
-  set(wizardStepAtom, 0);
-  set(wizardFormDataAtom, { folderPath: "", workspaceName: "" });
+  set(wizardFormDataAtom, { workspaceName: "", gitUrl: "", forkFrom: "" });
   set(wizardCreatingAtom, false);
   set(wizardErrorAtom, null);
 });
@@ -242,8 +246,8 @@ export const resetWizardAtom = atom(null, (_get, set) => {
 export const createWorkspaceAtom = atom(null, async (get, set) => {
   const formData = get(wizardFormDataAtom);
 
-  if (!formData.folderPath || !formData.workspaceName) {
-    set(wizardErrorAtom, "Folder path and workspace name are required");
+  if (!formData.workspaceName) {
+    set(wizardErrorAtom, "Workspace name is required");
     return null;
   }
 
@@ -251,19 +255,17 @@ export const createWorkspaceAtom = atom(null, async (get, set) => {
   set(wizardErrorAtom, null);
 
   try {
-    const result = await workspace.create(
-      formData.folderPath,
-      formData.workspaceName
+    const opts: { gitUrl?: string; forkFrom?: string } = {};
+    if (formData.gitUrl) opts.gitUrl = formData.gitUrl;
+    if (formData.forkFrom) opts.forkFrom = formData.forkFrom;
+    await workspace.create(
+      formData.workspaceName,
+      Object.keys(opts).length > 0 ? opts : undefined,
     );
 
-    if (!result.isValid) {
-      set(wizardErrorAtom, result.error || "Failed to create workspace");
-      return null;
-    }
-
     // Select the newly created workspace (triggers app relaunch)
-    await workspace.select(result.path);
-    return result;
+    await workspace.select(formData.workspaceName);
+    return true;
   } catch (error) {
     set(wizardErrorAtom, error instanceof Error ? error.message : String(error));
     return null;

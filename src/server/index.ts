@@ -62,7 +62,7 @@ const ipcChannel = detectServerIpcChannel();
 // =============================================================================
 
 interface CliArgs {
-  workspace?: string;
+  workspaceDir?: string;
   dataDir?: string;
   appRoot?: string;
   logLevel?: string;
@@ -72,7 +72,7 @@ interface CliArgs {
 
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {};
-  const known = new Set(["workspace", "data-dir", "app-root", "log-level", "serve-panels", "panel-port"]);
+  const known = new Set(["workspace", "workspace-dir", "data-dir", "app-root", "log-level", "serve-panels", "panel-port"]);
   /** Flags that don't take a value */
   const booleanFlags = new Set(["serve-panels"]);
 
@@ -113,7 +113,8 @@ function parseArgs(argv: string[]): CliArgs {
 
     switch (key) {
       case "workspace":
-        args.workspace = value;
+      case "workspace-dir":
+        args.workspaceDir = value;
         break;
       case "data-dir":
         args.dataDir = value;
@@ -145,6 +146,7 @@ let args: CliArgs = {};
 if (!ipcChannel) {
   // Standalone mode: parse CLI args, set env vars
   args = parseArgs(process.argv.slice(2));
+  if (args.workspaceDir) process.env["NATSTACK_WORKSPACE_DIR"] = args.workspaceDir;
   if (args.dataDir) process.env["NATSTACK_USER_DATA_PATH"] = args.dataDir;
   process.env["NATSTACK_APP_ROOT"] = args.appRoot ?? process.cwd();
   if (args.logLevel) process.env["NATSTACK_LOG_LEVEL"] = args.logLevel;
@@ -158,7 +160,7 @@ if (!ipcChannel) {
 
 async function main() {
   const { setUserDataPath, getUserDataPath } = await import("@natstack/env-paths");
-  const { loadCentralEnv, discoverWorkspace, createWorkspace } = await import("../shared/workspace/loader.js");
+  const { loadCentralEnv, createWorkspace } = await import("../shared/workspace/loader.js");
   const { GitServer } = await import("@natstack/git-server");
   const { TokenManager } = await import("../shared/tokenManager.js");
   const { z } = await import("zod");
@@ -180,8 +182,16 @@ async function main() {
   // Workspace resolution
   // ===========================================================================
 
-  const workspaceArg = args.workspace ?? process.env["NATSTACK_WORKSPACE"];
-  const workspacePath = discoverWorkspace(workspaceArg);
+  const workspacePath = args.workspaceDir ?? process.env["NATSTACK_WORKSPACE_DIR"];
+  if (!workspacePath) {
+    const msg = "No workspace directory specified (set NATSTACK_WORKSPACE_DIR or --workspace-dir)";
+    if (ipcChannel) {
+      ipcChannel.postMessage({ type: "error", message: msg });
+      process.exit(1);
+    }
+    console.error(msg);
+    process.exit(1);
+  }
   const configPath = path.join(workspacePath, "natstack.yml");
   if (!fs.existsSync(configPath)) {
     const msg = `Workspace config not found: ${configPath}`;
@@ -193,6 +203,21 @@ async function main() {
     process.exit(1);
   }
   const workspace = createWorkspace(workspacePath);
+
+  // ===========================================================================
+  // App node_modules resolution (for @natstack/* platform packages)
+  // ===========================================================================
+
+  const appRoot = process.env["NATSTACK_APP_ROOT"] ?? process.cwd();
+  // In production, esbuild (native binary) can't read from .asar — use .asar.unpacked
+  const appNodeModulesCandidates = [
+    path.join(appRoot, "node_modules"),
+    path.join(appRoot.replace(/\.asar$/, ".asar.unpacked"), "node_modules"),
+  ];
+  const appNodeModules = appNodeModulesCandidates.find((p) => fs.existsSync(p));
+  if (!appNodeModules) {
+    console.warn("[Server] Could not find app node_modules — panel builds may fail");
+  }
 
   // ===========================================================================
   // Service initialization
@@ -250,7 +275,7 @@ async function main() {
   container.register({
     name: "buildSystem",
     async start() {
-      return await initBuildSystemV2(workspacePath, gitServer);
+      return await initBuildSystemV2(workspacePath, gitServer, appNodeModules ?? path.join(appRoot, "node_modules"));
     },
     async stop(instance: import("./buildV2/index.js").BuildSystemV2) { await instance?.shutdown(); },
   });

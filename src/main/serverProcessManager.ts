@@ -31,7 +31,6 @@ export class ServerProcessManager {
   constructor(private config: {
     workspacePath: string;
     appRoot: string;
-    dataDir?: string;
     logLevel?: string;
     /** Called if the server process exits unexpectedly */
     onCrash: (code: number | null) => void;
@@ -95,9 +94,9 @@ export class ServerProcessManager {
     const bundlePath = path.join(this.config.appRoot, "dist", "server-electron.cjs");
     const env: Record<string, string | undefined> = {
       ...process.env,
-      NATSTACK_WORKSPACE: this.config.workspacePath,
+      NATSTACK_WORKSPACE_DIR: this.config.workspacePath,
+      NATSTACK_USER_DATA_PATH: this.config.workspacePath,
       NATSTACK_APP_ROOT: this.config.appRoot,
-      ...(this.config.dataDir ? { NATSTACK_USER_DATA_PATH: this.config.dataDir } : {}),
       ...(this.config.logLevel ? { NATSTACK_LOG_LEVEL: this.config.logLevel } : {}),
     };
 

@@ -1,11 +1,12 @@
 import { useEffect } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { Box, Button, Card, Flex, Heading, IconButton, Separator, Text } from "@radix-ui/themes";
-import { Cross2Icon, FileIcon, GearIcon, PlusIcon } from "@radix-ui/react-icons";
+import { Cross2Icon, GearIcon, PlusIcon } from "@radix-ui/react-icons";
 
 import {
   recentWorkspacesAtom,
   workspacesLoadingAtom,
+  activeWorkspaceNameAtom,
   loadRecentWorkspacesAtom,
   removeRecentWorkspaceAtom,
   selectWorkspaceAtom,
@@ -13,12 +14,12 @@ import {
   wizardDialogOpenAtom,
   wizardFormDataAtom,
 } from "../state/appModeAtoms";
-import { workspace } from "../shell/client";
-import type { RecentWorkspace } from "../../shared/types";
+import type { WorkspaceEntry } from "../../shared/types";
 
 export function WorkspaceChooser() {
   const recentWorkspaces = useAtomValue(recentWorkspacesAtom);
   const isLoading = useAtomValue(workspacesLoadingAtom);
+  const activeWorkspaceName = useAtomValue(activeWorkspaceNameAtom);
   const loadRecentWorkspaces = useSetAtom(loadRecentWorkspacesAtom);
   const removeRecentWorkspace = useSetAtom(removeRecentWorkspaceAtom);
   const selectWorkspace = useSetAtom(selectWorkspaceAtom);
@@ -26,77 +27,35 @@ export function WorkspaceChooser() {
   const setWizardDialogOpen = useSetAtom(wizardDialogOpenAtom);
   const setWizardFormData = useSetAtom(wizardFormDataAtom);
 
-  // Load recent workspaces on mount
+  // Load workspaces on mount
   useEffect(() => {
     void loadRecentWorkspaces();
   }, [loadRecentWorkspaces]);
 
-  const handleOpenFolder = async () => {
+  const handleSelectWorkspace = async (ws: WorkspaceEntry) => {
     try {
-      const folderPath = await workspace.openFolderDialog();
-      if (!folderPath) return;
-
-      // Validate the selected folder
-      const validation = await workspace.validatePath(folderPath);
-
-      if (validation.hasConfig) {
-        // Valid workspace - open it directly
-        await selectWorkspace(validation.path);
-      } else {
-        // No config - open wizard with pre-filled path
-        setWizardFormData({
-          folderPath: validation.path,
-          workspaceName: validation.name,
-        });
-        setWizardDialogOpen(true);
-      }
-    } catch (error) {
-      console.error("Failed to open folder:", error);
-    }
-  };
-
-  const handleSelectWorkspace = async (workspace: RecentWorkspace) => {
-    try {
-      await selectWorkspace(workspace.path);
+      await selectWorkspace(ws.name);
     } catch (error) {
       console.error("Failed to select workspace:", error);
     }
   };
 
-  const handleRemoveWorkspace = async (e: React.MouseEvent, path: string) => {
+  const handleRemoveWorkspace = async (e: React.MouseEvent, name: string) => {
     e.stopPropagation();
-    await removeRecentWorkspace(path);
+    await removeRecentWorkspace(name);
   };
 
   const handleCreateNew = () => {
     setWizardFormData({
-      folderPath: "",
       workspaceName: "",
+      gitUrl: "",
+      forkFrom: "",
     });
     setWizardDialogOpen(true);
   };
 
   const handleOpenSettings = () => {
     setSettingsDialogOpen(true);
-  };
-
-  // Format path for display (shorten home directory)
-  // Note: In Electron renderer with contextIsolation, we can't access process.env
-  // So we just try common home directory patterns
-  const formatPath = (filePath: string): string => {
-    // Try to detect home directory from path patterns
-    const homePatterns = [
-      /^\/home\/[^/]+/, // Linux
-      /^\/Users\/[^/]+/, // macOS
-      /^[A-Z]:\\Users\\[^\\]+/i, // Windows
-    ];
-    for (const pattern of homePatterns) {
-      const match = filePath.match(pattern);
-      if (match) {
-        return "~" + filePath.slice(match[0].length);
-      }
-    }
-    return filePath;
   };
 
   return (
@@ -119,12 +78,12 @@ export function WorkspaceChooser() {
         </Text>
       </Flex>
 
-      {/* Recent Workspaces */}
+      {/* Workspaces */}
       <Card style={{ flex: 1, overflow: "hidden" }}>
         <Flex direction="column" style={{ height: "100%" }}>
           <Flex justify="between" align="center" mb="3">
             <Text size="2" weight="medium" color="gray">
-              Recent Workspaces
+              Workspaces
             </Text>
             {isLoading && (
               <Text size="1" color="gray">
@@ -144,18 +103,18 @@ export function WorkspaceChooser() {
             {recentWorkspaces.length === 0 ? (
               <Flex align="center" justify="center" style={{ height: "100%", minHeight: "120px" }}>
                 <Text size="2" color="gray">
-                  No recent workspaces
+                  No workspaces yet
                 </Text>
               </Flex>
             ) : (
               <Flex direction="column" gap="2">
-                {recentWorkspaces.map((workspace) => (
+                {recentWorkspaces.map((ws) => (
                   <WorkspaceItem
-                    key={workspace.path}
-                    workspace={workspace}
-                    formatPath={formatPath}
-                    onSelect={() => handleSelectWorkspace(workspace)}
-                    onRemove={(e) => handleRemoveWorkspace(e, workspace.path)}
+                    key={ws.name}
+                    workspace={ws}
+                    isActive={ws.name === activeWorkspaceName}
+                    onSelect={() => handleSelectWorkspace(ws)}
+                    onRemove={(e) => handleRemoveWorkspace(e, ws.name)}
                   />
                 ))}
               </Flex>
@@ -166,10 +125,6 @@ export function WorkspaceChooser() {
 
       {/* Action Buttons */}
       <Flex gap="3" mt="4" justify="center">
-        <Button variant="soft" size="3" onClick={handleOpenFolder}>
-          <FileIcon />
-          Open Folder...
-        </Button>
         <Button variant="soft" size="3" color="green" onClick={handleCreateNew}>
           <PlusIcon />
           Create New Workspace
@@ -190,13 +145,13 @@ export function WorkspaceChooser() {
 }
 
 interface WorkspaceItemProps {
-  workspace: RecentWorkspace;
-  formatPath: (path: string) => string;
+  workspace: WorkspaceEntry;
+  isActive: boolean;
   onSelect: () => void;
   onRemove: (e: React.MouseEvent) => void;
 }
 
-function WorkspaceItem({ workspace, formatPath, onSelect, onRemove }: WorkspaceItemProps) {
+function WorkspaceItem({ workspace, isActive, onSelect, onRemove }: WorkspaceItemProps) {
   return (
     <Card asChild style={{ cursor: "pointer" }} className="workspace-item">
       <button
@@ -213,20 +168,27 @@ function WorkspaceItem({ workspace, formatPath, onSelect, onRemove }: WorkspaceI
           <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
             <Text size="2" weight="medium" truncate>
               {workspace.name}
+              {isActive && (
+                <Text size="1" color="gray" ml="2">(current)</Text>
+              )}
             </Text>
-            <Text size="1" color="gray" truncate style={{ fontFamily: "var(--font-mono)" }}>
-              {formatPath(workspace.path)}
-            </Text>
+            {workspace.gitUrl && (
+              <Text size="1" color="gray" truncate style={{ fontFamily: "var(--font-mono)" }}>
+                {workspace.gitUrl}
+              </Text>
+            )}
           </Flex>
-          <IconButton
-            variant="ghost"
-            size="1"
-            color="gray"
-            onClick={onRemove}
-            style={{ flexShrink: 0 }}
-          >
-            <Cross2Icon />
-          </IconButton>
+          {!isActive && (
+            <IconButton
+              variant="ghost"
+              size="1"
+              color="gray"
+              onClick={onRemove}
+              style={{ flexShrink: 0 }}
+            >
+              <Cross2Icon />
+            </IconButton>
+          )}
         </Flex>
       </button>
     </Card>

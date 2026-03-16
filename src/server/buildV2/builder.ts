@@ -26,6 +26,26 @@ import { extractSourceForBuild } from "./sourceExtractor.js";
 import { PANEL_CSP_META } from "../../shared/constants.js";
 
 // ---------------------------------------------------------------------------
+// Module Initialization
+// ---------------------------------------------------------------------------
+
+/**
+ * Absolute path to the app's node_modules directory, where @natstack/*
+ * platform packages are installed. Must be set via initBuilder() before
+ * any builds run. These packages use workspace:* versions in package.json,
+ * so they're skipped by ensureExternalDeps and resolved via this path instead.
+ */
+let _appNodeModules: string | null = null;
+
+/**
+ * Initialize the builder with the app's node_modules path.
+ * Must be called once before any buildUnit() calls.
+ */
+export function initBuilder(appNodeModules: string): void {
+  _appNodeModules = appNodeModules;
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -828,9 +848,10 @@ async function prepareBuildEnv(
   const nodeModulesDir = await ensureExternalDeps(externalDeps);
   const nodePaths = nodeModulesDir ? [nodeModulesDir] : [];
 
-  const rootNodeModules = path.join(workspaceRoot, "..", "node_modules");
-  if (fs.existsSync(rootNodeModules)) {
-    nodePaths.push(rootNodeModules);
+  // App's node_modules for @natstack/* packages (workspace:* deps).
+  // These are skipped by ensureExternalDeps and must be found via nodePaths.
+  if (_appNodeModules) {
+    nodePaths.push(_appNodeModules);
   }
 
   const resolveDir = pickResolveDir(nodePaths, workspaceRoot);

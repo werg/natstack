@@ -35,7 +35,7 @@ import {
 } from "./effectiveVersion.js";
 import * as buildStore from "./buildStore.js";
 import type { BuildResult } from "./buildStore.js";
-import { buildUnit, type BuildUnitOptions } from "./builder.js";
+import { buildUnit, initBuilder, type BuildUnitOptions } from "./builder.js";
 import { PushTrigger } from "./pushTrigger.js";
 import type { GitServer } from "@natstack/git-server";
 
@@ -95,8 +95,12 @@ export interface BuildSystemV2 {
 export async function initBuildSystemV2(
   workspaceRoot: string,
   gitServer: GitServer,
+  appNodeModules: string,
 ): Promise<BuildSystemV2> {
   console.log("[BuildV2] Initializing...");
+
+  // Declare where @natstack/* platform packages live (workspace:* deps).
+  initBuilder(appNodeModules);
 
   // Step 1: Discover package graph
   const graph = discoverPackageGraph(workspaceRoot);

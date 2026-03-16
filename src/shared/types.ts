@@ -178,18 +178,10 @@ export interface Panel {
 // =============================================================================
 
 
-export interface RecentWorkspace {
-  path: string;
+export interface WorkspaceEntry {
   name: string;
   lastOpened: number;
-}
-
-export interface WorkspaceValidation {
-  path: string;
-  name: string;
-  isValid: boolean;
-  hasConfig: boolean;
-  error?: string;
+  gitUrl?: string;
 }
 
 export interface ProviderInfo {

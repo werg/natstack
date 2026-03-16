@@ -38,8 +38,7 @@ import type {
   ThemeAppearance,
   Panel,
   PanelContextMenuAction,
-  RecentWorkspace,
-  WorkspaceValidation,
+  WorkspaceEntry,
   SettingsData,
   MovePanelRequest,
   GetChildrenPaginatedRequest,
@@ -147,24 +146,12 @@ export const menu = {
 // =============================================================================
 
 export const workspace = {
-  validatePath: (path: string) =>
-    rpc.call<WorkspaceValidation>("main", "workspace.validatePath", path),
-  openFolderDialog: () => rpc.call<string | null>("main", "workspace.openFolderDialog"),
-  create: (path: string, name: string) =>
-    rpc.call<WorkspaceValidation>("main", "workspace.create", path, name),
-  select: (path: string) => rpc.call<void>("main", "workspace.select", path),
-};
-
-// =============================================================================
-// Central Service (recent workspaces)
-// =============================================================================
-
-export const central = {
-  getRecentWorkspaces: () => rpc.call<RecentWorkspace[]>("main", "central.getRecentWorkspaces"),
-  addRecentWorkspace: (path: string) =>
-    rpc.call<void>("main", "central.addRecentWorkspace", path),
-  removeRecentWorkspace: (path: string) =>
-    rpc.call<void>("main", "central.removeRecentWorkspace", path),
+  list: () => rpc.call<WorkspaceEntry[]>("main", "workspace.list"),
+  create: (name: string, opts?: { gitUrl?: string; forkFrom?: string }) =>
+    rpc.call<WorkspaceEntry>("main", "workspace.create", name, opts),
+  select: (name: string) => rpc.call<void>("main", "workspace.select", name),
+  delete: (name: string) => rpc.call<void>("main", "workspace.delete", name),
+  getActive: () => rpc.call<string>("main", "workspace.getActive"),
 };
 
 // =============================================================================

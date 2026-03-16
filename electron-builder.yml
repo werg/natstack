@@ -25,8 +25,23 @@ asarUnpack:
   - "node_modules/pacote/**/*"
   # @natstack packages need to be unpacked for panel builds
   - "packages/**/*"
+  - "node_modules/@natstack/**/*"
 
 extraResources:
+  # Default workspace template (used to create first workspace on fresh install).
+  # Whitelist only source directories — exclude Electron session data, build cache, etc.
+  - from: "workspace"
+    to: "workspace-template"
+    filter:
+      - "natstack.yml"
+      - "panels/**/*"
+      - "packages/**/*"
+      - "agents/**/*"
+      - "workers/**/*"
+      - "skills/**/*"
+      - "about/**/*"
+      - "!**/node_modules/**"
+      - "!**/.git/**"
   # Pre-built shipped panels
   - from: "dist/shipped-panels"
     to: "shipped-panels"
