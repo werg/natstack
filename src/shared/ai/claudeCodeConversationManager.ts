@@ -58,6 +58,8 @@ export interface CreateConversationOptions {
   executeCallback: ToolExecuteCallback;
   /** Additional Claude Code settings */
   settings?: Partial<ClaudeCodeSettings>;
+  /** Working directory for this conversation (panel's context folder) */
+  cwd: string;
 }
 
 /**
@@ -75,10 +77,8 @@ export class ClaudeCodeConversationManager {
   private claudeExecutable: string | undefined;
   private logger = createDevLogger("ClaudeCodeConversationManager");
   private endListeners = new Set<(conversationId: string, panelId: string) => void>();
-  private workspacePath: string | undefined;
 
-  constructor(workspacePath?: string) {
-    this.workspacePath = workspacePath;
+  constructor() {
     this.claudeExecutable = findExecutable("claude");
     if (!this.claudeExecutable) {
       this.logger.warn("Claude Code CLI not found in PATH");
@@ -126,7 +126,7 @@ export class ClaudeCodeConversationManager {
     const provider = createClaudeCode({
       defaultSettings: {
         pathToClaudeCodeExecutable: this.claudeExecutable,
-        cwd: this.workspacePath ?? process.cwd(),
+        cwd: options.cwd,
         allowedTools: mcpToolNames,
         mcpServers: {
           [`proxy-${conversationId}`]: mcpServer,

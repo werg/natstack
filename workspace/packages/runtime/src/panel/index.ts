@@ -19,8 +19,8 @@ const { runtime, config } = initRuntime({
 
 import { createAiClient, type AiClient } from "@natstack/ai";
 
-// Create AI client with the runtime's RPC bridge
-const aiClient: AiClient = createAiClient(runtime.rpc);
+// Create AI client with the runtime's RPC bridge, scoped to this panel's context
+const aiClient: AiClient = createAiClient(runtime.rpc, runtime.contextId);
 
 export * as Rpc from "../core/rpc.js";
 export { z } from "../core/zod.js";

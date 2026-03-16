@@ -598,7 +598,7 @@ async function main() {
       async start(resolve) {
         const { server: rpcServer } = resolve<{ server: import("./rpcServer.js").RpcServer; port: number }>("rpcServer")!;
         const aiHandler = resolve<import("../shared/ai/aiHandler.js").AIHandler>("ai")!;
-        aiServiceDef = createAiService({ aiHandler, rpcServer });
+        aiServiceDef = createAiService({ aiHandler, rpcServer, contextFolderManager });
       },
       getServiceDefinition() {
         return aiServiceDef;

@@ -3,10 +3,12 @@ import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { AIHandler } from "../../shared/ai/aiHandler.js";
 import type { StreamTextOptions } from "../../shared/types.js";
 import type { RpcServer } from "../rpcServer.js";
+import type { ContextFolderManager } from "../../shared/contextFolderManager.js";
 
 export function createAiService(deps: {
   aiHandler: AIHandler;
   rpcServer: RpcServer;
+  contextFolderManager: ContextFolderManager;
 }): ServiceDefinition {
   return {
     name: "ai",
@@ -36,8 +38,15 @@ export function createAiService(deps: {
           if (!ctx.wsClient) {
             throw new Error("AI streaming requires a WS connection");
           }
+
+          // Resolve context folder — every panel has a contextId
+          if (!options.contextId) {
+            throw new Error("AI streaming requires a contextId");
+          }
+          const contextFolderPath = await deps.contextFolderManager.ensureContextFolder(options.contextId);
+
           const target = deps.rpcServer.createWsStreamTarget(ctx.wsClient, streamId);
-          aiHandler.startTargetStream(target, options, streamId);
+          aiHandler.startTargetStream(target, options, streamId, contextFolderPath);
           return;
         }
 

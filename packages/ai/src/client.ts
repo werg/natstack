@@ -17,6 +17,7 @@ interface StreamTextBridgeOptions {
   maxOutputTokens?: number;
   temperature?: number;
   thinking?: { type: "enabled" | "disabled"; budgetTokens?: number };
+  contextId?: string;
 }
 
 type SerializableStreamEvent = {
@@ -136,8 +137,9 @@ export type AiClient = {
  * Create an AI client backed by the given RPC bridge.
  *
  * @param rpc The RPC bridge to use for AI communication
+ * @param contextId Optional context ID — scopes AI working directory to the panel's context folder
  */
-export function createAiClient(rpc: RpcBridge): AiClient {
+export function createAiClient(rpc: RpcBridge, contextId?: string): AiClient {
   const streamChunkListeners = new Set<(streamId: string, chunk: SerializableStreamEvent) => void>();
   const streamEndListeners = new Set<(streamId: string) => void>();
 
@@ -237,6 +239,7 @@ export function createAiClient(rpc: RpcBridge): AiClient {
         maxOutputTokens: options.maxOutputTokens,
         temperature: options.temperature,
         thinking: options.thinking,
+        ...(contextId ? { contextId } : {}),
       };
 
       const iterable: AsyncIterable<StreamEvent> = {

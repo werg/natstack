@@ -16,9 +16,14 @@ describe("aiService", () => {
     createWsStreamTarget: vi.fn().mockReturnValue({ write: vi.fn(), end: vi.fn() }),
   };
 
+  const mockContextFolderManager = {
+    ensureContextFolder: vi.fn().mockResolvedValue("/tmp/test-context"),
+  };
+
   const svc = createAiService({
     aiHandler: mockAiHandler as any,
     rpcServer: mockRpcServer as any,
+    contextFolderManager: mockContextFolderManager as any,
   });
   const handler = svc.handler;
 
@@ -49,7 +54,7 @@ describe("aiService", () => {
   });
 
   it("streamTextStart calls startTargetStream with wsClient", async () => {
-    const options = { model: "claude-3", messages: [] };
+    const options = { model: "claude-3", messages: [], contextId: "ctx-test-panel" };
     const wsCtx: ServiceContext = {
       ...panelCtx,
       wsClient: { ws: {}, callerId: "p1", callerKind: "panel" } as any,

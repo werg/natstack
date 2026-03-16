@@ -100,6 +100,8 @@ export interface StreamTextOptions {
   system?: string;
   /** Enable thinking/reasoning with optional budget */
   thinking?: { type: "enabled" | "disabled"; budgetTokens?: number };
+  /** Context ID for scoping AI working directory to the panel's context folder */
+  contextId?: string;
 }
 
 /** Stream event sent from main to panel */

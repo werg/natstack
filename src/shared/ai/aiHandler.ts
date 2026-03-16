@@ -240,7 +240,7 @@ export class AIHandler {
 
   constructor(workspacePath?: string, ccConversationManager?: ClaudeCodeConversationManager) {
     this.workspacePath = workspacePath;
-    this.ccConversationManager = ccConversationManager ?? new ClaudeCodeConversationManager(workspacePath);
+    this.ccConversationManager = ccConversationManager ?? new ClaudeCodeConversationManager();
   }
 
   registerProvider(config: AIProviderConfig): void {
@@ -425,13 +425,14 @@ export class AIHandler {
     target: StreamTarget,
     options: StreamTextOptions,
     streamId: string,
+    contextFolderPath: string,
     requestId: string = generateRequestId()
   ): void {
     this.logger.info(`[${requestId}] [Main AI] stream-text-start for target ${JSON.stringify({ targetId: target.targetId, model: options.model, messageCount: options.messages?.length, toolCount: options.tools?.length, streamId })}`);
 
     const resolvedModelId = this.resolveModelId(options.model);
 
-    void this.streamTextToTarget(target, requestId, resolvedModelId, options, streamId);
+    void this.streamTextToTarget(target, requestId, resolvedModelId, options, streamId, contextFolderPath);
   }
 
   // ===========================================================================
@@ -443,7 +444,8 @@ export class AIHandler {
     requestId: string,
     modelId: string,
     options: StreamTextOptions,
-    streamId: string
+    streamId: string,
+    contextFolderPath: string,
   ): Promise<void> {
     const isClaudeCode = modelId.startsWith("claude-code:");
     const hasTools = options.tools && options.tools.length > 0;
@@ -467,7 +469,8 @@ export class AIHandler {
           modelId,
           options,
           streamId,
-          abortController
+          abortController,
+          contextFolderPath,
         );
       } else if (hasTools) {
         await this.streamTextWithAgentLoopToTarget(
@@ -800,7 +803,8 @@ export class AIHandler {
     modelId: string,
     options: StreamTextOptions,
     streamId: string,
-    abortController: AbortController
+    abortController: AbortController,
+    contextFolderPath: string,
   ): Promise<void> {
     // Extract the model name (e.g., "claude-code:sonnet" -> "sonnet")
     const ccModelId = modelId.startsWith("claude-code:")
@@ -877,12 +881,13 @@ export class AIHandler {
       return result;
     };
 
-    // Create the conversation
+    // Create the conversation — use context folder as cwd if available
     const conversationHandle = this.ccConversationManager.createConversation({
       panelId: target.targetId,
       modelId: ccModelId,
       tools: validatedTools,
       executeCallback: mcpExecuteCallback,
+      cwd: contextFolderPath,
     });
 
     conversationRef.id = conversationHandle.conversationId;
