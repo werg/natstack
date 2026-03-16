@@ -73,8 +73,10 @@ export interface WorkerdManagerDeps {
   fsService: FsService;
   rpcPort: number;
   getBuild: (unitPath: string, ref?: string) => Promise<BuildResult>;
-  /** Workspace root path — used for DO storage (localDisk). */
+  /** Workspace source root — used for WORKER_SOURCE binding. */
   workspacePath: string;
+  /** State directory — used for DO storage (localDisk). */
+  statePath: string;
   /** PubSub HTTP base URL — injected as PUBSUB_URL binding for DOs */
   pubsubUrl?: string;
   /** Server HTTP base URL (for harness API) — injected as SERVER_URL binding for DOs */
@@ -305,7 +307,7 @@ export class WorkerdManager {
 
       // DO storage: create a disk service and reference it by name
       const diskServiceName = `${doService.serviceName}_disk`;
-      const doStoragePath = path.join(this.deps.workspacePath, ".databases", "workerd-do");
+      const doStoragePath = path.join(this.deps.statePath, ".databases", "workerd-do");
       fs.mkdirSync(doStoragePath, { recursive: true });
 
       // Network service for outbound fetch (PubSub HTTP, Server harness API).

@@ -1,10 +1,10 @@
 /**
  * ContextFolderManager — Manages per-context directories on disk.
  *
- * Each context gets a real folder at `{workspace.path}/.contexts/{contextId}/`
- * that starts as a copy of all workspace git repos. Working tree files and
- * mutable git state (HEAD, index, refs, config) are copied per-context, while
- * the immutable object store (.git/objects/) is symlinked to share storage.
+ * Each context gets a folder at `{contextsRoot}/{contextId}/` that starts as
+ * a copy of all workspace git repos from the source tree. Working tree files
+ * and mutable git state (HEAD, index, refs, config) are copied per-context,
+ * while the immutable object store (.git/objects/) is symlinked to share storage.
  * Panel fs calls are routed to these folders via RPC, making files visible on
  * disk and accessible to server-side tools and agents.
  */
@@ -78,18 +78,21 @@ async function setupContextGit(srcGit: string, destGit: string): Promise<void> {
 
 export class ContextFolderManager {
   private readonly contextsRoot: string;
-  private readonly workspacePath: string;
+  private readonly sourcePath: string;
   private readonly getWorkspaceTree: () => Promise<{ children: WorkspaceNode[] }>;
 
   /** Concurrency guard: in-flight ensureContextFolder promises. */
   private readonly inflight = new Map<string, Promise<string>>();
 
   constructor(opts: {
-    workspacePath: string;
+    /** Path to the source tree (git repos to copy from) */
+    sourcePath: string;
+    /** Path to the contexts root directory (where context copies are stored) */
+    contextsRoot: string;
     getWorkspaceTree: () => Promise<{ children: WorkspaceNode[] }>;
   }) {
-    this.workspacePath = opts.workspacePath;
-    this.contextsRoot = path.join(opts.workspacePath, ".contexts");
+    this.sourcePath = opts.sourcePath;
+    this.contextsRoot = opts.contextsRoot;
     this.getWorkspaceTree = opts.getWorkspaceTree;
   }
 
@@ -126,7 +129,7 @@ export class ContextFolderManager {
 
         // Copy each repo: working tree files + context-local git state
         for (const repoPath of repos) {
-          const src = path.join(this.workspacePath, repoPath);
+          const src = path.join(this.sourcePath, repoPath);
           const dest = path.join(contextPath, repoPath);
           await fs.mkdir(path.dirname(dest), { recursive: true });
           // Copy working tree (skip .git, node_modules, etc.)

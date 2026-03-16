@@ -30,6 +30,7 @@ export class ServerProcessManager {
 
   constructor(private config: {
     workspacePath: string;
+    statePath: string;
     appRoot: string;
     logLevel?: string;
     /** Called if the server process exits unexpectedly */
@@ -95,7 +96,7 @@ export class ServerProcessManager {
     const env: Record<string, string | undefined> = {
       ...process.env,
       NATSTACK_WORKSPACE_DIR: this.config.workspacePath,
-      NATSTACK_USER_DATA_PATH: this.config.workspacePath,
+      NATSTACK_USER_DATA_PATH: this.config.statePath,
       NATSTACK_APP_ROOT: this.config.appRoot,
       ...(this.config.logLevel ? { NATSTACK_LOG_LEVEL: this.config.logLevel } : {}),
     };

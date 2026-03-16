@@ -122,7 +122,7 @@ export class PanelPersistence {
     }
 
     if (!this.db) {
-      const dbDir = path.join(workspace.path, ".databases");
+      const dbDir = path.join(workspace.statePath, ".databases");
       fs.mkdirSync(dbDir, { recursive: true });
 
       const dbPath = path.join(dbDir, "panels.db");

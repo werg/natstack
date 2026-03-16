@@ -92,7 +92,7 @@ let wsDir: string;
 if (wsName) {
   // Managed workspace by name — must exist on disk
   const dir = getWorkspaceDir(wsName);
-  if (!fs.existsSync(path.join(dir, "natstack.yml"))) {
+  if (!fs.existsSync(path.join(dir, "source", "natstack.yml"))) {
     console.error(`[Error] Workspace "${wsName}" does not exist.`);
     app.quit();
     process.exit(1);
@@ -114,7 +114,7 @@ if (wsName) {
     const defaultName = "default";
     const defaultDir = getWorkspaceDir(defaultName);
     try {
-      if (!fs.existsSync(path.join(defaultDir, "natstack.yml"))) {
+      if (!fs.existsSync(path.join(defaultDir, "source", "natstack.yml"))) {
         // Clean up partial directory from a previously interrupted create
         if (fs.existsSync(defaultDir)) {
           fs.rmSync(defaultDir, { recursive: true, force: true });
@@ -133,8 +133,8 @@ if (wsName) {
   }
 }
 
-// Set Electron's userData to the workspace dir — all internal storage scoped here
-app.setPath("userData", wsDir);
+// Set Electron's userData to the workspace state dir — all internal storage scoped here
+app.setPath("userData", path.join(wsDir, "state"));
 
 let workspace: Workspace | null = null;
 const tokenManager = new TokenManager();
@@ -380,6 +380,7 @@ app.on("ready", async () => {
     // Spawn server as child process
     serverProcessManager = new ServerProcessManager({
       workspacePath: workspace!.path,
+      statePath: workspace!.statePath,
       appRoot: getAppRoot(),
       onCrash: (code) => {
         console.error(`[App] Server process crashed with code ${code}`);
@@ -411,7 +412,8 @@ app.on("ready", async () => {
 
     // Filesystem service — per-context sandboxed fs via RPC
     const contextFolderManager = new ContextFolderManager({
-      workspacePath: workspace!.path,
+      sourcePath: workspace!.path,
+      contextsRoot: workspace!.contextsPath,
       getWorkspaceTree: () =>
         requireServerClient().call("git", "getWorkspaceTree", []) as Promise<any>,
     });

@@ -236,11 +236,11 @@ function validateWorkspaceName(name: string): void {
   }
 }
 
-/** Source directories to copy when forking or creating from a template. */
+/** Source directories (live under source/) — copied when forking or creating from template. */
 const SOURCE_DIRS = ["panels", "packages", "agents", "workers", "skills", "about"];
 
-/** Runtime directories — never copied, always scaffolded fresh. */
-const RUNTIME_DIRS = [".cache", ".databases", ".contexts"];
+/** State directories (live under state/) — never copied, always scaffolded fresh. */
+const STATE_DIRS = [".cache", ".databases", ".contexts"];
 
 /**
  * Initialize a new managed workspace directory.
@@ -260,6 +260,8 @@ export function initWorkspace(
   validateWorkspaceName(name);
 
   const wsDir = getWorkspaceDir(name);
+  const sourceRoot = path.join(wsDir, "source");
+  const stateRoot = path.join(wsDir, "state");
 
   if (fs.existsSync(wsDir)) {
     throw new Error(`Workspace directory already exists: ${wsDir}`);
@@ -268,13 +270,13 @@ export function initWorkspace(
   // Ensure parent workspaces/ dir exists
   fs.mkdirSync(getWorkspacesDir(), { recursive: true });
 
-  // Resolve source directory for template/fork
-  let sourceDir: string | null = null;
+  // Resolve template source directory for template/fork
+  let templateSrc: string | null = null;
 
   if (opts?.gitUrl) {
-    // Clone from remote — use execFileSync with argv to prevent shell injection
+    // Clone from remote into source/ — use execFileSync with argv to prevent shell injection
     try {
-      execFileSync("git", ["clone", opts.gitUrl, wsDir], {
+      execFileSync("git", ["clone", opts.gitUrl, sourceRoot], {
         stdio: "pipe",
         timeout: 60000,
       });
@@ -283,40 +285,46 @@ export function initWorkspace(
       throw new Error(`Failed to clone template: ${error instanceof Error ? error.message : String(error)}`);
     }
   } else if (opts?.templateDir) {
-    sourceDir = opts.templateDir;
+    templateSrc = opts.templateDir;
   } else if (opts?.forkFrom) {
-    sourceDir = getWorkspaceDir(opts.forkFrom);
-    if (!fs.existsSync(path.join(sourceDir, WORKSPACE_CONFIG_FILE))) {
+    templateSrc = path.join(getWorkspaceDir(opts.forkFrom), "source");
+    if (!fs.existsSync(path.join(templateSrc, WORKSPACE_CONFIG_FILE))) {
       throw new Error(`Source workspace "${opts.forkFrom}" does not exist`);
     }
   }
 
-  // If we have a local source dir (template or fork), copy source dirs
-  if (sourceDir) {
-    fs.mkdirSync(wsDir, { recursive: true });
+  // If we have a local source dir (template or fork), copy source dirs into source/
+  if (templateSrc) {
+    fs.mkdirSync(sourceRoot, { recursive: true });
     for (const dir of SOURCE_DIRS) {
-      const src = path.join(sourceDir, dir);
+      const src = path.join(templateSrc, dir);
       if (fs.existsSync(src)) {
-        copyDirRecursive(src, path.join(wsDir, dir));
+        copyDirRecursive(src, path.join(sourceRoot, dir));
       }
     }
     // Copy natstack.yml if present (will be rewritten below)
-    const srcConfig = path.join(sourceDir, WORKSPACE_CONFIG_FILE);
+    const srcConfig = path.join(templateSrc, WORKSPACE_CONFIG_FILE);
     if (fs.existsSync(srcConfig)) {
-      fs.copyFileSync(srcConfig, path.join(wsDir, WORKSPACE_CONFIG_FILE));
+      fs.copyFileSync(srcConfig, path.join(sourceRoot, WORKSPACE_CONFIG_FILE));
     }
   } else if (!opts?.gitUrl) {
     // Bare workspace
-    fs.mkdirSync(wsDir, { recursive: true });
+    fs.mkdirSync(sourceRoot, { recursive: true });
   }
 
-  // Scaffold runtime + source directories
-  for (const dir of [...SOURCE_DIRS, ...RUNTIME_DIRS]) {
-    fs.mkdirSync(path.join(wsDir, dir), { recursive: true });
+  // Scaffold source directories
+  for (const dir of SOURCE_DIRS) {
+    fs.mkdirSync(path.join(sourceRoot, dir), { recursive: true });
+  }
+
+  // Scaffold state directories
+  fs.mkdirSync(stateRoot, { recursive: true });
+  for (const dir of STATE_DIRS) {
+    fs.mkdirSync(path.join(stateRoot, dir), { recursive: true });
   }
 
   // Write/rewrite natstack.yml — always regenerate instance-specific fields
-  const configPath = path.join(wsDir, WORKSPACE_CONFIG_FILE);
+  const configPath = path.join(sourceRoot, WORKSPACE_CONFIG_FILE);
   const randomPort = 49152 + Math.floor(Math.random() * 16383);
 
   if (fs.existsSync(configPath)) {
@@ -340,7 +348,7 @@ git:
 
   // Initialize git repos for all source subdirectories (panels, packages, etc.)
   // so the build system can extract source and compute effective versions.
-  initGitRepos(wsDir);
+  initGitRepos(sourceRoot);
 
   log.info(`[Workspace] Created managed workspace "${name}" at ${wsDir}`);
 }
@@ -432,27 +440,32 @@ export function loadWorkspaceConfig(workspacePath: string): WorkspaceConfig {
 }
 
 /**
- * Create a fully resolved Workspace object from an existing workspace directory.
+ * Create a fully resolved Workspace object from a managed workspace directory.
+ * The wsDir contains source/ (git repos, natstack.yml) and state/ (runtime data).
  */
-export function createWorkspace(workspacePath: string): Workspace {
-  const resolvedPath = path.resolve(workspacePath);
+export function createWorkspace(wsDir: string): Workspace {
+  const resolvedDir = path.resolve(wsDir);
+  const sourceRoot = path.join(resolvedDir, "source");
+  const stateRoot = path.join(resolvedDir, "state");
 
-  const panelsPath = path.join(resolvedPath, "panels");
-  const packagesPath = path.join(resolvedPath, "packages");
-  const contextsPath = path.join(resolvedPath, ".contexts");
-  const gitReposPath = resolvedPath;
-  const cachePath = path.join(resolvedPath, ".cache");
-  const agentsPath = path.join(resolvedPath, "agents");
+  const panelsPath = path.join(sourceRoot, "panels");
+  const packagesPath = path.join(sourceRoot, "packages");
+  const contextsPath = path.join(stateRoot, ".contexts");
+  const gitReposPath = sourceRoot;
+  const cachePath = path.join(stateRoot, ".cache");
+  const agentsPath = path.join(sourceRoot, "agents");
 
   // Ensure directory structure exists
   fs.mkdirSync(panelsPath, { recursive: true });
   fs.mkdirSync(contextsPath, { recursive: true });
   fs.mkdirSync(cachePath, { recursive: true });
+  fs.mkdirSync(stateRoot, { recursive: true });
 
-  const config = loadWorkspaceConfig(resolvedPath);
+  const config = loadWorkspaceConfig(sourceRoot);
 
   return {
-    path: resolvedPath,
+    path: sourceRoot,
+    statePath: stateRoot,
     config,
     panelsPath,
     packagesPath,

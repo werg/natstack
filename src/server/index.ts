@@ -160,7 +160,7 @@ if (!ipcChannel) {
 
 async function main() {
   const { setUserDataPath, getUserDataPath } = await import("@natstack/env-paths");
-  const { loadCentralEnv, createWorkspace } = await import("../shared/workspace/loader.js");
+  const { loadCentralEnv, loadWorkspaceConfig } = await import("../shared/workspace/loader.js");
   const { GitServer } = await import("@natstack/git-server");
   const { TokenManager } = await import("../shared/tokenManager.js");
   const { z } = await import("zod");
@@ -202,7 +202,24 @@ async function main() {
     console.error(msg);
     process.exit(1);
   }
-  const workspace = createWorkspace(workspacePath);
+  const workspaceConfig = loadWorkspaceConfig(workspacePath);
+
+  // State path: where databases, caches, and Electron artifacts live.
+  // In IPC mode: NATSTACK_USER_DATA_PATH (= workspace state/ dir, set by parent).
+  // In standalone mode: getUserDataPath() (= platform default after setUserDataPath).
+  // Both are set before this point via setUserDataPath(dataDir).
+  const statePath = getUserDataPath();
+  const workspace: import("../shared/workspace/types.js").Workspace = {
+    path: workspacePath,
+    statePath,
+    config: workspaceConfig,
+    panelsPath: path.join(workspacePath, "panels"),
+    packagesPath: path.join(workspacePath, "packages"),
+    contextsPath: path.join(statePath, ".contexts"),
+    gitReposPath: workspacePath,
+    cachePath: path.join(statePath, ".cache"),
+    agentsPath: path.join(workspacePath, "agents"),
+  };
 
   // ===========================================================================
   // App node_modules resolution (for @natstack/* platform packages)
@@ -223,12 +240,12 @@ async function main() {
   // Service initialization
   // ===========================================================================
 
-  const githubConfig = workspace.config.git?.github;
+  const githubConfig = workspaceConfig.git?.github;
   const tokenManager = new TokenManager();
 
   const gitServer = new GitServer(tokenManager, {
-    port: workspace.config.git?.port,
-    reposPath: workspace.gitReposPath,
+    port: workspaceConfig.git?.port,
+    reposPath: workspacePath,
     github: {
       ...githubConfig,
       token: githubConfig?.token ?? process.env["GITHUB_TOKEN"],
@@ -238,11 +255,12 @@ async function main() {
   // Create ContextFolderManager before core services
   const { ContextFolderManager } = await import("../shared/contextFolderManager.js");
   const contextFolderManager = new ContextFolderManager({
-    workspacePath: workspacePath,
+    sourcePath: workspacePath,
+    contextsRoot: path.join(statePath, ".contexts"),
     getWorkspaceTree: () => gitServer.getWorkspaceTree(),
   });
 
-  const databaseManager = new DatabaseManager(workspacePath);
+  const databaseManager = new DatabaseManager(statePath);
 
   // ===========================================================================
   // Unified ServiceContainer — lifecycle + RPC services in one container
@@ -625,6 +643,7 @@ async function main() {
           rpcPort,
           getBuild: (unitPath, ref) => buildSystemForWorkerd!.getBuild(unitPath, ref),
           workspacePath,
+          statePath,
           pubsubUrl: `http://127.0.0.1:${pubsubPort}`,
           serverUrl: `http://127.0.0.1:${harnessApiPort}`,
         });
@@ -1000,8 +1019,7 @@ async function main() {
     // Register for browser extension auto-discovery (idempotent file writes)
     const { registerHeadlessService } = await import("./headlessServiceRegistration.js");
     try {
-      const configDir = args.dataDir ?? process.env["NATSTACK_USER_DATA_PATH"] ?? getUserDataPath();
-      registerHeadlessService(configDir, {
+      registerHeadlessService(statePath, {
         rpcPort,
         panelPort: panelHttpPort,
         gitPort: gitServer.getPort(),

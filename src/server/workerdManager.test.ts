@@ -50,6 +50,7 @@ function createMockDeps(overrides: Partial<WorkerdManagerDeps> = {}): WorkerdMan
       metadata: { ev: "abc123" },
     }),
     workspacePath: "/tmp/test-workspace",
+    statePath: "/tmp/test-workspace-state",
     ...overrides,
   };
 }

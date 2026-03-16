@@ -150,24 +150,30 @@ export interface WorkspaceConfig {
 }
 
 /**
- * Resolved workspace with computed paths
+ * Resolved workspace with computed paths.
+ *
+ * Directory layout:
+ *   workspaces/{name}/source/   ← path (source root: git repos, natstack.yml)
+ *   workspaces/{name}/state/    ← statePath (Electron userData + runtime state)
  */
 export interface Workspace {
-  /** Absolute path to workspace directory */
+  /** Absolute path to source directory (git repos, natstack.yml) */
   path: string;
+  /** Absolute path to state directory (Electron userData, databases, cache) */
+  statePath: string;
   /** Parsed workspace configuration */
   config: WorkspaceConfig;
-  /** Absolute path to panels directory (workspace/panels) */
+  /** Absolute path to panels directory (source/panels) */
   panelsPath: string;
-  /** Absolute path to packages directory (workspace/packages) */
+  /** Absolute path to packages directory (source/packages) */
   packagesPath: string;
-  /** Absolute path to contexts directory (workspace/.contexts) */
+  /** Absolute path to contexts directory (state/.contexts) */
   contextsPath: string;
-  /** Absolute path to git repos directory (workspace) */
+  /** Absolute path to git repos directory (= source root) */
   gitReposPath: string;
-  /** Absolute path to cache directory (workspace/.cache) */
+  /** Absolute path to cache directory (state/.cache) */
   cachePath: string;
-  /** Absolute path to agents directory (workspace/agents) */
+  /** Absolute path to agents directory (source/agents) */
   agentsPath: string;
 }
 
