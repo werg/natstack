@@ -28,6 +28,7 @@ workspace/workers/my-agent/
   },
   "dependencies": {
     "@workspace/runtime": "workspace:*",
+    "@workspace/agentic-do": "workspace:*",
     "@natstack/harness": "workspace:*"
   }
 }
@@ -120,90 +121,61 @@ protected getParticipantInfo(): ParticipantDescriptor {
 }
 ```
 
-## 3. ActionCollector API
+## 3. Direct Communication APIs
 
-Every handler creates an `ActionCollector` via `this.actions()` and returns `$.result()`:
+DOs are autonomous — they call PubSub and server APIs directly via HTTP POST. All methods return void.
 
-```typescript
-async onChannelEvent(channelId: string, event: ChannelEvent): Promise<WorkerActions> {
-  const $ = this.actions();
-  // ... add actions ...
-  return $.result();
-}
-```
-
-### Channel Operations — `$.channel(channelId)`
+### PubSub Operations — `this.pubsub`
 
 | Method | Description |
 |--------|-------------|
-| `.send(content, options?)` | Send a new message |
-| `.update(messageId, content)` | Update a streaming message |
-| `.complete(messageId)` | Mark a message as complete |
-| `.sendEphemeral(content, contentType)` | Send ephemeral event (typing, etc.) |
-| `.updateMetadata(metadata)` | Update channel metadata |
-| `.methodResult(callId, content, isError?)` | Reply to a method call |
-| `.callMethod(callId, participantId, method, args)` | Call another participant's method |
-| `.streamFor(harnessId, turn)` | Create a StreamWriter (see below) |
+| `.send(participantId, channelId, messageId, content, opts?)` | Send a new message |
+| `.update(participantId, channelId, messageId, content)` | Update a streaming message |
+| `.complete(participantId, channelId, messageId)` | Mark a message as complete |
+| `.sendEphemeral(participantId, channelId, content, contentType?)` | Send ephemeral event |
+| `.updateMetadata(participantId, channelId, metadata)` | Update channel metadata |
+| `.subscribe(channelId, participantId, metadata)` | Subscribe to channel |
+| `.unsubscribe(channelId, participantId)` | Unsubscribe from channel |
+| `.callMethod(channelId, callerPid, targetPid, callId, method, args)` | Async method call |
+| `.getParticipants(channelId)` | Get channel roster |
 
-### Harness Operations — `$.harness(harnessId)`
-
-| Method | Description |
-|--------|-------------|
-| `.startTurn(input)` | Start a new AI turn |
-| `.approveTool(toolUseId, allow, alwaysAllow?)` | Approve/deny a tool use |
-| `.interrupt()` | Interrupt the current turn |
-| `.fork(forkPointMessageId, turnSessionId)` | Fork the conversation |
-| `.dispose()` | Dispose the harness |
-
-### System Operations
+### Server Operations — `this.server`
 
 | Method | Description |
 |--------|-------------|
-| `$.spawnHarness(opts)` | Spawn a new harness process |
-| `$.respawnHarness(opts)` | Respawn a crashed harness |
-| `$.forkChannel(source, forkPointId)` | Fork a channel |
-| `$.setAlarm(delayMs)` | Set a timed alarm |
-
-All methods are fluent-chainable:
-```typescript
-$.channel(channelId).send("hello").send("world");
-$.harness(harnessId).startTurn(input);
-$.setAlarm(5000);
-return $.result();
-```
+| `.spawnHarness(opts)` | Spawn a new harness process |
+| `.sendHarnessCommand(harnessId, command)` | Send command to harness |
+| `.stopHarness(harnessId)` | Stop a harness process |
+| `.forkChannel(doRef, sourceChannel, forkPointId)` | Fork a channel |
 
 ## 4. StreamWriter
 
-`StreamWriter` handles the send -> update -> complete lifecycle of streaming messages. Created via the ActionCollector:
+`StreamWriter` handles the send -> update -> complete lifecycle of streaming messages:
 
 ```typescript
 const turn = this.getActiveTurn(harnessId);
 if (turn) {
-  const writer = $.channel(channelId).streamFor(harnessId, turn);
-  writer.startText();           // sends a new message
-  writer.updateText("chunk");   // updates the message content
-  writer.completeText();        // marks message as complete
+  const writer = this.createWriter(channelId, turn);
+  await writer.startText();           // sends a new message
+  await writer.updateText("chunk");   // updates the message content
+  await writer.completeText();        // marks message as complete
+  this.persistStreamState(harnessId, writer);
 }
 ```
 
 ### StreamWriter Methods
 
+All methods are async (HTTP calls to PubSub):
+
 | Method | Description |
 |--------|-------------|
-| `startThinking()` | Begin a thinking block |
-| `updateThinking(content)` | Update thinking content |
-| `endThinking()` | End thinking block |
-| `startText(metadata?)` | Begin a text message |
-| `updateText(content)` | Append text content |
-| `completeText()` | Complete current text message |
-| `startAction(tool, description, toolUseId?)` | Begin a tool action |
-| `endAction()` | End tool action |
+| `startThinking()` / `updateThinking(content)` / `endThinking()` | Thinking block lifecycle |
+| `startText(metadata?)` / `updateText(content)` / `completeText()` | Text message lifecycle |
+| `startAction(tool, description, toolUseId?)` / `endAction()` | Tool action lifecycle |
 | `sendInlineUi(data)` | Send inline UI component |
 | `startTyping()` / `stopTyping()` | Typing indicator lifecycle |
 
-### Auto-Persistence
-
-When you call `$.result()`, the ActionCollector automatically persists all StreamWriter message IDs back to the `active_turns` table. No manual `persistStreamState` calls needed.
+Call `this.persistStreamState(harnessId, writer)` after using the writer to save message IDs to SQLite.
 
 ## 5. ParticipantDescriptor
 
@@ -299,9 +271,8 @@ describe("MyWorker", () => {
       senderType: "panel", ts: Date.now(), persist: true,
     };
 
-    const result = await instance.onChannelEvent("ch-1", event);
-    const spawn = result.actions.find(a => "op" in a && a.op === "spawn-harness");
-    expect(spawn).toBeDefined();
+    // onChannelEvent returns void — side effects happen via direct HTTP calls
+    await instance.onChannelEvent("ch-1", event);
   });
 });
 ```
@@ -361,7 +332,7 @@ User sends message
 Harness emits event
   -> onHarnessEvent(harnessId, event)
     -> Look up active turn + channel
-    -> Create StreamWriter via $.channel(id).streamFor(harnessId, turn)
+    -> Create StreamWriter via this.createWriter(channelId, turn)
     -> Map event type to StreamWriter calls:
        thinking-start  -> writer.startThinking()
        thinking-delta  -> writer.updateThinking(content)
@@ -373,9 +344,9 @@ Harness emits event
        action-end      -> writer.endAction()
        inline-ui       -> writer.sendInlineUi(data)
        turn-complete   -> recordTurn(), clearActiveTurn(), clearInFlightTurn()
-       error           -> Mark crashed, complete partial, $.respawnHarness()
-       approval-needed -> Store continuation + $.channel(id).callMethod(request_tool_approval)
-       metadata-update -> $.channel(id).updateMetadata()
+       error           -> Mark crashed, complete partial, respawn via this.server.spawnHarness()
+       approval-needed -> Store continuation + this.pubsub.callMethod(request_tool_approval)
+       metadata-update -> this.pubsub.updateMetadata()
        ready           -> Set harness status to 'active'
 ```
 
@@ -387,21 +358,21 @@ When a harness sends an `error` event:
 3. The resume session ID is looked up from turn_map
 4. The in-flight turn is read for retry
 5. Active turn state is cleared
-6. A `respawn-harness` action is returned with the retry turn
+6. Respawns via `this.server.spawnHarness()` with the retry turn
 
 ## 11. Custom Worker Example: CodeReviewWorker
 
 ```typescript
-import { AgentWorkerBase } from "@workspace/runtime/worker";
+import { AgentWorkerBase } from "@workspace/agentic-do";
 import type {
   ChannelEvent, HarnessConfig, HarnessOutput,
-  ParticipantDescriptor, TurnInput, WorkerActions,
+  ParticipantDescriptor, TurnInput,
 } from "@natstack/harness";
 
 export class CodeReviewWorker extends AgentWorkerBase {
-  static schemaVersion = 1;
+  static override schemaVersion = 3;
 
-  protected getHarnessConfig(): HarnessConfig {
+  protected override getHarnessConfig(): HarnessConfig {
     return {
       systemPrompt: `You are a code review assistant. When given a diff or code snippet,
         provide constructive feedback on: correctness, performance, readability, and security.
@@ -411,7 +382,7 @@ export class CodeReviewWorker extends AgentWorkerBase {
     };
   }
 
-  protected getParticipantInfo(): ParticipantDescriptor {
+  protected override getParticipantInfo(): ParticipantDescriptor {
     return {
       handle: 'code-reviewer',
       name: 'Code Reviewer',
@@ -422,14 +393,13 @@ export class CodeReviewWorker extends AgentWorkerBase {
     };
   }
 
-  protected shouldProcess(event: ChannelEvent): boolean {
-    // Only process messages that contain code (fenced blocks or file references)
+  protected override shouldProcess(event: ChannelEvent): boolean {
     if (event.senderType !== 'panel' || event.type !== 'message') return false;
     const content = (event.payload as { content?: string })?.content ?? '';
     return content.includes('```') || content.includes('diff --git');
   }
 
-  protected buildTurnInput(event: ChannelEvent): TurnInput {
+  protected override buildTurnInput(event: ChannelEvent): TurnInput {
     const payload = event.payload as { content?: string };
     return {
       content: `Please review the following code:\n\n${payload.content ?? ''}`,
@@ -438,12 +408,10 @@ export class CodeReviewWorker extends AgentWorkerBase {
     };
   }
 
-  async onChannelEvent(channelId: string, event: ChannelEvent): Promise<WorkerActions> {
-    const $ = this.actions();
-
+  async onChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
     if (!this.shouldProcess(event)) {
       this.advanceCheckpoint(channelId, null, event.id);
-      return $.result();
+      return;
     }
 
     const input = this.buildTurnInput(event);
@@ -451,11 +419,13 @@ export class CodeReviewWorker extends AgentWorkerBase {
 
     if (!harnessId) {
       const contextId = this.getContextId(channelId);
-      $.spawnHarness({
+      await this.server.spawnHarness({
+        doRef: this.doRef,
+        harnessId: `harness-${crypto.randomUUID()}`,
         type: this.getHarnessType(),
         channelId,
         contextId,
-        config: this.getHarnessConfig(),
+        config: this.getHarnessConfig() as unknown as Record<string, unknown>,
         initialTurn: {
           input,
           triggerMessageId: event.messageId,
@@ -463,63 +433,52 @@ export class CodeReviewWorker extends AgentWorkerBase {
         },
       });
     } else {
-      $.harness(harnessId).startTurn(input);
       this.setActiveTurn(harnessId, channelId, event.messageId);
       this.setInFlightTurn(channelId, harnessId, event.messageId, event.id, input);
       this.advanceCheckpoint(channelId, harnessId, event.id);
+      await this.server.sendHarnessCommand(harnessId, { type: "start-turn", input });
     }
-
-    return $.result();
   }
 
-  async onHarnessEvent(harnessId: string, event: HarnessOutput): Promise<WorkerActions> {
-    const $ = this.actions();
+  async onHarnessEvent(harnessId: string, event: HarnessOutput): Promise<void> {
     const turn = this.getActiveTurn(harnessId);
     const channelId = turn?.channelId ?? this.getChannelForHarness(harnessId);
-    if (!channelId) return $.result();
+    if (!channelId || !turn) return;
 
-    if (turn) {
-      const writer = $.channel(channelId).streamFor(harnessId, turn);
+    const writer = this.createWriter(channelId, turn);
 
-      switch (event.type) {
-        case 'text-start': writer.startText(); break;
-        case 'text-delta': writer.updateText(event.content); break;
-        case 'text-end': writer.completeText(); break;
-        case 'turn-complete': {
-          const at = this.getActiveTurn(harnessId);
-          if (at?.turnMessageId) {
-            const inf = this.getInFlightTurn(channelId, harnessId);
-            this.recordTurn(harnessId, at.turnMessageId, inf?.triggerPubsubId ?? 0, event.sessionId);
-          }
-          this.clearActiveTurn(harnessId);
-          this.clearInFlightTurn(channelId, harnessId);
-          break;
+    switch (event.type) {
+      case 'text-start': await writer.startText(); break;
+      case 'text-delta': await writer.updateText(event.content); break;
+      case 'text-end': await writer.completeText(); break;
+      case 'turn-complete': {
+        this.persistStreamState(harnessId, writer);
+        const at = this.getActiveTurn(harnessId);
+        if (at?.turnMessageId) {
+          const inf = this.getInFlightTurn(channelId, harnessId);
+          this.recordTurn(harnessId, at.turnMessageId, inf?.triggerPubsubId ?? 0, event.sessionId);
         }
-        case 'ready':
-          this.sql.exec(`UPDATE harnesses SET status = 'active' WHERE id = ?`, harnessId);
-          break;
+        this.clearActiveTurn(harnessId);
+        this.clearInFlightTurn(channelId, harnessId);
+        return;
       }
+      case 'ready':
+        this.harnesses.setStatus(harnessId, 'active');
+        break;
     }
 
-    return $.result();
+    this.persistStreamState(harnessId, writer);
   }
 
   override async onMethodCall(
     channelId: string, callId: string, methodName: string, args: unknown,
-  ): Promise<WorkerActions> {
-    const $ = this.actions();
+  ): Promise<{ result: unknown; isError?: boolean }> {
     if (methodName === 'set-strictness') {
       const level = (args as { level?: number })?.level ?? 3;
-      // Store in state table for use in buildTurnInput
-      this.sql.exec(
-        `INSERT OR REPLACE INTO state (key, value) VALUES ('strictness', ?)`,
-        String(level),
-      );
-      $.channel(channelId).methodResult(callId, { strictness: level });
-    } else {
-      $.channel(channelId).methodResult(callId, { error: 'unknown method' }, true);
+      this.setStateValue('strictness', String(level));
+      return { result: { strictness: level } };
     }
-    return $.result();
+    return { result: { error: 'unknown method' }, isError: true };
   }
 }
 ```

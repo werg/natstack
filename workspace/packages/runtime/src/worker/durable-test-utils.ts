@@ -1,5 +1,4 @@
 import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
-import type { AgentWorkerBase } from "./durable.js";
 
 interface SqlResult {
   toArray(): Record<string, unknown>[];
@@ -9,6 +8,8 @@ interface SqlResult {
 interface TestDOResult<T> {
   instance: T;
   sql: { exec(query: string, ...bindings: unknown[]): SqlResult };
+  /** Alarms scheduled via ctx.storage.setAlarm(). Inspectable in tests. */
+  alarms: number[];
 }
 
 /** Shared sql.js initialization (cached after first call) */
@@ -56,9 +57,21 @@ function createSqlProxy(db: Database) {
   };
 }
 
+/** Default env stubs so AgentWorkerBase subclasses don't crash during construction.
+ *  The HTTP clients are created but never called in unit tests. */
+const AGENTIC_ENV_DEFAULTS: Record<string, string> = {
+  PUBSUB_URL: "http://test-pubsub.invalid",
+  SERVER_URL: "http://test-server.invalid",
+  RPC_AUTH_TOKEN: "test-token",
+};
+
 /**
  * Create a test DO instance backed by in-memory SQLite (sql.js / WASM).
  * Eliminates the need for workerd or native modules in unit tests.
+ *
+ * Works with both DurableObjectBase and AgentWorkerBase subclasses.
+ * For AgentWorkerBase subclasses, PUBSUB_URL/SERVER_URL/RPC_AUTH_TOKEN
+ * are automatically stubbed unless overridden via the env parameter.
  *
  * Must be awaited since sql.js initialization is async.
  */
@@ -71,11 +84,28 @@ export async function createTestDO<T>(
   const db = new SQL.Database();
   const sqlProxy = createSqlProxy(db);
 
+  const alarms: number[] = [];
+
   const ctx = {
-    storage: { sql: sqlProxy },
+    storage: {
+      sql: sqlProxy,
+      setAlarm(scheduledTime: number | Date) {
+        const ts = typeof scheduledTime === "number" ? scheduledTime : scheduledTime.getTime();
+        alarms.push(ts);
+      },
+      async getAlarm(): Promise<number | null> {
+        return alarms.length > 0 ? alarms[alarms.length - 1]! : null;
+      },
+      deleteAlarm() {
+        alarms.length = 0;
+      },
+    },
+    acceptWebSocket(_ws: unknown) { /* no-op in tests */ },
+    getWebSockets() { return []; },
   };
 
-  const instance = new DOClass(ctx, env ?? {});
+  const mergedEnv = { ...AGENTIC_ENV_DEFAULTS, ...env };
+  const instance = new DOClass(ctx, mergedEnv);
 
-  return { instance, sql: sqlProxy };
+  return { instance, sql: sqlProxy, alarms };
 }

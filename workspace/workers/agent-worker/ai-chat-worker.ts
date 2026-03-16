@@ -1,4 +1,4 @@
-import { AgentWorkerBase } from "@workspace/runtime/worker";
+import { AgentWorkerBase } from "@workspace/agentic-do";
 import type { ChannelEvent, HarnessConfig, HarnessOutput, ParticipantDescriptor } from "@natstack/harness/types";
 
 

@@ -1,6 +1,6 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["**/*.test.ts", "**/*.spec.ts"],
+  "exclude": ["**/*.test.ts", "**/*.spec.ts", "src/worker/durable-test-utils.ts"],
   "compilerOptions": {
     "paths": {
       "@natstack/harness": ["../../../packages/harness/dist/index.d.ts"],

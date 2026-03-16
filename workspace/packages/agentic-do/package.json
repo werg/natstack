@@ -1,0 +1,15 @@
+{
+  "name": "@workspace/agentic-do",
+  "version": "0.1.0",
+  "description": "Composable agent modules for Durable Objects",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@workspace/runtime": "workspace:*",
+    "@natstack/harness": "workspace:*",
+    "@natstack/pubsub": "workspace:*"
+  }
+}

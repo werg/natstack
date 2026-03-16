@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@workspace/runtime": "workspace:*",
+    "@workspace/agentic-do": "workspace:*",
     "@natstack/harness": "workspace:*"
   }
 }

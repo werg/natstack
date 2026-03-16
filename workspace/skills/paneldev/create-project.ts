@@ -171,6 +171,7 @@ export default function ${toPascalCase(name)}() {
           },
           dependencies: {
             "@workspace/runtime": "workspace:*",
+            "@workspace/agentic-do": "workspace:*",
             "@natstack/harness": "workspace:*",
           },
         }, null, 2);
@@ -179,7 +180,7 @@ export default function ${toPascalCase(name)}() {
 export default { fetch(_req: Request) { return new Response("${name} DO service"); } };
 `;
 
-        files[`${workerFileName}.ts`] = `import { AgentWorkerBase } from "@workspace/runtime/worker";
+        files[`${workerFileName}.ts`] = `import { AgentWorkerBase } from "@workspace/agentic-do";
 import type {
   ChannelEvent,
   HarnessConfig,

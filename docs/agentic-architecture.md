@@ -19,42 +19,39 @@ Panel (browser)          PubSub Channel          Worker DO (workerd)          Ha
 ```
 
 - **Channels** — PubSub messaging with forkable history
-- **Workers** — Durable Objects in workerd with SQLite state, returning actions for the server to execute
+- **Workers** — Durable Objects in workerd with SQLite state, making direct HTTP calls
 - **Harnesses** — Node.js child processes running AI SDKs (Claude, Pi), communicating via bidirectional RPC
 
-## Key Design Principle: Action-Return Pattern
+## Key Design Principle: Autonomous DOs with Direct HTTP Calls
 
-DOs never make outbound calls. Every DO method returns `WorkerActions` — a list of typed actions that the server executes. This keeps DOs stateless between invocations and makes all side effects explicit.
+DOs make direct outbound HTTP calls to PubSub and server APIs. All event handlers return `void` — side effects happen inline via `this.pubsub.*` and `this.server.*` methods.
 
 ```typescript
-async onChannelEvent(channelId, event): Promise<WorkerActions> {
-  const $ = this.actions();
-  $.channel(channelId).send("Hello");
-  $.harness(harnessId).startTurn(input);
-  $.spawnHarness({ type: "claude-sdk", channelId, contextId, initialTurn: {...} });
-  return $.result();  // server executes these
+async onChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
+  if (!this.shouldProcess(event)) return;
+  const input = this.buildTurnInput(event);
+  await this.server.spawnHarness({
+    doRef: this.doRef, harnessId: `harness-${crypto.randomUUID()}`,
+    type: this.getHarnessType(), channelId, contextId,
+    config: this.getHarnessConfig(), initialTurn: { input, ... },
+  });
 }
 ```
 
-Action types: channel operations (send, update, complete, call-method, method-result), harness commands (start-turn, approve-tool, interrupt), system operations (spawn-harness, respawn-harness, fork-channel, set-alarm).
-
 ## Server-Side Components
 
-### PubSubFacade (`src/server/services/pubsubFacade.ts`)
+### HarnessApi (`src/server/harnessApi.ts`)
 
-Bridges DOs with PubSub channels. When a DO subscribes:
-1. Registers a **callback participant** on the PubSub server (in-process, not WebSocket)
-2. Events arrive via async queue (per-participant, ordered)
-3. Dispatches events to DO via `WorkerRouter`
-4. Executes returned `WorkerActions`
+HTTP endpoints called by DOs directly via fetch():
+- `POST /harness/spawn` — spawn a new harness process
+- `POST /harness/{id}/command` — send a command to a running harness
+- `POST /harness/{id}/stop` — stop a harness process
+- `POST /harness/fork-channel` — create a forked channel
+- `POST /validate-token` — validate a caller token, returns identity
 
-Also handles `callParticipantMethod()` with two paths:
-- **DO → DO**: Direct dispatch via router
-- **DO → Panel**: Broadcasts method-call through PubSub, waits for method-result
+### DODispatch (`src/server/doDispatch.ts`)
 
-### WorkerRouter (`src/server/workerRouter.ts`)
-
-Central registry mapping `participantId → DO` and `harnessId → DO`. Dispatches method calls to DOs via HTTP POST to workerd (`/_do/{className}/{objectKey}/{method}`).
+Source-scoped HTTP dispatch to Durable Objects via `/_w/{source}/{className}/{objectKey}/{method}`.
 
 ### HarnessManager (`src/server/harnessManager.ts`)
 
@@ -62,15 +59,15 @@ Spawns and tracks Node.js child processes. Each harness:
 1. Gets environment vars (RPC_WS_URL, AUTH_TOKEN, HARNESS_ID, CHANNEL_ID, etc.)
 2. Connects back via WebSocket
 3. Authenticates and creates an RPC bridge
-4. Pushes `HarnessOutput` events to its owning DO via `harnessService.pushEvent()`
+4. Pushes `HarnessOutput` events to its owning DO via DODispatch
 
-### executeActions (`src/server/executeActions.ts`)
+## DO Base Classes
 
-The single execution path for all DO action results. Handles spawn-harness (7-step bootstrap), respawn-harness (crash recovery), fork-channel, set-alarm, and delegates channel/harness actions to the facade and bridges.
+**DurableObjectBase** — generic DO foundation (~150 lines).
+Location: `workspace/packages/runtime/src/worker/durable-base.ts`
 
-## DO Base Class: AgentWorkerBase
-
-Location: `workspace/packages/runtime/src/worker/durable.ts`
+**AgentWorkerBase** — agent composition shell extending DurableObjectBase.
+Location: `workspace/packages/agentic-do/src/agent-worker-base.ts`
 
 ### Five Customization Hooks
 
@@ -101,23 +98,22 @@ Location: `workspace/packages/runtime/src/worker/durable.ts`
 |------|---------|
 | `handleCallResult()` | Process method-call results (approval flow) |
 | `onMethodCall()` | Handle incoming method calls |
-| `onOutgoingMethodCall()` | Intercept harness method calls |
 | `onChannelForked()` | React to channel forks |
-| `onAlarm()` | Handle timer callbacks |
+| `alarm()` | Handle timer callbacks (inherited from DurableObjectBase) |
 
 ## Flows
 
 ### First User Message
 
 ```
-Panel sends message → PubSub → Facade callback → DO.onChannelEvent()
+Panel sends message → PubSub → POST-back to DO → onChannelEvent()
   1. shouldProcess() → true
   2. getHarnessForChannel() → null (no harness yet)
-  3. Send bootstrap typing indicator
-  4. Return spawnHarness action with initialTurn
+  3. Send bootstrap typing indicator via this.pubsub.send()
+  4. Call this.server.spawnHarness() with initialTurn
 
-Server executes spawn-harness:
-  1. Register harness in router + DO
+Server handles /harness/spawn:
+  1. Register harness in DO via DODispatch
   2. Ensure context folder
   3. Fork Node.js process
   4. Wait for WebSocket authentication
@@ -129,16 +125,16 @@ Server executes spawn-harness:
 ### Subsequent Messages
 
 ```
-Panel sends message → DO.onChannelEvent()
+Panel sends message → PubSub → POST-back to DO → onChannelEvent()
   1. getHarnessForChannel() → harnessId
-  2. Return startTurn action + typing indicator
+  2. Start typing via StreamWriter, call this.server.sendHarnessCommand(start-turn)
   3. Record active_turn + in_flight_turn
 ```
 
 ### Streaming Response
 
 ```
-Harness emits events → harnessService.pushEvent() → DO.onHarnessEvent()
+Harness emits events → DODispatch → DO.onHarnessEvent()
   text-start     → writer.startText()     → channel send (new message)
   text-delta     → writer.updateText()    → channel update
   text-end       → writer.completeText()  → channel complete
@@ -152,7 +148,7 @@ Harness: approval-needed(toolUseId, toolName, input)
   → DO stores pendingCall(callId, "approval", {harnessId, toolUseId})
   → DO returns callMethod(callId, panelId, "request_tool_approval", args)
 
-Server: facade.callParticipantMethod() → broadcasts to panel via PubSub
+DO: this.pubsub.callMethod() → broadcasts to panel via PubSub
 Panel: request_tool_approval handler
   → checkToolApproval() for auto-approve
   → requestApproval() for UI prompt
@@ -160,17 +156,17 @@ Panel: request_tool_approval handler
 
 Server: receives method-result → DO.onCallResult(callId, result)
   → consumePendingCall(callId) → handleCallResult("approval", ...)
-  → DO returns approveTool(toolUseId, allow, alwaysAllow) action
+  → DO calls this.server.sendHarnessCommand(approveTool)
 ```
 
 ### Crash Recovery
 
 ```
-Harness process dies → HarnessManager detects exit → onCrash callback
+Harness process dies → HarnessManager detects exit → DODispatch
   → DO.onHarnessEvent(harnessId, {type: "error"})
   → Complete partial stream
   → Read in-flight turn for retry
-  → Return respawnHarness action with resumeSessionId + retryTurn
+  → Call this.server.spawnHarness() with resumeSessionId + retryTurn
 ```
 
 ## RPC Services (Panel-Accessible)
@@ -189,10 +185,11 @@ Harness process dies → HarnessManager detects exit → onCrash callback
 
 | Package | Location | Contents |
 |---------|----------|----------|
-| `@natstack/harness` | `packages/harness/` | Types (HarnessOutput, WorkerAction, ChannelEvent), SDK adapters |
-| `@natstack/pubsub` | `packages/pubsub/` | PubSubClient, protocol types, approval schemas |
+| `@natstack/harness` | `packages/harness/` | Types (HarnessOutput, ChannelEvent), SDK adapters |
+| `@natstack/pubsub` | `workspace/packages/pubsub/` | PubSubClient, protocol types, approval schemas |
 | `@natstack/pubsub-server` | `packages/pubsub-server/` | PubSub server with channel forking |
-| `@workspace/runtime` | `workspace/packages/runtime/` | AgentWorkerBase, ActionCollector, StreamWriter |
+| `@workspace/runtime` | `workspace/packages/runtime/` | DurableObjectBase, PubSubDOClient, ServerDOClient |
+| `@workspace/agentic-do` | `workspace/packages/agentic-do/` | AgentWorkerBase, StreamWriter, composable modules |
 | Workers | `workspace/workers/` | DO implementations (agent-worker, test-agent) |
 
 ## Further Reading

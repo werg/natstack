@@ -31,9 +31,8 @@ import type { WorkerEnv } from "./types.js";
 import type { RuntimeFs, ThemeAppearance } from "../types.js";
 
 export type { WorkerEnv, ExecutionContext } from "./types.js";
-export { AgentWorkerBase } from "./durable.js";
-export type { DurableObjectContext, SqlStorage, SqlResult, AlignmentState } from "./durable.js";
-export { StreamWriter } from "./stream-writer.js";
+export { DurableObjectBase } from "./durable-base.js";
+export type { DurableObjectContext, SqlStorage, SqlResult, DORef } from "./durable-base.js";
 export { PubSubDOClient } from "./pubsub-client.js";
 export { ServerDOClient } from "./server-client.js";
 // Note: createTestDO is intentionally NOT exported here — it depends on better-sqlite3

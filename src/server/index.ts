@@ -964,7 +964,11 @@ async function main() {
     doDispatch: container.get<import("./doDispatch.js").DODispatch>("doDispatch"),
     contextFolderManager,
     pubsub: container.get<{ server: import("@natstack/pubsub-server").PubSubServer }>("pubsub").server,
-    validateToken: (token) => tokenManager.validateToken(token) != null,
+    validateToken: (token) => {
+      const result = tokenManager.validateToken(token);
+      if (!result) return { valid: false };
+      return { valid: true, callerId: result.callerId, callerKind: result.callerKind };
+    },
   };
 
   // Wire PubSub and DODispatch to workerdManager for restart recovery

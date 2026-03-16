@@ -57,6 +57,7 @@ export default { fetch(_req: Request) { return new Response("my-agent DO service
   },
   "dependencies": {
     "@workspace/runtime": "workspace:*",
+    "@workspace/agentic-do": "workspace:*",
     "@natstack/harness": "workspace:*"
   }
 }
@@ -86,10 +87,10 @@ The runtime is cached per worker -- multiple `fetch()` calls reuse the same WebS
 
 ## 3. AgentWorkerBase — The DO Base Class
 
-All agentic workers extend `AgentWorkerBase` from `@workspace/runtime/worker`:
+All agentic workers extend `AgentWorkerBase` from `@workspace/agentic-do`:
 
 ```typescript
-import { AgentWorkerBase } from "@workspace/runtime/worker";
+import { AgentWorkerBase } from "@workspace/agentic-do";
 import type { ChannelEvent, HarnessOutput } from "@natstack/harness";
 
 export class MyWorker extends AgentWorkerBase {
@@ -128,9 +129,9 @@ DOs are autonomous -- they call PubSub and server APIs directly via HTTP POST. N
 | `.complete(participantId, channelId, messageId)` | Mark a message as complete |
 | `.sendEphemeral(participantId, channelId, content, contentType?)` | Send ephemeral event |
 | `.updateMetadata(participantId, channelId, metadata)` | Update channel metadata |
-| `.subscribe(channelId, participantId, metadata, callbackUrl)` | Subscribe to channel |
+| `.subscribe(channelId, participantId, metadata)` | Subscribe to channel |
 | `.unsubscribe(channelId, participantId)` | Unsubscribe from channel |
-| `.callMethod(channelId, callerPid, callerCallbackUrl, targetPid, callId, method, args)` | Async method call |
+| `.callMethod(channelId, callerPid, targetPid, callId, method, args)` | Async method call |
 | `.getParticipants(channelId)` | Get channel roster |
 
 ### Server Operations -- `this.server`
@@ -244,7 +245,6 @@ case "approval-needed": {
   await this.pubsub.callMethod(
     channelId,
     this.getParticipantId(channelId)!,
-    this.callbackBaseUrl + "/onCallResult",
     panelId, callId, 'request_tool_approval',
     { agentId: this.getParticipantId(channelId), toolName: event.toolName, toolArgs: event.input },
   );
@@ -293,9 +293,8 @@ describe("MyWorker", () => {
       senderType: "panel", ts: Date.now(), persist: true,
     };
 
-    const result = await instance.onChannelEvent("ch-1", event);
-    const spawn = result.actions.find(a => "op" in a && a.op === "spawn-harness");
-    expect(spawn).toBeDefined();
+    // onChannelEvent returns void — side effects happen via direct HTTP calls
+    await instance.onChannelEvent("ch-1", event);
   });
 });
 ```

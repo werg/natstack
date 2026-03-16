@@ -22,13 +22,19 @@ import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("HarnessApi");
 
+export interface TokenValidationResult {
+  valid: boolean;
+  callerId?: string;
+  callerKind?: string;
+}
+
 export interface HarnessApiDeps {
   harnessManager: HarnessManager;
   doDispatch: DODispatch;
   contextFolderManager: ContextFolderManager;
   pubsub: PubSubServer;
-  /** Validate auth tokens */
-  validateToken: (token: string) => boolean;
+  /** Validate auth tokens — returns caller identity on success. */
+  validateToken: (token: string) => TokenValidationResult;
 }
 
 /**
@@ -43,12 +49,13 @@ export async function handleHarnessApiRequest(
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
   const pathname = url.pathname;
 
-  if (!pathname.startsWith("/harness")) return false;
+  if (!pathname.startsWith("/harness") && pathname !== "/validate-token") return false;
 
   // Auth check
   const authHeader = req.headers["authorization"];
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-  if (!token || !deps.validateToken(token)) {
+  const auth = token ? deps.validateToken(token) : { valid: false };
+  if (!token || !auth.valid) {
     sendJson(res, 401, { error: "Unauthorized" });
     return true;
   }
@@ -60,6 +67,18 @@ export async function handleHarnessApiRequest(
   }
 
   try {
+    // POST /validate-token — validate a caller token, returns identity
+    if (pathname === "/validate-token" && req.method === "POST") {
+      const tokenToValidate = body["token"] as string;
+      if (!tokenToValidate) {
+        sendJson(res, 400, { error: "Missing token" });
+        return true;
+      }
+      const result = deps.validateToken(tokenToValidate);
+      sendJson(res, 200, result);
+      return true;
+    }
+
     // POST /harness/spawn
     if (pathname === "/harness/spawn" && req.method === "POST") {
       await handleSpawn(body, deps, res);

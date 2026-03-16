@@ -6,7 +6,7 @@
  * The DO calls these directly via fetch() instead of returning WorkerActions.
  */
 
-import type { DORef } from "./durable.js";
+import type { DORef } from "./durable-base.js";
 import type { HarnessConfig } from "@natstack/harness/types";
 import { HttpClient } from "./http-client.js";
 
