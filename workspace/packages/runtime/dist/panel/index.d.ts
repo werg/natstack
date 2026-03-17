@@ -1,0 +1,33 @@
+import { fs } from "./fs.js";
+export type { ThemeAppearance, RuntimeFs, FileStats, MkdirOptions, RmOptions } from "../types.js";
+import { type AiClient } from "@natstack/ai";
+declare const aiClient: AiClient;
+export * as Rpc from "../core/rpc.js";
+export { z } from "../core/zod.js";
+export { defineContract, noopParent } from "../core/defineContract.js";
+export { buildPanelLink, contextIdToSubdomain } from "../core/panelLinks.js";
+export { parseContextId, isValidContextId, getInstanceId, } from "../core/context.js";
+export type * from "../core/types.js";
+export type { Runtime } from "../setup/createRuntime.js";
+export declare const id: string;
+declare const gitConfig: import("./index.js").GitConfig | null;
+declare const pubsubConfig: import("@natstack/types").PubSubConfig | null;
+declare const env: Record<string, string>;
+export declare const runtimeParentId: string | null, rpc: import("@natstack/rpc").RpcBridge, db: import("@natstack/types").DbClient, parent: import("./index.js").ParentHandle<import("../core/rpc.js").ExposedMethods, import("../core/rpc.js").RpcEventMap, import("../core/rpc.js").RpcEventMap>, getParent: <T extends import("../core/rpc.js").ExposedMethods = import("../core/rpc.js").ExposedMethods, E extends import("../core/rpc.js").RpcEventMap = import("../core/rpc.js").RpcEventMap, EmitE extends import("../core/rpc.js").RpcEventMap = import("../core/rpc.js").RpcEventMap>() => import("./index.js").ParentHandle<T, E, EmitE> | null, getParentWithContract: <C extends import("./index.js").PanelContract>(contract: C) => import("./index.js").ParentHandleFromContract<C> | null, onConnectionError: (callback: (error: {
+    code: number;
+    reason: string;
+    source?: "electron" | "server";
+}) => void) => (() => void), getInfo: () => Promise<import("./index.js").EndpointInfo>, closeSelf: () => Promise<void>, focusPanel: (panelId: string) => Promise<void>, getWorkspaceTree: () => Promise<import("./index.js").WorkspaceTree>, listBranches: (repoPath: string) => Promise<import("./index.js").BranchInfo[]>, listCommits: (repoPath: string, ref?: string, limit?: number) => Promise<import("./index.js").CommitInfo[]>, getTheme: () => import("./index.js").ThemeAppearance, onThemeChange: (callback: (theme: import("./index.js").ThemeAppearance) => void) => () => void, onFocus: (callback: () => void) => () => void, exposeMethod: <TArgs extends unknown[], TReturn>(method: string, handler: (...args: TArgs) => TReturn | Promise<TReturn>) => void, contextId: string;
+export { runtimeParentId as parentId };
+declare const workers: import("../shared/workerd.js").WorkerdClient;
+export { fs, gitConfig, pubsubConfig, env, workers, aiClient as ai };
+export { normalizePath, getFileName, resolvePath } from "../shared/pathUtils.js";
+export { getStateArgs, useStateArgs, setStateArgs } from "./stateArgs.js";
+export { createBrowserPanel, openExternal, onChildCreated, getBrowserHandle } from "./browser.js";
+export type { BrowserHandle } from "./browser.js";
+export type { AdBlockStats, AdBlockApi } from "./adblock.js";
+export declare const adblock: import("./adblock.js").AdBlockApi;
+export type { WorkspaceClient, WorkspaceEntry, WorkspaceConfig } from "../shared/workspace.js";
+declare const workspaceClient: import("./index.js").WorkspaceClient;
+export { workspaceClient as workspace };
+//# sourceMappingURL=index.d.ts.map

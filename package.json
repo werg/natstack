@@ -117,7 +117,6 @@
     "@natstack/port-utils": "workspace:*",
     "@natstack/process-adapter": "workspace:*",
     "@natstack/pubsub": "workspace:*",
-    "@natstack/pubsub-server": "workspace:*",
     "@natstack/rpc": "workspace:*",
     "@natstack/typecheck": "workspace:*",
     "@natstack/types": "workspace:*",

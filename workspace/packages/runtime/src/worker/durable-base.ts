@@ -138,6 +138,7 @@ export abstract class DurableObjectBase {
   /**
    * Call a method on another DO via HTTP POST through the workerd router.
    * Requires WORKERD_URL env binding (injected by WorkerdManager).
+   * Retries on transient errors (ECONNREFUSED, 5xx) with exponential backoff.
    */
   protected async postToDO<T = unknown>(
     source: string, className: string, objectKey: string,
@@ -146,18 +147,36 @@ export abstract class DurableObjectBase {
     const workerdUrl = this.env["WORKERD_URL"] as string;
     if (!workerdUrl) throw new Error("WORKERD_URL env binding not available");
     const url = `${workerdUrl}/_w/${source}/${encodeURIComponent(className)}/${encodeURIComponent(objectKey)}/${method}`;
-    const res = await fetch(url, {
+    const init: RequestInit = {
       method: "POST",
       body: JSON.stringify(args),
       headers: { "Content-Type": "application/json" },
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`postToDO ${source}/${className}/${objectKey}.${method} failed (${res.status}): ${text}`);
+    };
+
+    const maxRetries = 2;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const res = await fetch(url, init);
+        if (res.ok) {
+          const ct = res.headers.get("content-type") ?? "";
+          if (ct.includes("application/json")) return res.json() as Promise<T>;
+          return undefined as T;
+        }
+        if (res.status >= 500 && attempt < maxRetries) {
+          await new Promise(r => setTimeout(r, 200 * Math.pow(2, attempt)));
+          continue;
+        }
+        const text = await res.text();
+        throw new Error(`postToDO ${source}/${className}/${objectKey}.${method} failed (${res.status}): ${text}`);
+      } catch (err) {
+        if (attempt < maxRetries && isTransientError(err)) {
+          await new Promise(r => setTimeout(r, 200 * Math.pow(2, attempt)));
+          continue;
+        }
+        throw err;
+      }
     }
-    const ct = res.headers.get("content-type") ?? "";
-    if (ct.includes("application/json")) return res.json() as Promise<T>;
-    return undefined as T;
+    throw new Error(`postToDO ${source}/${className}/${objectKey}.${method}: exhausted retries`);
   }
 
   // --- Alarm (persists across workerd restarts) ---
@@ -251,4 +270,11 @@ export abstract class DurableObjectBase {
     const state = this.sql.exec(`SELECT * FROM state`).toArray();
     return { state };
   }
+}
+
+/** Detect transient network errors that are safe to retry. */
+function isTransientError(err: unknown): boolean {
+  if (err instanceof TypeError) return true; // fetch network errors
+  const msg = err instanceof Error ? err.message : String(err);
+  return /ECONNREFUSED|ECONNRESET|ETIMEDOUT|socket hang up/i.test(msg);
 }

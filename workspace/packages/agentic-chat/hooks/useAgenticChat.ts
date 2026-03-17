@@ -157,7 +157,16 @@ export function useAgenticChat({
             parameters: z.object({ title: z.string().describe("The new title") }),
             execute: async (args: unknown) => {
               const { title } = args as { title: string };
-              if (title) document.title = title;
+              if (!title) return { ok: false, error: "Missing title" };
+              // Update DOM title
+              document.title = title;
+              // Persist via channel config (survives reload, visible to all participants)
+              const client = core.clientRef.current;
+              if (client) {
+                try {
+                  await client.updateChannelConfig({ title });
+                } catch { /* best-effort */ }
+              }
               return { ok: true };
             },
           },

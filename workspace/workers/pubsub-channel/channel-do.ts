@@ -43,6 +43,39 @@ export class PubSubChannel extends DurableObjectBase {
     this.ensureReady();
     // Restore attachment counter
     this.restoreAttachmentCounter();
+    // Clean up ghost WS participants from previous workerd session
+    this.cleanupGhostParticipants();
+  }
+
+  /**
+   * Detect workerd restart and emit synthetic leave events for stale WS participants.
+   * WS connections die on restart but webSocketClose never fires, leaving orphaned entries.
+   */
+  private cleanupGhostParticipants(): void {
+    const sessionId = this.env["WORKERD_SESSION_ID"] as string;
+    if (!sessionId) return;
+
+    const prevSession = this.getStateValue("__workerdSessionId");
+    if (prevSession === sessionId) return; // Same session — no restart
+
+    this.setStateValue("__workerdSessionId", sessionId);
+    if (!prevSession) return; // First session ever — nothing to clean up
+
+    // Session changed — remove all WS participants and emit leave events
+    const wsParticipants = this.sql.exec(
+      `SELECT id, metadata FROM participants WHERE transport = 'ws'`,
+    ).toArray();
+
+    for (const row of wsParticipants) {
+      const pid = row["id"] as string;
+      const metadata = JSON.parse(row["metadata"] as string);
+      this.sql.exec(`DELETE FROM participants WHERE id = ?`, pid);
+      this.publishPresenceEvent(pid, "leave", metadata, "disconnect");
+    }
+
+    if (wsParticipants.length > 0) {
+      console.log(`[Channel] Cleaned up ${wsParticipants.length} ghost WS participant(s) after workerd restart`);
+    }
   }
 
   protected createTables(): void {

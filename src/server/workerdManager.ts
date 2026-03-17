@@ -21,6 +21,25 @@ import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("WorkerdManager");
 
+/**
+ * Replicate workerd's idFromName() → SQLite filename derivation.
+ *
+ * workerd derives DO storage filenames as:
+ *   1. key = SHA-256(uniqueKey)         — 32 bytes
+ *   2. base = HMAC-SHA256(key, name)    — truncate to first 16 bytes
+ *   3. mac = HMAC-SHA256(key, base)     — truncate to first 16 bytes
+ *   4. filename = hex(base || mac)      — 64 hex chars
+ *
+ * Verified against workerd source (actor-id-impl.c++) and empirically
+ * tested against actual workerd DO storage files.
+ */
+function computeWorkerdObjectIdHash(uniqueKey: string, objectName: string): string {
+  const key = crypto.createHash("sha256").update(uniqueKey).digest();
+  const base = crypto.createHmac("sha256", key).update(objectName).digest().subarray(0, 16);
+  const mac = crypto.createHmac("sha256", key).update(base).digest().subarray(0, 16);
+  return Buffer.concat([base, mac]).toString("hex");
+}
+
 /** DO reference — matches DORef from @workspace/runtime/worker. */
 interface DORef {
   source: string;
@@ -773,19 +792,14 @@ ${doBlock}${cases.join("\n")}
 
   /**
    * Clone a DO's SQLite storage to a new object key.
-   *
-   * TODO: Not yet functional. workerd's SQLite filename derivation is not
-   * SHA-256(objectKey) — it incorporates the namespace uniqueKey in an
-   * undocumented way. Until the correct derivation is verified, channel
-   * forking should use DO-level copy (read parent state via postToDO,
-   * write to new channel) instead of filesystem-level SQLite copy.
+   * The cloned DO starts with identical state. Used for channel forking.
    */
   async cloneDO(ref: DORef, newObjectKey: string): Promise<DORef> {
     const uniqueKey = `${ref.source.replace(/\//g, "_")}:${ref.className}`;
     const storagePath = path.join(this.deps.statePath, ".databases", "workerd-do", uniqueKey);
 
-    const sourceHash = this.computeObjectIdHash(ref.objectKey);
-    const targetHash = this.computeObjectIdHash(newObjectKey);
+    const sourceHash = computeWorkerdObjectIdHash(uniqueKey, ref.objectKey);
+    const targetHash = computeWorkerdObjectIdHash(uniqueKey, newObjectKey);
 
     const sourceFile = path.join(storagePath, `${sourceHash}.sqlite`);
     const targetFile = path.join(storagePath, `${targetHash}.sqlite`);
@@ -796,17 +810,6 @@ ${doBlock}${cases.join("\n")}
     fs.copyFileSync(sourceFile, targetFile);
 
     return { source: ref.source, className: ref.className, objectKey: newObjectKey };
-  }
-
-  /**
-   * Derive the SQLite filename for a DO object key.
-   *
-   * TODO: This is incorrect — workerd uses a derivation that includes the
-   * namespace uniqueKey, not just the object name. Needs to be verified
-   * against actual workerd storage or the workerd source code.
-   */
-  private computeObjectIdHash(objectKey: string): string {
-    return crypto.createHash("sha256").update(objectKey).digest("hex");
   }
 
   // =========================================================================
