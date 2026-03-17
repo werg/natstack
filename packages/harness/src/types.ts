@@ -173,7 +173,7 @@ export interface TurnInput {
 /** Commands sent from server to harness process */
 export type HarnessCommand =
   | { type: 'start-turn'; input: TurnInput }
-  | { type: 'approve-tool'; toolUseId: string; allow: boolean; alwaysAllow?: boolean }
+  | { type: 'approve-tool'; toolUseId: string; allow: boolean; alwaysAllow?: boolean; updatedInput?: Record<string, unknown> }
   | { type: 'interrupt' }
   | { type: 'fork'; forkPointMessageId: number; turnSessionId: string }
   | { type: 'dispose' }

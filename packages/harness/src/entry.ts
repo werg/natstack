@@ -336,12 +336,13 @@ async function main(): Promise<void> {
 
   bridge.exposeMethod(
     "approveTool",
-    async (toolUseId: string, allow: boolean, alwaysAllow?: boolean) => {
+    async (toolUseId: string, allow: boolean, alwaysAllow?: boolean, updatedInput?: Record<string, unknown>) => {
       void adapter.handleCommand({
         type: "approve-tool",
         toolUseId,
         allow,
         alwaysAllow,
+        updatedInput,
       }).catch((err) => {
         log.error("approveTool failed:", err);
         void pushEvent({ type: "error", error: String(err) }).catch((pushErr) => {

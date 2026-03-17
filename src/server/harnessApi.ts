@@ -306,7 +306,7 @@ function commandToRpc(cmd: { type: string; [key: string]: unknown }): { method: 
     case "start-turn":
       return { method: "startTurn", args: [cmd["input"]] };
     case "approve-tool":
-      return { method: "approveTool", args: [cmd["toolUseId"], cmd["allow"], cmd["alwaysAllow"]] };
+      return { method: "approveTool", args: [cmd["toolUseId"], cmd["allow"], cmd["alwaysAllow"], cmd["updatedInput"]] };
     case "interrupt":
       return { method: "interrupt", args: [] };
     case "fork":

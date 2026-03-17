@@ -194,6 +194,9 @@ export class ClaudeSdkAdapter {
   /** Whether the adapter has been disposed */
   private disposed = false;
 
+  /** Discovered channel methods — cached from buildMcpServers for AskUserQuestion routing */
+  private discoveredMethods: DiscoveredMethod[] = [];
+
   /** Pending tool approval requests — resolved when approve-tool arrives */
   private pendingApprovals = new Map<string, {
     resolve: (result: { behavior: 'allow'; updatedInput: Record<string, unknown> } | { behavior: 'deny'; message: string }) => void;
@@ -241,7 +244,7 @@ export class ClaudeSdkAdapter {
           if (command.allow) {
             pending.resolve({
               behavior: 'allow',
-              updatedInput: pending.input,
+              updatedInput: command.updatedInput ?? pending.input,
             });
           } else {
             pending.resolve({ behavior: 'deny', message: 'User denied tool use' });
@@ -349,9 +352,69 @@ export class ClaudeSdkAdapter {
         // or {behavior: 'deny', message}.
         canUseTool: async (toolName: string, toolInput: Record<string, unknown>, options: { toolUseID: string; signal: AbortSignal; suggestions?: unknown[] }) => {
           const toolUseId = options.toolUseID;
-          // All approval decisions are made by the DO based on channel config.
-          // Always emit approval-needed and let the DO decide.
           this.log('info', `canUseTool: requesting approval for "${toolName}" (toolUseId=${toolUseId})`);
+
+          // AskUserQuestion: route through feedback_form via callMethod (goes through DO as middleware).
+          if (toolName === "AskUserQuestion") {
+            const feedbackProvider = this.discoveredMethods.find(m => m.name === "feedback_form");
+            if (!feedbackProvider) {
+              return { behavior: 'deny', message: 'No feedback_form provider available' };
+            }
+
+            try {
+              // Convert SDK question format to feedback_form fields
+              const questions = (toolInput as { questions?: Array<{ question: string; header: string; options?: Array<{ label: string; description?: string }>; multiSelect?: boolean }> }).questions;
+              const fields: Array<Record<string, unknown>> = [];
+              if (Array.isArray(questions)) {
+                for (let i = 0; i < questions.length; i++) {
+                  const q = questions[i]!;
+                  const fieldId = String(i);
+                  const fieldOptions = (q.options ?? []).map(opt => ({
+                    value: opt.label, label: opt.label, description: opt.description,
+                  }));
+                  if (fieldOptions.length > 0 && fieldOptions.length < 4) {
+                    fieldOptions.push({ value: "__other__", label: "Other", description: "Provide a custom answer" });
+                  }
+                  if (fieldOptions.length > 0) {
+                    fields.push({ key: fieldId, label: q.header, description: q.question, type: q.multiSelect ? "multiSelect" : "segmented", variant: "cards", options: fieldOptions });
+                    fields.push({ key: `${fieldId}_other`, label: "Please specify", type: "string", placeholder: "Enter your answer...", visibleWhen: q.multiSelect ? { field: fieldId, operator: "contains", value: "__other__" } : { field: fieldId, operator: "eq", value: "__other__" } });
+                  } else {
+                    fields.push({ key: fieldId, label: q.header || "Your response", description: q.question, type: "textarea", required: true });
+                  }
+                }
+              } else {
+                fields.push({ key: "0", label: "Your response", description: (toolInput["question"] as string) ?? "", type: "textarea", required: true });
+              }
+
+              const result = await this.deps.callMethod(feedbackProvider.participantId, "feedback_form", { title: "Claude needs your input", fields, values: {} });
+              const feedbackResult = result as { type?: string; value?: Record<string, unknown> };
+
+              if (feedbackResult.type === "cancel") {
+                return { behavior: 'deny', message: 'User cancelled' };
+              }
+
+              // Map form values back to answers (resolve "Other" fields)
+              const formValues = feedbackResult.value ?? {};
+              const answers: Record<string, string> = {};
+              for (const [key, value] of Object.entries(formValues)) {
+                if (key.endsWith("_other")) continue;
+                const otherValue = formValues[`${key}_other`];
+                if (Array.isArray(value)) {
+                  answers[key] = value.map((v: string) => v === "__other__" ? (typeof otherValue === "string" && otherValue ? otherValue : "Other") : v).join(", ");
+                } else if (value === "__other__") {
+                  answers[key] = typeof otherValue === "string" && otherValue ? otherValue : "Other";
+                } else {
+                  answers[key] = String(value);
+                }
+              }
+
+              return { behavior: 'allow', updatedInput: { ...toolInput, answers } };
+            } catch (err) {
+              return { behavior: 'deny', message: err instanceof Error ? err.message : String(err) };
+            }
+          }
+
+          // All other approval decisions are made by the DO based on channel config.
 
           // Register the pending approval BEFORE emitting the event.
           // The DO may auto-approve synchronously during the emit() await,
@@ -779,6 +842,7 @@ export class ClaudeSdkAdapter {
 
     try {
       let methods = await this.deps.discoverMethods();
+      this.discoveredMethods = methods;
 
       // Apply toolAllowlist if configured — defense-in-depth filter that
       // prevents accidental tool exposure even if `internal` flags are missed.

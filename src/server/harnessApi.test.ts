@@ -345,7 +345,7 @@ describe("handleHarnessApiRequest", () => {
       await handleHarnessApiRequest(req, res, deps);
 
       expect(res.statusCode).toBe(200);
-      expect(mockBridgeCall).toHaveBeenCalledWith("h-1", "approveTool", "tool-1", true, false);
+      expect(mockBridgeCall).toHaveBeenCalledWith("h-1", "approveTool", "tool-1", true, false, undefined);
     });
 
     it("returns 404 when no bridge exists for the harness", async () => {
