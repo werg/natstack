@@ -139,12 +139,10 @@ export function useChatFeedback({
 **Field props:** \`key\` (required), \`label\` (required), \`type\` (required), \`default\`, \`required\`, \`description\`
 **Pre-populate:** Add \`values: { "key": "existing value" }\``,
       parameters: FeedbackFormArgsSchema,
-      internal: true, // callable by DOs/harnesses via callMethod, but not exposed as an AI tool
       execute: async (args: unknown, ctx: MethodExecutionContext) => handleFeedbackFormCallRef.current(ctx.callId, args as FeedbackFormArgs, ctx),
     };
 
     const feedbackCustomMethodDef: MethodDefinition = {
-      internal: true, // callable by DOs/harnesses via callMethod, but not exposed as an AI tool
       description: `[Chat Panel] Show a custom React UI. For advanced cases only - prefer feedback_form for standard forms.
 
 **Result:** \`{ type: "submit", value: ... }\` or \`{ type: "cancel" }\`
