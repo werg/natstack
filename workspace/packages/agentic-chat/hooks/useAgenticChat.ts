@@ -8,6 +8,7 @@
  */
 
 import { useCallback, useMemo, useRef, useEffect } from "react";
+import { z } from "zod";
 import type { ChannelConfig, MethodDefinition } from "@natstack/pubsub";
 import { useChatCore, type FeatureEventHandlers, type RosterExtension, type ReconnectExtension } from "./core/useChatCore";
 import { useRosterTracking } from "./features/useRosterTracking";
@@ -151,6 +152,15 @@ export function useAgenticChat({
           ...feedbackMethods,
           ...toolMethods,
           ...approvalMethod,
+          set_title: {
+            description: "Set the conversation title",
+            parameters: z.object({ title: z.string().describe("The new title") }),
+            execute: async (args: unknown) => {
+              const { title } = args as { title: string };
+              if (title) document.title = title;
+              return { ok: true };
+            },
+          },
         };
 
         await core.connectToChannel({ channelId: channelName, methods, channelConfig, contextId });

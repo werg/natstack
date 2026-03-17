@@ -25,7 +25,7 @@ export class AiChatWorker extends AgentWorkerBase {
 
   protected override getHarnessConfig(): HarnessConfig {
     return {
-      toolAllowlist: ["eval"],
+      toolAllowlist: ["eval", "feedback_form", "feedback_custom", "set_title"],
     };
   }
 
