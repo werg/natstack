@@ -265,6 +265,7 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
       serverInfo,
       cdpServer,
       panelLifecycle,
+      sourceRoot: workspace!.path,
       sendToClient: (callerId, msg) => rpcServer!.sendToClient(callerId, msg as import("../shared/ws/protocol.js").WsServerMessage),
       autofillManager: autofillManager ?? undefined,
       autofillPreloadPath: path.join(__dirname, "autofillPreload.cjs"),

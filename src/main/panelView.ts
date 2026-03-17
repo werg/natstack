@@ -12,14 +12,38 @@ import type { ViewManager } from "./viewManager.js";
 import type { PanelRegistry } from "../shared/panelRegistry.js";
 import type { TokenManager } from "../shared/tokenManager.js";
 import type { PanelViewLike, PanelHttpServerLike, ServerInfoLike } from "../shared/panelLifecycle.js";
-import { getCurrentSnapshot, getPanelSource, getPanelContextId } from "../shared/panelTypes.js";
+import { getCurrentSnapshot, getPanelSource, getPanelContextId, loadPanelManifest } from "../shared/panelTypes.js";
 import { contextIdToSubdomain } from "../shared/panelIdUtils.js";
-import type { Panel } from "../shared/types.js";
+import type { Panel, PanelSnapshot } from "../shared/types.js";
 import { logMemorySnapshot } from "./memoryMonitor.js";
 import { getPanelPersistence } from "../shared/db/panelPersistence.js";
 import { getPanelSearchIndex } from "../shared/db/panelSearchIndex.js";
+import * as path from "path";
 
 const log = createDevLogger("PanelView");
+
+/**
+ * Re-derive manifest-backed snapshot fields (currently only autoArchiveWhenEmpty)
+ * from the new source's manifest. Called when a panel navigates to a different source.
+ */
+export function syncSnapshotFromManifest(
+  snapshot: PanelSnapshot,
+  newSource: string,
+  sourceRoot: string,
+): void {
+  let autoArchive: boolean | undefined;
+  try {
+    const manifest = loadPanelManifest(path.join(sourceRoot, newSource));
+    autoArchive = manifest.autoArchiveWhenEmpty;
+  } catch {
+    // Manifest not loadable (e.g., browser panel) — clear the flag
+  }
+  if (autoArchive) {
+    snapshot.autoArchiveWhenEmpty = true;
+  } else {
+    delete snapshot.autoArchiveWhenEmpty;
+  }
+}
 
 // Narrow interfaces for dependencies
 interface CdpServerLike {
@@ -63,6 +87,7 @@ export class PanelView implements PanelViewLike {
   private readonly serverInfo: ServerInfoLike;
   private readonly cdpServer: CdpServerLike;
   private readonly panelLifecycle: PanelLifecycleLike;
+  private readonly sourceRoot: string;
   private sendToClient?: (callerId: string, msg: unknown) => void;
   private autofillManager?: AutofillManagerLike;
   private autofillPreloadPath?: string;
@@ -84,6 +109,7 @@ export class PanelView implements PanelViewLike {
     serverInfo: ServerInfoLike;
     cdpServer: CdpServerLike;
     panelLifecycle: PanelLifecycleLike;
+    sourceRoot: string;
     sendToClient?: (callerId: string, msg: unknown) => void;
     autofillManager?: AutofillManagerLike;
     autofillPreloadPath?: string;
@@ -97,6 +123,7 @@ export class PanelView implements PanelViewLike {
     this.serverInfo = deps.serverInfo;
     this.cdpServer = deps.cdpServer;
     this.panelLifecycle = deps.panelLifecycle;
+    this.sourceRoot = deps.sourceRoot;
     this.sendToClient = deps.sendToClient;
     this.autofillManager = deps.autofillManager;
     this.autofillPreloadPath = deps.autofillPreloadPath;
@@ -294,6 +321,7 @@ export class PanelView implements PanelViewLike {
           const panel = this.panelRegistry.getPanel(panelId);
           if (panel && pathSource && getPanelSource(panel) !== pathSource) {
             panel.snapshot.source = pathSource;
+            this.syncSnapshotWithSource(panel, pathSource);
             this.panelRegistry.persistPanel(panel, this.panelRegistry.findParentId(panelId));
           }
         } catch { /* non-URL navigation */ }
@@ -475,6 +503,13 @@ export class PanelView implements PanelViewLike {
     }
   }
 
+  /**
+   * Sync manifest-derived snapshot fields after a source change.
+   */
+  private syncSnapshotWithSource(panel: Panel, newSource: string): void {
+    syncSnapshotFromManifest(panel.snapshot, newSource, this.sourceRoot);
+  }
+
   private handleChildCreationError(parentId: string, error: unknown, url: string): void {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[PanelView] Failed to create child from ${url}:`, error);
@@ -510,6 +545,7 @@ export class PanelView implements PanelViewLike {
     const oldContextId = panel.snapshot.contextId;
     const oldSource = panel.snapshot.source;
     const oldStateArgs = panel.snapshot.stateArgs;
+    const oldAutoArchive = panel.snapshot.autoArchiveWhenEmpty;
 
     try {
       const rpcToken = this.tokenManager.ensureToken(panelId, "panel");
@@ -534,6 +570,7 @@ export class PanelView implements PanelViewLike {
 
       panel.snapshot.contextId = newContextId;
       panel.snapshot.source = source;
+      this.syncSnapshotWithSource(panel, source);
       if (stateArgs !== undefined) panel.snapshot.stateArgs = stateArgs;
 
       // Update fsService mapping so RPC-backed fs calls route to the new context
@@ -547,6 +584,11 @@ export class PanelView implements PanelViewLike {
       panel.snapshot.contextId = oldContextId;
       panel.snapshot.source = oldSource;
       panel.snapshot.stateArgs = oldStateArgs;
+      if (oldAutoArchive) {
+        panel.snapshot.autoArchiveWhenEmpty = true;
+      } else {
+        delete panel.snapshot.autoArchiveWhenEmpty;
+      }
       // Restore old fs context mapping on failure
       if (oldContextId) this.panelLifecycle.updatePanelContext(panelId, oldContextId);
       throw err;
