@@ -21,6 +21,13 @@ import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("WorkerdManager");
 
+/** DO reference — matches DORef from @workspace/runtime/worker. */
+interface DORef {
+  source: string;
+  className: string;
+  objectKey: string;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -77,8 +84,6 @@ export interface WorkerdManagerDeps {
   workspacePath: string;
   /** State directory — used for DO storage (localDisk). */
   statePath: string;
-  /** PubSub HTTP base URL — injected as PUBSUB_URL binding for DOs */
-  pubsubUrl?: string;
   /** Server HTTP base URL (for harness API) — injected as SERVER_URL binding for DOs */
   serverUrl?: string;
 }
@@ -295,12 +300,11 @@ export class WorkerdManager {
         // Source-scoped class identity
         { name: "WORKER_SOURCE", text: doService.source },
         { name: "WORKER_CLASS_NAME", text: className },
+        // Session ID for restart detection (changes on each WorkerdManager lifetime)
+        { name: "WORKERD_SESSION_ID", text: this.sessionId },
       ];
 
-      // PubSub and Server URLs for direct DO communication
-      if (this.deps.pubsubUrl) {
-        bindings.push({ name: "PUBSUB_URL", text: this.deps.pubsubUrl });
-      }
+      // Server URL for direct DO communication (harness API)
       if (this.deps.serverUrl) {
         bindings.push({ name: "SERVER_URL", text: this.deps.serverUrl });
       }
@@ -446,6 +450,16 @@ export class WorkerdManager {
       this.port = await findServicePort("workerd");
     }
 
+    // Inject WORKERD_URL into DO services (needs port to be resolved)
+    for (const svc of services) {
+      const worker = (svc as Record<string, unknown>)["worker"] as Record<string, unknown> | undefined;
+      if (worker?.["durableObjectNamespaces"]) {
+        (worker["bindings"] as object[]).push(
+          { name: "WORKERD_URL", text: `http://127.0.0.1:${this.port}` },
+        );
+      }
+    }
+
     return {
       services,
       sockets: hasAnyService
@@ -498,7 +512,7 @@ ${doLookupEntries.join(",\n")}
       if (ns) {
         const id = ns.idFromName(objectKey);
         const stub = ns.get(id);
-        const doUrl = new URL("/" + doRest.join("/"), url.origin);
+        const doUrl = new URL("/" + objectKey + (doRest.length ? "/" + doRest.join("/") : ""), url.origin);
         doUrl.search = url.search;
         return stub.fetch(new Request(doUrl, request));
       }
@@ -581,7 +595,7 @@ ${doBlock}${cases.join("\n")}
   // =========================================================================
 
   private async restartWorkerd(): Promise<void> {
-    this.stopWorkerd();
+    await this.stopWorkerd();
 
     if (this.instances.size === 0 && this.doServices.size === 0) return;
 
@@ -656,13 +670,18 @@ ${doBlock}${cases.join("\n")}
     log.info(`workerd started on port ${this.port} with ${this.instances.size} worker(s)`);
   }
 
-  private stopWorkerd(): void {
+  private async stopWorkerd(): Promise<void> {
     if (this.process) {
       const proc = this.process;
       this.process = null;
       proc.kill("SIGTERM");
-      // Give the process a moment to release its port
-      // (restartWorkerd awaits 500ms anyway, so this is mostly for shutdown)
+      // Wait for the process to exit so the port is released before respawn
+      await new Promise<void>((resolve) => {
+        const onExit = () => resolve();
+        proc.once("exit", onExit);
+        // Safety timeout — don't block forever if process ignores SIGTERM
+        setTimeout(() => { proc.removeListener("exit", onExit); resolve(); }, 3000);
+      });
     }
   }
 
@@ -671,11 +690,51 @@ ${doBlock}${cases.join("\n")}
   }
 
   /**
-   * Ensure a Durable Object is reachable: service registered, process alive, identity bootstrapped.
-   * Idempotent — always safe to call. The single codepath for making a DO available.
+   * Pre-register all DO classes discovered from the build graph.
+   * Builds each source, registers the service, and does a single workerd restart.
+   * Called at startup so all DO classes are available before any request arrives.
    */
-  async ensureDO(source: string, className: string, objectKey: string): Promise<void> {
-    // Ensure service class is registered (idempotent)
+  async registerAllDOClasses(
+    doClasses: Array<{ source: string; className: string }>,
+  ): Promise<void> {
+    let added = false;
+    for (const { source, className } of doClasses) {
+      const serviceKey = `${source}:${className}`;
+      if (this.doServices.has(serviceKey)) continue;
+
+      const sourceSegments = source.split("/").filter(Boolean);
+      if (sourceSegments.length !== 2) {
+        log.warn(`Skipping DO class with invalid source path: "${source}"`);
+        continue;
+      }
+
+      try {
+        const buildResult = await this.deps.getBuild(source);
+        const sourceSanitized = source.replace(/[^a-zA-Z0-9_]/g, "_");
+        const serviceName = `do_${sourceSanitized}_${className.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+        this.doServices.set(serviceKey, {
+          buildKey: buildResult.metadata.ev,
+          className,
+          serviceName,
+          source,
+        });
+        added = true;
+      } catch (err) {
+        log.warn(`Skipping DO class ${source}:${className} — build failed:`, err);
+      }
+    }
+
+    if (added) {
+      await this.restartWorkerd();
+      log.info(`Pre-registered ${this.doServices.size} DO class(es)`);
+    }
+  }
+
+  /**
+   * Ensure a DO class is registered and workerd is running. Does NOT bootstrap any instance.
+   * Use for infrastructure DOs (like PubSubChannel) that don't need DOIdentity.
+   */
+  async ensureDOClass(source: string, className: string): Promise<void> {
     const serviceKey = `${source}:${className}`;
     if (!this.doServices.has(serviceKey)) {
       const sourceSegments = source.split("/").filter(Boolean);
@@ -694,37 +753,60 @@ ${doBlock}${cases.join("\n")}
       await this.restartWorkerd();
     }
 
-    // Ensure workerd process is alive (may have crashed since service was registered)
     if (!this.process || this.process.exitCode !== null) {
       await this.restartWorkerd();
     }
-
-    // Bootstrap identity (idempotent — same sessionId = no-op for cleanup)
-    await this.bootstrapDO(source, className, objectKey);
   }
 
   /**
-   * Bootstrap a DO with its identity. Called by ensureDO after service registration.
-   * The DO stores doRef + sessionId in SQLite for restart detection.
-   * Same sessionId = no cleanup (idempotent). Different sessionId = restart detected.
+   * Ensure a Durable Object class is registered and workerd is running.
+   * DOs self-bootstrap from env bindings on first request — no external bootstrap call needed.
+   * Kept for backward compatibility with DODispatch retry path.
    */
-  private async bootstrapDO(source: string, className: string, objectKey: string): Promise<void> {
-    if (!this.port) {
-      throw new Error(`Cannot bootstrap DO ${source}:${className}/${objectKey}: workerd port not available`);
-    }
+  async ensureDO(source: string, className: string, _objectKey: string): Promise<void> {
+    await this.ensureDOClass(source, className);
+  }
 
-    const doRef = { source, className, objectKey };
-    const basePath = `/_w/${source}/${encodeURIComponent(className)}/${encodeURIComponent(objectKey)}`;
-    const url = `http://127.0.0.1:${this.port}${basePath}/bootstrap`;
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify([doRef, this.sessionId]),
-    });
-    if (!resp.ok) {
-      const body = await resp.text();
-      throw new Error(`DO bootstrap failed (${resp.status}): ${body}`);
+  // =========================================================================
+  // DO cloning (filesystem-level SQLite copy)
+  // =========================================================================
+
+  /**
+   * Clone a DO's SQLite storage to a new object key.
+   *
+   * TODO: Not yet functional. workerd's SQLite filename derivation is not
+   * SHA-256(objectKey) — it incorporates the namespace uniqueKey in an
+   * undocumented way. Until the correct derivation is verified, channel
+   * forking should use DO-level copy (read parent state via postToDO,
+   * write to new channel) instead of filesystem-level SQLite copy.
+   */
+  async cloneDO(ref: DORef, newObjectKey: string): Promise<DORef> {
+    const uniqueKey = `${ref.source.replace(/\//g, "_")}:${ref.className}`;
+    const storagePath = path.join(this.deps.statePath, ".databases", "workerd-do", uniqueKey);
+
+    const sourceHash = this.computeObjectIdHash(ref.objectKey);
+    const targetHash = this.computeObjectIdHash(newObjectKey);
+
+    const sourceFile = path.join(storagePath, `${sourceHash}.sqlite`);
+    const targetFile = path.join(storagePath, `${targetHash}.sqlite`);
+
+    if (!fs.existsSync(sourceFile)) {
+      throw new Error(`Source DO storage not found: ${ref.className}/${ref.objectKey} (expected ${sourceFile})`);
     }
+    fs.copyFileSync(sourceFile, targetFile);
+
+    return { source: ref.source, className: ref.className, objectKey: newObjectKey };
+  }
+
+  /**
+   * Derive the SQLite filename for a DO object key.
+   *
+   * TODO: This is incorrect — workerd uses a derivation that includes the
+   * namespace uniqueKey, not just the object name. Needs to be verified
+   * against actual workerd storage or the workerd source code.
+   */
+  private computeObjectIdHash(objectKey: string): string {
+    return crypto.createHash("sha256").update(objectKey).digest("hex");
   }
 
   // =========================================================================
@@ -732,7 +814,7 @@ ${doBlock}${cases.join("\n")}
   // =========================================================================
 
   async shutdown(): Promise<void> {
-    this.stopWorkerd();
+    await this.stopWorkerd();
 
     // Cleanup all instances
     for (const [, instance] of this.instances) {
@@ -761,8 +843,9 @@ ${doBlock}${cases.join("\n")}
   /**
    * Called by push trigger when a worker source is rebuilt.
    * Restarts HEAD-tracking instances (no ref) running the given source.
+   * If the source has DO classes not yet registered, registers them too.
    */
-  async onSourceRebuilt(source: string): Promise<void> {
+  async onSourceRebuilt(source: string, doClasses?: Array<{ className: string }>): Promise<void> {
     let needsRestart = false;
 
     for (const instance of this.instances.values()) {
@@ -777,6 +860,30 @@ ${doBlock}${cases.join("\n")}
     for (const [_serviceKey, doService] of this.doServices) {
       if (doService.source === source) {
         needsRestart = true;
+      }
+    }
+
+    // Register any new DO classes from this source
+    if (doClasses) {
+      for (const { className } of doClasses) {
+        const serviceKey = `${source}:${className}`;
+        if (!this.doServices.has(serviceKey)) {
+          try {
+            const buildResult = await this.deps.getBuild(source);
+            const sourceSanitized = source.replace(/[^a-zA-Z0-9_]/g, "_");
+            const serviceName = `do_${sourceSanitized}_${className.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+            this.doServices.set(serviceKey, {
+              buildKey: buildResult.metadata.ev,
+              className,
+              serviceName,
+              source,
+            });
+            needsRestart = true;
+            log.info(`Registered new DO class ${source}:${className} from push`);
+          } catch (err) {
+            log.warn(`Failed to register DO class ${source}:${className}:`, err);
+          }
+        }
       }
     }
 

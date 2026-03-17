@@ -17,7 +17,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { HarnessManager } from "./harnessManager.js";
 import type { DODispatch, DORef } from "./doDispatch.js";
 import type { ContextFolderManager } from "../shared/contextFolderManager.js";
-import type { PubSubServer } from "@natstack/pubsub-server";
+import type { WorkerdManager } from "./workerdManager.js";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("HarnessApi");
@@ -32,7 +32,7 @@ export interface HarnessApiDeps {
   harnessManager: HarnessManager;
   doDispatch: DODispatch;
   contextFolderManager: ContextFolderManager;
-  pubsub: PubSubServer;
+  workerdManager: WorkerdManager;
   /** Validate auth tokens — returns caller identity on success. */
   validateToken: (token: string) => TokenValidationResult;
 }
@@ -281,12 +281,18 @@ async function handleForkChannel(
   }
 
   const forkedChannelId = `fork:${sourceChannel}:${randomUUID().slice(0, 8)}`;
+  const channelRef = { source: "workers/pubsub-channel", className: "PubSubChannel", objectKey: sourceChannel };
 
-  const messageStore = deps.pubsub.getMessageStore();
-  messageStore.createChannel(forkedChannelId, "default", "system");
-  messageStore.setChannelFork(forkedChannelId, sourceChannel, forkPointId);
+  // Clone parent channel's SQLite → new DO starts with all parent state
+  await deps.workerdManager.cloneDO(channelRef, forkedChannelId);
 
-  // Notify the DO
+  // Tell the forked DO to trim post-fork messages and clear roster
+  await deps.doDispatch.dispatch(
+    { ...channelRef, objectKey: forkedChannelId },
+    "postClone", sourceChannel, forkPointId,
+  );
+
+  // Notify the agent DO
   await deps.doDispatch.dispatch(doRef, "onChannelForked", sourceChannel, forkedChannelId, forkPointId);
 
   sendJson(res, 200, { forkedChannelId });

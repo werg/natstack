@@ -15,5 +15,4 @@ export { ContinuationStore } from "./continuation-store.js";
 export type { PendingCall } from "./continuation-store.js";
 export { StreamWriter } from "./stream-writer.js";
 export type { PersistedStreamState } from "./stream-writer.js";
-export { PubSubMessageSink } from "./message-sink.js";
-export type { MessageSink } from "./message-sink.js";
+export { ChannelClient } from "./channel-client.js";

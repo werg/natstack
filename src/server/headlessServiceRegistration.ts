@@ -35,7 +35,6 @@ export interface ServicePorts {
   rpcPort: number;
   panelPort: number | null;
   gitPort: number;
-  pubsubPort: number;
   adminToken: string;
 }
 
@@ -71,7 +70,6 @@ function writeConnectionJson(configDir: string, ports: ServicePorts): void {
     rpcPort: ports.rpcPort,
     panelPort: ports.panelPort,
     gitPort: ports.gitPort,
-    pubsubPort: ports.pubsubPort,
     adminToken: ports.adminToken,
     serverUrl,
   };
@@ -167,7 +165,6 @@ try {
         rpcPort: config.rpcPort,
         panelPort: config.panelPort,
         gitPort: config.gitPort,
-        pubsubPort: config.pubsubPort,
       });
     } catch {
       writeMessage({ success: false, error: "connection.json not found or invalid" });

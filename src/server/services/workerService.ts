@@ -1,12 +1,9 @@
 /**
  * Worker RPC Service -- high-level worker DO operations.
  *
- * Simplified: generic dispatch only, no subscribe/unsubscribe handling
- * (DOs handle their own subscriptions via PubSub HTTP API).
- *
  * Provides:
  * - listSources: available worker sources (durable.classes from manifests)
- * - getChannelWorkers: DOs subscribed to a channel (queries PubSub HTTP API)
+ * - getChannelWorkers: DOs subscribed to a channel (queries channel DO)
  * - callDO: dispatch a method to a DO
  */
 
@@ -14,7 +11,6 @@ import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { DODispatch } from "../doDispatch.js";
 import type { BuildSystemV2 } from "../buildV2/index.js";
-import type { PubSubServer } from "@natstack/pubsub-server";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("WorkerService");
@@ -22,9 +18,8 @@ const log = createDevLogger("WorkerService");
 export function createWorkerService(deps: {
   doDispatch: DODispatch;
   buildSystem: BuildSystemV2;
-  pubsub: PubSubServer;
 }): ServiceDefinition {
-  const { doDispatch, buildSystem, pubsub } = deps;
+  const { doDispatch, buildSystem } = deps;
 
   return {
     name: "workers",
@@ -79,13 +74,14 @@ export function createWorkerService(deps: {
 
         case "getChannelWorkers": {
           const channelId = args[0] as string;
-          // Query PubSub roster for DO participants
-          const participants = pubsub.getChannelParticipants(channelId);
-          return participants
+          // Query channel DO for participants
+          const participants = await doDispatch.dispatch(
+            { source: "workers/pubsub-channel", className: "PubSubChannel", objectKey: channelId },
+            "getParticipants",
+          ) as Array<{ participantId: string; metadata: Record<string, unknown> }>;
+          return (participants ?? [])
             .filter((p) => p.participantId.startsWith("/_w/"))
             .map((p) => {
-              // Parse participantId format: /_w/{source0}/{source1}/{className}/{objectKey}
-              // className and objectKey are percent-encoded in the participant ID
               const parts = p.participantId.split("/").filter(Boolean);
               return {
                 participantId: p.participantId,
@@ -104,7 +100,6 @@ export function createWorkerService(deps: {
           const doMethod = args[3] as string;
           const doArgs = args.slice(4);
 
-          // Generic DO method call via DODispatch
           const result = await doDispatch.dispatch(
             { source, className, objectKey },
             doMethod,

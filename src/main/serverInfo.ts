@@ -11,7 +11,7 @@ export interface ServerInfo {
   /** Server's RPC port for direct client connections */
   rpcPort: number;
   gitBaseUrl: string;
-  pubsubUrl: string;
+  workerdPort: number;
   /** Create a server-side token for panel git/pubsub auth */
   createPanelToken(panelId: string, kind: CallerKind): Promise<string>;
   /** Ensure server-side token exists (idempotent — returns existing or creates new) */

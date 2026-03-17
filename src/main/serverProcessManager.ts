@@ -20,6 +20,7 @@ export interface ServerPorts {
   rpcPort: number;
   gitPort: number;
   pubsubPort: number;
+  workerdPort?: number;
   adminToken: string;
 }
 
@@ -122,6 +123,7 @@ export class ServerProcessManager {
             rpcPort: msg.rpcPort,
             gitPort: msg.gitPort,
             pubsubPort: msg.pubsubPort,
+            workerdPort: msg.workerdPort,
             adminToken: msg.adminToken,
           });
         } else if (msg?.type === "error") {

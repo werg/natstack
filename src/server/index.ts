@@ -311,24 +311,6 @@ async function main() {
     async stop(instance: import("../shared/workspace/gitWatcher.js").GitWatcher) { await instance?.close(); },
   });
 
-  // PubSub server
-  container.register({
-    name: "pubsub",
-    dependencies: ["tokenManager", "databaseManager"],
-    async start() {
-      const { PubSubServer, SqliteMessageStore } = await import("@natstack/pubsub-server");
-      const { findServicePort } = await import("@natstack/port-utils");
-      const server = new PubSubServer({
-        tokenValidator: tokenManager,
-        messageStore: new SqliteMessageStore(databaseManager),
-        findPort: () => findServicePort("pubsub"),
-      });
-      const port = await server.start();
-      return { server, port };
-    },
-    async stop(instance: { server: import("@natstack/pubsub-server").PubSubServer; port: number }) { await instance?.server?.stop(); },
-  });
-
   // AI handler (lifecycle only — RPC registered separately because it needs rpcServer)
   container.register({
     name: "ai",
@@ -569,16 +551,13 @@ async function main() {
     let workerServiceDef: import("../shared/serviceDefinition.js").ServiceDefinition;
     container.register({
       name: "workersRpc",
-      dependencies: ["doDispatch", "buildSystem", "pubsub"],
+      dependencies: ["doDispatch", "buildSystem"],
       async start(resolve) {
         const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
         const buildSystemInst = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
-        const { server: pubsubServer } = resolve<{ server: import("@natstack/pubsub-server").PubSubServer }>("pubsub")!;
-
         workerServiceDef = createWorkerService({
           doDispatch,
           buildSystem: buildSystemInst,
-          pubsub: pubsubServer,
         });
       },
       getServiceDefinition() {
@@ -628,13 +607,12 @@ async function main() {
     let buildSystemForWorkerd: import("./buildV2/index.js").BuildSystemV2 | null = null;
     container.register({
       name: "workerdManager",
-      dependencies: ["buildSystem", "rpcServer", "fsService", "pubsub", "harnessApiServer"],
+      dependencies: ["buildSystem", "rpcServer", "fsService", "harnessApiServer"],
       async start(resolve) {
         const { WorkerdManager } = await import("./workerdManager.js");
         buildSystemForWorkerd = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
         const { port: rpcPort } = resolve<{ port: number }>("rpcServer")!;
         const fsServiceInst = resolve<import("../shared/fsService.js").FsService>("fsService")!;
-        const { port: pubsubPort } = resolve<{ port: number }>("pubsub")!;
         const { port: harnessApiPort } = resolve<{ port: number }>("harnessApiServer")!;
 
         workerdManagerInstance = new WorkerdManager({
@@ -644,16 +622,42 @@ async function main() {
           getBuild: (unitPath, ref) => buildSystemForWorkerd!.getBuild(unitPath, ref),
           workspacePath,
           statePath,
-          pubsubUrl: `http://127.0.0.1:${pubsubPort}`,
+          // pubsubUrl removed — channel DOs replace PubSub server
           serverUrl: `http://127.0.0.1:${harnessApiPort}`,
         });
 
         // Wire push trigger to restart workers on source rebuild
         buildSystemForWorkerd.onPushBuild((source) => {
-          workerdManagerInstance?.onSourceRebuilt(source).catch((err) => {
+          // Check if the rebuilt source has DO classes (from the current graph)
+          const node = buildSystemForWorkerd?.getGraph().allNodes().find(n => n.relativePath === source);
+          const manifest = node?.manifest as Record<string, unknown> | undefined;
+          const durable = manifest?.["durable"] as { classes?: Array<{ className: string }> } | undefined;
+          const doClasses = durable?.classes;
+
+          workerdManagerInstance?.onSourceRebuilt(source, doClasses).catch((err) => {
             console.error(`[WorkerdManager] Failed to handle rebuilt source ${source}:`, err);
           });
         });
+
+        // Pre-register all DO classes from the build graph so they're available
+        // before any panel connects or agent subscribes. Single workerd restart.
+        {
+          const graph = buildSystemForWorkerd.getGraph();
+          const doClasses: Array<{ source: string; className: string }> = [];
+          for (const node of graph.allNodes()) {
+            if (node.kind !== "worker") continue;
+            const manifest = node.manifest as Record<string, unknown>;
+            const durable = manifest["durable"] as { classes?: Array<{ className: string }> } | undefined;
+            if (durable?.classes) {
+              for (const cls of durable.classes) {
+                doClasses.push({ source: node.relativePath, className: cls.className });
+              }
+            }
+          }
+          if (doClasses.length > 0) {
+            await workerdManagerInstance.registerAllDOClasses(doClasses);
+          }
+        }
 
         return workerdManagerInstance;
       },
@@ -717,7 +721,6 @@ async function main() {
         const registry = resolve<import("../shared/panelRegistry.js").PanelRegistry>("panelRegistry")!;
         const fsService = resolve<import("../shared/fsService.js").FsService>("fsService")!;
         const { server: rpcServer, port: rpcPort } = resolve<{ server: import("./rpcServer.js").RpcServer; port: number }>("rpcServer")!;
-        const pubsubPort = resolve<{ port: number }>("pubsub")!.port;
         const httpResult = resolve<{ server: import("./panelHttpServer.js").PanelHttpServer; port: number }>("panelHttpServer", true);
 
         const lifecycle = new PanelLifecycle({
@@ -729,7 +732,7 @@ async function main() {
           serverInfo: {
             rpcPort,
             gitBaseUrl: `http://127.0.0.1:${gitServer.getPort()}`,
-            pubsubUrl: `ws://127.0.0.1:${pubsubPort}`,
+            workerdPort: resolve<import("./workerdManager.js").WorkerdManager>("workerdManager")?.getPort() ?? 0,
             createPanelToken: (panelId, kind) => tokenManager.createToken(panelId, kind as import("../shared/serviceDispatcher.js").CallerKind),
             ensurePanelToken: (panelId, kind) => tokenManager.ensureToken(panelId, kind as import("../shared/serviceDispatcher.js").CallerKind),
             revokePanelToken: (panelId) => { tokenManager.revokeToken(panelId); },
@@ -963,7 +966,7 @@ async function main() {
     harnessManager: container.get<import("./harnessManager.js").HarnessManager>("harnessManager"),
     doDispatch: container.get<import("./doDispatch.js").DODispatch>("doDispatch"),
     contextFolderManager,
-    pubsub: container.get<{ server: import("@natstack/pubsub-server").PubSubServer }>("pubsub").server,
+    workerdManager: container.get<import("./workerdManager.js").WorkerdManager>("workerdManager")!,
     validateToken: (token) => {
       const result = tokenManager.validateToken(token);
       if (!result) return { valid: false };
@@ -971,13 +974,10 @@ async function main() {
     },
   };
 
-  // Wire PubSub and DODispatch to workerdManager for restart recovery
-  const pubsubServer = container.get<{ server: import("@natstack/pubsub-server").PubSubServer }>("pubsub").server;
+  // Wire DODispatch to workerdManager for restart recovery
   const workerdManager = container.get<import("./workerdManager.js").WorkerdManager>("workerdManager");
   const doDispatchInst = container.get<import("./doDispatch.js").DODispatch>("doDispatch");
 
-  pubsubServer.setPostbackPortResolver(() => workerdManager.getPort());
-  pubsubServer.setEnsureDO((source, className, objectKey) => workerdManager.ensureDO(source, className, objectKey));
   doDispatchInst.setEnsureDO((source, className, objectKey) => workerdManager.ensureDO(source, className, objectKey));
 
   dispatcher.markInitialized();
@@ -1005,14 +1005,15 @@ async function main() {
   // ===========================================================================
 
   const rpcPort = container.get<{ port: number }>("rpcServer").port;
-  const pubsubPort = container.get<{ port: number }>("pubsub").port;
+  const workerdMgr = container.get<import("./workerdManager.js").WorkerdManager>("workerdManager");
 
   if (ipcChannel) {
     ipcChannel.postMessage({
       type: "ready",
       rpcPort,
       gitPort: gitServer.getPort(),
-      pubsubPort,
+      pubsubPort: 0, // deprecated — channel DOs replace PubSub server
+      workerdPort: workerdMgr?.getPort() ?? 0,
       adminToken,
     });
   } else {
@@ -1027,7 +1028,6 @@ async function main() {
         rpcPort,
         panelPort: panelHttpPort,
         gitPort: gitServer.getPort(),
-        pubsubPort,
         adminToken,
       });
     } catch (err) {
@@ -1038,7 +1038,7 @@ async function main() {
 
     console.log("natstack-server ready:");
     console.log(`  Git:       http://127.0.0.1:${gitServer.getPort()}`);
-    console.log(`  PubSub:    ws://127.0.0.1:${pubsubPort}`);
+    console.log(`  Workerd:   http://127.0.0.1:${workerdMgr?.getPort() ?? '?'}`);
     console.log(`  RPC:       ws://127.0.0.1:${rpcPort}`);
     console.log(`  Harness:   http://127.0.0.1:${harnessApiPort}`);
     if (panelHttpPort) {

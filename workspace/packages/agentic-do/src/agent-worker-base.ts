@@ -9,9 +9,8 @@
  */
 
 import { DurableObjectBase, type DurableObjectContext, type DORef } from "@workspace/runtime/worker";
-import { PubSubDOClient, ServerDOClient } from "@workspace/runtime/worker";
-import type { ChannelEvent, HarnessConfig, HarnessOutput, TurnInput, ParticipantDescriptor, UnsubscribeResult, Attachment, ChannelBroadcastEventRaw } from "@natstack/harness/types";
-import { toChannelEvent } from "@natstack/harness/types";
+import { ServerDOClient } from "@workspace/runtime/worker";
+import type { ChannelEvent, HarnessConfig, HarnessOutput, TurnInput, ParticipantDescriptor, UnsubscribeResult, Attachment } from "@natstack/harness/types";
 import { needsApprovalForTool } from "@natstack/pubsub";
 
 import { DOIdentity } from "./identity.js";
@@ -20,7 +19,7 @@ import { HarnessManager } from "./harness-manager.js";
 import { TurnManager, type ActiveTurn, type InFlightTurn } from "./turn-manager.js";
 import { ContinuationStore } from "./continuation-store.js";
 import { StreamWriter, type PersistedStreamState } from "./stream-writer.js";
-import { PubSubMessageSink } from "./message-sink.js";
+import { ChannelClient } from "./channel-client.js";
 
 export abstract class AgentWorkerBase extends DurableObjectBase {
   protected identity: DOIdentity;
@@ -28,29 +27,30 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   protected harnesses: HarnessManager;
   protected turns: TurnManager;
   protected continuations: ContinuationStore;
-  protected pubsub: PubSubDOClient;
   protected server: ServerDOClient;
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
 
     const e = env as Record<string, string>;
-    const pubsubUrl = e["PUBSUB_URL"];
     const serverUrl = e["SERVER_URL"];
     const authToken = e["RPC_AUTH_TOKEN"];
 
-    if (!pubsubUrl || !serverUrl || !authToken) {
+    if (!serverUrl || !authToken) {
       throw new Error(
-        `AgentWorkerBase requires PUBSUB_URL, SERVER_URL, and RPC_AUTH_TOKEN env bindings. ` +
-        `Missing: ${[!pubsubUrl && "PUBSUB_URL", !serverUrl && "SERVER_URL", !authToken && "RPC_AUTH_TOKEN"].filter(Boolean).join(", ")}`,
+        `AgentWorkerBase requires SERVER_URL and RPC_AUTH_TOKEN env bindings. ` +
+        `Missing: ${[!serverUrl && "SERVER_URL", !authToken && "RPC_AUTH_TOKEN"].filter(Boolean).join(", ")}`,
       );
     }
 
-    this.pubsub = new PubSubDOClient(pubsubUrl, authToken);
     this.server = new ServerDOClient(serverUrl, authToken);
 
     this.identity = new DOIdentity(this.sql);
-    this.subscriptions = new SubscriptionManager(this.sql, this.pubsub, this.identity);
+    this.subscriptions = new SubscriptionManager(
+      this.sql,
+      (channelId) => new ChannelClient(this.postToDO.bind(this), channelId),
+      this.identity,
+    );
     this.harnesses = new HarnessManager(this.sql, this.server);
     this.turns = new TurnManager(this.sql);
     this.continuations = new ContinuationStore(this.sql);
@@ -72,7 +72,42 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.continuations.createTables();
   }
 
-  // --- Identity bootstrap (called by workerdManager after instance creation) ---
+  // --- Identity bootstrap ---
+  // Self-bootstraps from env bindings (WORKER_SOURCE, WORKER_CLASS_NAME, WORKERD_SESSION_ID)
+  // and objectKey (parsed from request URL by DurableObjectBase.fetch()).
+  // Also callable externally for backward compatibility.
+
+  private _bootstrapped = false;
+
+  /** Ensure identity is bootstrapped. Called automatically on first fetch(). */
+  private ensureBootstrapped(): void {
+    if (this._bootstrapped) return;
+    // objectKey may not be available yet (before first fetch)
+    try {
+      const key = this.objectKey;
+      const source = (this.env as Record<string, string>)["WORKER_SOURCE"];
+      const className = (this.env as Record<string, string>)["WORKER_CLASS_NAME"];
+      const sessionId = (this.env as Record<string, string>)["WORKERD_SESSION_ID"];
+      if (source && className && sessionId) {
+        const doRef: DORef = { source, className, objectKey: key };
+        const { isRestart } = this.identity.bootstrap(doRef, sessionId);
+        if (isRestart) {
+          this.harnesses.markCrashedOnRestart();
+          this.turns.clearAllActive();
+          this.turns.clearAllInFlight();
+          this.continuations.deleteAll();
+        }
+        this._bootstrapped = true;
+      }
+    } catch (err) {
+      // objectKey not yet available (before first fetch) — will bootstrap on next call.
+      // Log unexpected errors so they don't get silently swallowed.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes("objectKey not available")) {
+        console.error("[AgentWorkerBase] ensureBootstrapped failed:", err);
+      }
+    }
+  }
 
   async bootstrap(doRef: DORef, sessionId: string): Promise<void> {
     const { isRestart } = this.identity.bootstrap(doRef, sessionId);
@@ -82,12 +117,19 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       this.turns.clearAllInFlight();
       this.continuations.deleteAll();
     }
+    this._bootstrapped = true;
   }
 
   // --- Convenience accessors (delegate to identity) ---
 
   protected get doRef(): DORef {
     return this.identity.ref;
+  }
+
+  // --- ChannelClient factory ---
+
+  protected createChannelClient(channelId: string): ChannelClient {
+    return new ChannelClient(this.postToDO.bind(this), channelId);
   }
 
   // --- 5 Customization Hooks ---
@@ -124,8 +166,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   ): StreamWriter {
     const participantId = this.subscriptions.getParticipantId(channelId);
     if (!participantId) throw new Error(`No participant ID for channel ${channelId}`);
-    const sink = new PubSubMessageSink(this.pubsub, participantId);
-    return new StreamWriter(sink, channelId, turn.replyToId, turn.typingContent, turn.streamState);
+    const channel = this.createChannelClient(channelId);
+    return new StreamWriter(channel, participantId, channelId, turn.replyToId, turn.typingContent, turn.streamState);
   }
 
   // --- Subscription lifecycle ---
@@ -149,8 +191,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   async unsubscribeChannel(channelId: string): Promise<UnsubscribeResult> {
     const harnessIds = this.harnesses.listForChannel(channelId);
 
-    // Unsubscribe from PubSub
-    await this.subscriptions.unsubscribeFromPubSub(channelId);
+    // Unsubscribe from channel DO
+    await this.subscriptions.unsubscribeFromChannel(channelId);
 
     // Stop harnesses via server API
     for (const hid of harnessIds) {
@@ -318,7 +360,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           allow: true,
         });
         try {
-          await this.pubsub.cancelCall(channelId, call.callId);
+          const channel = this.createChannelClient(channelId);
+          await channel.cancelCall(call.callId);
         } catch { /* best-effort */ }
       }
     }
@@ -361,17 +404,26 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   async onChannelForked(_sourceChannel: string, _forkedChannelId: string, _forkPointId: number): Promise<void> {}
 
-  // --- Fetch override for agent-specific event transformation ---
+  // --- Fetch override for agent-specific event handling ---
 
   override async fetch(request: Request): Promise<Response> {
     this.ensureReady();
+
+    // Parse /{objectKey}/{method} from URL (same as base class)
+    const url = new URL(request.url);
+    const segments = url.pathname.split("/").filter(Boolean);
+    if (segments.length >= 1 && !(this as any)._objectKey) {
+      (this as any)._objectKey = decodeURIComponent(segments[0]!);
+    }
+
+    // Self-bootstrap from env bindings now that objectKey is available
+    this.ensureBootstrapped();
 
     if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
       return this.handleWebSocketUpgrade(request);
     }
 
-    const url = new URL(request.url);
-    const method = url.pathname.replace(/^\/+/, "") || "getState";
+    const method = segments.slice(1).join("/") || "getState";
 
     try {
       let args: unknown[] = [];
@@ -383,17 +435,17 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         }
       }
 
-      // Transform raw PubSub broadcast events into ChannelEvent
+      // Channel DO sends proper ChannelEvent objects — intercept config-update events
       if (method === "onChannelEvent" && args.length === 2) {
-        const rawEvent = args[1] as ChannelBroadcastEventRaw;
-
-        // Intercept config-update events
-        if (rawEvent.type === "config-update") {
+        const event = args[1] as ChannelEvent;
+        if (event.type === "config-update") {
           const channelId = args[0] as string;
           try {
-            const config = typeof rawEvent.payload === "string" ? JSON.parse(rawEvent.payload) : rawEvent.payload;
-            if (config && typeof config === "object" && "approvalLevel" in (config as Record<string, unknown>)) {
-              const newLevel = (config as Record<string, unknown>)["approvalLevel"] as number;
+            const config = typeof event.payload === "object" && event.payload !== null
+              ? event.payload as Record<string, unknown>
+              : {};
+            if ("approvalLevel" in config) {
+              const newLevel = config["approvalLevel"] as number;
               this.setApprovalLevel(channelId, newLevel);
               if (newLevel >= 2) {
                 await this.reevaluatePendingApprovals(channelId);
@@ -404,8 +456,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
             headers: { "Content-Type": "application/json" },
           });
         }
-
-        args[1] = toChannelEvent(rawEvent);
       }
 
       const fn = (this as unknown as Record<string, unknown>)[method];

@@ -5,7 +5,7 @@
 NatStack's agentic system is a 3-layer server-side architecture:
 
 ```
-Panel (browser)          PubSub Channel          Worker DO (workerd)          Harness (Node.js)
+Panel (browser)          Channel DO (workerd)     Worker DO (workerd)          Harness (Node.js)
      │                        │                        │                          │
      │── user message ───────►│── callback event ──────►│                          │
      │                        │                        │── spawnHarness ──────────►│
@@ -18,13 +18,13 @@ Panel (browser)          PubSub Channel          Worker DO (workerd)          Ha
      │                        │                        │◄── turn-complete ────────│
 ```
 
-- **Channels** — PubSub messaging with forkable history
-- **Workers** — Durable Objects in workerd with SQLite state, making direct HTTP calls
+- **Channels** — Channel DOs with forkable history and SQLite-backed message storage
+- **Workers** — Durable Objects in workerd with SQLite state, calling Channel DOs directly via `callDO()`
 - **Harnesses** — Node.js child processes running AI SDKs (Claude, Pi), communicating via bidirectional RPC
 
-## Key Design Principle: Autonomous DOs with Direct HTTP Calls
+## Key Design Principle: Autonomous DOs with Direct Calls
 
-DOs make direct outbound HTTP calls to PubSub and server APIs. All event handlers return `void` — side effects happen inline via `this.pubsub.*` and `this.server.*` methods.
+DOs call Channel DOs (via `callDO()` / `stub.fetch()`) and server APIs directly. All event handlers return `void` — side effects happen inline via `this.createChannelClient(channelId).*` and `this.server.*` methods.
 
 ```typescript
 async onChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
@@ -77,7 +77,7 @@ Location: `workspace/packages/agentic-do/src/agent-worker-base.ts`
 | `getHarnessConfig()` | `{}` | System prompt, model, toolAllowlist |
 | `shouldProcess(event)` | Panel messages only | Filter events |
 | `buildTurnInput(event)` | Extract content | Transform to TurnInput |
-| `getParticipantInfo()` | Generic agent | PubSub identity + methods |
+| `getParticipantInfo()` | Generic agent | Channel identity + methods |
 
 ### SQLite Tables (8 total)
 
@@ -87,7 +87,7 @@ Location: `workspace/packages/agentic-do/src/agent-worker-base.ts`
 | `subscriptions` | Channel subscriptions + participant ID |
 | `harnesses` | Harness lifecycle (status, session ID) |
 | `turn_map` | Completed turns for fork resolution |
-| `checkpoints` | Last-processed pubsub ID |
+| `checkpoints` | Last-processed event ID |
 | `in_flight_turns` | In-progress turns for crash retry |
 | `active_turns` | Streaming state (replyToId, senderParticipantId, streamState) |
 | `pending_calls` | Async call continuations (survives hibernation) |
@@ -106,10 +106,10 @@ Location: `workspace/packages/agentic-do/src/agent-worker-base.ts`
 ### First User Message
 
 ```
-Panel sends message → PubSub → POST-back to DO → onChannelEvent()
+Panel sends message → Channel DO → callback to Worker DO → onChannelEvent()
   1. shouldProcess() → true
   2. getHarnessForChannel() → null (no harness yet)
-  3. Send bootstrap typing indicator via this.pubsub.send()
+  3. Send bootstrap typing indicator via channel.send()
   4. Call this.server.spawnHarness() with initialTurn
 
 Server handles /harness/spawn:
@@ -125,7 +125,7 @@ Server handles /harness/spawn:
 ### Subsequent Messages
 
 ```
-Panel sends message → PubSub → POST-back to DO → onChannelEvent()
+Panel sends message → Channel DO → callback to Worker DO → onChannelEvent()
   1. getHarnessForChannel() → harnessId
   2. Start typing via StreamWriter, call this.server.sendHarnessCommand(start-turn)
   3. Record active_turn + in_flight_turn
@@ -146,15 +146,15 @@ Harness emits events → DODispatch → DO.onHarnessEvent()
 ```
 Harness: approval-needed(toolUseId, toolName, input)
   → DO stores pendingCall(callId, "approval", {harnessId, toolUseId})
-  → DO returns callMethod(callId, panelId, "request_tool_approval", args)
+  → DO calls channel.callMethod(callId, panelId, "request_tool_approval", args)
 
-DO: this.pubsub.callMethod() → broadcasts to panel via PubSub
+Channel DO: routes callMethod to panel
 Panel: request_tool_approval handler
   → checkToolApproval() for auto-approve
   → requestApproval() for UI prompt
   → returns {allow, alwaysAllow}
 
-Server: receives method-result → DO.onCallResult(callId, result)
+Channel DO: receives method-result → callDO back to Worker DO → onCallResult(callId, result)
   → consumePendingCall(callId) → handleCallResult("approval", ...)
   → DO calls this.server.sendHarnessCommand(approveTool)
 ```
@@ -186,10 +186,9 @@ Harness process dies → HarnessManager detects exit → DODispatch
 | Package | Location | Contents |
 |---------|----------|----------|
 | `@natstack/harness` | `packages/harness/` | Types (HarnessOutput, ChannelEvent), SDK adapters |
-| `@natstack/pubsub` | `workspace/packages/pubsub/` | PubSubClient, protocol types, approval schemas |
-| `@natstack/pubsub-server` | `packages/pubsub-server/` | PubSub server with channel forking |
-| `@workspace/runtime` | `workspace/packages/runtime/` | DurableObjectBase, PubSubDOClient, ServerDOClient |
-| `@workspace/agentic-do` | `workspace/packages/agentic-do/` | AgentWorkerBase, StreamWriter, composable modules |
+| `@natstack/pubsub` | `workspace/packages/pubsub/` | PubSubClient (panel-side), protocol types, approval schemas |
+| `@workspace/runtime` | `workspace/packages/runtime/` | DurableObjectBase, ServerDOClient |
+| `@workspace/agentic-do` | `workspace/packages/agentic-do/` | AgentWorkerBase, ChannelClient, StreamWriter, composable modules |
 | Workers | `workspace/workers/` | DO implementations (agent-worker, test-agent) |
 
 ## Further Reading
@@ -197,4 +196,4 @@ Harness process dies → HarnessManager detects exit → DODispatch
 - **Worker Authoring Guide**: `workspace/workers/README.md` — full annotated walkthrough with examples
 - **Paneldev Skill**: `workspace/skills/paneldev/WORKERS.md` — reference for AI agents building workers
 - **Harness Types**: `packages/harness/README.md` — HarnessOutput, HarnessCommand, WorkerAction type catalog
-- **Channel Forking**: `packages/pubsub-server/README.md` — fork semantics, replay, schema
+- **Channel Forking**: Channel DO handles fork semantics, replay, and schema internally

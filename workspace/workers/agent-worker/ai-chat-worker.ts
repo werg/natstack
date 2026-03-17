@@ -86,7 +86,8 @@ export class AiChatWorker extends AgentWorkerBase {
         `bootstrap_typing:${channelId}`, bootstrapTypingId,
       );
       if (participantId) {
-        await this.pubsub.send(participantId, channelId, bootstrapTypingId, typingContent, {
+        const channel = this.createChannelClient(channelId);
+        await channel.send(participantId, bootstrapTypingId, typingContent, {
           contentType: "typing",
           persist: false,
           replyTo: event.messageId,
@@ -229,8 +230,9 @@ export class AiChatWorker extends AgentWorkerBase {
           await this.cleanupBootstrapTyping(channelId);
           const participantId = this.getParticipantId(channelId);
           if (participantId) {
-            await this.pubsub.send(
-              participantId, channelId, crypto.randomUUID(),
+            const errorChannel = this.createChannelClient(channelId);
+            await errorChannel.send(
+              participantId, crypto.randomUUID(),
               JSON.stringify({ error: event.error, code: event.code }),
               { contentType: "error", persist: true, replyTo: turn?.replyToId },
             );
@@ -279,9 +281,9 @@ export class AiChatWorker extends AgentWorkerBase {
         const approvalParticipantInfo = this.getParticipantInfo(channelId);
         console.log(`[AiChatWorker] Requesting tool approval: tool=${event.toolName}, target=${panelId}, callId=${callId}`);
 
-        // Async call via PubSub — result arrives at onCallResult
-        await this.pubsub.callMethod(
-          channelId,
+        // Async call via channel DO — result arrives at onCallResult
+        const approvalChannel = this.createChannelClient(channelId);
+        await approvalChannel.callMethod(
           this.getParticipantId(channelId)!,
           panelId,
           callId,
@@ -306,9 +308,9 @@ export class AiChatWorker extends AgentWorkerBase {
           callId: event.callId,
         });
 
-        // Route tool call through PubSub callMethod
-        await this.pubsub.callMethod(
-          channelId,
+        // Route tool call through channel DO
+        const toolChannel = this.createChannelClient(channelId);
+        await toolChannel.callMethod(
           this.getParticipantId(channelId)!,
           event.participantId,
           event.callId,
@@ -321,7 +323,8 @@ export class AiChatWorker extends AgentWorkerBase {
       // --- Discover methods request from harness ---
       case "discover-methods": {
         // Query PubSub roster for methods
-        const participants = await this.pubsub.getParticipants(channelId);
+        const discoverChannel = this.createChannelClient(channelId);
+        const participants = await discoverChannel.getParticipants();
         const selfId = this.getParticipantId(channelId);
         const methods: Array<{ participantId: string; name: string; description: string; parameters?: unknown }> = [];
         for (const p of participants) {
@@ -351,7 +354,8 @@ export class AiChatWorker extends AgentWorkerBase {
       case "metadata-update": {
         const participantId = this.getParticipantId(channelId);
         if (participantId) {
-          await this.pubsub.updateMetadata(participantId, channelId, event.metadata);
+          const metaChannel = this.createChannelClient(channelId);
+          await metaChannel.updateMetadata(participantId, event.metadata);
         }
         break;
       }
@@ -452,7 +456,8 @@ export class AiChatWorker extends AgentWorkerBase {
       const typingMsgId = row[0]!["value"] as string;
       const participantId = this.getParticipantId(channelId);
       if (participantId) {
-        await this.pubsub.complete(participantId, channelId, typingMsgId);
+        const channel = this.createChannelClient(channelId);
+        await channel.complete(participantId, typingMsgId);
       }
       this.sql.exec(`DELETE FROM state WHERE key = ?`, key);
     }

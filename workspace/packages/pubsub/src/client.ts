@@ -456,9 +456,10 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
   }
 
   function buildWsUrl(withSinceId?: number): string {
-    const url = new URL(serverUrl);
+    // Channel ID is a path segment: {serverUrl}/{channelId}?token=...
+    const base = serverUrl.replace(/\/$/, "");
+    const url = new URL(`${base}/${encodeURIComponent(channel)}`);
     url.searchParams.set("token", token);
-    url.searchParams.set("channel", channel);
     if (contextId) {
       url.searchParams.set("contextId", contextId);
     }
@@ -471,11 +472,6 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
     if (replayMessageLimit !== undefined) {
       url.searchParams.set("replayMessageLimit", String(replayMessageLimit));
     }
-    // Note: metadata is always sent via updateMetadata after connection.
-    // This avoids URL length limits (~2KB-8KB depending on browser/server).
-    // WebSocket connections must use HTTP GET for the upgrade handshake (RFC 6455),
-    // so POST is not an option. The extra round-trip is acceptable since
-    // participants without metadata can still receive messages during this window.
     return url.toString();
   }
 

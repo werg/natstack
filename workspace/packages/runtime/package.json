@@ -34,7 +34,6 @@
     "@natstack/ai": "workspace:*",
     "@natstack/git": "workspace:*",
     "@natstack/harness": "workspace:*",
-    "@natstack/pubsub": "workspace:*",
     "@natstack/rpc": "workspace:*",
     "@natstack/types": "workspace:*",
     "buffer": "^6.0.3",

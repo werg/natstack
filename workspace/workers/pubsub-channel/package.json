@@ -1,0 +1,17 @@
+{
+  "name": "@workspace-workers/pubsub-channel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "type": "worker",
+    "entry": "index.ts",
+    "durable": {
+      "classes": [{ "className": "PubSubChannel" }]
+    }
+  },
+  "dependencies": {
+    "@workspace/runtime": "workspace:*",
+    "@natstack/harness": "workspace:*"
+  }
+}

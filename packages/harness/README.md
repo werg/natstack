@@ -5,16 +5,16 @@ Shared type definitions for the NatStack agentic harness messaging system. This 
 ## Type Flow
 
 ```
-Panel --> PubSub --> Server --> DO (ChannelEvent) --> WorkerActions --> Server --> Harness (HarnessCommand) --> HarnessOutput --> DO --> WorkerActions --> PubSub
+Panel --> Channel DO --> Worker DO (ChannelEvent) --> Server --> Harness (HarnessCommand) --> HarnessOutput --> Worker DO --> Channel DO
 ```
 
-1. **Panel** sends user messages via **PubSub**
-2. **Server** receives events and delivers them to worker DOs as `ChannelEvent`
-3. Worker DO processes the event and returns `WorkerActions`
-4. Server executes actions — for harness operations, it sends `HarnessCommand` to the harness process
+1. **Panel** sends user messages via the **Channel DO**
+2. **Channel DO** delivers events to subscribed worker DOs as `ChannelEvent` (via `callDO()`)
+3. Worker DO processes the event and calls server/channel APIs directly
+4. For harness operations, the DO calls the server which sends `HarnessCommand` to the harness process
 5. Harness emits `HarnessOutput` events as it streams a response
-6. Server feeds harness output back to the DO, which returns more `WorkerActions`
-7. Server executes those actions (e.g., sending messages back via PubSub)
+6. Server feeds harness output back to the DO via DODispatch
+7. DO calls channel APIs directly (e.g., sending messages back via the Channel DO)
 
 ## HarnessOutput (19 variants)
 
@@ -99,7 +99,7 @@ Actions returned by worker DOs for the server to execute. Grouped by target:
 | `SendOptions` | Options for channel send actions (type, persist, metadata, reply-to) |
 | `TurnInput` | Input for starting a new AI turn (content, sender, context, attachments, settings) |
 | `WorkerActions` | Wrapper containing an array of `WorkerAction` |
-| `ParticipantDescriptor` | PubSub participant identity with handle, name, type, and advertised methods |
+| `ParticipantDescriptor` | Channel participant identity with handle, name, type, and advertised methods |
 | `MethodAdvertisement` | A method callable by other participants |
 | `SpawnHarnessOpts` | Options for spawning a fresh harness |
 | `RespawnHarnessOpts` | Options for respawning a crashed harness |

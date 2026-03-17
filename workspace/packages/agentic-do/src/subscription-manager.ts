@@ -1,18 +1,19 @@
 /**
- * SubscriptionManager — Channel subscriptions, participant identity, PubSub subscribe/unsubscribe.
+ * SubscriptionManager — Channel subscriptions, participant identity.
  *
+ * Uses ChannelClient (callDO) for subscribe/unsubscribe — no PubSubDOClient.
  * Owns the `subscriptions` table.
  */
 
 import type { SqlStorage } from "@workspace/runtime/worker";
-import type { PubSubDOClient } from "@workspace/runtime/worker";
 import type { ParticipantDescriptor } from "@natstack/harness/types";
 import type { DOIdentity } from "./identity.js";
+import type { ChannelClient } from "./channel-client.js";
 
 export class SubscriptionManager {
   constructor(
     private sql: SqlStorage,
-    private pubsub: PubSubDOClient,
+    private channelFactory: (channelId: string) => ChannelClient,
     private identity: DOIdentity,
   ) {}
 
@@ -46,19 +47,28 @@ export class SubscriptionManager {
     );
 
     const participantId = this.buildParticipantId();
+    const ref = this.identity.ref;
 
     const metadata: Record<string, unknown> = {
       name: opts.descriptor.name,
       type: opts.descriptor.type,
       handle: opts.descriptor.handle,
-      transport: "post",
+      transport: "do",
+      doSource: ref.source,
+      doClass: ref.className,
+      doKey: ref.objectKey,
+      contextId: opts.contextId,
       ...opts.descriptor.metadata,
     };
+    if (opts.config && typeof opts.config === "object") {
+      metadata["channelConfig"] = opts.config;
+    }
     if (opts.descriptor.methods && opts.descriptor.methods.length > 0) {
       metadata["methods"] = opts.descriptor.methods;
     }
 
-    const subResult = await this.pubsub.subscribe(opts.channelId, participantId, metadata);
+    const channel = this.channelFactory(opts.channelId);
+    const subResult = await channel.subscribe(participantId, metadata);
 
     this.sql.exec(
       `UPDATE subscriptions SET participant_id = ? WHERE channel_id = ?`,
@@ -72,11 +82,12 @@ export class SubscriptionManager {
     };
   }
 
-  /** Unsubscribe from PubSub only. Does NOT clean up other tables — caller handles that. */
-  async unsubscribeFromPubSub(channelId: string): Promise<void> {
+  /** Unsubscribe from channel DO. Does NOT clean up other tables — caller handles that. */
+  async unsubscribeFromChannel(channelId: string): Promise<void> {
     const participantId = this.getParticipantId(channelId);
     if (participantId) {
-      await this.pubsub.unsubscribe(channelId, participantId);
+      const channel = this.channelFactory(channelId);
+      await channel.unsubscribe(participantId);
     }
   }
 
@@ -103,7 +114,7 @@ export class SubscriptionManager {
     return JSON.parse(row[0]!["config"] as string);
   }
 
-  /** Delete subscription record only (no PubSub call). Used during unsubscribeChannel cleanup. */
+  /** Delete subscription record only (no channel call). Used during unsubscribeChannel cleanup. */
   deleteSubscription(channelId: string): void {
     this.sql.exec(`DELETE FROM subscriptions WHERE channel_id = ?`, channelId);
   }

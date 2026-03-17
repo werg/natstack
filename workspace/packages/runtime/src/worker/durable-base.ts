@@ -9,15 +9,21 @@
  */
 
 // Minimal types for workerd DurableObject context (cannot import cloudflare:workers in Node)
+
 export interface DurableObjectContext {
+  id: { toString(): string; name?: string };
   storage: {
     sql: SqlStorage;
     setAlarm(scheduledTime: number | Date): void;
     getAlarm(): Promise<number | null>;
     deleteAlarm(): void;
   };
-  acceptWebSocket(ws: WebSocket): void;
-  getWebSockets(): WebSocket[];
+  // Tagged accept: tags survive hibernation, retrievable via getWebSockets(tag)
+  acceptWebSocket(ws: WebSocket, tags?: string[]): void;
+  // Retrieve by tag, or all if no tag
+  getWebSockets(tag?: string): WebSocket[];
+  // Run async init during construction or upgrade (blocks other events)
+  blockConcurrencyWhile<T>(fn: () => Promise<T>): Promise<T>;
 }
 
 export interface SqlStorage {
@@ -105,6 +111,55 @@ export abstract class DurableObjectBase {
     this.sql.exec(`DELETE FROM state WHERE key = ?`, key);
   }
 
+  // --- Object key identity ---
+  // Set from the first fetch() request URL: /{objectKey}/{method}
+  // The router includes the objectKey in the forwarded URL.
+
+  private _objectKey: string | null = null;
+
+  protected get objectKey(): string {
+    if (this._objectKey) return this._objectKey;
+    // Fallback to ctx.id.name (available in some workerd versions)
+    const name = this.ctx.id.name;
+    if (name) { this._objectKey = name; return name; }
+    // Fallback to persisted state (survives hibernation)
+    try {
+      const stored = this.sql.exec(`SELECT value FROM state WHERE key = '__objectKey'`).toArray();
+      if (stored.length > 0) {
+        this._objectKey = stored[0]!["value"] as string;
+        return this._objectKey;
+      }
+    } catch { /* state table may not exist yet */ }
+    throw new Error("objectKey not available — no request received yet and ctx.id.name not set");
+  }
+
+  // --- Cross-DO communication (HTTP POST through workerd router) ---
+
+  /**
+   * Call a method on another DO via HTTP POST through the workerd router.
+   * Requires WORKERD_URL env binding (injected by WorkerdManager).
+   */
+  protected async postToDO<T = unknown>(
+    source: string, className: string, objectKey: string,
+    method: string, ...args: unknown[]
+  ): Promise<T> {
+    const workerdUrl = this.env["WORKERD_URL"] as string;
+    if (!workerdUrl) throw new Error("WORKERD_URL env binding not available");
+    const url = `${workerdUrl}/_w/${source}/${encodeURIComponent(className)}/${encodeURIComponent(objectKey)}/${method}`;
+    const res = await fetch(url, {
+      method: "POST",
+      body: JSON.stringify(args),
+      headers: { "Content-Type": "application/json" },
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`postToDO ${source}/${className}/${objectKey}.${method} failed (${res.status}): ${text}`);
+    }
+    const ct = res.headers.get("content-type") ?? "";
+    if (ct.includes("application/json")) return res.json() as Promise<T>;
+    return undefined as T;
+  }
+
   // --- Alarm (persists across workerd restarts) ---
 
   protected setAlarm(delayMs: number): void {
@@ -121,12 +176,21 @@ export abstract class DurableObjectBase {
   async fetch(request: Request): Promise<Response> {
     this.ensureReady();
 
+    // Parse /{objectKey}/{method} — router includes objectKey in forwarded URL
+    const url = new URL(request.url);
+    const segments = url.pathname.split("/").filter(Boolean);
+    if (segments.length >= 1 && !this._objectKey) {
+      this._objectKey = decodeURIComponent(segments[0]!);
+      // Persist for hibernation recovery
+      try { this.sql.exec(`INSERT OR IGNORE INTO state (key, value) VALUES ('__objectKey', ?)`, this._objectKey); }
+      catch { /* state table may not exist yet — ensureReady hasn't run */ }
+    }
+
     if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
       return this.handleWebSocketUpgrade(request);
     }
 
-    const url = new URL(request.url);
-    const method = url.pathname.replace(/^\/+/, "") || "getState";
+    const method = segments.slice(1).join("/") || "getState";
 
     try {
       let args: unknown[] = [];

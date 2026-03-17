@@ -1,12 +1,12 @@
 /**
  * StreamWriter — Async streaming message lifecycle manager.
  *
- * Uses a MessageSink for delivery instead of coupling directly to PubSubDOClient.
- * All methods are async because they send messages via the sink.
+ * Uses a ChannelClient for delivery — sends messages directly to the
+ * channel DO via callDO(). No intermediate sink abstraction.
  */
 
 import type { SendMessageOptions } from "@natstack/harness/types";
-import type { MessageSink } from "./message-sink.js";
+import type { ChannelClient } from "./channel-client.js";
 
 export interface PersistedStreamState {
   responseMessageId: string | null;
@@ -19,7 +19,8 @@ export class StreamWriter {
   private state: PersistedStreamState;
 
   constructor(
-    private sink: MessageSink,
+    private channel: ChannelClient,
+    private participantId: string,
     private channelId: string,
     private replyToId: string,
     private typingContent: string,
@@ -29,15 +30,15 @@ export class StreamWriter {
   }
 
   private async send(messageId: string, content: string, options?: SendMessageOptions): Promise<void> {
-    await this.sink.send(this.channelId, messageId, content, options);
+    await this.channel.send(this.participantId, messageId, content, options);
   }
 
   private async update(messageId: string, content: string): Promise<void> {
-    await this.sink.update(this.channelId, messageId, content);
+    await this.channel.update(this.participantId, messageId, content);
   }
 
   private async complete(messageId: string): Promise<void> {
-    await this.sink.complete(this.channelId, messageId);
+    await this.channel.complete(this.participantId, messageId);
   }
 
   async startTyping(): Promise<void> {

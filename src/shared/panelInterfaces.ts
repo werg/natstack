@@ -45,7 +45,7 @@ export interface PanelRelationshipProvider {
 export interface ServerInfoLike {
   rpcPort: number;
   gitBaseUrl: string;
-  pubsubUrl: string;
+  workerdPort: number;
   createPanelToken(panelId: string, kind: string): Promise<string> | string;
   ensurePanelToken(panelId: string, kind: string): Promise<string> | string;
   revokePanelToken(panelId: string): Promise<void> | void;

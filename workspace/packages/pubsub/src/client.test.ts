@@ -69,7 +69,8 @@ describe("PubSubClient", () => {
       expect(capturedUrl).not.toBeNull();
       const url = new URL(capturedUrl!);
       expect(url.searchParams.get("token")).toBe("test-token");
-      expect(url.searchParams.get("channel")).toBe("my-channel");
+      // Channel is a path segment, not a query param
+      expect(url.pathname).toContain("my-channel");
     });
 
     it("includes sinceId when provided", () => {

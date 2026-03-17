@@ -17,11 +17,21 @@ vi.mock("child_process", () => ({
         listeners.get(event)!.add(fn);
         return proc;
       }),
+      once: vi.fn((event: string, fn: (...args: unknown[]) => void) => {
+        if (!listeners.has(event)) listeners.set(event, new Set());
+        listeners.get(event)!.add(fn);
+        return proc;
+      }),
       removeListener: vi.fn((event: string, fn: (...args: unknown[]) => void) => {
         listeners.get(event)?.delete(fn);
         return proc;
       }),
-      kill: vi.fn(),
+      kill: vi.fn(() => {
+        // Simulate process exit after kill
+        setTimeout(() => {
+          for (const fn of listeners.get("exit") ?? []) (fn as (code: number | null, signal: string | null) => void)(null, "SIGTERM");
+        }, 0);
+      }),
       pid: 12345,
     };
     return proc;

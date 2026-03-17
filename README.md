@@ -138,7 +138,7 @@ pnpm start
 ## Headless Server
 
 NatStack can run without Electron as a standalone Node.js server. All core
-services — build, git, pubsub, AI, agents, database, tokens — are available
+services — build, git, channels, AI, agents, database, tokens — are available
 over WebSocket RPC. Panels can optionally be served to a regular web browser
 over HTTP.
 
@@ -163,7 +163,6 @@ On startup the server prints connection details:
 ```
 natstack-server ready:
   Git:       http://127.0.0.1:9001
-  PubSub:    ws://127.0.0.1:9002
   RPC:       ws://127.0.0.1:9003
   Admin token: <hex>
 ```
@@ -196,7 +195,6 @@ Output includes the panel server URL:
 ```
 natstack-server ready:
   Git:       http://127.0.0.1:9001
-  PubSub:    ws://127.0.0.1:9002
   RPC:       ws://127.0.0.1:9003
   Panels:    http://127.0.0.1:8080
   Admin token: <hex>
@@ -211,7 +209,7 @@ Each panel gets:
 - **A WebSocket transport** connecting to the RPC server (same protocol as
   the Electron preload)
 - **RPC-backed filesystem** via server-side context folders
-- **Full service access** — AI, git, database, build, pubsub
+- **Full service access** — AI, git, database, build, channels
 
 ### Browser Extensions
 
@@ -226,6 +224,5 @@ instructions, configuration, and the full connection flow.
 ### In-Process Agents
 
 Agents run as in-process services managed by AgentManager. They have direct
-access to DatabaseManager and AIHandler, and communicate via PubSub channels
-using local WebSocket connections.
+access to DatabaseManager and AIHandler, and communicate via channels.
 

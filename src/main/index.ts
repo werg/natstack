@@ -181,7 +181,7 @@ function buildServerInfo(ports: ServerPorts): ServerInfo {
   return {
     rpcPort: ports.rpcPort,
     gitBaseUrl: `http://127.0.0.1:${ports.gitPort}`,
-    pubsubUrl: `ws://127.0.0.1:${ports.pubsubPort}`,
+    workerdPort: ports.workerdPort ?? 0,
     createPanelToken: (panelId, kind) =>
       requireServerClient().call("tokens", "create", [panelId, kind]) as Promise<string>,
     ensurePanelToken: (panelId, kind) =>

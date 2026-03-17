@@ -97,11 +97,11 @@ export class MyWorker extends AgentWorkerBase {
   static schemaVersion = 1;
 
   async onChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
-    // Handle event — call this.pubsub.* and this.server.* directly
+    // Handle event — call this.createChannelClient(channelId).* and this.server.* directly
   }
 
   async onHarnessEvent(harnessId: string, event: HarnessOutput): Promise<void> {
-    // Handle harness output — call this.pubsub.* and this.server.* directly
+    // Handle harness output — call this.createChannelClient(channelId).* and this.server.* directly
   }
 }
 ```
@@ -114,25 +114,31 @@ export class MyWorker extends AgentWorkerBase {
 | `getHarnessConfig()` | `{}` | System prompt, model, temperature, MCP servers |
 | `shouldProcess(event)` | Panel messages only | Filter which events trigger AI turns |
 | `buildTurnInput(event)` | Extracts content/senderId | Transform event to TurnInput |
-| `getParticipantInfo()` | Generic agent identity | PubSub handle, name, methods |
+| `getParticipantInfo()` | Generic agent identity | Channel handle, name, methods |
 
 ## 4. Direct Communication APIs
 
-DOs are autonomous -- they call PubSub and server APIs directly via HTTP POST. No action-return pattern.
+DOs are autonomous -- they call channel and server APIs directly. Channel operations go through `ChannelClient` (wraps `callDO()` to talk directly to the Channel DO via `stub.fetch()`). No action-return pattern.
 
-### PubSub Operations -- `this.pubsub`
+### Channel Operations -- `this.createChannelClient(channelId)`
+
+Create a `ChannelClient` for a specific channel, then call methods on it:
+
+```typescript
+const channel = this.createChannelClient(channelId);
+```
 
 | Method | Description |
 |--------|-------------|
-| `.send(participantId, channelId, messageId, content, opts?)` | Send a new message |
-| `.update(participantId, channelId, messageId, content)` | Update a streaming message |
-| `.complete(participantId, channelId, messageId)` | Mark a message as complete |
-| `.sendEphemeral(participantId, channelId, content, contentType?)` | Send ephemeral event |
-| `.updateMetadata(participantId, channelId, metadata)` | Update channel metadata |
-| `.subscribe(channelId, participantId, metadata)` | Subscribe to channel |
-| `.unsubscribe(channelId, participantId)` | Unsubscribe from channel |
-| `.callMethod(channelId, callerPid, targetPid, callId, method, args)` | Async method call |
-| `.getParticipants(channelId)` | Get channel roster |
+| `channel.send(participantId, messageId, content, opts?)` | Send a new message |
+| `channel.update(participantId, messageId, content)` | Update a streaming message |
+| `channel.complete(participantId, messageId)` | Mark a message as complete |
+| `channel.sendEphemeral(participantId, content, contentType?)` | Send ephemeral event |
+| `channel.updateMetadata(participantId, metadata)` | Update channel metadata |
+| `channel.subscribe(participantId, metadata)` | Subscribe to channel |
+| `channel.unsubscribe(participantId)` | Unsubscribe from channel |
+| `channel.callMethod(callerPid, targetPid, callId, method, args)` | Async method call |
+| `channel.getParticipants()` | Get channel roster |
 
 ### Server Operations -- `this.server`
 
@@ -141,9 +147,10 @@ DOs are autonomous -- they call PubSub and server APIs directly via HTTP POST. N
 | `.spawnHarness(opts)` | Spawn a new harness process |
 | `.sendHarnessCommand(harnessId, command)` | Send command to harness (start-turn, approve-tool, interrupt, etc.) |
 | `.stopHarness(harnessId)` | Stop a harness process |
-| `.forkChannel(doRef, sourceChannel, forkPointId)` | Fork a channel |
 
 ### StreamWriter -- `this.createWriter(channelId, turn)`
+
+`StreamWriter` takes a `ChannelClient` + `participantId` directly (no intermediate MessageSink).
 
 ```typescript
 const turn = this.getActiveTurn(harnessId);
@@ -158,7 +165,7 @@ if (turn) {
 
 ## 5. StreamWriter
 
-All StreamWriter methods are async (HTTP calls to PubSub):
+All StreamWriter methods are async (calls to the Channel DO):
 
 | Method | Description |
 |--------|-------------|
@@ -180,7 +187,7 @@ The base class creates 8 tables on initialization:
 | `subscriptions` | Channel subscriptions with config + participant ID |
 | `harnesses` | Harness instances (id, type, channel, status) |
 | `turn_map` | Completed turn records for fork resolution |
-| `checkpoints` | Last-processed pubsub ID per channel/harness |
+| `checkpoints` | Last-processed event ID per channel/harness |
 | `in_flight_turns` | Currently executing turns (for crash retry) |
 | `active_turns` | Currently streaming turns (replyToId, turnMessageId, senderParticipantId) |
 | `pending_calls` | Continuation state for async method calls (survives hibernation) |
@@ -211,7 +218,7 @@ export class MyWorker extends AgentWorkerBase {
 | `recordTurnStart(harnessId, channelId, input, messageId, pubsubId, senderParticipantId?)` | Convenience: set active + in-flight + checkpoint |
 | `pendingCall(callId, channelId, type, context)` | Store async call continuation (survives hibernation) |
 | `consumePendingCall(callId)` | Load and delete a continuation |
-| `getParticipantId(channelId)` | Get this DO's PubSub participant ID |
+| `getParticipantId(channelId)` | Get this DO's channel participant ID |
 
 ### Additional Hooks (override in subclass)
 
@@ -223,7 +230,7 @@ export class MyWorker extends AgentWorkerBase {
 
 ### Tool Approval via Continuations
 
-Tool approval uses the **async continuation pattern** -- the DO stores pending call state in SQLite (survives hibernation), calls PubSub's `callMethod` (async), and receives the result via POST-back to `onCallResult()` → `handleCallResult()`.
+Tool approval uses the **async continuation pattern** -- the DO stores pending call state in SQLite (survives hibernation), calls `channel.callMethod()` (async, routed through the Channel DO), and receives the result via POST-back to `onCallResult()` → `handleCallResult()`.
 
 ```typescript
 // In your onHarnessEvent handler for "approval-needed":
@@ -241,9 +248,9 @@ case "approval-needed": {
   this.pendingCall(callId, channelId, 'approval', {
     harnessId, toolUseId: event.toolUseId,
   });
-  // Async call via PubSub — result arrives at onCallResult
-  await this.pubsub.callMethod(
-    channelId,
+  // Async call via Channel DO — result arrives at onCallResult
+  const channel = this.createChannelClient(channelId);
+  await channel.callMethod(
     this.getParticipantId(channelId)!,
     panelId, callId, 'request_tool_approval',
     { agentId: this.getParticipantId(channelId), toolName: event.toolName, toolArgs: event.input },
@@ -293,7 +300,7 @@ describe("MyWorker", () => {
       senderType: "panel", ts: Date.now(), persist: true,
     };
 
-    // onChannelEvent returns void — side effects happen via direct HTTP calls
+    // onChannelEvent returns void — side effects happen via direct calls to Channel DO and server
     await instance.onChannelEvent("ch-1", event);
   });
 });

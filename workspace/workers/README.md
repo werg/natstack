@@ -106,7 +106,7 @@ protected buildTurnInput(event: ChannelEvent): TurnInput {
 
 ### getParticipantInfo(channelId, config?): ParticipantDescriptor
 
-Declare the PubSub identity for a channel. Controls what handle, name, and callable methods are advertised.
+Declare the channel identity for this DO. Controls what handle, name, and callable methods are advertised.
 
 ```typescript
 protected getParticipantInfo(): ParticipantDescriptor {
@@ -123,21 +123,27 @@ protected getParticipantInfo(): ParticipantDescriptor {
 
 ## 3. Direct Communication APIs
 
-DOs are autonomous — they call PubSub and server APIs directly via HTTP POST. All methods return void.
+DOs are autonomous — they call channel and server APIs directly. Channel operations go through `ChannelClient` (which wraps `callDO()` to talk directly to the Channel DO via `stub.fetch()`). Server operations go through `this.server`. All methods return void.
 
-### PubSub Operations — `this.pubsub`
+### Channel Operations — `this.createChannelClient(channelId)`
+
+Create a `ChannelClient` for a specific channel, then call methods on it:
+
+```typescript
+const channel = this.createChannelClient(channelId);
+```
 
 | Method | Description |
 |--------|-------------|
-| `.send(participantId, channelId, messageId, content, opts?)` | Send a new message |
-| `.update(participantId, channelId, messageId, content)` | Update a streaming message |
-| `.complete(participantId, channelId, messageId)` | Mark a message as complete |
-| `.sendEphemeral(participantId, channelId, content, contentType?)` | Send ephemeral event |
-| `.updateMetadata(participantId, channelId, metadata)` | Update channel metadata |
-| `.subscribe(channelId, participantId, metadata)` | Subscribe to channel |
-| `.unsubscribe(channelId, participantId)` | Unsubscribe from channel |
-| `.callMethod(channelId, callerPid, targetPid, callId, method, args)` | Async method call |
-| `.getParticipants(channelId)` | Get channel roster |
+| `channel.send(participantId, messageId, content, opts?)` | Send a new message |
+| `channel.update(participantId, messageId, content)` | Update a streaming message |
+| `channel.complete(participantId, messageId)` | Mark a message as complete |
+| `channel.sendEphemeral(participantId, content, contentType?)` | Send ephemeral event |
+| `channel.updateMetadata(participantId, metadata)` | Update channel metadata |
+| `channel.subscribe(participantId, metadata)` | Subscribe to channel |
+| `channel.unsubscribe(participantId)` | Unsubscribe from channel |
+| `channel.callMethod(callerPid, targetPid, callId, method, args)` | Async method call |
+| `channel.getParticipants()` | Get channel roster |
 
 ### Server Operations — `this.server`
 
@@ -146,11 +152,10 @@ DOs are autonomous — they call PubSub and server APIs directly via HTTP POST. 
 | `.spawnHarness(opts)` | Spawn a new harness process |
 | `.sendHarnessCommand(harnessId, command)` | Send command to harness |
 | `.stopHarness(harnessId)` | Stop a harness process |
-| `.forkChannel(doRef, sourceChannel, forkPointId)` | Fork a channel |
 
 ## 4. StreamWriter
 
-`StreamWriter` handles the send -> update -> complete lifecycle of streaming messages:
+`StreamWriter` handles the send -> update -> complete lifecycle of streaming messages. It takes a `ChannelClient` directly:
 
 ```typescript
 const turn = this.getActiveTurn(harnessId);
@@ -165,7 +170,7 @@ if (turn) {
 
 ### StreamWriter Methods
 
-All methods are async (HTTP calls to PubSub):
+All methods are async (calls to the Channel DO):
 
 | Method | Description |
 |--------|-------------|
@@ -207,7 +212,7 @@ The base class creates 8 tables on initialization:
 | `subscriptions` | Channel subscriptions with config + participant ID |
 | `harnesses` | Harness instances (id, type, channel, status) |
 | `turn_map` | Completed turn records for fork resolution |
-| `checkpoints` | Last-processed pubsub ID per channel/harness |
+| `checkpoints` | Last-processed event ID per channel/harness |
 | `in_flight_turns` | Currently executing turns (for crash retry) |
 | `active_turns` | Currently streaming turns (replyToId, turnMessageId, senderParticipantId) |
 | `pending_calls` | Continuation state for async method calls (survives hibernation) |
@@ -236,7 +241,7 @@ The base class creates 8 tables on initialization:
 | `recordTurnStart(harnessId, channelId, input, messageId, pubsubId, senderParticipantId?)` | Convenience: set active + in-flight + checkpoint |
 | `pendingCall(callId, channelId, type, context)` | Store a continuation (survives hibernation) |
 | `consumePendingCall(callId)` | Load and delete a continuation |
-| `getParticipantId(channelId)` | Get this DO's PubSub participant ID |
+| `getParticipantId(channelId)` | Get this DO's channel participant ID |
 
 ### Schema Versioning
 
@@ -271,7 +276,7 @@ describe("MyWorker", () => {
       senderType: "panel", ts: Date.now(), persist: true,
     };
 
-    // onChannelEvent returns void — side effects happen via direct HTTP calls
+    // onChannelEvent returns void — side effects happen via direct calls to Channel DO and server
     await instance.onChannelEvent("ch-1", event);
   });
 });
@@ -344,9 +349,9 @@ Harness emits event
        action-end      -> writer.endAction()
        inline-ui       -> writer.sendInlineUi(data)
        turn-complete   -> recordTurn(), clearActiveTurn(), clearInFlightTurn()
-       error           -> Mark crashed, complete partial, respawn via this.server.spawnHarness()
-       approval-needed -> Store continuation + this.pubsub.callMethod(request_tool_approval)
-       metadata-update -> this.pubsub.updateMetadata()
+       error           -> Mark crashed, complete partial message, respawn via this.server.spawnHarness()
+       approval-needed -> Store continuation + channel.callMethod(request_tool_approval)
+       metadata-update -> channel.updateMetadata()
        ready           -> Set harness status to 'active'
 ```
 

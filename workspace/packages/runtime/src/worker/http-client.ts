@@ -1,7 +1,7 @@
 /**
  * Base HTTP client for DO outbound calls.
  *
- * Shared by PubSubDOClient and ServerDOClient — provides authenticated
+ * Shared by ServerDOClient — provides authenticated
  * JSON POST/GET with consistent error handling and retry with exponential backoff.
  */
 

@@ -77,13 +77,10 @@ function createMockDeps(overrides: Partial<HarnessApiDeps> = {}): HarnessApiDeps
     contextFolderManager: {
       ensureContextFolder: vi.fn().mockResolvedValue("/tmp/test-ctx"),
     } as unknown as HarnessApiDeps["contextFolderManager"],
-    pubsub: {
-      getMessageStore: vi.fn().mockReturnValue({
-        createChannel: vi.fn(),
-        setChannelFork: vi.fn(),
-      }),
-    } as unknown as HarnessApiDeps["pubsub"],
-    validateToken: vi.fn().mockReturnValue(true),
+    workerdManager: {
+      cloneDO: vi.fn().mockResolvedValue({ source: "workers/pubsub-channel", className: "PubSubChannel", objectKey: "forked" }),
+    } as unknown as HarnessApiDeps["workerdManager"],
+    validateToken: vi.fn().mockReturnValue({ valid: true, callerId: "test-caller", callerKind: "worker" }),
     ...overrides,
   };
 }
@@ -468,14 +465,15 @@ describe("handleHarnessApiRequest", () => {
   describe("POST /harness/fork-channel", () => {
     it("creates a forked channel and notifies the DO", async () => {
       const mockCreateChannel = vi.fn();
-      const mockSetChannelFork = vi.fn();
+      const mockCloneDO = vi.fn().mockResolvedValue({
+        source: "workers/pubsub-channel",
+        className: "PubSubChannel",
+        objectKey: "forked",
+      });
       deps = createMockDeps({
-        pubsub: {
-          getMessageStore: vi.fn().mockReturnValue({
-            createChannel: mockCreateChannel,
-            setChannelFork: mockSetChannelFork,
-          }),
-        } as unknown as HarnessApiDeps["pubsub"],
+        workerdManager: {
+          cloneDO: mockCloneDO,
+        } as unknown as HarnessApiDeps["workerdManager"],
       });
 
       const req = mockRequest("POST", "/harness/fork-channel", {
@@ -491,17 +489,19 @@ describe("handleHarnessApiRequest", () => {
       const body = parseBody(res) as { forkedChannelId: string };
       expect(body.forkedChannelId).toMatch(/^fork:chan-original:/);
 
-      // Should have created the channel in the message store
-      expect(mockCreateChannel).toHaveBeenCalledWith(
-        body.forkedChannelId, "default", "system",
+      // Should have cloned the channel DO
+      expect(mockCloneDO).toHaveBeenCalledWith(
+        { source: "workers/pubsub-channel", className: "PubSubChannel", objectKey: "chan-original" },
+        body.forkedChannelId,
       );
 
-      // Should have set the fork metadata
-      expect(mockSetChannelFork).toHaveBeenCalledWith(
-        body.forkedChannelId, "chan-original", 55,
+      // Should have called postClone on the forked DO
+      expect(deps.doDispatch.dispatch).toHaveBeenCalledWith(
+        { source: "workers/pubsub-channel", className: "PubSubChannel", objectKey: body.forkedChannelId },
+        "postClone", "chan-original", 55,
       );
 
-      // Should have notified the DO
+      // Should have notified the agent DO
       expect(deps.doDispatch.dispatch).toHaveBeenCalledWith(
         testDoRef, "onChannelForked",
         "chan-original",

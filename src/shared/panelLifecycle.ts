@@ -779,8 +779,6 @@ export class PanelLifecycle implements BridgePanelManager {
     const snapshot = getCurrentSnapshot(panel);
     const env = snapshot.options.env ?? {};
     const stateArgs = getPanelStateArgs(panel) ?? {};
-    const pubsubPort = parseInt(new URL(this.serverInfo.pubsubUrl).port, 10);
-
     const serverRpcToken =
       (await this.serverInfo.getPanelToken(panel.id)) ??
       (await this.serverInfo.ensurePanelToken(panel.id, "panel"));
@@ -791,7 +789,7 @@ export class PanelLifecycle implements BridgePanelManager {
       sourceRepo: getPanelSource(panel),
     };
     const pubsubConfig = {
-      serverUrl: `ws://${subdomain}.localhost:${pubsubPort}`,
+      serverUrl: `ws://${subdomain}.localhost:${this.serverInfo.workerdPort}/_w/workers/pubsub-channel/PubSubChannel`,
       token: serverRpcToken,
     };
 
@@ -1032,9 +1030,12 @@ export class PanelLifecycle implements BridgePanelManager {
       : "";
 
     const serverToken = await this.serverInfo.getPanelToken(panelId);
-    const pubsubConfig = this.serverInfo.pubsubUrl
+    const panel = this.registry.getPanel(panelId);
+    const panelContextId = panel ? getPanelContextId(panel) : undefined;
+    const panelSubdomain = panelContextId ? contextIdToSubdomain(panelContextId) : "default";
+    const pubsubConfig = this.serverInfo.workerdPort
       ? JSON.stringify({
-          serverUrl: this.serverInfo.pubsubUrl,
+          serverUrl: `ws://${panelSubdomain}.localhost:${this.serverInfo.workerdPort}/_w/workers/pubsub-channel/PubSubChannel`,
           token: serverToken,
         })
       : "";
