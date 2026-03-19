@@ -158,16 +158,80 @@ export function useAgenticChat({
             execute: async (args: unknown) => {
               const { title } = args as { title: string };
               if (!title) return { ok: false, error: "Missing title" };
-              // Update DOM title
               document.title = title;
-              // Persist via channel config (survives reload, visible to all participants)
               const client = core.clientRef.current;
               if (client) {
-                try {
-                  await client.updateChannelConfig({ title });
-                } catch { /* best-effort */ }
+                try { await client.updateChannelConfig({ title }); } catch { /* best-effort */ }
               }
               return { ok: true };
+            },
+          },
+          inline_ui: {
+            description: `Render a persistent interactive UI component inline in the chat. Use for:
+
+1. **Rich data presentation** — tables, charts, interactive visualizations, formatted output that plain text can't capture well.
+2. **User-triggered actions** — buttons/controls that let the user trigger side-effects in their environment on demand (copy to clipboard, open files, run scripts, apply changes). The user decides when and whether to act.
+
+**Contrast with other tools:**
+- \`eval\`: Agent-triggered side-effects. The agent runs code immediately. Use eval when the agent should act now.
+- \`inline_ui\`: User-triggered side-effects. The agent renders controls, the user clicks when ready. Use inline_ui when the user should decide when to act.
+- \`feedback_form\`/\`feedback_custom\`: Blocks and waits for the user to respond. Use when the agent needs information back before continuing.
+
+**inline_ui is non-blocking** — returns immediately after rendering. The component stays in chat history. Results do NOT flow back to the agent.
+
+**Component receives** \`{ props }\` — pass data via the \`props\` parameter.
+**Available imports**: \`react\`, \`@radix-ui/themes\`, \`@radix-ui/react-icons\`
+**Must use** \`export default\`
+
+**Example — interactive data with action button:**
+\`\`\`tsx
+import { useState } from "react";
+import { Button, Flex, Text, Table } from "@radix-ui/themes";
+import { CopyIcon, CheckIcon } from "@radix-ui/react-icons";
+
+export default function App({ props }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = () => {
+    navigator.clipboard.writeText(JSON.stringify(props.data, null, 2));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <Flex direction="column" gap="2">
+      <Table.Root size="1">
+        <Table.Header>
+          <Table.Row>
+            {props.columns.map(c => <Table.ColumnHeaderCell key={c}>{c}</Table.ColumnHeaderCell>)}
+          </Table.Row>
+        </Table.Header>
+        <Table.Body>
+          {props.data.map((row, i) => (
+            <Table.Row key={i}>
+              {props.columns.map(c => <Table.Cell key={c}>{row[c]}</Table.Cell>)}
+            </Table.Row>
+          ))}
+        </Table.Body>
+      </Table.Root>
+      <Button size="1" variant="soft" onClick={handleCopy}>
+        {copied ? <><CheckIcon /> Copied</> : <><CopyIcon /> Copy as JSON</>}
+      </Button>
+    </Flex>
+  );
+}
+\`\`\``,
+            parameters: z.object({
+              code: z.string().describe("TSX source code for the component"),
+              props: z.record(z.unknown()).optional().describe("Props passed to the component as { props }"),
+            }),
+            execute: async (args: unknown) => {
+              const { code, props } = args as { code: string; props?: Record<string, unknown> };
+              if (!code) return { ok: false, error: "Missing code" };
+              const client = core.clientRef.current;
+              if (!client) return { ok: false, error: "Not connected" };
+              const id = crypto.randomUUID();
+              const data = JSON.stringify({ id, code, props });
+              await client.publish("message", { id, content: data, contentType: "inline_ui" }, { persist: true });
+              return { ok: true, id };
             },
           },
         };
