@@ -22,6 +22,7 @@
     "dist:mac": "pnpm build:dist && electron-builder --mac",
     "dist:win": "pnpm build:dist && electron-builder --win",
     "dist:linux": "pnpm build:dist && electron-builder --linux",
+    "sync-workspace": "bash scripts/sync-workspace.sh",
     "cleanup": "bash scripts/cleanup-processes.sh",
     "verify-native": "node scripts/verify-native-modules.mjs",
     "verify-native:electron": "node scripts/verify-electron-native.mjs",
