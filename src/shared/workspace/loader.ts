@@ -255,7 +255,7 @@ const STATE_DIRS = [".cache", ".databases", ".contexts"];
  */
 export function initWorkspace(
   name: string,
-  opts?: { gitUrl?: string; templateDir?: string; forkFrom?: string }
+  opts?: { gitUrl?: string; templateDir?: string; forkFrom?: string; devLink?: boolean }
 ): void {
   validateWorkspaceName(name);
 
@@ -293,8 +293,13 @@ export function initWorkspace(
     }
   }
 
-  // If we have a local source dir (template or fork), copy source dirs into source/
-  if (templateSrc) {
+  // Dev-link mode: symlink source/ → templateDir instead of copying.
+  // Changes in the running app are immediately reflected in the monorepo template.
+  if (opts?.devLink && templateSrc) {
+    fs.mkdirSync(path.dirname(sourceRoot), { recursive: true });
+    fs.symlinkSync(templateSrc, sourceRoot);
+  } else if (templateSrc) {
+    // If we have a local source dir (template or fork), copy source dirs into source/
     fs.mkdirSync(sourceRoot, { recursive: true });
     for (const dir of SOURCE_DIRS) {
       const src = path.join(templateSrc, dir);
@@ -312,7 +317,7 @@ export function initWorkspace(
     fs.mkdirSync(sourceRoot, { recursive: true });
   }
 
-  // Scaffold source directories
+  // Scaffold source directories (through symlink in devLink mode — harmless)
   for (const dir of SOURCE_DIRS) {
     fs.mkdirSync(path.join(sourceRoot, dir), { recursive: true });
   }
@@ -323,19 +328,25 @@ export function initWorkspace(
     fs.mkdirSync(path.join(stateRoot, dir), { recursive: true });
   }
 
-  // Write/rewrite natstack.yml — always regenerate instance-specific fields
+  // Write/rewrite natstack.yml — skip in devLink mode (use template's config as-is)
   const configPath = path.join(sourceRoot, WORKSPACE_CONFIG_FILE);
-  const randomPort = 49152 + Math.floor(Math.random() * 16383);
-
-  if (fs.existsSync(configPath)) {
-    const content = fs.readFileSync(configPath, "utf-8");
-    const config = YAML.parse(content) as WorkspaceConfig;
-    config.id = name;
-    if (!config.git) config.git = {};
-    config.git.port = randomPort;
-    fs.writeFileSync(configPath, YAML.stringify(config), "utf-8");
+  if (opts?.devLink) {
+    // Ensure the template has a config file
+    if (!fs.existsSync(configPath)) {
+      throw new Error(`devLink mode requires natstack.yml in template dir: ${templateSrc}`);
+    }
   } else {
-    const configContent = `# NatStack Workspace Configuration
+    const randomPort = 49152 + Math.floor(Math.random() * 16383);
+
+    if (fs.existsSync(configPath)) {
+      const content = fs.readFileSync(configPath, "utf-8");
+      const config = YAML.parse(content) as WorkspaceConfig;
+      config.id = name;
+      if (!config.git) config.git = {};
+      config.git.port = randomPort;
+      fs.writeFileSync(configPath, YAML.stringify(config), "utf-8");
+    } else {
+      const configContent = `# NatStack Workspace Configuration
 id: ${name}
 
 rootPanel: panels/chat
@@ -343,7 +354,8 @@ rootPanel: panels/chat
 git:
   port: ${randomPort}
 `;
-    fs.writeFileSync(configPath, configContent, "utf-8");
+      fs.writeFileSync(configPath, configContent, "utf-8");
+    }
   }
 
   // Initialize git repos for all source subdirectories (panels, packages, etc.)
