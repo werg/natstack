@@ -1,16 +1,16 @@
 /**
- * InlineUiMessage - Renders compiled MDX inline in conversation flow.
- * Unlike feedback components, these are display-only (no interaction callbacks).
+ * InlineUiMessage - Renders compiled TSX inline in conversation flow.
+ *
+ * Collapsible card that stays in the chat history. Users can expand/collapse
+ * at any time to interact with the component.
  */
-import { Component, Suspense, useMemo, type ComponentType, type ReactNode } from "react";
-import { Box, Callout, Spinner, Text } from "@radix-ui/themes";
-import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
+import { Component, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
+import { Box, Button, Card, Callout, Flex, Spinner, Text } from "@radix-ui/themes";
+import { ExclamationTriangleIcon, ChevronDownIcon, ChevronUpIcon, ComponentInstanceIcon } from "@radix-ui/react-icons";
 import type { InlineUiData } from "@natstack/pubsub";
 
 /**
  * Error boundary for inline UI components.
- * Catches render errors and displays a friendly message.
- * Resets when the resetKey prop changes (allows recovery on updates).
  */
 class InlineUiErrorBoundary extends Component<
   { children: ReactNode; resetKey?: string },
@@ -29,7 +29,6 @@ class InlineUiErrorBoundary extends Component<
     props: { resetKey?: string },
     state: { hasError: boolean; prevResetKey?: string }
   ) {
-    // Reset error state when resetKey changes (e.g., new props from update)
     if (props.resetKey !== state.prevResetKey) {
       return { hasError: false, error: undefined, prevResetKey: props.resetKey };
     }
@@ -57,9 +56,23 @@ interface InlineUiMessageProps {
   compilationError?: string;
 }
 
-export function InlineUiMessage({ data, compiledComponent: Component, compilationError }: InlineUiMessageProps) {
-  // Memoize props to prevent unnecessary re-renders
+export function InlineUiMessage({ data, compiledComponent: CompiledComponent, compilationError }: InlineUiMessageProps) {
   const componentProps = useMemo(() => data.props ?? {}, [data.props]);
+  const [expanded, setExpanded] = useState(true);
+  const [autoCollapsed, setAutoCollapsed] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  // Auto-collapse if rendered content exceeds 400px
+  const measuredRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node || autoCollapsed) return;
+    // Use requestAnimationFrame to measure after paint
+    requestAnimationFrame(() => {
+      if (node.scrollHeight > 400) {
+        setExpanded(false);
+        setAutoCollapsed(true);
+      }
+    });
+  }, [autoCollapsed]);
 
   if (compilationError) {
     return (
@@ -72,21 +85,53 @@ export function InlineUiMessage({ data, compiledComponent: Component, compilatio
     );
   }
 
-  if (!Component) {
-    // No compiled component - likely an ephemeral message that shouldn't be shown
-    // after page refresh. Return null to hide it.
+  if (!CompiledComponent) {
     return null;
   }
 
-  // Use stringified props as reset key so error boundary resets on updates
   const resetKey = JSON.stringify(data.props);
 
   return (
-    <InlineUiErrorBoundary resetKey={resetKey}>
-      <Suspense fallback={<Spinner size="1" />}>
-        <Component props={componentProps} />
-      </Suspense>
-    </InlineUiErrorBoundary>
+    <Card
+      variant="surface"
+      size="1"
+      style={{
+        background: "var(--color-surface)",
+        border: "1px solid var(--gray-a4)",
+        overflow: "hidden",
+      }}
+    >
+      {/* Clickable header — always visible */}
+      <Flex
+        align="center"
+        gap="2"
+        px="2"
+        py="1"
+        onClick={() => setExpanded(v => !v)}
+        style={{
+          cursor: "pointer",
+          userSelect: "none",
+          borderBottom: expanded ? "1px solid var(--gray-a4)" : "none",
+        }}
+      >
+        <ComponentInstanceIcon style={{ color: "var(--gray-9)", flexShrink: 0 }} />
+        <Text size="1" color="gray" style={{ flex: 1 }}>Interactive UI</Text>
+        <Button variant="ghost" size="1" tabIndex={-1} style={{ pointerEvents: "none" }}>
+          {expanded ? <ChevronUpIcon /> : <ChevronDownIcon />}
+        </Button>
+      </Flex>
+
+      {/* Collapsible content */}
+      {expanded && (
+        <Box p="2" ref={measuredRef}>
+          <InlineUiErrorBoundary resetKey={resetKey}>
+            <Suspense fallback={<Spinner size="1" />}>
+              <CompiledComponent props={componentProps} />
+            </Suspense>
+          </InlineUiErrorBoundary>
+        </Box>
+      )}
+    </Card>
   );
 }
 

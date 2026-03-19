@@ -1,8 +1,9 @@
 /**
  * FeedbackContainer - Wrapper for feedback UI components.
  *
- * Provides error boundary, dismiss button, consistent styling,
- * draggable top edge for resizing, and scrollable content area.
+ * Sizes to content naturally with a max-height cap. Provides error boundary,
+ * dismiss button, consistent styling, and scrollable content area.
+ * Draggable top edge for manual resizing when needed.
  */
 
 import { Box, Button, Card, Flex, ScrollArea, Text } from "@radix-ui/themes";
@@ -19,78 +20,53 @@ export interface FeedbackContainerProps {
   onError: (error: Error) => void;
   /** Title displayed in the container header (default: "Agent requires input") */
   title?: string;
-  /** Initial/default height (default: 50% of available container height) */
-  defaultHeight?: number;
-  /** Minimum height when resizing (default: 150px) */
+  /** Maximum height as fraction of viewport (default: 0.5) */
+  maxHeightFraction?: number;
+  /** Minimum height when resizing (default: 100px) */
   minHeight?: number;
-  /** Maximum height when resizing (default: 70% of available container height) */
-  maxHeight?: number;
 }
-
-const getViewportHeight = () =>
-  typeof window !== "undefined" ? window.innerHeight : 800;
 
 export function FeedbackContainer({
   children,
   onDismiss,
   onError,
   title = "Agent requires input",
-  defaultHeight: defaultHeightProp,
-  minHeight = 150,
-  maxHeight: maxHeightProp,
+  maxHeightFraction = 0.5,
+  minHeight = 100,
 }: FeedbackContainerProps) {
-  const [viewportHeight, setViewportHeight] = useState(getViewportHeight);
-
-  // Track viewport height changes
-  useEffect(() => {
-    const handleResize = () => setViewportHeight(window.innerHeight);
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
-
-  // Calculate limits based on viewport - use high percentages since
-  // the flex layout will naturally constrain growth
-  const maxHeight = maxHeightProp ?? Math.floor(viewportHeight * 0.7);
-  const defaultHeight = defaultHeightProp ?? Math.min(Math.floor(viewportHeight * 0.5), maxHeight);
-
-  const [height, setHeight] = useState<number | null>(null);
-  const effectiveHeight = height ?? defaultHeight;
+  // Manual height override (null = auto/content-fit)
+  const [manualHeight, setManualHeight] = useState<number | null>(null);
 
   const [isDragging, setIsDragging] = useState(false);
   const dragStartY = useRef(0);
   const dragStartHeight = useRef(0);
+  const cardRef = useRef<HTMLDivElement>(null);
 
-  // Clamp height when viewport shrinks
-  useEffect(() => {
-    if (height !== null && height > maxHeight) {
-      setHeight(maxHeight);
-    }
-  }, [height, maxHeight]);
+  const maxHeight = typeof window !== "undefined"
+    ? Math.floor(window.innerHeight * maxHeightFraction)
+    : 400;
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     setIsDragging(true);
     dragStartY.current = e.clientY;
-    dragStartHeight.current = effectiveHeight;
-  }, [effectiveHeight]);
+    // Measure current rendered height as drag start
+    dragStartHeight.current = cardRef.current?.offsetHeight ?? 200;
+  }, []);
 
   useEffect(() => {
     if (!isDragging) return;
 
     const handleMouseMove = (e: MouseEvent) => {
-      // Dragging up (negative deltaY) should increase height
       const deltaY = dragStartY.current - e.clientY;
       const newHeight = Math.min(maxHeight, Math.max(minHeight, dragStartHeight.current + deltaY));
-      setHeight(newHeight);
+      setManualHeight(newHeight);
     };
 
-    const handleMouseUp = () => {
-      setIsDragging(false);
-    };
+    const handleMouseUp = () => setIsDragging(false);
 
     document.addEventListener("mousemove", handleMouseMove);
     document.addEventListener("mouseup", handleMouseUp);
-
     return () => {
       document.removeEventListener("mousemove", handleMouseMove);
       document.removeEventListener("mouseup", handleMouseUp);
@@ -99,13 +75,16 @@ export function FeedbackContainer({
 
   return (
     <Card
+      ref={cardRef}
       variant="surface"
       style={{
         position: "relative",
         display: "flex",
         flexDirection: "column",
-        height: effectiveHeight,
-        minHeight,
+        // Content-fit by default; manual override when user drags
+        ...(manualHeight != null
+          ? { height: manualHeight, minHeight }
+          : { maxHeight }),
         flexShrink: 0,
         overflow: "hidden",
       }}
@@ -132,28 +111,20 @@ export function FeedbackContainer({
       <Flex
         justify="between"
         align="center"
-        p="2"
+        px="2"
+        py="1"
         flexShrink="0"
         style={{ borderBottom: "1px solid var(--gray-5)" }}
       >
-        <Text size="2" weight="bold">
-          {title}
-        </Text>
-        <Button
-          variant="ghost"
-          size="1"
-          onClick={onDismiss}
-          style={{ cursor: "pointer" }}
-        >
+        <Text size="2" weight="bold">{title}</Text>
+        <Button variant="ghost" size="1" onClick={onDismiss} style={{ cursor: "pointer" }}>
           <Cross2Icon />
         </Button>
       </Flex>
 
-      {/* Scrollable content */}
-      <Box p="3" flexGrow="1" style={{ minHeight: 0, overflow: "hidden" }}>
-        <ScrollArea style={{ height: "100%" }}>
-          <ErrorBoundary onError={onError}>{children}</ErrorBoundary>
-        </ScrollArea>
+      {/* Scrollable content — grows to fit, scrolls at max-height */}
+      <Box px="3" py="2" flexGrow="1" style={{ minHeight: 0, overflow: "auto" }}>
+        <ErrorBoundary onError={onError}>{children}</ErrorBoundary>
       </Box>
     </Card>
   );
