@@ -79,7 +79,6 @@
     "@workspace/agentic-chat": "workspace:*",
     "@workspace/agentic-components": "workspace:*",
     "@workspace/agentic-do": "workspace:*",
-    "@workspace/agentic-tools": "workspace:*",
     "@workspace/core": "workspace:*",
     "@workspace/eval": "workspace:*",
     "@workspace/git-ui": "workspace:*",

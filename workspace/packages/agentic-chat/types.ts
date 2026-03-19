@@ -93,9 +93,27 @@ export interface AgenticChatActions {
   onBecomeVisible?: () => void;
 }
 
+/** Chat API exposed to sandboxed code (eval, inline_ui, feedback_custom) */
+export interface ChatSandboxValue {
+  publish: (eventType: string, payload: unknown, options?: { persist?: boolean }) => Promise<unknown>;
+  callMethod: (participantId: string, method: string, args: unknown) => Promise<unknown>;
+  contextId: string;
+  channelId: string | null;
+  rpc: { call: (target: string, method: string, ...args: unknown[]) => Promise<unknown> };
+}
+
+/** Sandbox config injected by the panel (keeps agentic-chat runtime-agnostic) */
+export interface SandboxConfig {
+  rpc: { call: (target: string, method: string, ...args: unknown[]) => Promise<unknown> };
+  loadImport: (specifier: string, ref: string | undefined, externals: string[]) => Promise<string>;
+}
+
 /** Dependencies provided to the tool provider factory */
 export interface ToolProviderDeps {
   clientRef: { current: { publish: (eventType: string, payload: unknown) => void } | null };
+  contextId: string;
+  executeSandbox: (code: string, options: import("@workspace/eval").SandboxOptions) => Promise<import("@workspace/eval").SandboxResult>;
+  chat: ChatSandboxValue;
 }
 
 /** Inject tools at connect time */
@@ -106,7 +124,7 @@ export type ToolProvider = (deps: ToolProviderDeps) => Record<string, MethodDefi
 // ===========================================================================
 
 export interface InlineUiComponentEntry {
-  Component?: ComponentType<{ props: Record<string, unknown> }>;
+  Component?: ComponentType<{ props: Record<string, unknown>; chat?: Record<string, unknown> }>;
   cacheKey: string;
   error?: string;
 }
@@ -135,6 +153,9 @@ export interface ChatContextValue {
   status: string;
   channelId: string | null;
   sessionEnabled?: boolean;
+
+  /** Chat API for sandboxed code — publish messages, call methods, access runtime */
+  chat: ChatSandboxValue;
 
   // Messages
   messages: ChatMessage[];

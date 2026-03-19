@@ -34,3 +34,17 @@ export type {
   TrackingContextOptions,
   AsyncTrackingAPI,
 } from "./asyncTracking.js";
+
+// Unified sandbox execution engine
+export {
+  executeSandbox,
+  compileComponent,
+  SANDBOX_DEFAULT_TIMEOUT_MS,
+  SANDBOX_MAX_TIMEOUT_MS,
+  SANDBOX_FRAMEWORK_TIMEOUT_MS,
+} from "./sandbox.js";
+export type {
+  SandboxOptions,
+  SandboxResult,
+  CompileResult,
+} from "./sandbox.js";

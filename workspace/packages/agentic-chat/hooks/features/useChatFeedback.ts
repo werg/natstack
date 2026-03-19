@@ -18,19 +18,20 @@ import {
 } from "@natstack/pubsub";
 import {
   useFeedbackManager,
-  compileFeedbackComponent,
-  cleanupFeedbackComponent,
   type FeedbackResult,
-  type FeedbackUiToolArgs,
   type ActiveFeedbackTsx,
   type ActiveFeedbackSchema,
   type ActiveFeedback,
 } from "@workspace/tool-ui";
+import { compileComponent } from "@workspace/eval";
+import type { FeedbackComponentProps } from "@workspace/tool-ui";
 import type { MethodHistoryEntry } from "../../components/MethodHistoryItem";
+import type { ChatSandboxValue } from "../../types";
 
 interface UseChatFeedbackOptions {
   addMethodHistoryEntry: (entry: MethodHistoryEntry) => void;
   updateMethodHistoryEntry: (callId: string, updates: Partial<MethodHistoryEntry>) => void;
+  chat: ChatSandboxValue;
 }
 
 export interface ChatFeedbackState {
@@ -52,6 +53,7 @@ export interface ChatFeedbackState {
 export function useChatFeedback({
   addMethodHistoryEntry,
   updateMethodHistoryEntry,
+  chat,
 }: UseChatFeedbackOptions): ChatFeedbackState {
   const { activeFeedbacks, addFeedback, removeFeedback, dismissFeedback, handleFeedbackError } = useFeedbackManager();
   const activeFeedbacksRef = useRef(activeFeedbacks);
@@ -97,17 +99,26 @@ export function useChatFeedback({
         args, status: "pending", startedAt: Date.now(), callerId: ctx.callerId, handledLocally: true,
       };
       addMethodHistoryEntry(entry);
-      const result = await compileFeedbackComponent({ code: args.code } as FeedbackUiToolArgs);
+      if (!args.code.includes("onSubmit")) {
+        console.warn(
+          "[feedback_custom] Component code does not reference 'onSubmit'. " +
+          "The user will not be able to submit a response. Did you forget to destructure { onSubmit } from props?"
+        );
+      }
+      const result = await compileComponent<import("react").ComponentType<FeedbackComponentProps>>(args.code);
       if (!result.success) {
         updateMethodHistoryEntry(callId, { status: "error", error: result.error, completedAt: Date.now() });
         throw new Error(result.error);
       }
       const cacheKey = result.cacheKey!;
       return new Promise<FeedbackResult>((resolve) => {
+        let resolved = false;
         const feedback: ActiveFeedbackTsx = {
           type: "tsx", callId, Component: result.Component!, createdAt: Date.now(), cacheKey, title: args.title,
           complete: (feedbackResult: FeedbackResult) => {
-            removeFeedback(callId); cleanupFeedbackComponent(cacheKey);
+            if (resolved) return; // Prevent double-submission
+            resolved = true;
+            removeFeedback(callId);
             handleFeedbackResult(callId, feedbackResult); resolve(feedbackResult);
           },
         };
@@ -141,18 +152,28 @@ export function useChatFeedback({
     };
 
     const feedbackCustomMethodDef: MethodDefinition = {
-      description: `[Chat Panel] Show a custom React UI. For advanced cases only - prefer feedback_form for standard forms.
+      description: `Show a custom React component that blocks until user submits or cancels.
+
+**The component receives { onSubmit, onCancel, onError, chat }:**
+- onSubmit(value) — return data to the agent and close the form
+- onCancel() — signal cancellation to the agent
+- onError(message) — signal error
+- chat — chat API (publish messages, call runtime, etc.)
+  - chat.publish(type, payload) — send a message to the conversation
+  - chat.rpc.call(target, method, ...args) — call runtime services
+
+**Side effects during interaction:**
+- Component can call chat.publish() or chat.rpc.call() before submitting
+- Example: a form that runs validation via chat.rpc before returning results
 
 **Result:** \`{ type: "submit", value: ... }\` or \`{ type: "cancel" }\`
 
-Component receives \`onSubmit(value)\`, \`onCancel()\`, \`onError(msg)\` props.
-Available: \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`react\`
-
 **Requirements:**
-- Component MUST use \`export default\` (named exports alone won't work)
+- Component MUST use \`export default\`
 - Syntax: TSX (TypeScript + JSX)
+- Do NOT wrap in a Card — rendered inside a container with header and scroll area.
 
-**Rendering context:** Your component is rendered inside a container Card with a header, scroll area, and resize handle. Do NOT wrap your component in a top-level Card — use \`<Flex direction="column" gap="3" p="2">\` or similar as root.
+**Available imports:** react, @radix-ui/themes, @radix-ui/react-icons
 
 **Example:**
 \`\`\`tsx

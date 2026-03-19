@@ -10,7 +10,7 @@ import { useChatContext } from "../context/ChatContext";
  * Reads from ChatContext.
  */
 export function ChatFeedbackArea() {
-  const { activeFeedbacks, onFeedbackDismiss, onFeedbackError } = useChatContext();
+  const { activeFeedbacks, onFeedbackDismiss, onFeedbackError, chat } = useChatContext();
 
   if (activeFeedbacks.size === 0) return null;
 
@@ -61,6 +61,7 @@ export function ChatFeedbackArea() {
               onSubmit={(value) => feedback.complete({ type: "submit", value })}
               onCancel={() => feedback.complete({ type: "cancel" })}
               onError={(message) => feedback.complete({ type: "error", message })}
+              chat={chat as unknown as Record<string, unknown>}
             />
           </FeedbackContainer>
         );

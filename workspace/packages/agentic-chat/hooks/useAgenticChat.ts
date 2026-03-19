@@ -10,6 +10,8 @@
 import { useCallback, useMemo, useRef, useEffect } from "react";
 import { z } from "zod";
 import type { ChannelConfig, MethodDefinition } from "@natstack/pubsub";
+import { executeSandbox } from "@workspace/eval";
+import type { SandboxOptions, SandboxResult } from "@workspace/eval";
 import { useChatCore, type FeatureEventHandlers, type RosterExtension, type ReconnectExtension } from "./core/useChatCore";
 import { useRosterTracking } from "./features/useRosterTracking";
 import { usePendingAgents } from "./features/usePendingAgents";
@@ -22,6 +24,8 @@ import type {
   ConnectionConfig,
   AgenticChatActions,
   ToolProvider,
+  SandboxConfig,
+  ChatSandboxValue,
   ChatParticipantMetadata,
   ChatContextValue,
   ChatInputContextValue,
@@ -44,6 +48,8 @@ export interface UseAgenticChatOptions {
   theme?: "light" | "dark";
   pendingAgentInfos?: PendingAgentInfo[];
   eventMiddleware?: EventMiddleware[];
+  /** Sandbox config — provides RPC and import loading (keeps agentic-chat runtime-agnostic) */
+  sandbox: SandboxConfig;
 }
 
 export function useAgenticChat({
@@ -57,11 +63,16 @@ export function useAgenticChat({
   theme = "dark",
   pendingAgentInfos,
   eventMiddleware,
+  sandbox,
 }: UseAgenticChatOptions): { contextValue: ChatContextValue; inputContextValue: ChatInputContextValue } {
   // --- Extension refs (populated below, read by core via refs) ---
   const featureHandlersRef = useRef<FeatureEventHandlers>({});
   const rosterExtensionsRef = useRef<RosterExtension[]>([]);
   const reconnectExtensionsRef = useRef<ReconnectExtension[]>([]);
+
+  // --- Sandbox config ref (stable access in callbacks) ---
+  const sandboxRef = useRef(sandbox);
+  sandboxRef.current = sandbox;
 
   // --- Core ---
   const core = useChatCore({
@@ -87,9 +98,38 @@ export function useAgenticChat({
     initialPendingAgents: pendingAgentInfos,
   });
 
+  // --- Build chat sandbox value (stale-ref safe — dereferences clientRef at call time) ---
+  const chat: ChatSandboxValue = useMemo(() => ({
+    publish: (eventType: string, payload: unknown, opts?: { persist?: boolean }) => {
+      // Auto-generate id for message payloads (required by PubSub protocol)
+      if (eventType === "message" && typeof payload === "object" && payload !== null && !("id" in payload)) {
+        (payload as Record<string, unknown>)["id"] = crypto.randomUUID();
+      }
+      return core.clientRef.current!.publish(eventType, payload, opts) as Promise<unknown>;
+    },
+    callMethod: async (pid: string, method: string, callArgs: unknown) => {
+      const handle = core.clientRef.current!.callMethod(pid, method, callArgs);
+      return (handle as { result: Promise<unknown> }).result;
+    },
+    contextId: contextId ?? "",
+    channelId: channelName,
+    rpc: sandbox.rpc,
+  }), [contextId, channelName, sandbox.rpc]);
+
+  // --- Bound executeSandbox with loadImport wired ---
+  const boundExecuteSandbox = useCallback(
+    (code: string, opts: SandboxOptions = {}) =>
+      executeSandbox(code, {
+        ...opts,
+        loadImport: opts.loadImport ?? sandboxRef.current.loadImport,
+      }),
+    [],
+  );
+
   const feedback = useChatFeedback({
     addMethodHistoryEntry: core.addMethodHistoryEntry,
     updateMethodHistoryEntry: core.updateMethodHistoryEntry,
+    chat,
   });
 
   const chatTools = useChatTools({
@@ -97,6 +137,9 @@ export function useAgenticChat({
     tools,
     addFeedback: feedback.addFeedback,
     removeFeedback: feedback.removeFeedback,
+    contextId: contextId ?? "",
+    executeSandbox: boundExecuteSandbox,
+    chat,
   });
 
   const debug = useChatDebug();
@@ -167,29 +210,40 @@ export function useAgenticChat({
             },
           },
           inline_ui: {
-            description: `Render a persistent interactive UI component inline in the chat. Use for:
-
-1. **Rich data presentation** — tables, charts, interactive visualizations, formatted output that plain text can't capture well.
-2. **User-triggered actions** — buttons/controls that let the user trigger side-effects in their environment on demand (copy to clipboard, open files, run scripts, apply changes). The user decides when and whether to act.
+            description: `Render a persistent interactive UI component inline in the chat.
 
 **Contrast with other tools:**
-- \`eval\`: Agent-triggered side-effects. The agent runs code immediately. Use eval when the agent should act now.
-- \`inline_ui\`: User-triggered side-effects. The agent renders controls, the user clicks when ready. Use inline_ui when the user should decide when to act.
-- \`feedback_form\`/\`feedback_custom\`: Blocks and waits for the user to respond. Use when the agent needs information back before continuing.
+- \`eval\`: Agent-triggered side-effects. Runs code immediately, returns result.
+- \`inline_ui\`: User-triggered side-effects + rich data presentation. Renders controls/visualizations. Users interact when they choose. Non-blocking.
+- \`feedback_form\`/\`feedback_custom\`: Blocks until user responds. Returns data to agent.
 
-**inline_ui is non-blocking** — returns immediately after rendering. The component stays in chat history. Results do NOT flow back to the agent.
+**The component receives { props, chat }:**
+- props: data you pass via the props parameter
+- chat: full chat API for interacting with the conversation:
+  - chat.publish(type, payload, options?) — send a message to the conversation.
+    Example: chat.publish("message", { content: "User clicked Deploy" })
+  - chat.rpc.call(target, method, ...args) — call runtime services directly.
+    Example: chat.rpc.call("main", "fs.readFile", "/src/config.ts")
+  - chat.contextId, chat.channelId — current identifiers
 
-**Component receives** \`{ props }\` — pass data via the \`props\` parameter.
-**Available imports**: \`react\`, \`@radix-ui/themes\`, \`@radix-ui/react-icons\`
+**Side effects users can trigger from inline UI:**
+- Send messages back to chat (triggers new agent turns)
+- Read/write files, query databases, manage workers via chat.rpc
+- Copy to clipboard, open links, any browser API
+
+**Lifecycle:** Component starts expanded. Auto-collapses if taller than 400px.
+Users can expand/collapse at any time. Persists in chat history.
+
+**Available imports:** react, @radix-ui/themes, @radix-ui/react-icons
 **Must use** \`export default\`
 
-**Example — interactive data with action button:**
+**Example:**
 \`\`\`tsx
 import { useState } from "react";
 import { Button, Flex, Text, Table } from "@radix-ui/themes";
 import { CopyIcon, CheckIcon } from "@radix-ui/react-icons";
 
-export default function App({ props }) {
+export default function App({ props, chat }) {
   const [copied, setCopied] = useState(false);
   const handleCopy = () => {
     navigator.clipboard.writeText(JSON.stringify(props.data, null, 2));
@@ -212,9 +266,14 @@ export default function App({ props }) {
           ))}
         </Table.Body>
       </Table.Root>
-      <Button size="1" variant="soft" onClick={handleCopy}>
-        {copied ? <><CheckIcon /> Copied</> : <><CopyIcon /> Copy as JSON</>}
-      </Button>
+      <Flex gap="2">
+        <Button size="1" variant="soft" onClick={handleCopy}>
+          {copied ? <><CheckIcon /> Copied</> : <><CopyIcon /> Copy as JSON</>}
+        </Button>
+        <Button size="1" variant="soft" onClick={() => chat.publish("message", { content: "User requested data refresh" })}>
+          Refresh
+        </Button>
+      </Flex>
     </Flex>
   );
 }
@@ -280,6 +339,7 @@ export default function App({ props }) {
     status: core.status,
     channelId: channelName,
     sessionEnabled,
+    chat,
     messages: core.messages,
     methodEntries: core.methodEntries,
     inlineUiComponents: inlineUi.inlineUiComponents,
@@ -307,7 +367,7 @@ export default function App({ props }) {
     onReloadPanel,
     toolApproval: chatTools.toolApprovalValue,
   }), [
-    core.connected, core.status, channelName, sessionEnabled,
+    core.connected, core.status, channelName, sessionEnabled, chat,
     core.messages, core.methodEntries, inlineUi.inlineUiComponents, core.hasMoreHistory, core.loadingMore,
     core.participants, allParticipants,
     debug.debugEvents, debug.debugConsoleAgent, debug.dirtyRepoWarnings, pending.pendingAgents,

@@ -7,10 +7,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { CONTENT_TYPE_INLINE_UI } from "@natstack/pubsub";
-import {
-  compileInlineUiComponent,
-  cleanupInlineUiComponent,
-} from "@workspace/tool-ui";
+import { compileComponent } from "@workspace/eval";
 import { parseInlineUiData } from "../../components/InlineUiMessage";
 import type { ChatMessage, InlineUiComponentEntry } from "../../types";
 
@@ -35,7 +32,7 @@ export function useInlineUi({ messages }: UseInlineUiOptions): InlineUiState {
         if (inlineUiComponents.has(data.id)) continue;
 
         try {
-          const result = await compileInlineUiComponent({ code: data.code });
+          const result = await compileComponent<import("react").ComponentType<{ props: Record<string, unknown>; chat?: Record<string, unknown> }>>(data.code);
           if (result.success) {
             setInlineUiComponents(prev => {
               const updated = new Map(prev);
@@ -82,9 +79,6 @@ export function useInlineUi({ messages }: UseInlineUiOptions): InlineUiState {
       let removedCount = 0;
       for (const [id, component] of prevComponents) {
         if (!referencedUiIds.has(id)) {
-          if (component.Component && component.cacheKey) {
-            cleanupInlineUiComponent(component.cacheKey);
-          }
           next.delete(id);
           removedCount++;
         }

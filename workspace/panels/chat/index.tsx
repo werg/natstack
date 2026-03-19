@@ -11,8 +11,8 @@ import { usePanelTheme } from "@workspace/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Flex, Spinner, Text, Theme } from "@radix-ui/themes";
 import { AgenticChat, ErrorBoundary } from "@workspace/agentic-chat";
-import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDeps } from "@workspace/agentic-chat";
-import { executeEvalTool, EVAL_DEFAULT_TIMEOUT_MS, EVAL_MAX_TIMEOUT_MS, EVAL_FRAMEWORK_TIMEOUT_MS } from "@workspace/agentic-tools";
+import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDeps, SandboxConfig } from "@workspace/agentic-chat";
+import { SANDBOX_DEFAULT_TIMEOUT_MS, SANDBOX_MAX_TIMEOUT_MS, SANDBOX_FRAMEWORK_TIMEOUT_MS } from "@workspace/eval";
 import { z } from "zod";
 import type { MethodDefinition } from "@natstack/pubsub";
 
@@ -200,14 +200,39 @@ export default function ChatPanel() {
     onReloadPanel: handleReloadPanel,
   }), [handleNewConversation, handleAddAgent, handleRemoveAgent, availableAgents, handleFocusPanel, handleReloadPanel]);
 
-  // Tool provider: only eval tool — all other operations use eval + runtime APIs
-  const toolProvider: ToolProvider = useCallback((_deps: ToolProviderDeps) => {
-    const evalMethodDef: MethodDefinition = {
-      description: `Execute TypeScript/JavaScript code for side-effects.
+  // Sandbox config — provides RPC and import loading to agentic-chat (keeps it runtime-agnostic)
+  const sandboxConfig: SandboxConfig = useMemo(() => ({
+    rpc: { call: (t: string, m: string, ...a: unknown[]) => rpc.call(t, m, ...a) },
+    loadImport: async (specifier: string, ref: string | undefined, externals: string[]) => {
+      const result = await rpc.call("main", "build.getBuild", specifier, ref, { library: true, externals }) as { bundle: string };
+      return result.bundle;
+    },
+  }), []);
 
-Console output is streamed in real-time as code executes.
-Async operations (fetch, await, etc.) are automatically awaited.
-Top-level await is supported.
+  // Tool provider: only eval tool — all other operations use eval + runtime APIs
+  const toolProvider: ToolProvider = useCallback((deps: ToolProviderDeps) => {
+    const evalMethodDef: MethodDefinition = {
+      description: `Execute TypeScript/JavaScript code in the panel sandbox.
+
+**Capabilities:**
+- Top-level await supported (async operations, fetch, timers)
+- Console output streams to the agent in real-time
+- Dynamic imports: build workspace packages on-demand from any git ref
+
+**Available modules** (via import/require):
+- @workspace/runtime — rpc, fs, db, workers, workspace APIs
+- react, @radix-ui/themes, @radix-ui/react-icons — for component rendering
+- Any module in the panel's exposeModules list
+
+**Side effects you can trigger:**
+- File system: read/write files via rpc.call("main", "fs.readFile", path)
+- Database: query/mutate via rpc.call("main", "db.query", sql)
+- Worker management: create/destroy workers via rpc
+- Panel navigation: focusPanel(id), buildPanelLink(source)
+- Send messages to chat: chat.publish("message", { content: "..." })
+- Call channel methods: chat.callMethod(participantId, method, args)
+
+**Pre-injected variables:** contextId, chat
 
 Use static ESM imports (transformed to require() automatically):
 - import { rpc, focusPanel, buildPanelLink } from "@workspace/runtime"
@@ -217,35 +242,26 @@ IMPORTANT: Use static import syntax, NOT dynamic await import().`,
       parameters: z.object({
         code: z.string().describe("The TypeScript/JavaScript code to execute"),
         syntax: z.enum(["typescript", "jsx", "tsx"]).default("tsx").describe("Target syntax"),
-        timeout: z.number().default(EVAL_DEFAULT_TIMEOUT_MS).describe(`Timeout in ms (default: ${EVAL_DEFAULT_TIMEOUT_MS}, max: ${EVAL_MAX_TIMEOUT_MS}).`),
+        timeout: z.number().default(SANDBOX_DEFAULT_TIMEOUT_MS).describe(`Timeout in ms (default: ${SANDBOX_DEFAULT_TIMEOUT_MS}, max: ${SANDBOX_MAX_TIMEOUT_MS}).`),
         imports: z.record(z.string(), z.string()).optional()
           .describe("Workspace packages to build on-demand. Values: \"latest\" (current HEAD) or a git ref (branch/tag/SHA). E.g. { \"@workspace-skills/paneldev\": \"latest\" }"),
       }),
       streaming: true,
-      timeout: EVAL_FRAMEWORK_TIMEOUT_MS,
+      timeout: SANDBOX_FRAMEWORK_TIMEOUT_MS,
       execute: async (args, ctx) => {
-        let consoleBuffer = "";
-        let lastFlush = 0;
-        const flushConsole = (_force = false) => {
-          const now = Date.now();
-          if (!_force && now - lastFlush < 200) return;
-          lastFlush = now;
-        };
-
-        // The panel's contextId (from runtime) IS the channel contextId.
-        // Inject it so eval code can use it directly.
         const typedArgs = args as { code: string; syntax?: "typescript" | "jsx" | "tsx"; timeout?: number; imports?: Record<string, string> };
-        const codeWithContext = `const contextId = ${JSON.stringify(contextId)};\n${typedArgs.code}`;
-        const evalArgs = { ...typedArgs, code: codeWithContext };
 
-        const result = await executeEvalTool(evalArgs, ctx, {
-          onConsoleEntry: (formatted: string) => {
-            consoleBuffer = consoleBuffer ? `${consoleBuffer}\n${formatted}` : formatted;
-            flushConsole();
+        const result = await deps.executeSandbox(typedArgs.code, {
+          syntax: typedArgs.syntax,
+          timeout: typedArgs.timeout,
+          imports: typedArgs.imports,
+          bindings: { contextId: deps.contextId, chat: deps.chat },
+          onConsole: (formatted: string) => {
+            void ctx.stream({ type: "console", content: formatted }).catch(() => {});
           },
         });
+
         if (!result.success) {
-          if (result.consoleOutput) consoleBuffer = result.consoleOutput;
           throw new Error(result.error || "Eval failed");
         }
         return {
@@ -289,6 +305,7 @@ IMPORTANT: Use static import syntax, NOT dynamic await import().`,
         actions={chatActions}
         theme={theme}
         pendingAgents={pendingAgents}
+        sandbox={sandboxConfig}
       />
     </>
   );

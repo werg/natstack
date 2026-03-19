@@ -34,6 +34,8 @@ export interface FeedbackComponentProps {
   onCancel: () => void;
   /** Call when an error occurs */
   onError: (message: string) => void;
+  /** Chat API — publish messages, access runtime, etc. */
+  chat?: Record<string, unknown>;
 }
 
 // ============================================================================

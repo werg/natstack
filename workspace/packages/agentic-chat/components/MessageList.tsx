@@ -80,10 +80,12 @@ function buildInlineItems(
     }
   });
 
-  const actionToolNames = new Set<string>();
+  // Collect method tool names — when a method entry exists with rich data
+  // (args, result, code), prefer it over the lightweight action pill
+  const methodToolNames = new Set<string>();
   for (const item of inlineItems) {
-    if (item.type === "action") {
-      actionToolNames.add(prettifyToolName(item.data.type));
+    if (item.type === "method") {
+      methodToolNames.add(prettifyToolName(item.entry.methodName));
     }
   }
 
@@ -91,10 +93,9 @@ function buildInlineItems(
     if (item.type === "action" && item.data.toolUseId) {
       const lastIndex = lastActionIndexByToolUseId.get(item.data.toolUseId);
       if (lastIndex !== undefined && i !== lastIndex) return false;
-    }
-    if (item.type === "method") {
-      const methodToolName = prettifyToolName(item.entry.methodName);
-      if (actionToolNames.has(methodToolName)) return false;
+      // Prefer method entry over action when both exist (method has args/result/code)
+      const actionToolName = prettifyToolName(item.data.type);
+      if (methodToolNames.has(actionToolName)) return false;
     }
     return true;
   });
@@ -177,7 +178,7 @@ export interface MessageListProps {
   methodEntries?: Map<string, MethodHistoryEntry>;
   allParticipants: Record<string, Participant<ChatParticipantMetadata>>;
   inlineUiComponents?: Map<string, {
-    Component?: ComponentType<{ props: Record<string, unknown> }>;
+    Component?: ComponentType<{ props: Record<string, unknown>; chat?: Record<string, unknown> }>;
     cacheKey: string;
     error?: string;
   }>;

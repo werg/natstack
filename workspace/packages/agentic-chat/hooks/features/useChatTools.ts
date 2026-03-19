@@ -14,14 +14,18 @@ import {
   useToolApproval,
 } from "@workspace/tool-ui";
 import type { ToolApprovalProps, useFeedbackManager } from "@workspace/tool-ui";
+import type { SandboxOptions, SandboxResult } from "@workspace/eval";
 import type { UseChannelConnectionResult } from "../useChannelConnection";
-import type { ToolProvider } from "../../types";
+import type { ToolProvider, ChatSandboxValue } from "../../types";
 
 interface UseChatToolsOptions {
   clientRef: UseChannelConnectionResult["clientRef"];
   tools?: ToolProvider;
   addFeedback: ReturnType<typeof useFeedbackManager>["addFeedback"];
   removeFeedback: ReturnType<typeof useFeedbackManager>["removeFeedback"];
+  contextId: string;
+  executeSandbox: (code: string, options?: SandboxOptions) => Promise<SandboxResult>;
+  chat: ChatSandboxValue;
 }
 
 export interface ChatToolsState {
@@ -38,6 +42,9 @@ export function useChatTools({
   tools,
   addFeedback,
   removeFeedback,
+  contextId,
+  executeSandbox,
+  chat,
 }: UseChatToolsOptions): ChatToolsState {
   const approval = useToolApproval(clientRef.current as Parameters<typeof useToolApproval>[0], { addFeedback, removeFeedback });
   const approvalRef = useRef(approval);
@@ -45,8 +52,8 @@ export function useChatTools({
 
   const buildToolMethods = useCallback((): Record<string, MethodDefinition> => {
     if (!tools) return {};
-    return tools({ clientRef });
-  }, [tools, clientRef]);
+    return tools({ clientRef, contextId, executeSandbox, chat });
+  }, [tools, clientRef, contextId, executeSandbox, chat]);
 
   /**
    * Build the request_tool_approval method — called by DO agents when

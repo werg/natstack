@@ -4,7 +4,7 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import { ChatLayout } from "./ChatLayout";
 import { ChatProvider } from "../context/ChatProvider";
 import { useAgenticChat } from "../hooks/useAgenticChat";
-import type { ChatParticipantMetadata, ConnectionConfig, AgenticChatActions, ToolProvider } from "../types";
+import type { ChatParticipantMetadata, ConnectionConfig, AgenticChatActions, ToolProvider, SandboxConfig } from "../types";
 import type { EventMiddleware } from "../hooks/useAgentEvents";
 
 export interface AgenticChatProps {
@@ -28,6 +28,8 @@ export interface AgenticChatProps {
   pendingAgents?: Array<{ agentId: string; handle: string }>;
   /** Optional event middleware */
   eventMiddleware?: EventMiddleware[];
+  /** Sandbox config — provides RPC and import loading */
+  sandbox: SandboxConfig;
 }
 
 /**
@@ -48,6 +50,7 @@ export function AgenticChat({
   theme,
   pendingAgents: pendingAgentInfos,
   eventMiddleware,
+  sandbox,
 }: AgenticChatProps) {
   const { contextValue, inputContextValue } = useAgenticChat({
     config,
@@ -60,6 +63,7 @@ export function AgenticChat({
     theme,
     pendingAgentInfos,
     eventMiddleware,
+    sandbox,
   });
 
   return (

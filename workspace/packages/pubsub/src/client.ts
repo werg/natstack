@@ -1246,7 +1246,10 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
 
     if (msgType === "message") {
       const parsed = NewMessageSchema.safeParse(payload);
-      if (!parsed.success) return null;
+      if (!parsed.success) {
+        console.warn("[PubSubClient] Dropped malformed message:", parsed.error.issues);
+        return null;
+      }
       return {
         type: "message",
         kind,
@@ -1266,7 +1269,10 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
 
     if (msgType === "update-message") {
       const parsed = UpdateMessageSchema.safeParse(payload);
-      if (!parsed.success) return null;
+      if (!parsed.success) {
+        console.warn("[PubSubClient] Dropped malformed update-message:", parsed.error.issues);
+        return null;
+      }
       return {
         type: "update-message",
         kind,
@@ -1284,7 +1290,10 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
 
     if (msgType === "error") {
       const parsed = ErrorMessageSchema.safeParse(payload);
-      if (!parsed.success) return null;
+      if (!parsed.success) {
+        console.warn("[PubSubClient] Dropped malformed error:", parsed.error.issues);
+        return null;
+      }
       return {
         type: "error",
         kind,
@@ -1301,7 +1310,10 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
 
     if (msgType === "method-call") {
       const parsed = MethodCallSchema.safeParse(payload);
-      if (!parsed.success) return null;
+      if (!parsed.success) {
+        console.warn("[PubSubClient] Dropped malformed method-call:", parsed.error.issues);
+        return null;
+      }
       return {
         type: "method-call",
         kind,
@@ -1318,7 +1330,10 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
 
     if (msgType === "method-result") {
       const parsed = MethodResultSchema.safeParse(payload);
-      if (!parsed.success) return null;
+      if (!parsed.success) {
+        console.warn("[PubSubClient] Dropped malformed method-result:", parsed.error.issues);
+        return null;
+      }
       return {
         type: "method-result",
         kind,
@@ -1338,7 +1353,10 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
 
     if (msgType === "execution-pause") {
       const parsed = ExecutionPauseSchema.safeParse(payload);
-      if (!parsed.success) return null;
+      if (!parsed.success) {
+        console.warn("[PubSubClient] Dropped malformed execution-pause:", parsed.error.issues);
+        return null;
+      }
       return {
         type: "execution-pause",
         kind,

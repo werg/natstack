@@ -1,7 +1,55 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import { Badge, Box, Code, Flex, Text } from "@radix-ui/themes";
 import { ExpandableChevron } from "./shared/Chevron";
 import { prettifyToolName } from "@natstack/pubsub";
+
+// Lazy-loaded highlight.js for code preview
+type HLJSApi = typeof import("highlight.js/lib/core").default;
+let hljsInstance: HLJSApi | null = null;
+let hljsPromise: Promise<HLJSApi> | null = null;
+async function getHljs(): Promise<HLJSApi> {
+  if (hljsInstance) return hljsInstance;
+  if (!hljsPromise) {
+    hljsPromise = Promise.all([
+      import("highlight.js/lib/core"),
+      import("highlight.js/lib/languages/typescript"),
+    ]).then(([core, ts]) => {
+      hljsInstance = core.default;
+      hljsInstance.registerLanguage("typescript", ts.default);
+      return hljsInstance;
+    });
+  }
+  return hljsPromise;
+}
+
+/** Methods whose `code` arg should be syntax-highlighted */
+const CODE_METHODS = new Set(["eval", "inline_ui", "feedback_custom"]);
+
+/** Syntax-highlighted code preview */
+function CodePreview({ code }: { code: string }) {
+  const ref = useRef<HTMLElement>(null);
+  const [highlighted, setHighlighted] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getHljs().then((hljs) => {
+      if (cancelled) return;
+      const result = hljs.highlight(code, { language: "typescript" });
+      setHighlighted(result.value);
+    });
+    return () => { cancelled = true; };
+  }, [code]);
+
+  return (
+    <pre className="ns-codeblock" style={{ margin: 0, maxHeight: 400, overflow: "auto", borderRadius: 4, fontSize: "12px" }}>
+      {highlighted ? (
+        <code ref={ref} className="hljs language-typescript" dangerouslySetInnerHTML={{ __html: highlighted }} />
+      ) : (
+        <code style={{ whiteSpace: "pre-wrap" }}>{code}</code>
+      )}
+    </pre>
+  );
+}
 
 export type MethodCallStatus = "pending" | "success" | "error";
 
@@ -442,6 +490,11 @@ const ExpandedMethodDetail = React.memo(function ExpandedMethodDetail({
           </Box>
         )}
 
+        {/* Syntax-highlighted code preview for eval/inline_ui/feedback_custom */}
+        {CODE_METHODS.has(entry.methodName) && typeof (entry.args as Record<string, unknown>)?.["code"] === "string" && (
+          <CodePreview code={(entry.args as Record<string, unknown>)["code"] as string} />
+        )}
+
         {/* Meta badges */}
         {metaItems.length > 0 && (
           <Flex gap="1" wrap="wrap">
@@ -453,7 +506,7 @@ const ExpandedMethodDetail = React.memo(function ExpandedMethodDetail({
           </Flex>
         )}
 
-        {/* Args */}
+        {/* Args (collapsed by default — code preview above covers the main content) */}
         <CollapsibleSection label="Args" defaultOpen={false}>
           <Box
             style={{

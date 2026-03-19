@@ -13,6 +13,8 @@ export type {
   AgenticChatActions,
   ToolProvider,
   ToolProviderDeps,
+  ChatSandboxValue,
+  SandboxConfig,
   ChatContextValue,
   ChatInputContextValue,
   InlineUiComponentEntry,

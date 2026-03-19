@@ -8,6 +8,7 @@ import { Component, Suspense, useCallback, useEffect, useMemo, useRef, useState,
 import { Box, Button, Card, Callout, Flex, Spinner, Text } from "@radix-ui/themes";
 import { ExclamationTriangleIcon, ChevronDownIcon, ChevronUpIcon, ComponentInstanceIcon } from "@radix-ui/react-icons";
 import type { InlineUiData } from "@natstack/pubsub";
+import { useChatContext } from "../context/ChatContext";
 
 /**
  * Error boundary for inline UI components.
@@ -52,11 +53,12 @@ class InlineUiErrorBoundary extends Component<
 
 interface InlineUiMessageProps {
   data: InlineUiData;
-  compiledComponent?: ComponentType<{ props: Record<string, unknown> }>;
+  compiledComponent?: ComponentType<{ props: Record<string, unknown>; chat?: Record<string, unknown> }>;
   compilationError?: string;
 }
 
 export function InlineUiMessage({ data, compiledComponent: CompiledComponent, compilationError }: InlineUiMessageProps) {
+  const { chat } = useChatContext();
   const componentProps = useMemo(() => data.props ?? {}, [data.props]);
   const [expanded, setExpanded] = useState(true);
   const [autoCollapsed, setAutoCollapsed] = useState(false);
@@ -126,7 +128,7 @@ export function InlineUiMessage({ data, compiledComponent: CompiledComponent, co
         <Box p="2" ref={measuredRef}>
           <InlineUiErrorBoundary resetKey={resetKey}>
             <Suspense fallback={<Spinner size="1" />}>
-              <CompiledComponent props={componentProps} />
+              <CompiledComponent props={componentProps} chat={chat as unknown as Record<string, unknown>} />
             </Suspense>
           </InlineUiErrorBoundary>
         </Box>

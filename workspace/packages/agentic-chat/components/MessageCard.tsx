@@ -17,7 +17,7 @@ interface MessageCardProps {
   /** Whether this specific message was just copied (shows checkmark icon) */
   isCopied: boolean;
   inlineUiComponents?: Map<string, {
-    Component?: ComponentType<{ props: Record<string, unknown> }>;
+    Component?: ComponentType<{ props: Record<string, unknown>; chat?: Record<string, unknown> }>;
     cacheKey: string;
     error?: string;
   }>;

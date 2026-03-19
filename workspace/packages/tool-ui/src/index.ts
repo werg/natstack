@@ -52,24 +52,6 @@ export { useFeedbackManager, type UseFeedbackManagerResult } from "./hooks/useFe
 export { useToolApproval, APPROVAL_LEVELS, type FeedbackFunctions } from "./hooks/useToolApproval";
 
 // ============================================================================
-// Custom Feedback (TSX)
-// ============================================================================
-export {
-  compileFeedbackComponent,
-  cleanupFeedbackComponent,
-} from "./eval/feedbackComponent";
-
-// ============================================================================
-// Inline UI Components (TSX)
-// ============================================================================
-export {
-  compileInlineUiComponent,
-  cleanupInlineUiComponent,
-  type InlineUiComponentProps,
-  type InlineUiCompileResult,
-} from "./eval/feedbackComponent";
-
-// ============================================================================
 // Utilities
 // ============================================================================
 export { createApprovalSchema, type CreateApprovalSchemaParams } from "./utils/createApprovalSchema";
