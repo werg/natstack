@@ -120,7 +120,7 @@ if (wsName) {
           fs.rmSync(defaultDir, { recursive: true, force: true });
         }
         const templateDir = getWorkspaceTemplateDir();
-        initWorkspace(defaultName, templateDir ? { templateDir, devLink: isDev() } : undefined);
+        initWorkspace(defaultName, templateDir ? { templateDir } : undefined);
         log.info(`[Workspace] Auto-created "default" workspace${templateDir ? " from template" : ""}`);
       }
       centralData.addWorkspace(defaultName);
