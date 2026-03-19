@@ -47,8 +47,6 @@ export interface ChatFeedbackState {
   buildFeedbackMethods: () => Record<string, MethodDefinition>;
   onFeedbackDismiss: (callId: string) => void;
   onFeedbackError: (callId: string, error: Error) => void;
-  /** Dismiss all active feedbacks (for reset) */
-  dismissAll: () => void;
 }
 
 export function useChatFeedback({
@@ -185,12 +183,6 @@ export default function App({ onSubmit, onCancel }) {
     };
   }, []);
 
-  const dismissAll = useCallback(() => {
-    for (const callId of activeFeedbacksRef.current.keys()) {
-      dismissFeedback(callId);
-    }
-  }, [dismissFeedback]);
-
   return {
     activeFeedbacks,
     activeFeedbacksRef,
@@ -201,6 +193,5 @@ export default function App({ onSubmit, onCancel }) {
     buildFeedbackMethods,
     onFeedbackDismiss,
     onFeedbackError: handleFeedbackError,
-    dismissAll,
   };
 }

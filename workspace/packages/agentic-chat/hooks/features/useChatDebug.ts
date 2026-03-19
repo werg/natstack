@@ -16,8 +16,6 @@ export interface ChatDebugState {
   dirtyRepoWarnings: Map<string, DirtyRepoDetails>;
   setDirtyRepoWarnings: React.Dispatch<React.SetStateAction<Map<string, DirtyRepoDetails>>>;
   onDismissDirtyWarning: (agentName: string) => void;
-  /** Reset debug state */
-  resetDebug: () => void;
 }
 
 export function useChatDebug(): ChatDebugState {
@@ -33,12 +31,6 @@ export function useChatDebug(): ChatDebugState {
     });
   }, []);
 
-  const resetDebug = useCallback(() => {
-    setDebugEvents([]);
-    setDebugConsoleAgent(null);
-    setDirtyRepoWarnings(new Map());
-  }, []);
-
   return {
     debugEvents,
     setDebugEvents,
@@ -47,6 +39,5 @@ export function useChatDebug(): ChatDebugState {
     dirtyRepoWarnings,
     setDirtyRepoWarnings,
     onDismissDirtyWarning,
-    resetDebug,
   };
 }

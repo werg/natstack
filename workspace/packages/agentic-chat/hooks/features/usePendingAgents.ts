@@ -24,8 +24,6 @@ export interface PendingAgentsState {
   setPendingAgents: React.Dispatch<React.SetStateAction<Map<string, PendingAgent>>>;
   /** Roster extension — resolves pending agents when they appear */
   rosterExtension: RosterExtension;
-  /** Reset pending agents state */
-  resetPending: () => void;
 }
 
 const PENDING_TIMEOUT_MS = 45_000;
@@ -98,14 +96,9 @@ export function usePendingAgents({ initialPendingAgents }: UsePendingAgentsOptio
     });
   }, []);
 
-  const resetPending = useCallback(() => {
-    setPendingAgents(new Map());
-  }, []);
-
   return {
     pendingAgents,
     setPendingAgents,
     rosterExtension,
-    resetPending,
   };
 }

@@ -24,8 +24,6 @@ export interface RosterTrackingState {
   rosterExtension: RosterExtension;
   /** Reconnect handler — clears disconnect messages and resets suppression */
   onReconnect: () => void;
-  /** Reset roster tracking state */
-  resetRoster: () => void;
 }
 
 export function useRosterTracking({
@@ -146,17 +144,10 @@ export function useRosterTracking({
     });
   }, [setMessages]);
 
-  const resetRoster = useCallback(() => {
-    setHistoricalParticipants({});
-    suppressDisconnectRef.current = true;
-    expectedStopsRef.current.clear();
-  }, []);
-
   return {
     historicalParticipants,
     expectedStopsRef,
     rosterExtension,
     onReconnect,
-    resetRoster,
   };
 }

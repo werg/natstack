@@ -52,8 +52,7 @@ export interface MessageWindowState {
 
 export type MessageWindowAction =
   | { type: "replace"; updater: (prev: ChatMessage[]) => ChatMessage[] }
-  | { type: "prepend"; olderMessages: ChatMessage[]; newCursor: number; exhausted: boolean }
-  | { type: "reset" };
+  | { type: "prepend"; olderMessages: ChatMessage[]; newCursor: number; exhausted: boolean };
 
 const messageWindowInitialState: MessageWindowState = {
   messages: [],
@@ -90,11 +89,12 @@ function messageWindowReducer(state: MessageWindowState, action: MessageWindowAc
       return { ...state, messages: updated, oldestLoadedId };
     }
     case "prepend": {
-      const existingIds = new Set(
+      const existingPubsubIds = new Set(
         state.messages.filter((m) => m.pubsubId != null).map((m) => m.pubsubId)
       );
+      const existingMsgIds = new Set(state.messages.map((m) => m.id));
       const deduped = action.olderMessages.filter(
-        (m) => !m.pubsubId || !existingIds.has(m.pubsubId)
+        (m) => (!m.pubsubId || !existingPubsubIds.has(m.pubsubId)) && !existingMsgIds.has(m.id)
       );
       const merged = deduped.length > 0 ? [...deduped, ...state.messages] : state.messages;
       return {
@@ -103,8 +103,6 @@ function messageWindowReducer(state: MessageWindowState, action: MessageWindowAc
         paginationExhausted: action.exhausted,
       };
     }
-    case "reset":
-      return messageWindowInitialState;
   }
 }
 
@@ -186,9 +184,6 @@ export interface ChatCoreState {
   handleInterruptAgent: (agentId: string, messageId?: string, agentHandle?: string) => Promise<void>;
   handleCallMethod: (providerId: string, methodName: string, args: unknown) => void;
   stopTyping: () => Promise<void>;
-
-  // Reset
-  resetCore: () => void;
 
   // Refs
   selfIdRef: React.MutableRefObject<string | null>;
@@ -305,7 +300,17 @@ export function useChatCore({
           const chatMsg = aggregatedToChatMessage(event);
           setMessages(prev => {
             if (chatMsg.pubsubId && prev.some(m => m.pubsubId === chatMsg.pubsubId)) return prev;
-            if (prev.some(m => m.id === chatMsg.id)) return prev;
+            const existingIdx = prev.findIndex(m => m.id === chatMsg.id);
+            if (existingIdx >= 0) {
+              // Backfill pubsubId from server on locally-sent messages
+              const existing = prev[existingIdx]!;
+              if (chatMsg.pubsubId && !existing.pubsubId) {
+                const updated = [...prev];
+                updated[existingIdx] = { ...existing, pubsubId: chatMsg.pubsubId, pending: false };
+                return updated;
+              }
+              return prev;
+            }
             return [...prev, chatMsg];
           });
           break;
@@ -550,20 +555,6 @@ export function useChatCore({
     [clientRef]
   );
 
-  // --- Reset ---
-  const resetCore = useCallback(() => {
-    dispatch({ type: "reset" });
-    setFirstChatMessageId(undefined);
-    setInput("");
-    inputRef.current = "";
-    cleanupPendingImages(pendingImagesRef.current);
-    setPendingImages([]);
-    setParticipants({});
-    clearMethodHistory();
-    loadingMoreRef.current = false;
-    setLoadingMore(false);
-  }, [clearMethodHistory]);
-
   // --- Input context value ---
   const inputContextValue: ChatInputContextValue = useMemo(() => ({
     input,
@@ -601,7 +592,6 @@ export function useChatCore({
     handleInterruptAgent,
     handleCallMethod,
     stopTyping,
-    resetCore,
     selfIdRef,
     sessionEnabled: true,
     channelName,

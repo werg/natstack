@@ -44,7 +44,6 @@ export function ChatHeader() {
     onAddAgent,
     availableAgents,
     onRemoveAgent,
-    onReset,
   } = useChatContext();
 
   // Memoize participant active status: single reverse scan instead of O(P*M) filter per render.
@@ -83,7 +82,6 @@ export function ChatHeader() {
       onAddAgent={onAddAgent}
       availableAgents={availableAgents}
       onRemoveAgent={onRemoveAgent}
-      onReset={onReset}
       onDebugConsoleChange={onDebugConsoleChange}
     />
   );
@@ -104,7 +102,6 @@ interface ChatHeaderInnerProps {
   onAddAgent?: (agentId?: string) => void;
   availableAgents?: Array<{ id: string; name: string; proposedHandle: string }>;
   onRemoveAgent?: (handle: string) => void;
-  onReset: () => void;
   onDebugConsoleChange?: (agentHandle: string | null) => void;
 }
 
@@ -121,7 +118,6 @@ function chatHeaderInnerPropsEqual(prev: ChatHeaderInnerProps, next: ChatHeaderI
     prev.onAddAgent === next.onAddAgent &&
     prev.availableAgents === next.availableAgents &&
     prev.onRemoveAgent === next.onRemoveAgent &&
-    prev.onReset === next.onReset &&
     prev.onDebugConsoleChange === next.onDebugConsoleChange &&
     mapsShallowEqual(prev.participantActiveStatus, next.participantActiveStatus)
   );
@@ -140,7 +136,6 @@ const ChatHeaderInner = React.memo(function ChatHeaderInner({
   onAddAgent,
   availableAgents,
   onRemoveAgent,
-  onReset,
   onDebugConsoleChange,
 }: ChatHeaderInnerProps) {
   return (
@@ -205,9 +200,6 @@ const ChatHeaderInner = React.memo(function ChatHeaderInner({
             onSetFloor={toolApproval.onSetFloor}
           />
         )}
-        <Button variant="soft" onClick={onReset}>
-          Reset
-        </Button>
       </Flex>
     </Flex>
   );

@@ -247,16 +247,6 @@ export default function App({ props }) {
     void doConnect();
   }, [channelName, channelConfig, contextId, core.connectToChannel, config.serverUrl, core.hasConnectedRef, core.selfIdRef, core.clientRef]);
 
-  // --- Combined reset ---
-  const reset = useCallback(() => {
-    core.resetCore();
-    roster.resetRoster();
-    pending.resetPending();
-    feedback.dismissAll();
-    debug.resetDebug();
-    actions?.onNewConversation?.();
-  }, [core.resetCore, roster.resetRoster, pending.resetPending, feedback.dismissAll, debug.resetDebug, actions]);
-
   // --- Wrap platform actions ---
   const handleAddAgent = useCallback(async (agentId?: string) => {
     if (!actions?.onAddAgent) return;
@@ -310,7 +300,6 @@ export default function App({ props }) {
     onFeedbackError: feedback.onFeedbackError,
     onDebugConsoleChange: debug.setDebugConsoleAgent,
     onDismissDirtyWarning: debug.onDismissDirtyWarning,
-    onReset: reset,
     onAddAgent,
     availableAgents,
     onRemoveAgent,
@@ -324,7 +313,7 @@ export default function App({ props }) {
     debug.debugEvents, debug.debugConsoleAgent, debug.dirtyRepoWarnings, pending.pendingAgents,
     feedback.activeFeedbacks, theme,
     core.loadEarlierMessages, core.handleInterruptAgent, core.handleCallMethod,
-    feedback.onFeedbackDismiss, feedback.onFeedbackError, debug.setDebugConsoleAgent, debug.onDismissDirtyWarning, reset,
+    feedback.onFeedbackDismiss, feedback.onFeedbackError, debug.setDebugConsoleAgent, debug.onDismissDirtyWarning,
     onAddAgent, availableAgents, onRemoveAgent, onFocusPanel, onReloadPanel,
     chatTools.toolApprovalValue,
   ]);

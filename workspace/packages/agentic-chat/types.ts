@@ -167,7 +167,6 @@ export interface ChatContextValue {
   onFeedbackError: (callId: string, error: Error) => void;
   onDebugConsoleChange: (agentHandle: string | null) => void;
   onDismissDirtyWarning: (agentName: string) => void;
-  onReset: () => void;
 
   // Optional actions (platform-specific)
   onAddAgent?: (agentId?: string) => void;
