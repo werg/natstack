@@ -247,10 +247,9 @@ export function useChatCore({
   const hasMoreHistory = useMemo(() => {
     if (messageWindow.paginationExhausted) return false;
     if (messageWindow.oldestLoadedId === null) return false;
-    if (firstChatMessageId !== undefined) {
-      return messageWindow.oldestLoadedId > firstChatMessageId;
-    }
-    return true;
+    // firstChatMessageId is undefined when there are no chat messages yet
+    if (firstChatMessageId === undefined) return false;
+    return messageWindow.oldestLoadedId > firstChatMessageId;
   }, [messageWindow.paginationExhausted, messageWindow.oldestLoadedId, firstChatMessageId]);
 
   // --- Cleanup pending images on unmount ---
