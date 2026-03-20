@@ -16,12 +16,7 @@ export interface SpawnOpts {
   type: string;
   contextId: string;
   config?: HarnessConfig;
-  senderParticipantId?: string;
-  initialTurn?: {
-    input: { content: string; senderId: string; attachments?: unknown[] };
-    triggerMessageId: string;
-    triggerPubsubId: number;
-  };
+  initialInput?: { content: string; senderId: string; attachments?: unknown[] };
 }
 
 export interface HarnessCommand {

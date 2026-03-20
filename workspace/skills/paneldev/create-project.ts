@@ -239,29 +239,28 @@ export class ${className} extends AgentWorkerBase {
     }
 
     const input = this.buildTurnInput(event);
-    const harnessId = this.getHarnessForChannel(channelId);
+    const activeHarnessId = this.getActiveHarness();
 
-    if (!harnessId) {
+    if (!activeHarnessId) {
       // No active harness — spawn one with the first turn
       const contextId = this.getContextId(channelId);
+      const harnessId = \`harness-\${crypto.randomUUID()}\`;
+      this.registerHarness(harnessId, this.getHarnessType());
+      this.recordTurnStart(harnessId, channelId, input, event.messageId, event.id);
       await this.server.spawnHarness({
         doRef: this.doRef,
-        harnessId: \\\`harness-\\\${crypto.randomUUID()}\\\`,
+        harnessId,
         type: this.getHarnessType(),
         contextId,
         config: this.getHarnessConfig() as unknown as Record<string, unknown>,
-        initialTurn: {
-          input,
-          triggerMessageId: event.messageId,
-          triggerPubsubId: event.id,
-        },
+        initialInput: input,
       });
     } else {
       // Existing harness — start a new turn
-      this.setActiveTurn(harnessId, channelId, event.messageId);
-      this.setInFlightTurn(channelId, harnessId, event.messageId, event.id, input);
-      this.advanceCheckpoint(channelId, harnessId, event.id);
-      await this.server.sendHarnessCommand(harnessId, { type: "start-turn", input });
+      this.setActiveTurn(activeHarnessId, channelId, event.messageId);
+      this.setInFlightTurn(channelId, activeHarnessId, event.messageId, event.id, input);
+      this.advanceCheckpoint(channelId, activeHarnessId, event.id);
+      await this.server.sendHarnessCommand(activeHarnessId, { type: "start-turn", input });
     }
   }
 
@@ -270,8 +269,12 @@ export class ${className} extends AgentWorkerBase {
     harnessId: string,
     event: HarnessOutput,
   ): Promise<void> {
+    if (event.type === "ready") {
+      this.sql.exec(\`UPDATE harnesses SET status = 'active' WHERE id = ?\`, harnessId);
+      return;
+    }
     const turn = this.getActiveTurn(harnessId);
-    const channelId = turn?.channelId ?? this.getChannelForHarness(harnessId);
+    const channelId = turn?.channelId;
     if (!channelId || !turn) return;
 
     const writer = this.createWriter(channelId, turn);
@@ -289,15 +292,8 @@ export class ${className} extends AgentWorkerBase {
         }
         this.clearActiveTurn(harnessId);
         this.clearInFlightTurn(channelId, harnessId);
-          break;
-        }
-        case "ready":
-          this.sql.exec(\`UPDATE harnesses SET status = 'active' WHERE id = ?\`, harnessId);
-          return; // skip final persistStreamState
-      }
-      case "ready":
-        this.sql.exec(\\\`UPDATE harnesses SET status = 'active' WHERE id = ?\\\`, harnessId);
         break;
+      }
     }
 
     this.persistStreamState(harnessId, writer);

@@ -131,18 +131,12 @@ async function handleSpawn(
   const doRef = body["doRef"] as DORef;
   let harnessId = body["harnessId"] as string | undefined;
   const type = body["type"] as string;
-  const channelId = body["channelId"] as string;
   const contextId = body["contextId"] as string;
   const config = body["config"] as Record<string, unknown> | undefined;
-  const senderParticipantId = body["senderParticipantId"] as string | undefined;
-  const initialTurn = body["initialTurn"] as {
-    input: { content: string; senderId: string };
-    triggerMessageId: string;
-    triggerPubsubId: number;
-  } | undefined;
+  const initialInput = body["initialInput"] as { content: string; senderId: string } | undefined;
 
-  if (!doRef || !type || !channelId || !contextId) {
-    sendJson(res, 400, { error: "Missing required fields: doRef, type, channelId, contextId" });
+  if (!doRef || !type || !contextId) {
+    sendJson(res, 400, { error: "Missing required fields: doRef, type, contextId" });
     return;
   }
 
@@ -152,9 +146,6 @@ async function handleSpawn(
   }
 
   log.info(`Spawning harness ${harnessId} for DO ${doRef.source}:${doRef.className}/${doRef.objectKey}`);
-
-  // Register harness in DO's SQLite
-  await deps.doDispatch.dispatch(doRef, "registerHarness", harnessId, channelId, type);
 
   try {
     // Ensure context folder
@@ -182,18 +173,11 @@ async function handleSpawn(
     // Notify the DO that harness is ready
     await deps.doDispatch.dispatch(doRef, "onHarnessEvent", harnessId, { type: "ready" });
 
-    // If initial turn provided, record it and start
-    if (initialTurn) {
-      await deps.doDispatch.dispatch(
-        doRef, "recordTurnStart",
-        harnessId, channelId, initialTurn.input,
-        initialTurn.triggerMessageId, initialTurn.triggerPubsubId,
-        senderParticipantId,
-      );
-
+    // If initial input provided, fire start-turn
+    if (initialInput) {
       // Fire-and-forget start-turn (the AI turn blocks for minutes —
       // we don't hold the HTTP response open for that)
-      bridge.call(harnessId, "startTurn", initialTurn.input).catch((err) => {
+      bridge.call(harnessId, "startTurn", initialInput).catch((err) => {
         log.error(`Initial start-turn failed for ${harnessId}:`, err);
       });
     }

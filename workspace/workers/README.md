@@ -210,7 +210,7 @@ The base class creates 8 tables on initialization:
 |-------|---------|
 | `state` | Key-value store (schema version, custom state) |
 | `subscriptions` | Channel subscriptions with config + participant ID |
-| `harnesses` | Harness instances (id, type, channel, status) |
+| `harnesses` | Harness instances (id, type, status) |
 | `turn_map` | Completed turn records for fork resolution |
 | `checkpoints` | Last-processed event ID per channel/harness |
 | `in_flight_turns` | Currently executing turns (for crash retry) |
@@ -221,8 +221,7 @@ The base class creates 8 tables on initialization:
 
 | Method | Description |
 |--------|-------------|
-| `getHarnessForChannel(channelId)` | Find active harness for a channel |
-| `getChannelForHarness(harnessId)` | Find channel for a harness |
+| `getActiveHarness()` | Get the active harness ID |
 | `getContextId(channelId)` | Get context ID from subscription |
 | `getSubscriptionConfig(channelId)` | Get per-channel config |
 | `setActiveTurn(harnessId, channelId, replyToId, turnMessageId?)` | Record active turn |
@@ -236,7 +235,7 @@ The base class creates 8 tables on initialization:
 | `recordTurn(harnessId, messageId, triggerPubsubId, sessionId)` | Record completed turn |
 | `getResumeSessionId(harnessId)` | Get session ID for conversation resume |
 | `getAlignment(harnessId)` | Get alignment state |
-| `registerHarness(harnessId, channelId, type)` | Register a new harness |
+| `registerHarness(harnessId, type)` | Register a new harness |
 | `reactivateHarness(harnessId)` | Reactivate a harness |
 | `recordTurnStart(harnessId, channelId, input, messageId, pubsubId, senderParticipantId?)` | Convenience: set active + in-flight + checkpoint |
 | `pendingCall(callId, channelId, type, context)` | Store a continuation (survives hibernation) |
@@ -325,7 +324,8 @@ User sends message
        No  -> Advance checkpoint, return empty actions
        Yes -> Build TurnInput from event
               -> Is there an active harness?
-                 No  -> $.spawnHarness() with initialTurn
+                 No  -> registerHarness + recordTurnStart locally
+                        then $.spawnHarness() with initialInput
                  Yes -> $.harness(id).startTurn(input)
                         + typing indicator
                         + record active/in-flight turns
@@ -363,7 +363,8 @@ When a harness sends an `error` event:
 3. The resume session ID is looked up from turn_map
 4. The in-flight turn is read for retry
 5. Active turn state is cleared
-6. Respawns via `this.server.spawnHarness()` with the retry turn
+6. `reactivateHarness()` + `recordTurnStart()` locally
+7. Respawns via `this.server.spawnHarness()` with `initialInput`
 
 ## 11. Custom Worker Example: CodeReviewWorker
 
@@ -420,33 +421,36 @@ export class CodeReviewWorker extends AgentWorkerBase {
     }
 
     const input = this.buildTurnInput(event);
-    const harnessId = this.getHarnessForChannel(channelId);
+    const activeHarnessId = this.getActiveHarness();
 
-    if (!harnessId) {
+    if (!activeHarnessId) {
       const contextId = this.getContextId(channelId);
+      const harnessId = `harness-${crypto.randomUUID()}`;
+      this.registerHarness(harnessId, this.getHarnessType());
+      this.recordTurnStart(harnessId, channelId, input, event.messageId, event.id);
       await this.server.spawnHarness({
         doRef: this.doRef,
-        harnessId: `harness-${crypto.randomUUID()}`,
+        harnessId,
         type: this.getHarnessType(),
         contextId,
         config: this.getHarnessConfig() as unknown as Record<string, unknown>,
-        initialTurn: {
-          input,
-          triggerMessageId: event.messageId,
-          triggerPubsubId: event.id,
-        },
+        initialInput: input,
       });
     } else {
-      this.setActiveTurn(harnessId, channelId, event.messageId);
-      this.setInFlightTurn(channelId, harnessId, event.messageId, event.id, input);
+      this.setActiveTurn(activeHarnessId, channelId, event.messageId);
+      this.setInFlightTurn(channelId, activeHarnessId, event.messageId, event.id, input);
       this.advanceCheckpoint(channelId, harnessId, event.id);
-      await this.server.sendHarnessCommand(harnessId, { type: "start-turn", input });
+      await this.server.sendHarnessCommand(activeHarnessId, { type: "start-turn", input });
     }
   }
 
   async onHarnessEvent(harnessId: string, event: HarnessOutput): Promise<void> {
+    if (event.type === "ready") {
+      this.sql.exec(`UPDATE harnesses SET status = 'active' WHERE id = ?`, harnessId);
+      return;
+    }
     const turn = this.getActiveTurn(harnessId);
-    const channelId = turn?.channelId ?? this.getChannelForHarness(harnessId);
+    const channelId = turn?.channelId;
     if (!channelId || !turn) return;
 
     const writer = this.createWriter(channelId, turn);

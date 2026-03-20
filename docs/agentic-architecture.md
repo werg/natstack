@@ -30,10 +30,13 @@ DOs call Channel DOs (via `callDO()` / `stub.fetch()`) and server APIs directly.
 async onChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
   if (!this.shouldProcess(event)) return;
   const input = this.buildTurnInput(event);
+  const harnessId = `harness-${crypto.randomUUID()}`;
+  this.registerHarness(harnessId, this.getHarnessType());
+  this.recordTurnStart(harnessId, channelId, input, event.messageId, event.id);
   await this.server.spawnHarness({
-    doRef: this.doRef, harnessId: `harness-${crypto.randomUUID()}`,
-    type: this.getHarnessType(), channelId, contextId,
-    config: this.getHarnessConfig(), initialTurn: { input, ... },
+    doRef: this.doRef, harnessId,
+    type: this.getHarnessType(), contextId,
+    config: this.getHarnessConfig(), initialInput: input,
   });
 }
 ```
@@ -107,25 +110,24 @@ Location: `workspace/packages/agentic-do/src/agent-worker-base.ts`
 ```
 Panel sends message → Channel DO → callback to Worker DO → onChannelEvent()
   1. shouldProcess() → true
-  2. getHarnessForChannel() → null (no harness yet)
-  3. Send bootstrap typing indicator via channel.send()
-  4. Call this.server.spawnHarness() with initialTurn
+  2. getActiveHarness() → null (no harness yet)
+  3. registerHarness() + recordTurnStart() locally
+  4. Send bootstrap typing indicator via channel.send()
+  5. Call this.server.spawnHarness() with initialInput
 
 Server handles /harness/spawn:
-  1. Register harness in DO via DODispatch
-  2. Ensure context folder
-  3. Fork Node.js process
-  4. Wait for WebSocket authentication
-  5. Notify DO: onHarnessEvent("ready")
-  6. Record turn state in DO
-  7. Fire-and-forget: bridge.startTurn(input)
+  1. Ensure context folder
+  2. Fork Node.js process
+  3. Wait for WebSocket authentication
+  4. Notify DO: onHarnessEvent("ready")
+  5. Fire-and-forget: bridge.startTurn(initialInput)
 ```
 
 ### Subsequent Messages
 
 ```
 Panel sends message → Channel DO → callback to Worker DO → onChannelEvent()
-  1. getHarnessForChannel() → harnessId
+  1. getActiveHarness() → harnessId
   2. Start typing via StreamWriter, call this.server.sendHarnessCommand(start-turn)
   3. Record active_turn + in_flight_turn
 ```
@@ -165,7 +167,8 @@ Harness process dies → HarnessManager detects exit → DODispatch
   → DO.onHarnessEvent(harnessId, {type: "error"})
   → Complete partial stream
   → Read in-flight turn for retry
-  → Call this.server.spawnHarness() with resumeSessionId + retryTurn
+  → reactivateHarness() + recordTurnStart() locally
+  → Call this.server.spawnHarness() with resumeSessionId + initialInput
 ```
 
 ## RPC Services (Panel-Accessible)

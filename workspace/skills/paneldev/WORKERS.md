@@ -185,7 +185,7 @@ The base class creates 8 tables on initialization:
 |-------|---------|
 | `state` | Key-value store (schema version, custom state) |
 | `subscriptions` | Channel subscriptions with config + participant ID |
-| `harnesses` | Harness instances (id, type, channel, status) |
+| `harnesses` | Harness instances (id, type, status) |
 | `turn_map` | Completed turn records for fork resolution |
 | `checkpoints` | Last-processed event ID per channel/harness |
 | `in_flight_turns` | Currently executing turns (for crash retry) |
@@ -206,8 +206,7 @@ export class MyWorker extends AgentWorkerBase {
 
 | Method | Description |
 |--------|-------------|
-| `getHarnessForChannel(channelId)` | Find active harness for a channel |
-| `getChannelForHarness(harnessId)` | Find channel for a harness |
+| `getActiveHarness()` | Get the active harness ID |
 | `getContextId(channelId)` | Get context ID from subscription |
 | `getSubscriptionConfig(channelId)` | Get per-channel config |
 | `setActiveTurn() / getActiveTurn() / clearActiveTurn()` | Turn state (includes `senderParticipantId`) |

@@ -18,7 +18,6 @@ export class HarnessManager {
       CREATE TABLE IF NOT EXISTS harnesses (
         id TEXT PRIMARY KEY,
         type TEXT NOT NULL,
-        channel_id TEXT NOT NULL,
         status TEXT NOT NULL,
         parent_id TEXT,
         fork_point_message_id INTEGER,
@@ -30,10 +29,10 @@ export class HarnessManager {
     `);
   }
 
-  register(harnessId: string, channelId: string, type: string): void {
+  register(harnessId: string, type: string): void {
     this.sql.exec(
-      `INSERT OR REPLACE INTO harnesses (id, type, channel_id, status, created_at) VALUES (?, ?, ?, 'starting', ?)`,
-      harnessId, type, channelId, Date.now(),
+      `INSERT OR REPLACE INTO harnesses (id, type, status, created_at) VALUES (?, ?, 'starting', ?)`,
+      harnessId, type, Date.now(),
     );
   }
 
@@ -56,18 +55,11 @@ export class HarnessManager {
     );
   }
 
-  getForChannel(channelId: string): string | null {
+  getActive(): string | null {
     const row = this.sql.exec(
-      `SELECT id FROM harnesses WHERE channel_id = ? AND status = 'active'`, channelId,
+      `SELECT id FROM harnesses WHERE status = 'active' LIMIT 1`,
     ).toArray();
     return row.length > 0 ? (row[0]!["id"] as string) : null;
-  }
-
-  getChannelFor(harnessId: string): string | null {
-    const row = this.sql.exec(
-      `SELECT channel_id FROM harnesses WHERE id = ?`, harnessId,
-    ).toArray();
-    return row.length > 0 ? (row[0]!["channel_id"] as string) : null;
   }
 
   getAlignment(harnessId: string): { lastAlignedMessageId: number | null } {
@@ -86,17 +78,15 @@ export class HarnessManager {
     this.sql.exec(`UPDATE harnesses SET status = 'crashed' WHERE status IN ('active', 'starting')`);
   }
 
-  /** List harness IDs for a channel. */
-  listForChannel(channelId: string): string[] {
-    const rows = this.sql.exec(
-      `SELECT id FROM harnesses WHERE channel_id = ?`, channelId,
-    ).toArray();
+  /** List all harness IDs. */
+  listAll(): string[] {
+    const rows = this.sql.exec(`SELECT id FROM harnesses`).toArray();
     return rows.map(r => r["id"] as string);
   }
 
-  /** Delete all harnesses for a channel. */
-  deleteForChannel(channelId: string): void {
-    this.sql.exec(`DELETE FROM harnesses WHERE channel_id = ?`, channelId);
+  /** Delete all harnesses. */
+  deleteAll(): void {
+    this.sql.exec(`DELETE FROM harnesses`);
   }
 
   /** Stop a harness via server API (best-effort). */

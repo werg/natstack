@@ -62,7 +62,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.identity.restore();
   }
 
-  static override schemaVersion = 3;
+  static override schemaVersion = 4;
 
   protected createTables(): void {
     this.identity.createTables();
@@ -189,7 +189,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   }
 
   async unsubscribeChannel(channelId: string): Promise<UnsubscribeResult> {
-    const harnessIds = this.harnesses.listForChannel(channelId);
+    const harnessIds = this.harnesses.listAll();
 
     // Unsubscribe from channel DO
     await this.subscriptions.unsubscribeFromChannel(channelId);
@@ -201,7 +201,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
 
     // Clean up all tables for this channel
-    this.harnesses.deleteForChannel(channelId);
+    this.harnesses.deleteAll();
     this.turns.deleteCheckpointsForChannel(channelId);
     this.continuations.deleteForChannel(channelId);
     this.subscriptions.deleteSubscription(channelId);
@@ -211,12 +211,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   // --- Delegated helpers (backward-compatible API for subclasses) ---
 
-  protected getHarnessForChannel(channelId: string): string | null {
-    return this.harnesses.getForChannel(channelId);
-  }
-
-  protected getChannelForHarness(harnessId: string): string | null {
-    return this.harnesses.getChannelFor(harnessId);
+  protected getActiveHarness(): string | null {
+    return this.harnesses.getActive();
   }
 
   protected getContextId(channelId: string): string {
@@ -286,8 +282,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     return this.turns.getResumeSessionId(harnessId);
   }
 
-  protected getResumeSessionIdForChannel(channelId: string): string | undefined {
-    const harnessIds = this.harnesses.listForChannel(channelId);
+  protected getResumeSessionIdForChannel(_channelId: string): string | undefined {
+    const harnessIds = this.harnesses.listAll();
     return this.turns.getResumeSessionIdForHarnesses(harnessIds);
   }
 
@@ -295,10 +291,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.turns.persistStreamState(harnessId, writer.getState());
   }
 
-  // --- Harness registration (called by server during bootstrap) ---
+  // --- Harness registration ---
 
-  registerHarness(harnessId: string, channelId: string, type: string): void {
-    this.harnesses.register(harnessId, channelId, type);
+  registerHarness(harnessId: string, type: string): void {
+    this.harnesses.register(harnessId, type);
   }
 
   reactivateHarness(harnessId: string): void {
@@ -351,7 +347,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     for (const call of pending) {
       const context = call.context as { harnessId: string; toolUseId: string };
-      const activeHarnessId = this.getHarnessForChannel(channelId);
+      const activeHarnessId = this.getActiveHarness();
       if (activeHarnessId === context.harnessId) {
         this.continuations.deleteOne(call.callId);
         await this.server.sendHarnessCommand(context.harnessId, {

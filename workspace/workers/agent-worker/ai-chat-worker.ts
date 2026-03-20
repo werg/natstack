@@ -57,7 +57,7 @@ export class AiChatWorker extends AgentWorkerBase {
     }
 
     const input = this.buildTurnInput(event);
-    const harnessId = this.getHarnessForChannel(channelId);
+    const activeHarnessId = this.getActiveHarness();
     const participantId = this.getParticipantId(channelId);
 
     // Build typing data with proper display name
@@ -68,16 +68,21 @@ export class AiChatWorker extends AgentWorkerBase {
       senderType: participantInfo.type,
     });
 
-    if (!harnessId) {
+    if (!activeHarnessId) {
       // No active harness — spawn one with the first turn bundled.
       const contextId = this.getContextId(channelId);
       const config = this.buildHarnessConfig(channelId);
+      const harnessId = `harness-${crypto.randomUUID()}`;
 
       // Resume from the most recent session on this channel (restart recovery)
       const resumeSessionId = this.getResumeSessionIdForChannel(channelId);
       if (resumeSessionId) {
         config.extraEnv = { ...config.extraEnv, RESUME_SESSION_ID: resumeSessionId };
       }
+
+      // Register harness and record turn locally before spawning
+      this.registerHarness(harnessId, this.getHarnessType());
+      this.recordTurnStart(harnessId, channelId, input, event.messageId, event.id, event.senderId);
 
       // Send bootstrap typing indicator directly
       const bootstrapTypingId = crypto.randomUUID();
@@ -97,32 +102,27 @@ export class AiChatWorker extends AgentWorkerBase {
       // Spawn harness via server API
       await this.server.spawnHarness({
         doRef: this.doRef,
-        harnessId: `harness-${crypto.randomUUID()}`,
+        harnessId,
         type: this.getHarnessType(),
         contextId,
         config,
-        senderParticipantId: event.senderId,
-        initialTurn: {
-          input,
-          triggerMessageId: event.messageId,
-          triggerPubsubId: event.id,
-        },
+        initialInput: input,
       });
     } else {
       // Existing harness — start a new turn
-      this.setActiveTurn(harnessId, channelId, event.messageId, undefined, event.senderId, typingContent);
+      this.setActiveTurn(activeHarnessId, channelId, event.messageId, undefined, event.senderId, typingContent);
 
       // Start typing via StreamWriter
-      const newTurn = this.getActiveTurn(harnessId)!;
+      const newTurn = this.getActiveTurn(activeHarnessId)!;
       const turnWriter = this.createWriter(channelId, newTurn);
       await turnWriter.startTyping();
-      this.persistStreamState(harnessId, turnWriter);
+      this.persistStreamState(activeHarnessId, turnWriter);
 
-      this.setInFlightTurn(channelId, harnessId, event.messageId, event.id, input);
-      this.advanceCheckpoint(channelId, harnessId, event.id);
+      this.setInFlightTurn(channelId, activeHarnessId, event.messageId, event.id, input);
+      this.advanceCheckpoint(channelId, activeHarnessId, event.id);
 
       // Send start-turn command to harness
-      await this.server.sendHarnessCommand(harnessId, {
+      await this.server.sendHarnessCommand(activeHarnessId, {
         type: "start-turn",
         input,
       });
@@ -136,8 +136,16 @@ export class AiChatWorker extends AgentWorkerBase {
     event: HarnessOutput,
   ): Promise<void> {
     const turn = this.getActiveTurn(harnessId);
-    const channelId =
-      turn?.channelId ?? this.getChannelForHarness(harnessId);
+    const channelId = turn?.channelId;
+
+    // Ready event doesn't need a channel — just update status
+    if (event.type === "ready") {
+      this.sql.exec(
+        `UPDATE harnesses SET status = 'active' WHERE id = ?`,
+        harnessId,
+      );
+      return;
+    }
 
     if (!channelId) return;
 
@@ -362,14 +370,6 @@ export class AiChatWorker extends AgentWorkerBase {
       // --- Interleave point (no-op) ---
       case "interleave-point":
         break;
-
-      // --- Ready (harness initialized) ---
-      case "ready":
-        this.sql.exec(
-          `UPDATE harnesses SET status = 'active' WHERE id = ?`,
-          harnessId,
-        );
-        break;
     }
 
     // Persist stream state after every event that has a writer
@@ -386,12 +386,12 @@ export class AiChatWorker extends AgentWorkerBase {
     methodName: string,
     _args: unknown,
   ): Promise<{ result: unknown; isError?: boolean }> {
-    const harnessId = this.getHarnessForChannel(channelId);
+    const activeId = this.getActiveHarness();
 
     switch (methodName) {
       case "pause":
-        if (harnessId) {
-          await this.server.sendHarnessCommand(harnessId, { type: "interrupt" });
+        if (activeId) {
+          await this.server.sendHarnessCommand(activeId, { type: "interrupt" });
           return { result: { paused: true } };
         }
         return { result: { error: "no active harness" }, isError: true };
@@ -420,8 +420,8 @@ export class AiChatWorker extends AgentWorkerBase {
           allow = r["allow"] === true;
           alwaysAllow = r["alwaysAllow"] === true;
         }
-        const activeHarnessId = this.getHarnessForChannel(channelId);
-        if (activeHarnessId === harnessId) {
+        const currentActiveId = this.getActiveHarness();
+        if (currentActiveId === harnessId) {
           await this.server.sendHarnessCommand(harnessId, {
             type: "approve-tool",
             toolUseId,
@@ -501,22 +501,21 @@ export class AiChatWorker extends AgentWorkerBase {
     }
     await this.cleanupBootstrapTyping(channelId);
 
-    const senderParticipantId = activeTurn?.senderParticipantId ?? undefined;
     const resumeSessionId = this.getResumeSessionId(harnessId);
     console.log(`[AiChatWorker] Crash recovery: harnessId=${harnessId}, resumeSessionId=${resumeSessionId ?? 'NONE'}`);
 
     const inFlight = this.getInFlightTurn(channelId, harnessId);
     const contextId = this.getContextId(channelId);
 
-    const initialTurn = inFlight
-      ? {
-          input: inFlight.turnInput,
-          triggerMessageId: inFlight.triggerMessageId,
-          triggerPubsubId: inFlight.triggerPubsubId,
-        }
-      : undefined;
-
     this.clearActiveTurn(harnessId);
+
+    // Re-register harness and record turn locally before respawn
+    this.reactivateHarness(harnessId);
+    if (inFlight) {
+      this.recordTurnStart(harnessId, channelId, inFlight.turnInput,
+        inFlight.triggerMessageId, inFlight.triggerPubsubId,
+        activeTurn?.senderParticipantId ?? undefined);
+    }
 
     // Respawn via server API
     await this.server.spawnHarness({
@@ -525,8 +524,7 @@ export class AiChatWorker extends AgentWorkerBase {
       type: this.getHarnessType(),
       contextId,
       config: { ...this.buildHarnessConfig(channelId), extraEnv: { RESUME_SESSION_ID: resumeSessionId ?? "" } },
-      senderParticipantId,
-      initialTurn,
+      initialInput: inFlight?.turnInput,
     });
   }
 }

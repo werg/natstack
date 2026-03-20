@@ -150,7 +150,6 @@ describe("handleHarnessApiRequest", () => {
       const req = mockRequest("POST", "/harness/spawn", {
         doRef: testDoRef,
         type: "claude-sdk",
-        channelId: "chan-1",
         contextId: "ctx-1",
       });
       const res = mockResponse();
@@ -162,12 +161,10 @@ describe("handleHarnessApiRequest", () => {
       expect(body.ok).toBe(true);
       expect(body.harnessId).toMatch(/^harness-/);
 
-      // Should have registered the harness in the DO
-      expect(deps.doDispatch.dispatch).toHaveBeenCalledWith(
+      // Should NOT dispatch registerHarness (DO does this locally now)
+      expect(deps.doDispatch.dispatch).not.toHaveBeenCalledWith(
         testDoRef, "registerHarness",
-        expect.stringMatching(/^harness-/),
-        "chan-1",
-        "claude-sdk",
+        expect.anything(), expect.anything(),
       );
 
       // Should have spawned via harnessManager
@@ -195,7 +192,6 @@ describe("handleHarnessApiRequest", () => {
       const req = mockRequest("POST", "/harness/spawn", {
         doRef: testDoRef,
         type: "claude-sdk",
-        channelId: "chan-1",
         contextId: "ctx-1",
         harnessId: "my-custom-id",
       });
@@ -208,7 +204,7 @@ describe("handleHarnessApiRequest", () => {
       expect(body.harnessId).toBe("my-custom-id");
     });
 
-    it("with initialTurn dispatches recordTurnStart and calls bridge.startTurn", async () => {
+    it("with initialInput fires startTurn via bridge", async () => {
       const mockBridgeCall = vi.fn().mockResolvedValue(undefined);
       deps = createMockDeps({
         harnessManager: {
@@ -218,19 +214,13 @@ describe("handleHarnessApiRequest", () => {
         } as unknown as HarnessApiDeps["harnessManager"],
       });
 
-      const initialTurn = {
-        input: { content: "Hello!", senderId: "user-1" },
-        triggerMessageId: "msg-1",
-        triggerPubsubId: 42,
-      };
+      const initialInput = { content: "Hello!", senderId: "user-1" };
 
       const req = mockRequest("POST", "/harness/spawn", {
         doRef: testDoRef,
         type: "claude-sdk",
-        channelId: "chan-1",
         contextId: "ctx-1",
-        senderParticipantId: "participant-1",
-        initialTurn,
+        initialInput,
       });
       const res = mockResponse();
 
@@ -238,29 +228,25 @@ describe("handleHarnessApiRequest", () => {
 
       expect(res.statusCode).toBe(200);
 
-      // Should dispatch recordTurnStart to the DO
-      expect(deps.doDispatch.dispatch).toHaveBeenCalledWith(
+      // Should NOT dispatch recordTurnStart (DO does this locally now)
+      expect(deps.doDispatch.dispatch).not.toHaveBeenCalledWith(
         testDoRef, "recordTurnStart",
-        expect.any(String),  // harnessId
-        "chan-1",
-        initialTurn.input,
-        "msg-1",
-        42,
-        "participant-1",
+        expect.anything(), expect.anything(), expect.anything(),
+        expect.anything(), expect.anything(), expect.anything(),
       );
 
       // Should call bridge.startTurn (fire-and-forget)
       expect(mockBridgeCall).toHaveBeenCalledWith(
         expect.any(String),  // harnessId
         "startTurn",
-        initialTurn.input,
+        initialInput,
       );
     });
 
     it("returns 400 when required fields are missing", async () => {
       const req = mockRequest("POST", "/harness/spawn", {
         doRef: testDoRef,
-        // missing type, channelId, contextId
+        // missing type, contextId
       });
       const res = mockResponse();
 
@@ -268,7 +254,7 @@ describe("handleHarnessApiRequest", () => {
 
       expect(res.statusCode).toBe(400);
       expect(parseBody(res)).toEqual({
-        error: "Missing required fields: doRef, type, channelId, contextId",
+        error: "Missing required fields: doRef, type, contextId",
       });
     });
 
@@ -284,7 +270,6 @@ describe("handleHarnessApiRequest", () => {
       const req = mockRequest("POST", "/harness/spawn", {
         doRef: testDoRef,
         type: "claude-sdk",
-        channelId: "chan-1",
         contextId: "ctx-1",
       });
       const res = mockResponse();
