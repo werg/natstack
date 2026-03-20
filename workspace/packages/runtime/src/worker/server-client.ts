@@ -14,7 +14,6 @@ export interface SpawnOpts {
   doRef: DORef;
   harnessId: string;
   type: string;
-  channelId: string;
   contextId: string;
   config?: HarnessConfig;
   senderParticipantId?: string;
@@ -47,16 +46,8 @@ export class ServerDOClient extends HttpClient {
     await this.post(`/harness/${enc(harnessId)}/stop`, {});
   }
 
-  async forkChannel(
-    doRef: DORef,
-    sourceChannel: string,
-    forkPointId: number,
-  ): Promise<{ forkedChannelId: string }> {
-    return this.post("/harness/fork-channel", {
-      doRef,
-      sourceChannel,
-      forkPointId,
-    }) as Promise<{ forkedChannelId: string }>;
+  async cloneDO(ref: DORef, newObjectKey: string): Promise<DORef> {
+    return this.post("/do/clone", { ref, newObjectKey }) as Promise<DORef>;
   }
 }
 

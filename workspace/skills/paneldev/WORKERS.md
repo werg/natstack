@@ -226,7 +226,6 @@ export class MyWorker extends AgentWorkerBase {
 |------|---------|---------|
 | `handleCallResult(type, context, channelId, result, isError)` | no-op | Handle async method-call results (used for approval/tool-call flow) |
 | `onMethodCall(channelId, callId, methodName, args)` | returns error | Handle incoming method calls from other participants |
-| `onChannelForked(sourceChannel, forkedChannelId, forkPointId)` | no-op | Called when a channel fork completes |
 
 ### Tool Approval via Continuations
 

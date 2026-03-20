@@ -9,7 +9,7 @@
  */
 
 /// <reference path="../workerd.d.ts" />
-import { DurableObjectBase, type DurableObjectContext, validateToken } from "@workspace/runtime/worker";
+import { DurableObjectBase, type DurableObjectContext, type DORef, validateToken, ServerDOClient } from "@workspace/runtime/worker";
 import type { ChannelEvent } from "@natstack/harness/types";
 import type {
   SendOpts,
@@ -998,10 +998,40 @@ export class PubSubChannel extends DurableObjectBase {
   // ── Fork support ────────────────────────────────────────────────────────
 
   /**
+   * Fork this channel at a given message ID.
+   * Clones SQLite via the server, then tells the clone to trim.
+   */
+  async fork(forkPointId: number): Promise<{ forkedChannelId: string }> {
+    const serverUrl = this.env["SERVER_URL"] as string;
+    const authToken = this.env["RPC_AUTH_TOKEN"] as string;
+    const server = new ServerDOClient(serverUrl, authToken);
+
+    const forkedChannelId = `fork:${this.objectKey}:${crypto.randomUUID().slice(0, 8)}`;
+    const myRef: DORef = {
+      source: "workers/pubsub-channel",
+      className: "PubSubChannel",
+      objectKey: this.objectKey,
+    };
+
+    await server.cloneDO(myRef, forkedChannelId);
+    await this.postToDO(
+      "workers/pubsub-channel", "PubSubChannel", forkedChannelId,
+      "postClone", this.objectKey, forkPointId,
+    );
+
+    return { forkedChannelId };
+  }
+
+  /**
    * Called after cloneDO() copies the parent's SQLite.
    * Trims post-fork messages, clears roster and pending calls.
    */
   async postClone(parentChannelId: string, forkPointId: number): Promise<void> {
+    // Fix identity: cloneDO copies parent's __objectKey; overwrite with our actual key
+    this.sql.exec(
+      `INSERT OR REPLACE INTO state (key, value) VALUES ('__objectKey', ?)`,
+      this.objectKey,
+    );
     this.setStateValue("forkedFrom", parentChannelId);
     this.setStateValue("forkPointId", String(forkPointId));
     // Delete messages after fork point

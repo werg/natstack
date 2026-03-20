@@ -12,7 +12,6 @@ export interface SpawnOpts {
     doRef: DORef;
     harnessId: string;
     type: string;
-    channelId: string;
     contextId: string;
     config?: HarnessConfig;
     senderParticipantId?: string;
@@ -37,8 +36,6 @@ export declare class ServerDOClient extends HttpClient {
     }>;
     sendHarnessCommand(harnessId: string, command: HarnessCommand): Promise<void>;
     stopHarness(harnessId: string): Promise<void>;
-    forkChannel(doRef: DORef, sourceChannel: string, forkPointId: number): Promise<{
-        forkedChannelId: string;
-    }>;
+    cloneDO(ref: DORef, newObjectKey: string): Promise<DORef>;
 }
 //# sourceMappingURL=server-client.d.ts.map

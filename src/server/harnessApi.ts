@@ -9,7 +9,7 @@
  * - POST /harness/spawn — spawn a new harness process
  * - POST /harness/{id}/command — send a command to a running harness
  * - POST /harness/{id}/stop — stop a harness process
- * - POST /harness/fork-channel — create a forked channel
+ * - POST /do/clone — clone a DO's SQLite (self-class only)
  */
 
 import { randomUUID } from "crypto";
@@ -49,7 +49,7 @@ export async function handleHarnessApiRequest(
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
   const pathname = url.pathname;
 
-  if (!pathname.startsWith("/harness") && pathname !== "/validate-token") return false;
+  if (!pathname.startsWith("/harness") && !pathname.startsWith("/do/") && pathname !== "/validate-token") return false;
 
   // Auth check
   const authHeader = req.headers["authorization"];
@@ -85,9 +85,9 @@ export async function handleHarnessApiRequest(
       return true;
     }
 
-    // POST /harness/fork-channel
-    if (pathname === "/harness/fork-channel" && req.method === "POST") {
-      await handleForkChannel(body, deps, res);
+    // POST /do/clone
+    if (pathname === "/do/clone" && req.method === "POST") {
+      await handleCloneDO(body, auth, deps, res);
       return true;
     }
 
@@ -171,7 +171,6 @@ async function handleSpawn(
       id: harnessId,
       type,
       workerId: `${doRef.source}:${doRef.className}:${doRef.objectKey}`,
-      channel: channelId,
       contextId,
       contextFolderPath,
       extraEnv: { ...extraEnv, ...configEnv },
@@ -266,36 +265,29 @@ function handleStatus(
   }
 }
 
-async function handleForkChannel(
+async function handleCloneDO(
   body: Record<string, unknown>,
+  auth: TokenValidationResult,
   deps: HarnessApiDeps,
   res: ServerResponse,
 ): Promise<void> {
-  const doRef = body["doRef"] as DORef;
-  const sourceChannel = body["sourceChannel"] as string;
-  const forkPointId = body["forkPointId"] as number;
+  const ref = body["ref"] as DORef | undefined;
+  const newObjectKey = body["newObjectKey"] as string | undefined;
 
-  if (!doRef || !sourceChannel || forkPointId == null) {
-    sendJson(res, 400, { error: "Missing required fields" });
+  if (!ref?.source || !ref?.className || !ref?.objectKey || !newObjectKey) {
+    sendJson(res, 400, { error: "Missing required fields: ref (source, className, objectKey), newObjectKey" });
     return;
   }
 
-  const forkedChannelId = `fork:${sourceChannel}:${randomUUID().slice(0, 8)}`;
-  const channelRef = { source: "workers/pubsub-channel", className: "PubSubChannel", objectKey: sourceChannel };
+  // Self-clone restriction: caller can only clone instances of its own class
+  const expectedCallerId = `do-service:${ref.source}:${ref.className}`;
+  if (auth.callerId !== expectedCallerId) {
+    sendJson(res, 403, { error: "Can only clone instances of your own class" });
+    return;
+  }
 
-  // Clone parent channel's SQLite → new DO starts with all parent state
-  await deps.workerdManager.cloneDO(channelRef, forkedChannelId);
-
-  // Tell the forked DO to trim post-fork messages and clear roster
-  await deps.doDispatch.dispatch(
-    { ...channelRef, objectKey: forkedChannelId },
-    "postClone", sourceChannel, forkPointId,
-  );
-
-  // Notify the agent DO
-  await deps.doDispatch.dispatch(doRef, "onChannelForked", sourceChannel, forkedChannelId, forkPointId);
-
-  sendJson(res, 200, { forkedChannelId });
+  const newRef = await deps.workerdManager.cloneDO(ref, newObjectKey);
+  sendJson(res, 200, newRef);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

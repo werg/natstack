@@ -37,7 +37,6 @@ interface HarnessEnv {
   rpcAuthToken: string;
   harnessId: string;
   harnessType: string;
-  channelId: string;
   contextId: string;
   contextFolderPath?: string;
   resumeSessionId?: string;
@@ -48,16 +47,14 @@ function readEnv(): HarnessEnv {
   const rpcAuthToken = process.env["RPC_AUTH_TOKEN"];
   const harnessId = process.env["HARNESS_ID"];
   const harnessType = process.env["HARNESS_TYPE"];
-  const channelId = process.env["CHANNEL_ID"];
   const contextId = process.env["CONTEXT_ID"];
 
-  if (!rpcWsUrl || !rpcAuthToken || !harnessId || !harnessType || !channelId || !contextId) {
+  if (!rpcWsUrl || !rpcAuthToken || !harnessId || !harnessType || !contextId) {
     const missing = [
       !rpcWsUrl && "RPC_WS_URL",
       !rpcAuthToken && "RPC_AUTH_TOKEN",
       !harnessId && "HARNESS_ID",
       !harnessType && "HARNESS_TYPE",
-      !channelId && "CHANNEL_ID",
       !contextId && "CONTEXT_ID",
     ]
       .filter(Boolean)
@@ -70,7 +67,6 @@ function readEnv(): HarnessEnv {
     rpcAuthToken,
     harnessId,
     harnessType,
-    channelId,
     contextId,
     contextFolderPath: process.env["CONTEXT_FOLDER_PATH"] || undefined,
     resumeSessionId: process.env["RESUME_SESSION_ID"] || undefined,

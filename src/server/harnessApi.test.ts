@@ -174,7 +174,6 @@ describe("handleHarnessApiRequest", () => {
       expect(deps.harnessManager.spawn).toHaveBeenCalledWith(
         expect.objectContaining({
           type: "claude-sdk",
-          channel: "chan-1",
           contextId: "ctx-1",
         }),
       );
@@ -460,67 +459,81 @@ describe("handleHarnessApiRequest", () => {
     });
   });
 
-  // ── POST /harness/fork-channel ──────────────────────────────────────────────
+  // ── POST /do/clone ─────────────────────────────────────────────────────────
 
-  describe("POST /harness/fork-channel", () => {
-    it("creates a forked channel and notifies the DO", async () => {
-      const mockCreateChannel = vi.fn();
-      const mockCloneDO = vi.fn().mockResolvedValue({
-        source: "workers/pubsub-channel",
-        className: "PubSubChannel",
-        objectKey: "forked",
-      });
+  describe("POST /do/clone", () => {
+    const channelRef = {
+      source: "workers/pubsub-channel",
+      className: "PubSubChannel",
+      objectKey: "chan-original",
+    };
+
+    it("clones a DO and returns the new ref", async () => {
+      const clonedRef = { ...channelRef, objectKey: "chan-clone" };
+      const mockCloneDO = vi.fn().mockResolvedValue(clonedRef);
       deps = createMockDeps({
         workerdManager: {
           cloneDO: mockCloneDO,
         } as unknown as HarnessApiDeps["workerdManager"],
+        validateToken: vi.fn().mockReturnValue({
+          valid: true,
+          callerId: "do-service:workers/pubsub-channel:PubSubChannel",
+          callerKind: "worker",
+        }),
       });
 
-      const req = mockRequest("POST", "/harness/fork-channel", {
-        doRef: testDoRef,
-        sourceChannel: "chan-original",
-        forkPointId: 55,
+      const req = mockRequest("POST", "/do/clone", {
+        ref: channelRef,
+        newObjectKey: "chan-clone",
       });
       const res = mockResponse();
 
       await handleHarnessApiRequest(req, res, deps);
 
       expect(res.statusCode).toBe(200);
-      const body = parseBody(res) as { forkedChannelId: string };
-      expect(body.forkedChannelId).toMatch(/^fork:chan-original:/);
+      expect(parseBody(res)).toEqual(clonedRef);
+      expect(mockCloneDO).toHaveBeenCalledWith(channelRef, "chan-clone");
+    });
 
-      // Should have cloned the channel DO
-      expect(mockCloneDO).toHaveBeenCalledWith(
-        { source: "workers/pubsub-channel", className: "PubSubChannel", objectKey: "chan-original" },
-        body.forkedChannelId,
-      );
+    it("returns 403 when caller does not match ref class", async () => {
+      deps = createMockDeps({
+        validateToken: vi.fn().mockReturnValue({
+          valid: true,
+          callerId: "do-service:workers/other:OtherDO",
+          callerKind: "worker",
+        }),
+      });
 
-      // Should have called postClone on the forked DO
-      expect(deps.doDispatch.dispatch).toHaveBeenCalledWith(
-        { source: "workers/pubsub-channel", className: "PubSubChannel", objectKey: body.forkedChannelId },
-        "postClone", "chan-original", 55,
-      );
+      const req = mockRequest("POST", "/do/clone", {
+        ref: channelRef,
+        newObjectKey: "chan-clone",
+      });
+      const res = mockResponse();
 
-      // Should have notified the agent DO
-      expect(deps.doDispatch.dispatch).toHaveBeenCalledWith(
-        testDoRef, "onChannelForked",
-        "chan-original",
-        body.forkedChannelId,
-        55,
-      );
+      await handleHarnessApiRequest(req, res, deps);
+
+      expect(res.statusCode).toBe(403);
+      expect(parseBody(res)).toEqual({ error: "Can only clone instances of your own class" });
     });
 
     it("returns 400 when required fields are missing", async () => {
-      const req = mockRequest("POST", "/harness/fork-channel", {
-        doRef: testDoRef,
-        // missing sourceChannel and forkPointId
+      deps = createMockDeps({
+        validateToken: vi.fn().mockReturnValue({
+          valid: true,
+          callerId: "do-service:workers/pubsub-channel:PubSubChannel",
+          callerKind: "worker",
+        }),
+      });
+
+      const req = mockRequest("POST", "/do/clone", {
+        ref: { source: "workers/pubsub-channel" },
+        // missing className, objectKey, newObjectKey
       });
       const res = mockResponse();
 
       await handleHarnessApiRequest(req, res, deps);
 
       expect(res.statusCode).toBe(400);
-      expect(parseBody(res)).toEqual({ error: "Missing required fields" });
     });
   });
 });

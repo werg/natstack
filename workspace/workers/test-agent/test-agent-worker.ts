@@ -50,7 +50,6 @@ export class TestAgentWorker extends AgentWorkerBase {
         doRef: this.doRef,
         harnessId: `harness-${crypto.randomUUID()}`,
         type: this.getHarnessType(),
-        channelId,
         contextId,
         config: this.getHarnessConfig(),
         initialTurn: {

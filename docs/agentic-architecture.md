@@ -46,7 +46,7 @@ HTTP endpoints called by DOs directly via fetch():
 - `POST /harness/spawn` — spawn a new harness process
 - `POST /harness/{id}/command` — send a command to a running harness
 - `POST /harness/{id}/stop` — stop a harness process
-- `POST /harness/fork-channel` — create a forked channel
+- `POST /do/clone` — clone a DO's SQLite (self-class only)
 - `POST /validate-token` — validate a caller token, returns identity
 
 ### DODispatch (`src/server/doDispatch.ts`)
@@ -98,7 +98,6 @@ Location: `workspace/packages/agentic-do/src/agent-worker-base.ts`
 |------|---------|
 | `handleCallResult()` | Process method-call results (approval flow) |
 | `onMethodCall()` | Handle incoming method calls |
-| `onChannelForked()` | React to channel forks |
 | `alarm()` | Handle timer callbacks (inherited from DurableObjectBase) |
 
 ## Flows

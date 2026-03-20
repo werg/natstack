@@ -25,7 +25,6 @@ export interface HarnessProcess {
   id: string;
   type: string;           // e.g. 'claude-sdk', 'pi'
   workerId: string;       // DO identifier (source:className:objectKey)
-  channel: string;        // primary channel
   doRef?: DORef;          // source-scoped DO identity
   pid?: number;           // OS process ID
   status: "starting" | "running" | "stopped";
@@ -54,7 +53,6 @@ export interface SpawnOptions {
   id: string;
   type: string;              // e.g. 'claude-sdk', 'pi'
   workerId: string;          // DO identifier
-  channel: string;
   contextId: string;
   contextFolderPath?: string;
   resumeSessionId?: string;
@@ -89,7 +87,6 @@ export class HarnessManager {
       id,
       type,
       workerId,
-      channel,
       contextId,
       contextFolderPath,
       resumeSessionId,
@@ -112,7 +109,6 @@ export class HarnessManager {
       RPC_AUTH_TOKEN: token,
       HARNESS_ID: id,
       HARNESS_TYPE: type,
-      CHANNEL_ID: channel,
       CONTEXT_ID: contextId,
       ...(contextFolderPath ? { CONTEXT_FOLDER_PATH: contextFolderPath } : {}),
       ...(resumeSessionId ? { RESUME_SESSION_ID: resumeSessionId } : {}),
@@ -127,7 +123,7 @@ export class HarnessManager {
     }
 
     // Record the process entry
-    const proc: HarnessProcess = { id, type, workerId, channel, doRef, status: "starting" };
+    const proc: HarnessProcess = { id, type, workerId, doRef, status: "starting" };
     this.processes.set(id, proc);
 
     // Spawn Node.js child process via fork

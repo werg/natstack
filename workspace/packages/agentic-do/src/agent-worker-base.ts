@@ -402,8 +402,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     return { result: { error: 'not implemented' }, isError: true };
   }
 
-  async onChannelForked(_sourceChannel: string, _forkedChannelId: string, _forkPointId: number): Promise<void> {}
-
   // --- Fetch override for agent-specific event handling ---
 
   override async fetch(request: Request): Promise<Response> {

@@ -77,7 +77,6 @@ function defaultSpawnOptions(overrides: Partial<SpawnOptions> = {}): SpawnOption
     id: "harness-1",
     type: "claude-sdk",
     workerId: "MyWorker:key1",
-    channel: "chan-abc",
     contextId: "ctx-123",
     entryPath: "/fake/harness/entry.js",
     ...overrides,
@@ -112,7 +111,6 @@ describe("HarnessManager", () => {
       expect(proc!.id).toBe("harness-1");
       expect(proc!.type).toBe("claude-sdk");
       expect(proc!.workerId).toBe("MyWorker:key1");
-      expect(proc!.channel).toBe("chan-abc");
       expect(proc!.status).toBe("starting");
       expect(proc!.pid).toBe(12345);
     });

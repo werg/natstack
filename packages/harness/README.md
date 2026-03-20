@@ -84,7 +84,6 @@ Actions returned by worker DOs for the server to execute. Grouped by target:
 | `respawn-harness` | Restart a crashed harness, optionally resuming a session or retrying a turn |
 | `spawn-subagent` | Spawn a subagent for a specific tool use |
 | `cleanup-subagent` | Clean up a subagent after completion or failure |
-| `fork-channel` | Fork a channel at a specific message ID |
 | `set-alarm` | Schedule a delayed callback to the worker DO |
 
 ## Supporting Types
