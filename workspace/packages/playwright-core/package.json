@@ -15,10 +15,6 @@
   "files": [
     "dist"
   ],
-  "scripts": {
-    "build": "node build.mjs",
-    "dev": "tsc --project tsconfig.build.json --watch"
-  },
   "dependencies": {
     "@types/ws": "^8.5.3",
     "@types/xml2js": "^0.4.9",

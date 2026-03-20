@@ -4,10 +4,7 @@
     "module": "ESNext",
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "outDir": "./dist",
+    "noEmit": true,
     "rootDir": ".",
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -24,9 +21,22 @@
     "types": ["node", "vitest/globals"],
     "baseUrl": ".",
     "paths": {
-      "modern-monaco/editor-core": ["workspace/packages/git-ui/node_modules/modern-monaco/types/monaco.d.ts"]
+      "@natstack/ai": ["packages/ai/src/index.ts"],
+      "@natstack/browser-data": ["packages/browser-data/src/index.ts"],
+      "@natstack/dev-log": ["packages/dev-log/src/index.ts"],
+      "@natstack/env-paths": ["packages/env-paths/src/index.ts"],
+      "@natstack/git": ["packages/git/src/index.ts"],
+      "@natstack/git-server": ["packages/git-server/src/index.ts"],
+      "@natstack/harness": ["packages/harness/src/index.ts"],
+      "@natstack/harness/entry": ["packages/harness/src/entry.ts"],
+      "@natstack/harness/types": ["packages/harness/src/types.ts"],
+      "@natstack/port-utils": ["packages/port-utils/src/index.ts"],
+      "@natstack/process-adapter": ["packages/process-adapter/src/index.ts"],
+      "@natstack/rpc": ["packages/rpc/src/index.ts"],
+      "@natstack/typecheck": ["packages/typecheck/src/index.ts"],
+      "@natstack/types": ["packages/types/src/index.ts"]
     }
   },
-  "include": ["src/**/*", "packages/**/*", "workspace/**/*"],
-  "exclude": ["node_modules", "dist", "**/dist", "workspace/packages/playwright-*"]
+  "include": ["src/**/*", "packages/**/*"],
+  "exclude": ["node_modules", "dist", "**/dist"]
 }

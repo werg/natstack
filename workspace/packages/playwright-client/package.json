@@ -15,10 +15,6 @@
   "files": [
     "dist"
   ],
-  "scripts": {
-    "build": "tsc --project tsconfig.build.json",
-    "dev": "tsc --project tsconfig.build.json --watch"
-  },
   "dependencies": {
     "@workspace/playwright-core": "workspace:*"
   }

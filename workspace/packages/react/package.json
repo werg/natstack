@@ -13,10 +13,6 @@
   "files": [
     "dist"
   ],
-  "scripts": {
-    "build": "node build.mjs",
-    "dev": "tsc --project tsconfig.build.json --watch"
-  },
   "dependencies": {
     "@natstack/types": "workspace:*",
     "@workspace/core": "workspace:*",

@@ -31,7 +31,7 @@
     "lint": "eslint src",
     "format": "prettier --write 'src/**/*.{ts,tsx,css,html,json}'",
     "format:check": "prettier --check 'src/**/*.{ts,tsx,css,html,json}'",
-    "type-check": "pnpm --filter '@natstack/*' build && pnpm --filter '@workspace/*' --filter '!@workspace/playwright-*' build && tsc --noEmit",
+    "type-check": "tsc --noEmit && tsc --project tsconfig.workspace.json",
     "type-check:watch": "tsc --noEmit --watch --preserveWatchOutput",
     "pretest": "npm rebuild better-sqlite3",
     "test": "vitest run",

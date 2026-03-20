@@ -21,10 +21,6 @@
   "files": [
     "dist"
   ],
-  "scripts": {
-    "build": "node build.mjs",
-    "dev": "tsc --project tsconfig.build.json --watch"
-  },
   "dependencies": {
     "@natstack/git": "workspace:*",
     "@workspace/runtime": "workspace:*",
