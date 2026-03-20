@@ -28,12 +28,14 @@
       "@radix-ui/react-icons",
       "isomorphic-git",
       "@workspace/runtime",
-      "@workspace/panel-browser"
+      "@workspace/panel-browser",
+      "@workspace/playwright-client"
     ]
   },
   "dependencies": {
     "@workspace/runtime": "workspace:*",
     "@workspace/panel-browser": "workspace:*",
+    "@workspace/playwright-client": "workspace:*",
     "@workspace/react": "workspace:*",
     "@workspace/agentic-chat": "workspace:*",
     "@workspace/eval": "workspace:*",
