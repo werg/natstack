@@ -1,67 +1,52 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { createTestDO } from "@workspace/runtime/worker/test-utils";
 import { PubSubChannel } from "./channel-do.js";
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function mockFetch(responses: Array<{ ok: boolean; status?: number; json?: unknown }>) {
-  let callIndex = 0;
-  return vi.fn(async () => {
-    const resp = responses[callIndex++] ?? { ok: false, status: 500 };
-    return {
-      ok: resp.ok,
-      status: resp.status ?? (resp.ok ? 200 : 500),
-      headers: { get: (h: string) => h === "content-type" ? "application/json" : null },
-      json: async () => resp.json,
-      text: async () => JSON.stringify(resp.json ?? {}),
-    };
-  });
-}
-
 describe("PubSubChannel", () => {
-  describe("fork()", () => {
-    it("calls cloneDO then postClone on the forked channel", async () => {
-      const clonedRef = {
-        source: "workers/pubsub-channel",
-        className: "PubSubChannel",
-        objectKey: "fork:test-channel:abcd1234",
-      };
+  describe("getParticipants()", () => {
+    it("returns DO identity when present", async () => {
+      const { instance, sql } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
 
-      // Two fetch calls: 1) POST /do/clone, 2) postToDO to forked channel
-      const fetchMock = mockFetch([
-        { ok: true, json: clonedRef },  // cloneDO response
-        { ok: true, json: null },        // postToDO postClone response
-      ]);
-      vi.stubGlobal("fetch", fetchMock);
+      sql.exec(
+        `INSERT INTO participants (id, metadata, transport, connected_at, do_source, do_class, do_key)
+         VALUES ('p1', '{"name":"Agent"}', 'do', 1000, 'workers/agent', 'AgentDO', 'key-1')`,
+      );
+      sql.exec(
+        `INSERT INTO participants (id, metadata, transport, connected_at)
+         VALUES ('p2', '{"callerKind":"panel"}', 'ws', 2000)`,
+      );
 
+      const participants = await instance.getParticipants();
+      expect(participants).toHaveLength(2);
+
+      const doParticipant = participants.find(p => p.participantId === "p1")!;
+      expect(doParticipant.transport).toBe("do");
+      expect(doParticipant.doRef).toEqual({ source: "workers/agent", className: "AgentDO", objectKey: "key-1" });
+
+      const wsParticipant = participants.find(p => p.participantId === "p2")!;
+      expect(wsParticipant.transport).toBe("ws");
+      expect(wsParticipant.doRef).toBeUndefined();
+    });
+  });
+
+  describe("getContextId()", () => {
+    it("returns contextId when set", async () => {
+      const { instance, sql } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+
+      sql.exec(`INSERT OR REPLACE INTO state (key, value) VALUES ('contextId', 'ctx-123')`);
+      expect(await instance.getContextId()).toBe("ctx-123");
+    });
+
+    it("returns null when not set", async () => {
       const { instance } = await createTestDO(PubSubChannel, {
         __objectKey: "test-channel",
-        WORKERD_URL: "http://workerd.test",
       });
 
-      const result = await instance.fork(42);
-
-      expect(result.forkedChannelId).toMatch(/^fork:test-channel:/);
-
-      // First call: POST /do/clone to server
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-      const calls = fetchMock.mock.calls as unknown as Array<[string, { body: string }]>;
-      expect(calls[0]![0]).toBe("http://test-server.invalid/do/clone");
-      const cloneBody = JSON.parse(calls[0]![1].body);
-      expect(cloneBody.ref).toEqual({
-        source: "workers/pubsub-channel",
-        className: "PubSubChannel",
-        objectKey: "test-channel",
-      });
-      expect(cloneBody.newObjectKey).toBe(result.forkedChannelId);
-
-      // Second call: postToDO to the forked channel
-      expect(calls[1]![0]).toContain("/_w/workers/pubsub-channel/PubSubChannel/");
-      expect(calls[1]![0]).toContain("/postClone");
-      const postCloneBody = JSON.parse(calls[1]![1].body);
-      expect(postCloneBody).toEqual(["test-channel", 42]);
-
-      vi.unstubAllGlobals();
+      expect(await instance.getContextId()).toBeNull();
     });
   });
 

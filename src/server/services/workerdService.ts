@@ -2,7 +2,7 @@
  * workerd RPC service — manages worker instances via WorkerdManager.
  *
  * Methods: createInstance, destroyInstance, updateInstance, listInstances,
- * getInstanceStatus, listSources, getPort, restartAll.
+ * getInstanceStatus, listSources, getPort, restartAll, cloneDO, destroyDO.
  */
 
 import { z } from "zod";
@@ -26,6 +26,12 @@ const createOptionsSchema = z.object({
   ref: z.string().optional(),
 });
 
+const doRefSchema = z.object({
+  source: z.string(),
+  className: z.string(),
+  objectKey: z.string(),
+});
+
 export function createWorkerdService(deps: {
   workerdManager: WorkerdManager;
   buildSystem: BuildSystemV2;
@@ -43,6 +49,14 @@ export function createWorkerdService(deps: {
       listSources: { args: z.tuple([]) },
       getPort: { args: z.tuple([]) },
       restartAll: { args: z.tuple([]) },
+      cloneDO: {
+        description: "Clone a DO's SQLite storage to a new object key",
+        args: z.tuple([doRefSchema, z.string()]),
+      },
+      destroyDO: {
+        description: "Destroy a DO's SQLite storage",
+        args: z.tuple([doRefSchema]),
+      },
     },
     handler: async (_ctx, method, args) => {
       const wm = deps.workerdManager;
@@ -77,6 +91,11 @@ export function createWorkerdService(deps: {
           return wm.getPort();
         case "restartAll":
           return wm.restartAll();
+        case "cloneDO":
+          return wm.cloneDO(args[0] as any, args[1] as string);
+        case "destroyDO":
+          await wm.destroyDO(args[0] as any);
+          return { ok: true };
         default:
           throw new Error(`Unknown workerd method: ${method}`);
       }

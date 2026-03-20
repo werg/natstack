@@ -9,6 +9,7 @@ dist
 out
 **/.natstack
 packages/*/dist
+workspace/packages/*/dist
 *.tsbuildinfo
 packages/*/**/*.map
 

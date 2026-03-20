@@ -9,7 +9,7 @@
  */
 
 /// <reference path="../workerd.d.ts" />
-import { DurableObjectBase, type DurableObjectContext, type DORef, validateToken, ServerDOClient } from "@workspace/runtime/worker";
+import { DurableObjectBase, type DurableObjectContext, type DORef, validateToken } from "@workspace/runtime/worker";
 import type { ChannelEvent } from "@natstack/harness/types";
 import type {
   SendOpts,
@@ -812,16 +812,43 @@ export class PubSubChannel extends DurableObjectBase {
   }
 
   /**
-   * Get all participants.
+   * Get all participants with DO identity when available.
    */
-  async getParticipants(): Promise<Array<{ participantId: string; metadata: Record<string, unknown> }>> {
+  async getParticipants(): Promise<Array<{
+    participantId: string;
+    metadata: Record<string, unknown>;
+    transport: string;
+    doRef?: { source: string; className: string; objectKey: string };
+  }>> {
     const rows = this.sql.exec(
-      `SELECT id, metadata FROM participants`,
+      `SELECT id, metadata, transport, do_source, do_class, do_key FROM participants`,
     ).toArray();
-    return rows.map(row => ({
-      participantId: row["id"] as string,
-      metadata: JSON.parse(row["metadata"] as string),
-    }));
+    return rows.map(row => {
+      const entry: {
+        participantId: string;
+        metadata: Record<string, unknown>;
+        transport: string;
+        doRef?: { source: string; className: string; objectKey: string };
+      } = {
+        participantId: row["id"] as string,
+        metadata: JSON.parse(row["metadata"] as string),
+        transport: row["transport"] as string,
+      };
+      const doSource = row["do_source"] as string | null;
+      const doClass = row["do_class"] as string | null;
+      const doKey = row["do_key"] as string | null;
+      if (doSource && doClass && doKey) {
+        entry.doRef = { source: doSource, className: doClass, objectKey: doKey };
+      }
+      return entry;
+    });
+  }
+
+  /**
+   * Get the channel's contextId (set during initChannel).
+   */
+  async getContextId(): Promise<string | null> {
+    return this.getStateValue("contextId");
   }
 
   /**
@@ -996,31 +1023,6 @@ export class PubSubChannel extends DurableObjectBase {
   }
 
   // ── Fork support ────────────────────────────────────────────────────────
-
-  /**
-   * Fork this channel at a given message ID.
-   * Clones SQLite via the server, then tells the clone to trim.
-   */
-  async fork(forkPointId: number): Promise<{ forkedChannelId: string }> {
-    const serverUrl = this.env["SERVER_URL"] as string;
-    const authToken = this.env["RPC_AUTH_TOKEN"] as string;
-    const server = new ServerDOClient(serverUrl, authToken);
-
-    const forkedChannelId = `fork:${this.objectKey}:${crypto.randomUUID().slice(0, 8)}`;
-    const myRef: DORef = {
-      source: "workers/pubsub-channel",
-      className: "PubSubChannel",
-      objectKey: this.objectKey,
-    };
-
-    await server.cloneDO(myRef, forkedChannelId);
-    await this.postToDO(
-      "workers/pubsub-channel", "PubSubChannel", forkedChannelId,
-      "postClone", this.objectKey, forkPointId,
-    );
-
-    return { forkedChannelId };
-  }
 
   /**
    * Called after cloneDO() copies the parent's SQLite.

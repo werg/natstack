@@ -152,6 +152,8 @@ const channel = this.createChannelClient(channelId);
 | `.spawnHarness(opts)` | Spawn a new harness process |
 | `.sendHarnessCommand(harnessId, command)` | Send command to harness |
 | `.stopHarness(harnessId)` | Stop a harness process |
+| `.cloneDO(ref, newObjectKey)` | Clone a DO's SQLite storage |
+| `.destroyDO(ref)` | Destroy a DO's SQLite storage |
 
 ## 4. StreamWriter
 
@@ -234,6 +236,7 @@ The base class creates 8 tables on initialization:
 | `getCheckpoint(channelId, harnessId)` | Get checkpoint |
 | `recordTurn(harnessId, messageId, triggerPubsubId, sessionId)` | Record completed turn |
 | `getResumeSessionId(harnessId)` | Get session ID for conversation resume |
+| `getResumeSessionIdForChannel(channelId)` | Get resume session (prefers forkSessionId if set) |
 | `getAlignment(harnessId)` | Get alignment state |
 | `registerHarness(harnessId, type)` | Register a new harness |
 | `reactivateHarness(harnessId)` | Reactivate a harness |
@@ -366,7 +369,74 @@ When a harness sends an `error` event:
 6. `reactivateHarness()` + `recordTurnStart()` locally
 7. Respawns via `this.server.spawnHarness()` with `initialInput`
 
-## 11. Custom Worker Example: CodeReviewWorker
+## 11. Fork Support
+
+AgentWorkerBase has built-in support for semantic conversation forking — cloning an agent DO at a specific point in the conversation history so the fork can resume independently.
+
+### Preflight: `canFork()`
+
+Called by the fork orchestrator before cloning. Returns `{ ok, subscriptionCount }`. The orchestrator rejects multi-channel agents (>1 sub) and replacement DOs with existing subscriptions (>0 subs).
+
+### Post-clone: `postClone(parentObjectKey, newChannelId, oldChannelId, forkPointPubsubId)`
+
+Called on the **newly cloned** DO after `cloneDO()` copies the parent's SQLite. Performs:
+
+1. Fixes `__objectKey` and restores identity
+2. Records fork metadata in state KV (`forkedFrom`, `forkPointPubsubId`, `forkSourceChannel`)
+3. Resolves the fork session ID from `turn_map` (most recent session at or before fork point) → `forkSessionId`
+4. Marks all harnesses as `stopped`
+5. Clears ephemeral tables (`active_turns`, `in_flight_turns`, `pending_calls`, `checkpoints`)
+6. Renames `approvalLevel:{oldChannel}` → `approvalLevel:{newChannel}`
+7. Deletes old subscription and resubscribes to the forked channel
+8. Calls `onPostClone()` subclass hook
+
+### Resume after fork
+
+`getResumeSessionIdForChannel()` returns the stored `forkSessionId` on every call until the first turn succeeds (consumed in `recordTurn()`). This is passed as `RESUME_SESSION_ID` to the harness, which tells the Claude SDK to fork at that session point. Survives spawn retries.
+
+### Subclass hook: `onPostClone()`
+
+Override for custom cleanup after fork. Called at the end of `postClone()`:
+
+```typescript
+protected async onPostClone(
+  parentObjectKey: string,
+  newChannelId: string,
+  oldChannelId: string,
+  forkPointPubsubId: number,
+): Promise<void> {
+  // Custom cleanup, e.g., reset counters, clear caches
+}
+```
+
+### Fork Worker (`workspace/workers/fork/`)
+
+The fork worker is a stateless fetch handler that orchestrates the full fork sequence. It uses platform primitives via RPC:
+
+- `runtime.callMain("workerd.cloneDO", ref, newKey)` — clone a DO's SQLite
+- `runtime.callMain("workerd.destroyDO", ref)` — destroy on rollback
+- `fetch(workerdUrl + "/_w/...")` — call DO methods (same as postToDO)
+
+Trigger via `POST /fork`:
+
+```json
+{
+  "channelId": "chan-1",
+  "forkPointPubsubId": 42,
+  "exclude": ["participantId-to-skip"],
+  "replace": { "participantId": { "source": "workers/agent", "className": "Agent", "objectKey": "new-key" } }
+}
+```
+
+Flow:
+1. Fetches channel roster and contextId
+2. Preflight: `canFork()` on clones (≤1 sub), replacements (0 subs)
+3. Clones channel SQLite + `postClone` (trims messages, clears roster)
+4. Clones each agent DO + `postClone` (rewrites identity, resubscribes)
+5. Subscribes replacement DOs to the forked channel
+6. On failure: best-effort rollback (destroy cloned SQLite, unsubscribe replacements)
+
+## 12. Custom Worker Example: CodeReviewWorker
 
 ```typescript
 import { AgentWorkerBase } from "@workspace/agentic-do";

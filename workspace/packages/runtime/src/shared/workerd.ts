@@ -89,6 +89,13 @@ export interface WorkerSourceInfo {
 // Client
 // ---------------------------------------------------------------------------
 
+/** DO reference for clone/destroy operations. */
+export interface DORefParam {
+  source: string;
+  className: string;
+  objectKey: string;
+}
+
 export interface WorkerdClient {
   /** Create a new worker instance. Limits are mandatory. */
   create(options: WorkerCreateOptions): Promise<WorkerInstanceInfo>;
@@ -106,6 +113,10 @@ export interface WorkerdClient {
   getPort(): Promise<number | null>;
   /** Restart all worker instances. */
   restartAll(): Promise<void>;
+  /** Clone a DO's SQLite storage to a new object key. Returns the new DORef. */
+  cloneDO(ref: DORefParam, newObjectKey: string): Promise<DORefParam>;
+  /** Destroy a DO's SQLite storage (main + WAL/SHM files). */
+  destroyDO(ref: DORefParam): Promise<void>;
 }
 
 export function createWorkerdClient(rpc: Pick<RpcBridge, "call">): WorkerdClient {
@@ -121,5 +132,7 @@ export function createWorkerdClient(rpc: Pick<RpcBridge, "call">): WorkerdClient
     listSources: () => call<WorkerSourceInfo[]>("listSources"),
     getPort: () => call<number | null>("getPort"),
     restartAll: () => call<void>("restartAll"),
+    cloneDO: (ref, newObjectKey) => call<DORefParam>("cloneDO", ref, newObjectKey),
+    destroyDO: (ref) => call<void>("destroyDO", ref),
   };
 }

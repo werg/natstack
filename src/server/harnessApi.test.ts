@@ -77,9 +77,6 @@ function createMockDeps(overrides: Partial<HarnessApiDeps> = {}): HarnessApiDeps
     contextFolderManager: {
       ensureContextFolder: vi.fn().mockResolvedValue("/tmp/test-ctx"),
     } as unknown as HarnessApiDeps["contextFolderManager"],
-    workerdManager: {
-      cloneDO: vi.fn().mockResolvedValue({ source: "workers/pubsub-channel", className: "PubSubChannel", objectKey: "forked" }),
-    } as unknown as HarnessApiDeps["workerdManager"],
     validateToken: vi.fn().mockReturnValue({ valid: true, callerId: "test-caller", callerKind: "worker" }),
     ...overrides,
   };
@@ -444,81 +441,4 @@ describe("handleHarnessApiRequest", () => {
     });
   });
 
-  // ── POST /do/clone ─────────────────────────────────────────────────────────
-
-  describe("POST /do/clone", () => {
-    const channelRef = {
-      source: "workers/pubsub-channel",
-      className: "PubSubChannel",
-      objectKey: "chan-original",
-    };
-
-    it("clones a DO and returns the new ref", async () => {
-      const clonedRef = { ...channelRef, objectKey: "chan-clone" };
-      const mockCloneDO = vi.fn().mockResolvedValue(clonedRef);
-      deps = createMockDeps({
-        workerdManager: {
-          cloneDO: mockCloneDO,
-        } as unknown as HarnessApiDeps["workerdManager"],
-        validateToken: vi.fn().mockReturnValue({
-          valid: true,
-          callerId: "do-service:workers/pubsub-channel:PubSubChannel",
-          callerKind: "worker",
-        }),
-      });
-
-      const req = mockRequest("POST", "/do/clone", {
-        ref: channelRef,
-        newObjectKey: "chan-clone",
-      });
-      const res = mockResponse();
-
-      await handleHarnessApiRequest(req, res, deps);
-
-      expect(res.statusCode).toBe(200);
-      expect(parseBody(res)).toEqual(clonedRef);
-      expect(mockCloneDO).toHaveBeenCalledWith(channelRef, "chan-clone");
-    });
-
-    it("returns 403 when caller does not match ref class", async () => {
-      deps = createMockDeps({
-        validateToken: vi.fn().mockReturnValue({
-          valid: true,
-          callerId: "do-service:workers/other:OtherDO",
-          callerKind: "worker",
-        }),
-      });
-
-      const req = mockRequest("POST", "/do/clone", {
-        ref: channelRef,
-        newObjectKey: "chan-clone",
-      });
-      const res = mockResponse();
-
-      await handleHarnessApiRequest(req, res, deps);
-
-      expect(res.statusCode).toBe(403);
-      expect(parseBody(res)).toEqual({ error: "Can only clone instances of your own class" });
-    });
-
-    it("returns 400 when required fields are missing", async () => {
-      deps = createMockDeps({
-        validateToken: vi.fn().mockReturnValue({
-          valid: true,
-          callerId: "do-service:workers/pubsub-channel:PubSubChannel",
-          callerKind: "worker",
-        }),
-      });
-
-      const req = mockRequest("POST", "/do/clone", {
-        ref: { source: "workers/pubsub-channel" },
-        // missing className, objectKey, newObjectKey
-      });
-      const res = mockResponse();
-
-      await handleHarnessApiRequest(req, res, deps);
-
-      expect(res.statusCode).toBe(400);
-    });
-  });
 });

@@ -1,0 +1,14 @@
+{
+  "name": "@workspace-workers/fork",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "type": "worker",
+    "entry": "index.ts",
+    "title": "Fork Worker"
+  },
+  "dependencies": {
+    "@workspace/runtime": "workspace:*"
+  }
+}

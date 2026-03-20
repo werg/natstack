@@ -4,6 +4,13 @@ import path from "path";
 export default defineConfig({
   resolve: {
     alias: {
+      // Resolve @workspace/runtime exports to source, not dist/.
+      // The package.json "default" condition points to dist/ (needed for tsc),
+      // but vitest should use source directly so new methods don't require a
+      // manual `tsc --project tsconfig.build.json` rebuild before tests work.
+      "@workspace/runtime/worker/test-utils": path.resolve(__dirname, "workspace/packages/runtime/src/worker/durable-test-utils.ts"),
+      "@workspace/runtime/worker": path.resolve(__dirname, "workspace/packages/runtime/src/worker/index.ts"),
+      "@workspace/runtime/workerd-client": path.resolve(__dirname, "workspace/packages/runtime/src/shared/workerd.ts"),
       // Resolve workspace panel dependencies from pnpm's node_modules
       // These are needed for tests in workspace/panels/ which aren't pnpm workspace packages
       ignore: path.resolve(__dirname, "node_modules/.pnpm/ignore@5.3.2/node_modules/ignore"),

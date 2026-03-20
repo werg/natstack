@@ -147,6 +147,8 @@ const channel = this.createChannelClient(channelId);
 | `.spawnHarness(opts)` | Spawn a new harness process |
 | `.sendHarnessCommand(harnessId, command)` | Send command to harness (start-turn, approve-tool, interrupt, etc.) |
 | `.stopHarness(harnessId)` | Stop a harness process |
+| `.cloneDO(ref, newObjectKey)` | Clone a DO's SQLite storage (for forking) |
+| `.destroyDO(ref)` | Destroy a DO's SQLite storage (for fork rollback) |
 
 ### StreamWriter -- `this.createWriter(channelId, turn)`
 
@@ -214,6 +216,7 @@ export class MyWorker extends AgentWorkerBase {
 | `advanceCheckpoint() / getCheckpoint()` | Checkpoint tracking |
 | `recordTurn()` | Record completed turn |
 | `getResumeSessionId(harnessId)` | Get session ID for resume |
+| `getResumeSessionIdForChannel(channelId)` | Get resume session (prefers forkSessionId if set) |
 | `recordTurnStart(harnessId, channelId, input, messageId, pubsubId, senderParticipantId?)` | Convenience: set active + in-flight + checkpoint |
 | `pendingCall(callId, channelId, type, context)` | Store async call continuation (survives hibernation) |
 | `consumePendingCall(callId)` | Load and delete a continuation |
@@ -225,6 +228,22 @@ export class MyWorker extends AgentWorkerBase {
 |------|---------|---------|
 | `handleCallResult(type, context, channelId, result, isError)` | no-op | Handle async method-call results (used for approval/tool-call flow) |
 | `onMethodCall(channelId, callId, methodName, args)` | returns error | Handle incoming method calls from other participants |
+| `onPostClone(parentObjectKey, newChannelId, oldChannelId, forkPointPubsubId)` | no-op | Custom cleanup after fork clone (see Fork Support below) |
+
+### Fork Support
+
+AgentWorkerBase supports semantic conversation forking — cloning at a specific point so the fork resumes independently.
+
+| Method | Description |
+|--------|-------------|
+| `canFork()` | Preflight: returns `{ ok: true }` if single-channel, rejects multi-channel agents |
+| `postClone(parentObjectKey, newChannelId, oldChannelId, forkPointPubsubId)` | Post-clone cleanup on the new DO: fixes identity, resolves fork session, clears ephemeral state, resubscribes to forked channel |
+
+**`postClone()` sequence**: fix `__objectKey` + `do_identity` → record fork metadata → resolve `forkSessionId` from `turn_map` (most recent session at or before fork point) → mark harnesses stopped → clear ephemeral tables → rename approval keys → delete old subscription + resubscribe to forked channel → call `onPostClone()`.
+
+**Resume after fork**: `getResumeSessionIdForChannel()` returns `forkSessionId` on first call (consumed after use), passed as `RESUME_SESSION_ID` to the harness. Claude SDK forks the conversation at that session point. Subsequent spawns use the latest session.
+
+**Fork worker** (`workspace/workers/fork/`): stateless fetch handler that orchestrates forks. Uses platform RPC primitives (`workerd.cloneDO`, `workerd.destroyDO`) for filesystem ops and `fetch()` for DO method calls (`canFork`, `postClone`, `subscribeChannel`). Trigger: `POST /fork` with `{ channelId, forkPointPubsubId, exclude?, replace? }`. Rolls back cloned SQLite and replacement subscriptions on failure.
 
 ### Tool Approval via Continuations
 

@@ -268,6 +268,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   protected recordTurn(harnessId: string, messageId: string, triggerPubsubId: number, sessionId: string): void {
     this.turns.recordTurn(harnessId, messageId, triggerPubsubId, sessionId);
     this.harnesses.setSessionId(harnessId, sessionId);
+    // Consume forkSessionId after first successful turn — the new session
+    // is now recorded in turn_map and getResumeSessionIdForChannel() will
+    // fall back to it naturally on subsequent spawns.
+    if (this.getStateValue("forkSessionId")) {
+      this.deleteStateValue("forkSessionId");
+    }
   }
 
   protected getTurnAtOrBefore(harnessId: string, pubsubId: number) {
@@ -283,6 +289,13 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   }
 
   protected getResumeSessionIdForChannel(_channelId: string): string | undefined {
+    // Prefer fork-specific session (set by postClone). NOT consumed here —
+    // consumed in recordTurn() after the first turn succeeds, so retries
+    // on transient spawn failures still get the fork-point session.
+    const forkSession = this.getStateValue("forkSessionId");
+    if (forkSession) {
+      return forkSession;
+    }
     const harnessIds = this.harnesses.listAll();
     return this.turns.getResumeSessionIdForHarnesses(harnessIds);
   }
@@ -385,6 +398,110 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   protected async handleCallResult(
     _type: string, _context: Record<string, unknown>,
     _channelId: string, _result: unknown, _isError: boolean,
+  ): Promise<void> {
+    // Default: no-op
+  }
+
+  // --- Fork support ---
+
+  /**
+   * Preflight check for fork operations. Returns subscription count so the
+   * caller can decide the threshold: cloned DOs allow ≤1 (single-channel),
+   * replacement DOs require exactly 0 (must be fresh).
+   */
+  async canFork(): Promise<{ ok: boolean; subscriptionCount: number; reason?: string }> {
+    const count = this.sql.exec(`SELECT COUNT(*) as cnt FROM subscriptions`).toArray();
+    const n = (count[0]?.["cnt"] as number) ?? 0;
+    if (n > 1) {
+      return { ok: false, subscriptionCount: n, reason: "multi-channel" };
+    }
+    return { ok: true, subscriptionCount: n };
+  }
+
+  /**
+   * Called on the NEWLY CLONED agent DO after cloneDO copies parent's SQLite.
+   * Rewrites identity, clears ephemeral state, resubscribes to forked channel.
+   */
+  async postClone(
+    parentObjectKey: string,
+    newChannelId: string,
+    oldChannelId: string,
+    forkPointPubsubId: number,
+  ): Promise<void> {
+    // Fix __objectKey (cloneDO copied parent's key).
+    // ensureBootstrapped() in fetch() already sets the correct objectKey and doRef,
+    // but __objectKey in the state table still has the parent's value from the clone.
+    this.sql.exec(
+      `INSERT OR REPLACE INTO state (key, value) VALUES ('__objectKey', ?)`,
+      this.objectKey,
+    );
+
+    // Record fork metadata in state KV
+    this.setStateValue("forkedFrom", parentObjectKey);
+    this.setStateValue("forkPointPubsubId", String(forkPointPubsubId));
+    this.setStateValue("forkSourceChannel", oldChannelId);
+
+    // 4. Resolve fork session ID from turn_map — single deterministic query
+    //    across all harnesses, picking the most recent turn at or before the fork point.
+    const sessionRow = this.sql.exec(
+      `SELECT external_session_id FROM turn_map WHERE trigger_pubsub_id <= ? ORDER BY trigger_pubsub_id DESC LIMIT 1`,
+      forkPointPubsubId,
+    ).toArray();
+    if (sessionRow.length > 0) {
+      this.setStateValue("forkSessionId", sessionRow[0]!["external_session_id"] as string);
+    }
+
+    // 5. Mark all harnesses as stopped
+    this.sql.exec(`UPDATE harnesses SET status = 'stopped' WHERE status != 'stopped'`);
+
+    // 6. Clear ephemeral tables
+    this.sql.exec(`DELETE FROM active_turns`);
+    this.sql.exec(`DELETE FROM in_flight_turns`);
+    this.sql.exec(`DELETE FROM pending_calls`);
+    this.sql.exec(`DELETE FROM checkpoints`);
+
+    // 7. Clean state KV: remove bootstrap typing entries, rename approval level keys
+    const stateRows = this.sql.exec(`SELECT key FROM state WHERE key LIKE 'bootstrap_typing:%'`).toArray();
+    for (const row of stateRows) {
+      this.deleteStateValue(row["key"] as string);
+    }
+
+    // Rename approvalLevel from old channel to new channel
+    const oldApprovalKey = `approvalLevel:${oldChannelId}`;
+    const newApprovalKey = `approvalLevel:${newChannelId}`;
+    const approvalValue = this.getStateValue(oldApprovalKey);
+    if (approvalValue) {
+      this.setStateValue(newApprovalKey, approvalValue);
+      this.deleteStateValue(oldApprovalKey);
+    }
+
+    // 8. Resubscribe to forked channel
+    // Read old subscription data before deleting
+    const subRow = this.sql.exec(
+      `SELECT context_id, config FROM subscriptions WHERE channel_id = ?`, oldChannelId,
+    ).toArray();
+    const contextId = subRow.length > 0 ? (subRow[0]!["context_id"] as string) : undefined;
+    const configRaw = subRow.length > 0 ? (subRow[0]!["config"] as string | null) : null;
+    const config = configRaw ? JSON.parse(configRaw) : undefined;
+
+    // Delete old subscription
+    this.sql.exec(`DELETE FROM subscriptions`);
+
+    // Subscribe to forked channel (calls SubscriptionManager which calls channel.subscribe)
+    if (contextId) {
+      await this.subscribeChannel({ channelId: newChannelId, contextId, config });
+    }
+
+    // 9. Subclass hook
+    await this.onPostClone(parentObjectKey, newChannelId, oldChannelId, forkPointPubsubId);
+  }
+
+  /** Subclass hook called at end of postClone(). Override for custom cleanup. */
+  protected async onPostClone(
+    _parentObjectKey: string,
+    _newChannelId: string,
+    _oldChannelId: string,
+    _forkPointPubsubId: number,
   ): Promise<void> {
     // Default: no-op
   }

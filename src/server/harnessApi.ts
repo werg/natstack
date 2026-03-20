@@ -9,7 +9,7 @@
  * - POST /harness/spawn — spawn a new harness process
  * - POST /harness/{id}/command — send a command to a running harness
  * - POST /harness/{id}/stop — stop a harness process
- * - POST /do/clone — clone a DO's SQLite (self-class only)
+ * - GET /harness/{id}/status — get harness status
  */
 
 import { randomUUID } from "crypto";
@@ -17,7 +17,6 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { HarnessManager } from "./harnessManager.js";
 import type { DODispatch, DORef } from "./doDispatch.js";
 import type { ContextFolderManager } from "../shared/contextFolderManager.js";
-import type { WorkerdManager } from "./workerdManager.js";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("HarnessApi");
@@ -32,7 +31,6 @@ export interface HarnessApiDeps {
   harnessManager: HarnessManager;
   doDispatch: DODispatch;
   contextFolderManager: ContextFolderManager;
-  workerdManager: WorkerdManager;
   /** Validate auth tokens — returns caller identity on success. */
   validateToken: (token: string) => TokenValidationResult;
 }
@@ -49,7 +47,7 @@ export async function handleHarnessApiRequest(
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
   const pathname = url.pathname;
 
-  if (!pathname.startsWith("/harness") && !pathname.startsWith("/do/") && pathname !== "/validate-token") return false;
+  if (!pathname.startsWith("/harness") && pathname !== "/validate-token") return false;
 
   // Auth check
   const authHeader = req.headers["authorization"];
@@ -82,12 +80,6 @@ export async function handleHarnessApiRequest(
     // POST /harness/spawn
     if (pathname === "/harness/spawn" && req.method === "POST") {
       await handleSpawn(body, deps, res);
-      return true;
-    }
-
-    // POST /do/clone
-    if (pathname === "/do/clone" && req.method === "POST") {
-      await handleCloneDO(body, auth, deps, res);
       return true;
     }
 
@@ -247,31 +239,6 @@ function handleStatus(
   } else {
     sendJson(res, 404, { error: "Harness not found" });
   }
-}
-
-async function handleCloneDO(
-  body: Record<string, unknown>,
-  auth: TokenValidationResult,
-  deps: HarnessApiDeps,
-  res: ServerResponse,
-): Promise<void> {
-  const ref = body["ref"] as DORef | undefined;
-  const newObjectKey = body["newObjectKey"] as string | undefined;
-
-  if (!ref?.source || !ref?.className || !ref?.objectKey || !newObjectKey) {
-    sendJson(res, 400, { error: "Missing required fields: ref (source, className, objectKey), newObjectKey" });
-    return;
-  }
-
-  // Self-clone restriction: caller can only clone instances of its own class
-  const expectedCallerId = `do-service:${ref.source}:${ref.className}`;
-  if (auth.callerId !== expectedCallerId) {
-    sendJson(res, 403, { error: "Can only clone instances of your own class" });
-    return;
-  }
-
-  const newRef = await deps.workerdManager.cloneDO(ref, newObjectKey);
-  sendJson(res, 200, newRef);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

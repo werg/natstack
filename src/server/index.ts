@@ -966,7 +966,6 @@ async function main() {
     harnessManager: container.get<import("./harnessManager.js").HarnessManager>("harnessManager"),
     doDispatch: container.get<import("./doDispatch.js").DODispatch>("doDispatch"),
     contextFolderManager,
-    workerdManager: container.get<import("./workerdManager.js").WorkerdManager>("workerdManager")!,
     validateToken: (token) => {
       const result = tokenManager.validateToken(token);
       if (!result) return { valid: false };

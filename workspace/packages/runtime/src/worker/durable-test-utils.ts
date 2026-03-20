@@ -35,6 +35,12 @@ interface TestDOResult<T> {
   alarms: number[];
   /** WebSockets accepted via ctx.acceptWebSocket(). Inspectable in tests. */
   acceptedWebSockets: AcceptedWebSocket[];
+  /**
+   * Call a DO method through fetch(), matching the production dispatch path.
+   * Runs ensureReady(), ensureBootstrapped(), and objectKey parsing from the URL.
+   * Throws on non-2xx responses (with the error message from the response body).
+   */
+  call: <R = unknown>(method: string, ...args: unknown[]) => Promise<R>;
 }
 
 /** Shared sql.js initialization (cached after first call) */
@@ -141,5 +147,27 @@ export async function createTestDO<T>(
   const mergedEnv = { ...AGENTIC_ENV_DEFAULTS, ...env };
   const instance = new DOClass(ctx, mergedEnv);
 
-  return { instance, sql: sqlProxy, alarms, acceptedWebSockets };
+  // call() dispatches through fetch(), matching the production DO invocation path:
+  // URL /{objectKey}/{method} → ensureReady() → ensureBootstrapped() → method dispatch
+  const call = async <R = unknown>(method: string, ...args: unknown[]): Promise<R> => {
+    const fetchable = instance as unknown as { fetch(request: Request): Promise<Response> };
+    if (typeof fetchable.fetch !== "function") {
+      throw new Error("DO instance does not have a fetch() method");
+    }
+    const url = `http://test/${encodeURIComponent(objectKey)}/${encodeURIComponent(method)}`;
+    const request = new Request(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(args),
+    });
+    const response = await fetchable.fetch(request);
+    const text = await response.text();
+    if (!response.ok) {
+      const parsed = text ? JSON.parse(text) : {};
+      throw new Error(parsed.error ?? `DO call ${method} failed: ${response.status}`);
+    }
+    return (text ? JSON.parse(text) : undefined) as R;
+  };
+
+  return { instance, sql: sqlProxy, alarms, acceptedWebSockets, call };
 }

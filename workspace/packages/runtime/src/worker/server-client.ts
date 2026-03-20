@@ -41,9 +41,6 @@ export class ServerDOClient extends HttpClient {
     await this.post(`/harness/${enc(harnessId)}/stop`, {});
   }
 
-  async cloneDO(ref: DORef, newObjectKey: string): Promise<DORef> {
-    return this.post("/do/clone", { ref, newObjectKey }) as Promise<DORef>;
-  }
 }
 
 function enc(s: string): string {

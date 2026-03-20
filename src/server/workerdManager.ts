@@ -812,6 +812,24 @@ ${doBlock}${cases.join("\n")}
     return { source: ref.source, className: ref.className, objectKey: newObjectKey };
   }
 
+  /**
+   * Destroy a DO's SQLite storage. Deletes the main .sqlite plus any
+   * WAL/SHM sidecar files. Used for cleaning up orphaned clones on fork failure.
+   */
+  async destroyDO(ref: DORef): Promise<void> {
+    const uniqueKey = `${ref.source.replace(/\//g, "_")}:${ref.className}`;
+    const storagePath = path.join(this.deps.statePath, ".databases", "workerd-do", uniqueKey);
+    const hash = computeWorkerdObjectIdHash(uniqueKey, ref.objectKey);
+    const base = path.join(storagePath, hash);
+
+    for (const suffix of [".sqlite", ".sqlite-wal", ".sqlite-shm"]) {
+      try { fs.unlinkSync(base + suffix); }
+      catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+      }
+    }
+  }
+
   // =========================================================================
   // Shutdown
   // =========================================================================
