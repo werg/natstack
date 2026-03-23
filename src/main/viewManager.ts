@@ -229,8 +229,9 @@ export class ViewManager {
       throw new Error(`View already exists: ${config.id}`);
     }
 
-    // Create session - use partition if specified, otherwise default session
-    // Browser panels share a session for cookies/auth; app panels are isolated
+    // Create session - use partition if specified, otherwise default session.
+    // Browser panels share BROWSER_SESSION_PARTITION for cookies/auth.
+    // Workspace panels use the default session (no external sites).
     const ses = config.partition
       ? session.fromPartition(config.partition)
       : session.defaultSession;

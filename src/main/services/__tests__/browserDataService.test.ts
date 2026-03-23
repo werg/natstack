@@ -30,14 +30,16 @@ vi.mock("@natstack/browser-data", () => ({
 // Mock electron
 const mockCookiesSet = vi.fn().mockResolvedValue(undefined);
 const mockCookiesGet = vi.fn().mockResolvedValue([]);
+const mockBrowserSession = {
+  cookies: {
+    set: (...args: unknown[]) => mockCookiesSet(...args),
+    get: (...args: unknown[]) => mockCookiesGet(...args),
+  },
+};
 vi.mock("electron", () => ({
   session: {
-    defaultSession: {
-      cookies: {
-        set: (...args: unknown[]) => mockCookiesSet(...args),
-        get: (...args: unknown[]) => mockCookiesGet(...args),
-      },
-    },
+    defaultSession: mockBrowserSession,
+    fromPartition: () => mockBrowserSession,
   },
 }));
 

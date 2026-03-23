@@ -12,6 +12,13 @@
  */
 
 /**
+ * Shared Electron session partition for all browser panels.
+ * All browser panels share one cookie jar / session, like tabs in a normal browser.
+ * Panel-to-panel origin isolation is handled by Chromium's same-origin policy.
+ */
+export const BROWSER_SESSION_PARTITION = "persist:browser";
+
+/**
  * Minimal panel lifecycle interface — the subset that common bridge handlers need.
  */
 export interface BridgePanelManager {

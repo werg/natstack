@@ -12,6 +12,7 @@ import type { ViewManager } from "./viewManager.js";
 import type { PanelRegistry } from "../shared/panelRegistry.js";
 import type { TokenManager } from "../shared/tokenManager.js";
 import type { PanelViewLike, PanelHttpServerLike, ServerInfoLike } from "../shared/panelLifecycle.js";
+import { BROWSER_SESSION_PARTITION } from "../shared/panelInterfaces.js";
 import { getCurrentSnapshot, getPanelSource, getPanelContextId, loadPanelManifest } from "../shared/panelTypes.js";
 import { contextIdToSubdomain } from "../shared/panelIdUtils.js";
 import type { Panel, PanelSnapshot } from "../shared/types.js";
@@ -216,7 +217,7 @@ export class PanelView implements PanelViewLike {
       id: panelId, type: "panel",
       preload: this.autofillPreloadPath ?? null,
       url, parentId: parentId ?? undefined,
-      partition: `persist:${contextId}`,
+      partition: BROWSER_SESSION_PARTITION,
       injectHostThemeVariables: false,
     });
 

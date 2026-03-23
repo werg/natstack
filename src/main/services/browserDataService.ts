@@ -24,6 +24,7 @@ import type {
   SameSiteValue,
   SourceScheme,
 } from "@natstack/browser-data";
+import { BROWSER_SESSION_PARTITION } from "../../shared/panelInterfaces.js";
 
 function storedCookieToImported(c: {
   name: string;
@@ -62,7 +63,7 @@ async function syncStoreCookiesToSession(
   domain?: string,
 ): Promise<{ synced: number; failed: number }> {
   const { session } = await import("electron");
-  const ses = session.defaultSession;
+  const ses = session.fromPartition(BROWSER_SESSION_PARTITION);
   const storedCookies = browserDataStore.cookies.getByDomain(domain);
   let synced = 0;
   let failed = 0;
@@ -111,7 +112,7 @@ async function syncSessionCookiesToStore(
   domain?: string,
 ): Promise<{ synced: number }> {
   const { session } = await import("electron");
-  const ses = session.defaultSession;
+  const ses = session.fromPartition(BROWSER_SESSION_PARTITION);
 
   const filter: Electron.CookiesGetFilter = {};
   if (domain) filter.domain = domain;

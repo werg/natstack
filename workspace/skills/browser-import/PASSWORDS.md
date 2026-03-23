@@ -69,7 +69,7 @@ export default function PasswordVault({ props, chat }) {
               <Table.Body>
                 {passwords.slice(0, 50).map(p => (
                   <Table.Row key={p.id}>
-                    <Table.Cell><Text size="1" style={{ maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis" }}>{p.origin || p.hostname}</Text></Table.Cell>
+                    <Table.Cell><Text size="1" style={{ maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis" }}>{p.origin_url}</Text></Table.Cell>
                     <Table.Cell>
                       <Flex align="center" gap="1">
                         <Text size="1">{p.username}</Text>
@@ -116,7 +116,7 @@ eval({ code: `
   const api = createBrowserDataApi(rpc);
   const match = await api.getPasswordForSite("https://github.com/login");
   if (match) {
-    console.log("Found:", match.username, "for", match.origin);
+    console.log("Found:", match.username, "for", match.origin_url);
   } else {
     console.log("No saved password for this site");
   }
