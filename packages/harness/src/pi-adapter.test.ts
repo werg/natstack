@@ -1121,4 +1121,93 @@ describe("PiAdapter", () => {
       expect(actionStartFromEvent).toBeUndefined();
     });
   });
+
+  describe("turn queueing", () => {
+    it("queues second startTurn and processes sequentially", async () => {
+      let promptCount = 0;
+      let resolveFirst: (() => void) | undefined;
+      const mockSession = createMockPiSession([
+        { type: "message_start" },
+        { type: "message_end", message: { content: [{ type: "text", text: "ok" }] } },
+      ]);
+      const originalPrompt = mockSession.prompt.bind(mockSession);
+      mockSession.prompt = async (text: string) => {
+        promptCount++;
+        if (promptCount === 1) {
+          await new Promise<void>(r => { resolveFirst = r; });
+        }
+        return originalPrompt(text);
+      };
+
+      const deps = createDeps({
+        createSession: vi.fn().mockResolvedValue(mockSession),
+      });
+      const adapter = new PiAdapter(createConfig(), deps);
+
+      // Start first turn (blocks)
+      const firstTurn = adapter.handleCommand({ type: "start-turn", input: { content: "first", senderId: "u1" } });
+
+      // Wait for first prompt to start
+      while (!resolveFirst) await new Promise(r => setTimeout(r, 5));
+      expect(promptCount).toBe(1);
+
+      // Queue second turn
+      void adapter.handleCommand({ type: "start-turn", input: { content: "second", senderId: "u1" } });
+
+      // Unblock first
+      resolveFirst!();
+      await firstTurn;
+      await new Promise(r => setTimeout(r, 50));
+
+      expect(promptCount).toBe(2);
+
+      // Verify two turn-completes in order
+      const turnCompletes = deps.events.filter(e => e.type === "turn-complete");
+      expect(turnCompletes.length).toBe(2);
+    });
+
+    it("emits fallback turn-complete on abort", async () => {
+      let resolveBlock: (() => void) | undefined;
+      const mockSession = createMockPiSession([]);
+      mockSession.prompt = async () => {
+        await new Promise<void>(r => { resolveBlock = r; });
+      };
+      mockSession.abort = async () => { resolveBlock!(); };
+
+      const deps = createDeps({
+        createSession: vi.fn().mockResolvedValue(mockSession),
+      });
+      const adapter = new PiAdapter(createConfig(), deps);
+
+      const turnPromise = adapter.handleCommand({ type: "start-turn", input: { content: "test", senderId: "u1" } });
+      while (!resolveBlock) await new Promise(r => setTimeout(r, 5));
+
+      await adapter.handleCommand({ type: "interrupt" });
+      await turnPromise;
+
+      const turnCompletes = deps.events.filter(e => e.type === "turn-complete");
+      expect(turnCompletes.length).toBe(1);
+    });
+
+    it("emits error with code before turn-complete on failure", async () => {
+      const mockSession = createMockPiSession([]);
+      mockSession.prompt = async () => { throw new Error("SDK exploded"); };
+
+      const deps = createDeps({
+        createSession: vi.fn().mockResolvedValue(mockSession),
+      });
+      const adapter = new PiAdapter(createConfig(), deps);
+
+      await adapter.handleCommand({ type: "start-turn", input: { content: "test", senderId: "u1" } });
+
+      const types = deps.events.map(e => e.type);
+      const errorIdx = types.indexOf("error");
+      const turnCompleteIdx = types.indexOf("turn-complete");
+      expect(errorIdx).toBeGreaterThanOrEqual(0);
+      expect(turnCompleteIdx).toBeGreaterThan(errorIdx); // error before turn-complete
+
+      const error = deps.events[errorIdx] as { type: "error"; code?: string };
+      expect(error.code).toBe("ADAPTER_ERROR");
+    });
+  });
 });

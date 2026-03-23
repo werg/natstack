@@ -21,7 +21,6 @@ export type HarnessOutput =
   | { type: 'message-complete' }
   | { type: 'turn-complete'; sessionId: string; usage?: TurnUsage }
   | { type: 'error'; error: string; code?: string }
-  | { type: 'interleave-point' }
   | { type: 'metadata-update'; metadata: Record<string, unknown> }
   | { type: 'ready' }
   | { type: 'tool-call'; callId: string; participantId: string; method: string; args: unknown }

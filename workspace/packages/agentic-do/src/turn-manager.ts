@@ -23,6 +23,15 @@ export interface InFlightTurn {
   turnInput: TurnInput;
 }
 
+export interface QueuedTurn {
+  channelId: string;
+  messageId: string;
+  pubsubId: number;
+  senderId: string;
+  turnInput: TurnInput;
+  typingContent: string;
+}
+
 export interface TurnRecord {
   turnMessageId: string;
   externalSessionId: string;
@@ -74,6 +83,19 @@ export class TurnManager {
         stream_state TEXT,
         typing_content TEXT,
         started_at INTEGER NOT NULL
+      )
+    `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS queued_turns (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id TEXT NOT NULL,
+        harness_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        pubsub_id INTEGER NOT NULL,
+        sender_id TEXT NOT NULL,
+        turn_input TEXT NOT NULL,
+        typing_content TEXT,
+        created_at INTEGER NOT NULL
       )
     `);
   }
@@ -239,11 +261,47 @@ export class TurnManager {
     );
   }
 
+  // --- Queued turns ---
+
+  enqueue(channelId: string, harnessId: string, messageId: string, pubsubId: number, senderId: string, input: TurnInput, typingContent?: string): void {
+    this.sql.exec(
+      `INSERT INTO queued_turns (channel_id, harness_id, message_id, pubsub_id, sender_id, turn_input, typing_content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      channelId, harnessId, messageId, pubsubId, senderId, JSON.stringify(input), typingContent ?? '', Date.now(),
+    );
+  }
+
+  dequeue(harnessId: string): QueuedTurn | null {
+    const row = this.sql.exec(
+      `SELECT id, channel_id, message_id, pubsub_id, sender_id, turn_input, typing_content FROM queued_turns WHERE harness_id = ? ORDER BY id ASC LIMIT 1`,
+      harnessId,
+    ).toArray();
+    if (row.length === 0) return null;
+    const id = row[0]!["id"] as number;
+    this.sql.exec(`DELETE FROM queued_turns WHERE id = ?`, id);
+    return {
+      channelId: row[0]!["channel_id"] as string,
+      messageId: row[0]!["message_id"] as string,
+      pubsubId: row[0]!["pubsub_id"] as number,
+      senderId: row[0]!["sender_id"] as string,
+      turnInput: JSON.parse(row[0]!["turn_input"] as string),
+      typingContent: (row[0]!["typing_content"] as string) ?? '',
+    };
+  }
+
+  clearQueueForHarness(harnessId: string): void {
+    this.sql.exec(`DELETE FROM queued_turns WHERE harness_id = ?`, harnessId);
+  }
+
+  clearAllQueued(): void {
+    this.sql.exec(`DELETE FROM queued_turns`);
+  }
+
   // --- Cleanup for channel unsubscribe ---
 
   deleteForHarness(harnessId: string): void {
     this.sql.exec(`DELETE FROM active_turns WHERE harness_id = ?`, harnessId);
     this.sql.exec(`DELETE FROM in_flight_turns WHERE harness_id = ?`, harnessId);
+    this.sql.exec(`DELETE FROM queued_turns WHERE harness_id = ?`, harnessId);
     this.sql.exec(`DELETE FROM turn_map WHERE harness_id = ?`, harnessId);
     this.sql.exec(`DELETE FROM checkpoints WHERE harness_id = ?`, harnessId);
   }

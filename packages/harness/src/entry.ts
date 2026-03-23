@@ -328,7 +328,7 @@ async function main(): Promise<void> {
     async (input: TurnInput) => {
       void adapter.handleCommand({ type: "start-turn", input }).catch((err) => {
         log.error("startTurn failed:", err);
-        void pushEvent({ type: "error", error: String(err) }).catch((pushErr) => {
+        void pushEvent({ type: "error", error: String(err), code: "ADAPTER_ERROR" }).catch((pushErr) => {
           log.error("Failed to report startTurn error via pushEvent:", pushErr);
         });
       });
@@ -346,7 +346,7 @@ async function main(): Promise<void> {
         updatedInput,
       }).catch((err) => {
         log.error("approveTool failed:", err);
-        void pushEvent({ type: "error", error: String(err) }).catch((pushErr) => {
+        void pushEvent({ type: "error", error: String(err), code: "ADAPTER_ERROR" }).catch((pushErr) => {
           log.error("Failed to report approveTool error via pushEvent:", pushErr);
         });
       });

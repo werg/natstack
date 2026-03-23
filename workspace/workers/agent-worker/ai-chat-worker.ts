@@ -108,8 +108,16 @@ export class AiChatWorker extends AgentWorkerBase {
         config,
         initialInput: input,
       });
+    } else if (this.getActiveTurn(activeHarnessId)) {
+      // Turn in progress — send to harness first, only enqueue on success
+      await this.server.sendHarnessCommand(activeHarnessId, {
+        type: "start-turn",
+        input,
+      });
+      this.enqueueTurn(channelId, activeHarnessId, event.messageId, event.id, event.senderId, input, typingContent);
+      this.advanceCheckpoint(channelId, activeHarnessId, event.id);
     } else {
-      // Existing harness — start a new turn
+      // Harness idle — start a new turn immediately
       this.setActiveTurn(activeHarnessId, channelId, event.messageId, undefined, event.senderId, typingContent);
 
       // Start typing via StreamWriter
@@ -220,6 +228,25 @@ export class AiChatWorker extends AgentWorkerBase {
         }
         this.clearActiveTurn(harnessId);
         this.clearInFlightTurn(channelId, harnessId);
+
+        // Dequeue next turn if any — harness already auto-dequeued on its side
+        const next = this.dequeueNextTurn(harnessId);
+        if (next) {
+          const nextParticipantInfo = this.getParticipantInfo(next.channelId);
+          const nextTypingContent = next.typingContent || JSON.stringify({
+            senderId: next.senderId,
+            senderName: nextParticipantInfo.name,
+            senderType: nextParticipantInfo.type,
+          });
+          this.setActiveTurn(harnessId, next.channelId, next.messageId, undefined, next.senderId, nextTypingContent);
+
+          const nextTurn = this.getActiveTurn(harnessId)!;
+          const nextWriter = this.createWriter(next.channelId, nextTurn);
+          await nextWriter.startTyping();
+          this.persistStreamState(harnessId, nextWriter);
+
+          this.setInFlightTurn(next.channelId, harnessId, next.messageId, next.pubsubId, next.turnInput);
+        }
         break;
       }
 
@@ -367,9 +394,6 @@ export class AiChatWorker extends AgentWorkerBase {
         break;
       }
 
-      // --- Interleave point (no-op) ---
-      case "interleave-point":
-        break;
     }
 
     // Persist stream state after every event that has a writer
@@ -508,6 +532,7 @@ export class AiChatWorker extends AgentWorkerBase {
     const contextId = this.getContextId(channelId);
 
     this.clearActiveTurn(harnessId);
+    this.clearTurnQueue(harnessId);
 
     // Re-register harness and record turn locally before respawn
     this.reactivateHarness(harnessId);

@@ -38,7 +38,6 @@ Events emitted by a harness process back to the server:
 | `message-complete` | A single message (possibly multi-block) is complete |
 | `turn-complete` | The entire turn is finished; includes session ID and optional usage metrics |
 | `error` | An error occurred; includes message and optional error code |
-| `interleave-point` | Indicates a safe point for interleaving new user input |
 | `metadata-update` | Updated metadata for the current session |
 | `ready` | The harness process has initialized and is ready to accept commands |
 

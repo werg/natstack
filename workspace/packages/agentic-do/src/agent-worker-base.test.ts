@@ -136,11 +136,13 @@ describe("AgentWorkerBase fork support", () => {
       sql.exec(`INSERT INTO in_flight_turns (channel_id, harness_id, trigger_message_id, trigger_pubsub_id, turn_input, started_at) VALUES ('old-channel', 'h-1', 'msg-1', 10, '{}', 1000)`);
       sql.exec(`INSERT INTO pending_calls (call_id, channel_id, call_type, context, created_at) VALUES ('call-1', 'old-channel', 'approval', '{}', 1000)`);
       sql.exec(`INSERT INTO checkpoints (channel_id, last_pubsub_id, updated_at) VALUES ('old-channel', 10, 1000)`);
+      sql.exec(`INSERT INTO queued_turns (channel_id, harness_id, message_id, pubsub_id, sender_id, turn_input, created_at) VALUES ('old-channel', 'h-1', 'msg-2', 20, 'user-1', '{}', 1000)`);
 
       await call("postClone", "original-agent", "forked-channel", "old-channel", 42);
 
       expect(sql.exec(`SELECT COUNT(*) as cnt FROM active_turns`).toArray()[0]!["cnt"]).toBe(0);
       expect(sql.exec(`SELECT COUNT(*) as cnt FROM in_flight_turns`).toArray()[0]!["cnt"]).toBe(0);
+      expect(sql.exec(`SELECT COUNT(*) as cnt FROM queued_turns`).toArray()[0]!["cnt"]).toBe(0);
       expect(sql.exec(`SELECT COUNT(*) as cnt FROM pending_calls`).toArray()[0]!["cnt"]).toBe(0);
       expect(sql.exec(`SELECT COUNT(*) as cnt FROM checkpoints`).toArray()[0]!["cnt"]).toBe(0);
 

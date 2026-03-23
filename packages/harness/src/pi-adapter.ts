@@ -154,8 +154,10 @@ export interface CreatePiSessionOptions {
 // =============================================================================
 
 export interface PiAdapterDeps {
-  /** Push a HarnessOutput event to the server */
-  pushEvent(event: HarnessOutput): void;
+  /** Push a HarnessOutput event to the server.
+   *  May return a Promise — terminal events (turn-complete, error) must be awaited
+   *  in runTurn to guarantee delivery ordering before queue drain. */
+  pushEvent(event: HarnessOutput): void | Promise<void>;
 
   /** Execute a tool call on a channel participant */
   callMethod(
@@ -230,6 +232,12 @@ export class PiAdapter {
   private sessionManager: PiSessionManager | null = null;
   private unsubscribe: (() => void) | null = null;
   private aborted = false;
+  private disposed = false;
+
+  /** Turn queueing — prevents concurrent startTurn calls from corrupting state */
+  private pendingTurns: TurnInput[] = [];
+  private turnInProgress = false;
+  private turnCompleteEmitted = false;
 
   /** Previous cumulative token counts for computing per-turn deltas */
   private prevTokens = { input: 0, output: 0, cost: 0 };
@@ -298,10 +306,39 @@ export class PiAdapter {
   }
 
   // ---------------------------------------------------------------------------
-  // start-turn
+  // start-turn (queue wrapper)
   // ---------------------------------------------------------------------------
 
   private async startTurn(input: TurnInput): Promise<void> {
+    if (this.disposed) return;
+
+    if (this.turnInProgress) {
+      this.pendingTurns.push(input);
+      return;
+    }
+
+    this.turnInProgress = true;
+    try {
+      await this.runTurn(input);
+    } finally {
+      this.turnInProgress = false;
+      this.drainQueue();
+    }
+  }
+
+  /** Process the next queued turn, if any */
+  private drainQueue(): void {
+    if (this.disposed || this.pendingTurns.length === 0) return;
+    const next = this.pendingTurns.shift()!;
+    void this.startTurn(next);
+  }
+
+  // ---------------------------------------------------------------------------
+  // runTurn
+  // ---------------------------------------------------------------------------
+
+  private async runTurn(input: TurnInput): Promise<void> {
+    this.turnCompleteEmitted = false;
     const log = this.deps.log;
     const cwd = this.options?.contextFolderPath ?? process.cwd();
 
@@ -465,31 +502,40 @@ export class PiAdapter {
       // Emit turn-complete with session file as sessionId
       const usage = this.computeTurnUsage();
       const sessionId = this.session.sessionFile ?? "";
-      this.deps.pushEvent({
+      await this.deps.pushEvent({
         type: "turn-complete",
         sessionId,
         usage,
       });
+      this.turnCompleteEmitted = true;
     } catch (err) {
       // Aborted sessions may throw — only report unexpected errors
       if (!this.aborted) {
         const message = err instanceof Error ? err.message : String(err);
         log?.error("Pi turn error:", message);
-        this.deps.pushEvent({ type: "error", error: message });
+        await this.deps.pushEvent({ type: "error", error: message, code: "ADAPTER_ERROR" });
 
         // Emit turn-complete with sessionId for crash recovery
         const sessionId = this.session?.sessionFile ?? "";
         if (sessionId) {
-          this.deps.pushEvent({
+          await this.deps.pushEvent({
             type: "turn-complete",
             sessionId,
             usage: this.computeTurnUsage(),
           });
+          this.turnCompleteEmitted = true;
         }
       }
     } finally {
       // Ensure thinking/text blocks are closed
       this.closeOpenBlocks();
+      // Guarantee the DO always receives a turn-complete to advance its queue
+      if (!this.turnCompleteEmitted) {
+        await this.deps.pushEvent({
+          type: "turn-complete",
+          sessionId: this.session?.sessionFile ?? "",
+        });
+      }
       // DON'T unsubscribe — keep the subscription active for the next turn
     }
   }
@@ -640,6 +686,8 @@ export class PiAdapter {
   // ---------------------------------------------------------------------------
 
   private dispose(): void {
+    this.disposed = true;
+    this.pendingTurns.length = 0;
     // Reject pending approvals
     for (const [, pending] of this.pendingApprovals) {
       pending.resolve({ allow: false });

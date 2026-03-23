@@ -16,7 +16,7 @@ import { needsApprovalForTool } from "@natstack/pubsub";
 import { DOIdentity } from "./identity.js";
 import { SubscriptionManager } from "./subscription-manager.js";
 import { HarnessManager } from "./harness-manager.js";
-import { TurnManager, type ActiveTurn, type InFlightTurn } from "./turn-manager.js";
+import { TurnManager, type ActiveTurn, type InFlightTurn, type QueuedTurn } from "./turn-manager.js";
 import { ContinuationStore } from "./continuation-store.js";
 import { StreamWriter, type PersistedStreamState } from "./stream-writer.js";
 import { ChannelClient } from "./channel-client.js";
@@ -257,6 +257,18 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.turns.clearInFlight(channelId, harnessId);
   }
 
+  protected enqueueTurn(channelId: string, harnessId: string, messageId: string, pubsubId: number, senderId: string, input: TurnInput, typingContent?: string): void {
+    this.turns.enqueue(channelId, harnessId, messageId, pubsubId, senderId, input, typingContent);
+  }
+
+  protected dequeueNextTurn(harnessId: string): QueuedTurn | null {
+    return this.turns.dequeue(harnessId);
+  }
+
+  protected clearTurnQueue(harnessId: string): void {
+    this.turns.clearQueueForHarness(harnessId);
+  }
+
   protected advanceCheckpoint(channelId: string, harnessId: string | null, pubsubId: number): void {
     this.turns.advanceCheckpoint(channelId, harnessId, pubsubId);
   }
@@ -457,6 +469,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     // 6. Clear ephemeral tables
     this.sql.exec(`DELETE FROM active_turns`);
     this.sql.exec(`DELETE FROM in_flight_turns`);
+    this.sql.exec(`DELETE FROM queued_turns`);
     this.sql.exec(`DELETE FROM pending_calls`);
     this.sql.exec(`DELETE FROM checkpoints`);
 
@@ -596,7 +609,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const activeTurns = this.sql.exec(`SELECT * FROM active_turns`).toArray();
     const checkpoints = this.sql.exec(`SELECT * FROM checkpoints`).toArray();
     const inFlightTurns = this.sql.exec(`SELECT * FROM in_flight_turns`).toArray();
+    const queuedTurns = this.sql.exec(`SELECT * FROM queued_turns`).toArray();
     const pendingCalls = this.sql.exec(`SELECT * FROM pending_calls`).toArray();
-    return { subscriptions, harnesses, activeTurns, checkpoints, inFlightTurns, pendingCalls };
+    return { subscriptions, harnesses, activeTurns, checkpoints, inFlightTurns, queuedTurns, pendingCalls };
   }
 }

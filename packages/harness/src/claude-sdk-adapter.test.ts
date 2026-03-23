@@ -787,4 +787,137 @@ describe('ClaudeSdkAdapter', () => {
       expect(textStartIdx).toBeLessThan(textEndIdx);
     });
   });
+
+  describe('turn queueing', () => {
+    it('queues second startTurn and processes sequentially', async () => {
+      let queryCount = 0;
+      mockSdkModule(() => {
+        queryCount++;
+        return createMockQuery([
+          { type: 'stream_event', session_id: `sess-${queryCount}`, event: { type: 'message_start' } },
+          { type: 'result', subtype: 'success', session_id: `sess-${queryCount}`, usage: { input_tokens: 1, output_tokens: 1 } },
+        ]);
+      });
+
+      const { ClaudeSdkAdapter: MockedAdapter } = await import('./claude-sdk-adapter.js');
+      const deps = createDeps();
+      const adapter = new MockedAdapter(createConfig(), deps);
+
+      // Send two turns — both should complete
+      await adapter.handleCommand({ type: 'start-turn', input: { content: 'first', senderId: 'u1' } });
+      // The second was queued and auto-drained
+      await new Promise((r) => setTimeout(r, 50)); // let drain settle
+
+      expect(queryCount).toBe(1); // only one query because second wasn't queued during first
+
+      // Now test actual concurrent queueing
+      let resolveFirst: (() => void) | undefined;
+      let firstQueryCount = 0;
+      mockSdkModule(() => {
+        firstQueryCount++;
+        if (firstQueryCount === 1) {
+          // First query blocks until resolved
+          const gen = (async function* () {
+            yield { type: 'stream_event', session_id: 'sess-a', event: { type: 'message_start' } };
+            await new Promise<void>(r => { resolveFirst = r; });
+            yield { type: 'result', subtype: 'success', session_id: 'sess-a', usage: { input_tokens: 1, output_tokens: 1 } };
+          })() as AsyncGenerator<Record<string, unknown>, void> & { interrupt(): Promise<void> };
+          gen.interrupt = async () => {};
+          return gen;
+        }
+        return createMockQuery([
+          { type: 'stream_event', session_id: 'sess-b', event: { type: 'message_start' } },
+          { type: 'result', subtype: 'success', session_id: 'sess-b', usage: { input_tokens: 1, output_tokens: 1 } },
+        ]);
+      });
+
+      const { ClaudeSdkAdapter: MockedAdapter2 } = await import('./claude-sdk-adapter.js');
+      const deps2 = createDeps();
+      const adapter2 = new MockedAdapter2(createConfig(), deps2);
+
+      // Start first turn (blocks)
+      const firstTurn = adapter2.handleCommand({ type: 'start-turn', input: { content: 'first', senderId: 'u1' } });
+
+      // Wait for first query to start
+      while (!resolveFirst) await new Promise(r => setTimeout(r, 5));
+
+      // Queue second turn
+      void adapter2.handleCommand({ type: 'start-turn', input: { content: 'second', senderId: 'u1' } });
+      expect(firstQueryCount).toBe(1); // second hasn't started yet
+
+      // Unblock first
+      resolveFirst!();
+      await firstTurn;
+      await new Promise(r => setTimeout(r, 50));
+
+      expect(firstQueryCount).toBe(2); // second ran after first completed
+
+      // Verify two turn-completes
+      const turnCompletes = deps2.events.filter(e => e.type === 'turn-complete');
+      expect(turnCompletes.length).toBe(2);
+    });
+
+    it('emits fallback turn-complete on interrupt', async () => {
+      let resolveBlock: (() => void) | undefined;
+      const gen = (async function* () {
+        yield { type: 'stream_event', session_id: 'sess-int', event: { type: 'message_start' } };
+        await new Promise<void>(r => { resolveBlock = r; });
+      })() as AsyncGenerator<Record<string, unknown>, void> & { interrupt(): Promise<void> };
+      gen.interrupt = async () => { resolveBlock!(); };
+
+      mockSdkModule(() => gen);
+      const { ClaudeSdkAdapter: MockedAdapter } = await import('./claude-sdk-adapter.js');
+      const deps = createDeps();
+      const adapter = new MockedAdapter(createConfig(), deps);
+
+      const turnPromise = adapter.handleCommand({ type: 'start-turn', input: { content: 'test', senderId: 'u1' } });
+      while (!resolveBlock) await new Promise(r => setTimeout(r, 5));
+
+      await adapter.handleCommand({ type: 'interrupt' });
+      await turnPromise;
+
+      // Should have a turn-complete even though no result message
+      const turnCompletes = deps.events.filter(e => e.type === 'turn-complete');
+      expect(turnCompletes.length).toBe(1);
+      expect((turnCompletes[0] as { sessionId: string }).sessionId).toBe('sess-int');
+    });
+
+    it('dispose clears queue and prevents further turns', async () => {
+      let resolveBlock: (() => void) | undefined;
+      let queryCount = 0;
+      mockSdkModule(() => {
+        queryCount++;
+        if (queryCount === 1) {
+          const gen = (async function* () {
+            yield { type: 'stream_event', session_id: 'sess-d', event: { type: 'message_start' } };
+            await new Promise<void>(r => { resolveBlock = r; });
+            yield { type: 'result', subtype: 'success', session_id: 'sess-d', usage: { input_tokens: 1, output_tokens: 1 } };
+          })() as AsyncGenerator<Record<string, unknown>, void> & { interrupt(): Promise<void> };
+          gen.interrupt = async () => { resolveBlock!(); };
+          return gen;
+        }
+        return createMockQuery([
+          { type: 'result', subtype: 'success', session_id: 'sess-d2', usage: { input_tokens: 1, output_tokens: 1 } },
+        ]);
+      });
+
+      const { ClaudeSdkAdapter: MockedAdapter } = await import('./claude-sdk-adapter.js');
+      const deps = createDeps();
+      const adapter = new MockedAdapter(createConfig(), deps);
+
+      const turnPromise = adapter.handleCommand({ type: 'start-turn', input: { content: 'first', senderId: 'u1' } });
+      while (!resolveBlock) await new Promise(r => setTimeout(r, 5));
+
+      // Queue a second turn
+      void adapter.handleCommand({ type: 'start-turn', input: { content: 'second', senderId: 'u1' } });
+
+      // Dispose — should clear queue and interrupt
+      await adapter.handleCommand({ type: 'dispose' });
+      await turnPromise;
+      await new Promise(r => setTimeout(r, 50));
+
+      // Second turn should NOT have run
+      expect(queryCount).toBe(1);
+    });
+  });
 });

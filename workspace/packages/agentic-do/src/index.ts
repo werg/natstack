@@ -10,7 +10,7 @@ export { DOIdentity } from "./identity.js";
 export { SubscriptionManager } from "./subscription-manager.js";
 export { HarnessManager } from "./harness-manager.js";
 export { TurnManager } from "./turn-manager.js";
-export type { ActiveTurn, InFlightTurn, TurnRecord } from "./turn-manager.js";
+export type { ActiveTurn, InFlightTurn, QueuedTurn, TurnRecord } from "./turn-manager.js";
 export { ContinuationStore } from "./continuation-store.js";
 export type { PendingCall } from "./continuation-store.js";
 export { StreamWriter } from "./stream-writer.js";

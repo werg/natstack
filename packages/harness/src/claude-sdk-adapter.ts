@@ -194,6 +194,11 @@ export class ClaudeSdkAdapter {
   /** Whether the adapter has been disposed */
   private disposed = false;
 
+  /** Turn queueing — prevents concurrent startTurn calls from corrupting state */
+  private pendingTurns: TurnInput[] = [];
+  private turnInProgress = false;
+  private turnCompleteEmitted = false;
+
   /** Discovered channel methods — cached from buildMcpServers for AskUserQuestion routing */
   private discoveredMethods: DiscoveredMethod[] = [];
 
@@ -304,20 +309,49 @@ export class ClaudeSdkAdapter {
   // -------------------------------------------------------------------------
 
   /**
-   * Start a new AI turn: build SDK options, invoke `query()`, and stream
-   * events back as HarnessOutput.
+   * Queue-aware entry point for starting a turn.
+   * If a turn is already in progress, queues the input for later.
    */
   private async startTurn(input: TurnInput): Promise<void> {
     if (this.disposed) {
-      await this.pushError('Adapter has been disposed');
+      await this.pushError('Adapter has been disposed', 'ADAPTER_ERROR');
       return;
     }
 
-    const sdk = await this.ensureSdk();
+    if (this.turnInProgress) {
+      this.pendingTurns.push(input);
+      return;
+    }
+
+    this.turnInProgress = true;
+    try {
+      await this.runTurn(input);
+    } finally {
+      this.turnInProgress = false;
+      this.drainQueue();
+    }
+  }
+
+  /** Process the next queued turn, if any */
+  private drainQueue(): void {
+    if (this.disposed || this.pendingTurns.length === 0) return;
+    const next = this.pendingTurns.shift()!;
+    void this.startTurn(next);
+  }
+
+  /**
+   * Run a single AI turn: build SDK options, invoke `query()`, and stream
+   * events back as HarnessOutput.
+   */
+  private async runTurn(input: TurnInput): Promise<void> {
+    this.turnCompleteEmitted = false;
+
     const abort = new AbortController();
     this.currentAbort = abort;
 
     try {
+      const sdk = await this.ensureSdk();
+
       // Build system prompt
       const systemPrompt = buildSystemPrompt(this.config, input.settings);
 
@@ -466,11 +500,18 @@ export class ClaudeSdkAdapter {
     } catch (err) {
       if (!abort.signal.aborted) {
         const message = err instanceof Error ? err.message : String(err);
-        await this.pushError(message);
+        await this.pushError(message, 'ADAPTER_ERROR');
       }
     } finally {
       this.activeQuery = null;
       this.currentAbort = undefined;
+      // Guarantee the DO always receives a turn-complete to advance its queue
+      if (!this.turnCompleteEmitted) {
+        await this.emit({
+          type: 'turn-complete',
+          sessionId: this.sessionId ?? '',
+        });
+      }
     }
   }
 
@@ -511,6 +552,7 @@ export class ClaudeSdkAdapter {
    */
   private async dispose(): Promise<void> {
     this.disposed = true;
+    this.pendingTurns.length = 0;
     await this.interrupt();
     this.log('info', 'ClaudeSdkAdapter disposed');
   }
@@ -554,10 +596,13 @@ export class ClaudeSdkAdapter {
     for await (const message of queryInstance) {
       if (signal.aborted) break;
 
-      // Capture session ID from any message that carries it
+      // Capture session ID from any message that carries it.
+      // Update this.sessionId eagerly so the fallback turn-complete in
+      // runTurn's finally block has the correct session even on interrupt.
       const sdkMsg = message as SdkMessage;
       if (sdkMsg.session_id) {
         capturedSessionId = sdkMsg.session_id;
+        this.sessionId = sdkMsg.session_id;
       }
 
       // ----- Subagent routing -----
@@ -625,11 +670,6 @@ export class ClaudeSdkAdapter {
       if (message.type === 'stream_event' && sdkMsg.event) {
         hasStreamedContent = true;
         const streamEvent = sdkMsg.event;
-
-        if (streamEvent.type === 'message_start') {
-          // Emit interleave-point so the server can inject queued user messages
-          await this.emit({ type: 'interleave-point' });
-        }
 
         // --- Content block start ---
         if (streamEvent.type === 'content_block_start' && streamEvent.content_block) {
@@ -792,6 +832,7 @@ export class ClaudeSdkAdapter {
             sessionId: capturedSessionId ?? '',
             usage,
           });
+          this.turnCompleteEmitted = true;
         } else {
           // Error result subtypes: error_during_execution, error_max_turns, etc.
           const errors = resultMsg.errors;
@@ -812,6 +853,7 @@ export class ClaudeSdkAdapter {
               sessionId: capturedSessionId,
               usage,
             });
+            this.turnCompleteEmitted = true;
           }
         }
       }

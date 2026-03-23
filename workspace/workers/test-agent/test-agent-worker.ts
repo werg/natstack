@@ -59,7 +59,16 @@ export class TestAgentWorker extends AgentWorkerBase {
         config: this.getHarnessConfig(),
         initialInput: input,
       });
+    } else if (this.getActiveTurn(activeHarnessId)) {
+      // Turn in progress — send to harness first, only enqueue on success
+      await this.server.sendHarnessCommand(activeHarnessId, {
+        type: "start-turn",
+        input,
+      });
+      this.enqueueTurn(channelId, activeHarnessId, event.messageId, event.id, event.senderId, input);
+      this.advanceCheckpoint(channelId, activeHarnessId, event.id);
     } else {
+      // Harness idle — start immediately
       this.setActiveTurn(activeHarnessId, channelId, event.messageId);
       this.setInFlightTurn(channelId, activeHarnessId, event.messageId, event.id, input);
       this.advanceCheckpoint(channelId, activeHarnessId, event.id);
@@ -114,6 +123,13 @@ export class TestAgentWorker extends AgentWorkerBase {
         }
         this.clearActiveTurn(harnessId);
         this.clearInFlightTurn(channelId, harnessId);
+
+        // Dequeue next turn if any
+        const next = this.dequeueNextTurn(harnessId);
+        if (next) {
+          this.setActiveTurn(harnessId, next.channelId, next.messageId, undefined, next.senderId);
+          this.setInFlightTurn(next.channelId, harnessId, next.messageId, next.pubsubId, next.turnInput);
+        }
         return; // Skip final persistStreamState
       }
     }
