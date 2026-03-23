@@ -16,15 +16,13 @@
 /** A method discovered from a channel participant (injected by the server) */
 export interface DiscoveredMethod {
   /** Participant ID that provides this method */
-  providerId: string;
-  /** Display name of the provider */
-  providerName: string;
+  participantId: string;
   /** Method name (snake_case, e.g., "file_read") */
   name: string;
   /** Human-readable description */
-  description?: string;
+  description: string;
   /** JSON Schema for parameters */
-  parameters?: Record<string, unknown>;
+  parameters?: unknown;
   /** Whether this is menu-only (not an AI tool) */
   menu?: boolean;
 }
@@ -100,7 +98,7 @@ export function convertToPiTools(
     // Skip menu-only methods (not AI tools)
     if (method.menu) continue;
 
-    const wireName = `${prefix}_${method.providerId}_${method.name}`.replace(
+    const wireName = `${prefix}_${method.participantId}_${method.name}`.replace(
       /[^a-zA-Z0-9_-]/g,
       "_",
     );
@@ -108,13 +106,11 @@ export function convertToPiTools(
     customTools.push({
       name: wireName,
       label: wireName,
-      description: method.description
-        ? `[${method.providerName}] ${method.description}`
-        : "",
-      parameters: method.parameters ?? {},
+      description: method.description || "",
+      parameters: (method.parameters as Record<string, unknown>) ?? {},
       execute: async (_toolCallId, params) => {
         const result = await callMethod(
-          method.providerId,
+          method.participantId,
           method.name,
           params,
         );

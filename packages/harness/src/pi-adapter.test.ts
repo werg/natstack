@@ -725,15 +725,13 @@ describe("PiAdapter", () => {
     it("should discover methods and pass as custom tools to session", async () => {
       const methods: DiscoveredMethod[] = [
         {
-          providerId: "panel-1",
-          providerName: "Panel",
+          participantId: "panel-1",
           name: "eval",
           description: "Evaluate code",
           parameters: { type: "object", properties: { code: { type: "string" } } },
         },
         {
-          providerId: "panel-1",
-          providerName: "Panel",
+          participantId: "panel-1",
           name: "feedback_form",
           description: "Show a form",
           parameters: {},
@@ -757,22 +755,22 @@ describe("PiAdapter", () => {
 
       expect(createSession).toHaveBeenCalledTimes(1);
       const sessionOptions = createSession.mock.calls[0]![0]!;
-      expect(sessionOptions.customTools).toHaveLength(2);
+      // 2 discovered tools + 1 ask_user tool (from feedback_form presence)
+      expect(sessionOptions.customTools).toHaveLength(3);
       expect(sessionOptions.customTools[0].name).toContain("eval");
       expect(sessionOptions.customTools[1].name).toContain("feedback_form");
+      expect(sessionOptions.customTools[2].name).toBe("ask_user");
     });
 
     it("should skip menu-only methods", async () => {
       const methods: DiscoveredMethod[] = [
         {
-          providerId: "panel-1",
-          providerName: "Panel",
+          participantId: "panel-1",
           name: "eval",
           description: "Evaluate code",
         },
         {
-          providerId: "panel-1",
-          providerName: "Panel",
+          participantId: "panel-1",
           name: "settings_menu",
           description: "Open settings",
           menu: true,
@@ -825,6 +823,302 @@ describe("PiAdapter", () => {
       await adapter.handleCommand({ type: "dispose" });
 
       expect(disposeFn).toHaveBeenCalled();
+    });
+  });
+
+  describe("tool approval", () => {
+    it("should emit approval-needed and wait for approve-tool before executing", async () => {
+      const methods: DiscoveredMethod[] = [
+        {
+          participantId: "panel-1",
+          name: "eval",
+          description: "Evaluate code",
+          parameters: { type: "object", properties: { code: { type: "string" } } },
+        },
+      ];
+
+      // Session that calls the tool's execute — simulate Pi SDK calling it
+      let capturedTools: Array<{ name: string; execute: (...args: unknown[]) => Promise<unknown> }> = [];
+      const createSession = vi.fn().mockImplementation(async (options: { customTools?: unknown[] }) => {
+        capturedTools = (options.customTools ?? []) as typeof capturedTools;
+        return createMockPiSession([{ type: "agent_end" }]);
+      });
+
+      const deps = createDeps({
+        discoverMethods: vi.fn().mockResolvedValue(methods),
+        createSession,
+      });
+      const adapter = new PiAdapter(createConfig(), deps);
+
+      // Start turn to create session and discover tools
+      await adapter.handleCommand({
+        type: "start-turn",
+        input: { content: "test", senderId: "user-1" },
+      });
+
+      // Now call the wrapped tool directly (simulating Pi SDK calling execute)
+      expect(capturedTools.length).toBeGreaterThan(0);
+      const tool = capturedTools[0]!;
+
+      // Start execution in background — it should block on approval
+      let toolResult: unknown;
+      const toolPromise = tool.execute("call-1", { code: "1+1" }, undefined, undefined, undefined)
+        .then((r) => { toolResult = r; });
+
+      // approval-needed should have been emitted
+      const approvalEvent = deps.events.find(
+        (e) => e.type === "approval-needed",
+      );
+      expect(approvalEvent).toBeDefined();
+
+      // Approve the tool
+      await adapter.handleCommand({
+        type: "approve-tool",
+        toolUseId: "call-1",
+        allow: true,
+        alwaysAllow: false,
+      });
+      await toolPromise;
+
+      expect(toolResult).toBeDefined();
+    });
+
+    it("should return denial message when tool is rejected", async () => {
+      const methods: DiscoveredMethod[] = [
+        { participantId: "p1", name: "dangerous", description: "Dangerous op" },
+      ];
+
+      let capturedTools: Array<{ execute: (...args: unknown[]) => Promise<{ content: Array<{ text: string }> }> }> = [];
+      const createSession = vi.fn().mockImplementation(async (options: { customTools?: unknown[] }) => {
+        capturedTools = (options.customTools ?? []) as typeof capturedTools;
+        return createMockPiSession([{ type: "agent_end" }]);
+      });
+
+      const deps = createDeps({
+        discoverMethods: vi.fn().mockResolvedValue(methods),
+        createSession,
+      });
+      const adapter = new PiAdapter(createConfig(), deps);
+
+      await adapter.handleCommand({
+        type: "start-turn",
+        input: { content: "test", senderId: "user-1" },
+      });
+
+      const tool = capturedTools[0]!;
+      const resultPromise = tool.execute("call-2", {}, undefined, undefined, undefined);
+
+      // Deny
+      await adapter.handleCommand({
+        type: "approve-tool",
+        toolUseId: "call-2",
+        allow: false,
+        alwaysAllow: false,
+      });
+
+      const result = await resultPromise;
+      expect(result.content[0]!.text).toContain("denied");
+    });
+
+    it("should auto-deny on abort signal", async () => {
+      const methods: DiscoveredMethod[] = [
+        { participantId: "p1", name: "slow_op", description: "Slow" },
+      ];
+
+      let capturedTools: Array<{ execute: (...args: unknown[]) => Promise<{ content: Array<{ text: string }> }> }> = [];
+      const createSession = vi.fn().mockImplementation(async (options: { customTools?: unknown[] }) => {
+        capturedTools = (options.customTools ?? []) as typeof capturedTools;
+        return createMockPiSession([{ type: "agent_end" }]);
+      });
+
+      const deps = createDeps({
+        discoverMethods: vi.fn().mockResolvedValue(methods),
+        createSession,
+      });
+      const adapter = new PiAdapter(createConfig(), deps);
+
+      await adapter.handleCommand({
+        type: "start-turn",
+        input: { content: "test", senderId: "user-1" },
+      });
+
+      const tool = capturedTools[0]!;
+      const abortController = new AbortController();
+
+      // Start execution with an abort signal
+      const resultPromise = tool.execute("call-3", {}, abortController.signal, undefined, undefined);
+
+      // Abort — should auto-deny
+      abortController.abort();
+
+      const result = await resultPromise;
+      expect(result.content[0]!.text).toContain("denied");
+    });
+  });
+
+  describe("tool allowlist", () => {
+    it("should filter tools by allowlist", async () => {
+      const methods: DiscoveredMethod[] = [
+        { participantId: "p1", name: "allowed_tool", description: "Allowed" },
+        { participantId: "p1", name: "blocked_tool", description: "Blocked" },
+        { participantId: "p1", name: "feedback_form", description: "Form" },
+      ];
+
+      const createSession = vi.fn().mockResolvedValue(
+        createMockPiSession([{ type: "agent_end" }]),
+      );
+
+      const deps = createDeps({
+        discoverMethods: vi.fn().mockResolvedValue(methods),
+        createSession,
+      });
+      // Only allow "allowed_tool" — feedback_form is excluded
+      const config = createConfig({ toolAllowlist: ["allowed_tool"] });
+      const adapter = new PiAdapter(config, deps);
+
+      await adapter.handleCommand({
+        type: "start-turn",
+        input: { content: "test", senderId: "user-1" },
+      });
+
+      const sessionOptions = createSession.mock.calls[0]![0]!;
+      // Only 1 tool — allowed_tool. No ask_user because feedback_form is excluded.
+      expect(sessionOptions.customTools).toHaveLength(1);
+      expect(sessionOptions.customTools[0].name).toContain("allowed_tool");
+    });
+  });
+
+  describe("per-turn settings", () => {
+    it("should recreate session when model changes between turns", async () => {
+      const piEvents: PiSessionEvent[] = [{ type: "agent_end" }];
+      const session1 = createMockPiSession(piEvents, { sessionFile: "/s1.jsonl" });
+      const session2 = createMockPiSession(piEvents, { sessionFile: "/s2.jsonl" });
+      const createSession = vi.fn()
+        .mockResolvedValueOnce(session1)
+        .mockResolvedValueOnce(session2);
+      const createSessionManager = vi.fn().mockReturnValue(createMockSessionManager());
+
+      const deps = createDeps({ createSession, createSessionManager });
+      const adapter = new PiAdapter(createConfig({ model: "model-a" }), deps);
+
+      // Turn 1 with default model
+      await adapter.handleCommand({
+        type: "start-turn",
+        input: { content: "turn 1", senderId: "user-1" },
+      });
+      expect(createSession).toHaveBeenCalledTimes(1);
+      expect(createSession.mock.calls[0]![0].model).toBe("model-a");
+
+      // Turn 2 with different model — should recreate session
+      await adapter.handleCommand({
+        type: "start-turn",
+        input: {
+          content: "turn 2",
+          senderId: "user-1",
+          settings: { model: "model-b" },
+        },
+      });
+      expect(createSession).toHaveBeenCalledTimes(2);
+      expect(createSession.mock.calls[1]![0].model).toBe("model-b");
+      // Should have resumed from session 1's file
+      expect(createSessionManager).toHaveBeenLastCalledWith(
+        expect.any(String),
+        "/s1.jsonl",
+      );
+    });
+
+    it("should reuse session when settings are unchanged", async () => {
+      const piEvents: PiSessionEvent[] = [{ type: "agent_end" }];
+      const mockSession = createMockPiSession(piEvents);
+      const createSession = vi.fn().mockResolvedValue(mockSession);
+
+      const deps = createDeps({ createSession });
+      const adapter = new PiAdapter(createConfig({ model: "model-a" }), deps);
+
+      await adapter.handleCommand({
+        type: "start-turn",
+        input: { content: "turn 1", senderId: "user-1" },
+      });
+      await adapter.handleCommand({
+        type: "start-turn",
+        input: { content: "turn 2", senderId: "user-1" },
+      });
+
+      // Session created only once
+      expect(createSession).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("error recovery", () => {
+    it("should emit turn-complete with sessionId after error", async () => {
+      const mockSession = createMockPiSession([], {
+        sessionFile: "/sessions/err.jsonl",
+      });
+      (mockSession as { prompt: unknown }).prompt = async () => {
+        throw new Error("API error");
+      };
+
+      const deps = createDeps({
+        createSession: vi.fn().mockResolvedValue(mockSession),
+      });
+      const adapter = new PiAdapter(createConfig(), deps);
+
+      await adapter.handleCommand({
+        type: "start-turn",
+        input: { content: "test", senderId: "user-1" },
+      });
+
+      const errorEvt = deps.events.find((e) => e.type === "error");
+      expect(errorEvt).toBeDefined();
+
+      const turnComplete = deps.events.find((e) => e.type === "turn-complete");
+      expect(turnComplete).toBeDefined();
+      expect(
+        (turnComplete as { sessionId: string }).sessionId,
+      ).toBe("/sessions/err.jsonl");
+    });
+  });
+
+  describe("approval ordering", () => {
+    it("should defer action-start for approval-gated tools", async () => {
+      const methods: DiscoveredMethod[] = [
+        { participantId: "p1", name: "eval", description: "Eval" },
+      ];
+
+      let capturedTools: Array<{ name: string; execute: (...args: unknown[]) => Promise<unknown> }> = [];
+      const piEvents: PiSessionEvent[] = [
+        { type: "agent_start" },
+        // tool_execution_start fires before execute is called
+        { type: "tool_execution_start", toolCallId: "tc-1", toolName: expect.stringContaining("eval") as unknown as string },
+        { type: "tool_execution_end", toolCallId: "tc-1", toolName: "eval" },
+        { type: "agent_end" },
+      ];
+
+      const createSession = vi.fn().mockImplementation(async (options: { customTools?: unknown[] }) => {
+        capturedTools = (options.customTools ?? []) as typeof capturedTools;
+        return createMockPiSession(piEvents);
+      });
+
+      const deps = createDeps({
+        discoverMethods: vi.fn().mockResolvedValue(methods),
+        createSession,
+      });
+      const adapter = new PiAdapter(createConfig(), deps);
+
+      await adapter.handleCommand({
+        type: "start-turn",
+        input: { content: "test", senderId: "user-1" },
+      });
+
+      // tool_execution_start for an approval-gated tool should NOT have
+      // emitted action-start (it's deferred to the execute wrapper)
+      const actionStartFromEvent = deps.events.find(
+        (e) => e.type === "action-start",
+      );
+      // action-start only appears if the execute wrapper was called
+      // (in this mock, prompt() fires events but doesn't call execute)
+      // so no action-start should appear
+      expect(actionStartFromEvent).toBeUndefined();
     });
   });
 });

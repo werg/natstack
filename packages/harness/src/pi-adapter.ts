@@ -243,7 +243,29 @@ export class PiAdapter {
     isThinking: false,
     inTextBlock: false,
     currentToolUseId: null as string | null,
+    messageCompleteEmitted: false,
   };
+
+  /** Pending tool approval requests — resolved when approve-tool arrives */
+  private pendingApprovals = new Map<
+    string,
+    {
+      resolve: (result: {
+        allow: boolean;
+        updatedInput?: Record<string, unknown>;
+      }) => void;
+    }
+  >();
+
+  /** Cached tools from first discovery (reused across session recreations) */
+  private allTools: PiToolDefinition[] | null = null;
+
+  /** Filtered methods from discovery (post-allowlist) */
+  private discoveredMethods: DiscoveredMethod[] = [];
+
+  /** Settings used to create the current session — compared per-turn */
+  private activeModel: string | undefined;
+  private activeThinkingLevel: string | undefined;
 
   constructor(
     private readonly config: HarnessConfig,
@@ -260,11 +282,12 @@ export class PiAdapter {
       case "start-turn":
         return this.startTurn(command.input);
       case "approve-tool":
-        return this.approveTool(
+        this.approveTool(
           command.toolUseId,
           command.allow,
-          command.alwaysAllow,
+          command.updatedInput,
         );
+        return;
       case "interrupt":
         return this.interrupt();
       case "fork":
@@ -289,38 +312,138 @@ export class PiAdapter {
         isThinking: false,
         inTextBlock: false,
         currentToolUseId: null,
+        messageCompleteEmitted: false,
       };
       this.aborted = false;
 
-      // Ensure session exists — create on first turn, reuse on subsequent turns.
-      // The Pi SDK session manages its own conversation history and JSONL persistence.
-      if (!this.session) {
-        // Discover tools from channel participants
-        const methods = await this.deps.discoverMethods();
+      // ----- Tool discovery (first turn only) -----
+      if (!this.allTools) {
+        let methods = await this.deps.discoverMethods();
+
+        // Apply tool allowlist BEFORE caching — defense-in-depth filter.
+        const allowlist = this.config.toolAllowlist;
+        if (allowlist) {
+          const allowSet = new Set(allowlist);
+          const before = methods.length;
+          methods = methods.filter((m) => allowSet.has(m.name));
+          log?.info(
+            `Tool allowlist: ${before} discovered → ${methods.length} allowed`,
+          );
+        }
+
+        // Store filtered set — createAskUserTool reads from this
+        this.discoveredMethods = methods;
+
         const { customTools, originalToDisplay } = convertToPiTools(
           methods,
           (pid, method, args) => this.deps.callMethod(pid, method, args),
         );
         this.originalToDisplay = originalToDisplay;
 
-        log?.info(
-          `Discovered ${customTools.length} tools from channel participants`,
+        // Wrap custom tools with approval gating — the server/DO decides
+        // whether to auto-approve or prompt the user interactively.
+        const approvalWrappedTools: PiToolDefinition[] = customTools.map(
+          (tool) => ({
+            ...tool,
+            execute: async (
+              toolCallId: string,
+              params: Record<string, unknown>,
+              signal: AbortSignal | undefined,
+              onUpdate: Parameters<PiToolDefinition["execute"]>[3],
+              ctx: unknown,
+            ): ReturnType<PiToolDefinition["execute"]> => {
+              const approval = await this.requestToolApproval(
+                toolCallId,
+                tool.name,
+                params,
+                signal,
+              );
+              if (!approval.allow) {
+                // Emit action-start/end so the UI shows the denied attempt
+                const displayName =
+                  this.originalToDisplay.get(tool.name) ??
+                  prettifyToolName(tool.name);
+                this.deps.pushEvent({
+                  type: "action-start",
+                  tool: displayName,
+                  description: getToolDescription(displayName, params),
+                  toolUseId: toolCallId,
+                });
+                return {
+                  content: [
+                    { type: "text" as const, text: "Tool use denied by user" },
+                  ],
+                  details: undefined as unknown,
+                };
+              }
+              // Emit action-start after approval — matches Claude's ordering
+              // where canUseTool resolves before the action bead appears.
+              const displayName =
+                this.originalToDisplay.get(tool.name) ??
+                prettifyToolName(tool.name);
+              const finalParams = approval.updatedInput ?? params;
+              this.deps.pushEvent({
+                type: "action-start",
+                tool: displayName,
+                description: getToolDescription(displayName, finalParams),
+                toolUseId: toolCallId,
+              });
+              return tool.execute(toolCallId, finalParams, signal, onUpdate, ctx);
+            },
+          }),
         );
 
-        // Create session manager (new or resumed)
-        const resumeFile = this.options?.resumeSessionId;
+        // Add AskUserQuestion tool if feedback_form is available
+        const askUserTool = this.createAskUserTool();
+        this.allTools = askUserTool
+          ? [...approvalWrappedTools, askUserTool]
+          : approvalWrappedTools;
+
+        log?.info(
+          `Discovered ${this.allTools.length} tools from channel participants`,
+        );
+      }
+
+      // ----- Session creation / recreation -----
+      // Resolve effective settings for this turn
+      const turnModel = input.settings?.model ?? this.config.model;
+      const turnThinking =
+        input.settings?.maxThinkingTokens !== undefined
+          ? mapThinkingTokensToLevel(input.settings.maxThinkingTokens)
+          : this.config.maxThinkingTokens !== undefined
+            ? mapThinkingTokensToLevel(this.config.maxThinkingTokens)
+            : undefined;
+
+      const settingsChanged =
+        this.session &&
+        (turnModel !== this.activeModel ||
+          turnThinking !== this.activeThinkingLevel);
+
+      if (!this.session || settingsChanged) {
+        // Dispose existing session, preserving session file for resume
+        let resumeFile = this.options?.resumeSessionId;
+        if (this.session) {
+          resumeFile = this.session.sessionFile ?? undefined;
+          log?.info(
+            `Recreating session (model: ${this.activeModel} → ${turnModel}, ` +
+              `thinking: ${this.activeThinkingLevel} → ${turnThinking})`,
+          );
+          this.teardownSession();
+        }
+
         this.sessionManager = this.deps.createSessionManager(cwd, resumeFile);
 
-        // Create Pi session
         const session = await this.deps.createSession({
           cwd,
-          customTools,
+          customTools: this.allTools!,
           sessionManager: this.sessionManager,
+          ...(turnModel && { model: turnModel }),
+          ...(turnThinking && { thinkingLevel: turnThinking }),
         });
         this.session = session;
+        this.activeModel = turnModel;
+        this.activeThinkingLevel = turnThinking;
 
-        // Subscribe once — stays active across turns. Events only fire during
-        // session.prompt(), so the stream state reset above is safe.
         this.unsubscribe = session.subscribe((event) => {
           this.handlePiEvent(event);
         });
@@ -328,6 +451,16 @@ export class PiAdapter {
 
       // Run the prompt (blocks until agent finishes)
       await this.session.prompt(input.content);
+
+      // Ensure message-complete is emitted if we had content.
+      // Close open blocks first so text-end precedes message-complete.
+      if (
+        this.streamState.hasStreamedText &&
+        !this.streamState.messageCompleteEmitted
+      ) {
+        this.closeOpenBlocks();
+        this.deps.pushEvent({ type: "message-complete" });
+      }
 
       // Emit turn-complete with session file as sessionId
       const usage = this.computeTurnUsage();
@@ -340,10 +473,19 @@ export class PiAdapter {
     } catch (err) {
       // Aborted sessions may throw — only report unexpected errors
       if (!this.aborted) {
-        const message =
-          err instanceof Error ? err.message : String(err);
+        const message = err instanceof Error ? err.message : String(err);
         log?.error("Pi turn error:", message);
         this.deps.pushEvent({ type: "error", error: message });
+
+        // Emit turn-complete with sessionId for crash recovery
+        const sessionId = this.session?.sessionFile ?? "";
+        if (sessionId) {
+          this.deps.pushEvent({
+            type: "turn-complete",
+            sessionId,
+            usage: this.computeTurnUsage(),
+          });
+        }
       }
     } finally {
       // Ensure thinking/text blocks are closed
@@ -352,23 +494,41 @@ export class PiAdapter {
     }
   }
 
+  /** Tear down the current session without clearing tools or discovery state */
+  private teardownSession(): void {
+    if (this.unsubscribe) {
+      this.unsubscribe();
+      this.unsubscribe = null;
+    }
+    if (this.session) {
+      try {
+        this.session.dispose();
+      } catch (err) {
+        this.deps.log?.warn(`Session dispose error: ${err}`);
+      }
+      this.session = null;
+    }
+    this.sessionManager = null;
+  }
+
   // ---------------------------------------------------------------------------
   // approve-tool
   // ---------------------------------------------------------------------------
 
   private approveTool(
-    _toolUseId: string,
-    _allow: boolean,
-    _alwaysAllow?: boolean,
+    toolUseId: string,
+    allow: boolean,
+    updatedInput?: Record<string, unknown>,
   ): void {
-    // Pi SDK handles tool approval via its extension hook (tool_call event),
-    // not the harness approve/reject flow. Approval gating is controlled by
-    // the autonomy level configured in adapterConfig, not interactive prompts.
-    // This method is intentionally a no-op for Pi.
-    this.deps.log?.debug(
-      `approve-tool command received (toolUseId=${_toolUseId}, allow=${_allow}) — ` +
-        `Pi uses extension-hook-based approval, not harness commands`,
-    );
+    const pending = this.pendingApprovals.get(toolUseId);
+    if (pending) {
+      this.pendingApprovals.delete(toolUseId);
+      pending.resolve({ allow, updatedInput });
+    } else {
+      this.deps.log?.debug(
+        `approve-tool for unknown toolUseId ${toolUseId}`,
+      );
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -377,6 +537,11 @@ export class PiAdapter {
 
   private async interrupt(): Promise<void> {
     this.aborted = true;
+    // Reject all pending approvals — the tool calls are cancelled
+    for (const [, pending] of this.pendingApprovals) {
+      pending.resolve({ allow: false });
+    }
+    this.pendingApprovals.clear();
     if (this.session) {
       try {
         await this.session.abort();
@@ -475,20 +640,17 @@ export class PiAdapter {
   // ---------------------------------------------------------------------------
 
   private dispose(): void {
-    if (this.unsubscribe) {
-      this.unsubscribe();
-      this.unsubscribe = null;
+    // Reject pending approvals
+    for (const [, pending] of this.pendingApprovals) {
+      pending.resolve({ allow: false });
     }
-    if (this.session) {
-      try {
-        this.session.dispose();
-      } catch (err) {
-        this.deps.log?.warn(`Session dispose error: ${err}`);
-      }
-      this.session = null;
-    }
-    this.sessionManager = null;
+    this.pendingApprovals.clear();
+    this.teardownSession();
+    this.allTools = null;
     this.originalToDisplay.clear();
+    this.discoveredMethods = [];
+    this.activeModel = undefined;
+    this.activeThinkingLevel = undefined;
     this.prevTokens = { input: 0, output: 0, cost: 0 };
   }
 
@@ -627,12 +789,13 @@ export class PiAdapter {
 
     // Emit message-complete
     this.deps.pushEvent({ type: "message-complete" });
+    this.streamState.messageCompleteEmitted = true;
   }
 
   private handleToolStart(
     event: Extract<PiSessionEvent, { type: "tool_execution_start" }>,
   ): void {
-    // Close any open blocks
+    // Close any open blocks before the tool runs
     if (this.streamState.isThinking) {
       this.deps.pushEvent({ type: "thinking-end" });
       this.streamState.isThinking = false;
@@ -642,14 +805,19 @@ export class PiAdapter {
       this.streamState.inTextBlock = false;
     }
 
-    const displayName =
-      this.originalToDisplay.get(event.toolName) ??
-      prettifyToolName(event.toolName);
     const toolUseId = event.toolCallId ?? generateId();
-    const args = (event.args ?? {}) as Record<string, unknown>;
-
     this.streamState.currentToolUseId = toolUseId;
 
+    // Approval-gated tools (in originalToDisplay) defer action-start until
+    // after the approval resolves — the execute wrapper emits it. This matches
+    // Claude's ordering where canUseTool fires before the action bead.
+    if (this.originalToDisplay.has(event.toolName)) {
+      return;
+    }
+
+    // Non-approval tools (Pi built-ins, ask_user) emit action-start immediately
+    const displayName = prettifyToolName(event.toolName);
+    const args = (event.args ?? {}) as Record<string, unknown>;
     this.deps.pushEvent({
       type: "action-start",
       tool: displayName,
@@ -675,6 +843,151 @@ export class PiAdapter {
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  /** Emit approval-needed and wait for the server/DO to approve or deny.
+   *  If the signal fires (interrupt/abort), auto-deny so the promise resolves. */
+  private requestToolApproval(
+    toolUseId: string,
+    toolName: string,
+    input: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<{ allow: boolean; updatedInput?: Record<string, unknown> }> {
+    return new Promise((resolve) => {
+      // If already aborted, deny immediately
+      if (signal?.aborted) {
+        resolve({ allow: false });
+        return;
+      }
+
+      this.pendingApprovals.set(toolUseId, { resolve });
+
+      // Auto-deny if the signal fires while waiting (interrupt, timeout, etc.)
+      const onAbort = () => {
+        if (this.pendingApprovals.has(toolUseId)) {
+          this.pendingApprovals.delete(toolUseId);
+          resolve({ allow: false });
+        }
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+
+      this.deps.pushEvent({
+        type: "approval-needed",
+        toolUseId,
+        toolName,
+        input,
+      });
+    });
+  }
+
+  /** Create an AskUserQuestion custom tool that routes through feedback_form.
+   *  Supports both simple single-question and multi-question with options,
+   *  matching the Claude SDK's AskUserQuestion format. */
+  private createAskUserTool(): PiToolDefinition | null {
+    const feedbackProvider = this.discoveredMethods.find(
+      (m) => m.name === "feedback_form",
+    );
+    if (!feedbackProvider) return null;
+
+    return {
+      name: "ask_user",
+      label: "Ask User",
+      description:
+        "Ask the user a question and wait for their response. " +
+        "Use `question` for a single free-text question, or `questions` " +
+        "for multiple questions with optional choice options.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: {
+            type: "string",
+            description: "Simple single question text",
+          },
+          questions: {
+            type: "array",
+            description: "Array of structured questions",
+            items: {
+              type: "object",
+              properties: {
+                question: { type: "string" },
+                header: { type: "string" },
+                options: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      label: { type: "string" },
+                      description: { type: "string" },
+                    },
+                  },
+                },
+                multiSelect: { type: "boolean" },
+              },
+            },
+          },
+        },
+      },
+      execute: async (_toolCallId, params) => {
+        try {
+          const fields = buildAskUserFields(params);
+          const result = await this.deps.callMethod(
+            feedbackProvider.participantId,
+            "feedback_form",
+            { title: "Agent needs your input", fields, values: {} },
+          );
+          const fr = result as {
+            type?: string;
+            value?: Record<string, unknown>;
+          };
+          if (fr.type === "cancel") {
+            return {
+              content: [
+                { type: "text" as const, text: "User cancelled the question." },
+              ],
+              details: undefined as unknown,
+            };
+          }
+
+          // Collect answers, resolving "Other" fields
+          const formValues = fr.value ?? {};
+          const answers: string[] = [];
+          for (const [key, value] of Object.entries(formValues)) {
+            if (key.endsWith("_other")) continue;
+            const otherValue = formValues[`${key}_other`];
+            let answer: string;
+            if (Array.isArray(value)) {
+              answer = value
+                .map((v: string) =>
+                  v === "__other__"
+                    ? (typeof otherValue === "string" && otherValue) || "Other"
+                    : v,
+                )
+                .join(", ");
+            } else if (value === "__other__") {
+              answer =
+                (typeof otherValue === "string" && otherValue) || "Other";
+            } else {
+              answer = String(value);
+            }
+            if (answer) answers.push(answer);
+          }
+
+          const text = answers.join("\n") || "(no response)";
+          return {
+            content: [{ type: "text" as const, text }],
+            details: undefined as unknown,
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            content: [
+              { type: "text" as const, text: `Error asking user: ${msg}` },
+            ],
+            details: undefined as unknown,
+          };
+        }
+      },
+    };
+  }
 
   /** Close any open thinking/text blocks */
   private closeOpenBlocks(): void {
@@ -742,6 +1055,92 @@ function getToolDescription(
     return `${tool}: ${String(path).slice(0, 120)}`;
   }
   return tool;
+}
+
+/** Build feedback_form fields from ask_user params (single or multi-question) */
+function buildAskUserFields(
+  params: Record<string, unknown>,
+): Array<Record<string, unknown>> {
+  const questions = params["questions"] as
+    | Array<{
+        question: string;
+        header?: string;
+        options?: Array<{ label: string; description?: string }>;
+        multiSelect?: boolean;
+      }>
+    | undefined;
+
+  const fields: Array<Record<string, unknown>> = [];
+
+  if (Array.isArray(questions) && questions.length > 0) {
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i]!;
+      const fieldId = String(i);
+      const fieldOptions = (q.options ?? []).map((opt) => ({
+        value: opt.label,
+        label: opt.label,
+        description: opt.description,
+      }));
+      // Add "Other" option for short option lists
+      if (fieldOptions.length > 0 && fieldOptions.length < 4) {
+        fieldOptions.push({
+          value: "__other__",
+          label: "Other",
+          description: "Provide a custom answer",
+        });
+      }
+      if (fieldOptions.length > 0) {
+        fields.push({
+          key: fieldId,
+          label: q.header || q.question,
+          description: q.question,
+          type: q.multiSelect ? "multiSelect" : "segmented",
+          variant: "cards",
+          options: fieldOptions,
+        });
+        fields.push({
+          key: `${fieldId}_other`,
+          label: "Please specify",
+          type: "string",
+          placeholder: "Enter your answer...",
+          visibleWhen: q.multiSelect
+            ? { field: fieldId, operator: "contains", value: "__other__" }
+            : { field: fieldId, operator: "eq", value: "__other__" },
+        });
+      } else {
+        fields.push({
+          key: fieldId,
+          label: q.header || "Your response",
+          description: q.question,
+          type: "textarea",
+          required: true,
+        });
+      }
+    }
+  } else {
+    // Single question fallback
+    const question =
+      (params["question"] as string) ?? "Do you have any input?";
+    fields.push({
+      key: "0",
+      label: "Your response",
+      description: question,
+      type: "textarea",
+      required: true,
+    });
+  }
+
+  return fields;
+}
+
+/** Map maxThinkingTokens (number) to Pi's ThinkingLevel (string) */
+function mapThinkingTokensToLevel(mtk: number): string {
+  if (!mtk || mtk === 0) return "off";
+  if (mtk <= 1024) return "minimal";
+  if (mtk <= 4096) return "low";
+  if (mtk <= 16384) return "medium";
+  if (mtk <= 65536) return "high";
+  return "xhigh";
 }
 
 /** Generate a simple unique ID */

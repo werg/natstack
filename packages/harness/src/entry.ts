@@ -125,9 +125,9 @@ async function createAdapter(
       const authStorage = piSdk.AuthStorage.create();
       const modelRegistry = new piSdk.ModelRegistry(authStorage);
 
-      // Resolve model from harness config (e.g. "anthropic:claude-opus-4-5" or "claude-sonnet-4-5")
-      const resolveModel = (): unknown => {
-        const modelStr = config.model;
+      // Resolve a model string (e.g. "anthropic:claude-opus-4-5" or "claude-sonnet-4-5")
+      // to a Pi SDK Model object via ModelRegistry / piAi.getModel.
+      const resolveModelStr = (modelStr: string | undefined): unknown => {
         if (!modelStr) return undefined;
         const colonIdx = modelStr.indexOf(":");
         if (colonIdx >= 0) {
@@ -145,6 +145,7 @@ async function createAdapter(
         }
         return undefined;
       };
+      const resolveModel = (): unknown => resolveModelStr(config.model);
 
       // Map maxThinkingTokens (number) to Pi's ThinkingLevel (string)
       const resolveThinkingLevel = (): string => {
@@ -181,9 +182,13 @@ async function createAdapter(
       const piDeps: PiAdapterDeps = {
         pushEvent: deps.pushEvent,
         callMethod: deps.callMethod,
-        discoverMethods: deps.discoverMethods as unknown as PiAdapterDeps["discoverMethods"],
+        discoverMethods: deps.discoverMethods,
         createSession: async (options) => {
-          const model = resolveModel();
+          // Resolve per-turn model string through ModelRegistry, fall back to config
+          const model =
+            (typeof options.model === "string"
+              ? resolveModelStr(options.model)
+              : options.model) ?? resolveModel();
           const { session } = await piSdk.createAgentSession({
             cwd: options.cwd,
             ...(model ? { model: model as never } : {}),
