@@ -16,7 +16,7 @@ import type {
 } from "../shared/ws/protocol.js";
 import type { StreamTextEvent } from "../shared/types.js";
 import type { StreamTarget } from "../shared/ai/aiHandler.js";
-import type { ToolExecutionResult } from "../shared/ai/claudeCodeToolProxy.js";
+import type { ToolExecutionResult } from "../shared/ai/claudeAgentToolProxy.js";
 import { TOOL_EXECUTION_TIMEOUT_MS } from "../shared/constants.js";
 import { findServicePort } from "@natstack/port-utils";
 import {

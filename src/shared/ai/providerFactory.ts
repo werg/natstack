@@ -33,9 +33,9 @@ export function findExecutable(name: string): string | undefined {
 }
 
 /**
- * Find the path to the Claude Code CLI executable.
+ * Find the path to the Claude Agent CLI executable.
  */
-function findClaudeCodeExecutable(): string | undefined {
+function findClaudeAgentExecutable(): string | undefined {
   return findExecutable("claude");
 }
 
@@ -206,21 +206,21 @@ const DEFAULT_MODELS: Record<SupportedProvider, ModelInfo[]> = {
       description: "Fast web-connected model",
     },
   ],
-  "claude-code": [
+  "claude-agent": [
     {
       id: "sonnet",
-      displayName: "Claude Code (Sonnet)",
-      description: "Claude Code agent with Sonnet model - optimized for coding tasks",
+      displayName: "Claude Agent (Sonnet)",
+      description: "Claude Agent with Sonnet model - optimized for coding tasks",
     },
     {
       id: "opus",
-      displayName: "Claude Code (Opus)",
-      description: "Claude Code agent with Opus model - most capable for complex coding",
+      displayName: "Claude Agent (Opus)",
+      description: "Claude Agent with Opus model - most capable for complex coding",
     },
     {
       id: "haiku",
-      displayName: "Claude Code (Haiku)",
-      description: "Claude Code agent with Haiku model - fast and efficient",
+      displayName: "Claude Agent (Haiku)",
+      description: "Claude Agent with Haiku model - fast and efficient",
     },
   ],
 };
@@ -238,7 +238,7 @@ const OPENAI_COMPATIBLE_BASE_URLS: Partial<Record<SupportedProvider, string>> = 
 
 /**
  * Environment variable names for each provider's API key.
- * Note: Claude Code uses CLI authentication via `claude login`, not an API key.
+ * Note: Claude Agent uses CLI authentication via `claude login`, not an API key.
  * The empty string indicates no API key is needed.
  */
 const PROVIDER_ENV_VARS: Record<SupportedProvider, string> = {
@@ -251,7 +251,7 @@ const PROVIDER_ENV_VARS: Record<SupportedProvider, string> = {
   together: "TOGETHER_API_KEY",
   replicate: "REPLICATE_API_KEY",
   perplexity: "PERPLEXITY_API_KEY",
-  "claude-code": "", // Uses CLI auth, not API key
+  "claude-agent": "", // Uses CLI auth, not API key
 };
 
 /**
@@ -267,25 +267,25 @@ function getApiKey(providerId: SupportedProvider): string | undefined {
  * Create an AI provider configuration.
  * API keys are read from environment variables (populated from .secrets.yml or .env).
  * Returns null if the provider cannot be created (e.g., missing API key).
- * Note: Claude Code uses CLI authentication and doesn't require an API key.
+ * Note: Claude Agent uses CLI authentication and doesn't require an API key.
  */
 export function createProviderFromConfig(providerId: SupportedProvider, workspacePath?: string): AIProviderConfig | null {
   const models = DEFAULT_MODELS[providerId] ?? [];
 
-  // Claude Code uses CLI authentication, not API keys.
+  // Claude Agent uses CLI authentication, not API keys.
   // NOTE: This provider is for basic text generation WITHOUT tools.
-  // For tool use with Claude Code, aiHandler.streamToPanel() routes through
-  // streamClaudeCodeWithTools() which sets up proper MCP tool proxying.
-  if (providerId === "claude-code") {
-    const claudeExecutable = findClaudeCodeExecutable();
+  // For tool use with Claude Agent, aiHandler.streamToPanel() routes through
+  // streamClaudeAgentWithTools() which sets up proper MCP tool proxying.
+  if (providerId === "claude-agent") {
+    const claudeExecutable = findClaudeAgentExecutable();
     if (!claudeExecutable) {
-      console.warn("[ProviderFactory] Claude Code CLI not found in PATH, skipping");
+      console.warn("[ProviderFactory] Claude Agent CLI not found in PATH, skipping");
       return null;
     }
 
     return {
       id: providerId,
-      name: "Claude Code",
+      name: "Claude Agent",
       createModel: (modelId) =>
         createClaudeCode()(modelId as "sonnet" | "opus" | "haiku", {
           allowedTools: [], // No tools for basic provider
@@ -418,7 +418,7 @@ export function getProviderDisplayName(providerId: SupportedProvider): string {
     together: "Together AI",
     replicate: "Replicate",
     perplexity: "Perplexity",
-    "claude-code": "Claude Code",
+    "claude-agent": "Claude Agent",
   };
   return displayNames[providerId] ?? providerId;
 }
@@ -435,5 +435,5 @@ export function hasProviderApiKey(providerId: SupportedProvider): boolean {
  * Check if a provider uses CLI authentication instead of API keys
  */
 export function usesCliAuth(providerId: SupportedProvider): boolean {
-  return providerId === "claude-code";
+  return providerId === "claude-agent";
 }

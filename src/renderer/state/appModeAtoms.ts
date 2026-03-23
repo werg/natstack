@@ -172,7 +172,7 @@ export const setModelRoleAtom = atom(
 );
 
 /**
- * Enable a CLI-auth provider (like claude-code)
+ * Enable a CLI-auth provider (like claude-agent)
  */
 export const enableProviderAtom = atom(null, async (_get, set, providerId: string) => {
   try {

@@ -35,7 +35,7 @@ describe("providerFactory", () => {
       expect(isSupportedProvider("openai")).toBe(true);
       expect(isSupportedProvider("google")).toBe(true);
       expect(isSupportedProvider("groq")).toBe(true);
-      expect(isSupportedProvider("claude-code")).toBe(true);
+      expect(isSupportedProvider("claude-agent")).toBe(true);
     });
 
     it("returns false for unknown provider ids", () => {
@@ -62,7 +62,7 @@ describe("providerFactory", () => {
       expect(providers).toContain("together");
       expect(providers).toContain("replicate");
       expect(providers).toContain("perplexity");
-      expect(providers).toContain("claude-code");
+      expect(providers).toContain("claude-agent");
       expect(providers).not.toContain("codex-cli");
     });
   });
@@ -81,7 +81,7 @@ describe("providerFactory", () => {
       expect(getProviderDisplayName("together")).toBe("Together AI");
       expect(getProviderDisplayName("replicate")).toBe("Replicate");
       expect(getProviderDisplayName("perplexity")).toBe("Perplexity");
-      expect(getProviderDisplayName("claude-code")).toBe("Claude Code");
+      expect(getProviderDisplayName("claude-agent")).toBe("Claude Agent");
     });
   });
 
@@ -106,9 +106,9 @@ describe("providerFactory", () => {
     });
 
     it("returns false for CLI-auth providers (empty env var name)", () => {
-      // claude-code has empty string env var,
+      // claude-agent has empty string env var,
       // so process.env[""] is always undefined
-      expect(hasProviderApiKey("claude-code")).toBe(false);
+      expect(hasProviderApiKey("claude-agent")).toBe(false);
     });
   });
 
@@ -116,8 +116,8 @@ describe("providerFactory", () => {
   // usesCliAuth
   // -------------------------------------------------------------------------
   describe("usesCliAuth", () => {
-    it("returns true for claude-code", () => {
-      expect(usesCliAuth("claude-code")).toBe(true);
+    it("returns true for claude-agent", () => {
+      expect(usesCliAuth("claude-agent")).toBe(true);
     });
 
     it("returns false for API-key providers", () => {
@@ -134,7 +134,7 @@ describe("providerFactory", () => {
     it("returns non-empty model arrays for known providers", () => {
       const knownProviders: SupportedProvider[] = [
         "anthropic", "openai", "google", "groq", "openrouter",
-        "mistral", "together", "replicate", "perplexity", "claude-code",
+        "mistral", "together", "replicate", "perplexity", "claude-agent",
       ];
       for (const id of knownProviders) {
         const models = getDefaultModelsForProvider(id);
@@ -170,7 +170,7 @@ describe("providerFactory", () => {
       expect(envVars.replicate).toBe("REPLICATE_API_KEY");
       expect(envVars.perplexity).toBe("PERPLEXITY_API_KEY");
       // CLI-auth providers have empty string env var
-      expect(envVars["claude-code"]).toBe("");
+      expect(envVars["claude-agent"]).toBe("");
     });
   });
 

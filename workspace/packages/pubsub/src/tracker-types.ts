@@ -14,10 +14,10 @@ import type { ContextWindowUsage } from "./context-tracker.js";
  */
 export interface ChatParticipantMetadata extends AgenticParticipantMetadata {
   name: string;
-  type: "panel" | "ai-responder" | "claude-code" | "pi" | "subagent";
+  type: "panel" | "ai-responder" | "claude-agent" | "pi" | "subagent";
   /** Runtime panel/worker ID - allows chat panel to link participant to child panel for focus/reload */
   panelId?: string;
-  /** Agent type ID for identification/recovery (e.g., "claude-code-responder") */
+  /** Agent type ID for identification/recovery (e.g., "claude-agent-responder") */
   agentTypeId?: string;
   /** Context window usage tracking (updated by AI responders) */
   contextUsage?: ContextWindowUsage;
@@ -71,7 +71,7 @@ export interface TypingData {
   senderId: string;
   /** Display name of who is typing */
   senderName?: string;
-  /** Participant type (e.g., "panel", "claude-code", "pi") */
+  /** Participant type (e.g., "panel", "claude-agent", "pi") */
   senderType?: string;
   /** Optional context (e.g., "preparing response", "searching files") */
   context?: string;

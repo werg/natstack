@@ -623,7 +623,7 @@ export class PanelLifecycle implements BridgePanelManager {
     this.cdpServer?.revokeTokenForPanel(panelId);
     this.cdpServer?.unregisterBrowser?.(panelId);
 
-    // Claude Code conversation cleanup
+    // Claude Agent conversation cleanup
     this.ccConversationManager?.endPanelConversations(panelId);
 
     // Clear subdomain sessions if no panels remain on this subdomain

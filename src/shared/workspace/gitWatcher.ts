@@ -53,7 +53,7 @@ export function createGitWatcher(workspace: Workspace): GitWatcher {
       // Skip .cache directory
       if (p.includes("/.cache")) return true;
       // Skip .contexts directory — these are generated context folder copies
-      // with their own .git repos (from create_project / Claude Code CLI).
+      // with their own .git repos (from create_project / Claude Agent CLI).
       // They are not workspace repos and should not trigger cache invalidation.
       if (p.includes("/.contexts")) return true;
       return false;

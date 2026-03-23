@@ -203,7 +203,7 @@ workspace/
 │   ├── model-provider-config/
 │   └── ...
 └── agents/                ← AI agents (node target)
-    ├── claude-code-responder/
+    ├── claude-agent-responder/
     ├── test-echo/
     └── ...
 ```

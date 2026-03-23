@@ -1,7 +1,7 @@
 /**
- * Claude Code Conversation Manager
+ * Claude Agent Conversation Manager
  *
- * Manages per-conversation Claude Code provider instances. Each conversation
+ * Manages per-conversation Claude Agent provider instances. Each conversation
  * with tools gets its own provider configured with an SDK MCP server that
  * proxies tool calls back to the panel.
  */
@@ -12,7 +12,7 @@ import {
   createToolProxyMcpServer,
   getMcpToolNames,
   type ToolExecuteCallback,
-} from "./claudeCodeToolProxy.js";
+} from "./claudeAgentToolProxy.js";
 import { createDevLogger } from "@natstack/dev-log";
 import { findExecutable } from "./providerFactory.js";
 
@@ -56,37 +56,37 @@ export interface CreateConversationOptions {
   modelId: string; // e.g., "sonnet", "opus", "haiku"
   tools: AIToolDefinition[];
   executeCallback: ToolExecuteCallback;
-  /** Additional Claude Code settings */
+  /** Additional Claude Agent settings */
   settings?: Partial<ClaudeCodeSettings>;
   /** Working directory for this conversation (panel's context folder) */
   cwd: string;
 }
 
 /**
- * Manages Claude Code conversations with per-conversation tool proxying.
+ * Manages Claude Agent conversations with per-conversation tool proxying.
  *
  * Key features:
  * - Creates isolated provider instances for each conversation
- * - Disables all builtin Claude Code tools
+ * - Disables all builtin Claude Agent tools
  * - Enables only the MCP proxy tools defined by the panel
  * - Handles cleanup when conversations end
  */
-export class ClaudeCodeConversationManager {
+export class ClaudeAgentConversationManager {
   private conversations = new Map<string, ConversationState>();
   private panelConversations = new Map<string, Set<string>>(); // panelId -> conversationIds
   private claudeExecutable: string | undefined;
-  private logger = createDevLogger("ClaudeCodeConversationManager");
+  private logger = createDevLogger("ClaudeAgentConversationManager");
   private endListeners = new Set<(conversationId: string, panelId: string) => void>();
 
   constructor() {
     this.claudeExecutable = findExecutable("claude");
     if (!this.claudeExecutable) {
-      this.logger.warn("Claude Code CLI not found in PATH");
+      this.logger.warn("Claude Agent CLI not found in PATH");
     }
   }
 
   /**
-   * Check if Claude Code CLI is available
+   * Check if Claude Agent CLI is available
    */
   isAvailable(): boolean {
     return !!this.claudeExecutable;
@@ -97,11 +97,11 @@ export class ClaudeCodeConversationManager {
    *
    * @param options - Conversation configuration
    * @returns Handle to the conversation
-   * @throws Error if Claude Code CLI is not available
+   * @throws Error if Claude Agent CLI is not available
    */
   createConversation(options: CreateConversationOptions): ConversationHandle {
     if (!this.claudeExecutable) {
-      throw new Error("Claude Code CLI not available");
+      throw new Error("Claude Agent CLI not available");
     }
 
     const { panelId, modelId, tools, executeCallback, settings } = options;
@@ -120,7 +120,7 @@ export class ClaudeCodeConversationManager {
     // Get the MCP tool names for the allowlist
     const mcpToolNames = getMcpToolNames(conversationId, tools);
 
-    // Create a Claude Code provider for this conversation with:
+    // Create a Claude Agent provider for this conversation with:
     // - All builtin tools disabled (only MCP proxy tools allowed)
     // - Streaming input enabled (required for MCP tools to work correctly)
     const provider = createClaudeCode({

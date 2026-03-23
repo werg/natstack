@@ -221,7 +221,7 @@ function ProviderRow({ provider, providerInfo, onUpdate }: ProviderRowProps) {
     }
   };
 
-  // For CLI-auth providers (like Claude Code), show enable/disable instead of API key
+  // For CLI-auth providers (like Claude Agent), show enable/disable instead of API key
   if (usesCliAuth) {
     return (
       <Card variant="surface">
@@ -258,7 +258,7 @@ function ProviderRow({ provider, providerInfo, onUpdate }: ProviderRowProps) {
         {!isEnabled && (
           <Box mt="2">
             <Text size="1" color="gray">
-              {provider.id === "claude-code"
+              {provider.id === "claude-agent"
                 ? "Requires CLI installation. Run: npm install -g @anthropic-ai/claude-code && claude login"
                 : "Requires CLI authentication. Please install and log in to the CLI tool."}
             </Text>

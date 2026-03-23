@@ -169,7 +169,7 @@ function fullGroupComputation(
 /** Sender info returned by getSenderInfo */
 export interface SenderInfo {
   name: string;
-  type: "panel" | "ai-responder" | "claude-code" | "pi" | "subagent" | "unknown";
+  type: "panel" | "ai-responder" | "claude-agent" | "pi" | "subagent" | "unknown";
   handle: string;
 }
 

@@ -26,7 +26,7 @@ export type SupportedProvider =
   | "together"
   | "replicate"
   | "perplexity"
-  | "claude-code";
+  | "claude-agent";
 
 /**
  * Standard model roles with fallback behavior

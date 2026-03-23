@@ -5,7 +5,7 @@
  * They ensure compatibility between:
  * - Panel implementations (providers)
  * - Worker tool definitions (consumers)
- * - Claude Code expected tool APIs
+ * - Claude Agent expected tool APIs
  */
 
 import { z } from "zod";
@@ -17,7 +17,7 @@ import { normalizeToolName } from "./tool-name-utils.js";
 
 /**
  * bash - Execute a shell command
- * Matches Claude Code `Bash` tool behavior
+ * Matches Claude Agent `Bash` tool behavior
  */
 export const BashArgsSchema = z.object({
   command: z.string().describe("The bash command to execute"),
@@ -43,7 +43,7 @@ export type AllowedPrompt = z.infer<typeof AllowedPromptSchema>;
 
 /**
  * exit_plan_mode - Exit plan mode and request approval to proceed
- * Matches Claude Code `ExitPlanMode` tool behavior.
+ * Matches Claude Agent `ExitPlanMode` tool behavior.
  *
  * When Claude exits plan mode, it can optionally request bash permissions
  * that will be auto-approved during implementation.
@@ -65,7 +65,7 @@ export type ExitPlanModeArgs = z.infer<typeof ExitPlanModeArgsSchema> & {
 
 /**
  * enter_plan_mode - Enter plan mode for exploration and planning
- * Matches Claude Code `EnterPlanMode` tool behavior.
+ * Matches Claude Agent `EnterPlanMode` tool behavior.
  *
  * When Claude enters plan mode, it switches to read-only exploration
  * and creates a plan file for user review.

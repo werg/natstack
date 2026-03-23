@@ -523,7 +523,7 @@ export class ClaudeSdkAdapter {
    * Process the async stream of SDK messages and emit HarnessOutput events.
    *
    * This is the core translation layer. It mirrors the event processing loop
-   * in claudeCodeResponder.ts (lines ~1048-1266) but emits HarnessOutput
+   * in claudeAgentResponder.ts (lines ~1048-1266) but emits HarnessOutput
    * events instead of calling PubSub client methods.
    */
   private async processStream(
@@ -833,7 +833,7 @@ export class ClaudeSdkAdapter {
    * Build MCP servers from discovered channel methods.
    *
    * Mirrors the tool discovery and MCP server creation in
-   * claudeCodeResponder.ts (lines ~818-939).
+   * claudeAgentResponder.ts (lines ~818-939).
    */
   private async buildMcpServers(
     sdk: NonNullable<typeof this.sdkModule>,

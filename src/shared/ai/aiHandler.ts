@@ -23,9 +23,9 @@ import { createDevLogger } from "@natstack/dev-log";
 import { validateToolDefinitions } from "../validation.js";
 import { MAX_STREAM_DURATION_MS } from "../constants.js";
 import {
-  ClaudeCodeConversationManager,
-} from "./claudeCodeConversationManager.js";
-import { type ToolExecutionResult } from "./claudeCodeToolProxy.js";
+  ClaudeAgentConversationManager,
+} from "./claudeAgentConversationManager.js";
+import { type ToolExecutionResult } from "./claudeAgentToolProxy.js";
 
 export interface StreamTarget {
   targetId: string;
@@ -235,12 +235,12 @@ export class AIHandler {
   private streamManager = new AIStreamManager();
   private logger = createDevLogger("AIHandler");
   private modelRoleResolver: import("./modelRoles.js").ModelRoleResolver | null = null;
-  readonly ccConversationManager: ClaudeCodeConversationManager;
+  readonly ccConversationManager: ClaudeAgentConversationManager;
   private workspacePath: string | undefined;
 
-  constructor(workspacePath?: string, ccConversationManager?: ClaudeCodeConversationManager) {
+  constructor(workspacePath?: string, ccConversationManager?: ClaudeAgentConversationManager) {
     this.workspacePath = workspacePath;
-    this.ccConversationManager = ccConversationManager ?? new ClaudeCodeConversationManager();
+    this.ccConversationManager = ccConversationManager ?? new ClaudeAgentConversationManager();
   }
 
   registerProvider(config: AIProviderConfig): void {
@@ -447,11 +447,11 @@ export class AIHandler {
     streamId: string,
     contextFolderPath: string,
   ): Promise<void> {
-    const isClaudeCode = modelId.startsWith("claude-code:");
+    const isClaudeAgent = modelId.startsWith("claude-agent:");
     const hasTools = options.tools && options.tools.length > 0;
     const maxSteps = options.maxSteps ?? 10;
 
-    this.logger.info(`[${requestId}] streamText started ${JSON.stringify({ targetId: target.targetId, modelId, streamId, hasTools, maxSteps, isClaudeCode })}`);
+    this.logger.info(`[${requestId}] streamText started ${JSON.stringify({ targetId: target.targetId, modelId, streamId, hasTools, maxSteps, isClaudeAgent })}`);
 
     const abortController = new AbortController();
     this.streamManager.startTracking(streamId, abortController, requestId);
@@ -462,8 +462,8 @@ export class AIHandler {
     });
 
     try {
-      if (isClaudeCode && hasTools) {
-        await this.streamTextClaudeCodeToTarget(
+      if (isClaudeAgent && hasTools) {
+        await this.streamTextClaudeAgentToTarget(
           target,
           requestId,
           modelId,
@@ -795,9 +795,9 @@ export class AIHandler {
   }
 
   /**
-   * Streaming with Claude Code model and tools via MCP proxy.
+   * Streaming with Claude Agent model and tools via MCP proxy.
    */
-  private async streamTextClaudeCodeToTarget(
+  private async streamTextClaudeAgentToTarget(
     target: StreamTarget,
     requestId: string,
     modelId: string,
@@ -806,14 +806,14 @@ export class AIHandler {
     abortController: AbortController,
     contextFolderPath: string,
   ): Promise<void> {
-    // Extract the model name (e.g., "claude-code:sonnet" -> "sonnet")
-    const ccModelId = modelId.startsWith("claude-code:")
-      ? modelId.substring("claude-code:".length)
+    // Extract the model name (e.g., "claude-agent:sonnet" -> "sonnet")
+    const ccModelId = modelId.startsWith("claude-agent:")
+      ? modelId.substring("claude-agent:".length)
       : modelId;
 
     // Validate tools
     if (!options.tools || options.tools.length === 0) {
-      throw createAIError("api_error", "Tools are required for Claude Code streamText");
+      throw createAIError("api_error", "Tools are required for Claude Agent streamText");
     }
 
     // Convert to AIToolDefinition format
@@ -892,7 +892,7 @@ export class AIHandler {
 
     conversationRef.id = conversationHandle.conversationId;
 
-    this.logger.info(`[${requestId}] Created streamText Claude Code conversation ${JSON.stringify({ conversationId: conversationRef.id, streamId, targetId: target.targetId, toolCount: validatedTools.length })}`);
+    this.logger.info(`[${requestId}] Created streamText Claude Agent conversation ${JSON.stringify({ conversationId: conversationRef.id, streamId, targetId: target.targetId, toolCount: validatedTools.length })}`);
 
     const totalUsage = { promptTokens: 0, completionTokens: 0 };
 

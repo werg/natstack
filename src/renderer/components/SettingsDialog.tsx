@@ -262,7 +262,7 @@ function ProviderRow({ provider, providerInfo }: ProviderRowProps) {
     }
   };
 
-  // For CLI-auth providers (like Claude Code), show enable/disable instead of API key
+  // For CLI-auth providers (like Claude Agent), show enable/disable instead of API key
   if (usesCliAuth) {
     return (
       <Card>
@@ -303,7 +303,7 @@ function ProviderRow({ provider, providerInfo }: ProviderRowProps) {
         {!isEnabled && (
           <Box px="2" pb="2">
             <Text size="1" color="gray">
-              Requires Claude Code CLI. Run: npm install -g @anthropic-ai/claude-code && claude
+              Requires Claude Agent CLI. Run: npm install -g @anthropic-ai/claude-code && claude
               login
             </Text>
           </Box>

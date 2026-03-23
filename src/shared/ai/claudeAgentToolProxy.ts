@@ -1,8 +1,8 @@
 /**
- * Claude Code Tool Proxy
+ * Claude Agent Tool Proxy
  *
  * Creates SDK MCP servers that proxy tool calls back to panels via IPC.
- * This allows panel code to define and execute tools while using Claude Code
+ * This allows panel code to define and execute tools while using Claude Agent
  * as the AI provider.
  */
 
@@ -145,7 +145,7 @@ function jsonSchemaToShape(schema: Record<string, unknown>): Record<string, z.Zo
  * Create an SDK MCP server that proxies tool calls to the panel.
  *
  * @param config - Configuration for the tool proxy
- * @returns MCP server configuration that can be passed to Claude Code provider
+ * @returns MCP server configuration that can be passed to Claude Agent provider
  */
 export function createToolProxyMcpServer(config: ToolProxyConfig): McpSdkServerConfigWithInstance {
   const { conversationId, tools, executeCallback } = config;

@@ -1,19 +1,19 @@
 /**
  * Tests for AIHandler — stream management and provider registry behavior.
  *
- * We mock away the heavy dependencies (Claude Code conversation manager,
+ * We mock away the heavy dependencies (Claude Agent conversation manager,
  * provider factory, model roles) and test the AIHandler's public API for
  * provider registration, model discovery, stream cancellation, and role resolution.
  */
 
-vi.mock("./claudeCodeConversationManager.js", () => ({
-  ClaudeCodeConversationManager: vi.fn().mockImplementation(() => ({
+vi.mock("./claudeAgentConversationManager.js", () => ({
+  ClaudeAgentConversationManager: vi.fn().mockImplementation(() => ({
     createConversation: vi.fn(),
     endConversation: vi.fn(),
   })),
 }));
 
-vi.mock("./claudeCodeToolProxy.js", () => ({}));
+vi.mock("./claudeAgentToolProxy.js", () => ({}));
 
 vi.mock("../errors.js", () => ({
   createAIError: vi.fn((code: string, message: string) => {

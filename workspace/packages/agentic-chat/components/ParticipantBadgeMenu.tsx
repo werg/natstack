@@ -26,7 +26,7 @@ function getParticipantColor(type: string) {
       return "blue";
     case "ai-responder":
       return "purple";
-    case "claude-code":
+    case "claude-agent":
       return "orange";
     case "pi":
       return "teal";

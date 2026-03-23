@@ -15,7 +15,7 @@
 // ============================================================================
 
 /**
- * Mapping from pubsub tool names to Claude Code canonical tool names.
+ * Mapping from pubsub tool names to Claude Agent canonical tool names.
  * Used to provide familiar tool names to the LLM while using pubsub RPC underneath.
  */
 export const CANONICAL_TOOL_MAPPINGS: Record<string, string> = {

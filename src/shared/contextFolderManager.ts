@@ -144,7 +144,7 @@ export class ContextFolderManager {
           }
         }
 
-        // Generate Claude Code plugin manifest so skills/ is discovered as a plugin.
+        // Generate Claude Agent plugin manifest so skills/ is discovered as a plugin.
         // The CLI expects .claude-plugin/plugin.json at the plugin root, with skills
         // in a skills/ subdirectory (each containing SKILL.md).
         const pluginDir = path.join(contextPath, ".claude-plugin");

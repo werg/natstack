@@ -39,7 +39,7 @@ export type JsonSchema = Record<string, unknown>;
 export const PARTICIPANT_TYPES = {
   PANEL: "panel",
   WORKER: "worker",
-  CLAUDE_CODE: "claude-code",
+  CLAUDE_AGENT: "claude-agent",
   PI: "pi",
   AI_RESPONDER: "ai-responder",
 } as const;

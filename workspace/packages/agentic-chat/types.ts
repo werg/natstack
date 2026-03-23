@@ -22,13 +22,13 @@ export interface PendingAgent {
 /** Metadata for participants in this channel */
 export interface ChatParticipantMetadata {
   name: string;
-  type: "panel" | "ai-responder" | "claude-code" | "pi" | "subagent";
+  type: "panel" | "ai-responder" | "claude-agent" | "pi" | "subagent";
   handle: string;
   /** Methods this participant provides (for menu display) */
   methods?: MethodAdvertisement[];
   /** Runtime panel/worker ID - allows linking participant to child panel for focus/reload */
   panelId?: string;
-  /** Agent type ID for identification (e.g., "claude-code-responder") */
+  /** Agent type ID for identification (e.g., "claude-agent-responder") */
   agentTypeId?: string;
   /** Context window usage tracking (updated by AI responders) */
   contextUsage?: ContextWindowUsage;

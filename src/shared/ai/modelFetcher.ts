@@ -210,10 +210,10 @@ const PERPLEXITY_MODELS: FetchedModel[] = [
  * Hardcoded models for CLI-based providers
  */
 const CLI_PROVIDER_MODELS: Record<string, FetchedModel[]> = {
-  "claude-code": [
-    { id: "opus", displayName: "Claude Code (Opus)", description: "Most capable for complex coding" },
-    { id: "sonnet", displayName: "Claude Code (Sonnet)", description: "Balanced coding performance" },
-    { id: "haiku", displayName: "Claude Code (Haiku)", description: "Fast and efficient" },
+  "claude-agent": [
+    { id: "opus", displayName: "Claude Agent (Opus)", description: "Most capable for complex coding" },
+    { id: "sonnet", displayName: "Claude Agent (Sonnet)", description: "Balanced coding performance" },
+    { id: "haiku", displayName: "Claude Agent (Haiku)", description: "Fast and efficient" },
   ],
 };
 
@@ -225,7 +225,7 @@ export async function fetchModelsForProvider(
   apiKey: string
 ): Promise<FetchedModel[] | null> {
   // Handle CLI-based providers
-  if (providerId === "claude-code") {
+  if (providerId === "claude-agent") {
     return CLI_PROVIDER_MODELS[providerId] ?? null;
   }
 
@@ -295,7 +295,7 @@ export async function fetchAllProviderModels(
   // Fetch in parallel with individual error handling
   const fetchPromises = providers.map(async (provider) => {
     // Skip providers without API keys (except CLI-based ones)
-    const isCli = provider.id === "claude-code";
+    const isCli = provider.id === "claude-agent";
     if (!isCli && !provider.apiKey) {
       return;
     }
