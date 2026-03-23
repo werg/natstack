@@ -1013,6 +1013,12 @@ export class TypeCheckService {
     } else if (moduleName.startsWith("@workspace-agents/")) {
       baseDir = path.join(userWorkspace, "agents");
       scope = "@workspace-agents/";
+    } else if (moduleName.startsWith("@workspace-workers/")) {
+      baseDir = path.join(userWorkspace, "workers");
+      scope = "@workspace-workers/";
+    } else if (moduleName.startsWith("@workspace-skills/")) {
+      baseDir = path.join(userWorkspace, "skills");
+      scope = "@workspace-skills/";
     } else if (moduleName.startsWith("@workspace/")) {
       // Shared workspace packages in workspace/packages/
       baseDir = path.join(userWorkspace, "packages");
