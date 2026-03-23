@@ -79,9 +79,10 @@ function buildPbes2Blob(
   iv: Buffer,
   iterations: number,
 ): Buffer {
-  // Derive key using same logic as FirefoxCrypto
-  const salt = Buffer.concat([globalSalt, entrySalt]);
-  const key = crypto.pbkdf2Sync(Buffer.from(password, "utf-8"), salt, iterations, 32, "sha256");
+  // Derive key using same logic as FirefoxCrypto (NSS / firepwd):
+  // PBKDF2 password = SHA1(globalSalt + masterPassword), salt = entrySalt
+  const hp = crypto.createHash("sha1").update(globalSalt).update(Buffer.from(password, "utf-8")).digest();
+  const key = crypto.pbkdf2Sync(hp, entrySalt, iterations, 32, "sha256");
 
   // Encrypt with AES-256-CBC + PKCS#7 padding
   const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
@@ -104,18 +105,26 @@ function buildPbes2Blob(
 }
 
 /**
- * Build a 3DES login encrypted blob (as stored in logins.json after base64 encoding).
+ * Build a 3DES login encrypted blob matching the real Firefox SDR format:
+ *   SEQUENCE {
+ *     OCTET_STRING(keyID)         -- 16 null bytes (PKCS#11 key handle)
+ *     SEQUENCE { OID, OCTET_STRING(IV) }
+ *     OCTET_STRING(ciphertext)
+ *   }
+ *
+ * Reference: github.com/lclevy/firepwd decodeLoginData()
  */
 function buildLoginBlob(plaintext: Buffer, key: Buffer, iv: Buffer): Buffer {
   const cipher = crypto.createCipheriv("des-ede3-cbc", key, iv);
   const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
 
+  const keyID = octetString(Buffer.alloc(16)); // 16 null bytes
   const algoSeq = seq(Buffer.concat([
     oid(OID_DES_EDE3_CBC),
-    seq(octetString(iv)),
+    octetString(iv),
   ]));
 
-  return seq(Buffer.concat([algoSeq, octetString(encrypted)]));
+  return seq(Buffer.concat([keyID, algoSeq, octetString(encrypted)]));
 }
 
 describe("Firefox crypto component tests", () => {
@@ -173,7 +182,7 @@ describe("Firefox crypto component tests", () => {
   });
 
   describe("ASN.1 login blob parsing", () => {
-    it("parses a constructed 3DES login blob", () => {
+    it("parses a Firefox SDR login blob (3-element SEQUENCE)", () => {
       const key = crypto.randomBytes(24);
       const iv = crypto.randomBytes(8);
       const plaintext = Buffer.from("my-password");
@@ -182,20 +191,25 @@ describe("Firefox crypto component tests", () => {
       const root = parseAsn1(blob);
 
       expect(root.tag).toBe(0x30);
-      expect(root.children).toHaveLength(2);
+      expect(root.children).toHaveLength(3);
 
-      // Algorithm sequence
-      const algoSeq = root.children![0]!;
+      // Element 0: keyID (16 null bytes)
+      const keyIdNode = root.children![0]!;
+      expect(keyIdNode.tag).toBe(0x04); // OCTET STRING
+      expect(keyIdNode.data.length).toBe(16);
+
+      // Element 1: Algorithm sequence
+      const algoSeq = root.children![1]!;
       const oidNode = algoSeq.children![0]!;
       expect(oidToString(oidNode.data)).toBe(OID_DES_EDE3_CBC);
 
-      // IV
-      const paramSeq = algoSeq.children![1]!;
-      const ivNode = paramSeq.children![0]!;
+      // IV is a direct OCTET STRING child, not wrapped in SEQUENCE
+      const ivNode = algoSeq.children![1]!;
+      expect(ivNode.tag).toBe(0x04); // OCTET STRING (primitive)
       expect(ivNode.data.equals(iv)).toBe(true);
 
-      // Encrypted data
-      const encData = root.children![1]!.data;
+      // Element 2: Encrypted data
+      const encData = root.children![2]!.data;
       const decipher = crypto.createDecipheriv("des-ede3-cbc", key, iv);
       const decrypted = Buffer.concat([decipher.update(encData), decipher.final()]);
       expect(decrypted.toString()).toBe("my-password");

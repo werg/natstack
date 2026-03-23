@@ -148,7 +148,8 @@ function derivePbes2(
   }
 
   const cipherOid = oidToString(cipherSeq.children[0]!.data);
-  const iv = cipherSeq.children[1]!.data; // OCTET STRING
+  const ivNode = cipherSeq.children[1]!;
+  const ivValue = ivNode.data; // OCTET STRING value (may be shorter than expected)
 
   let algorithm: PbeParams["algorithm"];
   if (cipherOid === OID_AES_256_CBC) {
@@ -164,12 +165,29 @@ function derivePbes2(
     );
   }
 
-  // Derive key using PBKDF2
-  const passwordBuf = Buffer.from(password, "utf-8");
-  const salt = Buffer.concat([globalSalt, entrySalt]);
-  const key = crypto.pbkdf2Sync(passwordBuf, salt, iterations, keyLength, hmacAlgo);
+  // NSS quirk: for AES-256-CBC in key4.db, the IV OCTET STRING value is only
+  // 14 bytes. The actual 16-byte IV is the full DER encoding of the OCTET STRING
+  // (tag 0x04 + length byte + value). Reference: firepwd.py `iv = b'\x04\x0e' + ...`
+  const expectedIvLen = algorithm === "aes-256-cbc" ? 16 : 8;
+  let iv: Buffer;
+  if (ivValue.length === expectedIvLen) {
+    iv = Buffer.from(ivValue);
+  } else if (ivValue.length < expectedIvLen) {
+    // Reconstruct IV from DER encoding: tag + length + value
+    const header = ivValue.length < 128
+      ? Buffer.from([ivNode.tag, ivValue.length])
+      : Buffer.from([ivNode.tag, 0x81, ivValue.length]);
+    iv = Buffer.concat([header, ivValue]);
+  } else {
+    iv = ivValue.subarray(0, expectedIvLen);
+  }
 
-  return { algorithm, key, iv: Buffer.from(iv) };
+  // Derive key using PBKDF2
+  // Per NSS / firepwd: PBKDF2 password = SHA1(globalSalt + masterPassword), salt = entrySalt
+  const hp = crypto.createHash("sha1").update(globalSalt).update(Buffer.from(password, "utf-8")).digest();
+  const key = crypto.pbkdf2Sync(hp, entrySalt, iterations, keyLength, hmacAlgo);
+
+  return { algorithm, key, iv };
 }
 
 /** Read an ASN.1 INTEGER node as a JS number. */
@@ -231,8 +249,8 @@ function parsePbeBlob(
 }
 
 export class FirefoxCrypto {
-  // Cache: key4DbPath -> decrypted key
-  private keyCache = new Map<string, Buffer>();
+  // Cache: key4DbPath -> all decrypted keys (sorted longest first)
+  private keyCache = new Map<string, Buffer[]>();
 
   /**
    * Decrypt a single encrypted login field (username or password).
@@ -249,22 +267,25 @@ export class FirefoxCrypto {
     const password = masterPassword ?? "";
     const cacheKey = `${key4DbPath}:${password}`;
 
-    let decryptionKey = this.keyCache.get(cacheKey);
-    if (!decryptionKey) {
-      decryptionKey = await this.extractKey(key4DbPath, password);
-      this.keyCache.set(cacheKey, decryptionKey);
+    let keys = this.keyCache.get(cacheKey);
+    if (!keys) {
+      keys = await this.extractKeys(key4DbPath, password);
+      this.keyCache.set(cacheKey, keys);
     }
 
-    return this.decryptField(encryptedBase64, decryptionKey);
+    return this.decryptFieldWithKeys(encryptedBase64, keys);
   }
 
   /**
-   * Extract the master decryption key from key4.db.
+   * Extract all valid decryption keys from key4.db.
    *
    * Step 1: Verify master password via metaData table.
-   * Step 2: Decrypt the actual key from nssPrivate table.
+   * Step 2: Decrypt keys from nssPrivate table.
+   *
+   * Returns keys sorted longest-first (AES-256 before 3DES) so callers
+   * try the most capable key first.
    */
-  private async extractKey(key4DbPath: string, password: string): Promise<Buffer> {
+  private async extractKeys(key4DbPath: string, password: string): Promise<Buffer[]> {
     // Dynamically import better-sqlite3 to keep it lazy
     const Database = (await import("better-sqlite3")).default;
     const db = new Database(key4DbPath, { readonly: true, fileMustExist: true });
@@ -298,94 +319,135 @@ export class FirefoxCrypto {
         );
       }
 
-      // Step 2: Extract the actual decryption key from nssPrivate
-      const nssRow = db
+      // Step 2: Extract the actual decryption key from nssPrivate.
+      // Profiles upgraded from 3DES to AES may have multiple rows:
+      // one with the old 24-byte 3DES key, one with the new 32-byte AES key.
+      // Try all rows and pick the longest valid key (AES-256 > 3DES).
+      const nssRows = db
         .prepare("SELECT a11, a102 FROM nssPrivate")
-        .get() as { a11: Buffer; a102: Buffer } | undefined;
+        .all() as Array<{ a11: Buffer; a102: Buffer }>;
 
-      if (!nssRow) {
+      if (nssRows.length === 0) {
         throw new BrowserDataError("DECRYPTION_FAILED", "No entry in key4.db nssPrivate table");
       }
 
-      const a11 = Buffer.from(nssRow.a11);
+      const keys: Buffer[] = [];
+      for (const nssRow of nssRows) {
+        try {
+          const a11 = Buffer.from(nssRow.a11);
+          const { params: keyParams, ciphertext: keyCipher } = parsePbeBlob(
+            a11, password, globalSalt,
+          );
+          keys.push(pbeDecrypt(keyParams, keyCipher));
+        } catch {
+          // Skip rows that fail to decrypt (e.g., different encryption scheme)
+        }
+      }
 
-      const { params: keyParams, ciphertext: keyCipher } = parsePbeBlob(
-        a11,
-        password,
-        globalSalt,
-      );
-      const rawKey = pbeDecrypt(keyParams, keyCipher);
+      if (keys.length === 0) {
+        throw new BrowserDataError("DECRYPTION_FAILED", "Failed to decrypt any nssPrivate entry");
+      }
 
-      // The decrypted key is typically 24 bytes (3DES) padded out.
-      // Take the first 24 bytes as the 3DES key.
-      return rawKey.subarray(0, 24);
+      // Sort longest first: AES-256 (32 bytes) before 3DES (24 bytes)
+      keys.sort((a, b) => b.length - a.length);
+      return keys;
     } finally {
       db.close();
     }
   }
 
   /**
+   * Try each extracted key until one successfully decrypts the login field.
+   * Handles mixed-key profiles (both 3DES and AES keys from nssPrivate).
+   */
+  private decryptFieldWithKeys(encryptedBase64: string, keys: Buffer[]): string {
+    let lastError: Error | null = null;
+    for (const key of keys) {
+      try {
+        return this.decryptField(encryptedBase64, key);
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+      }
+    }
+    throw lastError ?? new BrowserDataError("DECRYPTION_FAILED", "No keys available");
+  }
+
+  /**
    * Decrypt a single login field using the extracted key.
    *
-   * The base64-decoded blob is ASN.1:
+   * Firefox SDR (PK11SDR_Encrypt) produces the following ASN.1 structure:
    *   SEQUENCE {
-   *     SEQUENCE { OID, SEQUENCE { OCTET_STRING(IV) } }
-   *     OCTET_STRING(ciphertext)
+   *     OCTET_STRING(keyID)       -- 16 bytes, PKCS#11 key handle
+   *     SEQUENCE {                -- AlgorithmIdentifier
+   *       OID                     -- cipher (DES-EDE3-CBC or AES-256-CBC)
+   *       OCTET_STRING(IV)        -- initialization vector (8 or 16 bytes)
+   *     }
+   *     OCTET_STRING(ciphertext)  -- encrypted data
    *   }
+   *
+   * Reference: github.com/lclevy/firepwd decodeLoginData()
    */
   private decryptField(encryptedBase64: string, key: Buffer): string {
     const data = Buffer.from(encryptedBase64, "base64");
     const root = parseAsn1(data);
 
-    if (!root.children || root.children.length < 2) {
-      throw new BrowserDataError("DECRYPTION_FAILED", "Invalid encrypted login structure");
+    if (!root.children || root.children.length < 3) {
+      throw new BrowserDataError(
+        "DECRYPTION_FAILED",
+        `Invalid login blob: expected 3 elements in root SEQUENCE, got ${root.children?.length ?? 0}`,
+      );
     }
 
-    const algoSeq = root.children[0]!;
-    const ciphertext = root.children[1]!.data;
+    // Element 0: keyID (skip — not needed for decryption)
+    // Element 1: AlgorithmIdentifier SEQUENCE { OID, OCTET_STRING(IV) }
+    // Element 2: ciphertext
+    const algoSeq = root.children[1]!;
+    const ciphertext = root.children[2]!.data;
 
     if (!algoSeq.children || algoSeq.children.length < 2) {
-      throw new BrowserDataError("DECRYPTION_FAILED", "Invalid algorithm sequence in login");
+      throw new BrowserDataError("DECRYPTION_FAILED", "Invalid algorithm sequence in login blob");
     }
 
     const oid = oidToString(algoSeq.children[0]!.data);
-    const paramSeq = algoSeq.children[1]!;
+    const iv = algoSeq.children[1]!.data; // IV is a primitive OCTET STRING
 
-    if (!paramSeq.children || paramSeq.children.length < 1) {
-      throw new BrowserDataError("DECRYPTION_FAILED", "Missing cipher params in login");
-    }
-
-    const iv = paramSeq.children[0]!.data;
-
-    let algorithm: string;
     if (oid === OID_DES_EDE3_CBC) {
-      algorithm = "des-ede3-cbc";
+      if (key.length < 24) {
+        throw new BrowserDataError("DECRYPTION_FAILED", `3DES requires 24-byte key, got ${key.length}`);
+      }
+      return this.decryptCbc("des-ede3-cbc", key.subarray(0, 24), iv, ciphertext, 8);
     } else if (oid === OID_AES_256_CBC) {
-      algorithm = "aes-256-cbc";
+      if (key.length < 32) {
+        throw new BrowserDataError("DECRYPTION_FAILED", `AES-256-CBC requires 32-byte key, got ${key.length}`);
+      }
+      return this.decryptCbc("aes-256-cbc", key.subarray(0, 32), iv, ciphertext, 16);
     } else {
       throw new BrowserDataError(
         "UNSUPPORTED_ENCRYPTION_VERSION",
         `Unsupported login cipher OID: ${oid}`,
       );
     }
+  }
 
+  /** Decrypt CBC-mode ciphertext, validate and strip PKCS#7 padding. */
+  private decryptCbc(
+    algorithm: string, key: Buffer, iv: Buffer, ciphertext: Buffer, blockSize: number,
+  ): string {
     const decipher = crypto.createDecipheriv(algorithm, key, iv);
     decipher.setAutoPadding(false);
     const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
 
-    // Remove PKCS#7 padding
-    const blockSize = oid === OID_DES_EDE3_CBC ? 8 : 16;
+    // Validate and remove PKCS#7 padding — wrong key produces invalid padding
     const padLen = decrypted[decrypted.length - 1]!;
-    if (padLen > 0 && padLen <= blockSize) {
-      let validPad = true;
-      for (let i = decrypted.length - padLen; i < decrypted.length; i++) {
-        if (decrypted[i]! !== padLen) { validPad = false; break; }
-      }
-      if (validPad) {
-        return decrypted.subarray(0, decrypted.length - padLen).toString("utf-8");
+    if (padLen === 0 || padLen > blockSize) {
+      throw new BrowserDataError("DECRYPTION_FAILED", "Invalid PKCS#7 padding (wrong key?)");
+    }
+    for (let i = decrypted.length - padLen; i < decrypted.length; i++) {
+      if (decrypted[i]! !== padLen) {
+        throw new BrowserDataError("DECRYPTION_FAILED", "Invalid PKCS#7 padding (wrong key?)");
       }
     }
-
-    return decrypted.toString("utf-8");
+    return decrypted.subarray(0, decrypted.length - padLen).toString("utf-8");
   }
+
 }
