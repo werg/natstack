@@ -11,6 +11,7 @@
  */
 
 import type { RpcBridge } from "@natstack/rpc";
+import { buildPanelLink } from "../core/panelLinks.js";
 
 export interface BrowserHandle {
   readonly id: string;
@@ -83,6 +84,36 @@ export function onChildCreated(
  */
 export function getBrowserHandle(id: string, title?: string): BrowserHandle {
   return makeBrowserHandle(getRpc(), id, title ?? id);
+}
+
+/**
+ * Open a panel by source path or URL.
+ *
+ * - For http/https URLs, creates a browser panel via {@link createBrowserPanel}.
+ * - For workspace panel sources (e.g. "panels/my-app"), builds a panel link
+ *   and opens it via `window.open`.
+ *
+ * @returns For browser panels, resolves with `{ id }` of the new panel.
+ *          For workspace panels, resolves with `void`.
+ */
+export async function openPanel(
+  source: string,
+  options?: { name?: string; focus?: boolean; stateArgs?: Record<string, unknown> },
+): Promise<{ id: string } | void> {
+  if (/^https?:\/\//i.test(source)) {
+    const handle = await createBrowserPanel(source, {
+      name: options?.name,
+      focus: options?.focus ?? true,
+    });
+    return { id: handle.id };
+  }
+  // For workspace panels, use buildPanelLink + window.open
+  const link = buildPanelLink(source, {
+    stateArgs: options?.stateArgs,
+    name: options?.name,
+    focus: options?.focus ?? true,
+  });
+  window.open(link);
 }
 
 function makeBrowserHandle(rpc: RpcBridge, id: string, title: string): BrowserHandle {

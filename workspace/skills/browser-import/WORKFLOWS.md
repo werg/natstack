@@ -49,8 +49,8 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { createBrowserDataApi, createBrowserPanel } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
+  import { createBrowserDataApi } from "@workspace/panel-browser";
+  import { rpc, createBrowserPanel } from "@workspace/runtime";
   import { connect } from "@workspace/playwright-client";
 
   const api = createBrowserDataApi(rpc);

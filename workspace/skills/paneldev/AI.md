@@ -85,15 +85,15 @@ Create and control browser panels via Playwright/CDP. Works in both Electron and
 
 ```typescript
 import { createBrowserPanel, openExternal } from "@workspace/runtime";
-import { chromium } from "playwright-core";
+import { connect } from "@workspace/playwright-client";
 
 // 1. Create a browser panel — returns a BrowserHandle
 const handle = await createBrowserPanel("https://example.com", { focus: true });
 
 // 2. Connect Playwright via CDP
 const cdpUrl = await handle.getCdpEndpoint();
-const browser = await chromium.connectOverCDP(cdpUrl);
-const page = browser.contexts()[0].pages()[0];
+const browser = await connect(cdpUrl, "chromium", {});
+const page = browser.contexts()[0]?.pages()[0];
 
 // 3. Interact with the page
 await page.fill("input[name=query]", "NatStack");

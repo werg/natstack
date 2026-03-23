@@ -2,8 +2,16 @@
  * @workspace/panel-browser — Typed browser data API for panel eval context.
  *
  * Usage from eval:
- *   const { browserData } = require("@workspace/panel-browser");
+ *   import { browserData } from "@workspace/panel-browser";
  *   const browsers = await browserData.detectBrowsers();
+ *
+ * Or explicitly with an RPC bridge:
+ *   import { createBrowserDataApi } from "@workspace/panel-browser";
+ *   import { rpc } from "@workspace/runtime";
+ *   const browserData = createBrowserDataApi(rpc);
+ *
+ * Note: `createBrowserPanel` (for opening external URL panels with CDP access)
+ * is available from `@workspace/runtime`, not this package.
  */
 
 import type { RpcBridge } from "@natstack/rpc";
@@ -232,6 +240,13 @@ export interface BrowserDataApi {
 const SVC = "browser-data";
 
 export function createBrowserDataApi(rpc: RpcBridge): BrowserDataApi {
+  if (!rpc) {
+    throw new Error(
+      "createBrowserDataApi requires an RPC bridge. " +
+      "In eval context: import { rpc } from '@workspace/runtime'. " +
+      "In inline_ui components: use chat.rpc.",
+    );
+  }
   return {
     // Detection
     detectBrowsers: () => rpc.call("main", `${SVC}.detectBrowsers`),
@@ -294,16 +309,32 @@ let _browserData: BrowserDataApi | undefined;
 export function getBrowserData(): BrowserDataApi {
   if (_browserData) return _browserData;
 
-  // Lazy-require @workspace/runtime to get the rpc bridge
-  // This works in eval context where @workspace/runtime is in the module map
-  const runtime = (globalThis as Record<string, unknown>)["__natstackRequire__"]
-    ? ((globalThis as Record<string, unknown>)["__natstackRequire__"] as (id: string) => { rpc: RpcBridge })("@workspace/runtime")
-    : undefined;
+  // Try multiple mechanisms to resolve @workspace/runtime's rpc bridge.
+  // 1. __natstackRequire__ — available in built panel bundles
+  // 2. __natstackModuleMap__ — the underlying map that __natstackRequire__ reads from;
+  //    available in eval sandbox context even when __natstackRequire__ is not yet wired up
+  let runtime: { rpc?: RpcBridge } | undefined;
+
+  const g = globalThis as Record<string, unknown>;
+  if (typeof g["__natstackRequire__"] === "function") {
+    try {
+      runtime = (g["__natstackRequire__"] as (id: string) => { rpc: RpcBridge })("@workspace/runtime");
+    } catch {
+      // fall through to next strategy
+    }
+  }
+
+  if (!runtime?.rpc && g["__natstackModuleMap__"]) {
+    const moduleMap = g["__natstackModuleMap__"] as Record<string, { rpc?: RpcBridge }>;
+    runtime = moduleMap["@workspace/runtime"];
+  }
 
   if (!runtime?.rpc) {
     throw new Error(
-      "@workspace/panel-browser requires @workspace/runtime to be available. " +
-      "Use createBrowserDataApi(rpc) to provide an RPC bridge manually.",
+      "browserData requires @workspace/runtime. " +
+      "In eval context: import { createBrowserDataApi } from '@workspace/panel-browser'; " +
+      "import { rpc } from '@workspace/runtime'; const browserData = createBrowserDataApi(rpc); " +
+      "In inline_ui: const browserData = createBrowserDataApi(chat.rpc);",
     );
   }
 

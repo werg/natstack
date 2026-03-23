@@ -194,7 +194,14 @@ eval({ code: `
 
 ### Browser Data
 
-Available via `import { browserData } from "@workspace/panel-browser"`:
+```typescript
+import { createBrowserDataApi } from "@workspace/panel-browser";
+import { rpc } from "@workspace/runtime";
+const browserData = createBrowserDataApi(rpc);
+// In inline_ui components, use: createBrowserDataApi(chat.rpc)
+```
+
+Available methods:
 
 | Method | Description |
 |--------|-------------|

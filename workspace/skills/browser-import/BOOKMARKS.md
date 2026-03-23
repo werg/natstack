@@ -12,7 +12,7 @@ inline_ui({
 import { useState, useEffect } from "react";
 import { Button, Flex, Text, Box, TextField, Badge, Spinner } from "@radix-ui/themes";
 import { BookmarkIcon, MagnifyingGlassIcon, ChevronRightIcon } from "@radix-ui/react-icons";
-import { createBrowserDataApi, createBrowserPanel } from "@workspace/panel-browser";
+import { createBrowserDataApi } from "@workspace/panel-browser";
 
 export default function BookmarkBrowser({ props, chat }) {
   const [bookmarks, setBookmarks] = useState([]);

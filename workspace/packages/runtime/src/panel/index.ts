@@ -74,7 +74,7 @@ export { getStateArgs, useStateArgs, setStateArgs } from "./stateArgs.js";
 // Browser panel API (external URL panels with CDP access)
 import { _initBrowserBridge } from "./browser.js";
 _initBrowserBridge(rpc);
-export { createBrowserPanel, openExternal, onChildCreated, getBrowserHandle } from "./browser.js";
+export { createBrowserPanel, openExternal, onChildCreated, getBrowserHandle, openPanel } from "./browser.js";
 export type { BrowserHandle } from "./browser.js";
 
 // Ad blocking programmatic interface
