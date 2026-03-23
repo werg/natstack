@@ -107,7 +107,7 @@ function createDeps(
 
   return {
     events,
-    pushEvent: (event: HarnessOutput) => events.push(event),
+    pushEvent: (event: HarnessOutput) => { events.push(event); },
     callMethod: vi.fn().mockResolvedValue({ success: true }),
     discoverMethods: vi.fn().mockResolvedValue([]),
     createSession: vi.fn().mockResolvedValue(mockSession),
@@ -1119,6 +1119,172 @@ describe("PiAdapter", () => {
       // (in this mock, prompt() fires events but doesn't call execute)
       // so no action-start should appear
       expect(actionStartFromEvent).toBeUndefined();
+    });
+  });
+
+  describe("image attachments", () => {
+    it("should pass image attachments to session.prompt()", async () => {
+      const promptSpy = vi.fn().mockResolvedValue(undefined);
+      const mockSession = createMockPiSession([{ type: "agent_end" }]);
+      mockSession.prompt = promptSpy;
+
+      const deps = createDeps({
+        createSession: vi.fn().mockResolvedValue(mockSession),
+      });
+      const adapter = new PiAdapter(createConfig(), deps);
+
+      await adapter.handleCommand({
+        type: "start-turn",
+        input: {
+          content: "Describe this image",
+          senderId: "user-1",
+          attachments: [
+            { type: "image", data: "base64data==", mimeType: "image/png", filename: "screenshot.png" },
+            { type: "file", data: "notanimage", mimeType: "text/plain", filename: "readme.txt" },
+          ],
+        },
+      });
+
+      expect(promptSpy).toHaveBeenCalledWith(
+        "Describe this image",
+        { images: [{ type: "image", data: "base64data==", mimeType: "image/png" }] },
+      );
+    });
+
+    it("should omit images option when no image attachments", async () => {
+      const promptSpy = vi.fn().mockResolvedValue(undefined);
+      const mockSession = createMockPiSession([{ type: "agent_end" }]);
+      mockSession.prompt = promptSpy;
+
+      const deps = createDeps({
+        createSession: vi.fn().mockResolvedValue(mockSession),
+      });
+      const adapter = new PiAdapter(createConfig(), deps);
+
+      await adapter.handleCommand({
+        type: "start-turn",
+        input: { content: "Hello", senderId: "user-1" },
+      });
+
+      expect(promptSpy).toHaveBeenCalledWith("Hello", undefined);
+    });
+  });
+
+  describe("tool_execution_update", () => {
+    it("should emit action-update with accumulated text", async () => {
+      const piEvents: PiSessionEvent[] = [
+        { type: "agent_start" },
+        { type: "tool_execution_start", toolCallId: "tc-1", toolName: "bash", args: { command: "ls" } },
+        {
+          type: "tool_execution_update",
+          toolCallId: "tc-1",
+          toolName: "bash",
+          partialResult: { content: [{ type: "text", text: "file1.ts\n" }] },
+        },
+        {
+          type: "tool_execution_update",
+          toolCallId: "tc-1",
+          toolName: "bash",
+          partialResult: { content: [{ type: "text", text: "file1.ts\nfile2.ts\n" }] },
+        },
+        { type: "tool_execution_end", toolCallId: "tc-1", toolName: "bash" },
+        { type: "agent_end" },
+      ];
+
+      const mockSession = createMockPiSession(piEvents);
+      const deps = createDeps({
+        createSession: vi.fn().mockResolvedValue(mockSession),
+      });
+      const adapter = new PiAdapter(createConfig(), deps);
+
+      await adapter.handleCommand({
+        type: "start-turn",
+        input: { content: "list files", senderId: "user-1" },
+      });
+
+      const updates = deps.events.filter(
+        (e): e is Extract<HarnessOutput, { type: "action-update" }> =>
+          e.type === "action-update",
+      );
+      expect(updates).toHaveLength(2);
+      expect(updates[0]!.toolUseId).toBe("tc-1");
+      expect(updates[0]!.content).toBe("file1.ts\n");
+      expect(updates[1]!.content).toBe("file1.ts\nfile2.ts\n");
+    });
+  });
+
+  describe("tool re-discovery", () => {
+    it("should detect new tools and recreate session", async () => {
+      const methods1: DiscoveredMethod[] = [
+        { participantId: "p1", name: "eval", description: "Eval" },
+      ];
+      const methods2: DiscoveredMethod[] = [
+        { participantId: "p1", name: "eval", description: "Eval" },
+        { participantId: "p2", name: "deploy", description: "Deploy" },
+      ];
+
+      const piEvents: PiSessionEvent[] = [{ type: "agent_end" }];
+      const session1 = createMockPiSession(piEvents, { sessionFile: "/s1.jsonl" });
+      const session2 = createMockPiSession(piEvents, { sessionFile: "/s2.jsonl" });
+      const createSession = vi.fn()
+        .mockResolvedValueOnce(session1)
+        .mockResolvedValueOnce(session2);
+      const discoverMethods = vi.fn()
+        .mockResolvedValueOnce(methods1)
+        .mockResolvedValueOnce(methods2);
+
+      const createSessionManager = vi.fn().mockReturnValue(createMockSessionManager());
+      const deps = createDeps({ createSession, discoverMethods, createSessionManager });
+      const adapter = new PiAdapter(createConfig(), deps);
+
+      // Turn 1: 1 tool
+      await adapter.handleCommand({
+        type: "start-turn",
+        input: { content: "turn 1", senderId: "user-1" },
+      });
+      expect(createSession).toHaveBeenCalledTimes(1);
+      expect(createSession.mock.calls[0]![0].customTools).toHaveLength(1);
+
+      // Turn 2: 2 tools — session should be recreated, resuming from /s1.jsonl
+      await adapter.handleCommand({
+        type: "start-turn",
+        input: { content: "turn 2", senderId: "user-1" },
+      });
+      expect(createSession).toHaveBeenCalledTimes(2);
+      expect(createSession.mock.calls[1]![0].customTools).toHaveLength(2);
+      // Must resume from session 1's file — not start fresh
+      expect(createSessionManager).toHaveBeenLastCalledWith(
+        expect.any(String),
+        "/s1.jsonl",
+      );
+    });
+
+    it("should reuse session when tools are unchanged", async () => {
+      const methods: DiscoveredMethod[] = [
+        { participantId: "p1", name: "eval", description: "Eval" },
+      ];
+
+      const piEvents: PiSessionEvent[] = [{ type: "agent_end" }];
+      const mockSession = createMockPiSession(piEvents);
+      const createSession = vi.fn().mockResolvedValue(mockSession);
+      const discoverMethods = vi.fn().mockResolvedValue(methods);
+
+      const deps = createDeps({ createSession, discoverMethods });
+      const adapter = new PiAdapter(createConfig(), deps);
+
+      await adapter.handleCommand({
+        type: "start-turn",
+        input: { content: "turn 1", senderId: "user-1" },
+      });
+      await adapter.handleCommand({
+        type: "start-turn",
+        input: { content: "turn 2", senderId: "user-1" },
+      });
+
+      // Session created only once — tools unchanged
+      expect(createSession).toHaveBeenCalledTimes(1);
+      // discoverMethods called twice (every turn)
+      expect(discoverMethods).toHaveBeenCalledTimes(2);
     });
   });
 

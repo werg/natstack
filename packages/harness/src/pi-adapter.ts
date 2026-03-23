@@ -16,6 +16,7 @@
  */
 
 import type {
+  Attachment,
   HarnessCommand,
   HarnessConfig,
   HarnessOutput,
@@ -36,11 +37,18 @@ import {
  * Subset of `@mariozechner/pi-coding-agent`'s AgentSession used by the adapter.
  * The full session is injected via `PiAdapterDeps.createSession`.
  */
+/** Pi SDK's ImageContent shape — base64-encoded image with MIME type */
+export interface PiImageContent {
+  type: "image";
+  data: string;
+  mimeType: string;
+}
+
 export interface PiSession {
   /** Send a prompt and wait for the agent loop to complete */
   prompt(
     text: string,
-    options?: { images?: unknown[] },
+    options?: { images?: PiImageContent[] },
   ): Promise<void>;
 
   /** Queue a follow-up message for when the agent finishes */
@@ -271,6 +279,9 @@ export class PiAdapter {
   /** Filtered methods from discovery (post-allowlist) */
   private discoveredMethods: DiscoveredMethod[] = [];
 
+  /** Last known session file — preserved across teardowns for resume */
+  private lastSessionFile: string | undefined;
+
   /** Settings used to create the current session — compared per-turn */
   private activeModel: string | undefined;
   private activeThinkingLevel: string | undefined;
@@ -353,8 +364,8 @@ export class PiAdapter {
       };
       this.aborted = false;
 
-      // ----- Tool discovery (first turn only) -----
-      if (!this.allTools) {
+      // ----- Tool discovery (every turn — new participants may have joined) -----
+      {
         let methods = await this.deps.discoverMethods();
 
         // Apply tool allowlist BEFORE caching — defense-in-depth filter.
@@ -368,77 +379,104 @@ export class PiAdapter {
           );
         }
 
-        // Store filtered set — createAskUserTool reads from this
+        // Detect tool changes — compare method names+participantIds
+        const newToolKey = methods
+          .map((m) => `${m.participantId}:${m.name}`)
+          .sort()
+          .join(",");
+        const oldToolKey = this.discoveredMethods
+          .map((m) => `${m.participantId}:${m.name}`)
+          .sort()
+          .join(",");
+        const toolsChanged = newToolKey !== oldToolKey;
+
+        if (toolsChanged) {
+          if (this.allTools) {
+            log?.info("Channel tools changed — will recreate session");
+            // Capture session file BEFORE teardown so the recreation path
+            // can resume from it instead of falling back to the initial
+            // resumeSessionId (which would discard conversation history).
+            if (this.session?.sessionFile) {
+              this.lastSessionFile = this.session.sessionFile;
+            }
+            this.teardownSession();
+          }
+          this.allTools = null;
+        }
+
         this.discoveredMethods = methods;
 
-        const { customTools, originalToDisplay } = convertToPiTools(
-          methods,
-          (pid, method, args) => this.deps.callMethod(pid, method, args),
-        );
-        this.originalToDisplay = originalToDisplay;
+        // Rebuild tool definitions when tools changed or on first turn
+        if (!this.allTools) {
+          const { customTools, originalToDisplay } = convertToPiTools(
+            methods,
+            (pid, method, args) => this.deps.callMethod(pid, method, args),
+          );
+          this.originalToDisplay = originalToDisplay;
 
-        // Wrap custom tools with approval gating — the server/DO decides
-        // whether to auto-approve or prompt the user interactively.
-        const approvalWrappedTools: PiToolDefinition[] = customTools.map(
-          (tool) => ({
-            ...tool,
-            execute: async (
-              toolCallId: string,
-              params: Record<string, unknown>,
-              signal: AbortSignal | undefined,
-              onUpdate: Parameters<PiToolDefinition["execute"]>[3],
-              ctx: unknown,
-            ): ReturnType<PiToolDefinition["execute"]> => {
-              const approval = await this.requestToolApproval(
-                toolCallId,
-                tool.name,
-                params,
-                signal,
-              );
-              if (!approval.allow) {
-                // Emit action-start/end so the UI shows the denied attempt
+          // Wrap custom tools with approval gating — the server/DO decides
+          // whether to auto-approve or prompt the user interactively.
+          const approvalWrappedTools: PiToolDefinition[] = customTools.map(
+            (tool) => ({
+              ...tool,
+              execute: async (
+                toolCallId: string,
+                params: Record<string, unknown>,
+                signal: AbortSignal | undefined,
+                onUpdate: Parameters<PiToolDefinition["execute"]>[3],
+                ctx: unknown,
+              ): ReturnType<PiToolDefinition["execute"]> => {
+                const approval = await this.requestToolApproval(
+                  toolCallId,
+                  tool.name,
+                  params,
+                  signal,
+                );
+                if (!approval.allow) {
+                  // Emit action-start/end so the UI shows the denied attempt
+                  const displayName =
+                    this.originalToDisplay.get(tool.name) ??
+                    prettifyToolName(tool.name);
+                  this.deps.pushEvent({
+                    type: "action-start",
+                    tool: displayName,
+                    description: getToolDescription(displayName, params),
+                    toolUseId: toolCallId,
+                  });
+                  return {
+                    content: [
+                      { type: "text" as const, text: "Tool use denied by user" },
+                    ],
+                    details: undefined as unknown,
+                  };
+                }
+                // Emit action-start after approval — matches Claude's ordering
+                // where canUseTool resolves before the action bead appears.
                 const displayName =
                   this.originalToDisplay.get(tool.name) ??
                   prettifyToolName(tool.name);
+                const finalParams = approval.updatedInput ?? params;
                 this.deps.pushEvent({
                   type: "action-start",
                   tool: displayName,
-                  description: getToolDescription(displayName, params),
+                  description: getToolDescription(displayName, finalParams),
                   toolUseId: toolCallId,
                 });
-                return {
-                  content: [
-                    { type: "text" as const, text: "Tool use denied by user" },
-                  ],
-                  details: undefined as unknown,
-                };
-              }
-              // Emit action-start after approval — matches Claude's ordering
-              // where canUseTool resolves before the action bead appears.
-              const displayName =
-                this.originalToDisplay.get(tool.name) ??
-                prettifyToolName(tool.name);
-              const finalParams = approval.updatedInput ?? params;
-              this.deps.pushEvent({
-                type: "action-start",
-                tool: displayName,
-                description: getToolDescription(displayName, finalParams),
-                toolUseId: toolCallId,
-              });
-              return tool.execute(toolCallId, finalParams, signal, onUpdate, ctx);
-            },
-          }),
-        );
+                return tool.execute(toolCallId, finalParams, signal, onUpdate, ctx);
+              },
+            }),
+          );
 
-        // Add AskUserQuestion tool if feedback_form is available
-        const askUserTool = this.createAskUserTool();
-        this.allTools = askUserTool
-          ? [...approvalWrappedTools, askUserTool]
-          : approvalWrappedTools;
+          // Add AskUserQuestion tool if feedback_form is available
+          const askUserTool = this.createAskUserTool();
+          this.allTools = askUserTool
+            ? [...approvalWrappedTools, askUserTool]
+            : approvalWrappedTools;
 
-        log?.info(
-          `Discovered ${this.allTools.length} tools from channel participants`,
-        );
+          log?.info(
+            `Discovered ${this.allTools.length} tools from channel participants`,
+          );
+        }
       }
 
       // ----- Session creation / recreation -----
@@ -457,16 +495,19 @@ export class PiAdapter {
           turnThinking !== this.activeThinkingLevel);
 
       if (!this.session || settingsChanged) {
-        // Dispose existing session, preserving session file for resume
-        let resumeFile = this.options?.resumeSessionId;
+        // Dispose existing session, preserving session file for resume.
+        // lastSessionFile may already be set by tool-change teardown above.
+        let resumeFile =
+          this.lastSessionFile ?? this.options?.resumeSessionId;
         if (this.session) {
-          resumeFile = this.session.sessionFile ?? undefined;
+          resumeFile = this.session.sessionFile ?? resumeFile;
           log?.info(
             `Recreating session (model: ${this.activeModel} → ${turnModel}, ` +
               `thinking: ${this.activeThinkingLevel} → ${turnThinking})`,
           );
           this.teardownSession();
         }
+        this.lastSessionFile = undefined;
 
         this.sessionManager = this.deps.createSessionManager(cwd, resumeFile);
 
@@ -487,7 +528,11 @@ export class PiAdapter {
       }
 
       // Run the prompt (blocks until agent finishes)
-      await this.session.prompt(input.content);
+      const images = convertAttachmentsToPiImages(input.attachments);
+      await this.session.prompt(
+        input.content,
+        images.length > 0 ? { images } : undefined,
+      );
 
       // Ensure message-complete is emitted if we had content.
       // Close open blocks first so text-end precedes message-complete.
@@ -697,6 +742,7 @@ export class PiAdapter {
     this.allTools = null;
     this.originalToDisplay.clear();
     this.discoveredMethods = [];
+    this.lastSessionFile = undefined;
     this.activeModel = undefined;
     this.activeThinkingLevel = undefined;
     this.prevTokens = { input: 0, output: 0, cost: 0 };
@@ -730,6 +776,10 @@ export class PiAdapter {
 
       case "tool_execution_start":
         this.handleToolStart(event);
+        break;
+
+      case "tool_execution_update":
+        this.handleToolUpdate(event);
         break;
 
       case "tool_execution_end":
@@ -872,6 +922,30 @@ export class PiAdapter {
       description: getToolDescription(displayName, args),
       toolUseId,
     });
+  }
+
+  private handleToolUpdate(
+    event: Extract<PiSessionEvent, { type: "tool_execution_update" }>,
+  ): void {
+    const toolUseId =
+      event.toolCallId ?? this.streamState.currentToolUseId ?? generateId();
+
+    // partialResult is accumulated output (not a delta) — extract text content
+    const partial = event.partialResult as
+      | { content?: Array<{ type: string; text?: string }> }
+      | undefined;
+    const text = partial?.content
+      ?.filter((c) => c.type === "text" && c.text)
+      .map((c) => c.text)
+      .join("") ?? "";
+
+    if (text) {
+      this.deps.pushEvent({
+        type: "action-update",
+        toolUseId,
+        content: text,
+      });
+    }
   }
 
   private handleToolEnd(
@@ -1189,6 +1263,20 @@ function mapThinkingTokensToLevel(mtk: number): string {
   if (mtk <= 16384) return "medium";
   if (mtk <= 65536) return "high";
   return "xhigh";
+}
+
+/** Convert harness Attachment[] to Pi SDK ImageContent[] */
+function convertAttachmentsToPiImages(
+  attachments: Attachment[] | undefined,
+): PiImageContent[] {
+  if (!attachments) return [];
+  return attachments
+    .filter((a) => a.mimeType?.startsWith("image/") && a.data)
+    .map((a) => ({
+      type: "image" as const,
+      data: a.data,
+      mimeType: a.mimeType!,
+    }));
 }
 
 /** Generate a simple unique ID */

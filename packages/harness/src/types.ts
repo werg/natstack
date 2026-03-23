@@ -15,6 +15,7 @@ export type HarnessOutput =
   | { type: 'text-delta'; content: string }
   | { type: 'text-end' }
   | { type: 'action-start'; tool: string; description: string; toolUseId: string }
+  | { type: 'action-update'; toolUseId: string; content: string }
   | { type: 'action-end'; toolUseId: string }
   | { type: 'inline-ui'; data: unknown }
   | { type: 'approval-needed'; toolUseId: string; toolName: string; input: unknown }

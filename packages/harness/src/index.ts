@@ -28,6 +28,7 @@ export type {
   PiSessionEvent,
   PiSessionStats,
   PiSessionManager,
+  PiImageContent,
   CreatePiSessionOptions,
 } from './pi-adapter.js';
 
