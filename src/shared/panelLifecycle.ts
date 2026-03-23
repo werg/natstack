@@ -353,6 +353,7 @@ export class PanelLifecycle implements BridgePanelManager {
         snapshot: initialSnapshot,
         artifacts: {
           buildState: "ready",
+          htmlPath: url,
         },
       };
 
