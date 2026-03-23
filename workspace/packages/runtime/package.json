@@ -3,28 +3,18 @@
   "version": "0.1.0-git.dfc926d-dirty.2482fc2becd1",
   "description": "Unified runtime for NatStack panels and workers",
   "type": "module",
-  "main": "./dist/panel/index.js",
-  "types": "./dist/panel/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/panel/index.d.ts",
-      "natstack-panel": "./dist/panel/index.js",
-      "default": "./dist/panel/index.js"
+      "natstack-panel": "./src/panel/index.ts",
+      "default": "./src/panel/index.ts"
     },
     "./worker": {
-      "types": "./dist/worker/index.d.ts",
-      "worker": "./dist/worker/index.js",
-      "workerd": "./dist/worker/index.js",
-      "default": "./dist/worker/index.js"
+      "worker": "./src/worker/index.ts",
+      "workerd": "./src/worker/index.ts",
+      "default": "./src/worker/index.ts"
     },
-    "./worker/test-utils": {
-      "types": "./src/worker/durable-test-utils.d.ts",
-      "default": "./src/worker/durable-test-utils.js"
-    },
-    "./workerd-client": {
-      "types": "./dist/shared/workerd.d.ts",
-      "default": "./dist/shared/workerd.js"
-    }
+    "./worker/test-utils": "./src/worker/durable-test-utils.ts",
+    "./workerd-client": "./src/shared/workerd.ts"
   },
   "dependencies": {
     "@natstack/ai": "workspace:*",
@@ -37,8 +27,5 @@
   },
   "devDependencies": {
     "sql.js": "^1.14.0"
-  },
-  "files": [
-    "dist"
-  ]
+  }
 }

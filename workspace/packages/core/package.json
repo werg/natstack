@@ -3,21 +3,10 @@
   "version": "0.1.0",
   "description": "Minimal form-schema utility for workspace panels",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    },
-    "./form-schema": {
-      "types": "./dist/form-schema.d.ts",
-      "default": "./dist/form-schema.js"
-    }
+    ".": "./src/index.ts",
+    "./form-schema": "./src/form-schema.ts"
   },
-  "files": [
-    "dist"
-  ],
   "dependencies": {
     "@natstack/types": "workspace:*"
   },

@@ -3,17 +3,9 @@
   "version": "0.1.0",
   "description": "Typed convenience API for browser data operations from panel eval context",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
+    ".": "./src/index.ts"
   },
-  "files": [
-    "dist"
-  ],
   "peerDependencies": {
     "@workspace/runtime": "workspace:*"
   },

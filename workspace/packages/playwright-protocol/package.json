@@ -4,15 +4,9 @@
   "type": "module",
   "description": "Playwright CDP protocol definitions",
   "license": "Apache-2.0",
-  "types": "./dist/index.d.ts",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts"
-    }
+    ".": "./src/index.ts"
   },
-  "files": [
-    "dist"
-  ],
   "dependencies": {
     "zod": "^3.25.76"
   }

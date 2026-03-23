@@ -4,17 +4,12 @@
   "type": "module",
   "description": "Browser-compatible CDP client library for orchestrating Chrome sessions",
   "license": "Apache-2.0",
-  "main": "./dist/playwright-core.js",
-  "types": "./dist/index.d.ts",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/playwright-core.js"
-    }
+    ".": "./dist/playwright-core.js"
   },
-  "files": [
-    "dist"
-  ],
+  "scripts": {
+    "build": "node build.mjs"
+  },
   "dependencies": {
     "@types/ws": "^8.5.3",
     "@types/xml2js": "^0.4.9",

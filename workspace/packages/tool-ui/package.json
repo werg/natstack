@@ -2,17 +2,9 @@
   "name": "@workspace/tool-ui",
   "version": "0.1.0-git.dfc926d-dirty.431476b8002f",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
+    ".": "./src/index.ts"
   },
-  "files": [
-    "dist"
-  ],
   "dependencies": {
     "@natstack/types": "workspace:*",
     "@natstack/pubsub": "workspace:*",
