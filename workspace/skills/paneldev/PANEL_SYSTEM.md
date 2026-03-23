@@ -154,13 +154,13 @@ const active = await workspace.getActiveEntry();
 
 // Read workspace config (natstack.yml)
 const config = await workspace.getConfig();
-// => { id: "default", rootPanel: "panels/chat", git: { port: 63524 } }
+// => { id: "default", initPanels: [{ source: "panels/chat" }], git: { port: 63524 } }
 
 // Create a new workspace (fork from current)
 const entry = await workspace.create("experiment", { forkFrom: name });
 
-// Set the default panel for this workspace
-await workspace.setRootPanel("panels/my-app");
+// Set the init panels for this workspace
+await workspace.setInitPanels([{ source: "panels/my-app" }]);
 
 // Switch to a workspace (triggers app relaunch)
 await workspace.switchTo("experiment");
@@ -171,18 +171,17 @@ await workspace.switchTo("experiment");
 | Option | Type | Description |
 |--------|------|-------------|
 | `forkFrom` | string | Copy panels, packages, and agents from an existing workspace |
-| `gitUrl` | string | Clone from a remote git template URL |
 
-If neither option is given, creates an empty workspace.
+If no option is given, creates an empty workspace.
 
-### workspace.setRootPanel / workspace.setInitPanels
+### workspace.setInitPanels
 
-Field-specific setters that update `natstack.yml` safely. Each setter updates one field, preserving all other config. The workspace `id` and `git` config are not writable via RPC.
+Updates `natstack.yml` safely, preserving all other config. The workspace `id` and `git` config are not writable via RPC.
 
 ### Restrictions
 
 - Panels **cannot** delete workspaces — deletion is only available through the workspace switcher UI.
-- `getConfig`, `setRootPanel`, and `setInitPanels` operate on the **active** workspace only — no cross-workspace access.
+- `getConfig` and `setInitPanels` operate on the **active** workspace only — no cross-workspace access.
 
 ## Related Docs
 

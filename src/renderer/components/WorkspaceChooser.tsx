@@ -77,7 +77,6 @@ export function WorkspaceChooser() {
   const handleCreateNew = () => {
     setWizardFormData({
       workspaceName: "",
-      gitUrl: "",
       forkFrom: "",
     });
     setWizardDialogOpen(true);
@@ -215,11 +214,6 @@ function WorkspaceItem({ workspace, isActive, onSelect, onRemove }: WorkspaceIte
                 <Text size="1" color="gray" ml="2">(current)</Text>
               )}
             </Text>
-            {workspace.gitUrl && (
-              <Text size="1" color="gray" truncate style={{ fontFamily: "var(--font-mono)" }}>
-                {workspace.gitUrl}
-              </Text>
-            )}
             <Text size="1" color="gray">
               {formatRelativeTime(workspace.lastOpened)}
             </Text>

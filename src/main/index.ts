@@ -470,6 +470,7 @@ app.on("ready", async () => {
       panelHttpServer,
       panelHttpPort,
       sendToClient: (callerId, msg) => rpcServer!.sendToClient(callerId, msg as import("../shared/ws/protocol.js").WsServerMessage),
+      workspaceConfig: workspace!.config,
     });
 
     // Set up test API for E2E testing (only when NATSTACK_TEST_MODE=1)

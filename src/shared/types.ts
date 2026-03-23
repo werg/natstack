@@ -183,7 +183,6 @@ export interface Panel {
 export interface WorkspaceEntry {
   name: string;
   lastOpened: number;
-  gitUrl?: string;
 }
 
 export interface ProviderInfo {

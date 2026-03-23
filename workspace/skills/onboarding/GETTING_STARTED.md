@@ -11,7 +11,7 @@ eval({ code: `
   import { workspace, fs } from "@workspace/runtime";
   const config = await workspace.getConfig();
   console.log("Workspace:", config.id);
-  console.log("Root panel:", config.rootPanel);
+  console.log("Init panels:", config.initPanels);
 
   const entries = await fs.readdir("/", { withFileTypes: true });
   const dirs = entries.filter(e => e.isDirectory()).map(e => e.name);
@@ -88,13 +88,13 @@ eval({ code: `
 ` })
 ```
 
-Configure which panel opens by default:
+Configure which panels open on first launch:
 
 ```
 eval({ code: `
   import { workspace } from "@workspace/runtime";
-  await workspace.setRootPanel("panels/chat");
-  console.log("Root panel set");
+  await workspace.setInitPanels([{ source: "panels/chat" }]);
+  console.log("Init panels set");
 ` })
 ```
 

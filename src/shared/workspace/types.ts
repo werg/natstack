@@ -8,7 +8,7 @@
  *    - .env: Environment variables
  *
  * 2. Workspace (project directory with natstack.yml):
- *    - natstack.yml: Workspace ID, git port, root panel
+ *    - natstack.yml: Workspace ID, git port, init panels
  *    - panels/: Panel source code
  *    - .cache/: Build cache
  */
@@ -126,6 +126,14 @@ export interface GitConfig {
 }
 
 /**
+ * An entry in the initPanels array — panel source + optional stateArgs.
+ */
+export interface InitPanelEntry {
+  source: string;
+  stateArgs?: Record<string, unknown>;
+}
+
+/**
  * Workspace configuration from natstack.yml
  * This is specific to each workspace/project.
  */
@@ -135,18 +143,11 @@ export interface WorkspaceConfig {
   /** Git server configuration */
   git?: GitConfig;
   /**
-   * Default panel to open when workspace loads (fresh install / empty panel tree).
-   * If set, this panel opens directly instead of the shell/new launcher.
-   * Example: "panels/chat"
-   */
-  rootPanel?: string;
-  /**
    * Panels to create on first initialization (when panel tree is empty).
-   * These panels are created as root panels before the launcher.
-   * Useful for panels that need to run once to seed data or perform setup.
-   * Example: ["panels/setup-wizard"]
+   * These panels are created as root panels in the specified order.
+   * Example: [{ source: "panels/chat", stateArgs: { agentSource: "workers/onboarding-agent" } }]
    */
-  initPanels?: string[];
+  initPanels?: InitPanelEntry[];
 }
 
 /**

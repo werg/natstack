@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ServiceContext } from "../../../shared/serviceDispatcher.js";
 import type { CentralDataManager } from "../../centralData.js";
-import type { WorkspaceConfig, WorkspaceEntry } from "../../../shared/workspace/types.js";
+import type { WorkspaceConfig } from "../../../shared/workspace/types.js";
+import type { WorkspaceEntry } from "../../../shared/types.js";
 
 // Mock electron app (workspace.select calls app.relaunch/app.exit)
 vi.mock("electron", () => ({
@@ -37,7 +38,7 @@ function makeCentralData(workspaces: WorkspaceEntry[] = []): CentralDataManager 
 }
 
 function makeConfig(): WorkspaceConfig {
-  return { id: "test-ws", rootPanel: "panels/chat", git: { port: 63524 } };
+  return { id: "test-ws", initPanels: [{ source: "panels/chat" }], git: { port: 63524 } };
 }
 
 describe("workspaceService", () => {
@@ -60,7 +61,7 @@ describe("workspaceService", () => {
     setField = vi.fn();
     centralData = makeCentralData([
       { name: "test-ws", lastOpened: 1000 },
-      { name: "other", lastOpened: 900, gitUrl: "https://example.com" },
+      { name: "other", lastOpened: 900 },
     ]);
   });
 
@@ -91,29 +92,16 @@ describe("workspaceService", () => {
     const svc = makeService();
     const result = await svc.handler(panelCtx, "getConfig", []);
     expect(result).toBe(config);
-    expect(result).toEqual({ id: "test-ws", rootPanel: "panels/chat", git: { port: 63524 } });
-  });
-
-  // ── setRootPanel ──
-
-  it("setRootPanel calls setWorkspaceConfigField with the value", async () => {
-    const svc = makeService();
-    await svc.handler(panelCtx, "setRootPanel", ["panels/new-app"]);
-    expect(setField).toHaveBeenCalledWith("rootPanel", "panels/new-app");
-  });
-
-  it("setRootPanel converts null to undefined", async () => {
-    const svc = makeService();
-    await svc.handler(panelCtx, "setRootPanel", [null]);
-    expect(setField).toHaveBeenCalledWith("rootPanel", undefined);
+    expect(result).toEqual({ id: "test-ws", initPanels: [{ source: "panels/chat" }], git: { port: 63524 } });
   });
 
   // ── setInitPanels ──
 
   it("setInitPanels calls setWorkspaceConfigField with the array", async () => {
     const svc = makeService();
-    await svc.handler(panelCtx, "setInitPanels", [["panels/setup", "panels/chat"]]);
-    expect(setField).toHaveBeenCalledWith("initPanels", ["panels/setup", "panels/chat"]);
+    const entries = [{ source: "panels/setup" }, { source: "panels/chat", stateArgs: { agentClass: "Foo" } }];
+    await svc.handler(panelCtx, "setInitPanels", [entries]);
+    expect(setField).toHaveBeenCalledWith("initPanels", entries);
   });
 
   // ── delete guard ──

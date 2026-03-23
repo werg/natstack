@@ -126,8 +126,7 @@ import { workspace } from "@workspace/runtime";
 | `getActiveEntry()` | Get active workspace details |
 | `getConfig()` | Get workspace config |
 | `create(name, opts?)` | Create a new workspace |
-| `setRootPanel(source)` | Set workspace root panel |
-| `setInitPanels(sources)` | Set panels launched on workspace open |
+| `setInitPanels(entries)` | Set panels launched on workspace open |
 | `switchTo(name)` | Switch workspace (triggers app relaunch) |
 
 ## Git

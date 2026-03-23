@@ -67,5 +67,5 @@ eval({ code: `
 | List workspaces | `eval` — `workspace.list()` |
 | Get workspace config | `eval` — `workspace.getConfig()` |
 | Create workspace | `eval` — `workspace.create("name", { forkFrom: "default" })` |
-| Set root panel | `eval` — `workspace.setRootPanel("panels/my-app")` |
+| Set init panels | `eval` — `workspace.setInitPanels([{ source: "panels/my-app" }])` |
 | Switch workspace | `eval` — `workspace.switchTo("name")` |

@@ -80,7 +80,7 @@ export function WorkspaceWizard() {
               <Select.Root
                 value={formData.forkFrom || "__none__"}
                 onValueChange={(value) =>
-                  setFormData({ ...formData, forkFrom: value === "__none__" ? "" : value, gitUrl: value !== "__none__" ? "" : formData.gitUrl })
+                  setFormData({ ...formData, forkFrom: value === "__none__" ? "" : value })
                 }
               >
                 <Select.Trigger placeholder="Empty workspace (no panels)" />
@@ -95,23 +95,6 @@ export function WorkspaceWizard() {
               </Select.Root>
               <Text size="1" color="gray">
                 Copy panels, packages, and agents from an existing workspace.
-              </Text>
-            </Flex>
-          )}
-
-          {/* Git URL — only shown when not forking */}
-          {!formData.forkFrom && (
-            <Flex direction="column" gap="3">
-              <Text size="2" weight="medium">
-                Git Template URL <Text size="1" color="gray">(optional)</Text>
-              </Text>
-              <TextField.Root
-                value={formData.gitUrl}
-                onChange={(e) => setFormData({ ...formData, gitUrl: e.target.value })}
-                placeholder="https://github.com/user/template.git"
-              />
-              <Text size="1" color="gray">
-                Clone a template repository to initialize the workspace.
               </Text>
             </Flex>
           )}

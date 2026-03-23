@@ -14,9 +14,32 @@
           "type": "string",
           "description": "Channel to connect to"
         },
+        "channelConfig": {
+          "type": "object",
+          "description": "Channel configuration"
+        },
         "contextId": {
           "type": "string",
           "description": "Context ID for channel authorization"
+        },
+        "pendingAgents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "agentId": { "type": "string" },
+              "handle": { "type": "string" }
+            }
+          },
+          "description": "Agents pending subscription"
+        },
+        "agentSource": {
+          "type": "string",
+          "description": "Worker source path for the default agent DO"
+        },
+        "agentClass": {
+          "type": "string",
+          "description": "DO class name for the default agent"
         }
       }
     },

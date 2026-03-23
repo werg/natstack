@@ -7,7 +7,8 @@ import * as fs from "fs";
 import YAML from "yaml";
 import { initWorkspace, deleteWorkspaceDir } from "../shared/workspace/loader.js";
 import type { CentralDataManager } from "./centralData.js";
-import type { WorkspaceEntry, WorkspaceConfig } from "../shared/workspace/types.js";
+import type { WorkspaceConfig } from "../shared/workspace/types.js";
+import type { WorkspaceEntry } from "../shared/types.js";
 
 /**
  * Create a new workspace and register it in the central data store.
@@ -16,7 +17,7 @@ import type { WorkspaceEntry, WorkspaceConfig } from "../shared/workspace/types.
 export function createAndRegisterWorkspace(
   name: string,
   centralData: CentralDataManager,
-  opts?: { gitUrl?: string; templateDir?: string; forkFrom?: string },
+  opts?: { templateDir?: string; forkFrom?: string },
 ): WorkspaceEntry {
   // Fail if registry already has this workspace (after disk-pruning)
   if (centralData.hasWorkspace(name)) {
@@ -27,12 +28,11 @@ export function createAndRegisterWorkspace(
   initWorkspace(name, opts);
 
   // Register in central data
-  centralData.addWorkspace(name, opts?.gitUrl);
+  centralData.addWorkspace(name);
 
   return {
     name,
     lastOpened: Date.now(),
-    ...(opts?.gitUrl ? { gitUrl: opts.gitUrl } : {}),
   };
 }
 
@@ -43,7 +43,7 @@ export function createAndRegisterWorkspace(
 export function createWorkspaceConfigManager(configPath: string, config: WorkspaceConfig) {
   return {
     get: () => config,
-    set(key: "rootPanel" | "initPanels", value: unknown): void {
+    set(key: "initPanels", value: unknown): void {
       // Write disk first — if I/O fails, in-memory config stays consistent
       const content = fs.readFileSync(configPath, "utf-8");
       const onDisk = (YAML.parse(content) as Record<string, unknown>) ?? {};

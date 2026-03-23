@@ -246,7 +246,6 @@ const STATE_DIRS = [".cache", ".databases", ".contexts"];
  * Initialize a new managed workspace directory.
  *
  * Source options (mutually exclusive, at most one):
- * - `gitUrl`:     Clone from a remote git template
  * - `templateDir`: Copy source dirs from a local directory (e.g., the shipped workspace template)
  * - `forkFrom`:   Copy source dirs from another managed workspace by name
  *
@@ -255,7 +254,7 @@ const STATE_DIRS = [".cache", ".databases", ".contexts"];
  */
 export function initWorkspace(
   name: string,
-  opts?: { gitUrl?: string; templateDir?: string; forkFrom?: string }
+  opts?: { templateDir?: string; forkFrom?: string }
 ): void {
   validateWorkspaceName(name);
 
@@ -273,18 +272,7 @@ export function initWorkspace(
   // Resolve template source directory for template/fork
   let templateSrc: string | null = null;
 
-  if (opts?.gitUrl) {
-    // Clone from remote into source/ — use execFileSync with argv to prevent shell injection
-    try {
-      execFileSync("git", ["clone", opts.gitUrl, sourceRoot], {
-        stdio: "pipe",
-        timeout: 60000,
-      });
-    } catch (error) {
-      fs.rmSync(wsDir, { recursive: true, force: true });
-      throw new Error(`Failed to clone template: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  } else if (opts?.templateDir) {
+  if (opts?.templateDir) {
     templateSrc = opts.templateDir;
   } else if (opts?.forkFrom) {
     templateSrc = path.join(getWorkspaceDir(opts.forkFrom), "source");
@@ -307,7 +295,7 @@ export function initWorkspace(
     if (fs.existsSync(srcConfig)) {
       fs.copyFileSync(srcConfig, path.join(sourceRoot, WORKSPACE_CONFIG_FILE));
     }
-  } else if (!opts?.gitUrl) {
+  } else {
     // Bare workspace
     fs.mkdirSync(sourceRoot, { recursive: true });
   }
@@ -338,7 +326,8 @@ export function initWorkspace(
     const configContent = `# NatStack Workspace Configuration
 id: ${name}
 
-rootPanel: panels/chat
+initPanels:
+  - source: panels/chat
 
 git:
   port: ${randomPort}

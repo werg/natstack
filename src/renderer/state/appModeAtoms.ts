@@ -236,13 +236,11 @@ export const shellOverlayActiveAtom = atom((get) => get(shellOverlayCountAtom) >
  */
 export interface WizardFormData {
   workspaceName: string;
-  gitUrl: string;
   forkFrom: string;
 }
 
 export const wizardFormDataAtom = atom<WizardFormData>({
   workspaceName: "",
-  gitUrl: "",
   forkFrom: "",
 });
 
@@ -260,7 +258,7 @@ export const wizardErrorAtom = atom<string | null>(null);
  * Reset wizard state
  */
 export const resetWizardAtom = atom(null, (_get, set) => {
-  set(wizardFormDataAtom, { workspaceName: "", gitUrl: "", forkFrom: "" });
+  set(wizardFormDataAtom, { workspaceName: "", forkFrom: "" });
   set(wizardCreatingAtom, false);
   set(wizardErrorAtom, null);
 });
@@ -280,8 +278,7 @@ export const createWorkspaceAtom = atom(null, async (get, set) => {
   set(wizardErrorAtom, null);
 
   try {
-    const opts: { gitUrl?: string; forkFrom?: string } = {};
-    if (formData.gitUrl) opts.gitUrl = formData.gitUrl;
+    const opts: { forkFrom?: string } = {};
     if (formData.forkFrom) opts.forkFrom = formData.forkFrom;
     await workspace.create(
       formData.workspaceName,

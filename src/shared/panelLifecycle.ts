@@ -42,6 +42,7 @@ import type {
   PanelHttpServerLike,
   PanelCreateOptions,
 } from "./panelInterfaces.js";
+import type { WorkspaceConfig } from "./workspace/types.js";
 
 // Re-export for consumers that import from this module
 export type { ServerInfoLike, PanelViewLike, PanelHttpServerLike, PanelCreateOptions } from "./panelInterfaces.js";
@@ -72,6 +73,9 @@ export interface PanelLifecycleDeps {
 
   // For sending WS events to panels (stateArgs:updated, panel:event)
   sendToClient?: (callerId: string, msg: unknown) => void;
+
+  // Workspace config for initPanels on first startup
+  workspaceConfig?: WorkspaceConfig;
 }
 
 // =============================================================================
@@ -92,6 +96,7 @@ export class PanelLifecycle implements BridgePanelManager {
   private readonly panelHttpServer: PanelHttpServerLike | null;
   private readonly panelHttpPort: number | undefined;
   private readonly sendToClient: ((callerId: string, msg: unknown) => void) | undefined;
+  private readonly workspaceConfig: WorkspaceConfig | undefined;
 
   private currentTheme: "light" | "dark" = "dark";
 
@@ -111,6 +116,7 @@ export class PanelLifecycle implements BridgePanelManager {
     this.panelHttpServer = deps.panelHttpServer ?? null;
     this.panelHttpPort = deps.panelHttpPort;
     this.sendToClient = deps.sendToClient;
+    this.workspaceConfig = deps.workspaceConfig;
   }
 
   // =========================================================================
@@ -187,7 +193,10 @@ export class PanelLifecycle implements BridgePanelManager {
    * Create an initialization panel as a root panel.
    * Used for workspace config's initPanels array on first startup.
    */
-  async createInitPanel(source: string): Promise<{ id: string; title: string }> {
+  async createInitPanel(
+    source: string,
+    stateArgs?: Record<string, unknown>,
+  ): Promise<{ id: string; title: string }> {
     const { relativePath, absolutePath } = normalizeRelativePanelPath(source, this.panelsRoot);
 
     let manifest: PanelManifest;
@@ -206,6 +215,7 @@ export class PanelLifecycle implements BridgePanelManager {
       options: {},
       isRoot: true,
       addAsRoot: true,
+      stateArgs,
     });
   }
 
@@ -934,9 +944,26 @@ export class PanelLifecycle implements BridgePanelManager {
       }
 
       this.registry.notifyPanelTreeUpdate();
+    } else {
+      const entries = this.workspaceConfig?.initPanels;
+      if (entries && entries.length > 0) {
+        // Create in reverse order: addPanel with addAsRoot uses unshift,
+        // so reverse ensures config order matches final rootPanels order.
+        for (const entry of [...entries].reverse()) {
+          try {
+            await this.createInitPanel(entry.source, entry.stateArgs);
+          } catch (err) {
+            console.error(`[PanelLifecycle] Failed to create init panel ${entry.source}:`, err);
+          }
+        }
+      }
+      // Focus the first root panel so main-process focus state is set
+      const newRoots = this.registry.getRootPanels();
+      if (newRoots.length > 0) {
+        this.focusPanel(newRoots[0]!.id);
+      }
+      this.registry.notifyPanelTreeUpdate();
     }
-    // If no panels loaded, the caller (e.g. Electron main) can decide
-    // whether to create init panels or a launcher.
   }
 
   // =========================================================================

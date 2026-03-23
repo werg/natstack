@@ -38,6 +38,8 @@ interface ChatStateArgs {
   channelConfig?: Record<string, unknown>;
   contextId?: string;
   pendingAgents?: Array<{ agentId: string; handle: string }>;
+  agentSource?: string;
+  agentClass?: string;
 }
 
 /**
@@ -90,16 +92,20 @@ export default function ChatPanel() {
     if (stateArgs.channelName || bootstrapAttempted.current) return;
     bootstrapAttempted.current = true;
 
-    const channelName = `chat-${crypto.randomUUID().slice(0, 8)}`;
-    const objectKey = `${DEFAULT_HANDLE}-${crypto.randomUUID().slice(0, 8)}`;
-    const pending = [{ agentId: DEFAULT_CLASS_NAME, handle: DEFAULT_HANDLE }];
+    const workerSource = stateArgs.agentSource ?? DEFAULT_WORKER_SOURCE;
+    const className = stateArgs.agentClass ?? DEFAULT_CLASS_NAME;
+    const baseHandle = className === DEFAULT_CLASS_NAME
+      ? DEFAULT_HANDLE
+      : className.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase();
 
-    // Persist channel name to stateArgs so reloads reconnect to the same channel
+    const channelName = `chat-${crypto.randomUUID().slice(0, 8)}`;
+    const objectKey = `${baseHandle}-${crypto.randomUUID().slice(0, 8)}`;
+    const pending = [{ agentId: className, handle: baseHandle }];
+
     void setStateArgs({ channelName });
 
-    // Subscribe default DO agent — fire-and-forget, AgenticChat handles pending display
-    subscribeDOToChannel(DEFAULT_WORKER_SOURCE, DEFAULT_CLASS_NAME, objectKey, channelName, contextId).catch((err: unknown) => {
-      console.warn(`[ChatPanel] Failed to subscribe default agent DO:`, err);
+    subscribeDOToChannel(workerSource, className, objectKey, channelName, contextId).catch((err: unknown) => {
+      console.warn(`[ChatPanel] Failed to subscribe agent DO:`, err);
     });
 
     setBootstrapChannel(channelName);

@@ -149,7 +149,7 @@ export const menu = {
 
 export const workspace = {
   list: () => rpc.call<WorkspaceEntry[]>("main", "workspace.list"),
-  create: (name: string, opts?: { gitUrl?: string; forkFrom?: string }) =>
+  create: (name: string, opts?: { forkFrom?: string }) =>
     rpc.call<WorkspaceEntry>("main", "workspace.create", name, opts),
   select: (name: string) => rpc.call<void>("main", "workspace.select", name),
   delete: (name: string) => rpc.call<void>("main", "workspace.delete", name),

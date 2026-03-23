@@ -3,8 +3,11 @@
 
 id: natstack-dev
 
-# Default panel to open when workspace loads (fresh start)
-rootPanel: panels/chat
+initPanels:
+  - source: panels/chat
+    stateArgs:
+      agentSource: workers/onboarding-agent
+      agentClass: OnboardingAgent
 
 # Git server configuration
 git:

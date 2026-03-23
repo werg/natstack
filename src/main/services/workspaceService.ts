@@ -9,7 +9,7 @@ export function createWorkspaceService(deps: {
   centralData: CentralDataManager;
   activeWorkspaceName: string;
   getWorkspaceConfig: () => WorkspaceConfig;
-  setWorkspaceConfigField: (key: "rootPanel" | "initPanels", value: unknown) => void;
+  setWorkspaceConfigField: (key: "initPanels", value: unknown) => void;
 }): ServiceDefinition {
   return {
     name: "workspace",
@@ -17,14 +17,16 @@ export function createWorkspaceService(deps: {
     policy: { allowed: ["shell", "panel", "worker"] },
     methods: {
       list: { args: z.tuple([]) },
-      create: { args: z.tuple([z.string(), z.object({ gitUrl: z.string().optional(), forkFrom: z.string().optional() }).optional()]) },
+      create: { args: z.tuple([z.string(), z.object({ forkFrom: z.string().optional() }).optional()]) },
       select: { args: z.tuple([z.string()]) },
       delete: { args: z.tuple([z.string()]) },
       getActive: { args: z.tuple([]) },
       getActiveEntry: { args: z.tuple([]) },
       getConfig: { args: z.tuple([]) },
-      setRootPanel: { args: z.tuple([z.string().nullable()]) },
-      setInitPanels: { args: z.tuple([z.array(z.string())]) },
+      setInitPanels: { args: z.tuple([z.array(z.object({
+        source: z.string(),
+        stateArgs: z.record(z.unknown()).optional(),
+      }))]) },
     },
     handler: async (ctx, method, args) => {
       // Only shell callers can delete workspaces
@@ -37,7 +39,7 @@ export function createWorkspaceService(deps: {
           return deps.centralData.listWorkspaces();
 
         case "create": {
-          const [name, opts] = args as [string, { gitUrl?: string; forkFrom?: string } | undefined];
+          const [name, opts] = args as [string, { forkFrom?: string } | undefined];
           return createAndRegisterWorkspace(name, deps.centralData, opts);
         }
 
@@ -84,14 +86,8 @@ export function createWorkspaceService(deps: {
         case "getConfig":
           return deps.getWorkspaceConfig();
 
-        case "setRootPanel": {
-          const [rootPanel] = args as [string | null];
-          deps.setWorkspaceConfigField("rootPanel", rootPanel ?? undefined);
-          return;
-        }
-
         case "setInitPanels": {
-          const [initPanels] = args as [string[]];
+          const [initPanels] = args as [Array<{ source: string; stateArgs?: Record<string, unknown> }>];
           deps.setWorkspaceConfigField("initPanels", initPanels);
           return;
         }

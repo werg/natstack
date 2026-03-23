@@ -105,14 +105,13 @@ export class CentralDataManager {
   /**
    * Add a new workspace to the registry.
    */
-  addWorkspace(name: string, gitUrl?: string): void {
+  addWorkspace(name: string): void {
     // Remove existing entry if present
     this.data.workspaces = this.data.workspaces.filter((w) => w.name !== name);
 
     this.data.workspaces.unshift({
       name,
       lastOpened: Date.now(),
-      ...(gitUrl ? { gitUrl } : {}),
     });
 
     this.save();

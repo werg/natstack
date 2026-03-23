@@ -22,7 +22,7 @@ A workspace is a named collection of panels, packages, workers, and configuratio
 - Create multiple workspaces (e.g. "personal", "work", "experiment")
 - Fork a workspace to branch off a snapshot
 - Switch between workspaces (triggers app relaunch)
-- Configure which panel opens by default (`rootPanel`)
+- Configure which panels open on first launch (`initPanels`)
 
 Workspace config lives in `natstack.yml`. Each workspace gets its own git repository.
 
