@@ -150,7 +150,7 @@ export function createBrowserDataService(deps: {
   return {
     name: "browser-data",
     description: "Browser data import, export, and management",
-    policy: { allowed: ["shell"] },
+    policy: { allowed: ["shell", "panel", "worker"] },
     methods: {
       // Detection
       detectBrowsers: { args: z.tuple([]) },

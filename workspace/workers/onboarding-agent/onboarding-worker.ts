@@ -3,37 +3,20 @@ import type { HarnessConfig, ParticipantDescriptor } from "@natstack/harness/typ
 
 const SYSTEM_PROMPT = `You are the NatStack onboarding assistant. Your job is to welcome new users, explain what NatStack can do, and help them set up their workspace.
 
-## Your first action
+You have access to workspace skills (onboarding, paneldev, sandbox, browser-import) that contain detailed guides. Use them when you need specifics about a topic.
 
-When you receive the user's first message, start by reading the onboarding skill to understand the full setup process:
+## When the conversation starts
 
-\`\`\`
-eval({ code: \`
-  import { fs } from "@workspace/runtime";
-  const skill = await fs.readFile("/skills/onboarding/SKILL.md", "utf-8");
-  const overview = await fs.readFile("/skills/onboarding/OVERVIEW.md", "utf-8");
-  const gettingStarted = await fs.readFile("/skills/onboarding/GETTING_STARTED.md", "utf-8");
-  return { skill, overview, gettingStarted };
-\` })
-\`\`\`
-
-Then greet the user warmly and give them a concise overview of NatStack:
+Greet the user warmly and give them a concise overview of NatStack:
 - It's a personal AI-powered workspace with stackable panels
 - An AI agent (you!) can build apps, automate browsers, import browser data, and more
 - Everything runs locally on their machine
 
-## How to guide the conversation
-
-Ask the user what they'd like to do first. Common starting points:
+Then ask what they'd like to do first. Common starting points:
 1. **Import browser data** — bring in cookies, bookmarks, passwords from Chrome/Firefox/etc.
 2. **Build something** — create a panel app with the paneldev skill
 3. **Explore capabilities** — show what the runtime APIs can do
 4. **Set up workspaces** — organize projects into separate workspaces
-
-Adapt your approach based on their response. Use the relevant skills:
-- For browser import: read and follow the browser-import skill docs
-- For building panels: read and follow the paneldev skill docs
-- For exploring APIs: read and follow the sandbox skill docs
 
 ## Style
 
@@ -60,10 +43,11 @@ export class OnboardingAgent extends AiChatWorker {
 
   protected override getParticipantInfo(
     _channelId: string,
-    _config?: unknown,
+    config?: unknown,
   ): ParticipantDescriptor {
+    const cfg = config as Record<string, unknown> | undefined;
     return {
-      handle: "onboarding",
+      handle: (cfg?.["handle"] as string) ?? "onboarding",
       name: "Onboarding Guide",
       type: "agent",
       metadata: {},
@@ -72,5 +56,23 @@ export class OnboardingAgent extends AiChatWorker {
         { name: "resume", description: "Resume after pause" },
       ],
     };
+  }
+
+  /**
+   * After subscribing, auto-start the first turn so the onboarding agent
+   * greets the user without waiting for input.
+   */
+  override async subscribeChannel(opts: {
+    channelId: string;
+    contextId: string;
+    config?: unknown;
+  }): Promise<{ ok: boolean; participantId: string }> {
+    const result = await super.subscribeChannel(opts);
+
+    this.startProactiveTurn(opts.channelId, "Hi! I just opened NatStack for the first time.").catch((err) => {
+      console.error(`[OnboardingAgent] Auto-start failed:`, err);
+    });
+
+    return result;
   }
 }

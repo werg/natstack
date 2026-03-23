@@ -22,7 +22,7 @@ export class StreamWriter {
     private channel: ChannelClient,
     private participantId: string,
     private channelId: string,
-    private replyToId: string,
+    private replyToId: string | undefined,
     private typingContent: string,
     initialState: PersistedStreamState,
   ) {
@@ -48,7 +48,7 @@ export class StreamWriter {
     await this.send(messageId, this.typingContent, {
       contentType: "typing",
       persist: false,
-      replyTo: this.replyToId,
+      ...(this.replyToId && { replyTo: this.replyToId }),
     });
   }
 
@@ -68,7 +68,7 @@ export class StreamWriter {
     await this.send(messageId, "", {
       contentType: "thinking",
       persist: true,
-      replyTo: this.replyToId,
+      ...(this.replyToId && { replyTo: this.replyToId }),
     });
   }
 
@@ -87,7 +87,7 @@ export class StreamWriter {
     await this.stopTyping();
     if (this.state.responseMessageId) return;
     const messageId = crypto.randomUUID();
-    const options: SendMessageOptions = { persist: true, replyTo: this.replyToId };
+    const options: SendMessageOptions = { persist: true, ...(this.replyToId && { replyTo: this.replyToId }) };
     if (metadata) options.senderMetadata = metadata as Record<string, unknown>;
     this.state.responseMessageId = messageId;
     await this.send(messageId, "", options);
@@ -117,7 +117,7 @@ export class StreamWriter {
       {
         contentType: "action",
         persist: true,
-        replyTo: this.replyToId,
+        ...(this.replyToId && { replyTo: this.replyToId }),
       },
     );
   }

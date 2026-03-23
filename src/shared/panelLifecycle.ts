@@ -946,12 +946,15 @@ export class PanelLifecycle implements BridgePanelManager {
       this.registry.notifyPanelTreeUpdate();
     } else {
       const entries = this.workspaceConfig?.initPanels;
+      log.info(`[initializePanelTree] No existing roots. initPanels config:`, JSON.stringify(entries));
       if (entries && entries.length > 0) {
         // Create in reverse order: addPanel with addAsRoot uses unshift,
         // so reverse ensures config order matches final rootPanels order.
         for (const entry of [...entries].reverse()) {
           try {
+            log.info(`[initializePanelTree] Creating init panel: ${entry.source} stateArgs=${JSON.stringify(entry.stateArgs)}`);
             await this.createInitPanel(entry.source, entry.stateArgs);
+            log.info(`[initializePanelTree] Successfully created init panel: ${entry.source}`);
           } catch (err) {
             console.error(`[PanelLifecycle] Failed to create init panel ${entry.source}:`, err);
           }

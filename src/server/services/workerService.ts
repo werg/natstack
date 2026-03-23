@@ -100,12 +100,19 @@ export function createWorkerService(deps: {
           const doMethod = args[3] as string;
           const doArgs = args.slice(4);
 
-          const result = await doDispatch.dispatch(
-            { source, className, objectKey },
-            doMethod,
-            ...doArgs,
-          );
-          return result;
+          log.info(`[callDO] ${source}:${className}/${objectKey}.${doMethod}`);
+          try {
+            const result = await doDispatch.dispatch(
+              { source, className, objectKey },
+              doMethod,
+              ...doArgs,
+            );
+            log.info(`[callDO] ${source}:${className}/${objectKey}.${doMethod} => OK`);
+            return result;
+          } catch (err) {
+            log.info(`[callDO] ${source}:${className}/${objectKey}.${doMethod} => FAILED: ${err instanceof Error ? err.message : String(err)}`);
+            throw err;
+          }
         }
 
         default:

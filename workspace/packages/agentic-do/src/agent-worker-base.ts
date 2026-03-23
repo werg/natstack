@@ -148,9 +148,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     return { content: payload.content ?? '', senderId: event.senderId, attachments: event.attachments };
   }
 
-  protected getParticipantInfo(_channelId: string, _config?: unknown): ParticipantDescriptor {
+  protected getParticipantInfo(_channelId: string, config?: unknown): ParticipantDescriptor {
+    const cfg = config as Record<string, unknown> | undefined;
     return {
-      handle: 'agent',
+      handle: (cfg?.["handle"] as string) ?? 'agent',
       name: 'AI Agent',
       type: 'agent',
       metadata: {},

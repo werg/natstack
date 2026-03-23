@@ -104,7 +104,7 @@ export default function ChatPanel() {
 
     void setStateArgs({ channelName });
 
-    subscribeDOToChannel(workerSource, className, objectKey, channelName, contextId).catch((err: unknown) => {
+    subscribeDOToChannel(workerSource, className, objectKey, channelName, contextId, { handle: baseHandle }).catch((err: unknown) => {
       console.warn(`[ChatPanel] Failed to subscribe agent DO:`, err);
     });
 

@@ -655,6 +655,7 @@ async function main() {
             }
           }
           if (doClasses.length > 0) {
+            console.log(`[WorkerdManager] Pre-registering DO classes:`, doClasses.map(c => `${c.source}:${c.className}`).join(", "));
             await workerdManagerInstance.registerAllDOClasses(doClasses);
           }
         }

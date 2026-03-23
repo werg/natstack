@@ -31,10 +31,11 @@ export class AiChatWorker extends AgentWorkerBase {
 
   protected override getParticipantInfo(
     _channelId: string,
-    _config?: unknown,
+    config?: unknown,
   ): ParticipantDescriptor {
+    const cfg = config as Record<string, unknown> | undefined;
     return {
-      handle: "ai-chat",
+      handle: (cfg?.["handle"] as string) ?? "ai-chat",
       name: "AI Chat",
       type: "agent",
       metadata: {},
@@ -468,6 +469,55 @@ export class AiChatWorker extends AgentWorkerBase {
         break;
       }
     }
+  }
+
+  // --- Proactive turn ---
+
+  /**
+   * Start a turn proactively (without a user message triggering it).
+   * Spawns a harness with the given content as initial input.
+   * Use from subscribeChannel overrides when the agent should greet first.
+   */
+  protected async startProactiveTurn(channelId: string, content: string): Promise<void> {
+    const participantId = this.getParticipantId(channelId);
+    if (!participantId) throw new Error(`Not subscribed to channel ${channelId}`);
+
+    const input = { content, senderId: "user" };
+    const contextId = this.getContextId(channelId);
+    const config = this.buildHarnessConfig(channelId);
+    const harnessId = `harness-${crypto.randomUUID()}`;
+    const participantInfo = this.getParticipantInfo(channelId);
+    const typingContent = JSON.stringify({
+      senderId: participantId,
+      senderName: participantInfo.name,
+      senderType: participantInfo.type,
+    });
+
+    this.registerHarness(harnessId, this.getHarnessType());
+    // No replyToId — proactive turns have no trigger message
+    this.setActiveTurn(harnessId, channelId, "", undefined, undefined, typingContent);
+    this.setInFlightTurn(channelId, harnessId, "", 0, input);
+
+    // Send bootstrap typing indicator
+    const bootstrapTypingId = crypto.randomUUID();
+    this.sql.exec(
+      `INSERT OR REPLACE INTO state (key, value) VALUES (?, ?)`,
+      `bootstrap_typing:${channelId}`, bootstrapTypingId,
+    );
+    const channel = this.createChannelClient(channelId);
+    await channel.send(participantId, bootstrapTypingId, typingContent, {
+      contentType: "typing",
+      persist: false,
+    });
+
+    await this.server.spawnHarness({
+      doRef: this.doRef,
+      harnessId,
+      type: this.getHarnessType(),
+      contextId,
+      config,
+      initialInput: input,
+    });
   }
 
   // --- Private helpers ---
