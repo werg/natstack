@@ -1,4 +1,3 @@
-export { toChannelEvent } from './types.js';
 export type {
   TurnUsage,
   HarnessOutput,
@@ -6,7 +5,6 @@ export type {
   HarnessConfig,
   Attachment,
   ChannelEvent,
-  ChannelBroadcastEventRaw,
   SendMessageOptions,
   TurnInput,
   HarnessCommand,

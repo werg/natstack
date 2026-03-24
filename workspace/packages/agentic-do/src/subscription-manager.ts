@@ -42,7 +42,7 @@ export class SubscriptionManager {
     descriptor: ParticipantDescriptor;
     /** Request replay of persisted messages sent before this subscriber joined. */
     replay?: boolean;
-  }): Promise<{ ok: boolean; participantId: string; channelConfig?: Record<string, unknown>; replay?: ChannelEvent[] }> {
+  }): Promise<{ ok: boolean; participantId: string; channelConfig?: Record<string, unknown>; replay?: ChannelEvent[]; replayTruncated?: boolean }> {
     this.sql.exec(
       `INSERT OR REPLACE INTO subscriptions (channel_id, context_id, subscribed_at, config) VALUES (?, ?, ?, ?)`,
       opts.channelId, opts.contextId, Date.now(), opts.config ? JSON.stringify(opts.config) : null,
@@ -85,6 +85,7 @@ export class SubscriptionManager {
       participantId,
       channelConfig: subResult?.channelConfig,
       replay: subResult?.replay,
+      replayTruncated: subResult?.replayTruncated,
     };
   }
 

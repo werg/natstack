@@ -16,8 +16,10 @@ export interface SendOpts {
 export interface SubscribeResult {
   ok: boolean;
   channelConfig?: Record<string, unknown>;
-  /** Persisted channel events the subscriber missed (sent before it joined). */
+  /** Up to 50 most recent persisted events before the subscriber joined (best-effort catch-up). */
   replay?: ChannelEvent[];
+  /** True if replay was capped and older events exist beyond the returned window. */
+  replayTruncated?: boolean;
 }
 
 /** Participant info stored in the participants table. */
@@ -45,41 +47,10 @@ export interface PresencePayload {
   leaveReason?: "graceful" | "disconnect";
 }
 
-/** Server message format sent to WebSocket clients (same as PubSub server). */
-export interface ServerMessage {
-  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error" | "config-update" | "messages-before";
-  id?: number;
-  type?: string;
-  payload?: unknown;
-  senderId?: string;
-  ts?: number;
+/** WS-specific metadata passed alongside a ChannelEvent to broadcast(). */
+export interface BroadcastEnvelope {
+  kind: "persisted" | "ephemeral";
   ref?: number;
-  error?: string;
-  attachments?: Array<{ id: string; data: string; mimeType: string; name?: string; size: number }>;
-  senderMetadata?: Record<string, unknown>;
-  contextId?: string;
-  channelConfig?: ChannelConfig;
-  totalCount?: number;
-  chatMessageCount?: number;
-  firstChatMessageId?: number;
-  messages?: Array<{
-    id: number;
-    type: string;
-    payload: unknown;
-    senderId: string;
-    ts: number;
-    senderMetadata?: Record<string, unknown>;
-    attachments?: Array<{ id: string; data: string; mimeType: string; name?: string; size: number }>;
-  }>;
-  hasMore?: boolean;
-  trailingUpdates?: Array<{
-    id: number;
-    type: string;
-    payload: unknown;
-    senderId: string;
-    ts: number;
-    senderMetadata?: Record<string, unknown>;
-  }>;
 }
 
 /** Client message format received from WebSocket clients. */

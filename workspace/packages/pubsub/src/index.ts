@@ -74,6 +74,9 @@ export type { PubSubClient } from "./client.js";
 // Content type constants
 export * from "./content-types.js";
 
+// Wire protocol types (shared with channel DO server)
+export * from "./protocol-wire.js";
+
 // Protocol types (agentic messaging types, events, aggregation)
 export * from "./protocol-types.js";
 

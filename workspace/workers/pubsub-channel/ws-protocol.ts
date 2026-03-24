@@ -1,15 +1,17 @@
 /**
  * WebSocket protocol helpers — frame parsing, message serialization.
  *
- * The wire format matches the existing PubSub server exactly so the
- * panel client library (workspace/packages/pubsub) works unchanged.
+ * sendJson/buildBinaryFrame accept any WS message type (event or control).
+ * The wire format is intentionally loose at this layer — type safety is
+ * enforced by callers using WsEventMessage/WsControlMessage from shared types.
  */
 
-import type { ServerMessage, ClientMessage, AttachmentMeta, StoredAttachment } from "./types.js";
+import type { WsEventMessage, WsControlMessage } from "@natstack/pubsub";
+import type { ClientMessage, AttachmentMeta, StoredAttachment } from "./types.js";
 
 // ── JSON send ────────────────────────────────────────────────────────────────
 
-export function sendJson(ws: WebSocket, msg: ServerMessage): void {
+export function sendJson(ws: WebSocket, msg: WsEventMessage | WsControlMessage | Record<string, unknown>): void {
   ws.send(JSON.stringify(msg));
 }
 
@@ -21,7 +23,7 @@ export function sendJson(ws: WebSocket, msg: ServerMessage): void {
  *
  * Note: In workerd, Uint8Array is the primary binary type (no Node.js Buffer).
  */
-export function buildBinaryFrame(msg: ServerMessage, attachments: StoredAttachment[]): ArrayBuffer {
+export function buildBinaryFrame(msg: WsEventMessage | Record<string, unknown>, attachments: StoredAttachment[]): ArrayBuffer {
   const attachmentMeta = attachments.map((a) => ({
     id: a.id,
     mimeType: a.mimeType,
@@ -30,14 +32,7 @@ export function buildBinaryFrame(msg: ServerMessage, attachments: StoredAttachme
   }));
 
   const metadata = {
-    kind: msg.kind,
-    id: msg.id,
-    type: msg.type,
-    payload: msg.payload,
-    senderId: msg.senderId,
-    ts: msg.ts,
-    ref: msg.ref,
-    senderMetadata: msg.senderMetadata,
+    ...msg,
     attachmentMeta,
   };
 

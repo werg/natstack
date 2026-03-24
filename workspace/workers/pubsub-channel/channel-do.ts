@@ -17,7 +17,6 @@ import type {
   ChannelConfig,
   PresencePayload,
   ClientMessage,
-  ServerMessage,
   StoredAttachment,
 } from "./types.js";
 import {
@@ -25,6 +24,8 @@ import {
   broadcastConfigUpdate,
   sendReady,
   buildChannelEvent,
+  parseRowToChannelEvent,
+  channelEventToWsJson,
   type BroadcastDeps,
 } from "./broadcast.js";
 import { replayRosterOps, replayMessages, replayAnchored, getMessagesBefore } from "./replay.js";
@@ -149,6 +150,15 @@ export class PubSubChannel extends DurableObjectBase {
       postToDO: this.postToDO.bind(this),
       objectKey: this.objectKey,
     };
+  }
+
+  /** Look up a participant's metadata from the participants table. */
+  private getSenderMetadata(participantId: string): Record<string, unknown> | undefined {
+    const row = this.sql.exec(
+      `SELECT metadata FROM participants WHERE id = ?`, participantId,
+    ).toArray();
+    if (row.length === 0) return undefined;
+    try { return JSON.parse(row[0]!["metadata"] as string); } catch { return undefined; }
   }
 
   // ── Channel initialization ──────────────────────────────────────────────
@@ -312,12 +322,7 @@ export class PubSubChannel extends DurableObjectBase {
 
     const leaveReason = code === 1000 ? "graceful" : "disconnect";
 
-    const metaRow = this.sql.exec(
-      `SELECT metadata FROM participants WHERE id = ?`, participantId,
-    ).toArray();
-    const metadata = metaRow.length > 0
-      ? JSON.parse(metaRow[0]!["metadata"] as string)
-      : {};
+    const metadata = this.getSenderMetadata(participantId) ?? {};
 
     this.sql.exec(`DELETE FROM participants WHERE id = ? AND transport = 'ws'`, participantId);
     this.publishPresenceEvent(participantId, "leave", metadata, leaveReason);
@@ -400,13 +405,7 @@ export class PubSubChannel extends DurableObjectBase {
         return;
       }
 
-      // Get sender metadata from participants table
-      const metaRow = this.sql.exec(
-        `SELECT metadata FROM participants WHERE id = ?`, senderId,
-      ).toArray();
-      const senderMetadata = metaRow.length > 0
-        ? JSON.parse(metaRow[0]!["metadata"] as string)
-        : undefined;
+      const senderMetadata = this.getSenderMetadata(senderId);
 
       // Extract messageId from payload (client convention: payload.id is the message UUID)
       const payloadObj = typeof payload === "object" && payload !== null
@@ -423,17 +422,11 @@ export class PubSubChannel extends DurableObjectBase {
         );
         const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
 
-        const serverMsg: ServerMessage = {
-          kind: "persisted", id, type, payload, senderId, ts, senderMetadata,
-        };
         const event = buildChannelEvent(id, messageId, type, payloadJson, senderId, senderMetadata, ts, true);
-        broadcast(this.broadcastDeps, serverMsg, event, senderId, ws, ref);
+        broadcast(this.broadcastDeps, event, { kind: "persisted", ref }, senderId, ws);
       } else {
-        const serverMsg: ServerMessage = {
-          kind: "ephemeral", type, payload, senderId, ts, senderMetadata,
-        };
         const event = buildChannelEvent(0, messageId, type, payloadJson, senderId, senderMetadata, ts, false);
-        broadcast(this.broadcastDeps, serverMsg, event, senderId, ws, ref);
+        broadcast(this.broadcastDeps, event, { kind: "ephemeral", ref }, senderId, ws);
       }
       return;
     }
@@ -488,12 +481,7 @@ export class PubSubChannel extends DurableObjectBase {
       return;
     }
 
-    const metaRow = this.sql.exec(
-      `SELECT metadata FROM participants WHERE id = ?`, senderId,
-    ).toArray();
-    const senderMetadata = metaRow.length > 0
-      ? JSON.parse(metaRow[0]!["metadata"] as string)
-      : undefined;
+    const senderMetadata = this.getSenderMetadata(senderId);
 
     const payloadObj = typeof payload === "object" && payload !== null
       ? payload as Record<string, unknown>
@@ -510,19 +498,11 @@ export class PubSubChannel extends DurableObjectBase {
       );
       const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
 
-      const serverMsg: ServerMessage = {
-        kind: "persisted", id, type, payload, senderId, ts, senderMetadata,
-        attachments,
-      };
       const event = buildChannelEvent(id, messageId, type, payloadJson, senderId, senderMetadata, ts, true, attachments);
-      broadcast(this.broadcastDeps, serverMsg, event, senderId, ws, ref, attachments);
+      broadcast(this.broadcastDeps, event, { kind: "persisted", ref }, senderId, ws);
     } else {
-      const serverMsg: ServerMessage = {
-        kind: "ephemeral", type, payload, senderId, ts, senderMetadata,
-        attachments,
-      };
       const event = buildChannelEvent(0, messageId, type, payloadJson, senderId, senderMetadata, ts, false, attachments);
-      broadcast(this.broadcastDeps, serverMsg, event, senderId, ws, ref, attachments);
+      broadcast(this.broadcastDeps, event, { kind: "ephemeral", ref }, senderId, ws);
     }
   }
 
@@ -553,11 +533,8 @@ export class PubSubChannel extends DurableObjectBase {
     );
     const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
 
-    const serverMsg: ServerMessage = {
-      kind: "persisted", id, type: "presence", payload, senderId, ts, senderMetadata: metadata,
-    };
     const event = buildChannelEvent(id, messageId, "presence", payloadJson, senderId, metadata, ts, true);
-    broadcast(this.broadcastDeps, serverMsg, event, senderId, senderWs ?? null, senderRef);
+    broadcast(this.broadcastDeps, event, { kind: "persisted", ref: senderRef }, senderId, senderWs ?? null);
   }
 
   // ── DO-callable methods (via HTTP POST through router) ──────────────────
@@ -589,12 +566,7 @@ export class PubSubChannel extends DurableObjectBase {
       `SELECT id FROM participants WHERE id = ?`, participantId,
     ).toArray();
     if (existing.length > 0) {
-      const oldMeta = this.sql.exec(
-        `SELECT metadata FROM participants WHERE id = ?`, participantId,
-      ).toArray();
-      const oldMetadata = oldMeta.length > 0
-        ? JSON.parse(oldMeta[0]!["metadata"] as string)
-        : {};
+      const oldMetadata = this.getSenderMetadata(participantId) ?? {};
       this.publishPresenceEvent(participantId, "leave", oldMetadata, "graceful");
       this.sql.exec(`DELETE FROM participants WHERE id = ?`, participantId);
     }
@@ -629,26 +601,21 @@ export class PubSubChannel extends DurableObjectBase {
     // Build replay only when explicitly requested.
     // The subscribing DO is single-threaded, so it will process these
     // before any live events that arrived during subscription.
+    const REPLAY_LIMIT = 50;
     let replay: ChannelEvent[] | undefined;
+    let replayTruncated: boolean | undefined;
     if (wantsReplay) {
       const replayRows = this.sql.exec(
         `SELECT id, message_id, type, content, sender_id, ts, sender_metadata, attachments
-         FROM messages WHERE type != 'presence' AND persist = 1 ORDER BY id ASC`,
+         FROM messages WHERE type != 'presence' AND persist = 1 ORDER BY id DESC LIMIT ?`,
+        REPLAY_LIMIT + 1,
       ).toArray();
 
-      const events: ChannelEvent[] = replayRows.map((row) =>
-        buildChannelEvent(
-          row["id"] as number,
-          row["message_id"] as string,
-          row["type"] as string,
-          row["content"] as string,
-          row["sender_id"] as string,
-          row["sender_metadata"] ? JSON.parse(row["sender_metadata"] as string) : undefined,
-          row["ts"] as number,
-          true,
-          row["attachments"] ? JSON.parse(row["attachments"] as string) : undefined,
-        ),
-      );
+      replayTruncated = replayRows.length > REPLAY_LIMIT;
+      const rows = replayTruncated ? replayRows.slice(0, REPLAY_LIMIT) : replayRows;
+      rows.reverse(); // Back to chronological order
+
+      const events = rows.map(parseRowToChannelEvent);
       if (events.length > 0) replay = events;
     }
 
@@ -656,6 +623,7 @@ export class PubSubChannel extends DurableObjectBase {
       ok: true,
       channelConfig: this.getChannelConfig() ?? undefined,
       replay,
+      replayTruncated,
     };
   }
 
@@ -663,12 +631,7 @@ export class PubSubChannel extends DurableObjectBase {
    * Unsubscribe a DO participant from this channel.
    */
   async unsubscribe(participantId: string): Promise<void> {
-    const metaRow = this.sql.exec(
-      `SELECT metadata FROM participants WHERE id = ?`, participantId,
-    ).toArray();
-    const metadata = metaRow.length > 0
-      ? JSON.parse(metaRow[0]!["metadata"] as string)
-      : {};
+    const metadata = this.getSenderMetadata(participantId) ?? {};
 
     this.sql.exec(`DELETE FROM participants WHERE id = ?`, participantId);
     this.publishPresenceEvent(participantId, "leave", metadata, "graceful");
@@ -688,13 +651,7 @@ export class PubSubChannel extends DurableObjectBase {
     const contentType = opts?.contentType;
     const replyTo = opts?.replyTo;
 
-    // Get sender metadata
-    const metaRow = this.sql.exec(
-      `SELECT metadata FROM participants WHERE id = ?`, participantId,
-    ).toArray();
-    const senderMetadata = metaRow.length > 0
-      ? JSON.parse(metaRow[0]!["metadata"] as string)
-      : opts?.senderMetadata;
+    const senderMetadata = this.getSenderMetadata(participantId) ?? opts?.senderMetadata;
 
     // Build payload (match PubSub server format)
     const payload: Record<string, unknown> = {
@@ -715,17 +672,11 @@ export class PubSubChannel extends DurableObjectBase {
       );
       const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
 
-      const serverMsg: ServerMessage = {
-        kind: "persisted", id, type: "message", payload, senderId: participantId, ts, senderMetadata,
-      };
       const event = buildChannelEvent(id, messageId, "message", payloadJson, participantId, senderMetadata, ts, true);
-      broadcast(this.broadcastDeps, serverMsg, event, participantId, null);
+      broadcast(this.broadcastDeps, event, { kind: "persisted" }, participantId, null);
     } else {
-      const serverMsg: ServerMessage = {
-        kind: "ephemeral", type: "message", payload, senderId: participantId, ts, senderMetadata,
-      };
       const event = buildChannelEvent(0, messageId, "message", payloadJson, participantId, senderMetadata, ts, false);
-      broadcast(this.broadcastDeps, serverMsg, event, participantId, null);
+      broadcast(this.broadcastDeps, event, { kind: "ephemeral" }, participantId, null);
     }
   }
 
@@ -739,12 +690,7 @@ export class PubSubChannel extends DurableObjectBase {
   ): Promise<void> {
     const ts = Date.now();
 
-    const metaRow = this.sql.exec(
-      `SELECT metadata FROM participants WHERE id = ?`, participantId,
-    ).toArray();
-    const senderMetadata = metaRow.length > 0
-      ? JSON.parse(metaRow[0]!["metadata"] as string)
-      : undefined;
+    const senderMetadata = this.getSenderMetadata(participantId);
 
     const payload = { id: messageId, content };
     const payloadJson = JSON.stringify(payload);
@@ -757,11 +703,8 @@ export class PubSubChannel extends DurableObjectBase {
     );
     const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
 
-    const serverMsg: ServerMessage = {
-      kind: "persisted", id, type: "update-message", payload, senderId: participantId, ts, senderMetadata,
-    };
     const event = buildChannelEvent(id, messageId, "update-message", payloadJson, participantId, senderMetadata, ts, true);
-    broadcast(this.broadcastDeps, serverMsg, event, participantId, null);
+    broadcast(this.broadcastDeps, event, { kind: "persisted" }, participantId, null);
   }
 
   /**
@@ -773,12 +716,7 @@ export class PubSubChannel extends DurableObjectBase {
   ): Promise<void> {
     const ts = Date.now();
 
-    const metaRow = this.sql.exec(
-      `SELECT metadata FROM participants WHERE id = ?`, participantId,
-    ).toArray();
-    const senderMetadata = metaRow.length > 0
-      ? JSON.parse(metaRow[0]!["metadata"] as string)
-      : undefined;
+    const senderMetadata = this.getSenderMetadata(participantId);
 
     // complete uses type "update-message" with { id, complete: true } — matches PubSub server wire format
     const payload = { id: messageId, complete: true };
@@ -792,11 +730,8 @@ export class PubSubChannel extends DurableObjectBase {
     );
     const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
 
-    const serverMsg: ServerMessage = {
-      kind: "persisted", id, type: "update-message", payload, senderId: participantId, ts, senderMetadata,
-    };
     const event = buildChannelEvent(id, messageId, "update-message", payloadJson, participantId, senderMetadata, ts, true);
-    broadcast(this.broadcastDeps, serverMsg, event, participantId, null);
+    broadcast(this.broadcastDeps, event, { kind: "persisted" }, participantId, null);
   }
 
   /**
@@ -810,22 +745,14 @@ export class PubSubChannel extends DurableObjectBase {
     const ts = Date.now();
     const messageId = `eph_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-    const metaRow = this.sql.exec(
-      `SELECT metadata FROM participants WHERE id = ?`, participantId,
-    ).toArray();
-    const senderMetadata = metaRow.length > 0
-      ? JSON.parse(metaRow[0]!["metadata"] as string)
-      : undefined;
+    const senderMetadata = this.getSenderMetadata(participantId);
 
     const payload: Record<string, unknown> = { id: messageId, content };
     if (contentType) payload["contentType"] = contentType;
     const payloadJson = JSON.stringify(payload);
 
-    const serverMsg: ServerMessage = {
-      kind: "ephemeral", type: "message", payload, senderId: participantId, ts, senderMetadata,
-    };
     const event = buildChannelEvent(0, messageId, "message", payloadJson, participantId, senderMetadata, ts, false);
-    broadcast(this.broadcastDeps, serverMsg, event, participantId, null);
+    broadcast(this.broadcastDeps, event, { kind: "ephemeral" }, participantId, null);
   }
 
   /**
@@ -950,14 +877,15 @@ export class PubSubChannel extends DurableObjectBase {
       // WebSocket target — broadcast method-call as ephemeral channel message
       // Format must match what the PubSub client expects: { callId, providerId, methodName, args }
       const payload = { callId, providerId: targetPid, methodName: method, args };
-      const callerMeta = this.sql.exec(`SELECT metadata FROM participants WHERE id = ?`, callerPid).toArray();
-      const senderMetadata = callerMeta.length > 0 ? JSON.parse(callerMeta[0]!["metadata"] as string) : undefined;
-      const serverMsg: ServerMessage = {
-        kind: "ephemeral", type: "method-call", payload, senderId: callerPid, ts: Date.now(), senderMetadata,
+      const senderMetadata = this.getSenderMetadata(callerPid);
+      const ts = Date.now();
+      const event: ChannelEvent = {
+        id: 0, messageId: "", type: "method-call",
+        payload, senderId: callerPid, senderMetadata, ts, persist: false,
       };
       // Broadcast to all WS clients (the PubSub client filters by providerId === self)
       const allWs = this.ctx.getWebSockets();
-      const data = JSON.stringify(serverMsg);
+      const data = JSON.stringify(channelEventToWsJson(event, "ephemeral"));
       for (const ws of allWs) ws.send(data);
     }
   }
@@ -1023,10 +951,12 @@ export class PubSubChannel extends DurableObjectBase {
       const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
 
       // Broadcast to all WS clients (caller picks it up by callId)
+      const event: ChannelEvent = {
+        id, messageId, type: "method-result",
+        payload, senderId: callerId, ts, persist: true,
+      };
       const allWs = this.ctx.getWebSockets();
-      const data = JSON.stringify({
-        kind: "persisted", id, type: "method-result", payload, senderId: callerId, ts,
-      });
+      const data = JSON.stringify(channelEventToWsJson(event, "persisted"));
       for (const ws of allWs) ws.send(data);
     }
   }

@@ -51,52 +51,22 @@ import {
 import { aggregateReplayEvents } from "./aggregation.js";
 import { createFanout } from "./async-queue.js";
 import type { AttachmentInput } from "./types.js";
+import { base64ToUint8Array } from "./image-utils.js";
+import type { WsMessage } from "./protocol-wire.js";
 
-/**
- * Server message envelope.
- */
-interface ServerMessage {
-  kind: "replay" | "persisted" | "ephemeral" | "ready" | "error" | "config-update" | "messages-before";
-  id?: number;
-  type?: string;
-  payload?: unknown;
-  senderId?: string;
-  ts?: number;
-  ref?: number;
-  error?: string;
-  /** Binary attachments (parsed from binary frame) */
-  attachments?: Attachment[];
-  senderMetadata?: Record<string, unknown>;
-  /** Context ID for the channel (sent in ready message) */
-  contextId?: string;
-  /** Channel config (sent in ready message or config-update) */
-  channelConfig?: ChannelConfig;
-  /** Total message count for pagination (sent in ready message) */
-  totalCount?: number;
-  /** Count of type="message" events only, for accurate chat pagination */
-  chatMessageCount?: number;
-  /** ID of the first chat message in the channel (for pagination boundary) */
-  firstChatMessageId?: number;
-  /** Messages returned for get-messages-before (sent in messages-before response) */
-  messages?: Array<{
-    id: number;
-    type: string;
-    payload: unknown;
-    senderId: string;
-    ts: number;
-    senderMetadata?: Record<string, unknown>;
-  }>;
-  /** Whether there are more messages before these (sent in messages-before response) */
-  hasMore?: boolean;
-  /** Trailing updates for boundary messages (messages-before response) */
-  trailingUpdates?: Array<{
-    id: number;
-    type: string;
-    payload: unknown;
-    senderId: string;
-    ts: number;
-    senderMetadata?: Record<string, unknown>;
-  }>;
+/** Convert wire-format attachments (base64, filename) to client Attachment[] (Uint8Array, name). */
+function convertWireAttachments(wireAtts: unknown[] | undefined): Attachment[] | undefined {
+  if (!wireAtts || wireAtts.length === 0) return undefined;
+  return wireAtts.map((a) => {
+    const att = a as Record<string, unknown>;
+    const data = typeof att["data"] === "string" ? base64ToUint8Array(att["data"]) : att["data"] as Uint8Array;
+    return {
+      id: (att["id"] as string) ?? "",
+      data,
+      mimeType: att["mimeType"] as string,
+      name: (att["filename"] as string | undefined) ?? (att["name"] as string | undefined),
+    };
+  });
 }
 
 type PresenceAction = "join" | "leave" | "update";
@@ -491,7 +461,7 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
   }
 
   function handleMessage(event: MessageEvent | { data: ArrayBuffer }): void {
-    let msg: ServerMessage;
+    let msg: WsMessage;
 
     // Handle binary messages (messages with attachments)
     if (event.data instanceof ArrayBuffer) {
@@ -546,10 +516,10 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
       msg = {
         ...metadata,
         attachments,
-      } as ServerMessage;
+      } as WsMessage;
     } else {
       // Handle text messages (JSON)
-      msg = JSON.parse(event.data as string) as ServerMessage;
+      msg = JSON.parse(event.data as string) as WsMessage;
     }
 
 
@@ -583,14 +553,22 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
         break;
 
       case "messages-before": {
-        // Handle messages-before response
+        // Handle messages-before response — convert wire attachments to client format
         if (msg.ref !== undefined) {
           const pending = pendingMessagesBeforeRequests.get(msg.ref);
           if (pending) {
             clearTimeout(pending.timeoutId);
+            const messages = (msg.messages ?? []).map(m => ({
+              ...m,
+              attachments: convertWireAttachments(m.attachments as unknown[] | undefined),
+            }));
+            const trailingUpdates = msg.trailingUpdates?.map(m => ({
+              ...m,
+              attachments: convertWireAttachments((m as Record<string, unknown>)["attachments"] as unknown[] | undefined),
+            }));
             pending.resolve({
-              messages: msg.messages ?? [],
-              trailingUpdates: msg.trailingUpdates,
+              messages,
+              trailingUpdates,
               hasMore: msg.hasMore ?? false,
             });
             pendingMessagesBeforeRequests.delete(msg.ref);
@@ -757,7 +735,14 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
           break;
         }
 
-        // Build the PubSubMessage for all events (including presence)
+        // Build the PubSubMessage for all events (including presence).
+        // Convert wire-format attachments (base64) to client format (Uint8Array).
+        // Binary frames already have decoded attachments; JSON events may have inline base64.
+        const clientAttachments = msg.attachments instanceof Array && msg.attachments.length > 0 &&
+          msg.attachments[0] && typeof (msg.attachments[0] as Record<string, unknown>)["data"] === "string"
+          ? convertWireAttachments(msg.attachments)
+          : msg.attachments as Attachment[] | undefined;
+
         const message: PubSubMessage = {
           kind: msg.kind,
           id: msg.id,
@@ -765,7 +750,7 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
           payload: msg.payload,
           senderId: msg.senderId!,
           ts: msg.ts!,
-          attachments: msg.attachments,
+          attachments: clientAttachments,
           senderMetadata: msg.senderMetadata,
         };
 

@@ -62,95 +62,33 @@ export interface HarnessConfig {
   toolAllowlist?: string[];
 }
 
-/** Attachment on a user message */
+/** Attachment on a channel message — canonical format for all transports */
 export interface Attachment {
-  type: string;
+  /** Stable ID for binary frame correlation */
+  id: string;
+  /** Derived convenience: "image" | "file" */
+  type?: string;
+  /** Base64-encoded content */
   data: string;
-  mimeType?: string;
+  mimeType: string;
   filename?: string;
+  /** Byte size for binary frame slicing */
+  size: number;
 }
 
-/** Channel event as delivered to a worker DO */
+/** Channel event — canonical format for all transports (WS + DO) */
 export interface ChannelEvent {
   id: number;
   messageId: string;
   type: string;
   payload: unknown;
   senderId: string;
-  senderType?: string;
+  senderMetadata?: Record<string, unknown>;
   /** Content type from the payload (e.g., "typing" for typing indicators) */
   contentType?: string;
   ts: number;
   persist: boolean;
   attachments?: Attachment[];
-}
-
-/**
- * Raw broadcast event shape from PubSub server (wire format).
- * Used as input to `toChannelEvent()`.
- */
-export interface ChannelBroadcastEventRaw {
-  id: number;
-  type: string;
-  payload: unknown;
-  senderId: string;
-  ts: number;
-  persist: boolean;
-  senderMetadata?: string | Record<string, unknown>;
-  attachments?: Array<{ mimeType?: string; data: unknown; name?: string }>;
-}
-
-/**
- * Convert a raw PubSub ChannelBroadcastEvent into the ChannelEvent shape
- * that worker DOs consume. Extracts senderType from senderMetadata,
- * contentType and messageId from payload, maps attachments.
- */
-export function toChannelEvent(raw: ChannelBroadcastEventRaw): ChannelEvent {
-  // Parse senderMetadata to extract senderType
-  let senderType: string | undefined;
-  const rawMeta = raw.senderMetadata;
-  if (typeof rawMeta === "string") {
-    try {
-      const meta = JSON.parse(rawMeta) as Record<string, unknown>;
-      senderType = meta["type"] as string | undefined;
-    } catch { /* invalid metadata */ }
-  } else if (rawMeta && typeof rawMeta === "object") {
-    senderType = rawMeta["type"] as string | undefined;
-  }
-
-  // Parse payload (may be JSON string or object)
-  let parsedPayload = raw.payload;
-  if (typeof parsedPayload === "string") {
-    try { parsedPayload = JSON.parse(parsedPayload); } catch { /* keep as string */ }
-  }
-
-  // Extract messageId and contentType from payload
-  const payloadObj = parsedPayload && typeof parsedPayload === "object"
-    ? parsedPayload as Record<string, unknown>
-    : null;
-  const messageId = (payloadObj?.["id"] as string | undefined) ?? `${raw.id}`;
-  const contentType = payloadObj?.["contentType"] as string | undefined;
-
-  // Map attachments
-  const attachments = raw.attachments?.map(att => ({
-    type: att.mimeType?.startsWith("image/") ? "image" : "file",
-    data: typeof att.data === "string" ? att.data : "",
-    mimeType: att.mimeType,
-    filename: att.name,
-  }));
-
-  return {
-    id: raw.id,
-    messageId,
-    type: raw.type,
-    payload: parsedPayload,
-    senderId: raw.senderId,
-    senderType,
-    ...(contentType ? { contentType } : {}),
-    ts: raw.ts,
-    persist: raw.persist,
-    ...(attachments && attachments.length > 0 ? { attachments } : {}),
-  };
 }
 
 /** Options for sending a channel message (used by DO clients and PubSub server) */

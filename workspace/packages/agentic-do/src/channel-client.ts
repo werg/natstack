@@ -36,8 +36,8 @@ export class ChannelClient {
     await this.postToDO(CHANNEL_SOURCE, CHANNEL_CLASS, this.channelId, "updateMetadata", participantId, metadata);
   }
 
-  async subscribe(participantId: string, metadata: Record<string, unknown>): Promise<{ ok: boolean; channelConfig?: Record<string, unknown>; replay?: ChannelEvent[] }> {
-    return this.postToDO(CHANNEL_SOURCE, CHANNEL_CLASS, this.channelId, "subscribe", participantId, metadata) as Promise<{ ok: boolean; channelConfig?: Record<string, unknown>; replay?: ChannelEvent[] }>;
+  async subscribe(participantId: string, metadata: Record<string, unknown>): Promise<{ ok: boolean; channelConfig?: Record<string, unknown>; replay?: ChannelEvent[]; replayTruncated?: boolean }> {
+    return this.postToDO(CHANNEL_SOURCE, CHANNEL_CLASS, this.channelId, "subscribe", participantId, metadata) as Promise<{ ok: boolean; channelConfig?: Record<string, unknown>; replay?: ChannelEvent[]; replayTruncated?: boolean }>;
   }
 
   async unsubscribe(participantId: string): Promise<void> {

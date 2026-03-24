@@ -1139,8 +1139,8 @@ describe("PiAdapter", () => {
           content: "Describe this image",
           senderId: "user-1",
           attachments: [
-            { type: "image", data: "base64data==", mimeType: "image/png", filename: "screenshot.png" },
-            { type: "file", data: "notanimage", mimeType: "text/plain", filename: "readme.txt" },
+            { id: "att_1", type: "image", data: "base64data==", mimeType: "image/png", filename: "screenshot.png", size: 10 },
+            { id: "att_2", type: "file", data: "notanimage", mimeType: "text/plain", filename: "readme.txt", size: 10 },
           ],
         },
       });

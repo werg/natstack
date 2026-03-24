@@ -138,7 +138,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   protected getHarnessConfig(): HarnessConfig { return {}; }
 
   protected shouldProcess(event: ChannelEvent): boolean {
-    if (event.senderType !== 'panel' || event.type !== 'message') return false;
+    if ((event.senderMetadata?.["type"] as string | undefined) !== 'panel' || event.type !== 'message') return false;
     if (event.contentType) return false;
     return true;
   }
@@ -188,11 +188,17 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
 
     // Process replay events (messages sent before this DO subscribed).
-    // Only returned when replay was explicitly requested (first agent on new channel).
+    // Best-effort: subscription success must not depend on replay processing.
     // DOs are single-threaded, so live events are queued during this processing.
+    // Stop on first error — continuing after failure could skip events that
+    // depend on earlier state (e.g. harness spawn must precede turn commands).
     if (result.replay) {
-      for (const event of result.replay) {
-        await this.onChannelEvent(opts.channelId, event);
+      try {
+        for (const event of result.replay) {
+          await this.onChannelEvent(opts.channelId, event);
+        }
+      } catch (err) {
+        console.warn(`[AgentWorkerBase] Replay processing stopped:`, err);
       }
     }
 
