@@ -1,6 +1,22 @@
 # Getting Started
 
-A step-by-step guide for new users. The agent should walk through these steps interactively, adapting to what the user wants to do.
+A step-by-step guide for onboarding. The agent should first detect the user's experience level, then walk through the relevant steps interactively.
+
+## Step 0: Detect Experience Level
+
+Before anything else, check how many workspaces exist:
+
+```
+eval({ code: `
+  import { workspace } from "@workspace/runtime";
+  const workspaces = await workspace.list();
+  const active = await workspace.getActive();
+  return { count: workspaces.length, names: workspaces.map(w => w.name), active };
+` })
+```
+
+- **`count === 1`** → new user. Start from Step 1, explain concepts thoroughly.
+- **`count > 1`** → returning user. Greet them briefly, mention their active workspace, and ask what they need. Skip to whichever step is relevant, or point them to the right skill directly.
 
 ## Step 1: Explore Your Workspace
 
