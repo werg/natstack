@@ -48,6 +48,8 @@ export interface UseAgenticChatOptions {
   theme?: "light" | "dark";
   pendingAgentInfos?: PendingAgentInfo[];
   eventMiddleware?: EventMiddleware[];
+  /** If set, automatically sent as the first user message once connected */
+  initialPrompt?: string;
   /** Sandbox config — provides RPC and import loading (keeps agentic-chat runtime-agnostic) */
   sandbox: SandboxConfig;
 }
@@ -63,6 +65,7 @@ export function useAgenticChat({
   theme = "dark",
   pendingAgentInfos,
   eventMiddleware,
+  initialPrompt,
   sandbox,
 }: UseAgenticChatOptions): { contextValue: ChatContextValue; inputContextValue: ChatInputContextValue } {
   // --- Extension refs (populated below, read by core via refs) ---
@@ -83,6 +86,7 @@ export function useAgenticChat({
     metadata,
     theme,
     eventMiddleware,
+    initialPrompt,
     featureHandlersRef,
     rosterExtensionsRef,
     reconnectExtensionsRef,

@@ -28,6 +28,8 @@ export interface AgenticChatProps {
   pendingAgents?: Array<{ agentId: string; handle: string }>;
   /** Optional event middleware */
   eventMiddleware?: EventMiddleware[];
+  /** If set, automatically sent as the first user message once connected */
+  initialPrompt?: string;
   /** Sandbox config — provides RPC and import loading */
   sandbox: SandboxConfig;
 }
@@ -50,6 +52,7 @@ export function AgenticChat({
   theme,
   pendingAgents: pendingAgentInfos,
   eventMiddleware,
+  initialPrompt,
   sandbox,
 }: AgenticChatProps) {
   const { contextValue, inputContextValue } = useAgenticChat({
@@ -63,6 +66,7 @@ export function AgenticChat({
     theme,
     pendingAgentInfos,
     eventMiddleware,
+    initialPrompt,
     sandbox,
   });
 

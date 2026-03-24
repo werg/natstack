@@ -135,6 +135,8 @@ export interface UseChatCoreOptions {
   metadata?: ChatParticipantMetadata;
   theme?: "light" | "dark";
   eventMiddleware?: EventMiddleware[];
+  /** If set, automatically sent as the first user message once connected */
+  initialPrompt?: string;
   /** Ref populated by composer with feature hook event handlers */
   featureHandlersRef?: React.MutableRefObject<FeatureEventHandlers>;
   /** Ref populated by composer with roster extension callbacks */
@@ -212,6 +214,7 @@ export function useChatCore({
   metadata = DEFAULT_METADATA,
   theme = "dark",
   eventMiddleware,
+  initialPrompt,
   featureHandlersRef,
   rosterExtensionsRef,
   reconnectExtensionsRef,
@@ -527,6 +530,18 @@ export function useChatCore({
       return [...prev, { id: messageId, senderId: selfId, content: text, complete: true, pending: true, kind: "message" }];
     });
   }, [config.clientId, clientRef, stopTyping, setMessages]);
+
+  // --- Auto-send initial prompt once connected ---
+  // Capture in a ref so clearing stateArgs in the parent doesn't lose the value
+  const initialPromptCaptured = useRef(initialPrompt);
+  const initialPromptSentRef = useRef(false);
+  useEffect(() => {
+    const prompt = initialPromptCaptured.current;
+    if (!prompt || !connected || !clientRef.current || initialPromptSentRef.current) return;
+    initialPromptSentRef.current = true;
+    inputRef.current = prompt;
+    sendMessage().catch((err) => console.warn("[Chat] Failed to send initial prompt:", err));
+  }, [connected, sendMessage]);
 
   // --- Interrupt / call method ---
   const handleInterruptAgent = useCallback(

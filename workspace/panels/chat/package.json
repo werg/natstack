@@ -40,6 +40,14 @@
         "agentClass": {
           "type": "string",
           "description": "DO class name for the default agent"
+        },
+        "initialPrompt": {
+          "type": "string",
+          "description": "Initial prompt to auto-send as the first user message"
+        },
+        "systemPrompt": {
+          "type": "string",
+          "description": "System prompt for the agent harness"
         }
       }
     },

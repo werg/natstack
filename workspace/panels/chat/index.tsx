@@ -40,6 +40,10 @@ interface ChatStateArgs {
   pendingAgents?: Array<{ agentId: string; handle: string }>;
   agentSource?: string;
   agentClass?: string;
+  /** If set, automatically sent as the first user message once connected */
+  initialPrompt?: string;
+  /** System prompt for the agent harness */
+  systemPrompt?: string;
 }
 
 /**
@@ -53,6 +57,7 @@ async function subscribeDOToChannel(
   channelId: string,
   channelContextId: string,
   config?: Record<string, unknown>,
+  replay?: boolean,
 ): Promise<{ ok: boolean; participantId?: string }> {
   // callDO dispatches via DODispatch which internally ensures the DO is alive
   // on failure (ensureDO + retry). No eager setup needed.
@@ -63,7 +68,7 @@ async function subscribeDOToChannel(
     className,
     objectKey,
     "subscribeChannel",
-    { channelId, contextId: channelContextId, config },
+    { channelId, contextId: channelContextId, config, replay },
   );
 }
 
@@ -104,13 +109,26 @@ export default function ChatPanel() {
 
     void setStateArgs({ channelName });
 
-    subscribeDOToChannel(workerSource, className, objectKey, channelName, contextId, { handle: baseHandle }).catch((err: unknown) => {
+    const subscribeConfig: Record<string, unknown> = { handle: baseHandle };
+    if (stateArgs.systemPrompt) subscribeConfig["systemPrompt"] = stateArgs.systemPrompt;
+    subscribeDOToChannel(workerSource, className, objectKey, channelName, contextId, subscribeConfig, true).catch((err: unknown) => {
       console.warn(`[ChatPanel] Failed to subscribe agent DO:`, err);
     });
 
     setBootstrapChannel(channelName);
     setBootstrapPending(pending);
   }, [stateArgs.channelName]);
+
+  // Clear initialPrompt from persisted stateArgs after capture.
+  // useChatCore captures the value in a ref on first render, so this
+  // won't interfere with the auto-send — but prevents re-send on reload.
+  const initialPromptCleared = useRef(false);
+  useEffect(() => {
+    if (stateArgs.initialPrompt && !initialPromptCleared.current) {
+      initialPromptCleared.current = true;
+      void setStateArgs({ initialPrompt: undefined });
+    }
+  }, [stateArgs.initialPrompt]);
 
   // Build ConnectionConfig from runtime
   const config: ConnectionConfig = {
@@ -311,6 +329,7 @@ IMPORTANT: Use static import syntax, NOT dynamic await import().`,
         actions={chatActions}
         theme={theme}
         pendingAgents={pendingAgents}
+        initialPrompt={stateArgs.initialPrompt}
         sandbox={sandboxConfig}
       />
     </>
