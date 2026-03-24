@@ -20,6 +20,10 @@ Documentation for developing NatStack panels.
 | [WORKFLOW.md](WORKFLOW.md) | Development workflow |
 | [create-project.ts](create-project.ts) | Project scaffolding and git helpers (importable via eval `imports` parameter) |
 
+## Interaction Patterns
+
+See the sandbox skill's [INTERACTION_PATTERNS.md](../sandbox/INTERACTION_PATTERNS.md) for when to use inline UI vs eval for side-effect actions. In short: if an action involves choices or could fail, prefer rendering an inline UI that lets the user trigger it and reports results back via `chat.publish`.
+
 ## Critical Rules
 
 1. **Relative paths only** — use `panels/my-app/index.tsx`, NEVER `/home/.../workspace/...`

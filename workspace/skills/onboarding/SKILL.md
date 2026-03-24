@@ -54,6 +54,10 @@ eval({ code: `
 2. **Ask what they need** — Don't re-explain concepts. Jump straight to their goal
 3. **Point to relevant skills** — Direct them to the right skill doc for what they want to do
 
+## Interaction Patterns
+
+See the sandbox skill's [INTERACTION_PATTERNS.md](../sandbox/INTERACTION_PATTERNS.md) for when to use inline UI vs eval for side-effect actions. During onboarding, actions like choosing a setup step, switching workspaces, or importing browser data should be inline UIs — not blind eval calls.
+
 ## Guiding Principles
 
 - **Adapt to experience** — check workspace count first, then tailor depth accordingly.

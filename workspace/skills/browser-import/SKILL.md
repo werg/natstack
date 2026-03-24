@@ -18,6 +18,10 @@ Import and manage browser data (cookies, passwords, bookmarks, history) from ins
 | [BOOKMARKS.md](BOOKMARKS.md) | Bookmark browser — folder tree, search, open, export |
 | [WORKFLOWS.md](WORKFLOWS.md) | End-to-end recipes — import-sync-verify, cross-browser merge |
 
+## Interaction Patterns
+
+See the sandbox skill's [INTERACTION_PATTERNS.md](../sandbox/INTERACTION_PATTERNS.md) for when to use inline UI vs eval for side-effect actions. Browser import is a prime example: discovery can be eval, but the actual import (choosing browser, profile, data types) should be an inline UI that reports results back via `chat.publish`.
+
 ## Architecture
 
 All browser data operations go through `@workspace/panel-browser`, which wraps RPC calls to the `browser-data` service. The service reads browser profile databases directly (SQLite for Chrome/Firefox, plist for Safari).

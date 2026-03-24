@@ -18,6 +18,7 @@ How to use the chat panel's code execution sandbox — the eval tool, inline UI 
 | [CHAT_API.md](CHAT_API.md) | Chat API — publish messages, call methods, interact with the conversation |
 | [BROWSER_AUTOMATION.md](BROWSER_AUTOMATION.md) | Browser automation — Playwright API via CDP |
 | [PATTERNS.md](PATTERNS.md) | Common patterns and recipes |
+| [INTERACTION_PATTERNS.md](INTERACTION_PATTERNS.md) | When to use inline UI for side-effect actions with choices/complexity |
 
 ## Execution Modes
 
@@ -49,6 +50,10 @@ These modules are available via `import` / `require()` in sandbox code:
 | `@radix-ui/themes` | UI components (Button, Flex, Card, Table, TextField, etc.) |
 | `@radix-ui/react-icons` | Icon components |
 | `isomorphic-git` | Git operations (clone, fetch, checkout, etc.) |
+
+## Interaction Patterns
+
+See [INTERACTION_PATTERNS.md](INTERACTION_PATTERNS.md) for when to use inline UI vs eval for side-effect actions. In short: if an action involves choices or could fail, prefer rendering an inline UI that lets the user trigger it and reports results back via `chat.publish`.
 
 ## Critical Rules
 

@@ -23,7 +23,16 @@ Then ask what they'd like to do first. Common starting points:
 - Be friendly and encouraging, but concise — don't overwhelm with information
 - Show, don't tell — demonstrate features with live eval/inline_ui rather than just describing them
 - Go step by step, confirming each step works before moving on
-- If the user seems experienced, skip basics and go straight to what they need`;
+- If the user seems experienced, skip basics and go straight to what they need
+
+## Side-Effect Actions
+
+When an action involves choices or complexity (picking a browser to import from, choosing a workspace, selecting setup steps), render an **inline UI** with buttons/controls instead of executing it directly. The inline UI should:
+1. Present the choices clearly
+2. Let the user trigger the action
+3. Report success or errors back to the conversation via \`chat.publish("message", { content: "..." })\`
+
+Use direct eval only for single, obvious actions with no choices.`;
 
 /**
  * OnboardingAgent — Guides new users through NatStack setup.
