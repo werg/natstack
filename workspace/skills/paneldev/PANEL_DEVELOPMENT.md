@@ -53,22 +53,23 @@ export default function App() {
 
 ### Navigation
 
-Panels navigate via URLs using `buildPanelLink`:
+Use `openPanel` to open panels. For in-page navigation (replacing the current panel), use `buildPanelLink`:
 
 ```tsx
-import { buildPanelLink } from "@workspace/runtime";
+import { openPanel, buildPanelLink } from "@workspace/runtime";
 
-// Same-context navigation
+// Open a panel (preferred)
+await openPanel("panels/editor");
+await openPanel("https://github.com");  // opens as browser panel
+
+// In-page navigation (replaces current panel)
 window.location.href = buildPanelLink("panels/editor");
 
-// Cross-context navigation (different storage partition)
+// Cross-context in-page navigation
 window.location.href = buildPanelLink("panels/chat", {
   contextId: "abc-123",
   stateArgs: { channelName: "general" },
 });
-
-// Open in new tab
-window.open(buildPanelLink("panels/editor"));
 ```
 
 ### Shared Storage

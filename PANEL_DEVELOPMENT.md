@@ -61,35 +61,40 @@ export default function App() {
 
 ### Navigation
 
-Navigation between panels is URL-based using `buildPanelLink` from `@workspace/runtime`:
+Use `openPanel` to open panels. It handles both URLs (browser panels) and workspace sources:
 
 ```tsx
-import { buildPanelLink } from "@workspace/runtime";
+import { openPanel, buildPanelLink } from "@workspace/runtime";
 
 function NavigationExample() {
-  // Navigate in the same context (replaces current panel)
-  const openEditor = () => {
+  // Open a panel (new tab)
+  const openEditor = () => openPanel("panels/editor");
+
+  // Open with state args
+  const openChat = () => openPanel("panels/chat", { stateArgs: { channel: "my-channel" } });
+
+  // Open a URL as a browser panel
+  const openSite = () => openPanel("https://github.com");
+
+  // In-page navigation (replaces current panel) — use buildPanelLink
+  const navigateToEditor = () => {
     window.location.href = buildPanelLink("panels/editor");
   };
 
-  // Navigate to a panel in a different context, passing state
-  const openChat = () => {
+  // Cross-context in-page navigation
+  const navigateToChat = () => {
     window.location.href = buildPanelLink("panels/chat", {
       contextId: "abc-123",
       stateArgs: { channel: "my-channel" },
     });
   };
 
-  // Open a panel in a new tab
-  const openEditorTab = () => {
-    window.open(buildPanelLink("panels/editor"));
-  };
-
   return (
     <div>
       <button onClick={openEditor}>Open Editor</button>
       <button onClick={openChat}>Open Chat</button>
-      <button onClick={openEditorTab}>Editor (New Tab)</button>
+      <button onClick={openSite}>Open GitHub</button>
+      <button onClick={navigateToEditor}>Navigate to Editor</button>
     </div>
   );
 }
@@ -548,8 +553,8 @@ Key PubSub client APIs:
 
 4. **Export contracts** -- Put contract in separate file and export via package.json
 
-5. **Use buildPanelLink for navigation** -- All panel navigation uses URL-based links:
+5. **Use openPanel for navigation** -- `openPanel(source)` opens any panel; use `buildPanelLink` only for in-page navigation:
    ```typescript
-   import { buildPanelLink } from "@workspace/runtime";
-   window.location.href = buildPanelLink("panels/target");
+   import { openPanel } from "@workspace/runtime";
+   await openPanel("panels/target");
    ```

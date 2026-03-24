@@ -56,7 +56,7 @@ import {
   getWorkspaceTree, listBranches, listCommits,
 
   // Navigation
-  buildPanelLink, contextIdToSubdomain,
+  openPanel, buildPanelLink, contextIdToSubdomain,
 
   // Utilities
   parseContextId, isValidContextId, getInstanceId,
@@ -71,12 +71,27 @@ export type { BrowserHandle } from "@workspace/runtime";
 
 ## Navigation
 
-Panels navigate via URLs, not RPC calls:
+Use `openPanel` to open panels. It handles both URLs (browser panels) and workspace sources:
+
+```typescript
+import { openPanel } from "@workspace/runtime";
+
+// Open a workspace panel
+await openPanel("panels/editor");
+
+// Open with stateArgs
+await openPanel("panels/chat", { stateArgs: { channelName: "general" } });
+
+// Open a URL as a browser panel
+await openPanel("https://github.com");
+```
+
+For in-page navigation (replacing the current panel), use `buildPanelLink` + `window.location.href`:
 
 ```typescript
 import { buildPanelLink } from "@workspace/runtime";
 
-// Same-context navigation (relative URL, stays on current subdomain)
+// Navigate this panel to a different source
 window.location.href = buildPanelLink("panels/editor");
 
 // Cross-context navigation (absolute URL, different subdomain)
@@ -84,9 +99,6 @@ window.location.href = buildPanelLink("panels/chat", {
   contextId: "abc-123",
   stateArgs: { channelName: "general" },
 });
-
-// Open in new tab
-window.open(buildPanelLink("panels/editor"));
 ```
 
 ## Git Utilities

@@ -2,6 +2,8 @@
 
 Browse, search, delete, sync, and export imported cookies.
 
+> **Note:** Imported cookies are automatically synced to the shared browser session after `startImport`. Browser panels get them immediately. The manual sync operations below are only needed for user-defined panels (which use a different session) or after modifying cookies in the store directly.
+
 ## Interactive Cookie Manager (Inline UI)
 
 Persistent widget — stays in chat for ongoing cookie management.
@@ -50,7 +52,7 @@ export default function CookieManager({ props, chat }) {
 
   // Group by domain for summary
   const domainCounts = {};
-  cookies.forEach(c => { domainCounts[c.host] = (domainCounts[c.host] || 0) + 1; });
+  cookies.forEach(c => { domainCounts[c.domain] = (domainCounts[c.domain] || 0) + 1; });
   const topDomains = Object.entries(domainCounts).sort((a, b) => b[1] - a[1]).slice(0, 10);
 
   return (
@@ -96,13 +98,13 @@ export default function CookieManager({ props, chat }) {
               <Table.Body>
                 {cookies.slice(0, 100).map(c => (
                   <Table.Row key={c.id}>
-                    <Table.Cell><Text size="1">{c.host}</Text></Table.Cell>
+                    <Table.Cell><Text size="1">{c.domain}</Text></Table.Cell>
                     <Table.Cell><Text size="1" style={{ maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis" }}>{c.name}</Text></Table.Cell>
-                    <Table.Cell><Text size="1" color="gray">{c.expiry ? new Date(c.expiry * 1000).toLocaleDateString() : "session"}</Text></Table.Cell>
+                    <Table.Cell><Text size="1" color="gray">{c.expiration_date ? new Date(c.expiration_date * 1000).toLocaleDateString() : "session"}</Text></Table.Cell>
                     <Table.Cell>
                       <Flex gap="1">
                         {c.secure && <Badge size="1" variant="outline">🔒</Badge>}
-                        {c.httpOnly && <Badge size="1" variant="outline">H</Badge>}
+                        {c.http_only && <Badge size="1" variant="outline">H</Badge>}
                       </Flex>
                     </Table.Cell>
                     <Table.Cell>

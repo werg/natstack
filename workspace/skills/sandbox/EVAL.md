@@ -150,14 +150,17 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { focusPanel, buildPanelLink, createBrowserPanel } from "@workspace/runtime";
+  import { openPanel, createBrowserPanel } from "@workspace/runtime";
 
   // Open a URL in a browser panel
-  const handle = await createBrowserPanel("https://example.com");
+  await openPanel("https://example.com");
 
-  // Build a link to another panel
-  const link = buildPanelLink("panels/chat");
-  console.log("Chat panel URL:", link);
+  // Open a workspace panel
+  await openPanel("panels/chat", { stateArgs: { topic: "hello" } });
+
+  // Use createBrowserPanel when you need CDP automation
+  const handle = await createBrowserPanel("https://example.com");
+  const endpoint = await handle.getCdpEndpoint();
 ` })
 ```
 

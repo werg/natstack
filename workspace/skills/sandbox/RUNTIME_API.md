@@ -212,16 +212,23 @@ Formats — bookmarks: `"html" \| "json" \| "chrome-json"`, passwords: `"csv-chr
 ## Panel Navigation
 
 ```typescript
-import { focusPanel, buildPanelLink, createBrowserPanel, openExternal, closeSelf } from "@workspace/runtime";
+import { openPanel, createBrowserPanel, focusPanel, buildPanelLink, openExternal, closeSelf } from "@workspace/runtime";
 ```
 
 | Function | Description |
 |----------|-------------|
-| `focusPanel(panelId)` | Focus another panel |
-| `buildPanelLink(source, opts?)` | Build URL for panel navigation |
-| `createBrowserPanel(url, opts?)` | Open URL in browser panel, returns `BrowserHandle` |
+| `openPanel(source, opts?)` | Open any panel — URLs become browser panels, source paths open workspace panels. Returns `{ id }` for browser panels |
+| `createBrowserPanel(url, opts?)` | Open URL in browser panel, returns `BrowserHandle` (use when you need CDP/automation) |
+| `focusPanel(panelId)` | Focus an existing panel by its ID (does NOT open new panels) |
+| `buildPanelLink(source, opts?)` | Build URL for panel navigation (low-level — prefer `openPanel`) |
 | `openExternal(url)` | Open in OS default browser |
 | `closeSelf()` | Close this panel |
+
+**Choosing the right function:**
+- To open a URL in a browser panel: `openPanel("https://...")` or `createBrowserPanel(url)` if you need the `BrowserHandle` for automation
+- To open a workspace panel: `openPanel("panels/my-app", { stateArgs: {...} })`
+- To focus a panel you already have the ID for: `focusPanel(panelId)`
+- `buildPanelLink` just builds a URL string — you still need `window.open(link)` to open it
 
 `BrowserHandle`: `getCdpEndpoint()`, `navigate(url)`, `goBack()`, `goForward()`, `reload()`, `stop()`, `close()`.
 

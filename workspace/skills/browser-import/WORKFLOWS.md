@@ -10,9 +10,9 @@ Composable recipes. The agent should adapt these dynamically based on what the u
 - **Leave management UIs** — render persistent `inline_ui` widgets so the user can continue managing data after the agent finishes
 - **Handle errors gracefully** — TCC blocks, missing profiles, master passwords, empty results
 
-## Workflow: Full Import → Sync → Verify
+## Workflow: Full Import → Verify
 
-The most common flow: import cookies from a browser, sync to session, verify authentication.
+The most common flow: import cookies from a browser and verify authentication. Cookies are automatically synced to the browser session after import — browser panels get them immediately.
 
 ### Step 1: Discover and ask
 
@@ -45,21 +45,16 @@ eval({ code: `
 `, timeout: 60000 })
 ```
 
-### Step 3: Sync cookies and verify
+### Step 3: Verify in browser panel
+
+Cookies were auto-synced during import — just open a browser panel and check.
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc, createBrowserPanel } from "@workspace/runtime";
+  import { createBrowserPanel } from "@workspace/runtime";
   import { connect } from "@workspace/playwright-client";
 
-  const api = createBrowserDataApi(rpc);
-
-  // Sync cookies to browser session
-  const syncResult = await api.syncCookiesToSession();
-  console.log("Synced", syncResult.synced, "cookies");
-
-  // Open target site and check login state
+  // Open target site — imported cookies are already in the browser session
   const handle = await createBrowserPanel("https://github.com");
   const browser = await connect(await handle.getCdpEndpoint(), "chromium", {});
   const page = browser.contexts()[0]?.pages()[0];
@@ -111,14 +106,9 @@ eval({ code: `
     dataTypes: ["cookies"],
   });
 
-  // Check if we got GitHub cookies
+  // Check if we got GitHub cookies (auto-synced to browser session during import)
   const cookies = await api.getCookies("github.com");
-  console.log("Found", cookies.length, "GitHub cookies");
-
-  if (cookies.length > 0) {
-    await api.syncCookiesToSession("github.com");
-    console.log("Synced to browser session");
-  }
+  console.log("Found", cookies.length, "GitHub cookies (auto-synced to browser session)");
 
   return { browser: browser.displayName, profile: profile.displayName, cookieCount: cookies.length };
 `, timeout: 60000 })
@@ -233,7 +223,7 @@ eval({ code: `
 The agent should compose these building blocks based on what the user actually asks:
 
 - **"Import my Chrome cookies"** → skip wizard, auto-detect Chrome, import cookies only, show cookie manager
-- **"Set up GitHub authentication"** → import cookies → sync github.com → open browser → verify → leave cookie manager filtered to github.com
+- **"Set up GitHub authentication"** → import cookies (auto-synced) → open browser panel → verify login → leave cookie manager filtered to github.com
 - **"What browsers do I have?"** → discovery only, show rich browser cards
 - **"Show me my saved passwords"** → import passwords if not already imported → show password vault
 - **"Import everything from Firefox"** → detect Firefox → import all types → show summary → leave managers for each type

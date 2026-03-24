@@ -62,13 +62,11 @@ Commit, push, and open as a child panel (build happens on-demand):
 ```
 eval({ code: `
   import { commitAndPush } from "@workspace-skills/paneldev";
-  import { buildPanelLink } from "@workspace/runtime";
+  import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/my-app", "Initial launch");
-  window.open(buildPanelLink("panels/my-app", { contextId }));
+  await openPanel("panels/my-app");
 `, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
 ```
-
-`window.open` creates a child panel view. The host intercepts the open and creates a proper panel.
 
 ### 5. Iterate
 
@@ -77,9 +75,9 @@ Edit files with Edit/Write tools, then commit+push and re-open (rebuild happens 
 ```
 eval({ code: `
   import { commitAndPush } from "@workspace-skills/paneldev";
-  import { buildPanelLink } from "@workspace/runtime";
+  import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/my-app", "Update");
-  window.open(buildPanelLink("panels/my-app", { contextId }));
+  await openPanel("panels/my-app");
 `, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
 ```
 
@@ -91,12 +89,12 @@ eval({ code: `
 
 1. `eval` with `imports: { "@workspace-skills/paneldev": "latest" }` — call `createProject({ ... })`
 2. Edit the generated `index.tsx` using Edit/Write tools
-3. Launch via eval (`commitAndPush(...)` + `window.open(buildPanelLink(...))`)
+3. Launch via eval (`commitAndPush(...)` + `openPanel(...)`)
 
 ### Iterating on Code
 
 1. Edit files with `Edit` / `Write`
-2. Launch via eval (`commitAndPush(...)` + `window.open(buildPanelLink(...))`)
+2. Launch via eval (`commitAndPush(...)` + `openPanel(...)`)
 3. Read the error or inspect the panel
 4. Edit again, rebuild again
 
@@ -118,4 +116,4 @@ eval({ code: `
 6. **Relative paths only** — All paths are relative to your working directory
 7. **Check types early** — Catch errors before launching
 8. **Read build errors** — If launch fails, the error tells you what to fix
-9. **Use buildPanelLink for navigation** — `buildPanelLink(source, { contextId })` builds the correct URL
+9. **Use openPanel for launching** — `openPanel(source)` handles both workspace panels and URLs

@@ -108,8 +108,9 @@ Available via `import { ... } from "@workspace/runtime"` and `import { ... } fro
 | API | Description |
 |-----|-------------|
 | `rpc` | RPC bridge for calling main-process services via `rpc.call(target, method, ...args)` |
-| `buildPanelLink(source, opts)` | Build a URL for navigating to a panel |
-| `focusPanel(panelId)` | Focus an existing panel by ID |
+| `openPanel(source, opts?)` | Open any panel — URLs become browser panels, source paths open workspace panels |
+| `buildPanelLink(source, opts)` | Build a URL for panel navigation (low-level — prefer `openPanel`) |
+| `focusPanel(panelId)` | Focus an existing panel by ID (does NOT open new panels) |
 
 **Pre-injected** (use directly, do NOT import):
 
@@ -282,22 +283,20 @@ eval({ code: `
 ```
 eval({ code: `
   import { commitAndPush } from "@workspace-skills/paneldev";
-  import { buildPanelLink } from "@workspace/runtime";
+  import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/my-app", "Initial");
-  window.open(buildPanelLink("panels/my-app", { contextId }));
+  await openPanel("panels/my-app");
 `, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
 ```
-
-`window.open` creates a child panel (like target="_blank"). The host intercepts the open and creates a proper panel view.
 
 #### Rebuild after edits
 
 ```
 eval({ code: `
   import { commitAndPush } from "@workspace-skills/paneldev";
-  import { buildPanelLink } from "@workspace/runtime";
+  import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/my-app", "Update");
-  window.open(buildPanelLink("panels/my-app", { contextId }));
+  await openPanel("panels/my-app");
 `, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
 ```
 

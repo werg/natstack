@@ -26,7 +26,7 @@ Documentation for developing NatStack panels.
 2. **NEVER use Bash** for git, file listing, or file creation — use the structured tools
 3. **Use filesystem tools for file edits** — Read, Edit, Write (not eval)
 4. **Use eval only for runtime operations** — project creation, git, typecheck, tests, launching panels
-5. **Static imports only in eval** — `import { rpc, buildPanelLink } from "@workspace/runtime"` (NOT `await import(...)`)
+5. **Static imports only in eval** — `import { rpc, openPanel } from "@workspace/runtime"` (NOT `await import(...)`)
 6. **`contextId` is pre-injected** — use it directly in eval, do NOT import it from `@workspace/runtime`
 
 ## Quick Start Workflow
@@ -45,9 +45,9 @@ Edit the generated files, then commit, push, and launch:
 ```
 eval({ code: `
   import { commitAndPush } from "@workspace-skills/paneldev";
-  import { buildPanelLink } from "@workspace/runtime";
+  import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/my-app", "Initial launch");
-  window.open(buildPanelLink("panels/my-app", { contextId }));
+  await openPanel("panels/my-app");
 `, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
 ```
 
@@ -57,7 +57,7 @@ eval({ code: `
 |------|-----|
 | Create project | `eval` with `imports: { "@workspace-skills/paneldev": "latest" }` — call `createProject({ projectType, name, title })` |
 | Commit & push | `eval` with `imports` — call `commitAndPush("panels/my-app", "message")` |
-| Launch panel | `eval` with `imports` — `commitAndPush(...)` + `window.open(buildPanelLink(source, { contextId }))` |
+| Launch panel | `eval` with `imports` — `commitAndPush(...)` + `openPanel(source)` |
 | Launch worker | `eval` — `workers.create({ source: "workers/my-worker", contextId, limits: { cpuMs: 100 } })` |
 | Read a file | `Read({ file_path: "panels/my-app/index.tsx" })` |
 | Edit a file | `Edit({ file_path: "panels/my-app/index.tsx", old_string: "...", new_string: "..." })` |

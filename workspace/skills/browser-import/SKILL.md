@@ -67,11 +67,83 @@ const api = createBrowserDataApi(rpc);
 | `settings` | Browser preferences | Chrome |
 | `favicons` | Site icons | Chrome |
 
+## Record Types
+
+These are the actual field names returned by the API. **Use these exact fields** in UI code.
+
+### Cookie (StoredCookie)
+
+These are the actual columns returned by `getCookies()`. SQLite stores booleans as `0|1` integers.
+
+```typescript
+interface StoredCookie {
+  id: number;
+  name: string;
+  value: string;
+  domain: string;              // e.g. ".github.com" — the domain/host field
+  host_only: number;           // 0 or 1
+  path: string;
+  expiration_date: number | null;  // Unix timestamp (ms), null for session cookies
+  secure: number;              // 0 or 1
+  http_only: number;           // 0 or 1
+  same_site: string;
+  source_scheme: string | null;
+  source_port: number;
+  source_browser: string | null;
+  created_at: number;
+  last_accessed: number | null;
+}
+```
+
+### Password (StoredPassword)
+
+```typescript
+interface StoredPassword {
+  id: number;
+  origin_url: string;       // ⚠️ NOT "domain", "origin", or "url"
+  username: string;          // decrypted
+  password: string;          // decrypted
+  action_url: string;
+  realm: string;
+  date_created: number | null;
+  date_last_used: number | null;
+  date_password_changed: number | null;
+  times_used: number;
+}
+```
+
+### Detected Browser
+
+```typescript
+interface DetectedBrowser {
+  name: string;          // "chrome" | "firefox" | "safari" | etc.
+  family: string;        // "chromium" | "firefox" | "webkit"
+  displayName: string;   // "Google Chrome"
+  dataDir: string;       // path to browser data directory
+  profiles: DetectedProfile[];
+}
+
+interface DetectedProfile {
+  id: string;
+  displayName: string;
+  path: string;          // full path to profile directory
+  isDefault: boolean;
+}
+```
+
+## Cookie Session Sync
+
+Imported cookies are **automatically synced** to the shared browser session (`persist:browser`) after `startImport` completes. Browser panels use this session, so they get imported cookies immediately — no manual sync needed.
+
+`syncCookiesToSession` / `syncCookiesFromSession` exist for:
+- **User-defined panels** that run in a different session and need cookies pushed explicitly
+- **Re-syncing** after manually adding/deleting cookies in the store
+- **Domain-scoped sync** when you only want to push cookies for a specific domain
+
 ## Typical Agent Workflow
 
 1. **Discover**: `eval` → `detectBrowsers()` → log what's available
 2. **Ask user**: `feedback_form` or `inline_ui` → which browser/profile/data types
-3. **Import**: `eval` → `startImport(request)` → log results
+3. **Import**: `eval` → `startImport(request)` → log results (cookies auto-synced to browser session)
 4. **Show results**: `inline_ui` → interactive data managers (cookie table, password vault, etc.)
-5. **Sync**: `eval` or button in `inline_ui` → `syncCookiesToSession(domain)`
-6. **Verify**: `eval` → open browser panel, check authentication state
+5. **Verify**: `eval` → open browser panel, check authentication state

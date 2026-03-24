@@ -79,7 +79,7 @@ import {
 
   // Lifecycle
   closeSelf,             // Close this panel
-  focusPanel,            // Focus another panel by ID
+  focusPanel,            // Focus an existing panel by ID (does NOT open new panels)
   getInfo,               // Get panel info
   getTheme,              // Get current theme
   onThemeChange,         // Subscribe to theme changes
@@ -107,8 +107,12 @@ import {
   useStateArgs,          // React hook for state arguments
   setStateArgs,          // Set panel state arguments
 
+  // Panel navigation
+  openPanel,             // Open any panel — URLs become browser panels, source paths open workspace panels
+  buildPanelLink,        // Build URL for panel navigation (low-level — prefer openPanel)
+
   // Browser panels
-  createBrowserPanel,    // Create browser panel → BrowserHandle
+  createBrowserPanel,    // Create browser panel → BrowserHandle (use when you need CDP/automation)
   openExternal,          // Open URL in system browser
   onChildCreated,        // Subscribe to child-created events (window.open flow)
   getBrowserHandle,      // Get BrowserHandle for existing browser panel
@@ -118,27 +122,25 @@ export type { BrowserHandle } from "@workspace/runtime";
 
 ## Navigation
 
-Panels navigate to other panels using URL-based navigation with `buildPanelLink`.
-
-### Same-context navigation
-
-Navigate to another panel within the same context:
+Use `openPanel` to open panels. It handles both URLs (browser panels) and workspace sources:
 
 ```typescript
-import { buildPanelLink } from "@workspace/runtime";
+import { openPanel } from "@workspace/runtime";
 
-// Navigate to the chat panel in the current context
-window.location.href = buildPanelLink("panels/chat");
+await openPanel("panels/editor");                          // Open a workspace panel
+await openPanel("panels/chat", { stateArgs: { ch: "x" }}); // With state args
+await openPanel("https://github.com");                     // Open URL as browser panel
 ```
 
-### Cross-context navigation
-
-Navigate to a panel in a different context by providing a `contextId`:
+For in-page navigation (replacing the current panel), use `buildPanelLink` + `window.location.href`:
 
 ```typescript
 import { buildPanelLink } from "@workspace/runtime";
 
-// Navigate to a panel in a specific context
+// Same-context navigation (relative URL)
+window.location.href = buildPanelLink("panels/chat");
+
+// Cross-context navigation (absolute URL, different subdomain)
 window.location.href = buildPanelLink("panels/chat", { contextId: "abc-123" });
 ```
 

@@ -104,7 +104,7 @@ export default function CookieImporter({ props, chat }) {
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Button, Flex, Card, Text, Table, TextField, Select, Badge, Box, Spinner } from "@radix-ui/themes";
 import { CopyIcon, CheckIcon, GearIcon, TrashIcon } from "@radix-ui/react-icons";
-import { rpc, fs, db, workers, ai, focusPanel, buildPanelLink, createBrowserPanel } from "@workspace/runtime";
+import { rpc, fs, db, workers, ai, openPanel, focusPanel, buildPanelLink, createBrowserPanel } from "@workspace/runtime";
 import { createBrowserDataApi } from "@workspace/panel-browser";
 ```
 

@@ -128,9 +128,9 @@ Then edit the generated files with Read/Edit/Write tools and launch:
 ```
 eval({ code: `
   import { commitAndPush } from "@workspace-skills/paneldev";
-  import { buildPanelLink } from "@workspace/runtime";
+  import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/hello", "Initial launch");
-  window.open(buildPanelLink("panels/hello", { contextId }));
+  await openPanel("panels/hello");
 `, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
 ```
 

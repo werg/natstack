@@ -234,14 +234,14 @@ export default function ChatPanel() {
 - File system: read/write files via rpc.call("main", "fs.readFile", path)
 - Database: query/mutate via rpc.call("main", "db.query", sql)
 - Worker management: create/destroy workers via rpc
-- Panel navigation: focusPanel(id), buildPanelLink(source)
+- Panel navigation: openPanel(source) to open panels, focusPanel(id) to focus existing ones
 - Send messages to chat: chat.publish("message", { content: "..." })
 - Call channel methods: chat.callMethod(participantId, method, args)
 
 **Pre-injected variables:** contextId, chat
 
 Use static ESM imports (transformed to require() automatically):
-- import { rpc, focusPanel, buildPanelLink } from "@workspace/runtime"
+- import { rpc, openPanel, createBrowserPanel, focusPanel } from "@workspace/runtime"
 
 The variable \`contextId\` is pre-injected — use it directly, do NOT import it from @workspace/runtime.
 IMPORTANT: Use static import syntax, NOT dynamic await import().`,
