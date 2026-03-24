@@ -145,7 +145,7 @@ export interface WorkspaceConfig {
   /**
    * Panels to create on first initialization (when panel tree is empty).
    * These panels are created as root panels in the specified order.
-   * Example: [{ source: "panels/chat", stateArgs: { agentSource: "workers/onboarding-agent" } }]
+   * Example: [{ source: "panels/chat", stateArgs: { initialPrompt: "Hello", systemPrompt: "You are..." } }]
    */
   initPanels?: InitPanelEntry[];
 }
