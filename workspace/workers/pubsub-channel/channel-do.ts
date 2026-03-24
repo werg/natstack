@@ -599,13 +599,17 @@ export class PubSubChannel extends DurableObjectBase {
       this.sql.exec(`DELETE FROM participants WHERE id = ?`, participantId);
     }
 
-    // Clean metadata for storage (remove transport/DO fields)
+    // Extract replay flag before cleaning metadata
+    const wantsReplay = !!metadata["replay"];
+
+    // Clean metadata for storage (remove transport/DO fields and subscribe-time hints)
     const storedMetadata = { ...metadata };
     delete storedMetadata["doSource"];
     delete storedMetadata["doClass"];
     delete storedMetadata["doKey"];
     delete storedMetadata["contextId"];
     delete storedMetadata["channelConfig"];
+    delete storedMetadata["replay"];
 
     this.sql.exec(
       `INSERT INTO participants (id, metadata, transport, connected_at, do_source, do_class, do_key)
@@ -622,9 +626,36 @@ export class PubSubChannel extends DurableObjectBase {
     // Publish join presence
     this.publishPresenceEvent(participantId, "join", storedMetadata);
 
+    // Build replay only when explicitly requested.
+    // The subscribing DO is single-threaded, so it will process these
+    // before any live events that arrived during subscription.
+    let replay: ChannelEvent[] | undefined;
+    if (wantsReplay) {
+      const replayRows = this.sql.exec(
+        `SELECT id, message_id, type, content, sender_id, ts, sender_metadata, attachments
+         FROM messages WHERE type != 'presence' AND persist = 1 ORDER BY id ASC`,
+      ).toArray();
+
+      const events: ChannelEvent[] = replayRows.map((row) =>
+        buildChannelEvent(
+          row["id"] as number,
+          row["message_id"] as string,
+          row["type"] as string,
+          row["content"] as string,
+          row["sender_id"] as string,
+          row["sender_metadata"] ? JSON.parse(row["sender_metadata"] as string) : undefined,
+          row["ts"] as number,
+          true,
+          row["attachments"] ? JSON.parse(row["attachments"] as string) : undefined,
+        ),
+      );
+      if (events.length > 0) replay = events;
+    }
+
     return {
       ok: true,
       channelConfig: this.getChannelConfig() ?? undefined,
+      replay,
     };
   }
 

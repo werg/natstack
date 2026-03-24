@@ -173,17 +173,27 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   // --- Subscription lifecycle ---
 
-  async subscribeChannel(opts: { channelId: string; contextId: string; config?: unknown }): Promise<{ ok: boolean; participantId: string }> {
+  async subscribeChannel(opts: { channelId: string; contextId: string; config?: unknown; replay?: boolean }): Promise<{ ok: boolean; participantId: string }> {
     const descriptor = this.getParticipantInfo(opts.channelId, opts.config);
     const result = await this.subscriptions.subscribe({
       channelId: opts.channelId,
       contextId: opts.contextId,
       config: opts.config,
       descriptor,
+      replay: opts.replay,
     });
 
     if (result.channelConfig?.["approvalLevel"] != null) {
       this.setApprovalLevel(opts.channelId, result.channelConfig["approvalLevel"] as number);
+    }
+
+    // Process replay events (messages sent before this DO subscribed).
+    // Only returned when replay was explicitly requested (first agent on new channel).
+    // DOs are single-threaded, so live events are queued during this processing.
+    if (result.replay) {
+      for (const event of result.replay) {
+        await this.onChannelEvent(opts.channelId, event);
+      }
     }
 
     return { ok: result.ok, participantId: result.participantId };

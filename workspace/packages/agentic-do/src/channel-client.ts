@@ -5,7 +5,7 @@
  * The router dispatches to the PubSubChannel DO via namespace binding.
  */
 
-import type { SendMessageOptions } from "@natstack/harness/types";
+import type { ChannelEvent, SendMessageOptions } from "@natstack/harness/types";
 
 const CHANNEL_SOURCE = "workers/pubsub-channel";
 const CHANNEL_CLASS = "PubSubChannel";
@@ -36,8 +36,8 @@ export class ChannelClient {
     await this.postToDO(CHANNEL_SOURCE, CHANNEL_CLASS, this.channelId, "updateMetadata", participantId, metadata);
   }
 
-  async subscribe(participantId: string, metadata: Record<string, unknown>): Promise<{ ok: boolean; channelConfig?: Record<string, unknown> }> {
-    return this.postToDO(CHANNEL_SOURCE, CHANNEL_CLASS, this.channelId, "subscribe", participantId, metadata) as Promise<{ ok: boolean; channelConfig?: Record<string, unknown> }>;
+  async subscribe(participantId: string, metadata: Record<string, unknown>): Promise<{ ok: boolean; channelConfig?: Record<string, unknown>; replay?: ChannelEvent[] }> {
+    return this.postToDO(CHANNEL_SOURCE, CHANNEL_CLASS, this.channelId, "subscribe", participantId, metadata) as Promise<{ ok: boolean; channelConfig?: Record<string, unknown>; replay?: ChannelEvent[] }>;
   }
 
   async unsubscribe(participantId: string): Promise<void> {

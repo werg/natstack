@@ -16,6 +16,8 @@ export interface SendOpts {
 export interface SubscribeResult {
   ok: boolean;
   channelConfig?: Record<string, unknown>;
+  /** Persisted channel events the subscriber missed (sent before it joined). */
+  replay?: ChannelEvent[];
 }
 
 /** Participant info stored in the participants table. */

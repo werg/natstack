@@ -6,7 +6,7 @@
  */
 
 import type { SqlStorage } from "@workspace/runtime/worker";
-import type { ParticipantDescriptor } from "@natstack/harness/types";
+import type { ChannelEvent, ParticipantDescriptor } from "@natstack/harness/types";
 import type { DOIdentity } from "./identity.js";
 import type { ChannelClient } from "./channel-client.js";
 
@@ -40,7 +40,9 @@ export class SubscriptionManager {
     contextId: string;
     config?: unknown;
     descriptor: ParticipantDescriptor;
-  }): Promise<{ ok: boolean; participantId: string; channelConfig?: Record<string, unknown> }> {
+    /** Request replay of persisted messages sent before this subscriber joined. */
+    replay?: boolean;
+  }): Promise<{ ok: boolean; participantId: string; channelConfig?: Record<string, unknown>; replay?: ChannelEvent[] }> {
     this.sql.exec(
       `INSERT OR REPLACE INTO subscriptions (channel_id, context_id, subscribed_at, config) VALUES (?, ?, ?, ?)`,
       opts.channelId, opts.contextId, Date.now(), opts.config ? JSON.stringify(opts.config) : null,
@@ -66,6 +68,9 @@ export class SubscriptionManager {
     if (opts.descriptor.methods && opts.descriptor.methods.length > 0) {
       metadata["methods"] = opts.descriptor.methods;
     }
+    if (opts.replay) {
+      metadata["replay"] = true;
+    }
 
     const channel = this.channelFactory(opts.channelId);
     const subResult = await channel.subscribe(participantId, metadata);
@@ -79,6 +84,7 @@ export class SubscriptionManager {
       ok: true,
       participantId,
       channelConfig: subResult?.channelConfig,
+      replay: subResult?.replay,
     };
   }
 
