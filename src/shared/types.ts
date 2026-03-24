@@ -33,7 +33,8 @@ export interface PanelManifest {
   exposeModules?: string[];
   dedupeModules?: string[];
   injectHostThemeVariables?: boolean;
-  template?: "html" | "react";
+  /** Name of a workspace template directory in workspace/templates/ */
+  template?: string;
   /** If true, panel is auto-archived when it has no children at startup */
   autoArchiveWhenEmpty?: boolean;
 }

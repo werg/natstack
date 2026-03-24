@@ -127,7 +127,7 @@ export async function initBuildSystemV2(
   // Step 5: Build anything that's missing from the store
   const buildableNodes = graph
     .allNodes()
-    .filter((n) => n.kind !== "package"); // Panels, agents, and workers
+    .filter((n) => n.kind !== "package" && n.kind !== "template"); // Panels, agents, and workers
 
   let buildCount = 0;
   for (const node of buildableNodes) {
@@ -304,7 +304,7 @@ export async function initBuildSystemV2(
       const buildableChanged = [...changes.changed, ...changes.added].filter(
         (name) => {
           const n = newGraph.tryGet(name);
-          return n && n.kind !== "package";
+          return n && n.kind !== "package" && n.kind !== "template";
         },
       );
 

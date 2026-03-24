@@ -207,6 +207,27 @@ for await (const msg of client.messages()) {
 
 ---
 
+## Workspace Templates
+
+Panels use the `"default"` workspace template (React + Radix) unless overridden. To use a different template, set the `template` field in the natstack config:
+
+```json
+{
+  "natstack": {
+    "title": "My Svelte Panel",
+    "template": "svelte"
+  },
+  "dependencies": {
+    "@workspace/runtime": "workspace:*",
+    "@workspace/svelte": "workspace:*"
+  }
+}
+```
+
+Templates live in `workspace/templates/{name}/` and define the framework and HTML shell. The default template is the standard choice for most panels; alternative templates exist for other frameworks.
+
+---
+
 ## Related Docs
 
 - [RPC.md](RPC.md) - Typed contracts for parent-child communication

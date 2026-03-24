@@ -24,6 +24,9 @@ import { computeBuildKey } from "./effectiveVersion.js";
 import { collectTransitiveExternalDeps, ensureExternalDeps } from "./externalDeps.js";
 import { extractSourceForBuild } from "./sourceExtractor.js";
 import { PANEL_CSP_META } from "../../shared/constants.js";
+import { getAdapter } from "./adapters/index.js";
+import type { FrameworkAdapter } from "./adapters/types.js";
+import { resolveTemplate } from "./templateResolver.js";
 
 // ---------------------------------------------------------------------------
 // Module Initialization
@@ -69,19 +72,11 @@ const TEXT_EXTENSIONS = new Set([
   ".js", ".css", ".json", ".map", ".svg", ".txt", ".md", ".html",
 ]);
 
-const DEFAULT_DEDUPE_PACKAGES = [
-  "react",
-  "react-dom",
-  "react/jsx-runtime",
-  "react/jsx-dev-runtime",
-] as const;
-
-// Packages that frequently dominate bundle size. We create synthetic entry points
-// for these when present so esbuild can split them into independent chunks.
+// Framework-agnostic packages that frequently dominate bundle size.
+// Framework-specific split packages live in the adapter (e.g., @radix-ui/react-icons in React adapter).
 const FORCED_SPLIT_PACKAGES = [
   "@mdx-js/mdx",
   "rehype-highlight",
-  "@radix-ui/react-icons",
   "typescript",
   "monaco-editor",
   "sucrase",
@@ -408,12 +403,13 @@ function expandExternalSpecifiers(externals: Record<string, string>): string[] {
 }
 
 function pickForcedSplitModules(
+  forcedSplitPackages: readonly string[],
   transitiveExternals: Record<string, string>,
   exposeModules: string[],
 ): string[] {
   const selected = new Set<string>();
 
-  for (const pkg of FORCED_SPLIT_PACKAGES) {
+  for (const pkg of forcedSplitPackages) {
     if (transitiveExternals[pkg]) {
       selected.add(pkg);
     }
@@ -588,54 +584,74 @@ function escapeHtml(str: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/**
+ * Inject standard transforms into a custom/template HTML file:
+ * importmap, CSP, base href, bundle.js → __loader.js replacement.
+ */
+function injectHtmlTransforms(
+  html: string,
+  baseHref: string,
+  externals?: Record<string, string>,
+): string {
+  let result = html;
+  if (
+    externals &&
+    Object.keys(externals).length > 0 &&
+    !/<script[^>]+type\s*=\s*["']importmap["']/i.test(result)
+  ) {
+    const importMapScript = `<script type="importmap">${JSON.stringify({ imports: externals })}</script>`;
+    if (/<head\b[^>]*>/i.test(result)) {
+      result = result.replace(/(<head\b[^>]*>)/i, `$1\n  ${importMapScript}`);
+    } else {
+      result = `${importMapScript}\n${result}`;
+    }
+  }
+  // Inject CSP if not present
+  if (
+    !/<meta[^>]+http-equiv\s*=\s*["']Content-Security-Policy["']/i.test(result)
+  ) {
+    result = result.replace(/(<head\b[^>]*>)/i, `$1\n  ${PANEL_CSP_META}`);
+  }
+  // Inject base href if not present
+  if (!/<base\b/i.test(result)) {
+    result = result.replace(/(<head\b[^>]*>)/i, `$1\n  <base href="${escapeHtml(baseHref)}">`);
+  }
+  // Replace bundle.js script with loader
+  result = result.replace(
+    /<script\b[^>]*\bsrc\s*=\s*["'](?:\.\/)?bundle\.js(?:\?[^"']*)?["'][^>]*><\/script>/i,
+    `<script src="/__loader.js"></script>`,
+  );
+  return result;
+}
+
 function generatePanelHtml(
   title: string,
-  sourcePath: string,
   relativePath: string,
+  templateHtmlPath: string | null,
+  adapter: FrameworkAdapter,
   options: { hasCss: boolean; externals?: Record<string, string> },
 ): string {
   const baseHref = `/${relativePath}/`;
 
-  // Check for custom index.html
-  const customHtmlPath = path.join(sourcePath, "index.html");
-  if (fs.existsSync(customHtmlPath)) {
-    let html = fs.readFileSync(customHtmlPath, "utf-8");
-    if (
-      options.externals &&
-      Object.keys(options.externals).length > 0 &&
-      !/<script[^>]+type\s*=\s*["']importmap["']/i.test(html)
-    ) {
-      const importMapScript = `<script type="importmap">${JSON.stringify({ imports: options.externals })}</script>`;
-      if (/<head\b[^>]*>/i.test(html)) {
-        html = html.replace(/(<head\b[^>]*>)/i, `$1\n  ${importMapScript}`);
-      } else {
-        html = `${importMapScript}\n${html}`;
-      }
-    }
-    // Inject CSP if not present
-    if (
-      !/<meta[^>]+http-equiv\s*=\s*["']Content-Security-Policy["']/i.test(html)
-    ) {
-      html = html.replace(/(<head\b[^>]*>)/i, `$1\n  ${PANEL_CSP_META}`);
-    }
-    // Inject base href if not present
-    if (!/<base\b/i.test(html)) {
-      html = html.replace(/(<head\b[^>]*>)/i, `$1\n  <base href="${escapeHtml(baseHref)}">`);
-    }
-    // Replace bundle.js script with loader (matches ./bundle.js, /bundle.js, bundle.js, with optional query string)
-    html = html.replace(
-      /<script\b[^>]*\bsrc\s*=\s*["'](?:\.\/)?bundle\.js(?:\?[^"']*)?["'][^>]*><\/script>/i,
-      `<script src="/__loader.js"></script>`,
-    );
-    return html;
+  // If template or panel provides HTML, use it with standard injections
+  if (templateHtmlPath && fs.existsSync(templateHtmlPath)) {
+    const html = fs.readFileSync(templateHtmlPath, "utf-8");
+    return injectHtmlTransforms(html, baseHref, options.externals);
   }
 
+  // Adapter-generated fallback HTML
   const cssLink = options.hasCss
     ? `\n  <link rel="stylesheet" href="./bundle.css" />`
     : "";
   const importMapScript = options.externals && Object.keys(options.externals).length > 0
     ? `<script type="importmap">${JSON.stringify({ imports: options.externals })}</script>\n  `
     : "";
+
+  const cdnLinks = (adapter.cdnStylesheets ?? [])
+    .map(url => `<link rel="stylesheet" href="${escapeHtml(url)}">`)
+    .join("\n  ");
+  const additionalCss = adapter.additionalCss ?? "";
+  const rootElement = adapter.rootElementHtml ?? '<div id="root"></div>';
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -645,14 +661,14 @@ function generatePanelHtml(
   <base href="${escapeHtml(baseHref)}">
   ${PANEL_CSP_META}
   <title>${escapeHtml(title)}</title>
-  ${importMapScript}<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@radix-ui/themes@3.2.1/styles.css">${cssLink}
+  ${importMapScript}${cdnLinks}${cssLink}
   <style>
     html, body { margin: 0; padding: 0; height: 100%; }
-    #root, #root > .radix-themes { min-height: 100vh; }
+    ${additionalCss}
   </style>
 </head>
 <body>
-  <div id="root"></div>
+  ${rootElement}
   <script src="/__loader.js"></script>
 </body>
 </html>`;
@@ -706,20 +722,9 @@ function isSyntheticSplitEntryOutput(fileName: string): boolean {
 function generatePanelEntry(
   exposeEntryFile: string,
   entryFile: string,
-  hasReact: boolean,
+  adapter: FrameworkAdapter,
 ): string {
-  if (hasReact) {
-    return `import ${JSON.stringify(exposeEntryFile)};
-import { autoMountReactPanel, shouldAutoMount } from "@workspace/react";
-import * as userModule from ${JSON.stringify(entryFile)};
-
-if (shouldAutoMount(userModule)) {
-  autoMountReactPanel(userModule);
-}
-`;
-  }
-  return `import ${JSON.stringify(exposeEntryFile)};
-import ${JSON.stringify(entryFile)};\n`;
+  return adapter.generateEntry(exposeEntryFile, entryFile);
 }
 
 // ---------------------------------------------------------------------------
@@ -798,6 +803,8 @@ async function doBuild(
       return await buildLibraryBundle(node, ev, buildKey, graph, workspaceRoot, extracted.sourceRoot, options.externals ?? []);
     } else if (node.kind === "worker") {
       return await buildWorker(node, ev, buildKey, graph, workspaceRoot, sourcemap, extracted.sourceRoot);
+    } else if (node.kind === "template") {
+      throw new Error(`Templates are not buildable: ${node.name}`);
     } else {
       return await buildPanel(node, ev, buildKey, graph, workspaceRoot, sourcemap, extracted.sourceRoot);
     }
@@ -911,24 +918,33 @@ async function buildPanel(
   const env = await prepareBuildEnv(node, buildKey, graph, workspaceRoot, sourceRoot);
   const { outdir, sourcePath, entryFile, nodePaths } = env;
 
-  const manifestExternals = node.manifest.externals ?? {};
-  const externalSpecifiers = expandExternalSpecifiers(manifestExternals);
-  const exposeModules = normalizeManifestSpecList(node.manifest.exposeModules);
-  const dedupePackages = normalizeManifestSpecList([
-    ...DEFAULT_DEDUPE_PACKAGES,
-    ...(node.manifest.dedupeModules ?? []),
-  ]);
-  const forcedSplitModules = pickForcedSplitModules(env.externalDeps, exposeModules);
-  const { resolveDir } = env;
+  // Read extracted manifest for ref-correct build decisions
+  const panelSourcePath = path.join(sourceRoot, node.relativePath);
+  const extractedPkgPath = path.join(panelSourcePath, "package.json");
+  const pkg = JSON.parse(fs.readFileSync(extractedPkgPath, "utf-8"));
+  const extractedManifest = pkg.natstack ?? {};
+  const extractedDeps = { ...pkg.peerDependencies, ...pkg.dependencies };
 
-  // Check for React
-  const hasReact = "@workspace/react" in node.dependencies;
+  // Resolve framework and HTML template from extracted source
+  const resolved = resolveTemplate(extractedManifest, extractedDeps, panelSourcePath, sourceRoot);
+  const adapter = getAdapter(resolved.framework);
+
+  const manifestExternals = extractedManifest.externals ?? {};
+  const externalSpecifiers = expandExternalSpecifiers(manifestExternals);
+  const exposeModules = normalizeManifestSpecList(extractedManifest.exposeModules);
+  const dedupePackages = normalizeManifestSpecList([
+    ...adapter.dedupePackages,
+    ...(extractedManifest.dedupeModules ?? []),
+  ]);
+  const allForcedSplitPackages = [...FORCED_SPLIT_PACKAGES, ...adapter.forcedSplitPackages];
+  const forcedSplitModules = pickForcedSplitModules(allForcedSplitPackages, env.externalDeps, exposeModules);
+  const { resolveDir } = env;
 
   // Generate expose/wrapper entries.
   const exposePath = path.join(outdir, "_expose.js");
   fs.writeFileSync(exposePath, generateExposeModuleCode(exposeModules));
 
-  const wrapperCode = generatePanelEntry(exposePath, entryFile, hasReact);
+  const wrapperCode = generatePanelEntry(exposePath, entryFile, adapter);
   const wrapperPath = path.join(outdir, "_entry.js");
   fs.writeFileSync(wrapperPath, wrapperCode);
 
@@ -954,30 +970,41 @@ async function buildPanel(
   if (dedupePlugin) {
     plugins.push(dedupePlugin);
   }
+  // Add framework-specific plugins (e.g., esbuild-svelte)
+  if (adapter.plugins) {
+    plugins.push(...adapter.plugins());
+  }
+
+  // Build esbuild options with adapter-driven JSX settings
+  const esbuildOptions: esbuild.BuildOptions = {
+    entryPoints,
+    bundle: true,
+    platform: "browser",
+    target: "es2022",
+    format: "esm",
+    splitting: true,
+    outdir,
+    sourcemap: sourcemap ? "inline" : false,
+    metafile: true,
+    logLevel: "warning",
+    conditions: [...PANEL_CONDITIONS],
+    plugins,
+    nodePaths,
+    loader: PANEL_ASSET_LOADERS,
+    assetNames: "assets/[name]-[hash]",
+    entryNames: "[name]",
+    chunkNames: "chunk-[hash]",
+    external: externalSpecifiers,
+  };
+  if (adapter.jsx) {
+    esbuildOptions.jsx = adapter.jsx;
+  }
+  if (adapter.tsconfigJsx) {
+    esbuildOptions.tsconfigRaw = { compilerOptions: { jsx: adapter.tsconfigJsx } };
+  }
 
   try {
-    const result = await esbuild.build({
-      entryPoints,
-      bundle: true,
-      platform: "browser",
-      target: "es2022",
-      format: "esm",
-      splitting: true,
-      outdir,
-      jsx: "automatic",
-      sourcemap: sourcemap ? "inline" : false,
-      metafile: true,
-      logLevel: "warning",
-      conditions: [...PANEL_CONDITIONS],
-      plugins,
-      nodePaths,
-      loader: PANEL_ASSET_LOADERS,
-      assetNames: "assets/[name]-[hash]",
-      entryNames: "[name]",
-      chunkNames: "chunk-[hash]",
-      external: externalSpecifiers,
-      tsconfigRaw: { compilerOptions: { jsx: "react-jsx" } },
-    });
+    const result = await esbuild.build(esbuildOptions);
 
     if (isVerboseBuildLogEnabled() && result.metafile) {
       const outputs = Object.entries(result.metafile.outputs);
@@ -1036,9 +1063,9 @@ async function buildPanel(
       }
     }
 
-    // Generate HTML from extracted source (for custom index.html)
-    const title = node.manifest.title ?? node.name;
-    const html = generatePanelHtml(title, sourcePath, node.relativePath, {
+    // Generate HTML using template or adapter fallback
+    const title = extractedManifest.title ?? node.name;
+    const html = generatePanelHtml(title, node.relativePath, resolved.htmlPath, adapter, {
       hasCss: !!css,
       externals: manifestExternals,
     });
@@ -1056,6 +1083,7 @@ async function buildPanel(
       name: node.name,
       ev,
       sourcemap,
+      framework: resolved.framework,
       builtAt: new Date().toISOString(),
     };
 

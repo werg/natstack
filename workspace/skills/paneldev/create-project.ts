@@ -88,20 +88,80 @@ export async function createProject(
   const files: Record<string, string> = {};
 
   switch (projectType) {
-    case "panel":
-      files["package.json"] = JSON.stringify({
-        name: `${scope}/${name}`,
-        version: "0.1.0",
-        private: true,
-        type: "module",
-        natstack: { title },
-        dependencies: {
-          "@workspace/runtime": "workspace:*",
-          "@workspace/react": "workspace:*",
-          "@radix-ui/themes": "^3.2.1",
-        },
-      }, null, 2);
-      files["index.tsx"] = `import { usePanelTheme } from "@workspace/react";
+    case "panel": {
+      // Resolve template — defaults to "default" (React+Radix)
+      const panelTemplate = template ?? "default";
+      let panelFramework = "react";
+
+      // Read template.json from workspace to determine framework
+      if (panelTemplate !== "default") {
+        const templateConfigPath = `templates/${panelTemplate}/template.json`;
+        if (!await fs.exists(templateConfigPath)) {
+          throw new Error(`Template "${panelTemplate}" not found. Check workspace/templates/ for available templates.`);
+        }
+        const templateConfig = JSON.parse(
+          await fs.readFile(templateConfigPath, "utf-8") as string,
+        );
+        if (templateConfig.framework) panelFramework = templateConfig.framework;
+      } else {
+        try {
+          const templateConfig = JSON.parse(
+            await fs.readFile(`templates/default/template.json`, "utf-8") as string,
+          );
+          if (templateConfig.framework) panelFramework = templateConfig.framework;
+        } catch {
+          // Default template missing — use React defaults
+        }
+      }
+
+      if (panelFramework === "svelte") {
+        files["package.json"] = JSON.stringify({
+          name: `${scope}/${name}`,
+          version: "0.1.0",
+          private: true,
+          type: "module",
+          natstack: { title, ...(panelTemplate !== "default" ? { template: panelTemplate } : {}) },
+          dependencies: {
+            "@workspace/runtime": "workspace:*",
+            "@workspace/svelte": "workspace:*",
+            "svelte": "^5.0.0",
+          },
+        }, null, 2);
+        files["index.ts"] = `export { default } from "./App.svelte";\n`;
+        files["App.svelte"] = `<script>
+  import { theme } from "@workspace/svelte";
+</script>
+
+<div class="container" class:dark={$theme === "dark"}>
+  <h1>${title}</h1>
+</div>
+
+<style>
+  .container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    font-family: system-ui, sans-serif;
+  }
+</style>
+`;
+      } else {
+        // Default: React + Radix
+        files["package.json"] = JSON.stringify({
+          name: `${scope}/${name}`,
+          version: "0.1.0",
+          private: true,
+          type: "module",
+          natstack: { title, ...(panelTemplate !== "default" ? { template: panelTemplate } : {}) },
+          dependencies: {
+            "@workspace/runtime": "workspace:*",
+            "@workspace/react": "workspace:*",
+            "@radix-ui/themes": "^3.2.1",
+          },
+        }, null, 2);
+        files["index.tsx"] = `import { usePanelTheme } from "@workspace/react";
 import { Flex, Text, Theme } from "@radix-ui/themes";
 
 export default function ${toPascalCase(name)}() {
@@ -116,7 +176,9 @@ export default function ${toPascalCase(name)}() {
   );
 }
 `;
+      }
       break;
+    }
 
     case "package":
       files["package.json"] = JSON.stringify({

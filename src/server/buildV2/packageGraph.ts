@@ -1,9 +1,9 @@
 /**
  * Package Graph — DAG discovery from workspace package.json files.
  *
- * Scans workspace/packages/, workspace/panels/, workspace/about/, workspace/agents/
- * and builds an adjacency-list DAG of internal dependencies. Detects cycles,
- * produces topological ordering.
+ * Scans workspace/packages/, workspace/panels/, workspace/about/, workspace/agents/,
+ * workspace/templates/ and builds an adjacency-list DAG of internal dependencies.
+ * Detects cycles, produces topological ordering.
  */
 
 import * as fs from "fs";
@@ -21,7 +21,7 @@ export interface GraphNode {
   /** Package name from package.json (e.g., "@workspace/core") */
   name: string;
   /** Unit kind */
-  kind: "package" | "panel" | "worker";
+  kind: "package" | "panel" | "worker" | "template";
   /** All dependencies from package.json (name → version) */
   dependencies: Record<string, string>;
   /** Resolved internal dependency names */
@@ -57,6 +57,10 @@ export interface PackageManifest {
   externals?: Record<string, string>;
   exposeModules?: string[];
   dedupeModules?: string[];
+  /** Name of a workspace template (e.g., "default", "svelte") */
+  template?: string;
+  /** Resolved framework ID — set at graph time from template, or at build time from extracted source */
+  framework?: string;
 }
 
 export class PackageGraph {
@@ -270,6 +274,45 @@ function scanDirectory(
   return nodes;
 }
 
+import type { TemplateConfig } from "./templateResolver.js";
+
+function scanTemplates(dir: string, workspaceRoot: string): GraphNode[] {
+  if (!fs.existsSync(dir)) return [];
+  const nodes: GraphNode[] = [];
+
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name.startsWith(".")) continue;
+
+    const templateDir = path.join(dir, entry.name);
+    const configPath = path.join(templateDir, "template.json");
+    if (!fs.existsSync(configPath)) {
+      console.warn(`[PackageGraph] Template directory ${entry.name} has no template.json, skipping`);
+      continue;
+    }
+
+    let config: TemplateConfig = {};
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, "utf-8")) as TemplateConfig;
+    } catch {
+      console.warn(`[PackageGraph] Failed to parse template.json in ${entry.name}`);
+    }
+
+    nodes.push({
+      path: templateDir,
+      relativePath: path.relative(workspaceRoot, templateDir).replace(/\\/g, "/"),
+      name: `template:${entry.name}`,
+      kind: "template",
+      dependencies: {},
+      internalDeps: [],
+      internalDepRefs: {},
+      manifest: { framework: config.framework },
+    });
+  }
+
+  return nodes;
+}
+
 /**
  * Discover all buildable units in the workspace and build the package graph.
  */
@@ -297,6 +340,41 @@ export function discoverPackageGraph(workspaceRoot: string): PackageGraph {
   const skillsDir = path.join(workspaceRoot, "skills");
   for (const node of scanDirectory(skillsDir, workspaceRoot, "package")) {
     graph.addNode(node);
+  }
+
+  // Scan workspace templates
+  const templatesDir = path.join(workspaceRoot, "templates");
+  for (const node of scanTemplates(templatesDir, workspaceRoot)) {
+    graph.addNode(node);
+  }
+
+  // Inject template dependencies into panels so template content flows into EVs
+  const hasDefaultTemplate = graph.has("template:default");
+  for (const node of graph.allNodes()) {
+    if (node.kind !== "panel") continue;
+
+    if (node.manifest.template) {
+      // Explicit template reference
+      const templateName = `template:${node.manifest.template}`;
+      if (graph.has(templateName)) {
+        node.internalDeps.push(templateName);
+        node.internalDepRefs[templateName] = { raw: "workspace:*", mode: "default" };
+      } else {
+        console.warn(
+          `[PackageGraph] ${node.name} references template "${node.manifest.template}" which does not exist`,
+        );
+      }
+    } else if (hasDefaultTemplate) {
+      // Always inject default template as a dep so its content flows into the
+      // panel's EV. Even panels with their own index.html get this dep — the
+      // cost is trivial (template files extracted alongside panel source) and
+      // it avoids a ref-correctness issue: the live filesystem check for
+      // index.html could disagree with the state at the requested build ref.
+      // resolveFramework() handles the "has own HTML" case at build time from
+      // extracted source.
+      node.internalDeps.push("template:default");
+      node.internalDepRefs["template:default"] = { raw: "workspace:*", mode: "default" };
+    }
   }
 
   // Validate: all internal deps must exist in the graph

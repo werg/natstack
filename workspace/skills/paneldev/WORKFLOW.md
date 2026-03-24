@@ -88,6 +88,7 @@ eval({ code: `
 ### New Panel
 
 1. `eval` with `imports: { "@workspace-skills/paneldev": "latest" }` — call `createProject({ ... })`
+   - `createProject()` accepts an optional `template` parameter (e.g., `template: "svelte"`) to scaffold with a non-default workspace template. When omitted, the default React+Radix template is used.
 2. Edit the generated `index.tsx` using Edit/Write tools
 3. Launch via eval (`commitAndPush(...)` + `openPanel(...)`)
 

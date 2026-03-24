@@ -237,7 +237,7 @@ function validateWorkspaceName(name: string): void {
 }
 
 /** Source directories (live under source/) — copied when forking or creating from template. */
-const SOURCE_DIRS = ["panels", "packages", "agents", "workers", "skills", "about"];
+const SOURCE_DIRS = ["panels", "packages", "agents", "workers", "skills", "about", "templates"];
 
 /** State directories (live under state/) — never copied, always scaffolded fresh. */
 const STATE_DIRS = [".cache", ".databases", ".contexts"];

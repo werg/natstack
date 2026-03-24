@@ -31,10 +31,11 @@ export interface BuildArtifacts {
 }
 
 export interface BuildMetadata {
-  kind: "panel" | "package" | "worker";
+  kind: "panel" | "package" | "worker" | "template";
   name: string;
   ev: string;
   sourcemap: boolean;
+  framework?: string;
   builtAt: string;
 }
 

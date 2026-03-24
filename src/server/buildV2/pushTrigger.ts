@@ -211,7 +211,7 @@ export class PushTrigger extends EventEmitter {
     for (const name of allChanged) {
       const node = this.graph.tryGet(name);
       if (!node) continue;
-      if (node.kind === "package") continue; // Packages are libraries, not directly buildable
+      if (node.kind === "package" || node.kind === "template") continue; // Packages/templates are not directly buildable
 
       const ev = result.evMap[name]!;
       const sourcemap = node.manifest.sourcemap !== false;
@@ -307,7 +307,7 @@ export class PushTrigger extends EventEmitter {
     for (const name of allChanged) {
       const node = newGraph.tryGet(name);
       if (!node) continue;
-      if (node.kind === "package") continue;
+      if (node.kind === "package" || node.kind === "template") continue;
 
       const ev = result.evMap[name]!;
       const sourcemap = node.manifest.sourcemap !== false;

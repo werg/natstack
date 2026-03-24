@@ -38,12 +38,21 @@ my-panel/
 |-------|------|---------|-------------|
 | `title` | string | package name | Display name |
 | `entry` | string | `index.tsx` | Entry point file |
+| `template` | string | `"default"` | Workspace template name (see below) |
 | `sourcemap` | boolean | `true` | Include inline source maps |
 | `externals` | Record | `{}` | Import map entries (externalized from bundle) |
 | `exposeModules` | string[] | `[]` | Modules registered on `__natstackModuleMap__` |
 | `dedupeModules` | string[] | `[]` | Additional packages to deduplicate (react/react-dom always deduped) |
 | `shell` | boolean | `false` | Grants shell service access (about pages) |
 | `hiddenInLauncher` | boolean | `false` | Hide from launcher UI |
+
+## Workspace Templates
+
+The `template` field in the natstack config selects a workspace template from `workspace/templates/{name}/`. Each template provides a `template.json` (framework config) and an `index.html` (HTML shell).
+
+The `"default"` template (`workspace/templates/default/`) provides React + Radix UI and is used when no `template` is specified. Most panels should use the default. The template defines the framework, so panels do not need a separate `framework` field.
+
+Alternative templates (e.g., Svelte) can be used by setting the `template` field and adding the corresponding runtime package (e.g., `@workspace/svelte`).
 
 ## Core Runtime API
 
