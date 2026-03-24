@@ -541,6 +541,15 @@ export class PanelLifecycle implements BridgePanelManager {
       throw new Error(`Panel not found: ${panelId}`);
     }
 
+    // Determine sibling to navigate to before removing the panel
+    const parentId = this.registry.findParentId(panelId);
+    const parent = parentId ? this.registry.getPanel(parentId) : null;
+    let siblingToFocus: string | null = null;
+    if (parent && parent.selectedChildId === panelId) {
+      const siblings = parent.children.filter((c) => c.id !== panelId);
+      siblingToFocus = siblings.length > 0 ? siblings[siblings.length - 1]!.id : parentId;
+    }
+
     // Close children first (copy to avoid mutation during iteration)
     const childrenToClose = [...panel.children];
     for (const child of childrenToClose) {
@@ -555,12 +564,14 @@ export class PanelLifecycle implements BridgePanelManager {
       this.fsService?.unregisterPanelContext(panelId);
     }
 
-    // Destroy view
-    this.getPanelView()?.destroyView(panelId);
-
     // Remove from registry and archive in DB
     this.registry.removePanel(panelId);
     this.registry.archivePanel(panelId);
+
+    // Navigate shell to the sibling or parent so the UI doesn't fall back to root
+    if (siblingToFocus) {
+      this.eventService.emit("navigate-to-panel", { panelId: siblingToFocus });
+    }
   }
 
   /**
@@ -630,9 +641,8 @@ export class PanelLifecycle implements BridgePanelManager {
     void this.serverInfo.revokePanelToken(panelId);
     void this.serverInfo.revokeGitToken(panelId);
 
-    // CDP cleanup
+    // CDP cleanup (ownership tracking; unregisterBrowser is handled by destroyView)
     this.cdpServer?.revokeTokenForPanel(panelId);
-    this.cdpServer?.unregisterBrowser?.(panelId);
 
     // Claude Agent conversation cleanup
     this.ccConversationManager?.endPanelConversations(panelId);

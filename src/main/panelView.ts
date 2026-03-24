@@ -157,6 +157,8 @@ export class PanelView implements PanelViewLike {
     this.setupBrowserStateTracking(panelId, view.webContents);
 
     if (parentId) {
+      // Register immediately so CDP access checks pass before dom-ready
+      this.cdpServer.registerBrowser(panelId, view.webContents.id, parentId);
       const domReadyHandler = () => {
         this.cdpServer.registerBrowser(panelId, view.webContents.id, parentId);
       };
@@ -224,6 +226,8 @@ export class PanelView implements PanelViewLike {
     this.setupBrowserStateTracking(panelId, view.webContents);
 
     if (parentId) {
+      // Register immediately so CDP access checks pass before dom-ready
+      this.cdpServer.registerBrowser(panelId, view.webContents.id, parentId);
       const domReadyHandler = () => {
         this.cdpServer.registerBrowser(panelId, view.webContents.id, parentId);
       };

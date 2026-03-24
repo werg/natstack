@@ -309,8 +309,10 @@ export class PanelRegistry implements PanelRelationshipProvider {
       if (parent) {
         parent.children = parent.children.filter((c) => c.id !== panelId);
         if (parent.selectedChildId === panelId) {
-          parent.selectedChildId = null;
-          this.persistence?.setSelectedChild(parent.id, null);
+          // Auto-select the next remaining child (or null if none left)
+          const nextChild = parent.children.length > 0 ? parent.children[parent.children.length - 1]!.id : null;
+          parent.selectedChildId = nextChild;
+          this.persistence?.setSelectedChild(parent.id, nextChild);
         }
       }
     } else {
