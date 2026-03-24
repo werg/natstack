@@ -120,6 +120,7 @@ function mapSecretsToEnv(secrets: Record<string, string>): void {
     replicate: "REPLICATE_API_KEY",
     perplexity: "PERPLEXITY_API_KEY",
     github: "GITHUB_TOKEN", // For transparent GitHub repo cloning
+    nango: "NANGO_SECRET_KEY", // Nango OAuth proxy secret key
   };
 
   for (const [provider, secret] of Object.entries(secrets)) {

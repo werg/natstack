@@ -54,7 +54,7 @@ import {
 } from "@radix-ui/react-icons";
 
 import { emailContract } from "./contract.js";
-import { createTokenProvider, loadSavedConnection, OAuthNotConfiguredError } from "./oauth.js";
+import { createTokenProvider } from "./oauth.js";
 import { GmailClient, CalendarClient, GmailApiError } from "./gmail.js";
 import type { GmailMessage, GmailThread, CalendarEvent, SendMessageRequest } from "./gmail.js";
 import type { OAuthTokenProvider } from "./oauth.js";
@@ -110,10 +110,7 @@ export default function EmailPanel() {
           setConnectionStatus({ connected: false, checking: false });
         }
       } catch (err) {
-        const msg = err instanceof OAuthNotConfiguredError
-          ? err.message
-          : `Connection check failed: ${err}`;
-        setConnectionStatus({ connected: false, error: msg, checking: false });
+        setConnectionStatus({ connected: false, error: String(err), checking: false });
       }
     }
     init();
@@ -166,10 +163,7 @@ export default function EmailPanel() {
       setConnectionStatus({ connected: true, email: conn.email, checking: false });
       parent.emit("connection-changed", { connected: true, email: conn.email });
     } catch (err) {
-      const msg = err instanceof OAuthNotConfiguredError
-        ? err.message
-        : `Failed to connect: ${err}`;
-      setConnectionStatus({ connected: false, error: msg, checking: false });
+      setConnectionStatus({ connected: false, error: String(err), checking: false });
     }
   }, [tokenProvider, parent]);
 
@@ -301,24 +295,13 @@ function ConnectionSetup({
           <Separator size="4" />
 
           <Flex direction="column" gap="2" style={{ width: "100%" }}>
-            <Text size="2" weight="bold">Option 1: Nango (Recommended)</Text>
             <Text size="1" color="gray">
-              Configure a Nango instance for managed OAuth. Handles token refresh,
-              re-auth, and supports 250+ API providers.
+              Clicking Connect will request OAuth access via a notification
+              in the shell chrome. After approval, a browser panel opens
+              to complete the Google sign-in flow.
             </Text>
             <Button onClick={onConnect} size="2">
               Connect with OAuth
-            </Button>
-          </Flex>
-
-          <Flex direction="column" gap="2" style={{ width: "100%" }}>
-            <Text size="2" weight="bold">Option 2: Browser Cookies</Text>
-            <Text size="1" color="gray">
-              Import your browser cookies to use your existing Google session.
-              Less reliable but works without additional setup.
-            </Text>
-            <Button variant="soft" size="2" color="gray" onClick={onConnect}>
-              Use Browser Cookies
             </Button>
           </Flex>
         </Flex>

@@ -107,7 +107,7 @@ export const view = {
   setVisible: (viewId: string, visible: boolean) =>
     rpc.call<void>("main", "view.setVisible", viewId, visible),
   setThemeCss: (css: string) => rpc.call<void>("main", "view.setThemeCss", css),
-  updateLayout: (layout: { titleBarHeight?: number; sidebarVisible?: boolean; sidebarWidth?: number; saveBarHeight?: number }) =>
+  updateLayout: (layout: { titleBarHeight?: number; sidebarVisible?: boolean; sidebarWidth?: number; saveBarHeight?: number; notificationBarHeight?: number }) =>
     rpc.call<void>("main", "view.updateLayout", layout),
   setShellOverlay: (active: boolean) =>
     rpc.call<void>("main", "view.setShellOverlay", active),
@@ -195,6 +195,21 @@ export const events = {
   subscribe: (event: EventName) => rpc.call<void>("main", "events.subscribe", event),
   unsubscribe: (event: EventName) => rpc.call<void>("main", "events.unsubscribe", event),
   unsubscribeAll: () => rpc.call<void>("main", "events.unsubscribeAll"),
+};
+
+// =============================================================================
+// Notification Service
+// =============================================================================
+
+import type { NotificationPayload } from "../../shared/events.js";
+
+export const notification = {
+  show: (opts: Omit<NotificationPayload, "id"> & { id?: string }) =>
+    rpc.call<string>("main", "notification.show", opts),
+  reportAction: (id: string, actionId: string) =>
+    rpc.call<void>("main", "notification.reportAction", id, actionId),
+  dismiss: (id: string) =>
+    rpc.call<void>("main", "notification.dismiss", id),
 };
 
 // =============================================================================

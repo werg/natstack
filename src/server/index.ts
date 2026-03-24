@@ -362,6 +362,16 @@ async function main() {
   container.register(rpcService(createTypecheckService({ contextFolderManager })));
   container.register(rpcService(createEventsServiceDefinition(eventService)));
 
+  // ── Notification service ──
+  const { createNotificationService } = await import("./services/notificationService.js");
+  const notificationResult = createNotificationService({ eventService });
+  const notificationInternal = notificationResult.internal;
+  container.register(rpcService(notificationResult.definition));
+
+  // ── HTTP Proxy service ──
+  const { createHttpProxyService } = await import("./services/httpProxyService.js");
+  container.register(rpcService(createHttpProxyService()));
+
   // ── DODispatch (source-scoped HTTP dispatch to Durable Objects) ──
 
   container.register({
@@ -711,6 +721,39 @@ async function main() {
         return new PanelRegistry({ workspace, eventService });
       },
     });
+
+    // ── OAuth service (needs panelRegistry for consent tracking) ──
+    {
+      const { OAuthManager } = await import("../shared/oauth/oauthManager.js");
+      const { createOAuthService } = await import("./services/oauthService.js");
+      let oauthManager: InstanceType<typeof OAuthManager>;
+      container.register({
+        name: "oauth",
+        dependencies: ["panelRegistry"],
+        async start(resolve) {
+          const registry = resolve<import("../shared/panelRegistry.js").PanelRegistry>("panelRegistry")!;
+          const nangoUrl = workspace.config.oauth?.nangoUrl ?? process.env["NANGO_URL"] ?? "";
+          const nangoSecret = process.env["NANGO_SECRET_KEY"] ?? "";
+          oauthManager = new OAuthManager({
+            nangoUrl,
+            nangoSecretKey: nangoSecret,
+            workspaceStatePath: workspace.statePath,
+          });
+          return { oauthManager, registry };
+        },
+        async stop() {
+          oauthManager?.close();
+        },
+        getServiceDefinition() {
+          const registry = container.get<import("../shared/panelRegistry.js").PanelRegistry>("panelRegistry");
+          return createOAuthService({
+            oauthManager,
+            panelRegistry: registry,
+            notificationService: notificationInternal,
+          });
+        },
+      });
+    }
 
     // PanelLifecycle
     const { PanelLifecycle } = await import("../shared/panelLifecycle.js");

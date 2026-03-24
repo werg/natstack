@@ -10,6 +10,7 @@
  * `tokenProvider.getToken()` and use the result as a Bearer token.
  */
 
+import { httpProxy } from "@workspace/runtime";
 import type { OAuthTokenProvider, OAuthToken } from "./oauth.js";
 
 // ---- Types ----
@@ -63,17 +64,28 @@ const CALENDAR_BASE = "https://www.googleapis.com/calendar/v3";
 export class GmailClient {
   constructor(private tokenProvider: OAuthTokenProvider) {}
 
-  private async fetchWithAuth(url: string, init?: RequestInit): Promise<Response> {
+  private async fetchWithAuth(url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }): Promise<{ status: number; body: string }> {
     const token = await this.tokenProvider.getToken();
-    const headers = new Headers(init?.headers);
-    headers.set("Authorization", `Bearer ${token.accessToken}`);
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${token.accessToken}`,
+      ...init?.headers,
+    };
 
-    const res = await fetch(url, { ...init, headers });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new GmailApiError(res.status, `Gmail API error ${res.status}: ${body}`);
+    const res = await httpProxy.fetch(url, {
+      method: init?.method ?? "GET",
+      headers,
+      body: init?.body,
+    });
+
+    if (res.status >= 400) {
+      throw new GmailApiError(res.status, `Gmail API error ${res.status}: ${res.body}`);
     }
     return res;
+  }
+
+  private async fetchJson<T>(url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }): Promise<T> {
+    const res = await this.fetchWithAuth(url, init);
+    return JSON.parse(res.body) as T;
   }
 
   /** List messages matching a query (Gmail search syntax) */
@@ -82,8 +94,7 @@ export class GmailClient {
       q: query,
       maxResults: String(maxResults),
     });
-    const res = await this.fetchWithAuth(`${GMAIL_BASE}/messages?${params}`);
-    const data = await res.json() as { messages?: Array<{ id: string; threadId: string }> };
+    const data = await this.fetchJson<{ messages?: Array<{ id: string; threadId: string }> }>(`${GMAIL_BASE}/messages?${params}`);
 
     if (!data.messages?.length) return [];
 
@@ -96,19 +107,17 @@ export class GmailClient {
 
   /** Get a single message by ID */
   async getMessage(messageId: string): Promise<GmailMessage> {
-    const res = await this.fetchWithAuth(
+    const raw = await this.fetchJson<GmailRawMessage>(
       `${GMAIL_BASE}/messages/${messageId}?format=full`,
     );
-    const raw = await res.json() as GmailRawMessage;
     return parseGmailMessage(raw);
   }
 
   /** Get a full thread */
   async getThread(threadId: string): Promise<GmailThread> {
-    const res = await this.fetchWithAuth(
+    const raw = await this.fetchJson<{ id: string; snippet: string; messages: GmailRawMessage[] }>(
       `${GMAIL_BASE}/threads/${threadId}?format=full`,
     );
-    const raw = await res.json() as { id: string; snippet: string; messages: GmailRawMessage[] };
     const messages = raw.messages.map(parseGmailMessage);
     return {
       id: raw.id,
@@ -131,25 +140,22 @@ export class GmailClient {
     const body: Record<string, string> = { raw: encoded };
     if (req.threadId) body.threadId = req.threadId;
 
-    const res = await this.fetchWithAuth(`${GMAIL_BASE}/messages/send`, {
+    return await this.fetchJson<{ id: string; threadId: string }>(`${GMAIL_BASE}/messages/send`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    return await res.json() as { id: string; threadId: string };
   }
 
   /** Get the user's email address */
   async getProfile(): Promise<{ email: string; messagesTotal: number }> {
-    const res = await this.fetchWithAuth(`${GMAIL_BASE}/profile`);
-    const data = await res.json() as { emailAddress: string; messagesTotal: number };
+    const data = await this.fetchJson<{ emailAddress: string; messagesTotal: number }>(`${GMAIL_BASE}/profile`);
     return { email: data.emailAddress, messagesTotal: data.messagesTotal };
   }
 
   /** List labels */
   async listLabels(): Promise<Array<{ id: string; name: string; type: string }>> {
-    const res = await this.fetchWithAuth(`${GMAIL_BASE}/labels`);
-    const data = await res.json() as { labels: Array<{ id: string; name: string; type: string }> };
+    const data = await this.fetchJson<{ labels: Array<{ id: string; name: string; type: string }> }>(`${GMAIL_BASE}/labels`);
     return data.labels ?? [];
   }
 
@@ -159,7 +165,7 @@ export class GmailClient {
     addLabels: string[] = [],
     removeLabels: string[] = [],
   ): Promise<void> {
-    await this.fetchWithAuth(`${GMAIL_BASE}/messages/${messageId}/modify`, {
+    await this.fetchJson(`${GMAIL_BASE}/messages/${messageId}/modify`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -185,17 +191,23 @@ export class GmailClient {
 export class CalendarClient {
   constructor(private tokenProvider: OAuthTokenProvider) {}
 
-  private async fetchWithAuth(url: string, init?: RequestInit): Promise<Response> {
+  private async fetchJson<T>(url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }): Promise<T> {
     const token = await this.tokenProvider.getToken();
-    const headers = new Headers(init?.headers);
-    headers.set("Authorization", `Bearer ${token.accessToken}`);
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${token.accessToken}`,
+      ...init?.headers,
+    };
 
-    const res = await fetch(url, { ...init, headers });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new GmailApiError(res.status, `Calendar API error ${res.status}: ${body}`);
+    const res = await httpProxy.fetch(url, {
+      method: init?.method ?? "GET",
+      headers,
+      body: init?.body,
+    });
+
+    if (res.status >= 400) {
+      throw new GmailApiError(res.status, `Calendar API error ${res.status}: ${res.body}`);
     }
-    return res;
+    return JSON.parse(res.body) as T;
   }
 
   /** List upcoming events */
@@ -214,19 +226,17 @@ export class CalendarClient {
     });
     if (opts?.timeMax) params.set("timeMax", opts.timeMax);
 
-    const res = await this.fetchWithAuth(
+    const data = await this.fetchJson<{ items?: GcalRawEvent[] }>(
       `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events?${params}`,
     );
-    const data = await res.json() as { items?: GcalRawEvent[] };
     return (data.items ?? []).map(parseCalendarEvent);
   }
 
   /** Get a single event */
   async getEvent(eventId: string, calendarId: string = "primary"): Promise<CalendarEvent> {
-    const res = await this.fetchWithAuth(
+    const raw = await this.fetchJson<GcalRawEvent>(
       `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${eventId}`,
     );
-    const raw = await res.json() as GcalRawEvent;
     return parseCalendarEvent(raw);
   }
 }

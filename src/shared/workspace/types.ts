@@ -134,6 +134,14 @@ export interface InitPanelEntry {
 }
 
 /**
+ * OAuth configuration
+ */
+export interface OAuthConfig {
+  /** Nango instance URL (e.g., https://api.nango.dev or self-hosted) */
+  nangoUrl?: string;
+}
+
+/**
  * Workspace configuration from natstack.yml
  * This is specific to each workspace/project.
  */
@@ -142,6 +150,8 @@ export interface WorkspaceConfig {
   id: string;
   /** Git server configuration */
   git?: GitConfig;
+  /** OAuth configuration */
+  oauth?: OAuthConfig;
   /**
    * Panels to create on first initialization (when panel tree is empty).
    * These panels are created as root panels in the specified order.
