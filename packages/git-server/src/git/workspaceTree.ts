@@ -203,6 +203,7 @@ export class WorkspaceTreeManager {
         const ns = packageJson.natstack;
         result.launchable = {
           title: ns.title || packageJson.name || path.basename(absolutePath),
+          ...(ns.hiddenInLauncher ? { hidden: true } : {}),
         };
       }
     } catch {

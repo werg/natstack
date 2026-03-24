@@ -1,10 +1,10 @@
 /**
  * New Panel Page - Shell panel for launching panels from workspace.
- * Opens with Cmd/Ctrl+T and displays available panels and repos.
+ * Opens with Cmd/Ctrl+T and displays available panels with a chat prompt input.
  */
 
 import { createRoot } from "react-dom/client";
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 import "@radix-ui/themes/styles.css";
 import {
   Theme,
@@ -15,61 +15,32 @@ import {
   Box,
   Button,
   TextField,
-  Badge,
   ScrollArea,
-  Separator,
-  Tabs,
 } from "@radix-ui/themes";
-import { getWorkspaceTree, buildPanelLink, onFocus, rpc } from "@workspace/runtime";
+import { getWorkspaceTree, buildPanelLink, onFocus } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
 import type { WorkspaceTree, WorkspaceNode } from "@workspace/runtime";
 
-/** About page name string (e.g., "about", "keyboard-shortcuts") */
-type AboutPage = string;
-import { WorkspaceTreeView } from "./WorkspaceTreeView";
-import { RepoSelector } from "./RepoSelector";
-
-/**
- * About page metadata from the build service.
- */
-interface AboutPageMeta {
-  name: string;
-  title: string;
-  description?: string;
-  hiddenInLauncher: boolean;
-}
-
-/**
- * Shell page metadata for display.
- */
-interface ShellPageMeta {
-  page: AboutPage;
-  title: string;
-  description?: string;
+/** Flatten a workspace tree into a list of visible launchable nodes. */
+function collectLaunchable(nodes: WorkspaceNode[]): WorkspaceNode[] {
+  const result: WorkspaceNode[] = [];
+  for (const node of nodes) {
+    if (node.launchable && !node.launchable.hidden) result.push(node);
+    result.push(...collectLaunchable(node.children));
+  }
+  return result;
 }
 
 function NewPanelPage() {
   const [tree, setTree] = useState<WorkspaceTree | null>(null);
-  const [shellPages, setShellPages] = useState<ShellPageMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [urlInput, setUrlInput] = useState("");
-  const [selectedPath, setSelectedPath] = useState<string | undefined>(undefined);
+  const [promptInput, setPromptInput] = useState("");
 
-  // Fetch workspace tree and shell pages - runs on mount and when panel receives focus
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const [treeData, pagesData] = await Promise.all([
-        getWorkspaceTree(),
-        rpc.call<AboutPageMeta[]>("main", "build.getAboutPages"),
-      ]);
-      setTree(treeData);
-      setShellPages(
-        pagesData
-          .filter((p) => !p.hiddenInLauncher)
-          .map((p) => ({ page: p.name, title: p.title, description: p.description }))
-      );
+      setTree(await getWorkspaceTree());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -79,62 +50,27 @@ function NewPanelPage() {
 
   useEffect(() => {
     void fetchData();
-    // Also refetch when the panel receives focus (user navigates back to it)
     return onFocus(() => void fetchData());
   }, [fetchData]);
 
-  const handleLaunch = useCallback(
-    (node: WorkspaceNode) => {
-      const url = buildPanelLink(node.path);
-      window.location.href = url;
-    },
-    []
-  );
-
-  const handleNodeSelect = useCallback((node: WorkspaceNode) => {
-    setSelectedPath(node.path);
+  const handleLaunch = useCallback((node: WorkspaceNode) => {
+    window.location.href = buildPanelLink(node.path);
   }, []);
 
-  const handleSimpleLaunch = useCallback((node: WorkspaceNode) => {
-    if (node.launchable) {
-      const url = buildPanelLink(node.path);
-      window.location.href = url;
-    } else {
-      setSelectedPath(node.path);
-    }
-  }, []);
-
-  const handleUrlNavigate = useCallback(() => {
-    if (urlInput.trim()) {
-      window.location.href = urlInput.trim();
-    }
-  }, [urlInput]);
-
-  const handleShellPageClick = useCallback((page: AboutPage) => {
-    window.location.href = buildPanelLink(`about/${page}`);
-  }, []);
-
-  const renderNodeExtra = useCallback(
-    (node: WorkspaceNode) => {
-      if (!node.launchable) return null;
-      return (
-        <Flex mt="2">
-          <Button size="1" onClick={() => handleLaunch(node)}>
-            Launch
-          </Button>
-        </Flex>
-      );
-    },
-    [handleLaunch]
-  );
+  const handleNewChat = useCallback(() => {
+    const prompt = promptInput.trim();
+    if (!prompt) return;
+    const url = buildPanelLink("panels/chat", {
+      stateArgs: { initialPrompt: prompt },
+    });
+    window.location.href = url + (url.includes("?") ? "&" : "?") + "_fresh";
+  }, [promptInput]);
 
   if (loading) {
     return (
       <Box p="4" style={{ maxWidth: "700px", margin: "0 auto" }}>
-        <Heading size="7" mb="4">
-          New Panel
-        </Heading>
-        <Text color="gray">Loading projects...</Text>
+        <Heading size="7" mb="4">New Panel</Heading>
+        <Text color="gray">Loading...</Text>
       </Box>
     );
   }
@@ -142,128 +78,60 @@ function NewPanelPage() {
   if (error) {
     return (
       <Box p="4" style={{ maxWidth: "700px", margin: "0 auto" }}>
-        <Heading size="7" mb="4">
-          New Panel
-        </Heading>
+        <Heading size="7" mb="4">New Panel</Heading>
         <Card>
-          <Text color="red">Error loading projects: {error}</Text>
+          <Text color="red">Error: {error}</Text>
         </Card>
       </Box>
     );
   }
 
-  // Count items for tabs
-  const countLaunchable = (nodes: WorkspaceNode[]): number => {
-    let count = 0;
-    for (const node of nodes) {
-      if (node.launchable) {
-        count++;
-      }
-      count += countLaunchable(node.children);
-    }
-    return count;
-  };
-
-  const countRepos = (nodes: WorkspaceNode[]): number => {
-    let count = 0;
-    for (const node of nodes) {
-      if (node.isGitRepo && !node.launchable) {
-        count++;
-      }
-      count += countRepos(node.children);
-    }
-    return count;
-  };
-
-  const appCount = tree ? countLaunchable(tree.children) : 0;
-  const repoCount = tree ? countRepos(tree.children) : 0;
+  const panels = tree ? collectLaunchable(tree.children) : [];
 
   return (
     <Box p="4" style={{ maxWidth: "700px", margin: "0 auto" }}>
-      <Heading size="7" mb="4">
-        New Panel
-      </Heading>
+      <Heading size="7" mb="4">New Panel</Heading>
 
       <ScrollArea style={{ height: "calc(100vh - 100px)" }}>
         <Flex direction="column" gap="4">
-          {/* URL Input */}
+          {/* Chat prompt input */}
           <Card>
-            <Heading size="3" mb="2">
-              Open URL
-            </Heading>
+            <Heading size="3" mb="2">New Chat</Heading>
             <Flex gap="2">
               <TextField.Root
                 style={{ flex: 1 }}
-                placeholder="Enter URL or /panels/... path..."
-                value={urlInput}
-                onChange={(e) => setUrlInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleUrlNavigate()}
+                placeholder="Start a chat with a prompt..."
+                value={promptInput}
+                onChange={(e) => setPromptInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleNewChat()}
               />
-              <Button onClick={handleUrlNavigate} disabled={!urlInput.trim()}>
-                Go
+              <Button onClick={handleNewChat} disabled={!promptInput.trim()}>
+                Chat
               </Button>
             </Flex>
           </Card>
 
-          {/* Tabs for different project types */}
-          <Tabs.Root defaultValue="panels">
-            <Tabs.List>
-              <Tabs.Trigger value="panels">Apps ({appCount})</Tabs.Trigger>
-              <Tabs.Trigger value="repos">Repos ({repoCount})</Tabs.Trigger>
-              <Tabs.Trigger value="shell">Shell Pages</Tabs.Trigger>
-            </Tabs.List>
-
-            <Box pt="3">
-              <Tabs.Content value="panels">
-                {tree && appCount > 0 ? (
-                  <Card>
-                    <WorkspaceTreeView
-                      tree={tree}
-                      filter="launchable"
-                      onSelect={handleSimpleLaunch}
-                      selectedPath={selectedPath}
-                      renderNodeExtra={renderNodeExtra}
-                    />
-                  </Card>
-                ) : (
-                  <Text color="gray">No app panels found in workspace</Text>
-                )}
-              </Tabs.Content>
-
-              <Tabs.Content value="repos">
-                {tree && repoCount > 0 ? (
-                  <Card>
-                    <WorkspaceTreeView
-                      tree={tree}
-                      filter="repos"
-                      onSelect={handleNodeSelect}
-                      selectedPath={selectedPath}
-                    />
-                  </Card>
-                ) : (
-                  <Text color="gray">No other repos found in workspace</Text>
-                )}
-              </Tabs.Content>
-
-              <Tabs.Content value="shell">
-                {shellPages.map((page) => (
-                  <Card
-                    key={page.page}
-                    tabIndex={0}
-                    style={{ marginBottom: "8px", cursor: "pointer" }}
-                    onClick={() => handleShellPageClick(page.page)}
-                  >
-                    <Flex direction="column" gap="1">
-                      <Text weight="medium">{page.title}</Text>
-                      {page.description && (
-                        <Text size="1" color="gray">{page.description}</Text>
-                      )}
-                    </Flex>
-                  </Card>
-                ))}
-              </Tabs.Content>
-            </Box>
-          </Tabs.Root>
+          {/* Panel list */}
+          {panels.length > 0 ? (
+            <Flex direction="column" gap="2">
+              {panels.map((node) => (
+                <Card
+                  key={node.path}
+                  tabIndex={0}
+                  style={{ cursor: "pointer" }}
+                  onClick={() => handleLaunch(node)}
+                  onKeyDown={(e) => e.key === "Enter" && handleLaunch(node)}
+                >
+                  <Flex align="center" justify="between">
+                    <Text weight="medium">{node.launchable?.title ?? node.name}</Text>
+                    <Text size="1" color="gray">{node.path}</Text>
+                  </Flex>
+                </Card>
+              ))}
+            </Flex>
+          ) : (
+            <Text color="gray">No panels found in workspace</Text>
+          )}
         </Flex>
       </ScrollArea>
     </Box>

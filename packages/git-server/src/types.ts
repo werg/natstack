@@ -7,7 +7,7 @@ export interface WorkspaceNode {
   name: string;
   path: string;
   isGitRepo: boolean;
-  launchable?: { title: string };
+  launchable?: { title: string; hidden?: boolean };
   packageInfo?: { name: string; version?: string };
   skillInfo?: { name: string; description: string };
   children: WorkspaceNode[];

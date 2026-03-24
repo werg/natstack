@@ -228,6 +228,7 @@ export interface WorkspaceNode {
   launchable?: {
     type: "app";
     title: string;
+    hidden?: boolean;
   };
   /**
    * Package metadata if this repo has a package.json with a name.
