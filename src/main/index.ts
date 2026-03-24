@@ -18,6 +18,7 @@ import {
   initWorkspace,
   createWorkspace,
   loadCentralEnv,
+  deleteWorkspaceDir,
 } from "../shared/workspace/loader.js";
 import { getWorkspaceDir } from "@natstack/env-paths";
 import type { Workspace } from "../shared/workspace/types.js";
@@ -84,10 +85,11 @@ if (process.env["NATSTACK_DEBUG_PATHS"] === "1") {
 // Load central environment variables first (.env and .secrets.yml from ~/.config/natstack/)
 loadCentralEnv();
 
-// Resolve workspace: --workspace=name → env NATSTACK_WORKSPACE → last-opened → auto-create "default"
+// Resolve workspace: --workspace=name → env NATSTACK_WORKSPACE → (dev: fresh random) → last-opened → auto-create "default"
 const wsName = resolveWorkspaceName();
 const centralData = new CentralDataManager();
 let wsDir: string;
+let isEphemeralDevWorkspace = false;
 
 if (wsName) {
   // Managed workspace by name — must exist on disk
@@ -102,6 +104,22 @@ if (wsName) {
     centralData.addWorkspace(wsName);
   } else {
     centralData.touchWorkspace(wsName);
+  }
+} else if (isDev()) {
+  // Dev mode: always create a fresh workspace from the template
+  const { randomBytes } = require("crypto") as typeof import("crypto");
+  const devName = `dev-${randomBytes(4).toString("hex")}`;
+  try {
+    const templateDir = getWorkspaceTemplateDir();
+    initWorkspace(devName, templateDir ? { templateDir } : undefined);
+    centralData.addWorkspace(devName);
+    wsDir = getWorkspaceDir(devName);
+    isEphemeralDevWorkspace = true;
+    log.info(`[Workspace] Created ephemeral dev workspace "${devName}"${templateDir ? " from template" : ""}`);
+  } catch (error) {
+    console.error("[Workspace] Failed to create dev workspace:", error);
+    app.quit();
+    process.exit(1);
   }
 } else {
   // No explicit workspace — try last-opened from registry
@@ -732,6 +750,19 @@ app.on("will-quit", (event) => {
     }
   }
 
+  // Cleanup helper for ephemeral dev workspaces (called sync, after servers stop)
+  const cleanupDevWorkspace = () => {
+    if (isEphemeralDevWorkspace && workspace) {
+      try {
+        deleteWorkspaceDir(workspace.config.id);
+        centralData.removeWorkspace(workspace.config.id);
+        console.log(`[App] Deleted ephemeral dev workspace "${workspace.config.id}"`);
+      } catch (e) {
+        console.error("[App] Failed to delete dev workspace:", e);
+      }
+    }
+  };
+
   const hasResourcesToClean = serverClient || serverProcessManager || rpcServer || cdpServer || panelHttpServer;
   if (hasResourcesToClean) {
     isCleaningUp = true;
@@ -795,9 +826,12 @@ app.on("will-quit", (event) => {
 
     Promise.all(stopPromises).finally(() => {
       clearTimeout(shutdownTimeout);
+      cleanupDevWorkspace();
       console.log("[App] Shutdown complete");
       app.exit(0);
     });
+  } else {
+    cleanupDevWorkspace();
   }
 });
 
