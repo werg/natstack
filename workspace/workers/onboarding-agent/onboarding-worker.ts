@@ -78,7 +78,7 @@ export class OnboardingAgent extends AiChatWorker {
   }): Promise<{ ok: boolean; participantId: string }> {
     const result = await super.subscribeChannel(opts);
 
-    this.startProactiveTurn(opts.channelId, "Hi! I just opened NatStack for the first time.").catch((err) => {
+    this.startProactiveTurn(opts.channelId, "Hi! The user just opened a new workspace, onboard them.").catch((err) => {
       console.error(`[OnboardingAgent] Auto-start failed:`, err);
     });
 
