@@ -39,7 +39,7 @@ export interface NotificationAction {
 export interface NotificationConsentData {
   provider: string;
   scopes: string[];
-  panelSource: string;
+  panelId: string;
   panelTitle: string;
 }
 

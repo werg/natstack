@@ -110,6 +110,9 @@ export function NotificationBar() {
       cleanup();
       timerCleanups.current.delete(id);
     }
+    // Report dismissal to server so waitForAction() resolves immediately
+    // instead of hanging for the full timeout
+    void notification.reportAction(id, "dismiss");
   }, []);
 
   const handleAction = useCallback(
@@ -326,7 +329,7 @@ function ConsentNotification({
       {consent && (
         <Flex align="center" gap="3">
           <Text size="1" color="gray" style={{ flex: 1 }}>
-            <Text weight="bold" size="1">{consent.panelTitle || consent.panelSource}</Text>
+            <Text weight="bold" size="1">{consent.panelTitle || consent.panelId}</Text>
             {" wants to connect to "}
             <Text weight="bold" size="1">{consent.provider}</Text>
             {consent.scopes.length > 0 && (

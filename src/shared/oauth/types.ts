@@ -18,7 +18,7 @@ export interface OAuthConnection {
 }
 
 export interface ConsentRecord {
-  panelSource: string;
+  panelId: string;
   provider: string;
   scopes: string[];
   grantedAt: number;

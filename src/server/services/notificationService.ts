@@ -79,7 +79,7 @@ export function createNotificationService(deps: {
           consent: z.object({
             provider: z.string(),
             scopes: z.array(z.string()),
-            panelSource: z.string(),
+            panelId: z.string(),
             panelTitle: z.string(),
           }).optional(),
           ttl: z.number().optional(),

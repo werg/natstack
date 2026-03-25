@@ -153,7 +153,7 @@ export function createOAuthService(deps: {
           consent: {
             provider: providerKey,
             scopes,
-            panelSource: callerId,
+            panelId: callerId,
             panelTitle,
           },
           sourcePanelId: callerId,

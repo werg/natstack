@@ -308,7 +308,7 @@ export class OAuthManager {
     );
 
     return rows.map(r => ({
-      panelSource: r.panel_id,
+      panelId: r.panel_id,
       provider: r.provider,
       scopes: JSON.parse(r.scopes),
       grantedAt: r.granted_at,
