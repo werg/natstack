@@ -111,6 +111,18 @@ export function createOAuthService(deps: {
           }).optional(),
         ]),
       },
+      requestConsent: {
+        args: z.tuple([
+          z.string(),
+          z.object({ scopes: z.array(z.string()).optional() }).optional(),
+        ]),
+      },
+      startAuth: {
+        args: z.tuple([z.string(), z.string()]),
+      },
+      waitForConnection: {
+        args: z.tuple([z.string(), z.string(), z.number().optional()]),
+      },
       disconnect: {
         args: z.tuple([z.string(), z.string()]),
       },
@@ -218,6 +230,78 @@ export function createOAuthService(deps: {
             await new Promise(r => setTimeout(r, 2000));
           }
 
+          throw new Error(`OAuth connection timed out for "${providerKey}"`);
+        }
+
+        // --- Staged flow: panel-driven connect with progress feedback ---
+
+        case "requestConsent": {
+          const [providerKey, opts] = args as [string, { scopes?: string[] } | undefined];
+          const scopes = opts?.scopes ?? [];
+
+          if (isWorker) return { consented: true };
+          if (!panelSource) return { consented: true };
+
+          const hasConsent = await oauthManager.hasConsent(panelSource, providerKey);
+          if (hasConsent) return { consented: true };
+
+          const notifId = `oauth-consent-${randomUUID()}`;
+          const panelTitle = getPanelTitle(ctx.callerId);
+
+          notificationService.show({
+            id: notifId,
+            type: "consent",
+            title: "OAuth Access Requested",
+            consent: {
+              provider: providerKey,
+              scopes,
+              panelSource: panelSource,
+              panelTitle,
+            },
+          });
+
+          const actionId = await notificationService.waitForAction(notifId, 120_000);
+          if (actionId !== "approve") {
+            throw new Error(`OAuth consent denied for provider "${providerKey}"`);
+          }
+
+          await oauthManager.grantConsent(panelSource, providerKey, scopes);
+          return { consented: true };
+        }
+
+        case "startAuth": {
+          const [providerKey, connectionId] = args as [string, string];
+
+          // Pre-sync imported cookies so the browser panel may already be authenticated
+          await presyncCookiesForProvider(providerKey);
+
+          const authUrl = await oauthManager.getAuthUrl(providerKey, connectionId);
+
+          // Open browser panel (non-blocking — returns immediately)
+          let browserPanelId: string | undefined;
+          if (openBrowserPanel) {
+            try {
+              const result = await openBrowserPanel(ctx.callerId, authUrl, {
+                name: `Sign in — ${providerKey}`,
+                focus: true,
+              });
+              browserPanelId = result.id;
+            } catch {
+              // Non-fatal: panel can open URL manually
+            }
+          }
+
+          return { authUrl, browserPanelId };
+        }
+
+        case "waitForConnection": {
+          const [providerKey, connectionId, timeoutMs] = args as [string, string, number | undefined];
+          const deadline = Date.now() + (timeoutMs ?? 120_000);
+          while (Date.now() < deadline) {
+            const conn = await oauthManager.getConnection(providerKey, connectionId);
+            if (conn.connected) return conn;
+            await new Promise(r => setTimeout(r, 2000));
+          }
           throw new Error(`OAuth connection timed out for "${providerKey}"`);
         }
 

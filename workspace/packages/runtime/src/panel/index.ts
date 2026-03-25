@@ -90,7 +90,7 @@ export { workspaceClient as workspace };
 
 // OAuth token management
 import { createOAuthClient } from "./oauth.js";
-export type { OAuthToken, OAuthConnection, OAuthClient, ConsentRecord } from "./oauth.js";
+export type { OAuthToken, OAuthConnection, OAuthClient, OAuthStartAuthResult, ConsentRecord } from "./oauth.js";
 export const oauth = createOAuthClient(rpc);
 
 // HTTP proxy for CORS-free external API access

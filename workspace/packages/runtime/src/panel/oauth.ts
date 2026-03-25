@@ -33,20 +33,43 @@ export interface ConsentRecord {
   grantedAt: number;
 }
 
+export interface OAuthStartAuthResult {
+  authUrl: string;
+  browserPanelId?: string;
+}
+
 export interface OAuthClient {
   /** Get a valid access token, auto-refreshing if needed. Requires prior consent. */
   getToken(providerKey: string, connectionId?: string): Promise<OAuthToken>;
 
   /**
-   * Initiate an OAuth connection flow.
-   * If the panel hasn't been granted consent, a consent notification
-   * appears in the shell chrome. The call blocks until the user
-   * approves/denies and the OAuth flow completes.
+   * All-in-one connect (consent + auth + wait). Blocks until complete.
+   * For better UX, use the staged methods instead: requestConsent → startAuth → waitForConnection.
    */
   connect(providerKey: string, connectionId?: string, opts?: {
     scopes?: string[];
     reason?: string;
   }): Promise<OAuthConnection>;
+
+  /**
+   * Stage 1: Request consent. If not yet granted, shows a notification
+   * in the shell chrome and blocks until the user approves/denies.
+   * Returns immediately if consent was already granted.
+   */
+  requestConsent(providerKey: string, opts?: { scopes?: string[] }): Promise<{ consented: boolean }>;
+
+  /**
+   * Stage 2: Start the auth flow. Syncs imported cookies for the provider,
+   * opens the Nango auth URL in a browser panel, and returns immediately.
+   * The browser panel has autofill for imported passwords.
+   */
+  startAuth(providerKey: string, connectionId?: string): Promise<OAuthStartAuthResult>;
+
+  /**
+   * Stage 3: Wait for the OAuth flow to complete in the browser panel.
+   * Polls the connection status until connected or timeout.
+   */
+  waitForConnection(providerKey: string, connectionId?: string, timeoutMs?: number): Promise<OAuthConnection>;
 
   /** Disconnect and revoke an OAuth connection. */
   disconnect(providerKey: string, connectionId?: string): Promise<void>;
@@ -76,6 +99,15 @@ export function createOAuthClient(rpc: RpcBridge): OAuthClient {
     },
     async connect(pk, cid, opts) {
       return rpc.call<OAuthConnection>("main", "oauth.connect", pk, cid ?? defaultConnId(pk), opts);
+    },
+    async requestConsent(pk, opts) {
+      return rpc.call<{ consented: boolean }>("main", "oauth.requestConsent", pk, opts);
+    },
+    async startAuth(pk, cid) {
+      return rpc.call<OAuthStartAuthResult>("main", "oauth.startAuth", pk, cid ?? defaultConnId(pk));
+    },
+    async waitForConnection(pk, cid, timeoutMs) {
+      return rpc.call<OAuthConnection>("main", "oauth.waitForConnection", pk, cid ?? defaultConnId(pk), timeoutMs);
     },
     async disconnect(pk, cid) {
       await rpc.call<void>("main", "oauth.disconnect", pk, cid ?? defaultConnId(pk));

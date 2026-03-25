@@ -153,17 +153,33 @@ export default function EmailPanel() {
     });
   }, [connectionStatus, gmail, calendar]);
 
+  const [connectMessage, setConnectMessage] = useState<string | null>(null);
+
   const handleConnect = useCallback(async () => {
     if (!tokenProvider) return;
     setConnectionStatus(s => ({ ...s, checking: true, error: undefined }));
+    setConnectMessage("Requesting access...");
     try {
-      const conn = await tokenProvider.connect();
+      const conn = await tokenProvider.connect((stage, message) => {
+        setConnectMessage(message);
+      });
+      setConnectMessage(null);
       setGmail(new GmailClient(tokenProvider));
       setCalendar(new CalendarClient(tokenProvider));
       setConnectionStatus({ connected: true, email: conn.email, checking: false });
       parent.emit("connection-changed", { connected: true, email: conn.email });
     } catch (err) {
-      setConnectionStatus({ connected: false, error: String(err), checking: false });
+      setConnectMessage(null);
+      const msg = err instanceof Error ? err.message : String(err);
+      // Make common errors user-friendly
+      const userMessage = msg.includes("consent denied")
+        ? "Access was denied. Click Connect to try again."
+        : msg.includes("timed out")
+          ? "Sign-in timed out. Click Connect to try again."
+          : msg.includes("not configured")
+            ? "OAuth is not configured. Add a Nango instance URL to your workspace config."
+            : msg;
+      setConnectionStatus({ connected: false, error: userMessage, checking: false });
     }
   }, [tokenProvider, parent]);
 
@@ -207,9 +223,9 @@ export default function EmailPanel() {
         {/* Content */}
         <Box style={{ flex: 1, overflow: "hidden" }}>
           {connectionStatus.checking ? (
-            <Flex align="center" justify="center" style={{ height: "100%" }}>
+            <Flex align="center" justify="center" direction="column" gap="2" style={{ height: "100%" }}>
               <Spinner size="3" />
-              <Text size="2" ml="2">Checking connection...</Text>
+              <Text size="2">{connectMessage ?? "Checking connection..."}</Text>
             </Flex>
           ) : !connectionStatus.connected ? (
             <ConnectionSetup
