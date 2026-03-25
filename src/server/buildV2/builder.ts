@@ -1198,6 +1198,145 @@ async function buildLibraryBundle(
 }
 
 // ---------------------------------------------------------------------------
+// Npm Library Build
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate that a specifier looks like a legitimate npm package name.
+ * Rejects path traversals, URLs, and git specifiers that could cause
+ * npm to fetch from unexpected sources.
+ */
+function validateNpmSpecifier(specifier: string): void {
+  // npm package names: optional @scope/name, alphanumeric + hyphens + dots
+  const NPM_NAME_RE = /^(@[a-z0-9\-~][a-z0-9\-._~]*\/)?[a-z0-9\-~][a-z0-9\-._~]*$/;
+  if (!NPM_NAME_RE.test(specifier)) {
+    throw new Error(`Invalid npm package specifier: ${specifier}`);
+  }
+}
+
+/** Cache key for npm library builds */
+function npmBuildKey(specifier: string, version: string, externals: string[]): string {
+  const hash = createHash("sha256")
+    .update(JSON.stringify({ specifier, version, externals: externals.slice().sort() }))
+    .digest("hex")
+    .slice(0, 16);
+  return `npm:${specifier}@${version}:${hash}`;
+}
+
+/**
+ * Build an npm package as a CJS library bundle for sandbox consumption.
+ *
+ * Unlike buildLibraryBundle (which builds workspace packages from git), this
+ * installs an arbitrary npm package and bundles it with esbuild. The result
+ * is a self-contained CJS string that can be loaded into __natstackModuleMap__.
+ *
+ * Flow: validate → npm install → esbuild bundle → cache → return CJS string.
+ *
+ * Security:
+ * - Specifier validated against npm naming rules (no URLs, paths, or git refs)
+ * - npm install runs with --ignore-scripts (no postinstall)
+ * - Native addons (.node files) will fail to bundle (natural guardrail)
+ * - Bundle size is bounded by esbuild timeout / memory limits
+ */
+export async function buildNpmLibrary(
+  specifier: string,
+  version: string,
+  externals: string[],
+): Promise<string> {
+  validateNpmSpecifier(specifier);
+
+  const buildKey = npmBuildKey(specifier, version, externals);
+
+  // Check store cache
+  const cached = buildStore.get(buildKey);
+  if (cached) return cached.bundle;
+
+  // Check in-flight builds (coalescing)
+  const inFlight = inFlightBuilds.get(buildKey);
+  if (inFlight) return (await inFlight).bundle;
+
+  const buildPromise = doNpmBuild(specifier, version, externals, buildKey);
+  inFlightBuilds.set(buildKey, buildPromise);
+
+  try {
+    return (await buildPromise).bundle;
+  } finally {
+    inFlightBuilds.delete(buildKey);
+  }
+}
+
+async function doNpmBuild(
+  specifier: string,
+  version: string,
+  externals: string[],
+  buildKey: string,
+): Promise<BuildResult> {
+  await acquireSemaphore();
+
+  try {
+    const deps: Record<string, string> = { [specifier]: version };
+    const nodeModulesDir = await ensureExternalDeps(deps);
+
+    if (!nodeModulesDir) {
+      throw new Error(`Failed to install npm package: ${specifier}@${version}`);
+    }
+
+    const outdir = path.join(
+      require("os").tmpdir(),
+      "natstack-builds",
+      `npm-${specifier.replace(/[/@]/g, "_")}-${Date.now()}`,
+    );
+    fs.mkdirSync(outdir, { recursive: true });
+
+    const nodePaths = [nodeModulesDir];
+    if (_appNodeModules) {
+      nodePaths.push(_appNodeModules);
+    }
+    const resolveDir = pickResolveDir(nodePaths, nodeModulesDir);
+
+    // Use a virtual entry file instead of string interpolation to avoid injection
+    const entryFile = path.join(outdir, "_entry.js");
+    fs.writeFileSync(entryFile, `module.exports = require(${JSON.stringify(specifier)});\n`);
+
+    try {
+      await esbuild.build({
+        entryPoints: [entryFile],
+        bundle: true,
+        format: "cjs",
+        platform: "browser",
+        outfile: path.join(outdir, "bundle.js"),
+        write: true,
+        external: externals,
+        nodePaths,
+        logLevel: "warning",
+        tsconfigRaw: { compilerOptions: {} },
+      });
+
+      const bundleContent = fs.readFileSync(path.join(outdir, "bundle.js"), "utf-8");
+
+      // Store in build cache (same as workspace library builds)
+      const artifacts: BuildArtifacts = { bundle: bundleContent };
+      const metadata: BuildMetadata = {
+        kind: "panel",
+        name: specifier,
+        ev: `npm:${version}`,
+        sourcemap: false,
+        builtAt: new Date().toISOString(),
+      };
+      return buildStore.put(buildKey, artifacts, metadata);
+    } finally {
+      try {
+        fs.rmSync(outdir, { recursive: true, force: true });
+      } catch {
+        // Ignore
+      }
+    }
+  } finally {
+    releaseSemaphore();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

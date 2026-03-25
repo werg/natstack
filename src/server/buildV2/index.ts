@@ -35,7 +35,7 @@ import {
 } from "./effectiveVersion.js";
 import * as buildStore from "./buildStore.js";
 import type { BuildResult } from "./buildStore.js";
-import { buildUnit, initBuilder, type BuildUnitOptions } from "./builder.js";
+import { buildUnit, buildNpmLibrary, initBuilder, type BuildUnitOptions } from "./builder.js";
 import { PushTrigger } from "./pushTrigger.js";
 import type { GitServer } from "@natstack/git-server";
 
@@ -55,6 +55,9 @@ export type { BuildUnitOptions } from "./builder.js";
 export interface BuildSystemV2 {
   /** Get build result for a panel/agent/worker/library. Optional ref builds at a specific git ref. */
   getBuild(unitPath: string, ref?: string, options?: BuildUnitOptions): Promise<BuildResult>;
+
+  /** Build an npm package as a CJS library bundle for sandbox use. */
+  getBuildNpm(specifier: string, version: string, externals?: string[]): Promise<{ bundle: string }>;
 
   /** Get effective version for a unit */
   getEffectiveVersion(unitName: string): string | null;
@@ -279,6 +282,11 @@ export async function initBuildSystemV2(
 
       // Build on demand (buildUnit handles cache + coalescing internally)
       return buildUnit(node, ev, currentGraph, workspaceRoot, undefined, options);
+    },
+
+    async getBuildNpm(specifier: string, version: string, externals?: string[]): Promise<{ bundle: string }> {
+      const bundle = await buildNpmLibrary(specifier, version, externals ?? []);
+      return { bundle };
     },
 
     getEffectiveVersion(unitName: string): string | null {

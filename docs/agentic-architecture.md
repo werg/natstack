@@ -175,6 +175,8 @@ Harness process dies → HarnessManager detects exit → DODispatch
 
 | Service | Method | Purpose |
 |---------|--------|---------|
+| `build` | `getBuild` | Build a workspace package (panel/worker/library) on demand |
+| `build` | `getBuildNpm` | Install + bundle an npm package as CJS for sandbox eval |
 | `workers` | `listSources` | Available worker DO classes |
 | `workers` | `getChannelWorkers` | DOs subscribed to a channel |
 | `workers` | `callDO` | Call a DO method (subscribe/unsubscribe) |

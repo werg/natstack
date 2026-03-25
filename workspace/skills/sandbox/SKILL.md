@@ -50,6 +50,7 @@ These modules are available via `import` / `require()` in sandbox code:
 | `@radix-ui/themes` | UI components (Button, Flex, Card, Table, TextField, etc.) |
 | `@radix-ui/react-icons` | Icon components |
 | `isomorphic-git` | Git operations (clone, fetch, checkout, etc.) |
+| **Any npm package** | Use the `imports` parameter with `"npm:<version>"` in eval — see [EVAL.md](EVAL.md). Not available in inline_ui/feedback_custom (use eval to preload first) |
 
 ## Interaction Patterns
 

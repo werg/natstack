@@ -99,7 +99,7 @@ Execute TypeScript/JavaScript code in the panel runtime. Runtime APIs are availa
 | `code` | string | Yes | Code to execute |
 | `syntax` | `"typescript"` \| `"tsx"` \| `"jsx"` | No | Syntax mode (default: `"tsx"`) |
 | `timeout` | number | No | Max async wait in ms (default: 10000, max: 90000) |
-| `imports` | `Record<string, string>` | No | Workspace packages to build on-demand. Values: `"latest"` or a git ref |
+| `imports` | `Record<string, string>` | No | Packages to build on-demand. Workspace packages: `"latest"` or a git ref. npm packages: `"npm:<version>"` (e.g. `"npm:^4.17.21"`, `"npm:latest"`) |
 
 ### Runtime APIs
 
