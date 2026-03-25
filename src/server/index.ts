@@ -722,7 +722,7 @@ async function main() {
       },
     });
 
-    // ── OAuth service (needs panelRegistry for consent tracking) ──
+    // ── OAuth service (needs panelRegistry for consent, browser-data for cookie sync) ──
     {
       const { OAuthManager } = await import("../shared/oauth/oauthManager.js");
       const { createOAuthService } = await import("./services/oauthService.js");
@@ -730,6 +730,7 @@ async function main() {
       container.register({
         name: "oauth",
         dependencies: ["panelRegistry"],
+        optionalDependencies: ["panelLifecycle"],
         async start(resolve) {
           const registry = resolve<import("../shared/panelRegistry.js").PanelRegistry>("panelRegistry")!;
           const nangoUrl = workspace.config.oauth?.nangoUrl ?? process.env["NANGO_URL"] ?? "";
@@ -746,10 +747,34 @@ async function main() {
         },
         getServiceDefinition() {
           const registry = container.get<import("../shared/panelRegistry.js").PanelRegistry>("panelRegistry");
+          const lifecycle = container.get<import("../shared/panelLifecycle.js").PanelLifecycle>("panelLifecycle", true);
+
+          // Wire cookie sync callback — calls browser-data service to sync
+          // imported cookies to the Electron session before OAuth browser panels.
+          // This means if the user imported Chrome cookies with a Google session,
+          // the OAuth browser panel will already be logged in.
+          const syncCookiesToSession = async (domain: string) => {
+            try {
+              return await dispatcher.dispatch(
+                { callerId: "oauth-service", callerKind: "server" },
+                "browser-data",
+                "syncCookiesToSession",
+                [domain],
+              ) as { synced: number; failed: number };
+            } catch { /* non-fatal: browser-data service may not be registered */ }
+            return { synced: 0, failed: 0 };
+          };
+
+          // Wire browser panel callback — opens the auth URL in a managed
+          // browser panel that inherits synced cookies and has autofill attached.
+          const openBrowserPanel = lifecycle?.createBrowserPanel?.bind(lifecycle) ?? undefined;
+
           return createOAuthService({
             oauthManager,
             panelRegistry: registry,
             notificationService: notificationInternal,
+            syncCookiesToSession,
+            openBrowserPanel,
           });
         },
       });

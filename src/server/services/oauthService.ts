@@ -1,10 +1,14 @@
 /**
  * OAuth RPC Service — dynamic OAuth token management with consent.
  *
- * Key feature: the `connect` handler implements a dynamic consent flow.
- * When a panel calls `oauth.connect("google-mail")` and hasn't been
- * granted consent, a notification appears in the shell chrome area.
- * The call blocks until the user approves or denies.
+ * Key features:
+ * - Dynamic consent flow: panels call oauth.connect(), a notification
+ *   appears in the shell chrome, blocks until the user approves.
+ * - Cookie pre-sync: before opening the OAuth browser panel, syncs
+ *   imported cookies for the provider's auth domains so the user
+ *   may already be logged in.
+ * - Browser panel: opens the Nango auth URL in a managed browser panel
+ *   where autofill handles password entry automatically.
  */
 
 import { z } from "zod";
@@ -14,12 +18,43 @@ import type { NotificationServiceInternal } from "./notificationService.js";
 import type { PanelRegistry } from "../../shared/panelRegistry.js";
 import { randomUUID } from "node:crypto";
 
+/**
+ * Maps OAuth provider keys to the auth domains whose cookies
+ * should be synced to the browser session before opening the
+ * auth URL. This enables pre-authentication when the user has
+ * imported browser cookies/passwords.
+ */
+const PROVIDER_AUTH_DOMAINS: Record<string, string[]> = {
+  "google-mail": ["google.com", "accounts.google.com", "myaccount.google.com"],
+  "google-calendar": ["google.com", "accounts.google.com", "myaccount.google.com"],
+  "google-drive": ["google.com", "accounts.google.com", "myaccount.google.com"],
+  "github": ["github.com"],
+  "slack": ["slack.com"],
+  "microsoft": ["microsoft.com", "login.microsoftonline.com", "live.com"],
+  "notion": ["notion.so"],
+  "linear": ["linear.app"],
+};
+
 export function createOAuthService(deps: {
   oauthManager: OAuthManager;
   panelRegistry: PanelRegistry;
   notificationService: NotificationServiceInternal;
+  /**
+   * Sync imported cookies to the browser session for a domain.
+   * Called before opening OAuth browser panels so the user may
+   * already be authenticated. Optional — gracefully degrades if
+   * browser data service is unavailable (e.g., headless mode).
+   */
+  syncCookiesToSession?: (domain: string) => Promise<{ synced: number; failed: number }>;
+  /**
+   * Open a URL in a managed browser panel (child of the calling panel).
+   * Browser panels use the shared BROWSER_SESSION_PARTITION and have
+   * autofill attached, so imported passwords auto-fill login forms.
+   * Optional — in headless mode, the auth URL is returned for manual opening.
+   */
+  openBrowserPanel?: (callerId: string, url: string, opts?: { name?: string; focus?: boolean }) => Promise<{ id: string; title: string }>;
 }): ServiceDefinition {
-  const { oauthManager, panelRegistry, notificationService } = deps;
+  const { oauthManager, panelRegistry, notificationService, syncCookiesToSession, openBrowserPanel } = deps;
 
   /** Resolve callerId to panel source path (e.g., "panels/email"). */
   function getPanelSource(callerId: string): string | null {
@@ -33,6 +68,29 @@ export function createOAuthService(deps: {
     const panels = panelRegistry.listPanels();
     const panel = panels.find(p => p.panelId === callerId);
     return panel?.title ?? "Unknown Panel";
+  }
+
+  /**
+   * Pre-sync imported cookies for a provider's auth domains.
+   * This ensures the OAuth browser panel inherits any existing
+   * sessions from imported browser data.
+   */
+  async function presyncCookiesForProvider(providerKey: string): Promise<void> {
+    if (!syncCookiesToSession) return;
+
+    const domains = PROVIDER_AUTH_DOMAINS[providerKey];
+    if (!domains) return;
+
+    for (const domain of domains) {
+      try {
+        const result = await syncCookiesToSession(domain);
+        if (result.synced > 0) {
+          // Cookies found and synced — user may already be authenticated
+        }
+      } catch {
+        // Non-fatal: browser data service may not be available
+      }
+    }
   }
 
   return {
@@ -129,8 +187,28 @@ export function createOAuthService(deps: {
             }
           }
 
-          // Get the auth URL and return it — the panel opens it in a browser panel
+          // Pre-sync imported cookies for the provider's auth domains.
+          // This means if the user imported Chrome cookies that include a
+          // Google session, the OAuth browser panel will already be logged in.
+          await presyncCookiesForProvider(providerKey);
+
+          // Get the Nango auth URL
           const authUrl = await oauthManager.getAuthUrl(providerKey, connectionId);
+
+          // Open the auth URL in a browser panel (if available).
+          // The browser panel uses the shared BROWSER_SESSION_PARTITION,
+          // so it inherits synced cookies AND has autofill attached for
+          // password auto-fill on login forms.
+          if (openBrowserPanel) {
+            try {
+              await openBrowserPanel(ctx.callerId, authUrl, {
+                name: `Sign in — ${providerKey}`,
+                focus: true,
+              });
+            } catch {
+              // Non-fatal: fall through to polling (panel can open URL manually)
+            }
+          }
 
           // Poll for connection completion
           const deadline = Date.now() + 120_000;
