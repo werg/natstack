@@ -119,17 +119,17 @@ eval({
 
 ### When there's no npm SDK
 
-Fall back to `httpProxy.fetch()` with the OAuth token:
+Fall back to `fetch()` with the OAuth token:
 
 ```
 eval({
   code: `
-    import { oauth, httpProxy } from "@workspace/runtime";
+    import { oauth } from "@workspace/runtime";
     const token = await oauth.getToken("some-provider");
-    const res = await httpProxy.fetch("https://api.example.com/v1/data", {
+    const res = await fetch("https://api.example.com/v1/data", {
       headers: { Authorization: \`Bearer \${token.accessToken}\` }
     });
-    console.log(JSON.parse(res.body));
+    console.log(await res.json());
   `,
   timeout: 30000
 })
@@ -245,4 +245,4 @@ Imported browser cookies are synced before auth, so if the user imported Chrome 
 - Only Nango-configured providers work with `oauth.*`. Check `oauth.listProviders()`.
 - npm packages with native addons (`.node` files) can't be bundled — pure JS/TS only.
 - First npm install takes 10-30s. Use `timeout: 30000` or higher.
-- `httpProxy.fetch()` has a 10MB response size limit.
+- CORS is disabled for app panels, so `fetch()` works directly for any URL.

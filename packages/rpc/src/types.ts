@@ -119,6 +119,17 @@ export interface RpcBridge {
     handler: (...args: TArgs) => TReturn | Promise<TReturn>
   ): void;
 
+  /**
+   * Expose multiple methods at once from a methods object.
+   *
+   * @example
+   * rpc.expose({
+   *   async search(query: string) { return results; },
+   *   async getThread(id: string) { return thread; },
+   * });
+   */
+  expose(methods: Record<string, (...args: any[]) => any>): void;
+
   call<T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T>;
   emit(targetId: string, event: string, payload: unknown): Promise<void>;
   onEvent(event: string, listener: RpcEventListener): () => void;
@@ -151,6 +162,8 @@ export const SERVER_SERVICE_NAMES = [
   "db",
   "git",
   "harness",
+  "notification",
+  "oauth",
   "test",
   "tokens",
   "typecheck",

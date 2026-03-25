@@ -1,7 +1,7 @@
 /**
  * @workspace/integrations — High-level API clients for agent eval use.
  *
- * These wrap OAuth + httpProxy so agents can call APIs without knowing
+ * These wrap OAuth + fetch so agents can call APIs without knowing
  * auth details, raw URLs, or response schemas.
  *
  * Usage:

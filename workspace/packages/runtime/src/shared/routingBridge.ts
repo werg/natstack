@@ -56,5 +56,10 @@ export function createRoutingBridge(electronBridge: RpcBridge, serverBridge: Rpc
       electronBridge.exposeMethod(method, handler);
       serverBridge.exposeMethod(method, handler);
     },
+
+    expose(methods: Record<string, (...args: any[]) => any>): void {
+      electronBridge.expose(methods);
+      serverBridge.expose(methods);
+    },
   };
 }

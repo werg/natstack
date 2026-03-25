@@ -94,42 +94,18 @@ await oauth.disconnect("google-mail");
 4. Support a `connect()` flow that opens the Nango auth URL in a browser panel
 5. Store connection metadata per context
 
-### 2. OAuth Permissions (important)
+### 2. OAuth Permissions — RESOLVED
 
-Panels should declare required OAuth scopes in their manifest:
+OAuth consent is fully dynamic per-panel ID. When a panel calls
+`oauth.requestConsent()`, a consent notification appears in the shell chrome.
+The user approves/denies per panel, with an "Always Allow" option for
+workspace-wide approval. No static manifest declarations needed.
 
-```json
-{
-  "natstack": {
-    "permissions": {
-      "oauth": [{
-        "provider": "google-mail",
-        "scopes": ["gmail.readonly", "gmail.send", "calendar.readonly"]
-      }]
-    }
-  }
-}
-```
+### 3. Fetch from Panel Context — RESOLVED
 
-This integrates with the permissions system mentioned in PERMISSIONS.md:
-> nango / oauth access
-
-The user should be prompted to approve OAuth access when a panel first requests
-it, similar to how mobile apps request permissions.
-
-### 3. Fetch from Panel Context (moderate)
-
-Panels run in isolated webviews. The `fetch()` calls in `gmail.ts` will work
-in Electron (same-origin policy doesn't apply to webviews) but may be blocked
-by CORS in browser mode. Options:
-
-1. **Proxy through server** — add a generic `http.fetch()` service that panels
-   can use for cross-origin requests (with permission checks)
-2. **Service worker** — inject a service worker that proxies fetch requests
-3. **Dedicated API service** — server-side Gmail/Calendar client (too specific)
-
-Recommendation: **Generic `http.fetch()` service** with URL allowlisting per
-panel permissions.
+CORS is stripped for app panels (defaultSession). Panels can call external APIs
+directly via `fetch()`. Browser panels (persist:browser partition) retain
+normal CORS behavior.
 
 ### 4. Background Sync / Push Notifications (nice-to-have)
 

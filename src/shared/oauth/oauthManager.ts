@@ -179,7 +179,7 @@ export class OAuthManager {
       return {
         id: data.connection_id,
         provider: data.provider_config_key,
-        email: (data.metadata?.email as string) ?? undefined,
+        email: (data.metadata?.["email"] as string) ?? undefined,
         connected: true,
         lastRefreshed: Date.now(),
       };
@@ -254,25 +254,26 @@ export class OAuthManager {
   // =========================================================================
 
   /**
-   * Check if a panel has consent for a provider.
-   * Checks both panel-specific consent and workspace-wide consent.
+   * Check if a panel has consent for a provider (and optionally specific scopes).
+   * If requestedScopes is provided, checks that all requested scopes are covered
+   * by the granted scopes. If no scopes were requested, any consent suffices.
    */
-  async hasConsent(panelId: string, providerKey: string): Promise<boolean> {
+  async hasConsent(panelId: string, providerKey: string, requestedScopes?: string[]): Promise<boolean> {
     const handle = this.ensureDb();
-    // Check panel-specific consent
-    const row = this.databaseManager.get<{ c: number }>(
+    // Check panel-specific consent, then workspace-wide
+    const row = this.databaseManager.get<{ scopes: string }>(
       handle,
-      "SELECT 1 as c FROM oauth_consent WHERE panel_id = ? AND provider = ?",
+      "SELECT scopes FROM oauth_consent WHERE panel_id = ? AND provider = ?",
       [panelId, providerKey],
-    );
-    if (row) return true;
-    // Check workspace-wide consent (panel_id = '*')
-    const wsRow = this.databaseManager.get<{ c: number }>(
+    ) ?? this.databaseManager.get<{ scopes: string }>(
       handle,
-      "SELECT 1 as c FROM oauth_consent WHERE panel_id = '*' AND provider = ?",
+      "SELECT scopes FROM oauth_consent WHERE panel_id = '*' AND provider = ?",
       [providerKey],
     );
-    return !!wsRow;
+    if (!row) return false;
+    if (!requestedScopes || requestedScopes.length === 0) return true;
+    const grantedSet = new Set<string>(JSON.parse(row.scopes) as string[]);
+    return requestedScopes.every(s => grantedSet.has(s));
   }
 
   /**
@@ -308,7 +309,7 @@ export class OAuthManager {
     );
 
     return rows.map(r => ({
-      panelId: r.panel_id,
+      callerId: r.panel_id,
       provider: r.provider,
       scopes: JSON.parse(r.scopes),
       grantedAt: r.granted_at,

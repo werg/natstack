@@ -22,9 +22,9 @@ import type { PanelContract, ParentHandle, EventSchemaMap } from "./types.js";
  * ```
  */
 export function defineContract<
-  ChildMethods extends Rpc.ExposedMethods = {},
+  ChildMethods extends Record<string, Rpc.AnyFunction> = {},
   ChildEmits extends EventSchemaMap = {},
-  ParentMethods extends Rpc.ExposedMethods = {},
+  ParentMethods extends Record<string, Rpc.AnyFunction> = {},
   ParentEmits extends EventSchemaMap = {}
 >(contract: {
   source: string;

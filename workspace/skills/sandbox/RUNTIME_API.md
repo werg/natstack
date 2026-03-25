@@ -304,24 +304,9 @@ if (!conn.connected) {
 const token = await oauth.getToken("notion");
 ```
 
-## HTTP Proxy (`httpProxy`)
-
-```typescript
-import { httpProxy } from "@workspace/runtime";
-```
-
-Proxy HTTP requests through the server to bypass CORS. No URL restrictions.
-
-```typescript
-const res = await httpProxy.fetch(url, { method?, headers?, body? });
-// → { status: number, headers: Record<string, string>, body: string }
-```
-
-Response body is always a string — use `JSON.parse(res.body)` for JSON APIs. 10MB response size limit.
-
 ## Integrations (`@workspace/integrations`)
 
-Pre-built API clients that wrap oauth + httpProxy. See `api-integrations` skill for the full spectrum from quick experiments to custom libraries.
+Pre-built API clients that wrap OAuth + fetch. See `api-integrations` skill for the full spectrum from quick experiments to custom libraries.
 
 For APIs without a pre-built integration, use `oauth.getToken()` + the official npm SDK directly:
 

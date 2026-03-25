@@ -7,7 +7,7 @@
  *   const event = await calendar.getEvent(events[0].id);
  */
 
-import { oauth, httpProxy } from "@workspace/runtime";
+import { oauth } from "@workspace/runtime";
 
 // ============================================================================
 // Types
@@ -33,15 +33,16 @@ const PROVIDER = "google-mail"; // same Google OAuth connection
 
 async function authedFetch<T>(url: string): Promise<T> {
   const token = await oauth.getToken(PROVIDER);
-  const res = await httpProxy.fetch(url, {
+  const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token.accessToken}` },
   });
-  if (res.status >= 400) {
-    const err = new Error(`Calendar API error ${res.status}: ${res.body}`) as Error & { status: number };
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    const err = new Error(`Calendar API error ${res.status}: ${body}`) as Error & { status: number };
     err.status = res.status;
     throw err;
   }
-  return JSON.parse(res.body) as T;
+  return res.json() as Promise<T>;
 }
 
 // ============================================================================

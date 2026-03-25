@@ -4,22 +4,29 @@
  * Lifecycle:
  * 1. Panel calls startSync(connectionId, providerKey, intervalMs)
  * 2. DO stores config in state KV and sets first alarm
- * 3. On alarm: fetches new messages since last historyId, publishes to PubSub
+ * 3. On alarm: gets OAuth token via server HTTP API, fetches Gmail
+ *    history via native fetch, publishes new-mail events to PubSub
  * 4. Panel subscribes to PubSub channel for real-time updates
  * 5. Panel calls stopSync() to cancel polling
  *
- * Token acquisition: The DO fetches OAuth tokens by calling the server's
- * oauth service via postToDO or direct HTTP to the RPC server.
+ * Token acquisition: The DO gets OAuth tokens by calling the server's
+ * /oauth/token HTTP endpoint (DOs have outbound network via globalOutbound).
  */
 
 import { DurableObjectBase } from "@workspace/runtime/worker";
 import type { DurableObjectContext } from "@workspace/runtime/worker";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 interface SyncConfig {
   connectionId: string;
   providerKey: string;
   intervalMs: number;
   lastHistoryId?: string;
+  /** PubSub channel to publish new-mail events to */
+  pubsubChannel?: string;
 }
 
 interface SyncStatus {
@@ -29,6 +36,42 @@ interface SyncStatus {
   messagesSynced: number;
 }
 
+interface GmailHistoryResponse {
+  history?: Array<{
+    id: string;
+    messagesAdded?: Array<{
+      message: { id: string; threadId: string; labelIds?: string[] };
+    }>;
+  }>;
+  historyId: string;
+}
+
+interface GmailProfileResponse {
+  emailAddress: string;
+  historyId: string;
+}
+
+interface GmailMessageMetadata {
+  id: string;
+  threadId: string;
+  snippet: string;
+  labelIds?: string[];
+  payload: {
+    headers: Array<{ name: string; value: string }>;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
+const MAX_MESSAGES_PER_SYNC = 50;
+
+// ---------------------------------------------------------------------------
+// Durable Object
+// ---------------------------------------------------------------------------
+
 export class EmailSyncWorker extends DurableObjectBase {
   static override schemaVersion = 1;
 
@@ -37,8 +80,24 @@ export class EmailSyncWorker extends DurableObjectBase {
   }
 
   protected override createTables(): void {
-    // No additional SQL tables needed — config/status stored in state KV
+    // Track synced message IDs to avoid duplicate notifications across restarts
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS synced_messages (
+        message_id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        subject TEXT,
+        sender TEXT,
+        synced_at INTEGER NOT NULL
+      )
+    `);
+    // Prune entries older than 7 days to keep the table bounded
+    this.sql.exec(
+      `DELETE FROM synced_messages WHERE synced_at < ?`,
+      Date.now() - 7 * 24 * 60 * 60 * 1000,
+    );
   }
+
+  // --- Config / Status (state KV) ---
 
   private getConfig(): SyncConfig | null {
     const raw = this.getStateValue("sync_config");
@@ -60,21 +119,129 @@ export class EmailSyncWorker extends DurableObjectBase {
     this.setStateValue("sync_status", JSON.stringify(status));
   }
 
-  // --- HTTP dispatch (/{objectKey}/{method}) ---
+  // --- OAuth token via server HTTP API ---
+
+  private async getAccessToken(config: SyncConfig): Promise<string> {
+    const serverUrl = this.env["SERVER_URL"] as string | undefined;
+    const authToken = this.env["RPC_AUTH_TOKEN"] as string | undefined;
+    if (!serverUrl || !authToken) {
+      throw new Error("SERVER_URL / RPC_AUTH_TOKEN not available — cannot get OAuth token");
+    }
+
+    const res = await fetch(`${serverUrl}/oauth/token`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({
+        providerKey: config.providerKey,
+        connectionId: config.connectionId,
+      }),
+    });
+
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`OAuth token request failed (${res.status}): ${body}`);
+    }
+
+    const data = await res.json() as { accessToken: string };
+    return data.accessToken;
+  }
+
+  // --- Gmail API (native fetch — DOs have outbound network) ---
+
+  private async gmailFetch<T>(path: string, accessToken: string): Promise<T> {
+    const res = await fetch(`${GMAIL_BASE}${path}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Gmail API ${res.status}: ${body}`);
+    }
+    return res.json() as Promise<T>;
+  }
+
+  private async getProfile(accessToken: string): Promise<GmailProfileResponse> {
+    return this.gmailFetch("/profile", accessToken);
+  }
+
+  private async getHistory(
+    accessToken: string,
+    startHistoryId: string,
+  ): Promise<GmailHistoryResponse> {
+    const params = new URLSearchParams({
+      startHistoryId,
+      historyTypes: "messageAdded",
+      maxResults: String(MAX_MESSAGES_PER_SYNC),
+    });
+    return this.gmailFetch(`/history?${params}`, accessToken);
+  }
+
+  private async getMessageMetadata(
+    accessToken: string,
+    messageId: string,
+  ): Promise<GmailMessageMetadata> {
+    return this.gmailFetch(
+      `/messages/${messageId}?format=metadata&metadataHeaders=Subject&metadataHeaders=From`,
+      accessToken,
+    );
+  }
+
+  // --- PubSub publishing ---
+
+  private async publishNewMessages(
+    messages: Array<{ id: string; threadId: string; subject: string; from: string }>,
+    config: SyncConfig,
+  ): Promise<void> {
+    if (!config.pubsubChannel || messages.length === 0) return;
+
+    try {
+      await this.postToDO(
+        "workers/pubsub-channel",
+        "PubSubChannel",
+        config.pubsubChannel,
+        "send",
+        `email-sync:${config.connectionId}`,
+        `sync-${Date.now()}`,
+        JSON.stringify({
+          type: "new-messages",
+          connectionId: config.connectionId,
+          messages,
+          syncedAt: Date.now(),
+        }),
+      );
+    } catch (err) {
+      // Non-fatal — panel can still poll via getState
+      console.warn("[EmailSyncWorker] Failed to publish to PubSub:", err);
+    }
+  }
+
+  // --- HTTP dispatch methods (/{objectKey}/{method}) ---
 
   protected async startSync(args: unknown[]): Promise<{ ok: boolean; config: SyncConfig }> {
-    const [body] = args as [{ connectionId: string; providerKey: string; intervalMs?: number }];
+    const [body] = args as [
+      { connectionId: string; providerKey: string; intervalMs?: number; pubsubChannel?: string },
+    ];
 
     const config: SyncConfig = {
       connectionId: body.connectionId,
       providerKey: body.providerKey,
       intervalMs: body.intervalMs ?? 60_000,
+      pubsubChannel: body.pubsubChannel,
     };
+
+    // Seed historyId from the user's profile so we only get new messages
+    try {
+      const token = await this.getAccessToken(config);
+      const profile = await this.getProfile(token);
+      config.lastHistoryId = profile.historyId;
+    } catch (err) {
+      console.warn("[EmailSyncWorker] Could not seed historyId:", err);
+    }
 
     this.setConfig(config);
     this.setStatus({ running: true, messagesSynced: 0 });
-
-    // Schedule first alarm
     this.setAlarm(config.intervalMs);
 
     return { ok: true, config };
@@ -88,7 +255,14 @@ export class EmailSyncWorker extends DurableObjectBase {
     return { ok: true };
   }
 
-  protected async getState(_args: unknown[]): Promise<{ config: SyncConfig | null; status: SyncStatus }> {
+  protected async syncNow(_args: unknown[]): Promise<{ ok: boolean; newMessages: number }> {
+    const config = this.getConfig();
+    if (!config) throw new Error("Sync not configured — call startSync first");
+    const count = await this.doSync(config);
+    return { ok: true, newMessages: count };
+  }
+
+  override async getState(): Promise<Record<string, unknown>> {
     return { config: this.getConfig(), status: this.getStatus() };
   }
 
@@ -102,28 +276,102 @@ export class EmailSyncWorker extends DurableObjectBase {
     if (!config || !status.running) return;
 
     try {
-      // In a full implementation:
-      // 1. Get OAuth token via postToDO to the server's oauth service
-      // 2. Fetch Gmail history: GET /gmail/v1/users/me/history?startHistoryId=...
-      // 3. Parse new message IDs
-      // 4. Publish to PubSub channel: email-sync:{connectionId}
-      // 5. Update lastHistoryId in config
-      console.log(
-        `[EmailSyncWorker] Polling Gmail for ${config.connectionId}` +
-        (config.lastHistoryId ? ` (since historyId: ${config.lastHistoryId})` : ""),
-      );
-
+      const newCount = await this.doSync(config);
       status.lastSync = Date.now();
+      status.lastError = undefined;
+      status.messagesSynced += newCount;
       this.setStatus(status);
     } catch (err) {
       status.lastError = String(err);
+      status.lastSync = Date.now();
       this.setStatus(status);
       console.error("[EmailSyncWorker] Sync error:", err);
     }
 
-    // Schedule next alarm
     if (status.running) {
       this.setAlarm(config.intervalMs);
     }
+  }
+
+  // --- Core sync logic ---
+
+  private async doSync(config: SyncConfig): Promise<number> {
+    const accessToken = await this.getAccessToken(config);
+
+    // If no historyId yet, seed it from the profile (first sync)
+    if (!config.lastHistoryId) {
+      const profile = await this.getProfile(accessToken);
+      config.lastHistoryId = profile.historyId;
+      this.setConfig(config);
+      return 0;
+    }
+
+    // Fetch history since last sync
+    let history: GmailHistoryResponse;
+    try {
+      history = await this.getHistory(accessToken, config.lastHistoryId);
+    } catch (err) {
+      // historyId may be expired (404) — reseed from profile
+      if (String(err).includes("404") || String(err).includes("notFound")) {
+        const profile = await this.getProfile(accessToken);
+        config.lastHistoryId = profile.historyId;
+        this.setConfig(config);
+        return 0;
+      }
+      throw err;
+    }
+
+    // Extract new inbox message IDs
+    const newMessageIds = new Set<string>();
+    for (const entry of history.history ?? []) {
+      for (const added of entry.messagesAdded ?? []) {
+        if (added.message.labelIds?.includes("INBOX")) {
+          newMessageIds.add(added.message.id);
+        }
+      }
+    }
+
+    // Deduplicate against already-synced messages
+    const unseenIds: string[] = [];
+    for (const id of newMessageIds) {
+      const rows = this.sql.exec(
+        "SELECT 1 FROM synced_messages WHERE message_id = ?", id,
+      ).toArray();
+      if (rows.length === 0) {
+        unseenIds.push(id);
+      }
+    }
+
+    // Fetch metadata for unseen messages
+    const messages: Array<{ id: string; threadId: string; subject: string; from: string }> = [];
+    for (const id of unseenIds.slice(0, MAX_MESSAGES_PER_SYNC)) {
+      try {
+        const msg = await this.getMessageMetadata(accessToken, id);
+        const subject = msg.payload.headers.find(h => h.name === "Subject")?.value ?? "(no subject)";
+        const from = msg.payload.headers.find(h => h.name === "From")?.value ?? "";
+
+        messages.push({ id: msg.id, threadId: msg.threadId, subject, from });
+
+        this.sql.exec(
+          "INSERT OR IGNORE INTO synced_messages (message_id, thread_id, subject, sender, synced_at) VALUES (?, ?, ?, ?, ?)",
+          msg.id, msg.threadId, subject, from, Date.now(),
+        );
+      } catch (err) {
+        console.warn(`[EmailSyncWorker] Failed to fetch message ${id}:`, err);
+      }
+    }
+
+    // Advance the history cursor
+    config.lastHistoryId = history.historyId;
+    this.setConfig(config);
+
+    // Publish to PubSub channel
+    await this.publishNewMessages(messages, config);
+
+    if (messages.length > 0) {
+      console.log(`[EmailSyncWorker] Synced ${messages.length} new message(s) for ${config.connectionId}`);
+    }
+
+    return messages.length;
   }
 }

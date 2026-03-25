@@ -27,11 +27,13 @@ import { createDbClient } from "../shared/database.js";
 import { createRpcFs } from "../shared/rpcFs.js";
 import { createWorkerdClient, type WorkerdClient } from "../shared/workerd.js";
 import { createWorkspaceClient, type WorkspaceClient } from "../shared/workspace.js";
+import { createOAuthClient, type OAuthWorkerClient } from "../shared/oauth.js";
 import { createWorkerWsTransport } from "./transport.js";
 import type { WorkerEnv } from "./types.js";
 import type { RuntimeFs, ThemeAppearance } from "../types.js";
 
 export type { WorkerEnv, ExecutionContext } from "./types.js";
+export type { OAuthToken, OAuthConnection, OAuthWorkerClient, OAuthStartAuthResult, ConsentRecord } from "../shared/oauth.js";
 export { DurableObjectBase } from "./durable-base.js";
 export type { DurableObjectContext, SqlStorage, SqlResult, DORef } from "./durable-base.js";
 export { ServerDOClient } from "./server-client.js";
@@ -52,6 +54,7 @@ export interface WorkerRuntime {
   readonly fs: RuntimeFs;
   readonly workers: WorkerdClient;
   readonly workspace: WorkspaceClient;
+  readonly oauth: OAuthWorkerClient;
   readonly contextId: string;
   readonly gitConfig: null;
   readonly pubsubConfig: null;
@@ -95,6 +98,7 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
   const db = createDbClient(rpc);
   const workers = createWorkerdClient(rpc);
   const workspaceApi = createWorkspaceClient(rpc);
+  const oauth = createOAuthClient(rpc);
 
   const callMain = <T>(method: string, ...args: unknown[]) =>
     rpc.call<T>("main", method, ...args);
@@ -121,6 +125,7 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     fs,
     workers,
     workspace: workspaceApi,
+    oauth,
     contextId: env.CONTEXT_ID,
     gitConfig: null,
     pubsubConfig: null,

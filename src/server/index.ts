@@ -368,10 +368,6 @@ async function main() {
   const notificationInternal = notificationResult.internal;
   container.register(rpcService(notificationResult.definition));
 
-  // ── HTTP Proxy service ──
-  const { createHttpProxyService } = await import("./services/httpProxyService.js");
-  container.register(rpcService(createHttpProxyService()));
-
   // ── DODispatch (source-scoped HTTP dispatch to Durable Objects) ──
 
   container.register({
@@ -484,6 +480,7 @@ async function main() {
   // and no requests arrive until workerd is up.
 
   let harnessApiDeps: import("./harnessApi.js").HarnessApiDeps | null = null;
+  let oauthManagerRef: import("../shared/oauth/oauthManager.js").OAuthManager | null = null;
 
   container.register({
     name: "harnessApiServer",
@@ -740,6 +737,7 @@ async function main() {
             nangoSecretKey: nangoSecret,
             databaseManager,
           });
+          oauthManagerRef = oauthManager;
           return { oauthManager, registry };
         },
         async stop() {
@@ -747,7 +745,8 @@ async function main() {
         },
         getServiceDefinition() {
           const registry = container.get<import("../shared/panelRegistry.js").PanelRegistry>("panelRegistry");
-          const lifecycle = container.get<import("../shared/panelLifecycle.js").PanelLifecycle>("panelLifecycle", true);
+          let lifecycle: import("../shared/panelLifecycle.js").PanelLifecycle | undefined;
+          try { lifecycle = container.get<import("../shared/panelLifecycle.js").PanelLifecycle>("panelLifecycle"); } catch { /* optional */ }
 
           // Wire cookie sync callback — calls browser-data service to sync
           // imported cookies to the Electron session before OAuth browser panels.
@@ -1039,6 +1038,21 @@ async function main() {
       const result = tokenManager.validateToken(token);
       if (!result) return { valid: false };
       return { valid: true, callerId: result.callerId, callerKind: result.callerKind };
+    },
+    getOAuthToken: async (_callerId, providerKey, connectionId) => {
+      if (!oauthManagerRef) throw new Error("OAuth not configured");
+      // DOs use a synthetic caller ID (do-service:...) that never receives
+      // per-caller consent. Require workspace-wide consent (panel_id='*')
+      // which the user grants via "Always Allow" in the consent notification.
+      const hasWorkspaceConsent = await oauthManagerRef.hasConsent("*", providerKey);
+      if (!hasWorkspaceConsent) {
+        throw new Error(
+          `No workspace-wide consent for provider "${providerKey}". ` +
+          `A panel must connect with "Always Allow" before workers can use this provider.`,
+        );
+      }
+      const token = await oauthManagerRef.getToken(providerKey, connectionId);
+      return { accessToken: token.accessToken };
     },
   };
 

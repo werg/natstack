@@ -55,8 +55,10 @@ import {
 
 import { emailContract } from "./contract.js";
 import { createTokenProvider } from "./oauth.js";
-import { GmailClient, CalendarClient, GmailApiError } from "./gmail.js";
-import type { GmailMessage, GmailThread, CalendarEvent, SendMessageRequest } from "./gmail.js";
+import * as gmail from "@workspace/integrations/gmail";
+import * as calendar from "@workspace/integrations/calendar";
+import type { GmailMessage, GmailThread } from "@workspace/integrations/gmail";
+import type { CalendarEvent } from "@workspace/integrations/calendar";
 import type { OAuthTokenProvider } from "./oauth.js";
 
 // ---- State Args ----
@@ -86,8 +88,7 @@ export default function EmailPanel() {
   }>({ connected: false, checking: true });
 
   const [tokenProvider, setTokenProvider] = useState<OAuthTokenProvider | null>(null);
-  const [gmail, setGmail] = useState<GmailClient | null>(null);
-  const [calendar, setCalendar] = useState<CalendarClient | null>(null);
+  const [composeDraft, setComposeDraft] = useState<{ to?: string; subject?: string; body?: string } | undefined>();
 
   // Initialize auth on mount
   useEffect(() => {
@@ -102,8 +103,6 @@ export default function EmailPanel() {
       try {
         const conn = await provider.getConnection();
         if (conn.connected) {
-          setGmail(new GmailClient(provider));
-          setCalendar(new CalendarClient(provider));
           setConnectionStatus({ connected: true, email: conn.email, checking: false });
           parent.emit("connection-changed", { connected: true, email: conn.email });
         } else {
@@ -127,7 +126,7 @@ export default function EmailPanel() {
         };
       },
       async search(query: string, maxResults?: number) {
-        if (!gmail) throw new Error("Not connected");
+        if (!connectionStatus.connected) throw new Error("Not connected");
         const messages = await gmail.search(query, maxResults);
         return messages.map(m => ({
           id: m.id,
@@ -139,19 +138,19 @@ export default function EmailPanel() {
         }));
       },
       async getThread(threadId: string) {
-        if (!gmail) throw new Error("Not connected");
+        if (!connectionStatus.connected) throw new Error("Not connected");
         return gmail.getThread(threadId);
       },
       async compose(draft?: { to?: string; subject?: string; body?: string }) {
+        setComposeDraft(draft);
         setView("compose");
-        // Draft fields are picked up by the compose view via state
       },
       async getCalendarEvents(timeMin?: string, timeMax?: string, maxResults?: number) {
-        if (!calendar) throw new Error("Not connected");
+        if (!connectionStatus.connected) throw new Error("Not connected");
         return calendar.listEvents({ timeMin, timeMax, maxResults });
       },
     });
-  }, [connectionStatus, gmail, calendar]);
+  }, [connectionStatus]);
 
   const [connectMessage, setConnectMessage] = useState<string | null>(null);
 
@@ -164,8 +163,6 @@ export default function EmailPanel() {
         setConnectMessage(message);
       });
       setConnectMessage(null);
-      setGmail(new GmailClient(tokenProvider));
-      setCalendar(new CalendarClient(tokenProvider));
       setConnectionStatus({ connected: true, email: conn.email, checking: false });
       parent.emit("connection-changed", { connected: true, email: conn.email });
     } catch (err) {
@@ -234,7 +231,6 @@ export default function EmailPanel() {
             />
           ) : view === "inbox" ? (
             <InboxView
-              gmail={gmail!}
               onOpenThread={(threadId, subject) => {
                 setView("thread");
                 setStateArgs({ ...stateArgs, view: "thread", threadId });
@@ -243,7 +239,6 @@ export default function EmailPanel() {
             />
           ) : view === "thread" ? (
             <ThreadView
-              gmail={gmail!}
               threadId={stateArgs?.threadId ?? ""}
               onBack={() => setView("inbox")}
               onReply={(threadId) => {
@@ -253,16 +248,17 @@ export default function EmailPanel() {
             />
           ) : view === "compose" ? (
             <ComposeView
-              gmail={gmail!}
               threadId={stateArgs?.threadId}
+              draft={composeDraft}
               onSent={(to, subject) => {
+                setComposeDraft(undefined);
                 parent.emit("message-sent", { to, subject });
                 setView("inbox");
               }}
               onCancel={() => setView("inbox")}
             />
           ) : view === "calendar" ? (
-            <CalendarView calendar={calendar!} />
+            <CalendarView />
           ) : null}
         </Box>
       </Flex>
@@ -329,10 +325,8 @@ function ConnectionSetup({
 // ---- Inbox View ----
 
 function InboxView({
-  gmail,
   onOpenThread,
 }: {
-  gmail: GmailClient;
   onOpenThread: (threadId: string, subject: string) => void;
 }) {
   const [messages, setMessages] = useState<GmailMessage[]>([]);
@@ -344,14 +338,14 @@ function InboxView({
     setLoading(true);
     setError(undefined);
     try {
-      const msgs = await gmail.listMessages(query ?? "in:inbox", 20);
+      const msgs = await gmail.search(query ?? "in:inbox", 20);
       setMessages(msgs);
     } catch (err) {
-      setError(err instanceof GmailApiError ? err.message : String(err));
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  }, [gmail]);
+  }, []);
 
   useEffect(() => {
     loadMessages();
@@ -480,12 +474,10 @@ function MessageRow({
 // ---- Thread View ----
 
 function ThreadView({
-  gmail,
   threadId,
   onBack,
   onReply,
 }: {
-  gmail: GmailClient;
   threadId: string;
   onBack: () => void;
   onReply: (threadId: string) => void;
@@ -502,7 +494,7 @@ function ThreadView({
       .then(setThread)
       .catch(err => setError(String(err)))
       .finally(() => setLoading(false));
-  }, [gmail, threadId]);
+  }, [threadId]);
 
   if (!threadId) {
     return (
@@ -532,7 +524,7 @@ function ThreadView({
             <Spinner size="2" />
           </Flex>
         ) : error ? (
-          <Text size="2" color="red" p="4">{error}</Text>
+          <Box p="4"><Text size="2" color="red">{error}</Text></Box>
         ) : thread ? (
           <Flex direction="column" gap="3" p="3">
             {thread.messages.map(msg => (
@@ -568,21 +560,28 @@ function ThreadView({
 // ---- Compose View ----
 
 function ComposeView({
-  gmail,
   threadId,
+  draft,
   onSent,
   onCancel,
 }: {
-  gmail: GmailClient;
   threadId?: string;
+  draft?: { to?: string; subject?: string; body?: string };
   onSent: (to: string[], subject: string) => void;
   onCancel: () => void;
 }) {
-  const [to, setTo] = useState("");
-  const [subject, setSubject] = useState("");
-  const [body, setBody] = useState("");
+  const [to, setTo] = useState(draft?.to ?? "");
+  const [subject, setSubject] = useState(draft?.subject ?? "");
+  const [body, setBody] = useState(draft?.body ?? "");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string>();
+
+  // Reset all fields when draft changes (including to blank for undefined/empty drafts)
+  useEffect(() => {
+    setTo(draft?.to ?? "");
+    setSubject(draft?.subject ?? "");
+    setBody(draft?.body ?? "");
+  }, [draft]);
 
   const handleSend = async () => {
     if (!to.trim()) return;
@@ -590,7 +589,7 @@ function ComposeView({
     setError(undefined);
     try {
       const recipients = to.split(",").map(s => s.trim()).filter(Boolean);
-      await gmail.sendMessage({
+      await gmail.send({
         to: recipients,
         subject,
         body,
@@ -598,7 +597,7 @@ function ComposeView({
       });
       onSent(recipients, subject);
     } catch (err) {
-      setError(err instanceof GmailApiError ? err.message : String(err));
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setSending(false);
     }
@@ -646,7 +645,7 @@ function ComposeView({
 
 // ---- Calendar View ----
 
-function CalendarView({ calendar }: { calendar: CalendarClient }) {
+function CalendarView() {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -658,7 +657,7 @@ function CalendarView({ calendar }: { calendar: CalendarClient }) {
       .then(setEvents)
       .catch(err => setError(String(err)))
       .finally(() => setLoading(false));
-  }, [calendar]);
+  }, []);
 
   return (
     <Flex direction="column" style={{ height: "100%" }}>

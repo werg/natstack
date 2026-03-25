@@ -2,7 +2,11 @@
   "compilerOptions": {
     "target": "ES2020",
     "module": "ESNext",
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2020",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "jsx": "react-jsx",
     "noEmit": true,
     "rootDir": ".",
@@ -18,25 +22,63 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "moduleResolution": "bundler",
-    "types": ["node", "vitest/globals"],
+    "types": [
+      "node",
+      "vitest/globals"
+    ],
     "baseUrl": ".",
     "paths": {
-      "@natstack/ai": ["packages/ai/src/index.ts"],
-      "@natstack/browser-data": ["packages/browser-data/src/index.ts"],
-      "@natstack/dev-log": ["packages/dev-log/src/index.ts"],
-      "@natstack/env-paths": ["packages/env-paths/src/index.ts"],
-      "@natstack/git": ["packages/git/src/index.ts"],
-      "@natstack/git-server": ["packages/git-server/src/index.ts"],
-      "@natstack/harness": ["packages/harness/src/index.ts"],
-      "@natstack/harness/entry": ["packages/harness/src/entry.ts"],
-      "@natstack/harness/types": ["packages/harness/src/types.ts"],
-      "@natstack/port-utils": ["packages/port-utils/src/index.ts"],
-      "@natstack/process-adapter": ["packages/process-adapter/src/index.ts"],
-      "@natstack/rpc": ["packages/rpc/src/index.ts"],
-      "@natstack/typecheck": ["packages/typecheck/src/index.ts"],
-      "@natstack/types": ["packages/types/src/index.ts"]
+      "@natstack/ai": [
+        "packages/ai/src/index.ts"
+      ],
+      "@natstack/browser-data": [
+        "packages/browser-data/src/index.ts"
+      ],
+      "@natstack/dev-log": [
+        "packages/dev-log/src/index.ts"
+      ],
+      "@natstack/env-paths": [
+        "packages/env-paths/src/index.ts"
+      ],
+      "@natstack/git": [
+        "packages/git/src/index.ts"
+      ],
+      "@natstack/git-server": [
+        "packages/git-server/src/index.ts"
+      ],
+      "@natstack/harness": [
+        "packages/harness/src/index.ts"
+      ],
+      "@natstack/harness/entry": [
+        "packages/harness/src/entry.ts"
+      ],
+      "@natstack/harness/types": [
+        "packages/harness/src/types.ts"
+      ],
+      "@natstack/port-utils": [
+        "packages/port-utils/src/index.ts"
+      ],
+      "@natstack/process-adapter": [
+        "packages/process-adapter/src/index.ts"
+      ],
+      "@natstack/rpc": [
+        "packages/rpc/src/index.ts"
+      ],
+      "@natstack/typecheck": [
+        "packages/typecheck/src/index.ts"
+      ],
+      "@natstack/types": [
+        "packages/types/src/index.ts"
+      ]
     }
   },
-  "include": ["src/**/*", "packages/**/*"],
-  "exclude": ["node_modules", "dist", "**/dist"]
+  "include": [
+    "src/**/*",
+    "packages/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/dist"
+  ]
 }

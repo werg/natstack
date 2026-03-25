@@ -329,7 +329,8 @@ function ConsentNotification({
       {consent && (
         <Flex align="center" gap="3">
           <Text size="1" color="gray" style={{ flex: 1 }}>
-            <Text weight="bold" size="1">{consent.panelTitle || consent.panelId}</Text>
+            <Text weight="bold" size="1">{consent.callerTitle || consent.callerId}</Text>
+            {consent.callerKind === "worker" ? " (worker)" : ""}
             {" wants to connect to "}
             <Text weight="bold" size="1">{consent.provider}</Text>
             {consent.scopes.length > 0 && (

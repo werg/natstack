@@ -2,7 +2,7 @@
  * Gmail API client for agent eval and panel use.
  *
  * Wraps the Gmail REST API with high-level methods. Handles OAuth tokens
- * and HTTP proxying automatically via @workspace/runtime.
+ * automatically via @workspace/runtime.
  *
  * Usage from agent eval:
  *   import { gmail } from "@workspace/integrations";
@@ -11,7 +11,7 @@
  *   await gmail.send({ to: ["bob@example.com"], subject: "Hi", body: "Hello!" });
  */
 
-import { oauth, httpProxy } from "@workspace/runtime";
+import { oauth } from "@workspace/runtime";
 
 // ============================================================================
 // Types
@@ -82,19 +82,20 @@ async function authedFetch<T>(url: string, init?: {
     ...init?.headers,
   };
 
-  const res = await httpProxy.fetch(url, {
+  const res = await fetch(url, {
     method: init?.method ?? "GET",
     headers,
     body: init?.body,
   });
 
-  if (res.status >= 400) {
-    const err = new Error(`Gmail API error ${res.status}: ${res.body}`) as Error & { status: number };
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    const err = new Error(`Gmail API error ${res.status}: ${body}`) as Error & { status: number };
     err.status = res.status;
     throw err;
   }
 
-  return JSON.parse(res.body) as T;
+  return res.json() as Promise<T>;
 }
 
 // ============================================================================
@@ -163,7 +164,7 @@ export async function send(opts: SendOptions): Promise<{ id: string; threadId: s
   const raw = buildRawEmail(opts);
   const encoded = btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   const body: Record<string, string> = { raw: encoded };
-  if (opts.threadId) body.threadId = opts.threadId;
+  if (opts.threadId) body["threadId"] = opts.threadId;
 
   return authedFetch<{ id: string; threadId: string }>(`${GMAIL_BASE}/messages/send`, {
     method: "POST",

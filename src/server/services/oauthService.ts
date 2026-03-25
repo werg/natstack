@@ -2,7 +2,7 @@
  * OAuth RPC Service — dynamic OAuth token management with consent.
  *
  * Key features:
- * - Dynamic consent flow: panels call oauth.connect(), a notification
+ * - Dynamic consent flow: panels/workers call oauth.connect(), a notification
  *   appears in the shell chrome, blocks until the user approves.
  * - Cookie pre-sync: before opening the OAuth browser panel, syncs
  *   imported cookies for the provider's auth domains so the user
@@ -39,28 +39,20 @@ export function createOAuthService(deps: {
   oauthManager: OAuthManager;
   panelRegistry: PanelRegistry;
   notificationService: NotificationServiceInternal;
-  /**
-   * Sync imported cookies to the browser session for a domain.
-   * Called before opening OAuth browser panels so the user may
-   * already be authenticated. Optional — gracefully degrades if
-   * browser data service is unavailable (e.g., headless mode).
-   */
   syncCookiesToSession?: (domain: string) => Promise<{ synced: number; failed: number }>;
-  /**
-   * Open a URL in a managed browser panel (child of the calling panel).
-   * Browser panels use the shared BROWSER_SESSION_PARTITION and have
-   * autofill attached, so imported passwords auto-fill login forms.
-   * Optional — in headless mode, the auth URL is returned for manual opening.
-   */
   openBrowserPanel?: (callerId: string, url: string, opts?: { name?: string; focus?: boolean }) => Promise<{ id: string; title: string }>;
 }): ServiceDefinition {
   const { oauthManager, panelRegistry, notificationService, syncCookiesToSession, openBrowserPanel } = deps;
 
-  /** Get panel title for consent notification. */
-  function getPanelTitle(callerId: string): string {
-    const panels = panelRegistry.listPanels();
-    const panel = panels.find(p => p.panelId === callerId);
-    return panel?.title ?? "Unknown Panel";
+  /** Get a human-readable title for the caller (panel or worker). */
+  function getCallerTitle(callerId: string, callerKind: string): string {
+    if (callerKind === "panel") {
+      const panels = panelRegistry.listPanels();
+      const panel = panels.find(p => p.panelId === callerId);
+      return panel?.title ?? callerId;
+    }
+    // Workers: strip "worker:" prefix if present, use the worker ID
+    return callerId.replace(/^worker:/, "");
   }
 
   /**
@@ -76,10 +68,7 @@ export function createOAuthService(deps: {
 
     for (const domain of domains) {
       try {
-        const result = await syncCookiesToSession(domain);
-        if (result.synced > 0) {
-          // Cookies found and synced — user may already be authenticated
-        }
+        await syncCookiesToSession(domain);
       } catch {
         // Non-fatal: browser data service may not be available
       }
@@ -89,20 +78,10 @@ export function createOAuthService(deps: {
   return {
     name: "oauth",
     description: "OAuth token management via Nango with dynamic consent",
-    policy: { allowed: ["shell", "panel"] },
+    policy: { allowed: ["shell", "panel", "worker"] },
     methods: {
       getToken: {
         args: z.tuple([z.string(), z.string()]),
-      },
-      connect: {
-        args: z.tuple([
-          z.string(),
-          z.string(),
-          z.object({
-            scopes: z.array(z.string()).optional(),
-            reason: z.string().optional(),
-          }).optional(),
-        ]),
       },
       requestConsent: {
         args: z.tuple([
@@ -112,9 +91,6 @@ export function createOAuthService(deps: {
       },
       startAuth: {
         args: z.tuple([z.string(), z.string()]),
-      },
-      waitForConnection: {
-        args: z.tuple([z.string(), z.string(), z.number().optional()]),
       },
       disconnect: {
         args: z.tuple([z.string(), z.string()]),
@@ -128,23 +104,19 @@ export function createOAuthService(deps: {
       listProviders: {
         args: z.tuple([]),
       },
-      grantConsent: {
-        args: z.tuple([z.string(), z.array(z.string())]),
-      },
-      revokeConsent: {
-        args: z.tuple([z.string()]),
-      },
       listConsents: {
         args: z.tuple([]),
       },
     },
     handler: async (ctx, method, args) => {
       const callerId = ctx.callerId;
+      const callerKind = ctx.callerKind as "panel" | "worker" | "shell";
 
-      /** Show consent notification and wait for user action. Returns the granted scope. */
+      /** Show consent notification and wait for user action. */
       async function requestConsentFlow(providerKey: string, scopes: string[]): Promise<void> {
         const notifId = `oauth-consent-${randomUUID()}`;
-        const panelTitle = getPanelTitle(callerId);
+        const callerTitle = getCallerTitle(callerId, callerKind);
+        const effectiveKind = callerKind === "worker" ? "worker" as const : "panel" as const;
 
         notificationService.show({
           id: notifId,
@@ -153,10 +125,12 @@ export function createOAuthService(deps: {
           consent: {
             provider: providerKey,
             scopes,
-            panelId: callerId,
-            panelTitle,
+            callerId,
+            callerTitle,
+            callerKind: effectiveKind,
           },
-          sourcePanelId: callerId,
+          // Only set sourcePanelId for panels (clicking navigates to the panel)
+          sourcePanelId: callerKind === "panel" ? callerId : undefined,
         });
 
         const actionId = await notificationService.waitForAction(notifId, 120_000);
@@ -175,52 +149,18 @@ export function createOAuthService(deps: {
           const hasConsent = await oauthManager.hasConsent(callerId, providerKey);
           if (!hasConsent) {
             throw new Error(
-              `Panel has not been granted consent for provider "${providerKey}". ` +
-              `Call oauth.connect() first to initiate the consent and auth flow.`,
+              `Caller has not been granted consent for provider "${providerKey}". ` +
+              `Call oauth.requestConsent() first to initiate the consent flow.`,
             );
           }
           return oauthManager.getToken(providerKey, connectionId);
         }
 
-        case "connect": {
-          const [providerKey, connectionId, opts] = args as [string, string, { scopes?: string[]; reason?: string } | undefined];
-          const scopes = opts?.scopes ?? [];
-
-          if (!(await oauthManager.hasConsent(callerId, providerKey))) {
-            await requestConsentFlow(providerKey, scopes);
-          }
-
-          await presyncCookiesForProvider(providerKey);
-          const authUrl = await oauthManager.getAuthUrl(providerKey, connectionId);
-
-          if (openBrowserPanel) {
-            try {
-              await openBrowserPanel(callerId, authUrl, {
-                name: `Sign in — ${providerKey}`,
-                focus: true,
-              });
-            } catch {
-              // Non-fatal
-            }
-          }
-
-          const deadline = Date.now() + 120_000;
-          while (Date.now() < deadline) {
-            const conn = await oauthManager.getConnection(providerKey, connectionId);
-            if (conn.connected) return conn;
-            await new Promise(r => setTimeout(r, 2000));
-          }
-
-          throw new Error(`OAuth connection timed out for "${providerKey}"`);
-        }
-
-        // --- Staged flow: panel-driven connect with progress feedback ---
-
         case "requestConsent": {
           const [providerKey, opts] = args as [string, { scopes?: string[] } | undefined];
           const scopes = opts?.scopes ?? [];
 
-          if (await oauthManager.hasConsent(callerId, providerKey)) {
+          if (await oauthManager.hasConsent(callerId, providerKey, scopes)) {
             return { consented: true };
           }
 
@@ -231,37 +171,27 @@ export function createOAuthService(deps: {
         case "startAuth": {
           const [providerKey, connectionId] = args as [string, string];
 
-          // Pre-sync imported cookies so the browser panel may already be authenticated
           await presyncCookiesForProvider(providerKey);
 
           const authUrl = await oauthManager.getAuthUrl(providerKey, connectionId);
 
-          // Open browser panel (non-blocking — returns immediately)
+          // Open browser panel for panels only. Workers can't parent
+          // browser panels — they should rely on a panel or the user
+          // having already completed auth before the worker starts.
           let browserPanelId: string | undefined;
-          if (openBrowserPanel) {
+          if (openBrowserPanel && callerKind === "panel") {
             try {
-              const result = await openBrowserPanel(ctx.callerId, authUrl, {
+              const result = await openBrowserPanel(callerId, authUrl, {
                 name: `Sign in — ${providerKey}`,
                 focus: true,
               });
               browserPanelId = result.id;
             } catch {
-              // Non-fatal: panel can open URL manually
+              // Non-fatal: caller can open URL manually
             }
           }
 
           return { authUrl, browserPanelId };
-        }
-
-        case "waitForConnection": {
-          const [providerKey, connectionId, timeoutMs] = args as [string, string, number | undefined];
-          const deadline = Date.now() + (timeoutMs ?? 120_000);
-          while (Date.now() < deadline) {
-            const conn = await oauthManager.getConnection(providerKey, connectionId);
-            if (conn.connected) return conn;
-            await new Promise(r => setTimeout(r, 2000));
-          }
-          throw new Error(`OAuth connection timed out for "${providerKey}"`);
         }
 
         case "disconnect": {
@@ -281,18 +211,6 @@ export function createOAuthService(deps: {
 
         case "listProviders": {
           return oauthManager.listProviders();
-        }
-
-        case "grantConsent": {
-          const [providerKey, scopes] = args as [string, string[]];
-          await oauthManager.grantConsent(callerId, providerKey, scopes);
-          return;
-        }
-
-        case "revokeConsent": {
-          const [providerKey] = args as [string];
-          await oauthManager.revokeConsent(callerId, providerKey);
-          return;
         }
 
         case "listConsents": {

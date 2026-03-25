@@ -33,6 +33,8 @@ export interface HarnessApiDeps {
   contextFolderManager: ContextFolderManager;
   /** Validate auth tokens — returns caller identity on success. */
   validateToken: (token: string) => TokenValidationResult;
+  /** Get an OAuth access token for a provider/connection. Used by workers. */
+  getOAuthToken?: (callerId: string, providerKey: string, connectionId: string) => Promise<{ accessToken: string }>;
 }
 
 /**
@@ -47,7 +49,7 @@ export async function handleHarnessApiRequest(
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
   const pathname = url.pathname;
 
-  if (!pathname.startsWith("/harness") && pathname !== "/validate-token") return false;
+  if (!pathname.startsWith("/harness") && pathname !== "/validate-token" && pathname !== "/oauth/token") return false;
 
   // Auth check
   const authHeader = req.headers["authorization"];
@@ -73,6 +75,23 @@ export async function handleHarnessApiRequest(
         return true;
       }
       const result = deps.validateToken(tokenToValidate);
+      sendJson(res, 200, result);
+      return true;
+    }
+
+    // POST /oauth/token — get an OAuth access token (for workers)
+    if (pathname === "/oauth/token" && req.method === "POST") {
+      if (!deps.getOAuthToken) {
+        sendJson(res, 501, { error: "OAuth not configured" });
+        return true;
+      }
+      const providerKey = body["providerKey"] as string;
+      const connectionId = body["connectionId"] as string;
+      if (!providerKey || !connectionId) {
+        sendJson(res, 400, { error: "Missing providerKey or connectionId" });
+        return true;
+      }
+      const result = await deps.getOAuthToken(auth.callerId!, providerKey, connectionId);
       sendJson(res, 200, result);
       return true;
     }

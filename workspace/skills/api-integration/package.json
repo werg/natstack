@@ -1,7 +1,0 @@
-{
-  "name": "@workspace-skills/api-integration",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "description": "Guide for integrating with external APIs via OAuth and HTTP proxy"
-}

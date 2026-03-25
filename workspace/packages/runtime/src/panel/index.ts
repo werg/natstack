@@ -93,11 +93,6 @@ import { createOAuthClient } from "./oauth.js";
 export type { OAuthToken, OAuthConnection, OAuthClient, OAuthStartAuthResult, ConsentRecord } from "./oauth.js";
 export const oauth = createOAuthClient(rpc);
 
-// HTTP proxy for CORS-free external API access
-import { createHttpProxyClient } from "./httpProxy.js";
-export type { HttpProxyResponse, HttpProxyClient } from "./httpProxy.js";
-export const httpProxy = createHttpProxyClient(rpc);
-
 // Shell notifications
 import { createNotificationClient } from "./notifications.js";
 export type { NotificationClient } from "./notifications.js";

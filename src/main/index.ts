@@ -349,6 +349,18 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
 app.on("ready", async () => {
   performance.mark("startup:ready");
 
+  // Strip CORS restrictions for app panels (defaultSession).
+  // App panels are trusted workspace code that needs to call external APIs
+  // (Gmail, Notion, etc.) directly via fetch(). Browser panels use
+  // a separate "persist:browser" partition and are unaffected.
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    const headers = { ...details.responseHeaders };
+    headers["access-control-allow-origin"] = ["*"];
+    headers["access-control-allow-headers"] = ["*"];
+    headers["access-control-allow-methods"] = ["*"];
+    callback({ responseHeaders: headers });
+  });
+
   // Auto-update check (production only)
   if (!isDev()) {
     try {

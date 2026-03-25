@@ -8,7 +8,7 @@
 
 import { z, defineContract } from "@workspace/runtime";
 
-export interface EmailPanelApi {
+export interface EmailPanelApi extends Record<string, (...args: any[]) => any> {
   /** Get the current connection status */
   getConnectionStatus(): Promise<{ connected: boolean; email?: string; provider?: string }>;
 

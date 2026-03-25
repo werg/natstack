@@ -113,6 +113,12 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
       exposedMethods[method] = handler as (...args: unknown[]) => unknown | Promise<unknown>;
     },
 
+    expose(methods: Record<string, (...args: any[]) => any>): void {
+      for (const [name, handler] of Object.entries(methods)) {
+        exposedMethods[name] = handler as (...args: unknown[]) => unknown | Promise<unknown>;
+      }
+    },
+
     async call<T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T> {
       const requestId = generateRequestId();
       const request: RpcRequest = {

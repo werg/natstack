@@ -39,8 +39,12 @@ export interface NotificationAction {
 export interface NotificationConsentData {
   provider: string;
   scopes: string[];
-  panelId: string;
-  panelTitle: string;
+  /** ID of the caller requesting access (panel ID or worker ID) */
+  callerId: string;
+  /** Human-readable name of the caller */
+  callerTitle: string;
+  /** Whether the caller is a worker (affects display text) */
+  callerKind: "panel" | "worker";
 }
 
 /**

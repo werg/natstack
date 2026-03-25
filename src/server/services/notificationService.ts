@@ -22,17 +22,17 @@ export interface NotificationServiceInternal {
   waitForAction(id: string, timeoutMs?: number): Promise<string>;
 }
 
-/** Pending action resolvers keyed by notification ID */
-const pendingActions = new Map<string, {
-  resolve: (actionId: string) => void;
-  reject: (reason: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
-}>();
-
 export function createNotificationService(deps: {
   eventService: EventService;
 }): { definition: ServiceDefinition; internal: NotificationServiceInternal } {
   const { eventService } = deps;
+
+  /** Pending action resolvers keyed by notification ID */
+  const pendingActions = new Map<string, {
+    resolve: (actionId: string) => void;
+    reject: (reason: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
 
   const internal: NotificationServiceInternal = {
     show(opts) {
@@ -79,8 +79,9 @@ export function createNotificationService(deps: {
           consent: z.object({
             provider: z.string(),
             scopes: z.array(z.string()),
-            panelId: z.string(),
-            panelTitle: z.string(),
+            callerId: z.string(),
+            callerTitle: z.string(),
+            callerKind: z.enum(["panel", "worker"]),
           }).optional(),
           ttl: z.number().optional(),
           actions: z.array(z.object({
