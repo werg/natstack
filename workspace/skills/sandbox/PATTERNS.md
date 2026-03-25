@@ -92,6 +92,53 @@ eval({
 })
 ```
 
+## Use a Scoped npm Package (@faker-js/faker)
+
+```
+eval({
+  code: `
+    import { faker } from "@faker-js/faker";
+    for (let i = 0; i < 5; i++) {
+      console.log(faker.person.fullName(), "-", faker.internet.email());
+    }
+  `,
+  imports: { "@faker-js/faker": "npm:^9.0.0" },
+  timeout: 30000
+})
+```
+
+## Preload npm Package for Inline UI
+
+npm packages aren't directly available in `inline_ui`. Preload via `eval` first — the module stays in the module map:
+
+```
+// Step 1: preload
+eval({
+  code: `import _ from "lodash"; console.log("lodash loaded");`,
+  imports: { "lodash": "npm:^4.17.21" },
+  timeout: 30000
+})
+
+// Step 2: use in inline_ui (lodash is now in the module map)
+inline_ui({
+  code: `
+import { useState } from "react";
+import { Button, Flex, Text } from "@radix-ui/themes";
+import _ from "lodash";
+
+export default function Shuffler({ props }) {
+  const [items, setItems] = useState(props.items);
+  return (
+    <Flex direction="column" gap="2">
+      <Button size="1" onClick={() => setItems(_.shuffle([...items]))}>Shuffle</Button>
+      {items.map((item, i) => <Text key={i} size="2">{item}</Text>)}
+    </Flex>
+  );
+}`,
+  props: { items: ["Apple", "Banana", "Cherry", "Date", "Elderberry"] }
+})
+```
+
 ## Import Cookies from Chrome
 
 ```

@@ -261,6 +261,7 @@ import { rpc } from "@workspace/runtime";
 | RPC Call | Description |
 |----------|-------------|
 | `rpc.call("main", "build.getBuild", source, ref?, opts?)` | Build a panel/worker/agent |
+| `rpc.call("main", "build.getBuildNpm", specifier, version, externals?)` | Install + bundle an npm package as CJS for sandbox use |
 | `rpc.call("main", "build.getEffectiveVersion", name)` | Get effective version |
 | `rpc.call("main", "build.hasUnit", name)` | Check if build unit exists |
 | `rpc.call("main", "typecheck.check", source)` | Type-check a panel |

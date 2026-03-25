@@ -149,8 +149,10 @@ Two build strategies, selected by unit kind:
 - Used by `imports` parameter of the eval tool to load workspace packages on-demand
 
 **Npm library build** (CJS, for sandbox eval):
+- Validates specifier against npm naming rules (rejects paths, URLs, git refs)
 - Installs an arbitrary npm package via `ensureExternalDeps` (cached, `--ignore-scripts`)
-- Bundles with esbuild as CJS using `stdin` entry point (`module.exports = require("pkg")`)
+- Bundles with esbuild as CJS using a virtual entry file (`module.exports = require("pkg")`)
+- Results cached in buildStore + in-flight coalescing (same as workspace library builds)
 - Caller supplies `externals[]` to avoid re-bundling already-loaded modules
 - Used by `imports` parameter of the eval tool with `"npm:<version>"` values
 - Native addons are not supported (esbuild will fail to bundle `.node` files)

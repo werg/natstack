@@ -83,7 +83,9 @@ eval({
 
 Version values follow npm semver conventions: `"npm:^1.0.0"`, `"npm:~2.3.0"`, `"npm:3"`, `"npm:latest"`.
 
-Packages are installed with `--ignore-scripts` for security (no postinstall hooks). Native addon packages (those requiring `.node` binary files) are not supported. Installed packages are cached, so subsequent imports of the same package/version are fast.
+Packages are installed with `--ignore-scripts` for security (no postinstall hooks). Specifiers are validated against npm naming rules — only standard package names are accepted (no URLs, file paths, or git refs). Native addon packages (those requiring `.node` binary files) are not supported.
+
+Installed packages and their bundles are both cached, so subsequent imports of the same package/version are fast. The first install of a new package may take 10–30 seconds (npm download + esbuild bundle), so use `timeout: 30000` or higher for initial imports.
 
 ### Mixing workspace and npm imports
 
@@ -102,6 +104,12 @@ eval({
   timeout: 30000
 })
 ```
+
+### Limitations
+
+- npm packages are only available in `eval`, not in `inline_ui` or `feedback_custom` components. To use an npm package in a component, preload it via `eval` first (it will remain in the module map).
+- Only packages with standard npm names are accepted (e.g. `lodash`, `@scope/pkg`). URLs, file paths, and git specifiers are rejected.
+- Packages requiring native addons (`.node` binaries) won't work — esbuild cannot bundle them.
 
 ## Pre-injected Variables
 
