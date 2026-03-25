@@ -4,9 +4,13 @@
  * Wraps the Nango REST API with plain fetch (no SDK dependency).
  * Handles token caching, automatic refresh, connection lifecycle,
  * and per-panel consent tracking.
+ *
+ * Uses the shared DatabaseManager for SQLite access (token cache
+ * and consent store) rather than managing connections directly.
  */
 
 import { createDevLogger } from "@natstack/dev-log";
+import type { DatabaseManager } from "../db/databaseManager.js";
 import type { OAuthToken, OAuthConnection, ConsentRecord, NangoConnectionResponse } from "./types.js";
 
 const log = createDevLogger("OAuthManager");
@@ -14,7 +18,9 @@ const log = createDevLogger("OAuthManager");
 interface OAuthManagerOptions {
   nangoUrl: string;
   nangoSecretKey: string;
-  workspaceStatePath: string;
+  databaseManager: DatabaseManager;
+  /** Owner ID used for DatabaseManager handle tracking */
+  ownerId?: string;
 }
 
 // In-memory token cache
@@ -26,35 +32,26 @@ interface CachedToken {
 export class OAuthManager {
   private nangoUrl: string;
   private nangoSecretKey: string;
-  private workspaceStatePath: string;
+  private databaseManager: DatabaseManager;
+  private ownerId: string;
 
-  // In-memory caches
+  // In-memory token cache
   private tokenCache = new Map<string, CachedToken>();
-  private consentCache = new Map<string, ConsentRecord[]>();
 
-  // SQLite database for persistent consent storage
-  private db: import("better-sqlite3").Database | null = null;
+  // Database handle (lazy-initialized)
+  private dbHandle: string | null = null;
 
   constructor(opts: OAuthManagerOptions) {
     this.nangoUrl = opts.nangoUrl.replace(/\/$/, "");
     this.nangoSecretKey = opts.nangoSecretKey;
-    this.workspaceStatePath = opts.workspaceStatePath;
-    this.initDb();
+    this.databaseManager = opts.databaseManager;
+    this.ownerId = opts.ownerId ?? "oauth-manager";
   }
 
-  private initDb(): void {
-    try {
-      // Dynamic import since better-sqlite3 is a native module
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const Database = require("better-sqlite3");
-      const path = require("node:path");
-      const fs = require("node:fs");
-
-      const dbDir = path.join(this.workspaceStatePath, ".databases");
-      fs.mkdirSync(dbDir, { recursive: true });
-      this.db = new Database(path.join(dbDir, "oauth.db"));
-
-      this.db!.exec(`
+  private ensureDb(): string {
+    if (!this.dbHandle) {
+      this.dbHandle = this.databaseManager.open(this.ownerId, "oauth");
+      this.databaseManager.exec(this.dbHandle, `
         CREATE TABLE IF NOT EXISTS oauth_consent (
           panel_source TEXT NOT NULL,
           provider TEXT NOT NULL,
@@ -63,8 +60,7 @@ export class OAuthManager {
           PRIMARY KEY (panel_source, provider)
         )
       `);
-
-      this.db!.exec(`
+      this.databaseManager.exec(this.dbHandle, `
         CREATE TABLE IF NOT EXISTS oauth_tokens (
           provider TEXT NOT NULL,
           connection_id TEXT NOT NULL,
@@ -74,9 +70,8 @@ export class OAuthManager {
           PRIMARY KEY (provider, connection_id)
         )
       `);
-    } catch (err) {
-      log.warn("Failed to initialize OAuth database:", err);
     }
+    return this.dbHandle;
   }
 
   // =========================================================================
@@ -124,20 +119,21 @@ export class OAuthManager {
     }
 
     // Check SQLite cache
-    if (this.db) {
-      const row = this.db.prepare(
-        "SELECT access_token, expires_at, scopes FROM oauth_tokens WHERE provider = ? AND connection_id = ?",
-      ).get(providerKey, connectionId) as { access_token: string; expires_at: number; scopes: string } | undefined;
+    const handle = this.ensureDb();
+    const row = this.databaseManager.get<{ access_token: string; expires_at: number; scopes: string }>(
+      handle,
+      "SELECT access_token, expires_at, scopes FROM oauth_tokens WHERE provider = ? AND connection_id = ?",
+      [providerKey, connectionId],
+    );
 
-      if (row && row.expires_at > Date.now() + 60_000) {
-        const token: OAuthToken = {
-          accessToken: row.access_token,
-          expiresAt: row.expires_at,
-          scopes: JSON.parse(row.scopes),
-        };
-        this.tokenCache.set(cacheKey, { token, fetchedAt: Date.now() });
-        return token;
-      }
+    if (row && row.expires_at > Date.now() + 60_000) {
+      const token: OAuthToken = {
+        accessToken: row.access_token,
+        expiresAt: row.expires_at,
+        scopes: JSON.parse(row.scopes),
+      };
+      this.tokenCache.set(cacheKey, { token, fetchedAt: Date.now() });
+      return token;
     }
 
     // Fetch from Nango
@@ -156,11 +152,11 @@ export class OAuthManager {
 
     // Cache
     this.tokenCache.set(cacheKey, { token, fetchedAt: Date.now() });
-    if (this.db) {
-      this.db.prepare(
-        "INSERT OR REPLACE INTO oauth_tokens (provider, connection_id, access_token, expires_at, scopes) VALUES (?, ?, ?, ?, ?)",
-      ).run(providerKey, connectionId, token.accessToken, token.expiresAt, JSON.stringify(token.scopes));
-    }
+    this.databaseManager.run(
+      handle,
+      "INSERT OR REPLACE INTO oauth_tokens (provider, connection_id, access_token, expires_at, scopes) VALUES (?, ?, ?, ?, ?)",
+      [providerKey, connectionId, token.accessToken, token.expiresAt, JSON.stringify(token.scopes)],
+    );
 
     return token;
   }
@@ -193,7 +189,6 @@ export class OAuthManager {
 
   async getAuthUrl(providerKey: string, connectionId: string): Promise<string> {
     this.assertConfigured();
-    // Nango auth URL format
     return `${this.nangoUrl}/auth/${encodeURIComponent(providerKey)}?connection_id=${encodeURIComponent(connectionId)}`;
   }
 
@@ -227,10 +222,12 @@ export class OAuthManager {
 
     // Clear caches
     this.tokenCache.delete(`${providerKey}:${connectionId}`);
-    if (this.db) {
-      this.db.prepare("DELETE FROM oauth_tokens WHERE provider = ? AND connection_id = ?")
-        .run(providerKey, connectionId);
-    }
+    const handle = this.ensureDb();
+    this.databaseManager.run(
+      handle,
+      "DELETE FROM oauth_tokens WHERE provider = ? AND connection_id = ?",
+      [providerKey, connectionId],
+    );
   }
 
   // =========================================================================
@@ -238,32 +235,40 @@ export class OAuthManager {
   // =========================================================================
 
   async hasConsent(panelSource: string, providerKey: string): Promise<boolean> {
-    if (!this.db) return false;
-    const row = this.db.prepare(
-      "SELECT 1 FROM oauth_consent WHERE panel_source = ? AND provider = ?",
-    ).get(panelSource, providerKey);
+    const handle = this.ensureDb();
+    const row = this.databaseManager.get<{ c: number }>(
+      handle,
+      "SELECT 1 as c FROM oauth_consent WHERE panel_source = ? AND provider = ?",
+      [panelSource, providerKey],
+    );
     return !!row;
   }
 
   async grantConsent(panelSource: string, providerKey: string, scopes: string[]): Promise<void> {
-    if (!this.db) return;
-    this.db.prepare(
+    const handle = this.ensureDb();
+    this.databaseManager.run(
+      handle,
       "INSERT OR REPLACE INTO oauth_consent (panel_source, provider, scopes, granted_at) VALUES (?, ?, ?, ?)",
-    ).run(panelSource, providerKey, JSON.stringify(scopes), Date.now());
+      [panelSource, providerKey, JSON.stringify(scopes), Date.now()],
+    );
   }
 
   async revokeConsent(panelSource: string, providerKey: string): Promise<void> {
-    if (!this.db) return;
-    this.db.prepare(
+    const handle = this.ensureDb();
+    this.databaseManager.run(
+      handle,
       "DELETE FROM oauth_consent WHERE panel_source = ? AND provider = ?",
-    ).run(panelSource, providerKey);
+      [panelSource, providerKey],
+    );
   }
 
   async listConsents(panelSource: string): Promise<ConsentRecord[]> {
-    if (!this.db) return [];
-    const rows = this.db.prepare(
+    const handle = this.ensureDb();
+    const rows = this.databaseManager.query<{ panel_source: string; provider: string; scopes: string; granted_at: number }>(
+      handle,
       "SELECT panel_source, provider, scopes, granted_at FROM oauth_consent WHERE panel_source = ?",
-    ).all(panelSource) as Array<{ panel_source: string; provider: string; scopes: string; granted_at: number }>;
+      [panelSource],
+    );
 
     return rows.map(r => ({
       panelSource: r.panel_source,
@@ -278,9 +283,9 @@ export class OAuthManager {
   // =========================================================================
 
   close(): void {
-    if (this.db) {
-      this.db.close();
-      this.db = null;
+    if (this.dbHandle) {
+      this.databaseManager.close(this.dbHandle);
+      this.dbHandle = null;
     }
   }
 }

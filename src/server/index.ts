@@ -729,7 +729,7 @@ async function main() {
       let oauthManager: InstanceType<typeof OAuthManager>;
       container.register({
         name: "oauth",
-        dependencies: ["panelRegistry"],
+        dependencies: ["panelRegistry", "databaseManager"],
         optionalDependencies: ["panelLifecycle"],
         async start(resolve) {
           const registry = resolve<import("../shared/panelRegistry.js").PanelRegistry>("panelRegistry")!;
@@ -738,7 +738,7 @@ async function main() {
           oauthManager = new OAuthManager({
             nangoUrl,
             nangoSecretKey: nangoSecret,
-            workspaceStatePath: workspace.statePath,
+            databaseManager,
           });
           return { oauthManager, registry };
         },

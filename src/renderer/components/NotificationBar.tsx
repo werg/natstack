@@ -22,7 +22,7 @@ import {
 } from "@radix-ui/react-icons";
 import { useShellEvent } from "../shell/useShellEvent";
 import { view, notification } from "../shell/client";
-import type { NotificationPayload, NotificationAction } from "../../shared/events";
+import type { NotificationPayload } from "../../shared/events";
 
 /** Default TTLs by notification type (ms). 0 = no auto-dismiss. */
 const DEFAULT_TTLS: Record<NotificationPayload["type"], number> = {
@@ -121,9 +121,9 @@ export function NotificationBar() {
 
   // Auto-dismiss timers
   useEffect(() => {
-    for (const [id, notification] of notifications) {
+    for (const [id, notif] of notifications) {
       if (timerCleanups.current.has(id)) continue;
-      const ttl = notification.ttl ?? DEFAULT_TTLS[notification.type];
+      const ttl = notif.ttl ?? DEFAULT_TTLS[notif.type];
       if (ttl <= 0) continue;
 
       const timer = setTimeout(() => {

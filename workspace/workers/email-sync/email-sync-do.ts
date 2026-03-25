@@ -3,18 +3,17 @@
  *
  * Lifecycle:
  * 1. Panel calls startSync(connectionId, providerKey, intervalMs)
- * 2. DO stores config and sets first alarm
+ * 2. DO stores config in state KV and sets first alarm
  * 3. On alarm: fetches new messages since last historyId, publishes to PubSub
  * 4. Panel subscribes to PubSub channel for real-time updates
  * 5. Panel calls stopSync() to cancel polling
  *
  * Token acquisition: The DO fetches OAuth tokens by calling the server's
- * oauth service via internal HTTP (since workers can't use the panel RPC bridge).
+ * oauth service via postToDO or direct HTTP to the RPC server.
  */
 
-import type { DurableObjectState } from "@workspace/runtime/worker";
-
-const GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
+import { DurableObjectBase } from "@workspace/runtime/worker";
+import type { DurableObjectContext } from "@workspace/runtime/worker";
 
 interface SyncConfig {
   connectionId: string;
@@ -30,97 +29,101 @@ interface SyncStatus {
   messagesSynced: number;
 }
 
-export class EmailSyncWorker {
-  private state: DurableObjectState;
-  private config: SyncConfig | null = null;
-  private status: SyncStatus = { running: false, messagesSynced: 0 };
+export class EmailSyncWorker extends DurableObjectBase {
+  static override schemaVersion = 1;
 
-  constructor(state: DurableObjectState, _env: unknown) {
-    this.state = state;
-    this.state.blockConcurrencyWhile(async () => {
-      this.config = await this.state.storage.get<SyncConfig>("config") ?? null;
-      this.status = await this.state.storage.get<SyncStatus>("status") ?? { running: false, messagesSynced: 0 };
-    });
+  constructor(ctx: DurableObjectContext, env: unknown) {
+    super(ctx, env);
   }
 
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-
-    if (request.method === "POST" && url.pathname === "/startSync") {
-      const body = await request.json() as {
-        connectionId: string;
-        providerKey: string;
-        intervalMs?: number;
-      };
-
-      this.config = {
-        connectionId: body.connectionId,
-        providerKey: body.providerKey,
-        intervalMs: body.intervalMs ?? 60_000,
-      };
-      this.status = { running: true, messagesSynced: 0 };
-
-      await this.state.storage.put("config", this.config);
-      await this.state.storage.put("status", this.status);
-
-      // Set first alarm
-      this.state.storage.setAlarm(Date.now() + this.config.intervalMs);
-
-      return Response.json({ ok: true, config: this.config });
-    }
-
-    if (request.method === "POST" && url.pathname === "/stopSync") {
-      this.status.running = false;
-      await this.state.storage.put("status", this.status);
-      this.state.storage.deleteAlarm();
-      return Response.json({ ok: true });
-    }
-
-    if (url.pathname === "/status") {
-      return Response.json({ config: this.config, status: this.status });
-    }
-
-    return new Response("EmailSyncWorker\n\nPOST /startSync\nPOST /stopSync\nGET /status\n", {
-      headers: { "Content-Type": "text/plain" },
-    });
+  protected override createTables(): void {
+    // No additional SQL tables needed — config/status stored in state KV
   }
 
-  async alarm(): Promise<void> {
-    if (!this.config || !this.status.running) return;
+  private getConfig(): SyncConfig | null {
+    const raw = this.getStateValue("sync_config");
+    if (!raw) return null;
+    return JSON.parse(raw) as SyncConfig;
+  }
+
+  private setConfig(config: SyncConfig): void {
+    this.setStateValue("sync_config", JSON.stringify(config));
+  }
+
+  private getStatus(): SyncStatus {
+    const raw = this.getStateValue("sync_status");
+    if (!raw) return { running: false, messagesSynced: 0 };
+    return JSON.parse(raw) as SyncStatus;
+  }
+
+  private setStatus(status: SyncStatus): void {
+    this.setStateValue("sync_status", JSON.stringify(status));
+  }
+
+  // --- HTTP dispatch (/{objectKey}/{method}) ---
+
+  protected async startSync(args: unknown[]): Promise<{ ok: boolean; config: SyncConfig }> {
+    const [body] = args as [{ connectionId: string; providerKey: string; intervalMs?: number }];
+
+    const config: SyncConfig = {
+      connectionId: body.connectionId,
+      providerKey: body.providerKey,
+      intervalMs: body.intervalMs ?? 60_000,
+    };
+
+    this.setConfig(config);
+    this.setStatus({ running: true, messagesSynced: 0 });
+
+    // Schedule first alarm
+    this.setAlarm(config.intervalMs);
+
+    return { ok: true, config };
+  }
+
+  protected async stopSync(_args: unknown[]): Promise<{ ok: boolean }> {
+    const status = this.getStatus();
+    status.running = false;
+    this.setStatus(status);
+    this.ctx.storage.deleteAlarm();
+    return { ok: true };
+  }
+
+  protected async getState(_args: unknown[]): Promise<{ config: SyncConfig | null; status: SyncStatus }> {
+    return { config: this.getConfig(), status: this.getStatus() };
+  }
+
+  // --- Alarm-based polling ---
+
+  override async alarm(): Promise<void> {
+    await super.alarm();
+
+    const config = this.getConfig();
+    const status = this.getStatus();
+    if (!config || !status.running) return;
 
     try {
-      // Get OAuth token from the server's oauth service
-      // In a full implementation, this would use the workerd service bindings
-      // to call the server's RPC endpoint. For now, we document the pattern.
-      //
-      // const token = await env.OAUTH_SERVICE.fetch("/getToken", {
-      //   method: "POST",
-      //   body: JSON.stringify({ providerKey: this.config.providerKey, connectionId: this.config.connectionId }),
-      // });
-
-      // For now, log the sync attempt
+      // In a full implementation:
+      // 1. Get OAuth token via postToDO to the server's oauth service
+      // 2. Fetch Gmail history: GET /gmail/v1/users/me/history?startHistoryId=...
+      // 3. Parse new message IDs
+      // 4. Publish to PubSub channel: email-sync:{connectionId}
+      // 5. Update lastHistoryId in config
       console.log(
-        `[EmailSyncWorker] Polling Gmail for ${this.config.connectionId}` +
-        (this.config.lastHistoryId ? ` (since historyId: ${this.config.lastHistoryId})` : ""),
+        `[EmailSyncWorker] Polling Gmail for ${config.connectionId}` +
+        (config.lastHistoryId ? ` (since historyId: ${config.lastHistoryId})` : ""),
       );
 
-      // In a full implementation:
-      // 1. Fetch new messages: GET /gmail/v1/users/me/history?startHistoryId=...
-      // 2. Parse new message IDs
-      // 3. Publish to PubSub channel: email-sync:{connectionId}
-      // 4. Update lastHistoryId
-
-      this.status.lastSync = Date.now();
-      await this.state.storage.put("status", this.status);
+      status.lastSync = Date.now();
+      this.setStatus(status);
     } catch (err) {
-      this.status.lastError = String(err);
-      await this.state.storage.put("status", this.status);
+      status.lastError = String(err);
+      this.setStatus(status);
       console.error("[EmailSyncWorker] Sync error:", err);
     }
 
     // Schedule next alarm
-    if (this.status.running) {
-      this.state.storage.setAlarm(Date.now() + this.config.intervalMs);
+    if (status.running) {
+      this.setAlarm(config.intervalMs);
     }
   }
 }
