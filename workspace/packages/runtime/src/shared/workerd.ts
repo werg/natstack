@@ -16,7 +16,7 @@
  * Available to server, panel, and worker callers.
  */
 
-import type { RpcBridge } from "@natstack/rpc";
+import type { RpcCaller } from "@natstack/rpc";
 
 // ---------------------------------------------------------------------------
 // Types (mirror server-side WorkerdManager types, minus internal fields)
@@ -53,6 +53,8 @@ export interface WorkerCreateOptions {
   /** Build at a specific git ref (branch, tag, or commit SHA).
    *  Use a commit SHA for immutable pinning (content-addressed cache guarantees same build). */
   ref?: string;
+  /** ID of the creating caller. Worker can call getParent() to communicate back. */
+  parentId?: string;
 }
 
 export interface WorkerUpdateOptions {
@@ -119,7 +121,7 @@ export interface WorkerdClient {
   destroyDO(ref: DORefParam): Promise<void>;
 }
 
-export function createWorkerdClient(rpc: Pick<RpcBridge, "call">): WorkerdClient {
+export function createWorkerdClient(rpc: RpcCaller): WorkerdClient {
   const call = <T>(method: string, ...args: unknown[]) =>
     rpc.call<T>("main", `workerd.${method}`, ...args);
 

@@ -8,7 +8,7 @@
  */
 
 import { Buffer } from "buffer";
-import type { RpcBridge } from "@natstack/rpc";
+import type { RpcCaller } from "@natstack/rpc";
 import type { RuntimeFs, FileStats, Dirent, FileHandle } from "../types.js";
 import { toFileStats } from "./fs-utils.js";
 
@@ -62,7 +62,7 @@ function toDirent(d: SerializedDirent): Dirent {
 // Factory
 // ---------------------------------------------------------------------------
 
-export function createRpcFs(rpc: RpcBridge): RuntimeFs {
+export function createRpcFs(rpc: RpcCaller): RuntimeFs {
   function call<T>(method: string, ...args: unknown[]): Promise<T> {
     return rpc.call<T>("main", `fs.${method}`, ...args);
   }

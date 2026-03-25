@@ -4,13 +4,11 @@
  * Provides typed access to the server-side OAuth service for
  * token management, connection lifecycle, and consent tracking.
  *
- * Workers get the restricted OAuthWorkerClient (read-only: getToken,
- * getConnection, listConnections, listProviders). Workers cannot drive
- * the interactive auth flow — a panel or the user must establish the
- * Nango connection first.
+ * A single OAuthClient type is used everywhere. Server-side per-method
+ * policy restricts which callers can invoke interactive auth methods.
  */
 
-import type { RpcBridge } from "@natstack/rpc";
+import type { RpcCaller } from "@natstack/rpc";
 
 export interface OAuthToken {
   accessToken: string;
@@ -39,10 +37,10 @@ export interface OAuthStartAuthResult {
 }
 
 /**
- * Read-only OAuth client for workers. Workers can only consume
- * tokens for connections that were already established by a panel.
+ * Unified OAuth client for panels and workers.
+ * Server-side per-method policy restricts worker access to interactive methods.
  */
-export interface OAuthWorkerClient {
+export interface OAuthClient {
   /** Get a valid access token, auto-refreshing if needed. */
   getToken(providerKey: string, connectionId?: string): Promise<OAuthToken>;
 
@@ -54,12 +52,7 @@ export interface OAuthWorkerClient {
 
   /** List configured OAuth providers from Nango. */
   listProviders(): Promise<Array<{ key: string; provider: string }>>;
-}
 
-/**
- * Full OAuth client for panels. Includes interactive auth flow methods.
- */
-export interface OAuthClient extends OAuthWorkerClient {
   /**
    * All-in-one connect (consent + auth + wait). Blocks until complete.
    * For better UX, use the staged methods instead: requestConsent → startAuth → waitForConnection.
@@ -97,7 +90,7 @@ export interface OAuthClient extends OAuthWorkerClient {
   listConsents(): Promise<ConsentRecord[]>;
 }
 
-export function createOAuthClient(rpc: RpcBridge): OAuthClient {
+export function createOAuthClient(rpc: RpcCaller): OAuthClient {
   const defaultConnId = (pk: string) => `default-${pk}`;
 
   return {

@@ -6,6 +6,7 @@ export interface MethodDef {
   description?: string;
   args: z.ZodType;
   returns?: z.ZodType;
+  policy?: ServicePolicy;
 }
 
 export interface ServiceDefinition {

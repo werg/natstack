@@ -29,6 +29,26 @@ import {
 import { checkServiceAccess } from "../shared/servicePolicy.js";
 import type { TokenManager } from "../shared/tokenManager.js";
 
+/**
+ * Parse a "do:source:className:objectKey" target ID.
+ * Source contains "/" but no ":", so the first ":" after a "/" delimits
+ * source from className. ObjectKey may contain ":" (e.g., fork keys).
+ */
+function parseDOTarget(targetId: string): { source: string; className: string; objectKey: string } {
+  const body = targetId.slice(3); // Remove "do:"
+  const slashIdx = body.indexOf("/");
+  if (slashIdx === -1) throw new Error(`Invalid DO target (no source slash): ${targetId}`);
+  const colonAfterSlash = body.indexOf(":", slashIdx);
+  if (colonAfterSlash === -1) throw new Error(`Invalid DO target (no className): ${targetId}`);
+  const source = body.slice(0, colonAfterSlash);
+  const rest = body.slice(colonAfterSlash + 1);
+  const nextColon = rest.indexOf(":");
+  if (nextColon === -1) throw new Error(`Invalid DO target (no objectKey): ${targetId}`);
+  const className = rest.slice(0, nextColon);
+  const objectKey = rest.slice(nextColon + 1);
+  return { source, className, objectKey };
+}
+
 /** Server-side state for a connected WS client */
 export interface WsClientState {
   ws: WebSocket;
@@ -52,6 +72,7 @@ export class RpcServer {
   private wss: WebSocketServer | null = null;
   private httpServer: HttpServer | null = null;
   private port: number | null = null;
+  private workerdUrl: string | null = null;
 
   // Connection tracking
   private clients = new Map<WebSocket, WsClientState>();
@@ -91,10 +112,15 @@ export class RpcServer {
     this.deps.onClientAuthenticate = handler;
   }
 
+  /** Set the base URL for the workerd process (for HTTP relay to workers/DOs). */
+  setWorkerdUrl(url: string): void {
+    this.workerdUrl = url;
+  }
+
   async start(): Promise<number> {
     const port = await findServicePort("rpc");
 
-    this.httpServer = createServer();
+    this.httpServer = createServer((req, res) => this.handleHttpRequest(req, res));
     this.wss = new WebSocketServer({ server: this.httpServer });
 
     this.wss.on("connection", (ws) => this.handleConnection(ws));
@@ -291,7 +317,7 @@ export class RpcServer {
     const { service, method } = parsed;
 
     try {
-      checkServiceAccess(service, client.callerKind, this.dispatcher);
+      checkServiceAccess(service, client.callerKind, this.dispatcher, method);
     } catch (error) {
       this.sendToWs(client.ws, {
         type: "ws:rpc",
@@ -376,7 +402,38 @@ export class RpcServer {
     // Shell callers are not expected to route, but there's no harm in allowing it.
 
     const targetClient = this.callerToClient.get(targetId);
-    if (!targetClient || targetClient.ws.readyState !== WebSocket.OPEN) return;
+    if (!targetClient || targetClient.ws.readyState !== WebSocket.OPEN) {
+      // Target not connected via WS — try HTTP relay for workers/DOs
+      if (this.workerdUrl && (targetId.startsWith("do:") || targetId.startsWith("worker:"))) {
+        if (message.type === "request") {
+          const { requestId, method: reqMethod, args: reqArgs } = message;
+          void this.relayCall(client.callerId, targetId, reqMethod, reqArgs ?? []).then(
+            (result) => {
+              this.sendToWs(client.ws, {
+                type: "ws:routed",
+                fromId: targetId,
+                message: { type: "response", requestId, result },
+              });
+            },
+            (err) => {
+              this.sendToWs(client.ws, {
+                type: "ws:routed",
+                fromId: targetId,
+                message: {
+                  type: "response",
+                  requestId,
+                  error: err instanceof Error ? err.message : String(err),
+                },
+              });
+            },
+          );
+        } else if (message.type === "event") {
+          const { fromId: eventFromId, event, payload } = message;
+          void this.relayEvent(eventFromId ?? client.callerId, targetId, event, payload);
+        }
+      }
+      return;
+    }
 
     this.sendToWs(targetClient.ws, {
       type: "ws:routed",
@@ -538,6 +595,254 @@ export class RpcServer {
         return () => ws.off("close", listener);
       },
     };
+  }
+
+  // ===========================================================================
+  // HTTP POST /rpc endpoint
+  // ===========================================================================
+
+  private async handleHttpRequest(req: import("http").IncomingMessage, res: import("http").ServerResponse): Promise<void> {
+    // Only handle POST /rpc
+    if (req.method !== "POST" || req.url !== "/rpc") {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+
+    // Read body (with size limit)
+    const MAX_BODY_SIZE = 200 * 1024 * 1024; // 200MB
+    const chunks: Buffer[] = [];
+    let totalSize = 0;
+    for await (const chunk of req) {
+      totalSize += (chunk as Buffer).length;
+      if (totalSize > MAX_BODY_SIZE) {
+        res.writeHead(413, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Request body too large" }));
+        return;
+      }
+      chunks.push(chunk as Buffer);
+    }
+    const body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
+
+    // Auth: validate Bearer token
+    const authHeader = req.headers["authorization"];
+    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    if (!token) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Missing authorization" }));
+      return;
+    }
+
+    let callerId: string;
+    let callerKind: CallerKind;
+
+    if (this.deps.tokenManager.validateAdminToken(token)) {
+      callerId = "server";
+      callerKind = "server";
+    } else {
+      const entry = this.deps.tokenManager.validateToken(token);
+      if (!entry) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Invalid token" }));
+        return;
+      }
+      callerId = entry.callerId;
+      callerKind = entry.callerKind;
+    }
+
+    try {
+      const result = await this.handleHttpRpc(callerId, callerKind, body);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ result }));
+    } catch (err: any) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message, errorCode: err.code }));
+    }
+  }
+
+  private async handleHttpRpc(
+    callerId: string,
+    callerKind: CallerKind,
+    body: Record<string, unknown>,
+  ): Promise<unknown> {
+    const type = body["type"] as string | undefined;
+    const targetId = body["targetId"] as string | undefined;
+    const method = body["method"] as string;
+    const args = (body["args"] as unknown[]) ?? [];
+
+    // Direct service dispatch (no type or targetId === "main")
+    if (!type || targetId === "main") {
+      const parsed = parseServiceMethod(method);
+      if (!parsed) throw new Error(`Invalid method format: "${method}"`);
+
+      checkServiceAccess(parsed.service, callerKind, this.dispatcher, parsed.method);
+
+      const ctx: ServiceContext = { callerId, callerKind };
+      return await this.dispatcher.dispatch(ctx, parsed.service, parsed.method, args);
+    }
+
+    // Relay call to another target
+    if (type === "call") {
+      if (!targetId) throw new Error("Missing targetId for relay call");
+      this.checkRelayAuth(callerId, callerKind, targetId);
+      return await this.relayCall(callerId, targetId, method, args);
+    }
+
+    // Relay event to a target
+    if (type === "emit") {
+      const event = body["event"] as string;
+      const payload = body["payload"];
+      const fromId = (body["fromId"] as string) ?? callerId;
+      if (!targetId) throw new Error("Missing targetId for emit");
+      this.checkRelayAuth(callerId, callerKind, targetId);
+      await this.relayEvent(fromId, targetId, event, payload);
+      return "ok";
+    }
+
+    throw new Error(`Unknown message type: ${type}`);
+  }
+
+  // ===========================================================================
+  // Relay helpers (used by both HTTP POST /rpc and WS handleRoute)
+  // ===========================================================================
+
+  /**
+   * Enforce authorization for relay calls/events.
+   * Mirrors the logic in handleRoute() for WS clients:
+   * - Panels can only reach other panels if they share an ancestor/descendant relationship
+   * - Workers/server/shell can relay to any target
+   */
+  private checkRelayAuth(callerId: string, callerKind: CallerKind, targetId: string): void {
+    if (callerKind !== "panel") return; // Workers, server, shell can relay to anything
+
+    // Panel-to-DO/worker: allowed (workers are server-managed, trusted targets)
+    if (targetId.startsWith("do:") || targetId.startsWith("worker:")) return;
+
+    // Panel-to-panel: enforce tree relationship
+    if (this.deps.panelManager) {
+      const pm = this.deps.panelManager;
+      const isRelated = pm.isDescendantOf(targetId, callerId) || pm.isDescendantOf(callerId, targetId);
+      if (!isRelated) {
+        throw new Error(`Panel ${callerId} cannot relay to unrelated panel ${targetId}`);
+      }
+    }
+  }
+
+  private async relayCall(callerId: string, targetId: string, method: string, args: unknown[]): Promise<unknown> {
+    // Target is a connected WS client? Send via WebSocket bridge.
+    const wsClient = this.callerToClient.get(targetId);
+    if (wsClient?.ws.readyState === WebSocket.OPEN) {
+      const bridge = this.clientBridges.get(targetId);
+      if (bridge) {
+        return await bridge.call(targetId, method, ...args);
+      }
+    }
+
+    // Target is a DO? Relay via postToDOWithToken.
+    if (targetId.startsWith("do:")) {
+      return await this.relayToDO(callerId, targetId, method, args);
+    }
+
+    // Target is a worker? POST to /{workerName}/__rpc
+    if (targetId.startsWith("worker:")) {
+      return await this.relayToWorker(targetId, method, args);
+    }
+
+    throw new Error(`Target not reachable: ${targetId}`);
+  }
+
+  private async relayToDO(callerId: string, targetId: string, method: string, args: unknown[]): Promise<unknown> {
+    const ref = parseDOTarget(targetId);
+
+    const { postToDOWithToken } = await import("./doDispatch.js");
+
+    if (!this.deps.tokenManager || !this.workerdUrl) {
+      throw new Error("Cannot relay to DO: tokenManager or workerdUrl not configured");
+    }
+
+    return await postToDOWithToken(ref, method, args, {
+      tokenManager: this.deps.tokenManager,
+      workerdUrl: this.workerdUrl,
+    }, callerId);
+  }
+
+  private async relayToWorker(targetId: string, method: string, args: unknown[]): Promise<unknown> {
+    // targetId format: "worker:{workerName}"
+    const workerName = targetId.slice(7); // Remove "worker:"
+    if (!this.workerdUrl) throw new Error("workerdUrl not configured");
+
+    const url = `${this.workerdUrl}/${workerName}/__rpc`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "call", method, args }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Worker relay to ${targetId} failed (${res.status}): ${text}`);
+    }
+
+    const json = await res.json() as Record<string, unknown>;
+    if (json["error"]) {
+      const err = new Error(json["error"] as string);
+      if (json["errorCode"]) (err as any).code = json["errorCode"];
+      throw err;
+    }
+    return json["result"];
+  }
+
+  private async relayEvent(fromId: string, targetId: string, event: string, payload: unknown): Promise<void> {
+    // WS client?
+    const wsClient = this.callerToClient.get(targetId);
+    if (wsClient?.ws.readyState === WebSocket.OPEN) {
+      this.sendToWs(wsClient.ws, {
+        type: "ws:routed",
+        fromId,
+        message: { type: "event", fromId, event, payload },
+      });
+      return;
+    }
+
+    // DO?
+    if (targetId.startsWith("do:")) {
+      const ref = parseDOTarget(targetId);
+
+      if (!this.deps.tokenManager || !this.workerdUrl) {
+        throw new Error("Cannot relay event to DO: tokenManager or workerdUrl not configured");
+      }
+
+      const { postToDOWithToken } = await import("./doDispatch.js");
+      // Don't pass fromId as callerId — callerId is for parent tracking,
+      // fromId is the event source (already in the args).
+      await postToDOWithToken(ref, "__event", [event, payload, fromId], {
+        tokenManager: this.deps.tokenManager,
+        workerdUrl: this.workerdUrl,
+      });
+      return;
+    }
+
+    // Worker?
+    if (targetId.startsWith("worker:")) {
+      const workerName = targetId.slice(7);
+      if (!this.workerdUrl) throw new Error("workerdUrl not configured");
+
+      try {
+        const res = await fetch(`${this.workerdUrl}/${workerName}/__rpc`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "emit", event, payload, fromId }),
+        });
+        if (!res.ok) {
+          console.warn(`Event relay to ${targetId} failed (${res.status})`);
+        }
+      } catch (err) {
+        console.warn(`Event relay to ${targetId} failed:`, err);
+      }
+      return;
+    }
+
+    // Silent drop for unreachable targets (matches WS routing behavior)
   }
 
   // ===========================================================================

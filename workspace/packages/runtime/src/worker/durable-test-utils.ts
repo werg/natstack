@@ -147,6 +147,13 @@ export async function createTestDO<T>(
   const mergedEnv = { ...AGENTIC_ENV_DEFAULTS, ...env };
   const instance = new DOClass(ctx, mergedEnv);
 
+  // Seed __instanceToken so that this.rpc is available in tests.
+  // In production, this is set by postToDOWithToken before the first fetch.
+  try {
+    sqlProxy.exec(`INSERT OR IGNORE INTO state (key, value) VALUES ('__instanceToken', 'test-instance-token')`);
+    sqlProxy.exec(`INSERT OR IGNORE INTO state (key, value) VALUES ('__instanceId', 'do:test:TestDO:${objectKey}')`);
+  } catch { /* state table may not exist yet for non-agentic DOs */ }
+
   // call() dispatches through fetch(), matching the production DO invocation path:
   // URL /{objectKey}/{method} → ensureReady() → ensureBootstrapped() → method dispatch
   const call = async <R = unknown>(method: string, ...args: unknown[]): Promise<R> => {
