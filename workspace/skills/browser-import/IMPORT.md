@@ -114,7 +114,7 @@ eval({ code: `
 The agent first shows the import wizard (from DISCOVERY.md), receives the user's selection, then runs the import:
 
 ```
-// Step 1: feedback_custom import wizard → returns { browser, profilePath, dataTypes }
+// Step 1: feedback_custom import wizard → returns { browser, profile, dataTypes }
 // Step 2: eval with the result
 eval({ code: `
   import { createBrowserDataApi } from "@workspace/panel-browser";
@@ -123,7 +123,7 @@ eval({ code: `
 
   const results = await api.startImport({
     browser: "${selection.browser}",
-    profilePath: "${selection.profilePath}",
+    profilePath: "${selection.profile}",
     dataTypes: ${JSON.stringify(selection.dataTypes)},
   });
 

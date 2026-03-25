@@ -80,6 +80,11 @@ export interface ConnectionConfig {
   serverUrl: string;
   token: string;
   clientId: string;
+  rpc?: {
+    call<R = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<R>;
+    onEvent(event: string, listener: (fromId: string, payload: unknown) => void): () => void;
+    selfId: string;
+  };
 }
 
 /** Inject platform-specific navigation */

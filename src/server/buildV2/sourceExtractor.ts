@@ -148,6 +148,13 @@ export function extractSourceForBuild(
   try {
     for (const node of nodes) {
       const sha = resolvedMap.get(node.name)!;
+      // Sanity check: SHA should be a hex string, not a version spec
+      if (sha && !sha.match(/^[0-9a-f]{7,40}$/i) && !sha.startsWith("refs/")) {
+        throw new Error(
+          `Invalid commit SHA for ${node.name}: "${sha}" (expected hex SHA or ref). ` +
+          `This likely means a dependency version like "workspace:*" leaked through as a git ref.`,
+        );
+      }
       const relPath = path.relative(workspaceRoot, node.path);
       const extractTarget = path.join(sourceRoot, relPath);
       fs.mkdirSync(extractTarget, { recursive: true });

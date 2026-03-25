@@ -21,7 +21,7 @@ feedback_custom({
   title: "Import Browser Data",
   code: `... import wizard from DISCOVERY.md ...`
 })
-// → returns { browser, profilePath, dataTypes }
+// → returns { browser, profile, dataTypes }
 ```
 
 ### Step 2: Import

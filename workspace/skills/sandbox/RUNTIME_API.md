@@ -189,7 +189,7 @@ const browserData = createBrowserDataApi(rpc);
 
 ### Passwords
 
-`getPasswords(domain?)`, `getPasswordForSite(url)`, `addPassword(entry)`, `updatePassword(id, partial)`, `deletePassword(id)`
+`getPasswords()`, `getPasswordForSite(url)`, `addPassword(entry)`, `updatePassword(id, partial)`, `deletePassword(id)`
 
 ### Cookies
 
@@ -284,14 +284,18 @@ Manage OAuth connections via Nango. Handles token refresh, consent prompts, and 
 | Method | Description |
 |--------|-------------|
 | `listProviders()` | List configured Nango providers → `[{ key, provider }]` |
-| `listConnections()` | List active connections → `[{ id, provider, connected }]` |
-| `getConnection(providerKey)` | Check connection status |
-| `getToken(providerKey)` | Get access token (auto-refreshes) → `{ accessToken, expiresAt }` |
-| `requestConsent(providerKey, { scopes? })` | Request user consent (shows notification in shell) |
-| `startAuth(providerKey)` | Open auth browser panel (syncs imported cookies first) → `{ authUrl }` |
-| `waitForConnection(providerKey, connId?, timeoutMs?)` | Poll until connected |
-| `connect(providerKey)` | All-in-one: consent + auth + wait |
-| `disconnect(providerKey)` | Revoke connection |
+| `listConnections()` | List active connections → `OAuthConnection[]` |
+| `getConnection(providerKey, connectionId?)` | Check connection status → `OAuthConnection` |
+| `getToken(providerKey, connectionId?)` | Get access token (auto-refreshes) → `{ accessToken, expiresAt, scopes }` |
+| `requestConsent(providerKey, { scopes? })` | Request user consent (shows notification in shell) → `{ consented }` |
+| `startAuth(providerKey, connectionId?)` | Open auth browser panel (syncs imported cookies first) → `{ authUrl, browserPanelId? }` |
+| `waitForConnection(providerKey, connectionId?, timeoutMs?)` | Poll until connected → `OAuthConnection` |
+| `connect(providerKey, connectionId?, { scopes?, reason? })` | All-in-one: consent + auth + wait → `OAuthConnection` |
+| `disconnect(providerKey, connectionId?)` | Revoke connection |
+| `listConsents()` | List consent records for this caller → `ConsentRecord[]` |
+
+`OAuthConnection`: `{ id, provider, email?, connected, lastRefreshed? }`.
+`ConsentRecord`: `{ callerId, provider, scopes, grantedAt }`.
 
 **Quick connect pattern:**
 ```typescript

@@ -50,7 +50,7 @@ const api = createBrowserDataApi(rpc);
 | `api.getCookies(domain?)` | Browse stored cookies |
 | `api.syncCookiesToSession(domain?)` | Push cookies to active browser session |
 | `api.syncCookiesFromSession(domain?)` | Pull cookies from active session |
-| `api.getPasswords(domain?)` | Browse stored passwords |
+| `api.getPasswords()` | Get all stored passwords |
 | `api.getPasswordForSite(url)` | Find password for a URL |
 | `api.getBookmarks(folder?)` | Browse bookmarks by folder |
 | `api.searchBookmarks(query)` | Full-text bookmark search |
@@ -87,15 +87,10 @@ interface StoredCookie {
   domain: string;              // e.g. ".github.com" — the domain/host field
   host_only: number;           // 0 or 1
   path: string;
-  expiration_date: number | null;  // Unix timestamp (ms), null for session cookies
+  expiration_date: number | null;  // Unix timestamp, null for session cookies
   secure: number;              // 0 or 1
   http_only: number;           // 0 or 1
   same_site: string;
-  source_scheme: string | null;
-  source_port: number;
-  source_browser: string | null;
-  created_at: number;
-  last_accessed: number | null;
 }
 ```
 
@@ -111,7 +106,6 @@ interface StoredPassword {
   realm: string;
   date_created: number | null;
   date_last_used: number | null;
-  date_password_changed: number | null;
   times_used: number;
 }
 ```
@@ -123,8 +117,10 @@ interface DetectedBrowser {
   name: string;          // "chrome" | "firefox" | "safari" | etc.
   family: string;        // "chromium" | "firefox" | "webkit"
   displayName: string;   // "Google Chrome"
+  version?: string;
   dataDir: string;       // path to browser data directory
   profiles: DetectedProfile[];
+  tccBlocked?: boolean;  // macOS: needs Full Disk Access permission
 }
 
 interface DetectedProfile {
@@ -132,6 +128,7 @@ interface DetectedProfile {
   displayName: string;
   path: string;          // full path to profile directory
   isDefault: boolean;
+  avatarUrl?: string;    // Chrome profile avatar
 }
 ```
 

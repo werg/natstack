@@ -207,7 +207,7 @@ eval({ code: `
 
 ## Sync Cookies to Browser Session
 
-After importing cookies, sync them to the active browser session so they're used by browser panels:
+Cookies are auto-synced after `startImport`. Use this to re-sync after manual changes, or to sync only a specific domain:
 
 ```
 eval({ code: `
@@ -266,9 +266,9 @@ export default function CookieManager({ props, chat }) {
         <Table.Body>
           {cookies.slice(0, 50).map(c => (
             <Table.Row key={c.id}>
-              <Table.Cell><Text size="1">{c.host}</Text></Table.Cell>
+              <Table.Cell><Text size="1">{c.domain}</Text></Table.Cell>
               <Table.Cell><Text size="1">{c.name}</Text></Table.Cell>
-              <Table.Cell><Text size="1" color="gray">{c.expiry ? new Date(c.expiry * 1000).toLocaleDateString() : "session"}</Text></Table.Cell>
+              <Table.Cell><Text size="1" color="gray">{c.expiration_date ? new Date(c.expiration_date * 1000).toLocaleDateString() : "session"}</Text></Table.Cell>
               <Table.Cell>
                 <Button size="1" variant="ghost" color="red" onClick={() => handleDelete(c.id)}>
                   <TrashIcon />

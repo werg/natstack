@@ -24,10 +24,10 @@ export default function PasswordVault({ props, chat }) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const result = await api.getPasswords(filter || undefined);
+    const result = await api.getPasswords();
     setPasswords(result);
     setLoading(false);
-  }, [filter]);
+  }, []);
 
   useEffect(() => { load(); }, [load]);
 
@@ -45,6 +45,10 @@ export default function PasswordVault({ props, chat }) {
     setTimeout(() => setCopied(null), 2000);
   };
 
+  const filtered = filter
+    ? passwords.filter(p => p.origin_url.includes(filter) || p.username.includes(filter))
+    : passwords;
+
   return (
     <Flex direction="column" gap="2">
       <Box style={{ position: "relative" }}>
@@ -55,7 +59,7 @@ export default function PasswordVault({ props, chat }) {
 
       {loading ? <Spinner size="1" /> : (
         <>
-          <Text size="1" color="gray">{passwords.length} passwords{filter ? " matching " + filter : ""}</Text>
+          <Text size="1" color="gray">{filtered.length} passwords{filter ? " matching " + filter : ""}</Text>
           <Box style={{ maxHeight: 350, overflow: "auto" }}>
             <Table.Root size="1">
               <Table.Header>
@@ -67,7 +71,7 @@ export default function PasswordVault({ props, chat }) {
                 </Table.Row>
               </Table.Header>
               <Table.Body>
-                {passwords.slice(0, 50).map(p => (
+                {filtered.slice(0, 50).map(p => (
                   <Table.Row key={p.id}>
                     <Table.Cell><Text size="1" style={{ maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis" }}>{p.origin_url}</Text></Table.Cell>
                     <Table.Cell>

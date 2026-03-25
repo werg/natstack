@@ -191,7 +191,7 @@ Harness process dies → HarnessManager detects exit → DODispatch
 |---------|----------|----------|
 | `@natstack/harness` | `packages/harness/` | Types (HarnessOutput, ChannelEvent), SDK adapters |
 | `@natstack/pubsub` | `workspace/packages/pubsub/` | PubSubClient (panel-side), protocol types, approval schemas |
-| `@workspace/runtime` | `workspace/packages/runtime/` | DurableObjectBase, ServerDOClient |
+| `@workspace/runtime` | `workspace/packages/runtime/` | DurableObjectBase, HttpRpcBridge, shared clients (OAuth, DB, FS) |
 | `@workspace/agentic-do` | `workspace/packages/agentic-do/` | AgentWorkerBase, ChannelClient, StreamWriter, composable modules |
 | Workers | `workspace/workers/` | DO implementations (agent-worker, test-agent) |
 

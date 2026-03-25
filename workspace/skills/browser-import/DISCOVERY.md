@@ -57,9 +57,9 @@ export default function BrowserDiscovery({ props, chat }) {
         profilePath: profile.path,
         dataTypes,
       });
-      setResults(prev => [...prev, { browser: browser.displayName, profile: profile.displayName, result }]);
+      setResults(prev => [...prev, { browser: browser.displayName, profilePath: profile.displayName, result }]);
     } catch (e) {
-      setResults(prev => [...prev, { browser: browser.displayName, profile: profile.displayName, error: e.message }]);
+      setResults(prev => [...prev, { browser: browser.displayName, profilePath: profile.displayName, error: e.message }]);
     }
     setImporting(null);
   };
@@ -156,7 +156,7 @@ const DATA_TYPES = ["cookies", "passwords", "bookmarks", "history", "autofill", 
 
 export default function ImportWizard({ onSubmit, onCancel, chat }) {
   const [browsers, setBrowsers] = useState(null);
-  const [selected, setSelected] = useState(null);  // { browser, profile }
+  const [selected, setSelected] = useState(null);  // { browser, profile: DetectedProfile }
   const [dataTypes, setDataTypes] = useState(new Set(["cookies", "passwords", "bookmarks"]));
   const api = createBrowserDataApi(chat.rpc);
 
@@ -227,7 +227,7 @@ export default function ImportWizard({ onSubmit, onCancel, chat }) {
 })
 ```
 
-After the user submits, the agent receives `{ browser, profilePath, dataTypes }` and runs the import via eval.
+After the user submits, the agent receives `{ browser, profile, dataTypes }` and runs the import via eval.
 
 ## Types
 

@@ -295,10 +295,9 @@ export class PanelLifecycle implements BridgePanelManager {
     url: string,
     options?: { name?: string; focus?: boolean },
   ): Promise<{ id: string; title: string }> {
-    const caller = this.registry.getPanel(callerId);
-    if (!caller) {
-      throw new Error(`Caller panel not found: ${callerId}`);
-    }
+    // Resolve parent: if caller is a panel, browser panel is its child.
+    // Otherwise (worker/DO), browser panel is a root panel.
+    const callerPanel = this.registry.getPanel(callerId);
 
     // Validate URL
     if (!/^https?:\/\//i.test(url)) {
@@ -317,7 +316,7 @@ export class PanelLifecycle implements BridgePanelManager {
 
     const panelId = computePanelId({
       relativePath,
-      parent: { id: caller.id },
+      parent: callerPanel ? { id: callerPanel.id } : undefined,
       requestedId: options?.name,
     });
 
@@ -357,8 +356,12 @@ export class PanelLifecycle implements BridgePanelManager {
         },
       };
 
-      // Add to registry as child of caller
-      this.registry.addPanel(panel, caller.id);
+      // Add to registry: child of caller panel, or root if caller isn't a panel
+      if (callerPanel) {
+        this.registry.addPanel(panel, callerPanel.id);
+      } else {
+        this.registry.addPanel(panel, null, { addAsRoot: true });
+      }
 
       // Focus if requested
       if (options?.focus) {

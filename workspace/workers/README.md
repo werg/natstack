@@ -415,7 +415,7 @@ The fork worker is a stateless fetch handler that orchestrates the full fork seq
 
 - `runtime.callMain("workerd.cloneDO", ref, newKey)` — clone a DO's SQLite
 - `runtime.callMain("workerd.destroyDO", ref)` — destroy on rollback
-- `fetch(workerdUrl + "/_w/...")` — call DO methods (same as postToDO)
+- `rpc.call("do:source:className:objectKey", method, ...args)` — call DO methods via RPC relay
 
 Trigger via `POST /fork`:
 

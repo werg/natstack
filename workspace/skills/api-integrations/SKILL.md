@@ -230,13 +230,15 @@ Then use the same OAuth + SDK pattern in the panel code. Add `@workspace/integra
 
 ## OAuth flow summary
 
+All methods accept an optional `connectionId` (defaults to `"default-{provider}"`).
+
 | Step | What happens | User sees |
 |------|-------------|-----------|
-| `oauth.connect(provider)` | All-in-one: consent + auth + wait | Notification bar → browser sign-in |
-| `oauth.requestConsent(provider)` | Just consent | Notification bar with Approve/Deny |
-| `oauth.startAuth(provider)` | Syncs cookies, opens browser panel | Browser panel with sign-in page |
-| `oauth.waitForConnection(provider)` | Polls until connected | (agent waits) |
-| `oauth.getToken(provider)` | Returns cached/refreshed token | (invisible) |
+| `oauth.connect(provider, connId?, { scopes? })` | All-in-one: consent + auth + wait → `OAuthConnection` | Notification bar → browser sign-in |
+| `oauth.requestConsent(provider, { scopes? })` | Just consent → `{ consented }` | Notification bar with Approve/Deny |
+| `oauth.startAuth(provider, connId?)` | Syncs cookies, opens browser panel → `{ authUrl, browserPanelId? }` | Browser panel with sign-in page |
+| `oauth.waitForConnection(provider, connId?, timeoutMs?)` | Polls until connected → `OAuthConnection` | (agent waits) |
+| `oauth.getToken(provider, connId?)` | Returns cached/refreshed token → `{ accessToken, expiresAt, scopes }` | (invisible) |
 
 Imported browser cookies are synced before auth, so if the user imported Chrome cookies with an active session, they may already be logged in.
 
