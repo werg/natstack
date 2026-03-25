@@ -321,7 +321,20 @@ Response body is always a string — use `JSON.parse(res.body)` for JSON APIs. 1
 
 ## Integrations (`@workspace/integrations`)
 
-Pre-built API clients that wrap oauth + httpProxy. See `api-integration` skill for the full spectrum from quick experiments to custom libraries.
+Pre-built API clients that wrap oauth + httpProxy. See `api-integrations` skill for the full spectrum from quick experiments to custom libraries.
+
+For APIs without a pre-built integration, use `oauth.getToken()` + the official npm SDK directly:
+
+```typescript
+import { oauth } from "@workspace/runtime";
+import { Client } from "@notionhq/client";  // npm SDK, installed via imports param
+
+const token = await oauth.getToken("notion");
+const notion = new Client({ auth: token.accessToken });
+const results = await notion.search({ query: "my tasks" });
+```
+
+Pre-built wrappers for Gmail and Calendar:
 
 ```typescript
 import { gmail, calendar } from "@workspace/integrations";

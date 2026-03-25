@@ -1,7 +1,0 @@
-{
-  "name": "@workspace-skills/email-api",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "description": "Guide for using Gmail and Calendar APIs from agent eval"
-}

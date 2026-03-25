@@ -139,6 +139,37 @@ export default function Shuffler({ props }) {
 })
 ```
 
+## Connect to an API with OAuth + npm SDK
+
+The general pattern for any OAuth-protected API: connect once, then use the official SDK.
+
+```
+eval({
+  code: `
+    import { oauth } from "@workspace/runtime";
+    import { Client } from "@notionhq/client";
+
+    // Connect if needed (one-time — triggers consent + browser sign-in)
+    const conn = await oauth.getConnection("notion");
+    if (!conn.connected) await oauth.connect("notion");
+
+    // Use the official SDK with the OAuth token
+    const token = await oauth.getToken("notion");
+    const notion = new Client({ auth: token.accessToken });
+    const results = await notion.search({ query: "meeting notes" });
+    for (const page of results.results) {
+      if (page.object === "page") {
+        console.log("-", page.properties?.Name?.title?.[0]?.text?.content ?? page.id);
+      }
+    }
+  `,
+  imports: { "@notionhq/client": "npm:^2.2.0" },
+  timeout: 60000
+})
+```
+
+Works with any Nango-configured provider. Check `await oauth.listProviders()` to see what's available.
+
 ## Import Cookies from Chrome
 
 ```
