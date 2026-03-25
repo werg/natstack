@@ -80,6 +80,9 @@ export interface OAuthClient {
   /** List all active connections. */
   listConnections(): Promise<OAuthConnection[]>;
 
+  /** List configured OAuth providers from Nango. */
+  listProviders(): Promise<Array<{ key: string; provider: string }>>;
+
   /** Explicitly grant consent for a provider (usually done via the consent notification). */
   grantConsent(providerKey: string, scopes: string[]): Promise<void>;
 
@@ -117,6 +120,9 @@ export function createOAuthClient(rpc: RpcBridge): OAuthClient {
     },
     async listConnections() {
       return rpc.call<OAuthConnection[]>("main", "oauth.listConnections");
+    },
+    async listProviders() {
+      return rpc.call<Array<{ key: string; provider: string }>>("main", "oauth.listProviders");
     },
     async grantConsent(pk, scopes) {
       await rpc.call<void>("main", "oauth.grantConsent", pk, scopes);

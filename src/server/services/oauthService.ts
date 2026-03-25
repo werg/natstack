@@ -132,6 +132,9 @@ export function createOAuthService(deps: {
       listConnections: {
         args: z.tuple([]),
       },
+      listProviders: {
+        args: z.tuple([]),
+      },
       grantConsent: {
         args: z.tuple([z.string(), z.array(z.string())]),
       },
@@ -318,6 +321,10 @@ export function createOAuthService(deps: {
 
         case "listConnections": {
           return oauthManager.listConnections();
+        }
+
+        case "listProviders": {
+          return oauthManager.listProviders();
         }
 
         case "grantConsent": {

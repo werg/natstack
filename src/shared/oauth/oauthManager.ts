@@ -208,6 +208,24 @@ export class OAuthManager {
     }
   }
 
+  /**
+   * List configured OAuth providers from Nango.
+   * This tells agents which providers they can connect to.
+   */
+  async listProviders(): Promise<Array<{ key: string; provider: string }>> {
+    if (!this.isConfigured) return [];
+    try {
+      const res = await this.nangoFetch("/config");
+      const data = await res.json() as { configs: Array<{ unique_key: string; provider: string }> };
+      return (data.configs ?? []).map(c => ({
+        key: c.unique_key,
+        provider: c.provider,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
   async disconnect(providerKey: string, connectionId: string): Promise<void> {
     if (!this.isConfigured) return;
 

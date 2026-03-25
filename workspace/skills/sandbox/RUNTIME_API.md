@@ -272,6 +272,82 @@ import { rpc } from "@workspace/runtime";
 const result = await rpc.call("main", "test.run", "panels/my-app");
 ```
 
+## OAuth (`oauth`)
+
+```typescript
+import { oauth } from "@workspace/runtime";
+```
+
+Manage OAuth connections via Nango. Handles token refresh, consent prompts, and browser sign-in automatically.
+
+| Method | Description |
+|--------|-------------|
+| `listProviders()` | List configured Nango providers → `[{ key, provider }]` |
+| `listConnections()` | List active connections → `[{ id, provider, connected }]` |
+| `getConnection(providerKey)` | Check connection status |
+| `getToken(providerKey)` | Get access token (auto-refreshes) → `{ accessToken, expiresAt }` |
+| `requestConsent(providerKey, { scopes? })` | Request user consent (shows notification in shell) |
+| `startAuth(providerKey)` | Open auth browser panel (syncs imported cookies first) → `{ authUrl }` |
+| `waitForConnection(providerKey, connId?, timeoutMs?)` | Poll until connected |
+| `connect(providerKey)` | All-in-one: consent + auth + wait |
+| `disconnect(providerKey)` | Revoke connection |
+
+**Quick connect pattern:**
+```typescript
+const conn = await oauth.getConnection("notion");
+if (!conn.connected) {
+  await oauth.requestConsent("notion", { scopes: ["database:read"] });
+  await oauth.startAuth("notion");
+  await oauth.waitForConnection("notion");
+}
+const token = await oauth.getToken("notion");
+```
+
+## HTTP Proxy (`httpProxy`)
+
+```typescript
+import { httpProxy } from "@workspace/runtime";
+```
+
+Proxy HTTP requests through the server to bypass CORS. No URL restrictions.
+
+```typescript
+const res = await httpProxy.fetch(url, { method?, headers?, body? });
+// → { status: number, headers: Record<string, string>, body: string }
+```
+
+Response body is always a string — use `JSON.parse(res.body)` for JSON APIs. 10MB response size limit.
+
+## Integrations (`@workspace/integrations`)
+
+Pre-built API clients that wrap oauth + httpProxy. See `api-integration` skill for the full spectrum from quick experiments to custom libraries.
+
+```typescript
+import { gmail, calendar } from "@workspace/integrations";
+
+const messages = await gmail.search("from:alice");
+await gmail.send({ to: ["bob@example.com"], subject: "Hi", body: "Hello!" });
+const events = await calendar.listEvents();
+
+// Bootstrap OAuth if needed
+await gmail.ensureConnected();
+```
+
+## Notifications (`notifications`)
+
+```typescript
+import { notifications } from "@workspace/runtime";
+```
+
+Push notifications to the shell chrome area (toasts, errors).
+
+| Method | Description |
+|--------|-------------|
+| `show({ type, title, message?, ttl? })` | Show notification → returns ID |
+| `dismiss(id)` | Dismiss a notification |
+
+Types: `"info"` (5s auto-dismiss), `"success"` (3s), `"warning"` (8s), `"error"` (manual dismiss).
+
 ## Ad Block
 
 ```typescript
