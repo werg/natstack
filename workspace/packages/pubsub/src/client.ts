@@ -1509,7 +1509,7 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
         content: { error: errorMsg },
         complete: true,
         isError: true,
-      }, { persist: true }).catch(() => {});
+      }, { persist: true }).catch(e => console.error("[PubSub] Failed to publish auto-execution error:", e));
     }
   }
 
@@ -1792,7 +1792,7 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
         stream.close();
         rejectResult(new AgenticError("cancelled", "cancelled"));
         methodCallStates.delete(callId);
-        await publish("method-cancel", { callId }, { persist: true }).catch(() => {});
+        await publish("method-cancel", { callId }, { persist: true }).catch(e => console.warn("[PubSub] Failed to publish method cancel:", e));
       },
       get complete() { return state.complete; },
       get isError() { return state.isError; },

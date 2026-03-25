@@ -9,7 +9,6 @@
  */
 
 import { DurableObjectBase, type DurableObjectContext, type DORef } from "@workspace/runtime/worker";
-import { ServerDOClient } from "@workspace/runtime/worker";
 import type { ChannelEvent, HarnessConfig, HarnessOutput, TurnInput, ParticipantDescriptor, UnsubscribeResult, Attachment } from "@natstack/harness/types";
 import { needsApprovalForTool } from "@natstack/pubsub";
 
@@ -27,31 +26,27 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   protected harnesses: HarnessManager;
   protected turns: TurnManager;
   protected continuations: ContinuationStore;
-  protected server: ServerDOClient;
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
 
-    const e = env as Record<string, string>;
-    const serverUrl = e["SERVER_URL"];
-    const authToken = e["RPC_AUTH_TOKEN"];
-
-    if (!serverUrl || !authToken) {
-      throw new Error(
-        `AgentWorkerBase requires SERVER_URL and RPC_AUTH_TOKEN env bindings. ` +
-        `Missing: ${[!serverUrl && "SERVER_URL", !authToken && "RPC_AUTH_TOKEN"].filter(Boolean).join(", ")}`,
-      );
-    }
-
-    this.server = new ServerDOClient(serverUrl, authToken);
+    // Create a lazy RPC proxy that defers to this.rpc (which requires an instance
+    // token set by postToDOWithToken before the first fetch). This lets us
+    // construct modules eagerly for createTables() while deferring actual RPC
+    // calls to when the token is available.
+    const lazyRpc = {
+      call: <T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T> => {
+        return this.rpc.call<T>(targetId, method, ...args);
+      },
+    };
 
     this.identity = new DOIdentity(this.sql);
     this.subscriptions = new SubscriptionManager(
       this.sql,
-      (channelId) => new ChannelClient(this.postToDO.bind(this), channelId),
+      (channelId) => new ChannelClient(lazyRpc, channelId),
       this.identity,
     );
-    this.harnesses = new HarnessManager(this.sql, this.server);
+    this.harnesses = new HarnessManager(this.sql, lazyRpc);
     this.turns = new TurnManager(this.sql);
     this.continuations = new ContinuationStore(this.sql);
 
@@ -129,7 +124,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   // --- ChannelClient factory ---
 
   protected createChannelClient(channelId: string): ChannelClient {
-    return new ChannelClient(this.postToDO.bind(this), channelId);
+    return new ChannelClient(this.rpc, channelId);
   }
 
   // --- 5 Customization Hooks ---
@@ -386,7 +381,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       const activeHarnessId = this.getActiveHarness();
       if (activeHarnessId === context.harnessId) {
         this.continuations.deleteOne(call.callId);
-        await this.server.sendHarnessCommand(context.harnessId, {
+        await this.rpc.call("main", "harness.sendCommand", context.harnessId, {
           type: "approve-tool",
           toolUseId: context.toolUseId,
           allow: true,
@@ -458,6 +453,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       `INSERT OR REPLACE INTO state (key, value) VALUES ('__objectKey', ?)`,
       this.objectKey,
     );
+
+    // RPC identity is automatically updated: the dispatch that calls postClone
+    // delivers the clone's fresh instance token via X-Instance-Token header,
+    // and fetch() always overwrites identity from headers.
 
     // Record fork metadata in state KV
     this.setStateValue("forkedFrom", parentObjectKey);
@@ -560,13 +559,53 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     const method = segments.slice(1).join("/") || "getState";
 
+    // RPC infrastructure endpoints (must match DurableObjectBase)
+    if (method === "__rpc") {
+      const body = await request.json();
+      const result = await this.rpc.handleIncomingPost(body);
+      return new Response(JSON.stringify(result), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (method === "__event") {
+      let args: unknown[] = [];
+      if (request.method === "POST") {
+        const body = await request.text();
+        if (body) {
+          const result = this.parseRequestBody(body);
+          if (result.error) {
+            return new Response(JSON.stringify({ error: result.error }), {
+              status: 400, headers: { "Content-Type": "application/json" },
+            });
+          }
+          args = result.args;
+        }
+      }
+      if (args.length < 2) {
+        return new Response(JSON.stringify({ error: "__event requires at least [event, payload]" }), {
+          status: 400, headers: { "Content-Type": "application/json" },
+        });
+      }
+      const [event, payload, fromId] = args as [string, unknown, string | undefined];
+      await this.rpc.handleIncomingPost({ type: "emit", event, payload, fromId: fromId ?? "" });
+      return new Response(JSON.stringify({ result: "ok" }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     try {
       let args: unknown[] = [];
       if (request.method === "POST") {
         const body = await request.text();
         if (body) {
-          const parsed = JSON.parse(body);
-          args = Array.isArray(parsed) ? parsed : [parsed];
+          const result = this.parseRequestBody(body);
+          if (result.error) {
+            return new Response(JSON.stringify({ error: result.error }), {
+              status: 400, headers: { "Content-Type": "application/json" },
+            });
+          }
+          args = result.args;
         }
       }
 

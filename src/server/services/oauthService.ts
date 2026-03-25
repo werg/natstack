@@ -13,6 +13,7 @@
 
 import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
+import type { CallerKind } from "../../shared/serviceDispatcher.js";
 import type { OAuthManager } from "../../shared/oauth/oauthManager.js";
 import type { NotificationServiceInternal } from "./notificationService.js";
 import type { PanelRegistry } from "../../shared/panelRegistry.js";
@@ -88,6 +89,7 @@ export function createOAuthService(deps: {
           z.string(),
           z.object({ scopes: z.array(z.string()).optional() }).optional(),
         ]),
+        policy: { allowed: ["shell", "panel", "worker"] as CallerKind[] },
       },
       startAuth: {
         args: z.tuple([z.string(), z.string()]),
@@ -175,11 +177,10 @@ export function createOAuthService(deps: {
 
           const authUrl = await oauthManager.getAuthUrl(providerKey, connectionId);
 
-          // Open browser panel for panels only. Workers can't parent
-          // browser panels — they should rely on a panel or the user
-          // having already completed auth before the worker starts.
+          // Open browser panel for sign-in. Works for any caller —
+          // createBrowserPanel resolves a parent panel automatically.
           let browserPanelId: string | undefined;
-          if (openBrowserPanel && callerKind === "panel") {
+          if (openBrowserPanel) {
             try {
               const result = await openBrowserPanel(callerId, authUrl, {
                 name: `Sign in — ${providerKey}`,

@@ -1,20 +1,19 @@
 /**
- * Broadcast + delivery chains for the PubSub Channel DO.
+ * Broadcast + delivery for the PubSub Channel DO.
  *
- * WebSocket participants get direct ws.send().
- * DO participants get HTTP POST through the workerd router with per-participant
- * ordering via promise chains.
+ * All participants (panels and DOs) receive events via RPC emit.
+ * DO participants additionally receive ChannelEvent via RPC call
+ * for ordered delivery with promise chains.
  */
 
-import type { DurableObjectContext, SqlStorage } from "@workspace/runtime/worker";
+import type { SqlStorage } from "@workspace/runtime/worker";
+import type { RpcBridge } from "@natstack/rpc";
 import type { ChannelEvent } from "@natstack/harness/types";
-import type { ServerMessage, StoredAttachment } from "./types.js";
-import { sendJson, buildBinaryFrame } from "./ws-protocol.js";
+import type { ServerMessage, ChannelConfig } from "./types.js";
 
 export interface BroadcastDeps {
-  ctx: DurableObjectContext;
   sql: SqlStorage;
-  postToDO: (source: string, cls: string, key: string, method: string, ...args: unknown[]) => Promise<unknown>;
+  rpc: RpcBridge;
   objectKey: string;
 }
 
@@ -23,63 +22,54 @@ export interface BroadcastDeps {
 const deliveryChains = new Map<string, Promise<void>>();
 
 /**
- * Broadcast a persisted or ephemeral message to all participants.
+ * Broadcast a persisted or ephemeral message to all participants via RPC events.
  */
 export function broadcast(
   deps: BroadcastDeps,
   msg: ServerMessage,
   channelEvent: ChannelEvent | null,
   senderId: string,
-  senderWs: WebSocket | null,
   senderRef?: number,
-  attachments?: StoredAttachment[],
 ): void {
-  // ── WebSocket participants ──
-  const allWs = deps.ctx.getWebSockets();
-  if (attachments && attachments.length > 0) {
-    const bufferForOthers = buildBinaryFrame(msg, attachments);
-    const bufferForSender = senderRef !== undefined
-      ? buildBinaryFrame({ ...msg, ref: senderRef }, attachments)
-      : bufferForOthers;
-
-    for (const ws of allWs) {
-      const data = ws === senderWs ? bufferForSender : bufferForOthers;
-      ws.send(data);
-    }
-  } else {
-    const dataForOthers = JSON.stringify(msg);
-    const dataForSender = senderRef !== undefined
-      ? JSON.stringify({ ...msg, ref: senderRef })
-      : dataForOthers;
-
-    for (const ws of allWs) {
-      const data = ws === senderWs ? dataForSender : dataForOthers;
-      ws.send(data);
-    }
-  }
-
-  // ── DO participants (via HTTP POST through router, with delivery chains) ──
-  if (!channelEvent) return;
-
-  const doParticipants = deps.sql.exec(
-    `SELECT id, do_source, do_class, do_key FROM participants WHERE transport = 'do'`,
+  const participants = deps.sql.exec(
+    `SELECT id, transport, do_source, do_class, do_key FROM participants`,
   ).toArray();
 
-  for (const p of doParticipants) {
+  for (const p of participants) {
     const pid = p["id"] as string;
-    if (pid === senderId) continue;
+    if (pid === senderId) {
+      // Send back to sender with ref for ack
+      if (senderRef !== undefined) {
+        deps.rpc.emit(pid, "channel:message", {
+          channelId: deps.objectKey,
+          message: { ...msg, ref: senderRef },
+        }).catch(err => console.warn(`[Channel] emit failed:`, err));
+      } else {
+        deps.rpc.emit(pid, "channel:message", {
+          channelId: deps.objectKey,
+          message: msg,
+        }).catch(err => console.warn(`[Channel] emit failed:`, err));
+      }
+      continue;
+    }
 
-    const doSource = p["do_source"] as string;
-    const doClass = p["do_class"] as string;
-    const doKey = p["do_key"] as string;
+    // Emit the ServerMessage to all participants via RPC
+    deps.rpc.emit(pid, "channel:message", {
+      channelId: deps.objectKey,
+      message: msg,
+    }).catch(err => console.warn(`[Channel] emit failed:`, err));
 
-    const prev = deliveryChains.get(pid) ?? Promise.resolve();
-    const next: Promise<void> = prev.then(() =>
-      deps.postToDO(doSource, doClass, doKey, "onChannelEvent", deps.objectKey, channelEvent)
-        .then(() => {})
-        .catch(err => console.error(`[Channel] delivery failed for ${pid}:`, err)),
-    );
-    deliveryChains.set(pid, next);
+    // For DO participants, also deliver the structured ChannelEvent via RPC call
+    // for ordered delivery (agent DOs process these via onChannelEvent)
+    if (channelEvent && p["transport"] === "do") {
+      const prev = deliveryChains.get(pid) ?? Promise.resolve();
+      const next: Promise<void> = prev.then(() =>
+        deps.rpc.call(pid, "onChannelEvent", deps.objectKey, channelEvent)
+          .then(() => {})
+          .catch(err => console.error(`[Channel] delivery failed for ${pid}:`, err)),
+      );
+      deliveryChains.set(pid, next);
+    }
   }
 }
 
@@ -89,58 +79,57 @@ export function broadcast(
 export function broadcastConfigUpdate(
   deps: BroadcastDeps,
   config: Record<string, unknown>,
-  senderWs: WebSocket | null,
+  senderId?: string,
   senderRef?: number,
 ): void {
-  const msg = { kind: "config-update" as const, channelConfig: config };
+  const msg: ServerMessage = { kind: "config-update" as const, channelConfig: config as ChannelConfig };
 
-  const allWs = deps.ctx.getWebSockets();
-  const dataForOthers = JSON.stringify(msg);
-  const dataForSender = senderRef !== undefined
-    ? JSON.stringify({ ...msg, ref: senderRef })
-    : dataForOthers;
-
-  for (const ws of allWs) {
-    const data = ws === senderWs ? dataForSender : dataForOthers;
-    ws.send(data);
-  }
-
-  // Notify DO participants
-  const doParticipants = deps.sql.exec(
-    `SELECT id, do_source, do_class, do_key FROM participants WHERE transport = 'do'`,
+  const participants = deps.sql.exec(
+    `SELECT id, transport, do_source, do_class, do_key FROM participants`,
   ).toArray();
 
-  const event: ChannelEvent = {
-    id: 0,
-    messageId: "",
-    type: "config-update",
-    payload: config,
-    senderId: "",
-    ts: Date.now(),
-    persist: false,
-  };
-
-  for (const p of doParticipants) {
-    const doSource = p["do_source"] as string;
-    const doClass = p["do_class"] as string;
-    const doKey = p["do_key"] as string;
-
+  for (const p of participants) {
     const pid = p["id"] as string;
-    const prev = deliveryChains.get(pid) ?? Promise.resolve();
-    const next: Promise<void> = prev.then(() =>
-      deps.postToDO(doSource, doClass, doKey, "onChannelEvent", deps.objectKey, event)
-        .then(() => {})
-        .catch(err => console.error(`[Channel] config-update delivery failed for ${pid}:`, err)),
-    );
-    deliveryChains.set(pid, next);
+
+    // Only include ref for the sender (ack token)
+    const outMsg = (pid === senderId && senderRef !== undefined)
+      ? { ...msg, ref: senderRef }
+      : msg;
+
+    deps.rpc.emit(pid, "channel:message", {
+      channelId: deps.objectKey,
+      message: outMsg,
+    }).catch(err => console.warn(`[Channel] emit failed:`, err));
+
+    // For DO participants, also deliver as a ChannelEvent for ordered processing
+    if (p["transport"] === "do") {
+      const event: ChannelEvent = {
+        id: 0,
+        messageId: "",
+        type: "config-update",
+        payload: config,
+        senderId: "",
+        ts: Date.now(),
+        persist: false,
+      };
+
+      const prev = deliveryChains.get(pid) ?? Promise.resolve();
+      const next: Promise<void> = prev.then(() =>
+        deps.rpc.call(pid, "onChannelEvent", deps.objectKey, event)
+          .then(() => {})
+          .catch(err => console.error(`[Channel] config-update delivery failed for ${pid}:`, err)),
+      );
+      deliveryChains.set(pid, next);
+    }
   }
 }
 
 /**
- * Send a ready message to a single WebSocket client.
+ * Send a ready message to a single subscriber via RPC event.
  */
 export function sendReady(
-  ws: WebSocket,
+  deps: BroadcastDeps,
+  subscriberId: string,
   sql: SqlStorage,
   contextId: string | null,
   channelConfig: Record<string, unknown> | null,
@@ -154,14 +143,17 @@ export function sendReady(
   const firstRow = sql.exec(`SELECT MIN(id) as mid FROM messages WHERE type = 'message'`).toArray();
   const firstChatMessageId = (firstRow[0]?.["mid"] as number | null) ?? undefined;
 
-  sendJson(ws, {
-    kind: "ready",
-    contextId: contextId ?? undefined,
-    channelConfig: channelConfig ?? undefined,
-    totalCount,
-    chatMessageCount,
-    firstChatMessageId,
-  });
+  deps.rpc.emit(subscriberId, "channel:message", {
+    channelId: deps.objectKey,
+    message: {
+      kind: "ready",
+      contextId: contextId ?? undefined,
+      channelConfig: channelConfig ?? undefined,
+      totalCount,
+      chatMessageCount,
+      firstChatMessageId,
+    },
+  }).catch(err => console.warn(`[Channel] emit failed:`, err));
 }
 
 /**
@@ -177,7 +169,7 @@ export function buildChannelEvent(
   senderMetadata: Record<string, unknown> | undefined,
   ts: number,
   persist: boolean,
-  attachments?: StoredAttachment[],
+  attachments?: Array<{ id: string; data: string; mimeType: string; name?: string; size: number }>,
 ): ChannelEvent {
   let parsedPayload: unknown;
   try { parsedPayload = JSON.parse(content); } catch { parsedPayload = content; }
@@ -209,4 +201,3 @@ export function buildChannelEvent(
     ...(mappedAttachments && mappedAttachments.length > 0 ? { attachments: mappedAttachments } : {}),
   };
 }
-

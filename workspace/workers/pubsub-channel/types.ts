@@ -24,7 +24,7 @@ export interface SubscribeResult {
 export interface ParticipantInfo {
   id: string;
   metadata: Record<string, unknown>;
-  transport: "ws" | "do";
+  transport: "rpc" | "do" | "ws";
   connectedAt: number;
   doSource?: string;
   doClass?: string;

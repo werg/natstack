@@ -10,7 +10,7 @@ import type {
  * TestAgentWorker — Minimal agent DO for testing the harness pipeline.
  *
  * Overrides only getHarnessConfig() and getParticipantInfo() to inject a
- * distinctive system prompt. All side effects via direct PubSub/server calls.
+ * distinctive system prompt. All side effects via RPC calls.
  */
 export class TestAgentWorker extends AgentWorkerBase {
   static override schemaVersion = 3;
@@ -51,7 +51,7 @@ export class TestAgentWorker extends AgentWorkerBase {
       this.registerHarness(harnessId, this.getHarnessType());
       this.recordTurnStart(harnessId, channelId, input, event.messageId, event.id);
 
-      await this.server.spawnHarness({
+      await this.rpc.call("main", "harness.spawn", {
         doRef: this.doRef,
         harnessId,
         type: this.getHarnessType(),
@@ -61,7 +61,7 @@ export class TestAgentWorker extends AgentWorkerBase {
       });
     } else if (this.getActiveTurn(activeHarnessId)) {
       // Turn in progress — send to harness first, only enqueue on success
-      await this.server.sendHarnessCommand(activeHarnessId, {
+      await this.rpc.call("main", "harness.sendCommand", activeHarnessId, {
         type: "start-turn",
         input,
       });
@@ -73,7 +73,7 @@ export class TestAgentWorker extends AgentWorkerBase {
       this.setInFlightTurn(channelId, activeHarnessId, event.messageId, event.id, input);
       this.advanceCheckpoint(channelId, activeHarnessId, event.id);
 
-      await this.server.sendHarnessCommand(activeHarnessId, {
+      await this.rpc.call("main", "harness.sendCommand", activeHarnessId, {
         type: "start-turn",
         input,
       });

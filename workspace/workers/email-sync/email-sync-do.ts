@@ -4,13 +4,13 @@
  * Lifecycle:
  * 1. Panel calls startSync(connectionId, providerKey, intervalMs)
  * 2. DO stores config in state KV and sets first alarm
- * 3. On alarm: gets OAuth token via server HTTP API, fetches Gmail
- *    history via native fetch, publishes new-mail events to PubSub
+ * 3. On alarm: gets OAuth token via RPC, fetches Gmail history via
+ *    native fetch, publishes new-mail events to PubSub via RPC
  * 4. Panel subscribes to PubSub channel for real-time updates
  * 5. Panel calls stopSync() to cancel polling
  *
- * Token acquisition: The DO gets OAuth tokens by calling the server's
- * /oauth/token HTTP endpoint (DOs have outbound network via globalOutbound).
+ * Token acquisition: Uses the shared OAuthClient via the RPC bridge
+ * (inherited from DurableObjectBase).
  */
 
 import { DurableObjectBase } from "@workspace/runtime/worker";
@@ -119,34 +119,11 @@ export class EmailSyncWorker extends DurableObjectBase {
     this.setStateValue("sync_status", JSON.stringify(status));
   }
 
-  // --- OAuth token via server HTTP API ---
+  // --- OAuth token via RPC ---
 
   private async getAccessToken(config: SyncConfig): Promise<string> {
-    const serverUrl = this.env["SERVER_URL"] as string | undefined;
-    const authToken = this.env["RPC_AUTH_TOKEN"] as string | undefined;
-    if (!serverUrl || !authToken) {
-      throw new Error("SERVER_URL / RPC_AUTH_TOKEN not available — cannot get OAuth token");
-    }
-
-    const res = await fetch(`${serverUrl}/oauth/token`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${authToken}`,
-      },
-      body: JSON.stringify({
-        providerKey: config.providerKey,
-        connectionId: config.connectionId,
-      }),
-    });
-
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`OAuth token request failed (${res.status}): ${body}`);
-    }
-
-    const data = await res.json() as { accessToken: string };
-    return data.accessToken;
+    const token = await this.oauth.getToken(config.providerKey, config.connectionId);
+    return token.accessToken;
   }
 
   // --- Gmail API (native fetch — DOs have outbound network) ---
@@ -197,10 +174,9 @@ export class EmailSyncWorker extends DurableObjectBase {
     if (!config.pubsubChannel || messages.length === 0) return;
 
     try {
-      await this.postToDO(
-        "workers/pubsub-channel",
-        "PubSubChannel",
-        config.pubsubChannel,
+      const channelId = config.pubsubChannel;
+      await this.rpc.call(
+        `do:workers/pubsub-channel:PubSubChannel:${channelId}`,
         "send",
         `email-sync:${config.connectionId}`,
         `sync-${Date.now()}`,

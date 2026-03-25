@@ -1,30 +1,31 @@
 /**
  * Fork Worker — stateless fetch handler that orchestrates semantic conversation forks.
  *
- * Uses platform primitives:
+ * Uses platform primitives via RPC:
  * - `runtime.callMain("workerd.cloneDO", ...)` for filesystem SQLite clones
  * - `runtime.callMain("workerd.destroyDO", ...)` for rollback cleanup
- * - `fetch(workerdUrl + "/_w/...")` for DO method calls (same as postToDO)
+ * - `runtime.rpc.call("do:source:className:objectKey", method, ...args)` for DO method calls
  */
 
-import { createWorkerRuntime } from "@workspace/runtime/worker";
+import { createWorkerRuntime, handleWorkerRpc } from "@workspace/runtime/worker";
 import type { WorkerEnv, ExecutionContext } from "@workspace/runtime/worker";
 import { fork } from "./fork.js";
 import type { ForkOpts } from "./fork.js";
 
 export default {
   async fetch(request: Request, env: WorkerEnv, _ctx: ExecutionContext) {
+    const runtime = createWorkerRuntime(env);
+
+    // Handle incoming RPC calls
+    const rpcResponse = handleWorkerRpc(runtime, request);
+    if (rpcResponse) return rpcResponse;
+
     const url = new URL(request.url);
 
     if (url.pathname === "/fork" && request.method === "POST") {
       const opts = await request.json() as ForkOpts;
-      const runtime = createWorkerRuntime(env);
-      const workerdPort = await runtime.callMain<number | null>("workerd.getPort");
-      if (!workerdPort) {
-        return Response.json({ error: "workerd not running" }, { status: 503 });
-      }
       try {
-        const result = await fork(runtime, workerdPort, opts);
+        const result = await fork(runtime, opts);
         return Response.json(result);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

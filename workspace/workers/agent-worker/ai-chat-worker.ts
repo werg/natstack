@@ -10,13 +10,13 @@ import type { ChannelEvent, HarnessConfig, HarnessOutput, ParticipantDescriptor 
  * that no instance fields need to survive across DO invocations.
  *
  * Key flows:
- *   1. First user message → spawn harness via this.server.spawnHarness()
- *   2. Subsequent messages → start-turn command via this.server.sendHarnessCommand()
- *   3. Harness events → streamed to channel via StreamWriter (async PubSub HTTP)
- *   4. Crash recovery → respawn via this.server.spawnHarness()
+ *   1. First user message → spawn harness via RPC harness.spawn
+ *   2. Subsequent messages → start-turn command via RPC harness.sendCommand
+ *   3. Harness events → streamed to channel via StreamWriter (async PubSub RPC)
+ *   4. Crash recovery → respawn via RPC harness.spawn
  *   5. Tool approval → async via PubSub callMethod + onCallResult continuation
  *
- * All methods return void — side effects are direct HTTP calls, not action arrays.
+ * All methods return void — side effects are RPC calls, not action arrays.
  */
 export class AiChatWorker extends AgentWorkerBase {
   static override schemaVersion = 3;
@@ -101,7 +101,7 @@ export class AiChatWorker extends AgentWorkerBase {
       }
 
       // Spawn harness via server API
-      await this.server.spawnHarness({
+      await this.rpc.call("main", "harness.spawn", {
         doRef: this.doRef,
         harnessId,
         type: this.getHarnessType(),
@@ -111,7 +111,7 @@ export class AiChatWorker extends AgentWorkerBase {
       });
     } else if (this.getActiveTurn(activeHarnessId)) {
       // Turn in progress — send to harness first, only enqueue on success
-      await this.server.sendHarnessCommand(activeHarnessId, {
+      await this.rpc.call("main", "harness.sendCommand", activeHarnessId, {
         type: "start-turn",
         input,
       });
@@ -131,7 +131,7 @@ export class AiChatWorker extends AgentWorkerBase {
       this.advanceCheckpoint(channelId, activeHarnessId, event.id);
 
       // Send start-turn command to harness
-      await this.server.sendHarnessCommand(activeHarnessId, {
+      await this.rpc.call("main", "harness.sendCommand", activeHarnessId, {
         type: "start-turn",
         input,
       });
@@ -285,7 +285,7 @@ export class AiChatWorker extends AgentWorkerBase {
 
         // Check if channel's approval level allows auto-approval
         if (this.shouldAutoApprove(channelId, event.toolName)) {
-          await this.server.sendHarnessCommand(harnessId, {
+          await this.rpc.call("main", "harness.sendCommand", harnessId, {
             type: "approve-tool",
             toolUseId: event.toolUseId,
             allow: true,
@@ -302,7 +302,7 @@ export class AiChatWorker extends AgentWorkerBase {
         const activeTurnForApproval = this.getActiveTurn(harnessId);
         const panelId = activeTurnForApproval?.senderParticipantId;
         if (!panelId) {
-          await this.server.sendHarnessCommand(harnessId, {
+          await this.rpc.call("main", "harness.sendCommand", harnessId, {
             type: "approve-tool",
             toolUseId: event.toolUseId,
             allow: false,
@@ -378,7 +378,7 @@ export class AiChatWorker extends AgentWorkerBase {
           }
         }
 
-        await this.server.sendHarnessCommand(harnessId, {
+        await this.rpc.call("main", "harness.sendCommand", harnessId, {
           type: "discover-methods-result",
           methods,
         });
@@ -416,7 +416,7 @@ export class AiChatWorker extends AgentWorkerBase {
     switch (methodName) {
       case "pause":
         if (activeId) {
-          await this.server.sendHarnessCommand(activeId, { type: "interrupt" });
+          await this.rpc.call("main", "harness.sendCommand", activeId, { type: "interrupt" });
           return { result: { paused: true } };
         }
         return { result: { error: "no active harness" }, isError: true };
@@ -447,7 +447,7 @@ export class AiChatWorker extends AgentWorkerBase {
         }
         const currentActiveId = this.getActiveHarness();
         if (currentActiveId === harnessId) {
-          await this.server.sendHarnessCommand(harnessId, {
+          await this.rpc.call("main", "harness.sendCommand", harnessId, {
             type: "approve-tool",
             toolUseId,
             allow,
@@ -460,7 +460,7 @@ export class AiChatWorker extends AgentWorkerBase {
       case 'tool-call': {
         const { harnessId, callId } = context as { harnessId: string; callId: string };
         // Deliver tool result back to harness
-        await this.server.sendHarnessCommand(harnessId, {
+        await this.rpc.call("main", "harness.sendCommand", harnessId, {
           type: "tool-result",
           callId,
           result,
@@ -510,7 +510,7 @@ export class AiChatWorker extends AgentWorkerBase {
       persist: false,
     });
 
-    await this.server.spawnHarness({
+    await this.rpc.call("main", "harness.spawn", {
       doRef: this.doRef,
       harnessId,
       type: this.getHarnessType(),
@@ -593,7 +593,7 @@ export class AiChatWorker extends AgentWorkerBase {
     }
 
     // Respawn via server API
-    await this.server.spawnHarness({
+    await this.rpc.call("main", "harness.spawn", {
       doRef: this.doRef,
       harnessId,
       type: this.getHarnessType(),

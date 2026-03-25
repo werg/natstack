@@ -1,16 +1,16 @@
 /**
  * HarnessManager — Harness lifecycle tracking.
  *
- * Owns the `harnesses` table. Calls server directly via ServerDOClient.
+ * Owns the `harnesses` table. Calls server via RPC.
  */
 
 import type { SqlStorage } from "@workspace/runtime/worker";
-import type { ServerDOClient } from "@workspace/runtime/worker";
+import type { RpcCaller } from "@natstack/types";
 
 export class HarnessManager {
   constructor(
     private sql: SqlStorage,
-    private server: ServerDOClient,
+    private rpc: RpcCaller,
   ) {}
 
   createTables(): void {
@@ -89,10 +89,10 @@ export class HarnessManager {
     this.sql.exec(`DELETE FROM harnesses`);
   }
 
-  /** Stop a harness via server API (best-effort). */
+  /** Stop a harness via RPC (best-effort). */
   async stop(harnessId: string): Promise<void> {
     try {
-      await this.server.stopHarness(harnessId);
+      await this.rpc.call("main", "harness.stop", harnessId);
     } catch { /* harness may already be stopped */ }
   }
 }
