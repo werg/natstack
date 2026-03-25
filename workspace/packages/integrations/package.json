@@ -1,0 +1,15 @@
+{
+  "name": "@workspace/integrations",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "High-level API clients for OAuth-protected services (Gmail, Calendar, etc.). Designed for agent eval use.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./gmail": "./src/gmail.ts",
+    "./calendar": "./src/calendar.ts"
+  },
+  "dependencies": {
+    "@workspace/runtime": "workspace:*"
+  }
+}

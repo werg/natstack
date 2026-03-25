@@ -1,358 +1,70 @@
 /**
- * Gmail & Calendar API client for the email panel.
+ * Gmail & Calendar re-exports for the email panel.
  *
- * Uses the OAuthTokenProvider abstraction so it works with any auth strategy
- * (Nango, cookies, etc). All API calls go through Google's REST APIs —
- * no SDK dependency needed.
- *
- * This module demonstrates how a panel developer would structure API access.
- * The key insight: panels shouldn't embed OAuth logic. They should just call
- * `tokenProvider.getToken()` and use the result as a Bearer token.
+ * The actual API logic lives in @workspace/integrations so agents
+ * can use the same code from eval. This module re-exports everything
+ * and adds the panel-specific GmailClient/CalendarClient classes that
+ * wrap the module-level functions with OAuthTokenProvider compatibility.
  */
 
-import { httpProxy } from "@workspace/runtime";
-import type { OAuthTokenProvider, OAuthToken } from "./oauth.js";
+export {
+  search,
+  getMessage,
+  getThread,
+  send as sendMessage,
+  getProfile,
+  listLabels,
+  markAsRead,
+  archive,
+  modifyLabels,
+  ensureConnected,
+} from "@workspace/integrations/gmail";
 
-// ---- Types ----
+export type {
+  GmailMessage,
+  GmailThread,
+  SendOptions as SendMessageRequest,
+} from "@workspace/integrations/gmail";
 
-export interface GmailMessage {
-  id: string;
-  threadId: string;
-  subject: string;
-  from: string;
-  to: string[];
-  date: string;
-  snippet: string;
-  body: string;
-  labels: string[];
-  isUnread: boolean;
-}
+export {
+  listEvents,
+  getEvent,
+} from "@workspace/integrations/calendar";
 
-export interface GmailThread {
-  id: string;
-  subject: string;
-  messages: GmailMessage[];
-  snippet: string;
-}
+export type {
+  CalendarEvent,
+} from "@workspace/integrations/calendar";
 
-export interface CalendarEvent {
-  id: string;
-  summary: string;
-  description?: string;
-  start: string;
-  end: string;
-  location?: string;
-  attendees: string[];
-  htmlLink?: string;
-}
+import * as gmailApi from "@workspace/integrations/gmail";
+import * as calendarApi from "@workspace/integrations/calendar";
+import type { OAuthTokenProvider } from "./oauth.js";
 
-export interface SendMessageRequest {
-  to: string[];
-  cc?: string[];
-  bcc?: string[];
-  subject: string;
-  body: string;
-  inReplyTo?: string;
-  threadId?: string;
-}
-
-// ---- Gmail Client ----
-
-const GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
-const CALENDAR_BASE = "https://www.googleapis.com/calendar/v3";
-
+/**
+ * Class-based wrapper for panel UI use (preserves existing API).
+ * Delegates to the stateless integrations module.
+ */
 export class GmailClient {
-  constructor(private tokenProvider: OAuthTokenProvider) {}
+  constructor(private _provider: OAuthTokenProvider) {}
 
-  private async fetchWithAuth(url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }): Promise<{ status: number; body: string }> {
-    const token = await this.tokenProvider.getToken();
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${token.accessToken}`,
-      ...init?.headers,
-    };
-
-    const res = await httpProxy.fetch(url, {
-      method: init?.method ?? "GET",
-      headers,
-      body: init?.body,
-    });
-
-    if (res.status >= 400) {
-      throw new GmailApiError(res.status, `Gmail API error ${res.status}: ${res.body}`);
-    }
-    return res;
-  }
-
-  private async fetchJson<T>(url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }): Promise<T> {
-    const res = await this.fetchWithAuth(url, init);
-    return JSON.parse(res.body) as T;
-  }
-
-  /** List messages matching a query (Gmail search syntax) */
-  async listMessages(query: string = "", maxResults: number = 20): Promise<GmailMessage[]> {
-    const params = new URLSearchParams({
-      q: query,
-      maxResults: String(maxResults),
-    });
-    const data = await this.fetchJson<{ messages?: Array<{ id: string; threadId: string }> }>(`${GMAIL_BASE}/messages?${params}`);
-
-    if (!data.messages?.length) return [];
-
-    // Batch-fetch message details (up to 20 at a time)
-    const messages = await Promise.all(
-      data.messages.map(m => this.getMessage(m.id)),
-    );
-    return messages;
-  }
-
-  /** Get a single message by ID */
-  async getMessage(messageId: string): Promise<GmailMessage> {
-    const raw = await this.fetchJson<GmailRawMessage>(
-      `${GMAIL_BASE}/messages/${messageId}?format=full`,
-    );
-    return parseGmailMessage(raw);
-  }
-
-  /** Get a full thread */
-  async getThread(threadId: string): Promise<GmailThread> {
-    const raw = await this.fetchJson<{ id: string; snippet: string; messages: GmailRawMessage[] }>(
-      `${GMAIL_BASE}/threads/${threadId}?format=full`,
-    );
-    const messages = raw.messages.map(parseGmailMessage);
-    return {
-      id: raw.id,
-      subject: messages[0]?.subject ?? "(no subject)",
-      messages,
-      snippet: raw.snippet,
-    };
-  }
-
-  /** Search messages */
-  async search(query: string, maxResults: number = 10): Promise<GmailMessage[]> {
-    return this.listMessages(query, maxResults);
-  }
-
-  /** Send a message */
-  async sendMessage(req: SendMessageRequest): Promise<{ id: string; threadId: string }> {
-    const raw = buildRawEmail(req);
-    const encoded = btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-
-    const body: Record<string, string> = { raw: encoded };
-    if (req.threadId) body.threadId = req.threadId;
-
-    return await this.fetchJson<{ id: string; threadId: string }>(`${GMAIL_BASE}/messages/send`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-  }
-
-  /** Get the user's email address */
-  async getProfile(): Promise<{ email: string; messagesTotal: number }> {
-    const data = await this.fetchJson<{ emailAddress: string; messagesTotal: number }>(`${GMAIL_BASE}/profile`);
-    return { email: data.emailAddress, messagesTotal: data.messagesTotal };
-  }
-
-  /** List labels */
-  async listLabels(): Promise<Array<{ id: string; name: string; type: string }>> {
-    const data = await this.fetchJson<{ labels: Array<{ id: string; name: string; type: string }> }>(`${GMAIL_BASE}/labels`);
-    return data.labels ?? [];
-  }
-
-  /** Modify message labels (e.g., mark as read) */
-  async modifyMessage(
-    messageId: string,
-    addLabels: string[] = [],
-    removeLabels: string[] = [],
-  ): Promise<void> {
-    await this.fetchJson(`${GMAIL_BASE}/messages/${messageId}/modify`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        addLabelIds: addLabels,
-        removeLabelIds: removeLabels,
-      }),
-    });
-  }
-
-  /** Mark a message as read */
-  async markAsRead(messageId: string): Promise<void> {
-    await this.modifyMessage(messageId, [], ["UNREAD"]);
-  }
-
-  /** Archive a message */
-  async archive(messageId: string): Promise<void> {
-    await this.modifyMessage(messageId, [], ["INBOX"]);
-  }
+  search(query: string, maxResults?: number) { return gmailApi.search(query, maxResults); }
+  getMessage(id: string) { return gmailApi.getMessage(id); }
+  getThread(id: string) { return gmailApi.getThread(id); }
+  sendMessage(opts: gmailApi.SendOptions) { return gmailApi.send(opts); }
+  getProfile() { return gmailApi.getProfile(); }
+  listLabels() { return gmailApi.listLabels(); }
+  markAsRead(id: string) { return gmailApi.markAsRead(id); }
+  archive(id: string) { return gmailApi.archive(id); }
 }
-
-// ---- Calendar Client ----
 
 export class CalendarClient {
-  constructor(private tokenProvider: OAuthTokenProvider) {}
+  constructor(private _provider: OAuthTokenProvider) {}
 
-  private async fetchJson<T>(url: string, init?: { method?: string; headers?: Record<string, string>; body?: string }): Promise<T> {
-    const token = await this.tokenProvider.getToken();
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${token.accessToken}`,
-      ...init?.headers,
-    };
-
-    const res = await httpProxy.fetch(url, {
-      method: init?.method ?? "GET",
-      headers,
-      body: init?.body,
-    });
-
-    if (res.status >= 400) {
-      throw new GmailApiError(res.status, `Calendar API error ${res.status}: ${res.body}`);
-    }
-    return JSON.parse(res.body) as T;
-  }
-
-  /** List upcoming events */
-  async listEvents(opts?: {
-    timeMin?: string;
-    timeMax?: string;
-    maxResults?: number;
-    calendarId?: string;
-  }): Promise<CalendarEvent[]> {
-    const calendarId = opts?.calendarId ?? "primary";
-    const params = new URLSearchParams({
-      timeMin: opts?.timeMin ?? new Date().toISOString(),
-      maxResults: String(opts?.maxResults ?? 10),
-      singleEvents: "true",
-      orderBy: "startTime",
-    });
-    if (opts?.timeMax) params.set("timeMax", opts.timeMax);
-
-    const data = await this.fetchJson<{ items?: GcalRawEvent[] }>(
-      `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events?${params}`,
-    );
-    return (data.items ?? []).map(parseCalendarEvent);
-  }
-
-  /** Get a single event */
-  async getEvent(eventId: string, calendarId: string = "primary"): Promise<CalendarEvent> {
-    const raw = await this.fetchJson<GcalRawEvent>(
-      `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${eventId}`,
-    );
-    return parseCalendarEvent(raw);
-  }
-}
-
-// ---- Internal types & helpers ----
-
-interface GmailRawMessage {
-  id: string;
-  threadId: string;
-  snippet: string;
-  labelIds?: string[];
-  payload: {
-    headers: Array<{ name: string; value: string }>;
-    body?: { data?: string };
-    parts?: Array<{
-      mimeType: string;
-      body?: { data?: string };
-      parts?: Array<{ mimeType: string; body?: { data?: string } }>;
-    }>;
-  };
-}
-
-interface GcalRawEvent {
-  id: string;
-  summary?: string;
-  description?: string;
-  start?: { dateTime?: string; date?: string };
-  end?: { dateTime?: string; date?: string };
-  location?: string;
-  attendees?: Array<{ email: string }>;
-  htmlLink?: string;
-}
-
-function getHeader(msg: GmailRawMessage, name: string): string {
-  return msg.payload.headers.find(h => h.name.toLowerCase() === name.toLowerCase())?.value ?? "";
-}
-
-function decodeBase64Url(data: string): string {
-  const padded = data.replace(/-/g, "+").replace(/_/g, "/");
-  try {
-    return atob(padded);
-  } catch {
-    return data;
-  }
-}
-
-function extractBody(payload: GmailRawMessage["payload"]): string {
-  // Try direct body
-  if (payload.body?.data) {
-    return decodeBase64Url(payload.body.data);
-  }
-  // Try parts (prefer text/plain, fall back to text/html)
-  if (payload.parts) {
-    const textPart = payload.parts.find(p => p.mimeType === "text/plain");
-    if (textPart?.body?.data) return decodeBase64Url(textPart.body.data);
-
-    const htmlPart = payload.parts.find(p => p.mimeType === "text/html");
-    if (htmlPart?.body?.data) return decodeBase64Url(htmlPart.body.data);
-
-    // Nested multipart
-    for (const part of payload.parts) {
-      if (part.parts) {
-        const nested = part.parts.find(p => p.mimeType === "text/plain");
-        if (nested?.body?.data) return decodeBase64Url(nested.body.data);
-      }
-    }
-  }
-  return "";
-}
-
-function parseGmailMessage(raw: GmailRawMessage): GmailMessage {
-  return {
-    id: raw.id,
-    threadId: raw.threadId,
-    subject: getHeader(raw, "Subject") || "(no subject)",
-    from: getHeader(raw, "From"),
-    to: getHeader(raw, "To").split(",").map(s => s.trim()).filter(Boolean),
-    date: getHeader(raw, "Date"),
-    snippet: raw.snippet,
-    body: extractBody(raw.payload),
-    labels: raw.labelIds ?? [],
-    isUnread: raw.labelIds?.includes("UNREAD") ?? false,
-  };
-}
-
-function parseCalendarEvent(raw: GcalRawEvent): CalendarEvent {
-  return {
-    id: raw.id,
-    summary: raw.summary ?? "(no title)",
-    description: raw.description,
-    start: raw.start?.dateTime ?? raw.start?.date ?? "",
-    end: raw.end?.dateTime ?? raw.end?.date ?? "",
-    location: raw.location,
-    attendees: raw.attendees?.map(a => a.email) ?? [],
-    htmlLink: raw.htmlLink,
-  };
-}
-
-function buildRawEmail(req: SendMessageRequest): string {
-  const lines: string[] = [];
-  lines.push(`To: ${req.to.join(", ")}`);
-  if (req.cc?.length) lines.push(`Cc: ${req.cc.join(", ")}`);
-  if (req.bcc?.length) lines.push(`Bcc: ${req.bcc.join(", ")}`);
-  lines.push(`Subject: ${req.subject}`);
-  lines.push("Content-Type: text/plain; charset=utf-8");
-  if (req.inReplyTo) lines.push(`In-Reply-To: ${req.inReplyTo}`);
-  lines.push("");
-  lines.push(req.body);
-  return lines.join("\r\n");
+  listEvents(opts?: Parameters<typeof calendarApi.listEvents>[0]) { return calendarApi.listEvents(opts); }
+  getEvent(id: string, calendarId?: string) { return calendarApi.getEvent(id, calendarId); }
 }
 
 export class GmailApiError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-  ) {
+  constructor(public status: number, message: string) {
     super(message);
     this.name = "GmailApiError";
   }
