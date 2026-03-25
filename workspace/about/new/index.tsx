@@ -21,12 +21,13 @@ import { getWorkspaceTree, buildPanelLink, onFocus } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
 import type { WorkspaceTree, WorkspaceNode } from "@workspace/runtime";
 
-/** Flatten a workspace tree into a list of visible launchable nodes. */
-function collectLaunchable(nodes: WorkspaceNode[]): WorkspaceNode[] {
+/** Flatten a workspace tree into a list of visible launchable panels. */
+function collectPanels(nodes: WorkspaceNode[]): WorkspaceNode[] {
   const result: WorkspaceNode[] = [];
   for (const node of nodes) {
-    if (node.launchable && !node.launchable.hidden) result.push(node);
-    result.push(...collectLaunchable(node.children));
+    if (node.launchable && !node.launchable.hidden && (node.path.startsWith("panels/") || node.path.startsWith("about/")))
+      result.push(node);
+    result.push(...collectPanels(node.children));
   }
   return result;
 }
@@ -86,7 +87,7 @@ function NewPanelPage() {
     );
   }
 
-  const panels = tree ? collectLaunchable(tree.children) : [];
+  const panels = tree ? collectPanels(tree.children) : [];
 
   return (
     <Box p="4" style={{ maxWidth: "700px", margin: "0 auto" }}>
