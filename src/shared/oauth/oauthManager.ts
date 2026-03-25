@@ -53,11 +53,12 @@ export class OAuthManager {
       this.dbHandle = this.databaseManager.open(this.ownerId, "oauth");
       this.databaseManager.exec(this.dbHandle, `
         CREATE TABLE IF NOT EXISTS oauth_consent (
-          panel_source TEXT NOT NULL,
+          panel_id TEXT NOT NULL,
           provider TEXT NOT NULL,
           scopes TEXT NOT NULL DEFAULT '[]',
           granted_at INTEGER NOT NULL,
-          PRIMARY KEY (panel_source, provider)
+          workspace_wide INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (panel_id, provider)
         )
       `);
       this.databaseManager.exec(this.dbHandle, `
@@ -252,44 +253,62 @@ export class OAuthManager {
   // Consent tracking
   // =========================================================================
 
-  async hasConsent(panelSource: string, providerKey: string): Promise<boolean> {
+  /**
+   * Check if a panel has consent for a provider.
+   * Checks both panel-specific consent and workspace-wide consent.
+   */
+  async hasConsent(panelId: string, providerKey: string): Promise<boolean> {
     const handle = this.ensureDb();
+    // Check panel-specific consent
     const row = this.databaseManager.get<{ c: number }>(
       handle,
-      "SELECT 1 as c FROM oauth_consent WHERE panel_source = ? AND provider = ?",
-      [panelSource, providerKey],
+      "SELECT 1 as c FROM oauth_consent WHERE panel_id = ? AND provider = ?",
+      [panelId, providerKey],
     );
-    return !!row;
+    if (row) return true;
+    // Check workspace-wide consent (panel_id = '*')
+    const wsRow = this.databaseManager.get<{ c: number }>(
+      handle,
+      "SELECT 1 as c FROM oauth_consent WHERE panel_id = '*' AND provider = ?",
+      [providerKey],
+    );
+    return !!wsRow;
   }
 
-  async grantConsent(panelSource: string, providerKey: string, scopes: string[]): Promise<void> {
+  /**
+   * Grant consent for a specific panel or workspace-wide.
+   * @param panelId Panel ID, or '*' for workspace-wide
+   */
+  async grantConsent(panelId: string, providerKey: string, scopes: string[], workspaceWide = false): Promise<void> {
+    const handle = this.ensureDb();
+    const effectiveId = workspaceWide ? "*" : panelId;
+    this.databaseManager.run(
+      handle,
+      "INSERT OR REPLACE INTO oauth_consent (panel_id, provider, scopes, granted_at, workspace_wide) VALUES (?, ?, ?, ?, ?)",
+      [effectiveId, providerKey, JSON.stringify(scopes), Date.now(), workspaceWide ? 1 : 0],
+    );
+  }
+
+  async revokeConsent(panelId: string, providerKey: string): Promise<void> {
     const handle = this.ensureDb();
     this.databaseManager.run(
       handle,
-      "INSERT OR REPLACE INTO oauth_consent (panel_source, provider, scopes, granted_at) VALUES (?, ?, ?, ?)",
-      [panelSource, providerKey, JSON.stringify(scopes), Date.now()],
+      "DELETE FROM oauth_consent WHERE panel_id = ? AND provider = ?",
+      [panelId, providerKey],
     );
   }
 
-  async revokeConsent(panelSource: string, providerKey: string): Promise<void> {
+  async listConsents(panelId: string): Promise<ConsentRecord[]> {
     const handle = this.ensureDb();
-    this.databaseManager.run(
+    // Return both panel-specific and workspace-wide consents
+    const rows = this.databaseManager.query<{ panel_id: string; provider: string; scopes: string; granted_at: number; workspace_wide: number }>(
       handle,
-      "DELETE FROM oauth_consent WHERE panel_source = ? AND provider = ?",
-      [panelSource, providerKey],
-    );
-  }
-
-  async listConsents(panelSource: string): Promise<ConsentRecord[]> {
-    const handle = this.ensureDb();
-    const rows = this.databaseManager.query<{ panel_source: string; provider: string; scopes: string; granted_at: number }>(
-      handle,
-      "SELECT panel_source, provider, scopes, granted_at FROM oauth_consent WHERE panel_source = ?",
-      [panelSource],
+      "SELECT panel_id, provider, scopes, granted_at, workspace_wide FROM oauth_consent WHERE panel_id = ? OR panel_id = '*'",
+      [panelId],
     );
 
     return rows.map(r => ({
-      panelSource: r.panel_source,
+      panelSource: r.panel_id,
       provider: r.provider,
       scopes: JSON.parse(r.scopes),
       grantedAt: r.granted_at,

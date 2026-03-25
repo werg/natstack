@@ -56,13 +56,6 @@ export function createOAuthService(deps: {
 }): ServiceDefinition {
   const { oauthManager, panelRegistry, notificationService, syncCookiesToSession, openBrowserPanel } = deps;
 
-  /** Resolve callerId to panel source path (e.g., "panels/email"). */
-  function getPanelSource(callerId: string): string | null {
-    const panels = panelRegistry.listPanels();
-    const panel = panels.find(p => p.panelId === callerId);
-    return panel?.source ?? null;
-  }
-
   /** Get panel title for consent notification. */
   function getPanelTitle(callerId: string): string {
     const panels = panelRegistry.listPanels();
@@ -96,7 +89,7 @@ export function createOAuthService(deps: {
   return {
     name: "oauth",
     description: "OAuth token management via Nango with dynamic consent",
-    policy: { allowed: ["shell", "panel", "worker", "server"] },
+    policy: { allowed: ["shell", "panel"] },
     methods: {
       getToken: {
         args: z.tuple([z.string(), z.string()]),
@@ -146,21 +139,45 @@ export function createOAuthService(deps: {
       },
     },
     handler: async (ctx, method, args) => {
-      const panelSource = getPanelSource(ctx.callerId);
-      const isWorker = ctx.callerKind === "worker" || ctx.callerKind === "server";
+      const callerId = ctx.callerId;
+
+      /** Show consent notification and wait for user action. Returns the granted scope. */
+      async function requestConsentFlow(providerKey: string, scopes: string[]): Promise<void> {
+        const notifId = `oauth-consent-${randomUUID()}`;
+        const panelTitle = getPanelTitle(callerId);
+
+        notificationService.show({
+          id: notifId,
+          type: "consent",
+          title: "OAuth Access Requested",
+          consent: {
+            provider: providerKey,
+            scopes,
+            panelSource: callerId,
+            panelTitle,
+          },
+          sourcePanelId: callerId,
+        });
+
+        const actionId = await notificationService.waitForAction(notifId, 120_000);
+        if (actionId === "approve-workspace") {
+          await oauthManager.grantConsent(callerId, providerKey, scopes, true);
+        } else if (actionId === "approve") {
+          await oauthManager.grantConsent(callerId, providerKey, scopes);
+        } else {
+          throw new Error(`OAuth consent denied for provider "${providerKey}"`);
+        }
+      }
 
       switch (method) {
         case "getToken": {
           const [providerKey, connectionId] = args as [string, string];
-          // Check consent (skip for workers/server)
-          if (!isWorker && panelSource) {
-            const hasConsent = await oauthManager.hasConsent(panelSource, providerKey);
-            if (!hasConsent) {
-              throw new Error(
-                `Panel "${panelSource}" has not been granted consent for provider "${providerKey}". ` +
-                `Call oauth.connect() first to initiate the consent and auth flow.`,
-              );
-            }
+          const hasConsent = await oauthManager.hasConsent(callerId, providerKey);
+          if (!hasConsent) {
+            throw new Error(
+              `Panel has not been granted consent for provider "${providerKey}". ` +
+              `Call oauth.connect() first to initiate the consent and auth flow.`,
+            );
           }
           return oauthManager.getToken(providerKey, connectionId);
         }
@@ -169,63 +186,24 @@ export function createOAuthService(deps: {
           const [providerKey, connectionId, opts] = args as [string, string, { scopes?: string[]; reason?: string } | undefined];
           const scopes = opts?.scopes ?? [];
 
-          // Check consent (skip for workers/server)
-          if (!isWorker && panelSource) {
-            const hasConsent = await oauthManager.hasConsent(panelSource, providerKey);
-
-            if (!hasConsent) {
-              // Push a consent notification to the shell
-              const notifId = `oauth-consent-${randomUUID()}`;
-              const panelTitle = getPanelTitle(ctx.callerId);
-
-              notificationService.show({
-                id: notifId,
-                type: "consent",
-                title: "OAuth Access Requested",
-                consent: {
-                  provider: providerKey,
-                  scopes,
-                  panelSource: panelSource,
-                  panelTitle,
-                },
-              });
-
-              // Block until user approves or denies (120s timeout)
-              const actionId = await notificationService.waitForAction(notifId, 120_000);
-
-              if (actionId !== "approve") {
-                throw new Error(`OAuth consent denied for provider "${providerKey}"`);
-              }
-
-              // Store consent
-              await oauthManager.grantConsent(panelSource, providerKey, scopes);
-            }
+          if (!(await oauthManager.hasConsent(callerId, providerKey))) {
+            await requestConsentFlow(providerKey, scopes);
           }
 
-          // Pre-sync imported cookies for the provider's auth domains.
-          // This means if the user imported Chrome cookies that include a
-          // Google session, the OAuth browser panel will already be logged in.
           await presyncCookiesForProvider(providerKey);
-
-          // Get the Nango auth URL
           const authUrl = await oauthManager.getAuthUrl(providerKey, connectionId);
 
-          // Open the auth URL in a browser panel (if available).
-          // The browser panel uses the shared BROWSER_SESSION_PARTITION,
-          // so it inherits synced cookies AND has autofill attached for
-          // password auto-fill on login forms.
           if (openBrowserPanel) {
             try {
-              await openBrowserPanel(ctx.callerId, authUrl, {
+              await openBrowserPanel(callerId, authUrl, {
                 name: `Sign in — ${providerKey}`,
                 focus: true,
               });
             } catch {
-              // Non-fatal: fall through to polling (panel can open URL manually)
+              // Non-fatal
             }
           }
 
-          // Poll for connection completion
           const deadline = Date.now() + 120_000;
           while (Date.now() < deadline) {
             const conn = await oauthManager.getConnection(providerKey, connectionId);
@@ -242,33 +220,11 @@ export function createOAuthService(deps: {
           const [providerKey, opts] = args as [string, { scopes?: string[] } | undefined];
           const scopes = opts?.scopes ?? [];
 
-          if (isWorker) return { consented: true };
-          if (!panelSource) return { consented: true };
-
-          const hasConsent = await oauthManager.hasConsent(panelSource, providerKey);
-          if (hasConsent) return { consented: true };
-
-          const notifId = `oauth-consent-${randomUUID()}`;
-          const panelTitle = getPanelTitle(ctx.callerId);
-
-          notificationService.show({
-            id: notifId,
-            type: "consent",
-            title: "OAuth Access Requested",
-            consent: {
-              provider: providerKey,
-              scopes,
-              panelSource: panelSource,
-              panelTitle,
-            },
-          });
-
-          const actionId = await notificationService.waitForAction(notifId, 120_000);
-          if (actionId !== "approve") {
-            throw new Error(`OAuth consent denied for provider "${providerKey}"`);
+          if (await oauthManager.hasConsent(callerId, providerKey)) {
+            return { consented: true };
           }
 
-          await oauthManager.grantConsent(panelSource, providerKey, scopes);
+          await requestConsentFlow(providerKey, scopes);
           return { consented: true };
         }
 
@@ -329,21 +285,18 @@ export function createOAuthService(deps: {
 
         case "grantConsent": {
           const [providerKey, scopes] = args as [string, string[]];
-          if (!panelSource) throw new Error("Cannot grant consent: panel source unknown");
-          await oauthManager.grantConsent(panelSource, providerKey, scopes);
+          await oauthManager.grantConsent(callerId, providerKey, scopes);
           return;
         }
 
         case "revokeConsent": {
           const [providerKey] = args as [string];
-          if (!panelSource) throw new Error("Cannot revoke consent: panel source unknown");
-          await oauthManager.revokeConsent(panelSource, providerKey);
+          await oauthManager.revokeConsent(callerId, providerKey);
           return;
         }
 
         case "listConsents": {
-          if (!panelSource) return [];
-          return oauthManager.listConsents(panelSource);
+          return oauthManager.listConsents(callerId);
         }
 
         default:

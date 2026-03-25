@@ -22,6 +22,7 @@ import {
 } from "@radix-ui/react-icons";
 import { useShellEvent } from "../shell/useShellEvent";
 import { view, notification } from "../shell/client";
+import { useNavigation } from "./NavigationContext";
 import type { NotificationPayload } from "../../shared/events";
 
 /** Default TTLs by notification type (ms). 0 = no auto-dismiss. */
@@ -76,6 +77,7 @@ export function NotificationBar() {
   const [notifications, setNotifications] = useState<Map<string, NotificationPayload>>(new Map());
   const timerCleanups = useRef<Map<string, () => void>>(new Map());
   const barRef = useRef<HTMLDivElement>(null);
+  const { navigateToId } = useNavigation();
 
   // Handle incoming notifications
   useShellEvent(
@@ -184,6 +186,7 @@ export function NotificationBar() {
           queueCount={queueCount}
           onAction={handleAction}
           onDismiss={dismissNotification}
+          onNavigate={navigateToId}
         />
       </div>
     );
@@ -273,13 +276,21 @@ function ConsentNotification({
   queueCount,
   onAction,
   onDismiss,
+  onNavigate,
 }: {
   notification: NotificationPayload;
   queueCount: number;
   onAction: (id: string, actionId: string) => void;
   onDismiss: (id: string) => void;
+  onNavigate: (panelId: string) => void;
 }) {
   const consent = notification.consent;
+
+  const handleBarClick = useCallback(() => {
+    if (notification.sourcePanelId) {
+      onNavigate(notification.sourcePanelId);
+    }
+  }, [notification.sourcePanelId, onNavigate]);
 
   return (
     <Flex
@@ -291,7 +302,9 @@ function ConsentNotification({
         backgroundColor: TYPE_BG.consent,
         borderBottom: `1px solid ${TYPE_BORDER.consent}`,
         flexShrink: 0,
+        cursor: notification.sourcePanelId ? "pointer" : undefined,
       }}
+      onClick={handleBarClick}
     >
       <Flex align="center" justify="between">
         <Flex align="center" gap="2">
@@ -305,7 +318,7 @@ function ConsentNotification({
             </Badge>
           )}
         </Flex>
-        <Button size="1" variant="ghost" onClick={() => onDismiss(notification.id)}>
+        <Button size="1" variant="ghost" onClick={(e) => { e.stopPropagation(); onDismiss(notification.id); }}>
           <Cross2Icon />
         </Button>
       </Flex>
@@ -332,15 +345,23 @@ function ConsentNotification({
               size="1"
               variant="solid"
               color="green"
-              onClick={() => onAction(notification.id, "approve")}
+              onClick={(e) => { e.stopPropagation(); onAction(notification.id, "approve"); }}
             >
               Approve
             </Button>
             <Button
               size="1"
               variant="soft"
+              color="green"
+              onClick={(e) => { e.stopPropagation(); onAction(notification.id, "approve-workspace"); }}
+            >
+              Always Allow
+            </Button>
+            <Button
+              size="1"
+              variant="soft"
               color="red"
-              onClick={() => onAction(notification.id, "deny")}
+              onClick={(e) => { e.stopPropagation(); onAction(notification.id, "deny"); }}
             >
               Deny
             </Button>
