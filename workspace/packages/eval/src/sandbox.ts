@@ -52,7 +52,10 @@ export interface SandboxOptions {
   syntax?: "typescript" | "jsx" | "tsx";
   /** Timeout in ms for async operations (default: 10s, max: 90s, 0 = skip async) */
   timeout?: number;
-  /** Workspace packages to build and load before execution */
+  /** Packages to build and load before execution.
+   *  - Workspace packages: value is "latest" or a git ref (branch/tag/SHA)
+   *  - npm packages: value is "npm:<version>" (e.g. "npm:^4.17.21", "npm:latest")
+   */
   imports?: Record<string, string>;
   /** Console streaming callback */
   onConsole?: (formatted: string) => void;

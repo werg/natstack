@@ -1198,6 +1198,83 @@ async function buildLibraryBundle(
 }
 
 // ---------------------------------------------------------------------------
+// Npm Library Build
+// ---------------------------------------------------------------------------
+
+/**
+ * Build an npm package as a CJS library bundle for sandbox consumption.
+ *
+ * Unlike buildLibraryBundle (which builds workspace packages from git), this
+ * installs an arbitrary npm package and bundles it with esbuild. The result
+ * is a self-contained CJS string that can be loaded into __natstackModuleMap__.
+ *
+ * Flow: npm install → esbuild bundle → return CJS string.
+ *
+ * Security:
+ * - npm install runs with --ignore-scripts (no postinstall)
+ * - Native addons (.node files) will fail to bundle (natural guardrail)
+ * - Bundle size is bounded by esbuild timeout / memory limits
+ */
+export async function buildNpmLibrary(
+  specifier: string,
+  version: string,
+  externals: string[],
+): Promise<string> {
+  await acquireSemaphore();
+
+  try {
+    const deps: Record<string, string> = { [specifier]: version };
+    const nodeModulesDir = await ensureExternalDeps(deps);
+
+    if (!nodeModulesDir) {
+      throw new Error(`Failed to install npm package: ${specifier}@${version}`);
+    }
+
+    const outdir = path.join(
+      require("os").tmpdir(),
+      "natstack-builds",
+      `npm-${specifier.replace(/[/@]/g, "_")}-${Date.now()}`,
+    );
+    fs.mkdirSync(outdir, { recursive: true });
+
+    const nodePaths = [nodeModulesDir];
+    if (_appNodeModules) {
+      nodePaths.push(_appNodeModules);
+    }
+    const resolveDir = pickResolveDir(nodePaths, "");
+
+    try {
+      await esbuild.build({
+        stdin: {
+          contents: `module.exports = require("${specifier}");`,
+          resolveDir,
+          loader: "js",
+        },
+        bundle: true,
+        format: "cjs",
+        platform: "browser",
+        outfile: path.join(outdir, "bundle.js"),
+        write: true,
+        external: externals,
+        nodePaths,
+        logLevel: "warning",
+        tsconfigRaw: { compilerOptions: {} },
+      });
+
+      return fs.readFileSync(path.join(outdir, "bundle.js"), "utf-8");
+    } finally {
+      try {
+        fs.rmSync(outdir, { recursive: true, force: true });
+      } catch {
+        // Ignore
+      }
+    }
+  } finally {
+    releaseSemaphore();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

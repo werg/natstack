@@ -142,6 +142,19 @@ Two build strategies, selected by unit kind:
 - Native addons externalized (`*.node`, `fsevents`, `bufferutil`, etc.)
 - Output: `bundle.mjs` (stored as `bundle.js` in build store with `package.json` `{"type":"module"}`)
 
+**Library build** (CJS, for sandbox eval):
+- `platform: "browser"`, `format: "cjs"`
+- Code splitting disabled (single `bundle.js`)
+- Caller supplies `externals[]` — specifiers already in the module map
+- Used by `imports` parameter of the eval tool to load workspace packages on-demand
+
+**Npm library build** (CJS, for sandbox eval):
+- Installs an arbitrary npm package via `ensureExternalDeps` (cached, `--ignore-scripts`)
+- Bundles with esbuild as CJS using `stdin` entry point (`module.exports = require("pkg")`)
+- Caller supplies `externals[]` to avoid re-bundling already-loaded modules
+- Used by `imports` parameter of the eval tool with `"npm:<version>"` values
+- Native addons are not supported (esbuild will fail to bundle `.node` files)
+
 **Concurrency:** Semaphore with `MAX_CONCURRENT_BUILDS = 4`. Build coalescing deduplicates concurrent builds of the same key.
 
 **Workspace resolve plugin:** Resolves `@workspace/*` imports from the git-extracted source tree. Reads `package.json` exports fields with condition-based resolution (panel: `natstack-panel`, `import`, `default`; agent: `import`, `default`). Since extracted source lacks `dist/` (gitignored), the plugin maps `dist/` paths to their TypeScript source equivalents.
@@ -170,6 +183,7 @@ The build system is registered as the `"build"` RPC service:
 | Method | Description |
 |--------|-------------|
 | `getBuild(unitPath)` | Get build result (from cache or build on demand) |
+| `getBuildNpm(specifier, version, externals?)` | Install + bundle an npm package as CJS for sandbox use |
 | `getEffectiveVersion(name)` | Get current EV for a unit |
 | `recompute()` | Force full EV recomputation |
 | `gc(activeUnits)` | Garbage collect unreferenced builds |

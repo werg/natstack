@@ -56,6 +56,42 @@ eval({ code: `
 `, timeout: 30000 })
 ```
 
+## Use an npm Package (lodash)
+
+```
+eval({
+  code: `
+    import _ from "lodash";
+    const data = [
+      { name: "Alice", age: 30 },
+      { name: "Bob", age: 25 },
+      { name: "Charlie", age: 35 },
+    ];
+    console.log("Grouped by age > 28:", _.groupBy(data, d => d.age > 28 ? "senior" : "junior"));
+    console.log("Sorted by age:", _.sortBy(data, "age").map(d => d.name));
+  `,
+  imports: { "lodash": "npm:^4.17.21" },
+  timeout: 30000
+})
+```
+
+## Use an npm Package (date-fns)
+
+```
+eval({
+  code: `
+    import { format, addDays, differenceInDays } from "date-fns";
+    const today = new Date();
+    const nextWeek = addDays(today, 7);
+    console.log("Today:", format(today, "yyyy-MM-dd"));
+    console.log("Next week:", format(nextWeek, "yyyy-MM-dd"));
+    console.log("Days between:", differenceInDays(nextWeek, today));
+  `,
+  imports: { "date-fns": "npm:^3.6.0" },
+  timeout: 30000
+})
+```
+
 ## Import Cookies from Chrome
 
 ```

@@ -228,6 +228,13 @@ export default function ChatPanel() {
   const sandboxConfig: SandboxConfig = useMemo(() => ({
     rpc: { call: (t: string, m: string, ...a: unknown[]) => rpc.call(t, m, ...a) },
     loadImport: async (specifier: string, ref: string | undefined, externals: string[]) => {
+      // npm: prefix → install from npm registry and bundle
+      if (ref?.startsWith("npm:")) {
+        const version = ref.slice(4) || "latest";
+        const result = await rpc.call("main", "build.getBuildNpm", specifier, version, externals) as { bundle: string };
+        return result.bundle;
+      }
+      // Default: workspace package build
       const result = await rpc.call("main", "build.getBuild", specifier, ref, { library: true, externals }) as { bundle: string };
       return result.bundle;
     },
@@ -242,6 +249,7 @@ export default function ChatPanel() {
 - Top-level await supported (async operations, fetch, timers)
 - Console output streams to the agent in real-time
 - Dynamic imports: build workspace packages on-demand from any git ref
+- npm packages: install and bundle third-party npm packages on-demand
 
 **Available modules** (via import/require):
 - @workspace/runtime — rpc, fs, db, workers, workspace APIs
@@ -268,7 +276,7 @@ IMPORTANT: Use static import syntax, NOT dynamic await import().`,
         syntax: z.enum(["typescript", "jsx", "tsx"]).default("tsx").describe("Target syntax"),
         timeout: z.number().default(SANDBOX_DEFAULT_TIMEOUT_MS).describe(`Timeout in ms (default: ${SANDBOX_DEFAULT_TIMEOUT_MS}, max: ${SANDBOX_MAX_TIMEOUT_MS}).`),
         imports: z.record(z.string(), z.string()).optional()
-          .describe("Workspace packages to build on-demand. Values: \"latest\" (current HEAD) or a git ref (branch/tag/SHA). E.g. { \"@workspace-skills/paneldev\": \"latest\" }"),
+          .describe("Packages to build on-demand. For workspace packages, values are \"latest\" (current HEAD) or a git ref. For npm packages, use \"npm:<version>\" (e.g. \"npm:^4.17.21\") or \"npm:latest\". Examples: { \"@workspace-skills/paneldev\": \"latest\", \"lodash\": \"npm:^4.17.21\", \"d3\": \"npm:7\" }"),
       }),
       streaming: true,
       timeout: SANDBOX_FRAMEWORK_TIMEOUT_MS,

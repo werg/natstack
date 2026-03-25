@@ -15,7 +15,7 @@ eval({ code: `console.log("hello")` })
 | `code` | string | required | TypeScript/JavaScript code to execute |
 | `syntax` | `"typescript" \| "jsx" \| "tsx"` | `"tsx"` | Source syntax |
 | `timeout` | number (ms) | 10000 | Async timeout (0 = skip async, max 90000) |
-| `imports` | `Record<string, string>` | — | Workspace packages to build on-demand |
+| `imports` | `Record<string, string>` | — | Packages to build on-demand (workspace or npm) |
 
 ## Top-level Await
 
@@ -36,7 +36,9 @@ eval({ code: `
 
 ## Dynamic Imports
 
-Use the `imports` parameter to build and load workspace packages on-demand:
+Use the `imports` parameter to build and load packages on-demand — both workspace packages and third-party npm packages.
+
+### Workspace packages
 
 ```
 eval({
@@ -50,6 +52,56 @@ eval({
 ```
 
 Values are git refs: `"latest"` (current HEAD), a branch name, tag, or commit SHA.
+
+### npm packages
+
+Use the `"npm:<version>"` value format to install and bundle third-party npm packages:
+
+```
+eval({
+  code: `
+    import _ from "lodash";
+    console.log(_.chunk([1, 2, 3, 4, 5, 6], 2));
+  `,
+  imports: { "lodash": "npm:^4.17.21" },
+  timeout: 30000
+})
+```
+
+```
+eval({
+  code: `
+    import * as d3 from "d3-array";
+    const data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    console.log("mean:", d3.mean(data));
+    console.log("deviation:", d3.deviation(data));
+  `,
+  imports: { "d3-array": "npm:3" },
+  timeout: 30000
+})
+```
+
+Version values follow npm semver conventions: `"npm:^1.0.0"`, `"npm:~2.3.0"`, `"npm:3"`, `"npm:latest"`.
+
+Packages are installed with `--ignore-scripts` for security (no postinstall hooks). Native addon packages (those requiring `.node` binary files) are not supported. Installed packages are cached, so subsequent imports of the same package/version are fast.
+
+### Mixing workspace and npm imports
+
+```
+eval({
+  code: `
+    import { createProject } from "@workspace-skills/paneldev";
+    import Ajv from "ajv";
+    const ajv = new Ajv();
+    console.log("Ajv loaded:", typeof ajv.compile);
+  `,
+  imports: {
+    "@workspace-skills/paneldev": "latest",
+    "ajv": "npm:^8.12.0"
+  },
+  timeout: 30000
+})
+```
 
 ## Pre-injected Variables
 
