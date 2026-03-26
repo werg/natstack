@@ -69,11 +69,10 @@ const handleReadFile = async () => {
 ### Import browser cookies
 
 ```tsx
-import { createBrowserDataApi } from "@workspace/panel-browser";
+import { browserData } from "@workspace/panel-browser";
 
 export default function CookieImporter({ props, chat }) {
   const [browsers, setBrowsers] = useState([]);
-  const browserData = useMemo(() => createBrowserDataApi(chat.rpc), [chat.rpc]);
 
   useEffect(() => {
     browserData.detectBrowsers().then(setBrowsers);
@@ -82,7 +81,7 @@ export default function CookieImporter({ props, chat }) {
   const handleImport = async (browser) => {
     const result = await browserData.startImport({
       browser: browser.name,
-      profilePath: browser.profiles[0]?.path ?? browser.dataDir,
+      profile: browser.profiles[0] ?? browser.dataDir,
       dataTypes: ["cookies", "passwords"],
     });
     chat.publish("message", { content: `Imported: ${JSON.stringify(result)}` });
@@ -105,7 +104,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Button, Flex, Card, Text, Table, TextField, Select, Badge, Box, Spinner } from "@radix-ui/themes";
 import { CopyIcon, CheckIcon, GearIcon, TrashIcon } from "@radix-ui/react-icons";
 import { rpc, fs, db, workers, ai, openPanel, focusPanel, buildPanelLink, createBrowserPanel } from "@workspace/runtime";
-import { createBrowserDataApi } from "@workspace/panel-browser";
+import { browserData } from "@workspace/panel-browser";
 ```
 
 ## Lifecycle

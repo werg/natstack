@@ -154,10 +154,7 @@ const log = await git.log({ fs, dir: "/", depth: 5 });
 ## Browser Data (`@workspace/panel-browser`)
 
 ```typescript
-import { createBrowserDataApi } from "@workspace/panel-browser";
-import { rpc } from "@workspace/runtime";
-// or in components: createBrowserDataApi(chat.rpc)
-const browserData = createBrowserDataApi(rpc);
+import { browserData } from "@workspace/panel-browser";
 ```
 
 ### Detection
@@ -176,7 +173,7 @@ const browserData = createBrowserDataApi(rpc);
 | `startImport(request)` | Import data from a browser profile |
 | `getImportHistory()` | Past import results |
 
-`ImportRequest`: `{ browser: BrowserName, profilePath: string, dataTypes: ImportDataType[], masterPassword?, csvPasswordFile? }`
+`ImportRequest`: `{ browser: BrowserName, profile: DetectedProfile | string, dataTypes: ImportDataType[], masterPassword?, csvPasswordFile? }`
 `ImportDataType`: `"bookmarks" \| "history" \| "cookies" \| "passwords" \| "autofill" \| "searchEngines" \| "extensions" \| "permissions" \| "settings" \| "favicons"`
 
 ### Bookmarks
@@ -230,25 +227,20 @@ import { openPanel, createBrowserPanel, focusPanel, buildPanelLink, openExternal
 - To focus a panel you already have the ID for: `focusPanel(panelId)`
 - `buildPanelLink` just builds a URL string — you still need `window.open(link)` to open it
 
-`BrowserHandle`: `getCdpEndpoint()`, `navigate(url)`, `goBack()`, `goForward()`, `reload()`, `stop()`, `close()`.
+`BrowserHandle`: `page()`, `navigate(url)`, `goBack()`, `goForward()`, `reload()`, `stop()`, `close()`.
 
-## Browser Automation (`@workspace/playwright-client`)
-
-```typescript
-import { connect } from "@workspace/playwright-client";
-```
-
-Full Playwright API via CDP. Connect to a browser panel to automate pages.
+## Browser Automation
 
 ```typescript
 const handle = await createBrowserPanel("https://example.com");
-const browser = await connect(await handle.getCdpEndpoint(), "chromium", {});
-const page = browser.contexts()[0]?.pages()[0];
+const page = await handle.page();
 ```
 
-Key `Page` methods: `goto(url)`, `title()`, `content()`, `click(selector)`, `fill(selector, value)`, `screenshot(opts?)`, `evaluate(fn)`, `locator(selector)`, `waitForSelector(selector)`, `waitForURL(url)`, `waitForLoadState(state)`.
+`handle.page()` connects Playwright via CDP and returns a page object. No manual CDP endpoints or imports needed.
 
-Key `Locator` methods: `click()`, `fill(value)`, `textContent()`, `innerText()`, `getAttribute(name)`, `isVisible()`, `count()`, `first()`, `nth(i)`, `filter(opts)`, `screenshot()`.
+Key `Page` methods: `goto(url, opts?)`, `title()`, `content()`, `url()`, `click(selector)`, `fill(selector, value)`, `type(selector, text)`, `waitForSelector(selector)`, `querySelector(selector)`, `evaluate(fn, ...args)`, `screenshot(opts?)`, `close()`.
+
+Use `page.evaluate()` for complex DOM queries — gives you full DOM API access in the page context.
 
 See [BROWSER_AUTOMATION.md](BROWSER_AUTOMATION.md) for full API reference and examples.
 
@@ -270,7 +262,7 @@ import { rpc } from "@workspace/runtime";
 
 ```typescript
 import { rpc } from "@workspace/runtime";
-const result = await rpc.call("main", "test.run", "panels/my-app");
+const result = await rpc.call("main", "test.run", contextId, "panels/my-app");
 ```
 
 ## OAuth (`oauth`)
@@ -279,18 +271,20 @@ const result = await rpc.call("main", "test.run", "panels/my-app");
 import { oauth } from "@workspace/runtime";
 ```
 
-Manage OAuth connections via Nango. Handles token refresh, consent prompts, and browser sign-in automatically.
+Manage OAuth connections. Handles token refresh, consent prompts, and browser sign-in automatically.
+
+**Setup:** Requires a Nango secret key in `~/.config/natstack/.secrets.yml` (`nango: sk-...`). Sign up free at https://app.nango.dev, then configure providers in the Nango dashboard. Use the `api-integrations` skill for full setup guidance.
 
 | Method | Description |
 |--------|-------------|
-| `listProviders()` | List configured Nango providers → `[{ key, provider }]` |
+| `listProviders()` | List configured providers → `[{ key, provider }]` |
 | `listConnections()` | List active connections → `OAuthConnection[]` |
 | `getConnection(providerKey, connectionId?)` | Check connection status → `OAuthConnection` |
 | `getToken(providerKey, connectionId?)` | Get access token (auto-refreshes) → `{ accessToken, expiresAt, scopes }` |
 | `requestConsent(providerKey, { scopes? })` | Request user consent (shows notification in shell) → `{ consented }` |
-| `startAuth(providerKey, connectionId?)` | Open auth browser panel (syncs imported cookies first) → `{ authUrl, browserPanelId? }` |
+| `startAuth(providerKey, connectionId?, { openIn? })` | Sync cookies + open sign-in (`openIn`: `"panel"` (default) or `"external"`) → `{ authUrl }` |
 | `waitForConnection(providerKey, connectionId?, timeoutMs?)` | Poll until connected → `OAuthConnection` |
-| `connect(providerKey, connectionId?, { scopes?, reason? })` | All-in-one: consent + auth + wait → `OAuthConnection` |
+| `connect(providerKey, connectionId?, { scopes?, openIn? })` | All-in-one: consent + auth + wait → `OAuthConnection` |
 | `disconnect(providerKey, connectionId?)` | Revoke connection |
 | `listConsents()` | List consent records for this caller → `ConsentRecord[]` |
 
@@ -346,7 +340,7 @@ Push notifications to the shell chrome area (toasts, errors).
 
 | Method | Description |
 |--------|-------------|
-| `show({ type, title, message?, ttl? })` | Show notification → returns ID |
+| `show({ type, title, message?, ttl?, actions? })` | Show notification → returns ID |
 | `dismiss(id)` | Dismiss a notification |
 
 Types: `"info"` (5s auto-dismiss), `"success"` (3s), `"warning"` (8s), `"error"` (manual dismiss).

@@ -185,9 +185,7 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const browserData = createBrowserDataApi(rpc);
+  import { browserData } from "@workspace/panel-browser";
 
   // Detect installed browsers
   const browsers = await browserData.detectBrowsers();
@@ -198,7 +196,7 @@ eval({ code: `
   if (chrome) {
     const result = await browserData.startImport({
       browser: "chrome",
-      profilePath: chrome.profiles[0]?.path ?? chrome.dataDir,
+      profile: chrome.profiles[0] ?? chrome.dataDir,
       dataTypes: ["cookies"],
     });
     console.log("Import result:", result);
@@ -218,9 +216,10 @@ eval({ code: `
   // Open a workspace panel
   await openPanel("panels/chat", { stateArgs: { topic: "hello" } });
 
-  // Use createBrowserPanel when you need CDP automation
+  // Use createBrowserPanel when you need page automation
   const handle = await createBrowserPanel("https://example.com");
-  const endpoint = await handle.getCdpEndpoint();
+  const page = await handle.page();
+  console.log(await page.title());
 ` })
 ```
 

@@ -6,10 +6,8 @@ Detect installed browsers and enumerate their profiles before importing.
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const api = createBrowserDataApi(rpc);
-  const browsers = await api.detectBrowsers();
+  import { browserData } from "@workspace/panel-browser";
+  const browsers = await browserData.detectBrowsers();
 
   for (const b of browsers) {
     console.log(b.displayName + (b.version ? " v" + b.version : ""));
@@ -33,7 +31,7 @@ inline_ui({
   code: `
 import { useState, useEffect } from "react";
 import { Button, Flex, Text, Card, Badge, Box, Spinner, Avatar, Separator } from "@radix-ui/themes";
-import { createBrowserDataApi } from "@workspace/panel-browser";
+import { browserData } from "@workspace/panel-browser";
 
 const BROWSER_ICONS = {
   chrome: "🌐", firefox: "🦊", safari: "🧭", edge: "🔵",
@@ -44,22 +42,21 @@ export default function BrowserDiscovery({ props, chat }) {
   const [browsers, setBrowsers] = useState(null);
   const [importing, setImporting] = useState(null);
   const [results, setResults] = useState([]);
-  const api = createBrowserDataApi(chat.rpc);
 
-  useEffect(() => { api.detectBrowsers().then(setBrowsers); }, []);
+  useEffect(() => { browserData.detectBrowsers().then(setBrowsers); }, []);
 
   const handleImport = async (browser, profile, dataTypes) => {
     const key = browser.name + ":" + profile.path;
     setImporting(key);
     try {
-      const result = await api.startImport({
+      const result = await browserData.startImport({
         browser: browser.name,
-        profilePath: profile.path,
+        profile,
         dataTypes,
       });
-      setResults(prev => [...prev, { browser: browser.displayName, profilePath: profile.displayName, result }]);
+      setResults(prev => [...prev, { browser: browser.displayName, profile: profile.displayName, result }]);
     } catch (e) {
-      setResults(prev => [...prev, { browser: browser.displayName, profilePath: profile.displayName, error: e.message }]);
+      setResults(prev => [...prev, { browser: browser.displayName, profile: profile.displayName, error: e.message }]);
     }
     setImporting(null);
   };
@@ -150,7 +147,7 @@ feedback_custom({
   code: `
 import { useState, useEffect } from "react";
 import { Button, Flex, Text, Card, Badge, Box, Spinner, Checkbox, Separator } from "@radix-ui/themes";
-import { createBrowserDataApi } from "@workspace/panel-browser";
+import { browserData } from "@workspace/panel-browser";
 
 const DATA_TYPES = ["cookies", "passwords", "bookmarks", "history", "autofill", "searchEngines"];
 
@@ -158,9 +155,8 @@ export default function ImportWizard({ onSubmit, onCancel, chat }) {
   const [browsers, setBrowsers] = useState(null);
   const [selected, setSelected] = useState(null);  // { browser, profile: DetectedProfile }
   const [dataTypes, setDataTypes] = useState(new Set(["cookies", "passwords", "bookmarks"]));
-  const api = createBrowserDataApi(chat.rpc);
 
-  useEffect(() => { api.detectBrowsers().then(setBrowsers); }, []);
+  useEffect(() => { browserData.detectBrowsers().then(setBrowsers); }, []);
 
   const toggleType = (type) => {
     setDataTypes(prev => {
@@ -214,7 +210,7 @@ export default function ImportWizard({ onSubmit, onCancel, chat }) {
         <Button disabled={dataTypes.size === 0}
           onClick={() => onSubmit({
             browser: selected.browser.name,
-            profilePath: selected.profile.path,
+            profile: selected.profile,
             dataTypes: Array.from(dataTypes),
           })}>
           Import {dataTypes.size} type{dataTypes.size !== 1 ? "s" : ""}

@@ -12,7 +12,7 @@ inline_ui({
 import { useState, useEffect } from "react";
 import { Button, Flex, Text, Box, TextField, Badge, Spinner } from "@radix-ui/themes";
 import { BookmarkIcon, MagnifyingGlassIcon, ChevronRightIcon } from "@radix-ui/react-icons";
-import { createBrowserDataApi } from "@workspace/panel-browser";
+import { browserData } from "@workspace/panel-browser";
 
 export default function BookmarkBrowser({ props, chat }) {
   const [bookmarks, setBookmarks] = useState([]);
@@ -20,16 +20,15 @@ export default function BookmarkBrowser({ props, chat }) {
   const [folder, setFolder] = useState("");
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState(null);
-  const api = createBrowserDataApi(chat.rpc);
 
   useEffect(() => {
     setLoading(true);
-    api.getBookmarks(folder || undefined).then(b => { setBookmarks(b); setLoading(false); });
+    browserData.getBookmarks(folder || undefined).then(b => { setBookmarks(b); setLoading(false); });
   }, [folder]);
 
   const handleSearch = async () => {
     if (!search) { setSearchResults(null); return; }
-    const results = await api.searchBookmarks(search);
+    const results = await browserData.searchBookmarks(search);
     setSearchResults(results);
   };
 
@@ -106,10 +105,8 @@ export default function BookmarkBrowser({ props, chat }) {
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const api = createBrowserDataApi(rpc);
-  const results = await api.searchBookmarks("github");
+  import { browserData } from "@workspace/panel-browser";
+  const results = await browserData.searchBookmarks("github");
   for (const b of results.slice(0, 10)) {
     console.log(b.title + " → " + b.url);
   }
@@ -121,11 +118,9 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const api = createBrowserDataApi(rpc);
+  import { browserData } from "@workspace/panel-browser";
   // Formats: "html", "json", "chrome-json"
-  const exported = await api.exportBookmarks("html");
+  const exported = await browserData.exportBookmarks("html");
   console.log("Exported " + exported.length + " bytes of HTML bookmarks");
   return { length: exported.length, preview: exported.slice(0, 300) };
 ` })

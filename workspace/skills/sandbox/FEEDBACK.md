@@ -143,12 +143,11 @@ feedback_custom({
   code: `
 import { useState, useEffect } from "react";
 import { Button, Flex, Text, Select } from "@radix-ui/themes";
-import { createBrowserDataApi } from "@workspace/panel-browser";
+import { browserData } from "@workspace/panel-browser";
 
 export default function BrowserPicker({ onSubmit, onCancel, chat }) {
   const [browsers, setBrowsers] = useState([]);
   const [selected, setSelected] = useState("");
-  const browserData = createBrowserDataApi(chat.rpc);
 
   useEffect(() => {
     browserData.detectBrowsers().then(setBrowsers);

@@ -51,7 +51,7 @@ eval({ code: `
   }
 
   const matches = await grep("/src", "TODO");
-  console.log(JSON.stringify(matches, null, 2));
+  console.log(matches);
   return matches;
 `, timeout: 30000 })
 ```
@@ -168,15 +168,13 @@ eval({
 })
 ```
 
-Works with any Nango-configured provider. Check `await oauth.listProviders()` to see what's available.
+Works with any configured OAuth provider. Check `await oauth.listProviders()` to see what's available.
 
 ## Import Cookies from Chrome
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const browserData = createBrowserDataApi(rpc);
+  import { browserData } from "@workspace/panel-browser";
   const browsers = await browserData.detectBrowsers();
   const chrome = browsers.find(b => b.name === "chrome");
   if (!chrome) { console.log("Chrome not found"); return; }
@@ -184,10 +182,10 @@ eval({ code: `
   const defaultProfile = chrome.profiles.find(p => p.isDefault) || chrome.profiles[0];
   const result = await browserData.startImport({
     browser: "chrome",
-    profilePath: defaultProfile.path,
+    profile: defaultProfile,
     dataTypes: ["cookies"],
   });
-  console.log("Import result:", JSON.stringify(result, null, 2));
+  console.log("Import result:", result);
   return result;
 `, timeout: 60000 })
 ```
@@ -196,9 +194,7 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const browserData = createBrowserDataApi(rpc);
+  import { browserData } from "@workspace/panel-browser";
   const dump = await browserData.exportAll();
   console.log("Exported " + dump.length + " bytes");
   return JSON.parse(dump);
@@ -211,9 +207,7 @@ Cookies are auto-synced after `startImport`. Use this to re-sync after manual ch
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const browserData = createBrowserDataApi(rpc);
+  import { browserData } from "@workspace/panel-browser";
   const result = await browserData.syncCookiesToSession("github.com");
   console.log("Synced:", result.synced, "Failed:", result.failed);
 ` })
@@ -227,12 +221,11 @@ inline_ui({
 import { useState, useEffect } from "react";
 import { Button, Flex, Text, Table, Badge, TextField } from "@radix-ui/themes";
 import { TrashIcon } from "@radix-ui/react-icons";
-import { createBrowserDataApi } from "@workspace/panel-browser";
+import { browserData } from "@workspace/panel-browser";
 
 export default function CookieManager({ props, chat }) {
   const [cookies, setCookies] = useState([]);
   const [filter, setFilter] = useState("");
-  const browserData = createBrowserDataApi(chat.rpc);
 
   const load = () => browserData.getCookies(filter || undefined).then(setCookies);
   useEffect(() => { load(); }, [filter]);
@@ -368,21 +361,20 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { createBrowserPanel, rpc } from "@workspace/runtime";
-  import { createBrowserDataApi } from "@workspace/panel-browser";
+  import { createBrowserPanel } from "@workspace/runtime";
+  import { browserData } from "@workspace/panel-browser";
 
   // Open the site in a browser panel
   const handle = await createBrowserPanel("https://github.com");
   console.log("Opened browser panel");
 
   // Import cookies from Chrome for that domain
-  const browserData = createBrowserDataApi(rpc);
   const browsers = await browserData.detectBrowsers();
   const chrome = browsers.find(b => b.name === "chrome");
   if (chrome) {
     await browserData.startImport({
       browser: "chrome",
-      profilePath: chrome.profiles[0]?.path ?? chrome.dataDir,
+      profile: chrome.profiles[0] ?? chrome.dataDir,
       dataTypes: ["cookies"],
     });
     // Sync to the browser session

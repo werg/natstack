@@ -27,8 +27,8 @@ See the sandbox skill's [INTERACTION_PATTERNS.md](../sandbox/INTERACTION_PATTERN
 All browser data operations go through `@workspace/panel-browser`, which wraps RPC calls to the `browser-data` service. The service reads browser profile databases directly (SQLite for Chrome/Firefox, plist for Safari).
 
 ```
-Sandbox code / Inline UI
-  → createBrowserDataApi(rpc)  or  createBrowserDataApi(chat.rpc)
+Sandbox code (eval / inline_ui / feedback_custom)
+  → import { browserData } from "@workspace/panel-browser"
     → rpc.call("main", "browser-data.*")
       → BrowserDataService (Electron main process)
         → reads Chrome/Firefox/Safari profile databases
@@ -37,25 +37,24 @@ Sandbox code / Inline UI
 ## Quick Reference
 
 ```typescript
-import { createBrowserDataApi } from "@workspace/panel-browser";
-import { rpc } from "@workspace/runtime";  // or use chat.rpc in components
-const api = createBrowserDataApi(rpc);
+// In eval, inline_ui, and feedback_custom:
+import { browserData } from "@workspace/panel-browser";
 ```
 
 | Method | What it does |
 |--------|-------------|
-| `api.detectBrowsers()` | Find installed browsers + profiles → `DetectedBrowser[]` |
-| `api.startImport({ browser, profile, dataTypes })` | Import data from a browser profile → `ImportResult[]` (use `profile: detectedProfile` from detectBrowsers) |
-| `api.getImportHistory()` | Past import results |
-| `api.getCookies(domain?)` | Browse stored cookies |
-| `api.syncCookiesToSession(domain?)` | Push cookies to active browser session |
-| `api.syncCookiesFromSession(domain?)` | Pull cookies from active session |
-| `api.getPasswords()` | Get all stored passwords |
-| `api.getPasswordForSite(url)` | Find password for a URL |
-| `api.getBookmarks(folder?)` | Browse bookmarks by folder |
-| `api.searchBookmarks(query)` | Full-text bookmark search |
-| `api.getHistory(query)` | Browse/search history |
-| `api.exportAll()` | Export everything as JSON |
+| `browserData.detectBrowsers()` | Find installed browsers + profiles → `DetectedBrowser[]` |
+| `browserData.startImport({ browser, profile, dataTypes })` | Import data from a browser profile → `ImportResult[]` (use `profile: detectedProfile` from detectBrowsers) |
+| `browserData.getImportHistory()` | Past import results |
+| `browserData.getCookies(domain?)` | Browse stored cookies |
+| `browserData.syncCookiesToSession(domain?)` | Push cookies to active browser session |
+| `browserData.syncCookiesFromSession(domain?)` | Pull cookies from active session |
+| `browserData.getPasswords()` | Get all stored passwords |
+| `browserData.getPasswordForSite(url)` | Find password for a URL |
+| `browserData.getBookmarks(folder?)` | Browse bookmarks by folder |
+| `browserData.searchBookmarks(query)` | Full-text bookmark search |
+| `browserData.getHistory(query)` | Browse/search history |
+| `browserData.exportAll()` | Export everything as JSON |
 
 ## Data Types
 
@@ -157,7 +156,7 @@ interface ImportResult {
 
 **Common mistake**: `startImport` returns `ImportResult[]` (an array), not an object keyed by data type. Iterate the array to build summaries:
 ```typescript
-const results = await api.startImport({ browser: "chrome", profile, dataTypes: ["cookies"] });
+const results = await browserData.startImport({ browser: "chrome", profile, dataTypes: ["cookies"] });
 for (const r of results) {
   console.log(`${r.dataType}: ${r.itemCount} imported, ${r.skippedCount} skipped`);
 }

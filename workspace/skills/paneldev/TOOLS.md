@@ -196,10 +196,7 @@ eval({ code: `
 ### Browser Data
 
 ```typescript
-import { createBrowserDataApi } from "@workspace/panel-browser";
-import { rpc } from "@workspace/runtime";
-const browserData = createBrowserDataApi(rpc);
-// In inline_ui components, use: createBrowserDataApi(chat.rpc)
+import { browserData } from "@workspace/panel-browser";
 ```
 
 Available methods:
@@ -254,7 +251,7 @@ eval({ code: `
   const profile = chrome.profiles.find(p => p.isDefault) || chrome.profiles[0];
   const results = await browserData.startImport({
     browser: "chrome",
-    profilePath: profile.path,
+    profile,
     dataTypes: ["bookmarks", "history", "cookies"],
   });
   for (const r of results) {

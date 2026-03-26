@@ -1,148 +1,119 @@
 # Browser Automation
 
-Full Playwright-based browser automation via `@workspace/playwright-client`. Open browser panels, connect via CDP, and control pages programmatically — navigate, query DOM, take screenshots, fill forms, click elements.
+Automate browser panels with Playwright-style page control. Open a URL, get a page handle, and interact — click, fill forms, evaluate JS, take screenshots.
 
-## Setup
-
-```typescript
-import { createBrowserPanel } from "@workspace/runtime";
-import { connect } from "@workspace/playwright-client";
-```
-
-1. **Open a browser panel** — `createBrowserPanel(url)` returns a `BrowserHandle`
-2. **Get the CDP endpoint** — `handle.getCdpEndpoint()` returns a WebSocket URL
-3. **Connect Playwright** — `connect(wsEndpoint, "chromium", {})` returns a `Browser`
-4. **Use the Playwright API** — pages, locators, screenshots, etc.
-
-## Quick Start (Eval)
+## Quick Start
 
 ```
 eval({ code: `
   import { createBrowserPanel } from "@workspace/runtime";
-  import { connect } from "@workspace/playwright-client";
 
-  // Open a browser panel
   const handle = await createBrowserPanel("https://example.com");
-  const wsEndpoint = await handle.getCdpEndpoint();
+  const page = await handle.page();
 
-  // Connect Playwright
-  const browser = await connect(wsEndpoint, "chromium", {});
-  const contexts = browser.contexts();
-  const page = contexts[0]?.pages()[0];
+  const title = await page.title();
+  console.log("Title:", title);
 
-  if (page) {
-    // Get page title
-    const title = await page.title();
-    console.log("Title:", title);
-
-    // Get page content
-    const text = await page.locator("h1").textContent();
-    console.log("H1:", text);
-  }
+  const heading = await page.evaluate(() => document.querySelector("h1")?.textContent);
+  console.log("H1:", heading);
 `, timeout: 30000 })
 ```
 
-## Playwright API Reference
+Two lines to get a controllable page:
+1. `createBrowserPanel(url)` — opens a browser panel, returns a `BrowserHandle`
+2. `handle.page()` — connects Playwright via CDP, returns a `Page`
 
-### Browser
-
-```typescript
-const browser = await connect(wsEndpoint, "chromium", {});
-browser.contexts()              // BrowserContext[]
-browser.isConnected()           // boolean
-browser.close()                 // Promise<void>
-```
-
-### BrowserContext
+## Page API Reference
 
 ```typescript
-const context = browser.contexts()[0];
-context.pages()                 // Page[]
-context.newPage()               // Promise<Page>
-context.cookies(urls?)          // Promise<Cookie[]>
-context.addCookies(cookies)     // Promise<void>
-context.clearCookies()          // Promise<void>
-context.close()                 // Promise<void>
+const handle = await createBrowserPanel("https://example.com");
+const page = await handle.page();
 ```
 
-### Page
+### Navigation
 
 ```typescript
-const page = context.pages()[0];
-
-// Navigation
-page.goto(url, options?)        // Promise<Response | null>
-page.goBack(options?)           // Promise<Response | null>
-page.goForward(options?)        // Promise<Response | null>
-page.reload(options?)           // Promise<Response | null>
-page.url()                      // string
-page.title()                    // Promise<string>
-
-// Content
-page.content()                  // Promise<string> — full HTML
-page.textContent(selector)      // Promise<string | null>
-page.innerHTML(selector)        // Promise<string>
-
-// Screenshots
-page.screenshot(options?)       // Promise<Buffer>
-// options: { path?, fullPage?, clip?, type?: "png"|"jpeg", quality? }
-
-// Interaction
-page.click(selector, options?)
-page.fill(selector, value)
-page.type(selector, text, options?)
-page.press(selector, key)
-page.check(selector)
-page.uncheck(selector)
-page.selectOption(selector, values)
-page.hover(selector)
-
-// Waiting
-page.waitForSelector(selector, options?)
-page.waitForURL(url, options?)
-page.waitForLoadState(state?)    // "load" | "domcontentloaded" | "networkidle"
-page.waitForTimeout(ms)
-
-// Evaluation
-page.evaluate(fn, arg?)         // Promise<T> — run JS in page context
-page.evaluateHandle(fn, arg?)   // Promise<JSHandle>
-
-// Locators (recommended over raw selectors)
-page.locator(selector)          // Locator
-page.getByText(text)            // Locator
-page.getByRole(role, options?)  // Locator
-page.getByLabel(text)           // Locator
-page.getByPlaceholder(text)     // Locator
-page.getByTestId(testId)        // Locator
-
-// Events
-page.on("response", handler)
-page.on("request", handler)
-page.on("console", handler)
-page.on("dialog", handler)
+await page.goto(url)                              // navigate (waits for load)
+await page.goto(url, { waitUntil: "networkidle" }) // wait for network quiet
+await page.goto(url, { waitUntil: "domcontentloaded" })
+await page.goto(url, { timeout: 10000 })          // custom timeout
+page.url()                                         // current URL (sync)
+await page.title()                                 // page title
+await page.content()                               // full HTML source
 ```
 
-### Locator
+### Interaction
 
 ```typescript
-const loc = page.locator("button.submit");
-
-loc.click(options?)
-loc.fill(value)
-loc.textContent()               // Promise<string | null>
-loc.innerText()                 // Promise<string>
-loc.innerHTML()                 // Promise<string>
-loc.getAttribute(name)          // Promise<string | null>
-loc.isVisible()                 // Promise<boolean>
-loc.isEnabled()                 // Promise<boolean>
-loc.count()                     // Promise<number>
-loc.first()                     // Locator
-loc.last()                      // Locator
-loc.nth(index)                  // Locator
-loc.filter(options)             // Locator — { hasText?, has? }
-loc.screenshot(options?)        // Promise<Buffer>
-loc.waitFor(options?)           // Promise<void>
+await page.click("button.submit")
+await page.fill('input[name="email"]', "user@example.com")
+await page.type('input[name="search"]', "query")  // types character by character
 ```
+
+### DOM Queries
+
+```typescript
+await page.waitForSelector(".loaded")              // wait for element to appear
+await page.waitForSelector(".modal", { timeout: 5000 })
+await page.querySelector(".result")                // check if element exists
+```
+
+### Evaluate JavaScript in Page
+
+The most powerful method — run arbitrary JS in the page context:
+
+```typescript
+// Get text content
+const text = await page.evaluate(() => document.querySelector("h1")?.textContent);
+
+// Get multiple elements
+const items = await page.evaluate(() =>
+  Array.from(document.querySelectorAll(".item")).map(el => ({
+    title: el.querySelector("h3")?.textContent,
+    href: el.querySelector("a")?.getAttribute("href"),
+  }))
+);
+
+// Pass arguments
+const text = await page.evaluate(
+  (sel) => document.querySelector(sel)?.textContent,
+  ".my-class"
+);
+
+// Interact with the page
+await page.evaluate(() => {
+  document.querySelector("form")?.submit();
+});
+```
+
+### Screenshots
+
+```typescript
+const screenshot = await page.screenshot();                    // PNG Uint8Array
+const full = await page.screenshot({ fullPage: true });
+const jpeg = await page.screenshot({ format: "jpeg", quality: 80 });
+```
+
+### Close
+
+```typescript
+await page.close()    // close the page
+await handle.close()  // close the browser panel
+```
+
+### BrowserHandle Methods
+
+The handle also has direct navigation methods (no Playwright needed):
+
+| Method | Description |
+|--------|-------------|
+| `handle.page()` | Connect Playwright, return page |
+| `handle.navigate(url)` | Load a URL |
+| `handle.goBack()` | Navigate back |
+| `handle.goForward()` | Navigate forward |
+| `handle.reload()` | Reload page |
+| `handle.stop()` | Stop loading |
+| `handle.close()` | Close browser panel |
 
 ## Examples
 
@@ -151,20 +122,19 @@ loc.waitFor(options?)           // Promise<void>
 ```
 eval({ code: `
   import { createBrowserPanel } from "@workspace/runtime";
-  import { connect } from "@workspace/playwright-client";
 
   const handle = await createBrowserPanel("https://news.ycombinator.com");
-  const browser = await connect(await handle.getCdpEndpoint(), "chromium", {});
-  const page = browser.contexts()[0]?.pages()[0];
+  const page = await handle.page();
 
-  if (page) {
-    await page.waitForLoadState("domcontentloaded");
-    const titles = await page.locator(".titleline > a").evaluateAll(
-      els => els.map(el => ({ title: el.textContent, href: el.href }))
-    );
-    console.log("Top stories:", JSON.stringify(titles.slice(0, 5), null, 2));
-    return titles;
-  }
+  await page.goto("https://news.ycombinator.com", { waitUntil: "domcontentloaded" });
+  const titles = await page.evaluate(() =>
+    Array.from(document.querySelectorAll(".titleline > a")).map(el => ({
+      title: el.textContent,
+      href: el.getAttribute("href"),
+    }))
+  );
+  console.log("Top stories:", JSON.stringify(titles.slice(0, 5), null, 2));
+  return titles;
 `, timeout: 30000 })
 ```
 
@@ -173,20 +143,17 @@ eval({ code: `
 ```
 eval({ code: `
   import { createBrowserPanel } from "@workspace/runtime";
-  import { connect } from "@workspace/playwright-client";
 
   const handle = await createBrowserPanel("https://example.com/login");
-  const browser = await connect(await handle.getCdpEndpoint(), "chromium", {});
-  const page = browser.contexts()[0]?.pages()[0];
+  const page = await handle.page();
 
-  if (page) {
-    await page.waitForLoadState("networkidle");
-    await page.fill('input[name="email"]', 'user@example.com');
-    await page.fill('input[name="password"]', 'secret');
-    await page.click('button[type="submit"]');
-    await page.waitForURL("**/dashboard**");
-    console.log("Logged in, now at:", page.url());
-  }
+  await page.fill('input[name="email"]', 'user@example.com');
+  await page.fill('input[name="password"]', 'secret');
+  await page.click('button[type="submit"]');
+
+  // Wait for navigation to complete
+  await page.waitForSelector(".dashboard");
+  console.log("Logged in, now at:", page.url());
 `, timeout: 30000 })
 ```
 
@@ -194,19 +161,14 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { createBrowserPanel, fs } from "@workspace/runtime";
-  import { connect } from "@workspace/playwright-client";
+  import { createBrowserPanel } from "@workspace/runtime";
 
   const handle = await createBrowserPanel("https://example.com");
-  const browser = await connect(await handle.getCdpEndpoint(), "chromium", {});
-  const page = browser.contexts()[0]?.pages()[0];
+  const page = await handle.page();
 
-  if (page) {
-    await page.waitForLoadState("networkidle");
-    const screenshot = await page.screenshot({ fullPage: true });
-    await fs.writeFile("/tmp/screenshot.png", screenshot);
-    console.log("Screenshot saved to /tmp/screenshot.png");
-  }
+  const screenshot = await page.screenshot({ fullPage: true });
+  console.log("Screenshot taken:", screenshot.length, "bytes");
+  return screenshot;
 `, timeout: 30000 })
 ```
 
@@ -218,25 +180,22 @@ inline_ui({
 import { useState, useRef } from "react";
 import { Button, Flex, Text, TextField, Box, Badge } from "@radix-ui/themes";
 import { createBrowserPanel } from "@workspace/runtime";
-import { connect } from "@workspace/playwright-client";
 
 export default function BrowserController({ props, chat }) {
   const [url, setUrl] = useState(props.startUrl || "https://example.com");
   const [status, setStatus] = useState("disconnected");
   const [pageTitle, setPageTitle] = useState("");
-  const browserRef = useRef(null);
+  const handleRef = useRef(null);
   const pageRef = useRef(null);
 
   const handleConnect = async () => {
     setStatus("connecting...");
     const handle = await createBrowserPanel(url);
-    const wsEndpoint = await handle.getCdpEndpoint();
-    const browser = await connect(wsEndpoint, "chromium", {});
-    browserRef.current = browser;
-    const page = browser.contexts()[0]?.pages()[0];
+    handleRef.current = handle;
+    const page = await handle.page();
     pageRef.current = page;
     setStatus("connected");
-    if (page) setPageTitle(await page.title());
+    setPageTitle(await page.title());
   };
 
   const handleNavigate = async () => {
@@ -247,7 +206,7 @@ export default function BrowserController({ props, chat }) {
 
   const handleScrape = async () => {
     if (!pageRef.current) return;
-    const text = await pageRef.current.locator("body").innerText();
+    const text = await pageRef.current.evaluate(() => document.body.innerText);
     chat.publish("message", { content: "Page text (" + text.length + " chars):\\n" + text.slice(0, 500) });
   };
 
@@ -275,37 +234,40 @@ export default function BrowserController({ props, chat }) {
 
 ```
 eval({ code: `
-  import { createBrowserPanel, rpc } from "@workspace/runtime";
-  import { connect } from "@workspace/playwright-client";
-  import { createBrowserDataApi } from "@workspace/panel-browser";
+  import { createBrowserPanel } from "@workspace/runtime";
+  import { browserData } from "@workspace/panel-browser";
 
   // Step 1: Import cookies from Chrome
-  const browserData = createBrowserDataApi(rpc);
   const browsers = await browserData.detectBrowsers();
   const chrome = browsers.find(b => b.name === "chrome");
   if (chrome) {
     await browserData.startImport({
       browser: "chrome",
-      profilePath: chrome.profiles[0]?.path ?? chrome.dataDir,
+      profile: chrome.profiles[0] ?? chrome.dataDir,
       dataTypes: ["cookies"],
     });
-    // Sync to browser session
-    await browserData.syncCookiesToSession("github.com");
-    console.log("Cookies synced");
+    console.log("Cookies imported and synced to browser session");
   }
 
-  // Step 2: Open browser — now has GitHub cookies
+  // Step 2: Open browser — now has imported cookies
   const handle = await createBrowserPanel("https://github.com");
-  const browser = await connect(await handle.getCdpEndpoint(), "chromium", {});
-  const page = browser.contexts()[0]?.pages()[0];
+  const page = await handle.page();
 
-  if (page) {
-    await page.waitForLoadState("networkidle");
-    const title = await page.title();
-    console.log("Page title:", title);
-    // Check if logged in
-    const avatar = await page.locator('img.avatar').count();
-    console.log(avatar > 0 ? "Logged in!" : "Not logged in");
-  }
+  const title = await page.title();
+  console.log("Page title:", title);
+
+  // Check if logged in
+  const isLoggedIn = await page.evaluate(() =>
+    document.querySelector("img.avatar") !== null
+  );
+  console.log(isLoggedIn ? "Logged in!" : "Not logged in");
 `, timeout: 60000 })
 ```
+
+## Tips
+
+- **Use `page.evaluate()` for complex DOM queries** — it's more reliable than individual selector methods and gives you full DOM API access.
+- **Use `page.goto(url, { waitUntil: "networkidle" })` for SPAs** — waits for AJAX requests to finish.
+- **Use `page.waitForSelector()` before interacting** — ensures elements exist before clicking/filling.
+- **Pass `timeout: 60000` for slow pages** — the default eval timeout may be too short for pages that load slowly.
+- **Imported cookies are auto-synced** — if you imported browser data via the browser-import skill, browser panels will have those cookies available automatically.
