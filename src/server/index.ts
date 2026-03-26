@@ -62,19 +62,20 @@ const ipcChannel = detectServerIpcChannel();
 // =============================================================================
 
 interface CliArgs {
+  workspaceName?: string;
   workspaceDir?: string;
-  dataDir?: string;
   appRoot?: string;
   logLevel?: string;
   servePanels?: boolean;
   panelPort?: number;
+  init?: boolean;
 }
 
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {};
-  const known = new Set(["workspace", "workspace-dir", "data-dir", "app-root", "log-level", "serve-panels", "panel-port"]);
+  const known = new Set(["workspace", "workspace-dir", "app-root", "log-level", "serve-panels", "panel-port", "init"]);
   /** Flags that don't take a value */
-  const booleanFlags = new Set(["serve-panels"]);
+  const booleanFlags = new Set(["serve-panels", "init"]);
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -113,11 +114,10 @@ function parseArgs(argv: string[]): CliArgs {
 
     switch (key) {
       case "workspace":
+        args.workspaceName = value;
+        break;
       case "workspace-dir":
         args.workspaceDir = value;
-        break;
-      case "data-dir":
-        args.dataDir = value;
         break;
       case "app-root":
         args.appRoot = value;
@@ -127,6 +127,9 @@ function parseArgs(argv: string[]): CliArgs {
         break;
       case "serve-panels":
         args.servePanels = true;
+        break;
+      case "init":
+        args.init = true;
         break;
       case "panel-port":
         args.panelPort = parseInt(value!, 10);
@@ -147,7 +150,6 @@ if (!ipcChannel) {
   // Standalone mode: parse CLI args, set env vars
   args = parseArgs(process.argv.slice(2));
   if (args.workspaceDir) process.env["NATSTACK_WORKSPACE_DIR"] = args.workspaceDir;
-  if (args.dataDir) process.env["NATSTACK_USER_DATA_PATH"] = args.dataDir;
   process.env["NATSTACK_APP_ROOT"] = args.appRoot ?? process.cwd();
   if (args.logLevel) process.env["NATSTACK_LOG_LEVEL"] = args.logLevel;
 } else {
@@ -159,8 +161,9 @@ if (!ipcChannel) {
 // =============================================================================
 
 async function main() {
-  const { setUserDataPath, getUserDataPath } = await import("@natstack/env-paths");
-  const { loadCentralEnv, loadWorkspaceConfig } = await import("../shared/workspace/loader.js");
+  const { setUserDataPath } = await import("@natstack/env-paths");
+  const { loadCentralEnv, resolveOrCreateWorkspace } = await import("../shared/workspace/loader.js");
+  const { CentralDataManager } = await import("../shared/centralData.js");
   const { GitServer } = await import("@natstack/git-server");
   const { TokenManager } = await import("../shared/tokenManager.js");
   const { z } = await import("zod");
@@ -173,59 +176,68 @@ async function main() {
   const { initBuildSystemV2 } = await import("./buildV2/index.js");
   const { DatabaseManager } = await import("../shared/db/databaseManager.js");
 
-  // In IPC mode, dataDir comes from NATSTACK_USER_DATA_PATH env var
-  const dataDir = args.dataDir ?? process.env["NATSTACK_USER_DATA_PATH"];
-  if (dataDir) setUserDataPath(dataDir);
   loadCentralEnv();
 
   // ===========================================================================
   // Workspace resolution
   // ===========================================================================
+  // Shared resolution via resolveOrCreateWorkspace():
+  //   --workspace-dir <path>   → explicit managed workspace root
+  //   --workspace <name>       → resolve by name via getWorkspaceDir()
+  //   NATSTACK_WORKSPACE_DIR   → env var (set by Electron parent or user)
+  //   (none, standalone)       → last-opened from central data, or "default"
+  //
+  // With --init: auto-create from template if workspace doesn't exist.
 
-  const workspacePath = args.workspaceDir ?? process.env["NATSTACK_WORKSPACE_DIR"];
-  if (!workspacePath) {
-    const msg = "No workspace directory specified (set NATSTACK_WORKSPACE_DIR or --workspace-dir)";
-    if (ipcChannel) {
-      ipcChannel.postMessage({ type: "error", message: msg });
-      process.exit(1);
+  const appRoot = process.env["NATSTACK_APP_ROOT"] ?? process.cwd();
+  const centralData = !ipcChannel ? new CentralDataManager() : null;
+
+  const wsDir = args.workspaceDir ?? process.env["NATSTACK_WORKSPACE_DIR"];
+  const wsName = args.workspaceName ?? process.env["NATSTACK_WORKSPACE"];
+
+  function resolveOpts(): import("../shared/workspace/loader.js").ResolveWorkspaceOpts {
+    if (wsDir) return { wsDir, appRoot, init: args.init };
+    if (wsName) return { name: wsName, appRoot, init: args.init };
+    if (centralData) {
+      // Standalone with no workspace specified — use last-opened or "default"
+      const last = centralData.getLastOpenedWorkspace();
+      return last
+        ? { name: last.name, appRoot }
+        : { name: "default", appRoot, init: true };
     }
-    console.error(msg);
+    // IPC mode with no workspace — fatal
+    ipcChannel!.postMessage({ type: "error", message: "No workspace specified (set NATSTACK_WORKSPACE_DIR)" });
     process.exit(1);
   }
-  const configPath = path.join(workspacePath, "natstack.yml");
-  if (!fs.existsSync(configPath)) {
-    const msg = `Workspace config not found: ${configPath}`;
+
+  let workspace: import("../shared/workspace/types.js").Workspace;
+  try {
+    const resolved = resolveOrCreateWorkspace(resolveOpts());
+    workspace = resolved.workspace;
+    centralData?.addWorkspace(resolved.name);
+  } catch (error) {
+    const msg = `Workspace resolution failed: ${error}`;
     if (ipcChannel) {
       ipcChannel.postMessage({ type: "error", message: msg });
-      process.exit(1);
+    } else {
+      console.error(msg);
+      if (!args.init) console.error("  Use --init to auto-create from template.");
     }
-    console.error(msg);
     process.exit(1);
   }
-  const workspaceConfig = loadWorkspaceConfig(workspacePath);
 
-  // State path: where databases, caches, and Electron artifacts live.
-  // In IPC mode: NATSTACK_USER_DATA_PATH (= workspace state/ dir, set by parent).
-  // In standalone mode: getUserDataPath() (= platform default after setUserDataPath).
-  // Both are set before this point via setUserDataPath(dataDir).
-  const statePath = getUserDataPath();
-  const workspace: import("../shared/workspace/types.js").Workspace = {
-    path: workspacePath,
-    statePath,
-    config: workspaceConfig,
-    panelsPath: path.join(workspacePath, "panels"),
-    packagesPath: path.join(workspacePath, "packages"),
-    contextsPath: path.join(statePath, ".contexts"),
-    gitReposPath: workspacePath,
-    cachePath: path.join(statePath, ".cache"),
-    agentsPath: path.join(workspacePath, "agents"),
-  };
+  // Set user data path to workspace state dir for env-paths compatibility
+  setUserDataPath(workspace.statePath);
+
+  // Aliases — used throughout service init below
+  const workspacePath = workspace.path;
+  const workspaceConfig = workspace.config;
+  const statePath = workspace.statePath;
 
   // ===========================================================================
   // App node_modules resolution (for @natstack/* platform packages)
   // ===========================================================================
 
-  const appRoot = process.env["NATSTACK_APP_ROOT"] ?? process.cwd();
   // In production, esbuild (native binary) can't read from .asar — use .asar.unpacked
   const appNodeModulesCandidates = [
     path.join(appRoot, "node_modules"),
@@ -777,6 +789,7 @@ async function main() {
 
     // Bridge RPC service
     {
+      const { BRIDGE_METHOD_SCHEMAS } = await import("../shared/bridgeMethodSchemas.js");
       let bridgeDeps: Parameters<typeof handleHeadlessBridgeCall>[0];
       container.register({
         name: "bridge",
@@ -793,21 +806,7 @@ async function main() {
             name: "bridge",
             description: "Panel lifecycle (headless mode)",
             policy: { allowed: ["panel", "shell", "server"] },
-            methods: {
-              closeSelf: { args: z.tuple([]) },
-              getInfo: { args: z.tuple([]) },
-              setStateArgs: { args: z.tuple([z.record(z.unknown())]) },
-              focusPanel: { args: z.tuple([z.string().optional()]) },
-              getBootstrapConfig: { args: z.tuple([]) },
-              getWorkspaceTree: { args: z.tuple([]) },
-              listBranches: { args: z.tuple([z.string()]) },
-              listCommits: { args: z.tuple([z.string(), z.string().optional(), z.number().optional()]) },
-              openDevtools: { args: z.tuple([]) },
-              openFolderDialog: { args: z.tuple([z.object({ title: z.string().optional() }).optional()]) },
-              createBrowserPanel: { args: z.tuple([z.string(), z.object({ name: z.string().optional(), focus: z.boolean().optional() }).optional()]) },
-              closeChild: { args: z.tuple([z.string()]) },
-              openExternal: { args: z.tuple([z.string()]) },
-            },
+            methods: BRIDGE_METHOD_SCHEMAS,
             handler: async (ctx, method, serviceArgs) => {
               return handleHeadlessBridgeCall(bridgeDeps, ctx.callerId, method, serviceArgs as unknown[]);
             },

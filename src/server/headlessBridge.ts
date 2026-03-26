@@ -2,8 +2,8 @@
  * Headless Bridge Service Handler
  *
  * Handles bridge service calls in headless mode (no Electron). Common portable
- * handlers (closeSelf, getInfo, setStateArgs, focusPanel, getBootstrapConfig)
- * are delegated to src/shared/bridgeHandlersCommon.ts.
+ * handlers (closeSelf, getInfo, setStateArgs, focusPanel, getBootstrapConfig,
+ * git operations) are delegated to src/shared/bridgeHandlersCommon.ts.
  */
 
 import type { BridgePanelManager } from "../shared/panelInterfaces.js";
@@ -28,28 +28,11 @@ export async function handleHeadlessBridgeCall(
 ): Promise<unknown> {
   const { pm, gitServer } = deps;
   // Try common handlers first (shared with Electron mode)
-  const common = await handleCommonBridgeMethod(pm, callerId, method, args);
+  const common = await handleCommonBridgeMethod(pm, callerId, method, args, gitServer);
   if (common.handled) return common.result;
 
   // Headless-specific handlers
   switch (method) {
-    // =========================================================================
-    // Repo discovery (delegates to git server)
-    // =========================================================================
-
-    case "getWorkspaceTree":
-      return gitServer.getWorkspaceTree();
-
-    case "listBranches": {
-      const [repoPath] = args as [string];
-      return gitServer.listBranches(repoPath);
-    }
-
-    case "listCommits": {
-      const [repoPath, ref, limit] = args as [string, string?, number?];
-      return gitServer.listCommits(repoPath, ref ?? "HEAD", limit ?? 50);
-    }
-
     // =========================================================================
     // GUI-only operations — not supported in headless mode
     // =========================================================================
@@ -62,6 +45,11 @@ export async function handleHeadlessBridgeCall(
       throw new Error(
         "Folder dialogs are not available in headless mode. " +
         "Pass folder paths via stateArgs or CLI arguments."
+      );
+
+    case "createRepo":
+      throw new Error(
+        "Repo creation is not yet available in headless mode."
       );
 
     // =========================================================================

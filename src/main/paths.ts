@@ -233,22 +233,6 @@ export function getUnpackedPath(relativePath: string): string {
   }
 }
 
-/**
- * Get the workspace template directory for first-run workspace creation.
- *
- * In development: workspace/ at app root (the dev workspace)
- * In production: workspace-template/ in resources directory
- *
- * Returns null if no template directory exists.
- */
-export function getWorkspaceTemplateDir(): string | null {
-  if (isDev()) {
-    const devPath = path.join(getAppRoot(), "workspace");
-    return fs.existsSync(path.join(devPath, "natstack.yml")) ? devPath : null;
-  }
-  const prodPath = path.join(getResourcesPath(), "workspace-template");
-  return fs.existsSync(path.join(prodPath, "natstack.yml")) ? prodPath : null;
-}
 
 /**
  * Get the directory containing shipped (pre-built) panels.

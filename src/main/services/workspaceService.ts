@@ -1,15 +1,16 @@
-import { app } from "electron";
 import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { CentralDataManager } from "../centralData.js";
+import type { CentralDataManager } from "../../shared/centralData.js";
 import type { WorkspaceConfig } from "../../shared/workspace/types.js";
-import { createAndRegisterWorkspace, deleteWorkspaceDir } from "../workspaceOps.js";
+import { createAndRegisterWorkspace, deleteWorkspaceDir } from "../../shared/workspace/loader.js";
 
 export function createWorkspaceService(deps: {
   centralData: CentralDataManager;
   activeWorkspaceName: string;
   getWorkspaceConfig: () => WorkspaceConfig;
   setWorkspaceConfigField: (key: "initPanels", value: unknown) => void;
+  /** Restart the app with a different workspace. Injected so headless can provide its own. */
+  restartWithWorkspace: (name: string) => void;
 }): ServiceDefinition {
   return {
     name: "workspace",
@@ -46,21 +47,7 @@ export function createWorkspaceService(deps: {
         case "select": {
           const name = args[0] as string;
           deps.centralData.touchWorkspace(name);
-          // Strip existing --workspace=... or --workspace <value> args, then add the new one
-          const filteredArgs: string[] = [];
-          const rawArgs = process.argv.slice(1);
-          for (let i = 0; i < rawArgs.length; i++) {
-            const a = rawArgs[i]!;
-            if (a.startsWith("--workspace=")) continue;
-            if (a === "--workspace" && i + 1 < rawArgs.length && !rawArgs[i + 1]!.startsWith("--")) {
-              i++; // skip the value too
-              continue;
-            }
-            filteredArgs.push(a);
-          }
-          filteredArgs.push(`--workspace=${name}`);
-          app.relaunch({ args: filteredArgs });
-          app.exit(0);
+          deps.restartWithWorkspace(name);
           return;
         }
 

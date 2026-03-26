@@ -3,7 +3,6 @@ import { existsSync } from "fs";
 import { mkdir, writeFile } from "fs/promises";
 import { join, resolve } from "path";
 import { execSync } from "child_process";
-import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { PanelLifecycle } from "../../shared/panelLifecycle.js";
 import type { CdpServer } from "../cdpServer.js";
@@ -11,6 +10,7 @@ import type { ViewManager } from "../viewManager.js";
 import type { Workspace } from "../../shared/workspace/types.js";
 import type { ServerInfo } from "../serverInfo.js";
 import { handleCommonBridgeMethod } from "../../shared/bridgeHandlersCommon.js";
+import { BRIDGE_METHOD_SCHEMAS } from "../../shared/bridgeMethodSchemas.js";
 
 export function createBridgeService(deps: {
   panelLifecycle: PanelLifecycle;
@@ -23,45 +23,17 @@ export function createBridgeService(deps: {
     name: "bridge",
     description: "Panel lifecycle (createPanel, close, navigation)",
     policy: { allowed: ["panel", "shell", "server"] },
-    methods: {
-      closeSelf: { args: z.tuple([]) },
-      getInfo: { args: z.tuple([]) },
-      setStateArgs: { args: z.tuple([z.record(z.unknown())]) },
-      focusPanel: { args: z.tuple([z.string().optional()]) },
-      getBootstrapConfig: { args: z.tuple([]) },
-      getWorkspaceTree: { args: z.tuple([]) },
-      listBranches: { args: z.tuple([z.string()]) },
-      listCommits: { args: z.tuple([z.string(), z.string().optional(), z.number().optional()]) },
-      openFolderDialog: { args: z.tuple([z.object({ title: z.string().optional() }).optional()]) },
-      createRepo: { args: z.tuple([z.string()]) },
-      openDevtools: { args: z.tuple([]) },
-      createBrowserPanel: { args: z.tuple([z.string(), z.object({ name: z.string().optional(), focus: z.boolean().optional() }).optional()]) },
-      closeChild: { args: z.tuple([z.string()]) },
-      openExternal: { args: z.tuple([z.string()]) },
-    },
+    methods: BRIDGE_METHOD_SCHEMAS,
     handler: async (ctx, method, args) => {
       const lifecycle = deps.panelLifecycle;
       const callerId = ctx.callerId;
 
       // Try common handlers first (shared with headless mode)
-      const common = await handleCommonBridgeMethod(lifecycle, callerId, method, args as unknown[]);
+      const common = await handleCommonBridgeMethod(lifecycle, callerId, method, args as unknown[], deps.serverInfo);
       if (common.handled) return common.result;
 
       // Electron-specific handlers
       switch (method) {
-        case "getWorkspaceTree":
-          return deps.serverInfo.getWorkspaceTree();
-
-        case "listBranches": {
-          const [repoPath] = args as [string];
-          return deps.serverInfo.listBranches(repoPath);
-        }
-
-        case "listCommits": {
-          const [repoPath, ref, limit] = args as [string, string?, number?];
-          return deps.serverInfo.listCommits(repoPath, ref ?? "HEAD", limit ?? 50);
-        }
-
         case "openFolderDialog": {
           const [options] = (args ?? []) as [{ title?: string }?];
           const result = await dialog.showOpenDialog({

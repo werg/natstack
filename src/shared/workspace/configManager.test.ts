@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as fs from "fs";
 import YAML from "yaml";
-import { createWorkspaceConfigManager } from "./workspaceOps.js";
-import type { WorkspaceConfig } from "../shared/workspace/types.js";
+import { createWorkspaceConfigManager } from "./loader.js";
+import type { WorkspaceConfig } from "./types.js";
 
 vi.mock("fs");
 vi.mock("yaml");

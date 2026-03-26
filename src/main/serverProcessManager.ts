@@ -30,8 +30,8 @@ export class ServerProcessManager {
   private isShuttingDown = false;
 
   constructor(private config: {
-    workspacePath: string;
-    statePath: string;
+    /** Managed workspace root directory (contains source/ and state/) */
+    wsDir: string;
     appRoot: string;
     logLevel?: string;
     /** Called if the server process exits unexpectedly */
@@ -96,8 +96,7 @@ export class ServerProcessManager {
     const bundlePath = path.join(this.config.appRoot, "dist", "server-electron.cjs");
     const env: Record<string, string | undefined> = {
       ...process.env,
-      NATSTACK_WORKSPACE_DIR: this.config.workspacePath,
-      NATSTACK_USER_DATA_PATH: this.config.statePath,
+      NATSTACK_WORKSPACE_DIR: this.config.wsDir,
       NATSTACK_APP_ROOT: this.config.appRoot,
       ...(this.config.logLevel ? { NATSTACK_LOG_LEVEL: this.config.logLevel } : {}),
     };

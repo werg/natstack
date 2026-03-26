@@ -12,17 +12,16 @@ import { PanelRegistry } from "../shared/panelRegistry.js";
 import { PanelLifecycle } from "../shared/panelLifecycle.js";
 import { PanelView } from "./panelView.js";
 import { setupMenu, setMenuPanelLifecycle, setMenuPanelRegistry, setMenuViewManager, setMenuEventService } from "./menu.js";
-import { getAppRoot, getWorkspaceTemplateDir } from "./paths.js";
+import { getAppRoot } from "./paths.js";
 import {
   resolveWorkspaceName,
-  initWorkspace,
-  createWorkspace,
+  resolveOrCreateWorkspace,
   loadCentralEnv,
   deleteWorkspaceDir,
 } from "../shared/workspace/loader.js";
 import { getWorkspaceDir } from "@natstack/env-paths";
 import type { Workspace } from "../shared/workspace/types.js";
-import { CentralDataManager } from "./centralData.js";
+import { CentralDataManager } from "../shared/centralData.js";
 import { CdpServer } from "./cdpServer.js";
 import { TokenManager } from "../shared/tokenManager.js";
 import { EventService } from "../shared/eventsService.js";
@@ -89,72 +88,52 @@ loadCentralEnv();
 const wsName = resolveWorkspaceName();
 const centralData = new CentralDataManager();
 let wsDir: string;
+let workspace: Workspace | null = null;
 let isEphemeralDevWorkspace = false;
 
-if (wsName) {
-  // Managed workspace by name — must exist on disk
-  const dir = getWorkspaceDir(wsName);
-  if (!fs.existsSync(path.join(dir, "source", "natstack.yml"))) {
-    console.error(`[Error] Workspace "${wsName}" does not exist.`);
-    app.quit();
-    process.exit(1);
-  }
-  wsDir = dir;
-  if (!centralData.hasWorkspace(wsName)) {
+try {
+  const appRoot = getAppRoot();
+  if (wsName) {
+    // Managed workspace by name — must exist on disk
+    const resolved = resolveOrCreateWorkspace({ name: wsName, appRoot });
+    wsDir = resolved.wsDir;
+    workspace = resolved.workspace;
     centralData.addWorkspace(wsName);
-  } else {
-    centralData.touchWorkspace(wsName);
-  }
-} else if (isDev()) {
-  // Dev mode: always create a fresh workspace from the template
-  const { randomBytes } = require("crypto") as typeof import("crypto");
-  const devName = `dev-${randomBytes(4).toString("hex")}`;
-  try {
-    const templateDir = getWorkspaceTemplateDir();
-    initWorkspace(devName, templateDir ? { templateDir } : undefined);
+  } else if (isDev()) {
+    // Dev mode: always create a fresh workspace from the template
+    const { randomBytes } = require("crypto") as typeof import("crypto");
+    const devName = `dev-${randomBytes(4).toString("hex")}`;
+    const resolved = resolveOrCreateWorkspace({ name: devName, appRoot, init: true });
+    wsDir = resolved.wsDir;
+    workspace = resolved.workspace;
     centralData.addWorkspace(devName);
-    wsDir = getWorkspaceDir(devName);
     isEphemeralDevWorkspace = true;
-    log.info(`[Workspace] Created ephemeral dev workspace "${devName}"${templateDir ? " from template" : ""}`);
-  } catch (error) {
-    console.error("[Workspace] Failed to create dev workspace:", error);
-    app.quit();
-    process.exit(1);
-  }
-} else {
-  // No explicit workspace — try last-opened from registry
-  const last = centralData.getLastOpenedWorkspace();
-  if (last) {
-    wsDir = getWorkspaceDir(last.name);
-    centralData.touchWorkspace(last.name);
   } else {
-    // First run: auto-create "default" workspace from the shipped template
-    const defaultName = "default";
-    const defaultDir = getWorkspaceDir(defaultName);
-    try {
-      if (!fs.existsSync(path.join(defaultDir, "source", "natstack.yml"))) {
-        // Clean up partial directory from a previously interrupted create
-        if (fs.existsSync(defaultDir)) {
-          fs.rmSync(defaultDir, { recursive: true, force: true });
-        }
-        const templateDir = getWorkspaceTemplateDir();
-        initWorkspace(defaultName, templateDir ? { templateDir } : undefined);
-        log.info(`[Workspace] Auto-created "default" workspace${templateDir ? " from template" : ""}`);
-      }
-      centralData.addWorkspace(defaultName);
-      wsDir = defaultDir;
-    } catch (error) {
-      console.error("[Workspace] Failed to auto-create default workspace:", error);
-      app.quit();
-      process.exit(1);
+    // No explicit workspace — try last-opened from registry
+    const last = centralData.getLastOpenedWorkspace();
+    if (last) {
+      const resolved = resolveOrCreateWorkspace({ name: last.name, appRoot });
+      wsDir = resolved.wsDir;
+      workspace = resolved.workspace;
+      centralData.touchWorkspace(last.name);
+    } else {
+      // First run: auto-create "default" workspace from the shipped template
+      const resolved = resolveOrCreateWorkspace({ name: "default", appRoot, init: true });
+      wsDir = resolved.wsDir;
+      workspace = resolved.workspace;
+      centralData.addWorkspace("default");
     }
   }
+  log.info(`[Workspace] Loaded: ${workspace.path} (id: ${workspace.config.id})`);
+} catch (error) {
+  console.error("[Workspace] Failed to initialize workspace:", error);
+  app.quit();
+  process.exit(1);
 }
 
 // Set Electron's userData to the workspace state dir — all internal storage scoped here
-app.setPath("userData", path.join(wsDir, "state"));
+app.setPath("userData", path.join(wsDir!, "state"));
 
-let workspace: Workspace | null = null;
 const tokenManager = new TokenManager();
 let cdpServer: CdpServer | null = null;
 let panelRegistry: PanelRegistry | null = null;
@@ -174,19 +153,6 @@ let autofillManager: import("./autofill/autofillManager.js").AutofillManager | n
 function requireServerClient(): ServerClient {
   if (!serverClient) throw new Error("Server not available");
   return serverClient;
-}
-
-// =============================================================================
-// Main Mode Initialization
-// =============================================================================
-
-try {
-  workspace = createWorkspace(wsDir);
-  log.info(`[Workspace] Loaded: ${workspace.path} (id: ${workspace.config.id})`);
-} catch (error) {
-  console.error("[Workspace] Failed to initialize workspace:", error);
-  app.quit();
-  process.exit(1);
 }
 
 log.info(` Starting in main mode`);
@@ -415,8 +381,7 @@ app.on("ready", async () => {
     performance.mark("startup:server-spawn-begin");
     // Spawn server as child process
     serverProcessManager = new ServerProcessManager({
-      workspacePath: workspace!.path,
-      statePath: workspace!.statePath,
+      wsDir,
       appRoot: getAppRoot(),
       onCrash: (code) => {
         console.error(`[App] Server process crashed with code ${code}`);
@@ -591,7 +556,7 @@ app.on("ready", async () => {
       panelLifecycle, panelRegistry, getViewManager, serverClient,
     })));
     // Workspace config manager for atomic config reads/writes
-    const { createWorkspaceConfigManager } = await import("./workspaceOps.js");
+    const { createWorkspaceConfigManager } = await import("../shared/workspace/loader.js");
     const wsConfigPath = path.join(workspace!.path, "natstack.yml");
     const wsConfigManager = createWorkspaceConfigManager(wsConfigPath, workspace!.config);
     electronContainer.register(rpcService(createWorkspaceService({
@@ -599,6 +564,23 @@ app.on("ready", async () => {
       activeWorkspaceName: workspace!.config.id,
       getWorkspaceConfig: wsConfigManager.get,
       setWorkspaceConfigField: wsConfigManager.set,
+      restartWithWorkspace: (name: string) => {
+        // Strip existing --workspace=... or --workspace <value> args, then add the new one
+        const filteredArgs: string[] = [];
+        const rawArgs = process.argv.slice(1);
+        for (let i = 0; i < rawArgs.length; i++) {
+          const a = rawArgs[i]!;
+          if (a.startsWith("--workspace=")) continue;
+          if (a === "--workspace" && i + 1 < rawArgs.length && !rawArgs[i + 1]!.startsWith("--")) {
+            i++; // skip the value too
+            continue;
+          }
+          filteredArgs.push(a);
+        }
+        filteredArgs.push(`--workspace=${name}`);
+        app.relaunch({ args: filteredArgs });
+        app.exit(0);
+      },
     })));
     electronContainer.register(rpcService(createSettingsService({ serverClient })));
     electronContainer.register(rpcService(createAdblockService({ adBlockManager })));

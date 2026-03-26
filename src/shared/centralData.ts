@@ -7,9 +7,9 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { getCentralConfigPaths } from "../shared/workspace/loader.js";
+import { getCentralConfigPaths } from "./workspace/loader.js";
 import { getWorkspaceDir } from "@natstack/env-paths";
-import type { CentralData, WorkspaceEntry } from "../shared/workspace/types.js";
+import type { CentralData, WorkspaceEntry } from "./workspace/types.js";
 
 /**
  * Default empty central data structure

@@ -17,7 +17,8 @@ import { createDevLogger } from "@natstack/dev-log";
 import { execFileSync } from "child_process";
 
 const log = createDevLogger("Workspace");
-import type { Workspace, WorkspaceConfig, CentralConfig, CentralConfigPaths } from "./types.js";
+import type { Workspace, WorkspaceConfig, CentralConfig, CentralConfigPaths, WorkspaceEntry } from "./types.js";
+import type { CentralDataManager } from "../centralData.js";
 
 const WORKSPACE_CONFIG_FILE = "natstack.yml";
 const CENTRAL_CONFIG_FILE = "config.yml";
@@ -235,6 +236,26 @@ function validateWorkspaceName(name: string): void {
   if (!WORKSPACE_NAME_RE.test(name)) {
     throw new Error("Workspace name must contain only letters, numbers, hyphens, and underscores");
   }
+}
+
+/**
+ * Resolve the workspace template directory for first-run workspace creation.
+ *
+ * In development (NODE_ENV=development): workspace/ at app root (the dev workspace)
+ * In production: workspace-template/ in resources directory (or app root for headless)
+ *
+ * Returns null if no template directory exists.
+ */
+export function resolveWorkspaceTemplateDir(appRoot: string): string | null {
+  const isDev = process.env["NODE_ENV"] === "development";
+  if (isDev) {
+    const devPath = path.join(appRoot, "workspace");
+    return fs.existsSync(path.join(devPath, WORKSPACE_CONFIG_FILE)) ? devPath : null;
+  }
+  // Production: Electron sets process.resourcesPath; headless falls back to appRoot
+  const resourcesPath = "resourcesPath" in process ? (process.resourcesPath as string) : appRoot;
+  const prodPath = path.join(resourcesPath, "workspace-template");
+  return fs.existsSync(path.join(prodPath, WORKSPACE_CONFIG_FILE)) ? prodPath : null;
 }
 
 /** Source directories (live under source/) — copied when forking or creating from template. */
@@ -463,5 +484,111 @@ export function createWorkspace(wsDir: string): Workspace {
     gitReposPath,
     cachePath,
     agentsPath,
+  };
+}
+
+// =============================================================================
+// Workspace Resolution (shared between Electron and headless server)
+// =============================================================================
+
+export interface ResolveWorkspaceOpts {
+  /** Explicit managed workspace root path */
+  wsDir?: string;
+  /** Workspace name (resolved via getWorkspaceDir) */
+  name?: string;
+  /** App root for template resolution (required when init is true) */
+  appRoot?: string;
+  /** Auto-create from template if workspace doesn't exist */
+  init?: boolean;
+}
+
+export interface ResolvedWorkspace {
+  /** Managed workspace root directory */
+  wsDir: string;
+  /** Fully resolved workspace object */
+  workspace: Workspace;
+  /** Workspace name (derived from dir basename if not provided) */
+  name: string;
+  /** Whether workspace was newly created during this call */
+  created: boolean;
+}
+
+/**
+ * Resolve a workspace by name or path, optionally creating from template.
+ *
+ * Used by both Electron main and headless server to share workspace
+ * initialization logic.
+ *
+ * Throws if workspace doesn't exist and init is false.
+ */
+export function resolveOrCreateWorkspace(opts: ResolveWorkspaceOpts): ResolvedWorkspace {
+  let wsDir = opts.wsDir;
+  let name = opts.name;
+
+  if (!wsDir && name) {
+    wsDir = getWorkspaceDir(name);
+  }
+  if (!wsDir) {
+    throw new Error("No workspace specified (provide wsDir or name)");
+  }
+  if (!name) {
+    name = path.basename(wsDir);
+  }
+
+  const configPath = path.join(wsDir, "source", WORKSPACE_CONFIG_FILE);
+  let created = false;
+
+  if (!fs.existsSync(configPath)) {
+    if (!opts.init) {
+      throw new Error(`Workspace not found at ${wsDir}`);
+    }
+    // Clean up partial directory from a previously interrupted create
+    if (fs.existsSync(wsDir)) {
+      fs.rmSync(wsDir, { recursive: true, force: true });
+    }
+    const templateDir = opts.appRoot ? resolveWorkspaceTemplateDir(opts.appRoot) : null;
+    initWorkspace(name, templateDir ? { templateDir } : undefined);
+    created = true;
+    log.info(`[Workspace] Created "${name}"${templateDir ? " from template" : ""}`);
+  }
+
+  const workspace = createWorkspace(wsDir);
+  return { wsDir, workspace, name, created };
+}
+
+/**
+ * Create a new workspace and register it in the central data store.
+ * Used for user-initiated workspace creation (UI wizard, CLI).
+ * Fails if the workspace already exists in the registry.
+ */
+export function createAndRegisterWorkspace(
+  name: string,
+  centralData: CentralDataManager,
+  opts?: { templateDir?: string; forkFrom?: string },
+): WorkspaceEntry {
+  if (centralData.hasWorkspace(name)) {
+    throw new Error(`Workspace "${name}" already exists`);
+  }
+  initWorkspace(name, opts);
+  centralData.addWorkspace(name);
+  return { name, lastOpened: Date.now() };
+}
+
+/**
+ * Manages atomic reads/writes of workspace config fields.
+ * Updates both the in-memory config and disk (natstack.yml).
+ */
+export function createWorkspaceConfigManager(configPath: string, config: WorkspaceConfig) {
+  return {
+    get: () => config,
+    set(key: "initPanels", value: unknown): void {
+      // Write disk first — if I/O fails, in-memory config stays consistent
+      const content = fs.readFileSync(configPath, "utf-8");
+      const onDisk = (YAML.parse(content) as Record<string, unknown>) ?? {};
+      onDisk[key] = value;
+      fs.writeFileSync(configPath, YAML.stringify(onDisk), "utf-8");
+      // Only mutate in-memory after successful disk write
+      (config as unknown as Record<string, unknown>)[key] = value;
+    },
   };
 }

@@ -1,25 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ServiceContext } from "../../../shared/serviceDispatcher.js";
-import type { CentralDataManager } from "../../centralData.js";
+import type { CentralDataManager } from "../../../shared/centralData.js";
 import type { WorkspaceConfig } from "../../../shared/workspace/types.js";
 import type { WorkspaceEntry } from "../../../shared/types.js";
 
-// Mock electron app (workspace.select calls app.relaunch/app.exit)
-vi.mock("electron", () => ({
-  app: {
-    relaunch: vi.fn(),
-    exit: vi.fn(),
-  },
-}));
-
-// Mock workspaceOps to avoid real filesystem operations
-vi.mock("../../workspaceOps.js", () => ({
+// Mock shared workspace loader to avoid real filesystem operations
+vi.mock("../../../shared/workspace/loader.js", () => ({
   createAndRegisterWorkspace: vi.fn(),
   deleteWorkspaceDir: vi.fn(),
 }));
 
 import { createWorkspaceService } from "../workspaceService.js";
-import { createAndRegisterWorkspace, deleteWorkspaceDir } from "../../workspaceOps.js";
+import { createAndRegisterWorkspace, deleteWorkspaceDir } from "../../../shared/workspace/loader.js";
 
 const shellCtx: ServiceContext = { callerId: "shell", callerKind: "shell" };
 const panelCtx: ServiceContext = { callerId: "panel-1", callerKind: "panel" };
@@ -45,6 +37,7 @@ describe("workspaceService", () => {
   let config: WorkspaceConfig;
   let setField: ReturnType<typeof vi.fn>;
   let centralData: ReturnType<typeof makeCentralData>;
+  let restartWithWorkspace: ReturnType<typeof vi.fn>;
 
   function makeService(overrides?: { centralData?: CentralDataManager }) {
     return createWorkspaceService({
@@ -52,6 +45,7 @@ describe("workspaceService", () => {
       activeWorkspaceName: "test-ws",
       getWorkspaceConfig: () => config,
       setWorkspaceConfigField: setField,
+      restartWithWorkspace,
     });
   }
 
@@ -59,10 +53,20 @@ describe("workspaceService", () => {
     vi.resetAllMocks();
     config = makeConfig();
     setField = vi.fn();
+    restartWithWorkspace = vi.fn();
     centralData = makeCentralData([
       { name: "test-ws", lastOpened: 1000 },
       { name: "other", lastOpened: 900 },
     ]);
+  });
+
+  // ── select ──
+
+  it("select calls restartWithWorkspace", async () => {
+    const svc = makeService();
+    await svc.handler(shellCtx, "select", ["other-ws"]);
+    expect(centralData.touchWorkspace).toHaveBeenCalledWith("other-ws");
+    expect(restartWithWorkspace).toHaveBeenCalledWith("other-ws");
   });
 
   // ── getActiveEntry ──
