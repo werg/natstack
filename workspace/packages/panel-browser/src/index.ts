@@ -49,7 +49,10 @@ export type ImportDataType =
 
 export interface ImportRequest {
   browser: BrowserName;
-  profilePath: string;
+  /** Pass a DetectedProfile object or a profile path string. Preferred over profilePath. */
+  profile?: DetectedProfile | string;
+  /** @deprecated Use `profile` instead. Full path to the profile directory. */
+  profilePath?: string;
   dataTypes: ImportDataType[];
   masterPassword?: string;
   csvPasswordFile?: string;
@@ -303,48 +306,39 @@ export function createBrowserDataApi(rpc: RpcBridge): BrowserDataApi {
   };
 }
 
-// Auto-initialize using the runtime's RPC bridge if available
+// Auto-initialize using the runtime's RPC bridge via __natstackRequire__
+// (the module system for panel bundles and eval/inline_ui blocks).
 let _browserData: BrowserDataApi | undefined;
 
 export function getBrowserData(): BrowserDataApi {
   if (_browserData) return _browserData;
 
-  // Try multiple mechanisms to resolve @workspace/runtime's rpc bridge.
-  // 1. __natstackRequire__ — available in built panel bundles
-  // 2. __natstackModuleMap__ — the underlying map that __natstackRequire__ reads from;
-  //    available in eval sandbox context even when __natstackRequire__ is not yet wired up
-  let runtime: { rpc?: RpcBridge } | undefined;
-
-  const g = globalThis as Record<string, unknown>;
-  if (typeof g["__natstackRequire__"] === "function") {
-    try {
-      runtime = (g["__natstackRequire__"] as (id: string) => { rpc: RpcBridge })("@workspace/runtime");
-    } catch {
-      // fall through to next strategy
-    }
-  }
-
-  if (!runtime?.rpc && g["__natstackModuleMap__"]) {
-    const moduleMap = g["__natstackModuleMap__"] as Record<string, { rpc?: RpcBridge }>;
-    runtime = moduleMap["@workspace/runtime"];
-  }
-
-  if (!runtime?.rpc) {
+  const require = (globalThis as Record<string, unknown>)["__natstackRequire__"] as
+    | ((id: string) => { rpc: RpcBridge })
+    | undefined;
+  if (!require) {
     throw new Error(
-      "browserData requires @workspace/runtime. " +
-      "In eval context: import { createBrowserDataApi } from '@workspace/panel-browser'; " +
-      "import { rpc } from '@workspace/runtime'; const browserData = createBrowserDataApi(rpc); " +
-      "In inline_ui: const browserData = createBrowserDataApi(chat.rpc);",
+      "browserData requires __natstackRequire__ (panel runtime). " +
+      "In other contexts, use: createBrowserDataApi(rpc)",
     );
   }
 
-  _browserData = createBrowserDataApi(runtime.rpc);
+  const { rpc } = require("@workspace/runtime");
+  _browserData = createBrowserDataApi(rpc);
   return _browserData;
 }
 
 /** Pre-initialized browser data API (lazy, uses runtime's RPC bridge) */
 export const browserData: BrowserDataApi = new Proxy({} as BrowserDataApi, {
   get(_target, prop: string) {
-    return (getBrowserData() as unknown as Record<string, unknown>)[prop];
+    const api = getBrowserData() as unknown as Record<string, unknown>;
+    const value = api[prop];
+    if (value === undefined && !(prop in api)) {
+      const methods = Object.keys(api).join(", ");
+      throw new Error(
+        `browserData.${prop} is not a method. Available methods: ${methods}`,
+      );
+    }
+    return value;
   },
 });

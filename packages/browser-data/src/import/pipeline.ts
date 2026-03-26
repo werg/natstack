@@ -7,6 +7,7 @@ import type {
   BrowserFamily,
   CryptoProvider,
 } from "../types.js";
+import { resolveProfilePath } from "../types.js";
 import { BrowserDataError } from "../errors.js";
 import { detectBrowsers } from "../detection/index.js";
 import { getReader } from "../readers/index.js";
@@ -31,9 +32,13 @@ export async function runImportPipeline(
   store: BrowserDataStore,
   onProgress?: ProgressCallback,
 ): Promise<ImportResult[]> {
+  // Resolve profile/profilePath to a concrete path, then normalize request
+  const profilePath = resolveProfilePath(request);
+  const resolved = { ...request, profilePath };
+
   const requestId = crypto.randomUUID();
   const progress = new ProgressEmitter(requestId, onProgress || (() => {}));
-  const family = getBrowserFamily(request.browser);
+  const family = getBrowserFamily(resolved.browser);
 
   // Create crypto provider once for the entire pipeline.
   // For Chromium, this is passed to the reader so it can decrypt inline.
@@ -46,15 +51,15 @@ export async function runImportPipeline(
 
   const reader = await getReader(family, {
     cryptoProvider,
-    browser: request.browser,
+    browser: resolved.browser,
   });
   const results: ImportResult[] = [];
 
-  for (const dataType of request.dataTypes) {
+  for (const dataType of resolved.dataTypes) {
     try {
       const result = await importDataType(
         dataType,
-        request,
+        resolved,
         reader,
         family,
         store,
@@ -81,7 +86,7 @@ export async function runImportPipeline(
 
 async function importDataType(
   dataType: ImportDataType,
-  request: ImportRequest,
+  request: ImportRequest & { profilePath: string },
   reader: Awaited<ReturnType<typeof getReader>>,
   family: BrowserFamily,
   store: BrowserDataStore,

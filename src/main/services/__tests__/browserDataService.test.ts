@@ -12,20 +12,20 @@ const { mockDetectBrowsers, mockRunImportPipeline, mockExportNetscapeBookmarks, 
   mockDeriveCookieUrl: vi.fn().mockReturnValue("https://example.com/"),
 }));
 
-vi.mock("@natstack/browser-data", () => ({
-  detectBrowsers: mockDetectBrowsers,
-  runImportPipeline: mockRunImportPipeline,
-  exportNetscapeBookmarks: mockExportNetscapeBookmarks,
-  exportChromiumBookmarks: mockExportChromiumBookmarks,
-  exportCsvPasswords: mockExportCsvPasswords,
-  exportNetscapeCookies: mockExportNetscapeCookies,
-  exportJson: mockExportJson,
-  deriveCookieUrl: mockDeriveCookieUrl,
-  ImportRequestSchema: { _def: {} },
-  HistoryQuerySchema: { _def: {} },
-  BookmarkSchema: { partial: () => ({}) },
-  PasswordSchema: { partial: () => ({}) },
-}));
+vi.mock("@natstack/browser-data", async (importOriginal) => {
+  const actual = await importOriginal() as Record<string, unknown>;
+  return {
+    ...actual,
+    detectBrowsers: mockDetectBrowsers,
+    runImportPipeline: mockRunImportPipeline,
+    exportNetscapeBookmarks: mockExportNetscapeBookmarks,
+    exportChromiumBookmarks: mockExportChromiumBookmarks,
+    exportCsvPasswords: mockExportCsvPasswords,
+    exportNetscapeCookies: mockExportNetscapeCookies,
+    exportJson: mockExportJson,
+    deriveCookieUrl: mockDeriveCookieUrl,
+  };
+});
 
 // Mock electron
 const mockCookiesSet = vi.fn().mockResolvedValue(undefined);
