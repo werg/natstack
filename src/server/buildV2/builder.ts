@@ -1292,7 +1292,6 @@ async function doNpmBuild(
     if (_appNodeModules) {
       nodePaths.push(_appNodeModules);
     }
-    const resolveDir = pickResolveDir(nodePaths, nodeModulesDir);
 
     // Use a virtual entry file instead of string interpolation to avoid injection
     const entryFile = path.join(outdir, "_entry.js");

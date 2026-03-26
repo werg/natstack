@@ -18,7 +18,7 @@ export function createHttpRpcBridge(config: HttpRpcBridgeConfig): RpcBridge & {
   handleIncomingPost(body: unknown): Promise<unknown>;
 } {
   const { selfId, serverUrl, authToken } = config;
-  const methodHandlers = new Map<string, (args: unknown[]) => Promise<unknown>>();
+  const methodHandlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
   const eventListeners = new Map<string, Set<(fromId: string, payload: unknown) => void>>();
 
   async function postToServer(payload: object): Promise<unknown> {
@@ -83,7 +83,7 @@ export function createHttpRpcBridge(config: HttpRpcBridgeConfig): RpcBridge & {
         // Local dispatch
         const handler = methodHandlers.get(method);
         if (!handler) throw new Error(`No handler for method '${method}'`);
-        return handler(args) as T;
+        return handler(...args) as T;
       }
       return postToServer({ type: "call", targetId, method, args }) as Promise<T>;
     },
@@ -104,7 +104,7 @@ export function createHttpRpcBridge(config: HttpRpcBridgeConfig): RpcBridge & {
         const handler = methodHandlers.get(msg.method);
         if (!handler) return { error: `No handler for method '${msg.method}'` };
         try {
-          const result = await handler(msg.args ?? []);
+          const result = await handler(...(msg.args ?? []));
           return { result };
         } catch (err: any) {
           return { error: err.message, errorCode: err.code };

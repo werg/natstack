@@ -485,10 +485,12 @@ export class PubSubChannel extends DurableObjectBase {
     const attachments = opts?.attachments;
 
     // Intercept method-result only if there's a matching pending DO-initiated call
+    // AND the result is complete (not a streaming partial like console chunks).
     if (type === "method-result" && payload && typeof payload === "object") {
       const p = payload as Record<string, unknown>;
       const callId = p["callId"] as string;
-      if (callId) {
+      const isComplete = p["complete"] !== false;
+      if (callId && isComplete) {
         const pending = this.sql.exec(
           `SELECT call_id FROM pending_calls WHERE call_id = ?`, callId,
         ).toArray();
