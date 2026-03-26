@@ -292,7 +292,8 @@ export async function search(query: string) {
 export async function ensureConnected() {
   const conn = await oauth.getConnection("notion");
   if (conn.connected) return;
-  await oauth.requestConsent("notion");
+  const { consented } = await oauth.requestConsent("notion");
+  if (!consented) throw new Error("OAuth consent denied for Notion");
   await oauth.startAuth("notion");
   await oauth.waitForConnection("notion");
 }

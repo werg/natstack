@@ -99,7 +99,14 @@ export class OAuthManager {
     const headers = new Headers(init?.headers);
     headers.set("Authorization", `Bearer ${this.nangoSecretKey}`);
 
-    const res = await fetch(url, { ...init, headers });
+    const abort = new AbortController();
+    const timeout = setTimeout(() => abort.abort(), 10_000);
+    let res: Response;
+    try {
+      res = await fetch(url, { ...init, headers, signal: abort.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw new Error(`Nango API error ${res.status}: ${body}`);
@@ -184,8 +191,14 @@ export class OAuthManager {
         connected: true,
         lastRefreshed: Date.now(),
       };
-    } catch {
-      return { id: connectionId, provider: providerKey, connected: false };
+    } catch (err: unknown) {
+      // 404 / "not found" means the connection doesn't exist yet — expected.
+      // Other errors (network, 5xx, rate-limit) should propagate.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("404") || msg.toLowerCase().includes("not found")) {
+        return { id: connectionId, provider: providerKey, connected: false };
+      }
+      throw err;
     }
   }
 
@@ -229,18 +242,19 @@ export class OAuthManager {
   }
 
   async disconnect(providerKey: string, connectionId: string): Promise<void> {
-    if (!this.isConfigured) return;
-
-    try {
-      await this.nangoFetch(
-        `/connection/${encodeURIComponent(connectionId)}?provider_config_key=${encodeURIComponent(providerKey)}`,
-        { method: "DELETE" },
-      );
-    } catch (err) {
-      log.warn(`Failed to disconnect ${providerKey}/${connectionId}:`, err);
+    // Best-effort remote revocation (only if Nango is configured)
+    if (this.isConfigured) {
+      try {
+        await this.nangoFetch(
+          `/connection/${encodeURIComponent(connectionId)}?provider_config_key=${encodeURIComponent(providerKey)}`,
+          { method: "DELETE" },
+        );
+      } catch (err) {
+        log.warn(`Failed to disconnect ${providerKey}/${connectionId}:`, err);
+      }
     }
 
-    // Clear caches
+    // Always clear local caches regardless of remote status
     this.tokenCache.delete(`${providerKey}:${connectionId}`);
     const handle = this.ensureDb();
     this.databaseManager.run(
@@ -296,9 +310,10 @@ export class OAuthManager {
 
   async revokeConsent(panelId: string, providerKey: string): Promise<void> {
     const handle = this.ensureDb();
+    // Remove both panel-specific and workspace-wide consent for this provider
     this.databaseManager.run(
       handle,
-      "DELETE FROM oauth_consent WHERE panel_id = ? AND provider = ?",
+      "DELETE FROM oauth_consent WHERE panel_id IN (?, '*') AND provider = ?",
       [panelId, providerKey],
     );
   }

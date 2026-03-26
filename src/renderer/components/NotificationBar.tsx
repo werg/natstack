@@ -263,6 +263,7 @@ function ToastNotification({
         <Button
           size="1"
           variant="ghost"
+          aria-label="Dismiss notification"
           onClick={() => onDismiss(notification.id)}
         >
           <Cross2Icon />
@@ -321,7 +322,7 @@ function ConsentNotification({
             </Badge>
           )}
         </Flex>
-        <Button size="1" variant="ghost" onClick={(e) => { e.stopPropagation(); onDismiss(notification.id); }}>
+        <Button size="1" variant="ghost" aria-label="Dismiss notification" onClick={(e) => { e.stopPropagation(); onDismiss(notification.id); }}>
           <Cross2Icon />
         </Button>
       </Flex>
