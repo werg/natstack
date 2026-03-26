@@ -410,7 +410,7 @@ export class PanelView implements PanelViewLike {
       panel.title = state.pageTitle;
       try { getPanelPersistence().setTitle(panelId, state.pageTitle); }
       catch (error) { console.error(`[PanelView] Failed to persist title for ${panelId}:`, error); }
-      try { getPanelSearchIndex().updateTitle(panelId, state.pageTitle); } catch {}
+      try { getPanelSearchIndex().updateTitle(panelId, state.pageTitle); } catch (e) { console.warn(`[PanelView] Search index update failed for ${panelId}:`, e); }
     }
     this.panelRegistry.notifyPanelTreeUpdate();
   }
@@ -495,7 +495,7 @@ export class PanelView implements PanelViewLike {
           name: u.searchParams.get("name") ?? undefined,
           focus: u.searchParams.get("focus") === "true" || undefined,
         },
-        stateArgs: u.searchParams.has("stateArgs") ? JSON.parse(u.searchParams.get("stateArgs")!) : undefined,
+        stateArgs: u.searchParams.has("stateArgs") ? (() => { try { return JSON.parse(u.searchParams.get("stateArgs")!); } catch { return undefined; } })() : undefined,
       };
     } catch { return null; }
   }
@@ -541,7 +541,7 @@ export class PanelView implements PanelViewLike {
 
     let stateArgs: Record<string, unknown> | undefined;
     if (targetUrl.searchParams.has("stateArgs")) {
-      try { stateArgs = JSON.parse(targetUrl.searchParams.get("stateArgs")!); } catch {}
+      try { stateArgs = JSON.parse(targetUrl.searchParams.get("stateArgs")!); } catch (e) { log.warn(`[CrossCtx] Invalid stateArgs JSON:`, e); }
     }
 
     const newContextId = targetUrl.searchParams.get("contextId") ?? targetSubdomain;

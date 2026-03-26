@@ -503,13 +503,17 @@ async function main() {
           }
 
           void (async () => {
-            try {
-              await doDispatch.dispatch(
-                doRef, "onHarnessEvent", harnessId,
-                { type: "error", error: "harness process crashed" },
-              );
-            } catch (err) {
-              console.error(`[HarnessManager] onCrash: crash notification failed for ${harnessId}:`, err);
+            for (let attempt = 0; attempt < 3; attempt++) {
+              try {
+                await doDispatch.dispatch(
+                  doRef, "onHarnessEvent", harnessId,
+                  { type: "error", error: "harness process crashed" },
+                );
+                return; // Success
+              } catch (err) {
+                console.error(`[HarnessManager] onCrash: crash notification failed for ${harnessId} (attempt ${attempt + 1}/3):`, err);
+                if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+              }
             }
           })();
         },

@@ -73,7 +73,8 @@ export async function createServerClient(
     let msg: WsServerMessage;
     try {
       msg = JSON.parse(data.toString()) as WsServerMessage;
-    } catch {
+    } catch (e) {
+      console.warn("[ServerClient] Malformed message from server:", e);
       return;
     }
 

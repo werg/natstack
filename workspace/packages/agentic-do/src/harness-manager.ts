@@ -93,6 +93,11 @@ export class HarnessManager {
   async stop(harnessId: string): Promise<void> {
     try {
       await this.rpc.call("main", "harness.stop", harnessId);
-    } catch { /* harness may already be stopped */ }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes("not found") && !msg.includes("already stopped") && !msg.includes("No bridge")) {
+        console.warn(`[HarnessManager] stop(${harnessId}) unexpected error:`, err);
+      }
+    }
   }
 }

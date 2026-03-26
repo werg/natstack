@@ -641,8 +641,8 @@ export class PanelLifecycle implements BridgePanelManager {
     this.tokenManager.revokeToken(panelId);
 
     // Revoke server-side tokens (fire-and-forget)
-    void this.serverInfo.revokePanelToken(panelId);
-    void this.serverInfo.revokeGitToken(panelId);
+    void Promise.resolve(this.serverInfo.revokePanelToken(panelId)).catch((e: unknown) => console.warn(`[PanelLifecycle] Failed to revoke panel token for ${panelId}:`, e));
+    void Promise.resolve(this.serverInfo.revokeGitToken(panelId)).catch((e: unknown) => console.warn(`[PanelLifecycle] Failed to revoke git token for ${panelId}:`, e));
 
     // CDP cleanup (ownership tracking; unregisterBrowser is handled by destroyView)
     this.cdpServer?.revokeTokenForPanel(panelId);
@@ -765,7 +765,7 @@ export class PanelLifecycle implements BridgePanelManager {
     this.registry.notifyPanelTreeUpdate();
 
     if (focusedWasReset && focusedPanelId) {
-      void this.rebuildUnloadedPanel(focusedPanelId);
+      void this.rebuildUnloadedPanel(focusedPanelId).catch((e: unknown) => console.warn(`[PanelLifecycle] Failed to rebuild panel ${focusedPanelId}:`, e));
     }
   }
 
@@ -860,8 +860,9 @@ export class PanelLifecycle implements BridgePanelManager {
       const absolutePath = path.resolve(this.panelsRoot, panelSource);
       const manifest = loadPanelManifest(absolutePath);
       schema = manifest.stateArgs;
-    } catch {
+    } catch (err) {
       // If manifest can't be loaded (dynamic source), skip validation
+      console.debug(`[PanelLifecycle] Skipping stateArgs validation for ${panelSource}:`, err instanceof Error ? err.message : err);
     }
 
     const currentArgs = getPanelStateArgs(panel) ?? {};

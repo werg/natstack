@@ -45,8 +45,9 @@ export async function runImportPipeline(
   let cryptoProvider: CryptoProvider | undefined;
   try {
     cryptoProvider = await createCryptoProvider();
-  } catch {
+  } catch (err) {
     // Crypto unavailable — passwords/cookies may not decrypt
+    console.warn("[BrowserData] Crypto provider unavailable — passwords/cookies may not decrypt:", err instanceof Error ? err.message : String(err));
   }
 
   const reader = await getReader(family, {

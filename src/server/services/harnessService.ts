@@ -204,6 +204,10 @@ export function createHarnessService(deps: {
               // we don't hold the RPC call open for that)
               bridge.call(harnessId, "startTurn", initialInput).catch((err) => {
                 log.error(`Initial start-turn failed for ${harnessId}:`, err);
+                // Notify the DO so the user sees an error instead of infinite "thinking"
+                doDispatch.dispatch(doRef, "onHarnessEvent", harnessId, {
+                  type: "error", error: `start-turn failed: ${err instanceof Error ? err.message : String(err)}`, code: "START_TURN_FAILED",
+                }).catch((dispatchErr) => log.error(`Failed to notify DO of start-turn failure:`, dispatchErr));
               });
             }
 
@@ -235,6 +239,13 @@ export function createHarnessService(deps: {
             // Fire-and-forget: startTurn blocks for minutes
             bridge.call(harnessId, rpcMethod, ...rpcArgs).catch((err) => {
               log.error(`start-turn failed for ${harnessId}:`, err);
+              // Notify the DO so the user sees an error instead of infinite "thinking"
+              const doRef = harnessManager.getDOForHarness(harnessId);
+              if (doRef) {
+                doDispatch.dispatch(doRef, "onHarnessEvent", harnessId, {
+                  type: "error", error: `start-turn failed: ${err instanceof Error ? err.message : String(err)}`, code: "START_TURN_FAILED",
+                }).catch((dispatchErr) => log.error(`Failed to notify DO of start-turn failure:`, dispatchErr));
+              }
             });
             return { ok: true };
           } else {

@@ -182,7 +182,7 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
   useEffect(() => {
     panelService.getCollapsedIds().then((ids) => {
       setCollapsedIds(new Set(ids));
-    });
+    }).catch((err) => console.error("[PanelDndContext] Failed to load collapsed IDs:", err));
   }, []);
 
   // Flatten tree for sortable context
@@ -322,7 +322,7 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
         next.delete(panelId);
       }
       // Fire-and-forget persist
-      panelService.setCollapsed(panelId, nowCollapsed);
+      void panelService.setCollapsed(panelId, nowCollapsed).catch((err: unknown) => console.warn("[PanelDndContext] setCollapsed failed:", err));
       return next;
     });
   }, []);
@@ -334,7 +334,7 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
         next.delete(id);
       }
       // Fire-and-forget persist
-      panelService.expandIds(ids);
+      void panelService.expandIds(ids).catch((err: unknown) => console.warn("[PanelDndContext] expandIds failed:", err));
       return next;
     });
   }, []);

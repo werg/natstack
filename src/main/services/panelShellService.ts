@@ -64,7 +64,7 @@ export function createPanelShellService(deps: {
             getPanelSearchIndex().incrementAccessCount(panelId);
             registry.notifyPanelTreeUpdate();
             vm.refreshVisiblePanel();
-            void lifecycle.rebuildUnloadedPanel(panelId);
+            void lifecycle.rebuildUnloadedPanel(panelId).catch((err: unknown) => console.warn(`[Panel] Rebuild failed for ${panelId}:`, err));
           } catch (error) {
             console.error(`[Panel] Failed to update selected path for ${panelId}:`, error);
           }

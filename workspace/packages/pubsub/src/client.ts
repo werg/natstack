@@ -1543,8 +1543,9 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
 
       // Emit live events to all subscribers
       eventsFanout.emit(event);
-    } catch {
+    } catch (err) {
       // Don't let a single bad message kill the processing
+      console.warn("[PubSubClient] Event processing error:", err);
     }
   });
 

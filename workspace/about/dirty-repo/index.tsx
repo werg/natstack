@@ -19,7 +19,7 @@ function App() {
 
   const handleRetryBuild = () => {
     // `id` is the raw panelId. rpc.selfId is "panel:<id>".
-    rpc.call("main", "panel.retryDirtyBuild", id);
+    void rpc.call("main", "panel.retryDirtyBuild", id).catch((err: unknown) => console.error("[DirtyRepo] Failed to retry build:", err));
   };
 
   return (

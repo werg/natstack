@@ -84,7 +84,8 @@ function parseHarnessConfig(): HarnessConfig {
   if (!raw) return {};
   try {
     return JSON.parse(raw) as HarnessConfig;
-  } catch {
+  } catch (err) {
+    console.warn("[harness] Failed to parse HARNESS_CONFIG:", raw, err);
     return {};
   }
 }
@@ -135,13 +136,13 @@ async function createAdapter(
           const modelId = modelStr.slice(colonIdx + 1);
           try {
             return modelRegistry.find(provider, modelId) ?? piAi.getModel(provider as never, modelId as never);
-          } catch { return undefined; }
+          } catch (err) { log.info(`Model resolution failed for ${modelStr}:`, err); return undefined; }
         }
         // Bare model ID — try anthropic for claude-* models
         if (modelStr.startsWith("claude-")) {
           try {
             return modelRegistry.find("anthropic", modelStr) ?? piAi.getModel("anthropic" as never, modelStr as never);
-          } catch { return undefined; }
+          } catch (err) { log.info(`Model resolution failed for ${modelStr}:`, err); return undefined; }
         }
         return undefined;
       };

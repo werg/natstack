@@ -65,7 +65,9 @@ export const removeRecentWorkspaceAtom = atom(null, async (_get, set, name: stri
     try {
       const workspaces = await workspace.list();
       set(recentWorkspacesAtom, workspaces);
-    } catch {}
+    } catch (reloadErr) {
+      console.error("Failed to reload workspace list:", reloadErr);
+    }
   }
 });
 

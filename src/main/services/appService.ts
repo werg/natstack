@@ -50,7 +50,7 @@ export function createAppService(deps: {
 
         case "clearBuildCache": {
           if (deps.serverClient) {
-            try { await deps.serverClient.call("build", "recompute", []); } catch {}
+            try { await deps.serverClient.call("build", "recompute", []); } catch (e) { console.warn("[App] Build recompute failed:", e); }
           }
           try {
             deps.panelLifecycle.invalidateReadyPanels();
@@ -62,7 +62,7 @@ export function createAppService(deps: {
 
         case "getShellPages":
           if (deps.serverClient) {
-            try { return await deps.serverClient.call("build", "getAboutPages", []); } catch {}
+            try { return await deps.serverClient.call("build", "getAboutPages", []); } catch (e) { console.warn("[App] Failed to fetch shell pages:", e); }
           }
           return [];
 

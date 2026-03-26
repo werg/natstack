@@ -120,7 +120,7 @@ export function createWorkerService(deps: {
             log.info(`[callDO] ${source}:${className}/${objectKey}.${doMethod} => OK`);
             return result;
           } catch (err) {
-            log.info(`[callDO] ${source}:${className}/${objectKey}.${doMethod} => FAILED: ${err instanceof Error ? err.message : String(err)}`);
+            log.warn(`[callDO] ${source}:${className}/${objectKey}.${doMethod} => FAILED: ${err instanceof Error ? err.message : String(err)}`);
             throw err;
           }
         }

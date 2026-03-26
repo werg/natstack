@@ -303,7 +303,7 @@ export function PanelStack({
 
     // Hide previous panel's view when switching panels
     if (previousVisiblePanelId.current && previousVisiblePanelId.current !== panelId) {
-      void view.setVisible(previousVisiblePanelId.current, false);
+      void view.setVisible(previousVisiblePanelId.current, false).catch((err: unknown) => console.warn("[PanelStack] Failed to hide panel:", err));
     }
     previousVisiblePanelId.current = panelId;
 
@@ -313,7 +313,7 @@ export function PanelStack({
     const isUnloaded = buildState === "pending" || buildState === "building" || buildState === "error";
     if (!isUnloaded && htmlPath) {
       // Show current panel's view - main process handles bounds calculation
-      void view.setVisible(panelId, true);
+      void view.setVisible(panelId, true).catch((err: unknown) => console.warn("[PanelStack] Failed to show panel:", err));
     }
   }, [visiblePanel?.id, visiblePanel?.artifacts?.htmlPath, visiblePanel?.artifacts?.buildState]);
 
@@ -323,13 +323,13 @@ export function PanelStack({
     void view.updateLayout({
       sidebarVisible,
       sidebarWidth,
-    });
+    }).catch((err: unknown) => console.warn("[PanelStack] Layout update failed:", err));
   }, [sidebarVisible, sidebarWidth]);
 
   // Send theme CSS to main process for injection into views
   useEffect(() => {
     if (hostThemeCss) {
-      void view.setThemeCss(hostThemeCss);
+      void view.setThemeCss(hostThemeCss).catch((err: unknown) => console.warn("[PanelStack] Theme CSS injection failed:", err));
     }
   }, [hostThemeCss]);
 

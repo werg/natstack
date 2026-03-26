@@ -372,7 +372,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   protected getApprovalLevel(channelId: string): number {
     const value = this.getStateValue(`approvalLevel:${channelId}`);
     if (!value) return 2; // Default: Full Auto
-    return parseInt(value, 10);
+    return parseInt(value, 10) || 2; // Default to Full Auto on parse failure
   }
 
   protected shouldAutoApprove(channelId: string, toolName: string): boolean {
@@ -620,18 +620,25 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         const event = args[1] as ChannelEvent;
         if (event.type === "config-update") {
           const channelId = args[0] as string;
+          let newLevel: number | undefined;
           try {
             const config = typeof event.payload === "object" && event.payload !== null
               ? event.payload as Record<string, unknown>
               : {};
             if ("approvalLevel" in config) {
-              const newLevel = config["approvalLevel"] as number;
-              this.setApprovalLevel(channelId, newLevel);
-              if (newLevel >= 2) {
-                await this.reevaluatePendingApprovals(channelId);
-              }
+              newLevel = config["approvalLevel"] as number;
             }
           } catch { /* ignore parse errors */ }
+          if (newLevel !== undefined) {
+            this.setApprovalLevel(channelId, newLevel);
+            if (newLevel >= 2) {
+              try {
+                await this.reevaluatePendingApprovals(channelId);
+              } catch (err) {
+                console.error("[AgentWorkerBase] reevaluatePendingApprovals failed:", err);
+              }
+            }
+          }
           return new Response(JSON.stringify(null), {
             headers: { "Content-Type": "application/json" },
           });

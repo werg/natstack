@@ -23,6 +23,11 @@ export interface BroadcastDeps {
  *  agent DOs handle ordering via their own checkpoints. */
 const deliveryChains = new Map<string, Promise<void>>();
 
+/** Clean up delivery chain for a participant that unsubscribed. */
+export function cleanupDeliveryChain(participantId: string): void {
+  deliveryChains.delete(participantId);
+}
+
 // ── Broadcast ────────────────────────────────────────────────────────────────
 
 /**

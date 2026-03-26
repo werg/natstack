@@ -992,11 +992,16 @@ export class PiAdapter {
       };
       signal?.addEventListener("abort", onAbort, { once: true });
 
-      this.deps.pushEvent({
+      Promise.resolve(this.deps.pushEvent({
         type: "approval-needed",
         toolUseId,
         toolName,
         input,
+      })).catch((err) => {
+        this.deps.log?.error(`Failed to push approval-needed for ${toolName}:`, err);
+        // Unblock the tool call to prevent deadlock
+        this.pendingApprovals.delete(toolUseId);
+        resolve({ allow: false });
       });
     });
   }

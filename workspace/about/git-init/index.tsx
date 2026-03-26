@@ -18,7 +18,7 @@ function App() {
   const { repoPath } = getStateArgs<{ repoPath: string }>();
 
   const handleContinueBuild = () => {
-    rpc.call("main", "panel.initGitRepo", id);
+    void rpc.call("main", "panel.initGitRepo", id).catch((err: unknown) => console.error("[GitInit] Failed to init git repo:", err));
   };
 
   return (

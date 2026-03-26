@@ -35,7 +35,7 @@ export function createMenuService(deps: {
 
           const clearBuildCache = async () => {
             if (deps.serverClient) {
-              try { await deps.serverClient.call("build", "recompute", []); } catch {}
+              try { await deps.serverClient.call("build", "recompute", []); } catch (e) { console.warn("[App] Build recompute failed:", e); }
             }
             try {
               lifecycle.invalidateReadyPanels();

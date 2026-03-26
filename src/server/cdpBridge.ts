@@ -368,7 +368,7 @@ export class CdpBridge {
         const msg = JSON.parse(data.toString());
         this.handleExtensionMessage(msg);
       } catch (err) {
-        log.info(`Failed to parse extension message: ${err}`);
+        log.warn(`Failed to parse extension message: ${err}`);
       }
     });
 
@@ -573,7 +573,7 @@ export class CdpBridge {
           this.sendErrorToClient(ws, msg.id, "Failed to send to extension", msg.sessionId);
         }
       } catch (err) {
-        log.info(`Failed to parse client message: ${err}`);
+        log.warn(`Failed to parse client message: ${err}`);
       }
     });
 

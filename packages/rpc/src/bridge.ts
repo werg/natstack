@@ -46,7 +46,7 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
         requestId: request.requestId,
         error: `Method "${request.method}" is not exposed by this endpoint`,
       };
-      void config.transport.send(sourceId, response);
+      void config.transport.send(sourceId, response).catch?.(() => {});
       return;
     }
 
@@ -66,7 +66,7 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
           requestId: request.requestId,
           error: error instanceof Error ? error.message : String(error),
         };
-        return config.transport.send(sourceId, response);
+        return config.transport.send(sourceId, response).catch?.(() => {});
       });
   };
 
@@ -141,7 +141,11 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
           timeout,
         });
 
-        void config.transport.send(targetId, request);
+        void Promise.resolve(config.transport.send(targetId, request)).catch((err) => {
+          pendingRequests.delete(requestId);
+          clearTimeout(timeout);
+          reject(err);
+        });
       });
     },
 

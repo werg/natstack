@@ -26,6 +26,7 @@ import {
   parseRowToChannelEvent,
   channelEventToWsJson,
   type BroadcastDeps,
+  cleanupDeliveryChain,
 } from "./broadcast.js";
 import { getMessagesBefore } from "./replay.js";
 import { storeCall, consumeCall, cancelCall as cancelCallDb, getNextExpiry, expireCalls } from "./method-calls.js";
@@ -335,6 +336,7 @@ export class PubSubChannel extends DurableObjectBase {
     const metadata = this.getSenderMetadata(participantId) ?? {};
 
     this.sql.exec(`DELETE FROM participants WHERE id = ?`, participantId);
+    cleanupDeliveryChain(participantId);
     this.publishPresenceEvent(participantId, "leave", metadata, "graceful");
   }
 
@@ -704,7 +706,7 @@ export class PubSubChannel extends DurableObjectBase {
       this.rpc.emit(providerId, "channel:message", {
         channelId: this.objectKey,
         message: { kind: "ephemeral", type: "method-cancel", payload: { callId }, senderId: "system", ts: Date.now() },
-      }).catch(() => {});
+      }).catch((err) => { console.warn("[Channel] cancel emit failed:", err); });
     }
   }
 
@@ -723,16 +725,22 @@ export class PubSubChannel extends DurableObjectBase {
 
     const c = caller[0]!;
     if (c["transport"] === "do") {
-      try {
-        await this.rpc.call(
-          callerId,
-          "onCallResult",
-          callId,
-          result,
-          isError,
-        );
-      } catch (err) {
-        console.error(`[Channel] Failed to deliver call result to ${callerId}:`, err);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await this.rpc.call(
+            callerId,
+            "onCallResult",
+            callId,
+            result,
+            isError,
+          );
+          break; // Success
+        } catch (err) {
+          console.error(`[Channel] Failed to deliver call result to ${callerId} (attempt ${attempt + 1}/3):`, err);
+          if (attempt < 2) {
+            await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+          }
+        }
       }
     } else {
       // Persist and broadcast result as a normal channel message
@@ -795,8 +803,10 @@ export class PubSubChannel extends DurableObjectBase {
 
     for (const row of stale) {
       const pid = row["id"] as string;
-      const metadata = JSON.parse(row["metadata"] as string);
+      let metadata: Record<string, unknown> = {};
+      try { metadata = JSON.parse(row["metadata"] as string); } catch { /* corrupted metadata, use empty default */ }
       this.sql.exec(`DELETE FROM participants WHERE id = ?`, pid);
+      cleanupDeliveryChain(pid);
       this.publishPresenceEvent(pid, "leave", metadata, "disconnect");
     }
 

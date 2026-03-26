@@ -185,7 +185,7 @@ export default function ChatPanel() {
         }
       }
       setAvailableAgents(agents);
-    }).catch(() => {});
+    }).catch((err) => { console.warn("[ChatPanel] Failed to load worker sources:", err); });
   }, []);
 
   const handleAddAgent = useCallback(async (channelName: string, channelContextId?: string, agentId?: string) => {

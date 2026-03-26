@@ -218,7 +218,8 @@ export class OAuthManager {
         provider: c.provider_config_key,
         connected: true,
       }));
-    } catch {
+    } catch (err) {
+      log.warn("Failed to list OAuth connections:", err);
       return [];
     }
   }
@@ -236,7 +237,8 @@ export class OAuthManager {
         key: c.unique_key,
         provider: c.provider,
       }));
-    } catch {
+    } catch (err) {
+      log.warn("Failed to list OAuth providers:", err);
       return [];
     }
   }

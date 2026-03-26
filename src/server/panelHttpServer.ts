@@ -260,7 +260,7 @@ export class PanelHttpServer {
   async start(port = 0): Promise<number> {
     this.httpServer = createServer((req, res) => {
       this.handleRequest(req, res).catch((err) => {
-        log.info(`Request handler error: ${err}`);
+        log.warn(`Request handler error: ${err}`);
         if (!res.headersSent) {
           res.writeHead(500, { "Content-Type": "text/plain" });
           res.end("Internal Server Error");
@@ -531,7 +531,7 @@ export class PanelHttpServer {
       });
       res.end();
     } catch (err) {
-      log.info(`On-demand creation failed for ${subdomain}/${source}: ${err}`);
+      log.warn(`On-demand creation failed for ${subdomain}/${source}: ${err}`);
       this.servePanelClosedPage(res, subdomain);
     }
   }

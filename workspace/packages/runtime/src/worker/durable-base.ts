@@ -95,7 +95,7 @@ export abstract class DurableObjectBase {
     let currentVersion = 0;
     try {
       const row = this.sql.exec(`SELECT value FROM state WHERE key = 'schema_version'`).toArray();
-      if (row.length > 0) currentVersion = parseInt(row[0]!["value"] as string, 10);
+      if (row.length > 0) currentVersion = parseInt(row[0]!["value"] as string, 10) || 0;
     } catch { /* table might not have the row yet */ }
 
     const targetVersion = (this.constructor as typeof DurableObjectBase).schemaVersion;

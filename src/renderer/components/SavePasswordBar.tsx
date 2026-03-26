@@ -45,7 +45,7 @@ export function SavePasswordBar({ visiblePanelId }: SavePasswordBarProps) {
     for (const [panelId, _data] of prompts) {
       if (timerCleanups.current.has(panelId)) continue; // already has a timer
       const timer = setTimeout(() => {
-        void autofill.confirmSave(panelId, "dismiss");
+        void autofill.confirmSave(panelId, "dismiss").catch((err: unknown) => console.warn("[SavePasswordBar] Dismiss failed:", err));
         setPrompts((prev) => {
           const next = new Map(prev);
           next.delete(panelId);
@@ -128,18 +128,18 @@ export function SavePasswordBar({ visiblePanelId }: SavePasswordBarProps) {
   };
 
   const handleSave = () => {
-    void autofill.confirmSave(prompt.panelId, "save");
+    void autofill.confirmSave(prompt.panelId, "save").catch((err: unknown) => console.error("[SavePasswordBar] Save failed:", err));
     removePrompt(prompt.panelId);
     setConfirmed(true);
   };
 
   const handleNever = () => {
-    void autofill.confirmSave(prompt.panelId, "never");
+    void autofill.confirmSave(prompt.panelId, "never").catch((err: unknown) => console.warn("[SavePasswordBar] Never-save failed:", err));
     removePrompt(prompt.panelId);
   };
 
   const handleDismiss = () => {
-    void autofill.confirmSave(prompt.panelId, "dismiss");
+    void autofill.confirmSave(prompt.panelId, "dismiss").catch((err: unknown) => console.warn("[SavePasswordBar] Dismiss failed:", err));
     removePrompt(prompt.panelId);
   };
 

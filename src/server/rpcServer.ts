@@ -120,7 +120,15 @@ export class RpcServer {
   async start(): Promise<number> {
     const port = await findServicePort("rpc");
 
-    this.httpServer = createServer((req, res) => this.handleHttpRequest(req, res));
+    this.httpServer = createServer((req, res) => {
+      this.handleHttpRequest(req, res).catch((err) => {
+        console.error("[RpcServer] HTTP request handler error:", err);
+        if (!res.headersSent) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Bad request" }));
+        }
+      });
+    });
     this.wss = new WebSocketServer({ server: this.httpServer });
 
     this.wss.on("connection", (ws) => this.handleConnection(ws));

@@ -138,9 +138,13 @@ export class ContextFolderManager {
           const srcGit = path.join(src, ".git");
           try {
             await fs.access(srcGit);
-            await setupContextGit(srcGit, path.join(dest, ".git"));
           } catch {
-            // Source repo has no .git (shouldn't happen for isGitRepo, but be safe)
+            continue; // Source repo has no .git (shouldn't happen for isGitRepo, but be safe)
+          }
+          try {
+            await setupContextGit(srcGit, path.join(dest, ".git"));
+          } catch (err) {
+            console.warn(`[ContextFolder] Failed to setup context git for ${repoPath}:`, err);
           }
         }
 
