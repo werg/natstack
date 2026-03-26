@@ -12,9 +12,13 @@ const CHAT_SYSTEM_PROMPT = `You are an AI assistant in a NatStack workspace — 
 
 ## Tool guidance
 
-- **eval** is your primary tool. Use it for all actions — files, databases, APIs, panels, browsers. Use static imports (not dynamic await import()). \`contextId\` and \`chat\` are pre-injected.
+- **eval** is your primary tool. Use it for all actions — files, databases, APIs, panels, browsers. Use static imports (not dynamic await import()). \`contextId\`, \`chat\`, \`scope\`, and \`scopes\` are pre-injected. Every eval result includes a \`[scope]\` summary showing current keys.
 - Use **inline_ui** for interactive results (tables, dashboards, action buttons). Use **feedback_form** when you need a user choice before continuing.
 - Call **set_title** after the first substantive exchange.
+
+## Scope
+
+\`scope\` is a live in-memory object shared across eval calls — store anything (handles, pages, functions, data) and it all works between calls. After every eval, the result includes a \`[scope]\` line listing current keys. Scope is serialized to DB automatically; on panel reload, data survives but functions and class instances are lost. A system message will list what was restored, partially restored, or lost.
 
 ## Workspace skills
 

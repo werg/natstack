@@ -4,7 +4,7 @@
  * Collapsible card that stays in the chat history. Users can expand/collapse
  * at any time to interact with the component.
  */
-import { Component, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
+import { Component, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { Box, Button, Card, Callout, Flex, Spinner, Text } from "@radix-ui/themes";
 import { ExclamationTriangleIcon, ChevronDownIcon, ChevronUpIcon, ComponentInstanceIcon } from "@radix-ui/react-icons";
 import type { InlineUiData } from "@natstack/pubsub";
@@ -53,13 +53,27 @@ class InlineUiErrorBoundary extends Component<
 
 interface InlineUiMessageProps {
   data: InlineUiData;
-  compiledComponent?: ComponentType<{ props: Record<string, unknown>; chat?: Record<string, unknown> }>;
+  compiledComponent?: ComponentType<{ props: Record<string, unknown>; chat: Record<string, unknown>; scope: Record<string, unknown>; scopes: Record<string, unknown> }>;
   compilationError?: string;
 }
 
 export function InlineUiMessage({ data, compiledComponent: CompiledComponent, compilationError }: InlineUiMessageProps) {
-  const { chat } = useChatContext();
+  const { chat, scope, scopes, scopeManager } = useChatContext();
   const componentProps = useMemo(() => data.props ?? {}, [data.props]);
+  const [, forceUpdate] = useReducer((x: number) => x + 1, 0);
+
+  // Subscribe to scope changes — debounced re-render
+  useEffect(() => {
+    if (!scopeManager) return;
+    let timer: ReturnType<typeof setTimeout>;
+    return scopeManager.onChange(() => {
+      clearTimeout(timer);
+      timer = setTimeout(forceUpdate, 100);
+    });
+  }, [scopeManager]);
+
+  // DOM event delegation — silent best-effort persist after user interaction
+  const onInteraction = useCallback(() => scopeManager?.schedulePersist(2000), [scopeManager]);
   const [expanded, setExpanded] = useState(true);
   const [autoCollapsed, setAutoCollapsed] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -125,10 +139,10 @@ export function InlineUiMessage({ data, compiledComponent: CompiledComponent, co
 
       {/* Collapsible content */}
       {expanded && (
-        <Box p="2" ref={measuredRef}>
+        <Box p="2" ref={measuredRef} onClickCapture={onInteraction} onInputCapture={onInteraction} onChangeCapture={onInteraction}>
           <InlineUiErrorBoundary resetKey={resetKey}>
             <Suspense fallback={<Spinner size="1" />}>
-              <CompiledComponent props={componentProps} chat={chat as unknown as Record<string, unknown>} />
+              <CompiledComponent props={componentProps} chat={chat as unknown as Record<string, unknown>} scope={scope} scopes={scopes as unknown as Record<string, unknown>} />
             </Suspense>
           </InlineUiErrorBoundary>
         </Box>

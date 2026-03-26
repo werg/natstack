@@ -15,11 +15,11 @@ import { Box, Button, Flex, Heading } from "@radix-ui/themes";
 import { InfoCircledIcon, ExclamationTriangleIcon } from "@radix-ui/react-icons";
 import { FormRenderer, type CustomFieldRendererProps } from "@workspace/react";
 import type { FieldDefinition, FieldValue } from "@natstack/types";
-import type { FeedbackComponentProps } from "../types";
+import type { FeedbackCallbacks } from "../types";
 import { ToolPreviewField } from "./ToolPreviewField";
 import { ApprovalHeaderField } from "./ApprovalHeaderField";
 
-export interface FeedbackFormRendererProps extends FeedbackComponentProps {
+export interface FeedbackFormRendererProps extends FeedbackCallbacks {
   title: string;
   fields: FieldDefinition[];
   initialValues?: Record<string, FieldValue>;

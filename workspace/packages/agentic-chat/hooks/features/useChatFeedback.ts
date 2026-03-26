@@ -154,13 +154,15 @@ export function useChatFeedback({
     const feedbackCustomMethodDef: MethodDefinition = {
       description: `Show a custom React component that blocks until user submits or cancels.
 
-**The component receives { onSubmit, onCancel, onError, chat }:**
+**The component receives { onSubmit, onCancel, onError, chat, scope, scopes }:**
 - onSubmit(value) — return data to the agent and close the form
 - onCancel() — signal cancellation to the agent
 - onError(message) — signal error
 - chat — chat API (publish messages, call runtime, etc.)
   - chat.publish(type, payload) — send a message to the conversation
   - chat.rpc.call(target, method, ...args) — call runtime services
+- scope — REPL scope (shared read+write state that persists across eval calls)
+- scopes — scope management API — call scopes.save() after modifying scope
 
 **Side effects during interaction:**
 - Component can call chat.publish() or chat.rpc.call() before submitting

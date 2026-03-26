@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, type ComponentType } from "react";
+import React, { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from "react";
 import { Box, Button, Card, Flex, ScrollArea, Text } from "@radix-ui/themes";
 import { prettifyToolName } from "@natstack/pubsub";
 import type { Participant } from "@natstack/pubsub";
@@ -8,7 +8,7 @@ import { parseActionData } from "./ActionMessage";
 import { parseTypingData } from "./TypingMessage";
 import { NewContentIndicator } from "./NewContentIndicator";
 import { MessageCard } from "./MessageCard";
-import type { ChatMessage, ChatParticipantMetadata } from "../types";
+import type { ChatMessage, ChatParticipantMetadata, InlineUiComponentEntry } from "../types";
 
 const BOTTOM_THRESHOLD_PX = 48;
 
@@ -177,11 +177,7 @@ export interface MessageListProps {
   messages: ChatMessage[];
   methodEntries?: Map<string, MethodHistoryEntry>;
   allParticipants: Record<string, Participant<ChatParticipantMetadata>>;
-  inlineUiComponents?: Map<string, {
-    Component?: ComponentType<{ props: Record<string, unknown>; chat?: Record<string, unknown> }>;
-    cacheKey: string;
-    error?: string;
-  }>;
+  inlineUiComponents?: Map<string, InlineUiComponentEntry>;
   hasMoreHistory?: boolean;
   loadingMore?: boolean;
   onLoadEarlierMessages?: () => void;

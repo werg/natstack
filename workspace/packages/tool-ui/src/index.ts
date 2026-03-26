@@ -11,6 +11,7 @@
 // ============================================================================
 export type {
   FeedbackResult,
+  FeedbackCallbacks,
   FeedbackComponentProps,
   ActiveFeedback,
   ActiveFeedbackBase,

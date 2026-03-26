@@ -32,7 +32,7 @@ export function useInlineUi({ messages }: UseInlineUiOptions): InlineUiState {
         if (inlineUiComponents.has(data.id)) continue;
 
         try {
-          const result = await compileComponent<import("react").ComponentType<{ props: Record<string, unknown>; chat?: Record<string, unknown> }>>(data.code);
+          const result = await compileComponent<import("react").ComponentType<{ props: Record<string, unknown>; chat: Record<string, unknown>; scope: Record<string, unknown>; scopes: Record<string, unknown> }>>(data.code);
           if (result.success) {
             setInlineUiComponents(prev => {
               const updated = new Map(prev);

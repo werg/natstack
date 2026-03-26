@@ -10,8 +10,8 @@
 import { useCallback, useMemo, useRef, useEffect } from "react";
 import { z } from "zod";
 import type { ChannelConfig, MethodDefinition } from "@natstack/pubsub";
-import { executeSandbox } from "@workspace/eval";
-import type { SandboxOptions, SandboxResult } from "@workspace/eval";
+import { executeSandbox, ScopeManager, DbScopePersistence } from "@workspace/eval";
+import type { SandboxOptions, SandboxResult, HydrateResult } from "@workspace/eval";
 import { useChatCore, type FeatureEventHandlers, type RosterExtension, type ReconnectExtension } from "./core/useChatCore";
 import { useRosterTracking } from "./features/useRosterTracking";
 import { usePendingAgents } from "./features/usePendingAgents";
@@ -77,6 +77,34 @@ export function useAgenticChat({
   const sandboxRef = useRef(sandbox);
   sandboxRef.current = sandbox;
 
+  // --- Scope manager (REPL-style persistent scope) ---
+  const scopeManagerRef = useRef<ScopeManager | null>(null);
+  const hydratePromiseRef = useRef<Promise<HydrateResult> | null>(null);
+
+  if (!scopeManagerRef.current && channelName) {
+    scopeManagerRef.current = new ScopeManager({
+      channelId: channelName,
+      panelId: config.clientId,
+      persistence: new DbScopePersistence(() => sandbox.db.open("repl-scopes")),
+    });
+  }
+
+  // Hydration + lifecycle hooks (declared BEFORE connect effect so it fires first)
+  useEffect(() => {
+    const mgr = scopeManagerRef.current;
+    if (!mgr) return;
+    hydratePromiseRef.current = mgr.hydrate();
+    const onUnload = () => { if (mgr.isDirty) mgr.persist().catch((err) => console.warn("[Chat] Scope persist on unload failed:", err)); };
+    const onHidden = () => { if (document.hidden && mgr.isDirty) mgr.persist().catch((err) => console.warn("[Chat] Scope persist on hidden failed:", err)); };
+    window.addEventListener("beforeunload", onUnload);
+    document.addEventListener("visibilitychange", onHidden);
+    return () => {
+      window.removeEventListener("beforeunload", onUnload);
+      document.removeEventListener("visibilitychange", onHidden);
+      mgr.dispose();
+    };
+  }, []);
+
   // --- Core ---
   const core = useChatCore({
     config,
@@ -120,13 +148,25 @@ export function useAgenticChat({
     rpc: sandbox.rpc,
   }), [contextId, channelName, sandbox.rpc]);
 
-  // --- Bound executeSandbox with loadImport wired ---
+  // --- Bound executeSandbox with loadImport wired + scope enter/exit ---
   const boundExecuteSandbox = useCallback(
-    (code: string, opts: SandboxOptions = {}) =>
-      executeSandbox(code, {
-        ...opts,
-        loadImport: opts.loadImport ?? sandboxRef.current.loadImport,
-      }),
+    async (code: string, opts: SandboxOptions = {}): Promise<SandboxResult> => {
+      const mgr = scopeManagerRef.current;
+      mgr?.enterEval();
+      try {
+        return await executeSandbox(code, {
+          ...opts,
+          loadImport: opts.loadImport ?? sandboxRef.current.loadImport,
+          bindings: {
+            ...opts.bindings,
+            scope: mgr?.current ?? {},
+            scopes: mgr?.api ?? {},
+          },
+        });
+      } finally {
+        await mgr?.exitEval();
+      }
+    },
     [],
   );
 
@@ -136,6 +176,9 @@ export function useAgenticChat({
     chat,
   });
 
+  const scopeProxy = scopeManagerRef.current?.current ?? {};
+  const scopesApi = scopeManagerRef.current?.api ?? { currentId: "", push: async () => "", get: async () => null, list: async () => [], save: async () => {} };
+
   const chatTools = useChatTools({
     clientRef: core.clientRef,
     tools,
@@ -144,6 +187,8 @@ export function useAgenticChat({
     contextId: contextId ?? "",
     executeSandbox: boundExecuteSandbox,
     chat,
+    scope: scopeProxy,
+    scopes: scopesApi,
   });
 
   const debug = useChatDebug();
@@ -221,8 +266,10 @@ export function useAgenticChat({
 - \`inline_ui\`: User-triggered side-effects + rich data presentation. Renders controls/visualizations. Users interact when they choose. Non-blocking.
 - \`feedback_form\`/\`feedback_custom\`: Blocks until user responds. Returns data to agent.
 
-**The component receives { props, chat }:**
+**The component receives { props, chat, scope, scopes }:**
 - props: data you pass via the props parameter
+- scope: REPL scope — shared read+write state that persists across eval calls
+- scopes: scope management API — call scopes.save() after modifying scope from component handlers
 - chat: full chat API for interacting with the conversation:
   - chat.publish(type, payload, options?) — send a message to the conversation.
     Example: chat.publish("message", { content: "User clicked Deploy" })
@@ -301,6 +348,24 @@ export default function App({ props, chat }) {
 
         await core.connectToChannel({ channelId: channelName, methods, channelConfig, contextId });
         core.selfIdRef.current = core.clientRef.current?.clientId ?? null;
+
+        // Scope hydration system message (best-effort — must not poison chat startup)
+        let hr: HydrateResult | null = null;
+        try { hr = await hydratePromiseRef.current; }
+        catch (err) { console.warn("[Chat] Scope hydration failed:", err); }
+        if (hr && (hr.restored.length || hr.lost.length || hr.partial.length)) {
+          const parts: string[] = [];
+          if (hr.restored.length) parts.push(`Restored: [${hr.restored.join(", ")}]`);
+          if (hr.partial.length) parts.push(`Partially restored (some properties lost): [${hr.partial.join(", ")}]`);
+          if (hr.lost.length) parts.push(`Lost (must be re-created): [${hr.lost.join(", ")}]`);
+          const hasDegradation = hr.partial.length > 0 || hr.lost.length > 0;
+          const hint = hasDegradation ? " Functions and class instances don't survive reload — re-create them with eval if needed." : "";
+          core.clientRef.current!.publish("message", {
+            id: crypto.randomUUID(),
+            content: `Scope refreshed (panel session restarted). ${parts.join(". ")}.${hint}`,
+            kind: "system",
+          }, { persist: true });
+        }
       } catch (err) {
         console.error("[Chat] Connection error:", err);
         core.hasConnectedRef.current = false;
@@ -344,6 +409,9 @@ export default function App({ props, chat }) {
     channelId: channelName,
     sessionEnabled,
     chat,
+    scope: scopeProxy,
+    scopes: scopesApi,
+    scopeManager: scopeManagerRef.current,
     messages: core.messages,
     methodEntries: core.methodEntries,
     inlineUiComponents: inlineUi.inlineUiComponents,

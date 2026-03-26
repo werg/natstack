@@ -4,6 +4,7 @@ import type { MethodHistoryEntry } from "./components/MethodHistoryItem";
 import type { PendingImage } from "./utils/imageUtils";
 import type { DirtyRepoDetails } from "./hooks/useAgentEvents";
 import type { ComponentType } from "react";
+import type { ScopeManager, ScopesApi, DbHandle } from "@workspace/eval";
 
 // ===========================================================================
 // Core Chat Types (moved from panels/chat/types.ts)
@@ -111,6 +112,7 @@ export interface ChatSandboxValue {
 export interface SandboxConfig {
   rpc: { call: (target: string, method: string, ...args: unknown[]) => Promise<unknown> };
   loadImport: (specifier: string, ref: string | undefined, externals: string[]) => Promise<string>;
+  db: { open: (name: string) => Promise<DbHandle> };
 }
 
 /** Dependencies provided to the tool provider factory */
@@ -119,6 +121,8 @@ export interface ToolProviderDeps {
   contextId: string;
   executeSandbox: (code: string, options: import("@workspace/eval").SandboxOptions) => Promise<import("@workspace/eval").SandboxResult>;
   chat: ChatSandboxValue;
+  scope: Record<string, unknown>;
+  scopes: ScopesApi;
 }
 
 /** Inject tools at connect time */
@@ -129,7 +133,7 @@ export type ToolProvider = (deps: ToolProviderDeps) => Record<string, MethodDefi
 // ===========================================================================
 
 export interface InlineUiComponentEntry {
-  Component?: ComponentType<{ props: Record<string, unknown>; chat?: Record<string, unknown> }>;
+  Component?: ComponentType<{ props: Record<string, unknown>; chat: Record<string, unknown>; scope: Record<string, unknown>; scopes: Record<string, unknown> }>;
   cacheKey: string;
   error?: string;
 }
@@ -161,6 +165,15 @@ export interface ChatContextValue {
 
   /** Chat API for sandboxed code — publish messages, call methods, access runtime */
   chat: ChatSandboxValue;
+
+  /** Current REPL scope (Proxy) */
+  scope: Record<string, unknown>;
+
+  /** Scopes API — history + persistence (pre-injected as `scopes` binding) */
+  scopes: ScopesApi;
+
+  /** Scope manager for reactivity subscriptions */
+  scopeManager: ScopeManager | null;
 
   // Messages
   messages: ChatMessage[];

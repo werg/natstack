@@ -1,6 +1,25 @@
 # Runtime API Reference
 
-All APIs available to sandbox code via `import` or `chat.rpc.call()`.
+All APIs available to sandbox code via `import`, `chat.rpc.call()`, or pre-injected variables.
+
+## REPL Scope (pre-injected)
+
+```typescript
+// Pre-injected — do NOT import
+scope    // Record<string, unknown> — current active scope, read+write, persists across eval calls
+scopes   // ScopesApi — scope history + persistence management
+```
+
+| Property/Method | Description |
+|----------------|-------------|
+| `scope.x = val` | Store a value that persists across eval calls |
+| `scopes.currentId` | Current scope's durable UUID |
+| `scopes.push()` | Archive current scope, start new one → returns new ID |
+| `scopes.get(id)` | Retrieve archived scope by ID → read-only plain object |
+| `scopes.list()` | List all scopes for this channel |
+| `scopes.save()` | Force-persist scope to DB now (use after non-eval writes) |
+
+Scope is automatically persisted after every eval call. Primitives, plain objects, arrays, Date, Map, Set, RegExp survive serialization. Functions and class instances are dropped but their serializable properties are kept (e.g., `scope.browser.id` survives even though `scope.browser.page` is lost).
 
 ## Filesystem (`fs`)
 
@@ -209,13 +228,14 @@ Formats — bookmarks: `"html" \| "json" \| "chrome-json"`, passwords: `"csv-chr
 ## Panel Navigation
 
 ```typescript
-import { openPanel, createBrowserPanel, focusPanel, buildPanelLink, openExternal, closeSelf } from "@workspace/runtime";
+import { openPanel, createBrowserPanel, getBrowserHandle, focusPanel, buildPanelLink, openExternal, closeSelf } from "@workspace/runtime";
 ```
 
 | Function | Description |
 |----------|-------------|
 | `openPanel(source, opts?)` | Open any panel — URLs become browser panels, source paths open workspace panels. Returns `{ id }` for browser panels |
 | `createBrowserPanel(url, opts?)` | Open URL in browser panel, returns `BrowserHandle` (use when you need CDP/automation) |
+| `getBrowserHandle(id)` | Reconnect to an existing browser panel by ID (use after reload when `scope.browser.id` survived but methods were lost) |
 | `focusPanel(panelId)` | Focus an existing panel by its ID (does NOT open new panels) |
 | `buildPanelLink(source, opts?)` | Build URL for panel navigation (low-level — prefer `openPanel`) |
 | `openExternal(url)` | Open in OS default browser |

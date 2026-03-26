@@ -2,60 +2,91 @@
 
 Automate browser panels with Playwright-style page control. Open a URL, get a page handle, and interact — click, fill forms, evaluate JS, take screenshots.
 
-## Quick Start
+## REPL Scope: Open Once, Reuse Across Calls
+
+The primary pattern: open a browser panel once, store the handle in `scope`, and reuse it across multiple eval calls.
 
 ```
+// Call 1: Open browser panel once, store in scope
 eval({ code: `
   import { createBrowserPanel } from "@workspace/runtime";
+  scope.browser = await createBrowserPanel("https://example.com");
+  scope.page = await scope.browser.page();
+  console.log("Opened:", await scope.page.title());
+`, timeout: 30000 })
 
-  const handle = await createBrowserPanel("https://example.com");
-  const page = await handle.page();
+// Call 2: Reuse — no new panel, same page
+eval({ code: `
+  await scope.page.click("button.login");
+  await scope.page.fill('input[name="email"]', "user@example.com");
+  await scope.page.click('button[type="submit"]');
+  await scope.page.waitForSelector(".dashboard");
+  console.log("Logged in!");
+`, timeout: 30000 })
 
-  const title = await page.title();
-  console.log("Title:", title);
-
-  const heading = await page.evaluate(() => document.querySelector("h1")?.textContent);
-  console.log("H1:", heading);
+// Call 3: Continue with same page
+eval({ code: `
+  scope.results = await scope.page.evaluate(() =>
+    Array.from(document.querySelectorAll(".item")).map(el => el.textContent)
+  );
+  console.log("Scraped", scope.results.length, "items");
 `, timeout: 30000 })
 ```
 
-Two lines to get a controllable page:
-1. `createBrowserPanel(url)` — opens a browser panel, returns a `BrowserHandle`
-2. `handle.page()` — connects Playwright via CDP, returns a `Page`
+Two lines to get started:
+1. `scope.browser = await createBrowserPanel(url)` — opens a browser panel, stores handle in scope
+2. `scope.page = await scope.browser.page()` — connects Playwright via CDP, stores page in scope
+
+All subsequent eval calls reuse `scope.page` directly — no re-creation needed.
+
+## Reconnection After Panel Reload
+
+On panel reload, `scope.browser.id` survives serialization (it's a string) even though methods like `scope.browser.page` and `scope.browser.navigate` are lost (functions aren't serializable). Reconnect using the surviving ID:
+
+```
+eval({ code: `
+  import { getBrowserHandle } from "@workspace/runtime";
+  scope.browser = getBrowserHandle(scope.browser.id);  // id survived serialization
+  scope.page = await scope.browser.page();
+  console.log("Reconnected:", await scope.page.title());
+`, timeout: 30000 })
+```
+
+No need for a separate `scope.browserId` — per-property serialization means `scope.browser.id` and `scope.browser.title` survive even though the methods are lost.
 
 ## Page API Reference
 
 ```typescript
-const handle = await createBrowserPanel("https://example.com");
-const page = await handle.page();
+scope.browser = await createBrowserPanel("https://example.com");
+scope.page = await scope.browser.page();
 ```
 
 ### Navigation
 
 ```typescript
-await page.goto(url)                              // navigate (waits for load)
-await page.goto(url, { waitUntil: "networkidle" }) // wait for network quiet
-await page.goto(url, { waitUntil: "domcontentloaded" })
-await page.goto(url, { timeout: 10000 })          // custom timeout
-page.url()                                         // current URL (sync)
-await page.title()                                 // page title
-await page.content()                               // full HTML source
+await scope.page.goto(url)                              // navigate (waits for load)
+await scope.page.goto(url, { waitUntil: "networkidle" }) // wait for network quiet
+await scope.page.goto(url, { waitUntil: "domcontentloaded" })
+await scope.page.goto(url, { timeout: 10000 })          // custom timeout
+scope.page.url()                                         // current URL (sync)
+await scope.page.title()                                 // page title
+await scope.page.content()                               // full HTML source
 ```
 
 ### Interaction
 
 ```typescript
-await page.click("button.submit")
-await page.fill('input[name="email"]', "user@example.com")
-await page.type('input[name="search"]', "query")  // types character by character
+await scope.page.click("button.submit")
+await scope.page.fill('input[name="email"]', "user@example.com")
+await scope.page.type('input[name="search"]', "query")  // types character by character
 ```
 
 ### DOM Queries
 
 ```typescript
-await page.waitForSelector(".loaded")              // wait for element to appear
-await page.waitForSelector(".modal", { timeout: 5000 })
-await page.querySelector(".result")                // check if element exists
+await scope.page.waitForSelector(".loaded")              // wait for element to appear
+await scope.page.waitForSelector(".modal", { timeout: 5000 })
+await scope.page.querySelector(".result")                // check if element exists
 ```
 
 ### Evaluate JavaScript in Page
@@ -64,10 +95,10 @@ The most powerful method — run arbitrary JS in the page context:
 
 ```typescript
 // Get text content
-const text = await page.evaluate(() => document.querySelector("h1")?.textContent);
+const text = await scope.page.evaluate(() => document.querySelector("h1")?.textContent);
 
 // Get multiple elements
-const items = await page.evaluate(() =>
+const items = await scope.page.evaluate(() =>
   Array.from(document.querySelectorAll(".item")).map(el => ({
     title: el.querySelector("h3")?.textContent,
     href: el.querySelector("a")?.getAttribute("href"),
@@ -75,13 +106,13 @@ const items = await page.evaluate(() =>
 );
 
 // Pass arguments
-const text = await page.evaluate(
+const text = await scope.page.evaluate(
   (sel) => document.querySelector(sel)?.textContent,
   ".my-class"
 );
 
 // Interact with the page
-await page.evaluate(() => {
+await scope.page.evaluate(() => {
   document.querySelector("form")?.submit();
 });
 ```
@@ -89,16 +120,16 @@ await page.evaluate(() => {
 ### Screenshots
 
 ```typescript
-const screenshot = await page.screenshot();                    // PNG Uint8Array
-const full = await page.screenshot({ fullPage: true });
-const jpeg = await page.screenshot({ format: "jpeg", quality: 80 });
+const screenshot = await scope.page.screenshot();                    // PNG Uint8Array
+const full = await scope.page.screenshot({ fullPage: true });
+const jpeg = await scope.page.screenshot({ format: "jpeg", quality: 80 });
 ```
 
 ### Close
 
 ```typescript
-await page.close()    // close the page
-await handle.close()  // close the browser panel
+await scope.page.close()      // close the page
+await scope.browser.close()   // close the browser panel
 ```
 
 ### BrowserHandle Methods
@@ -117,59 +148,94 @@ The handle also has direct navigation methods (no Playwright needed):
 
 ## Examples
 
-### Scrape a Page
+### Multi-Step Workflow: Scrape + Process
 
 ```
+// Step 1: Open and navigate
 eval({ code: `
   import { createBrowserPanel } from "@workspace/runtime";
+  scope.browser = await createBrowserPanel("https://news.ycombinator.com");
+  scope.page = await scope.browser.page();
+  console.log("Opened HN");
+`, timeout: 30000 })
 
-  const handle = await createBrowserPanel("https://news.ycombinator.com");
-  const page = await handle.page();
-
-  await page.goto("https://news.ycombinator.com", { waitUntil: "domcontentloaded" });
-  const titles = await page.evaluate(() =>
+// Step 2: Scrape data
+eval({ code: `
+  scope.stories = await scope.page.evaluate(() =>
     Array.from(document.querySelectorAll(".titleline > a")).map(el => ({
       title: el.textContent,
       href: el.getAttribute("href"),
     }))
   );
-  console.log("Top stories:", JSON.stringify(titles.slice(0, 5), null, 2));
-  return titles;
+  console.log("Scraped", scope.stories.length, "stories");
 `, timeout: 30000 })
+
+// Step 3: Process results (scope.stories persists!)
+eval({ code: `
+  const top5 = scope.stories.slice(0, 5);
+  console.log("Top 5:", JSON.stringify(top5, null, 2));
+  return top5;
+`, timeout: 10000 })
 ```
 
-### Fill and Submit a Form
+### Login Flow Across Multiple Calls
 
 ```
 eval({ code: `
   import { createBrowserPanel } from "@workspace/runtime";
+  scope.browser = await createBrowserPanel("https://example.com/login");
+  scope.page = await scope.browser.page();
+`, timeout: 30000 })
 
-  const handle = await createBrowserPanel("https://example.com/login");
-  const page = await handle.page();
+eval({ code: `
+  await scope.page.fill('input[name="email"]', 'user@example.com');
+  await scope.page.fill('input[name="password"]', 'secret');
+  await scope.page.click('button[type="submit"]');
+  await scope.page.waitForSelector(".dashboard");
+  console.log("Logged in, now at:", scope.page.url());
+`, timeout: 30000 })
 
-  await page.fill('input[name="email"]', 'user@example.com');
-  await page.fill('input[name="password"]', 'secret');
-  await page.click('button[type="submit"]');
-
-  // Wait for navigation to complete
-  await page.waitForSelector(".dashboard");
-  console.log("Logged in, now at:", page.url());
+eval({ code: `
+  // Still logged in — same page, same session
+  scope.dashboardData = await scope.page.evaluate(() =>
+    document.querySelector(".stats")?.textContent
+  );
+  console.log("Dashboard:", scope.dashboardData);
 `, timeout: 30000 })
 ```
 
-### Take a Screenshot
+### Combined: Import Cookies + Authenticate
 
 ```
 eval({ code: `
   import { createBrowserPanel } from "@workspace/runtime";
+  import { browserData } from "@workspace/panel-browser";
 
-  const handle = await createBrowserPanel("https://example.com");
-  const page = await handle.page();
+  // Step 1: Import cookies from Chrome
+  const browsers = await browserData.detectBrowsers();
+  const chrome = browsers.find(b => b.name === "chrome");
+  if (chrome) {
+    await browserData.startImport({
+      browser: "chrome",
+      profile: chrome.profiles[0] ?? chrome.dataDir,
+      dataTypes: ["cookies"],
+    });
+    console.log("Cookies imported and synced to browser session");
+  }
 
-  const screenshot = await page.screenshot({ fullPage: true });
-  console.log("Screenshot taken:", screenshot.length, "bytes");
-  return screenshot;
-`, timeout: 30000 })
+  // Step 2: Open browser — now has imported cookies
+  scope.browser = await createBrowserPanel("https://github.com");
+  scope.page = await scope.browser.page();
+
+  const title = await scope.page.title();
+  console.log("Page title:", title);
+
+  // Check if logged in
+  const isLoggedIn = await scope.page.evaluate(() =>
+    document.querySelector("img.avatar") !== null
+  );
+  console.log(isLoggedIn ? "Logged in!" : "Not logged in");
+`, timeout: 60000 })
 ```
 
 ### Inline UI: Browser Control Panel
@@ -230,44 +296,12 @@ export default function BrowserController({ props, chat }) {
 })
 ```
 
-### Combined: Import Cookies + Authenticate
-
-```
-eval({ code: `
-  import { createBrowserPanel } from "@workspace/runtime";
-  import { browserData } from "@workspace/panel-browser";
-
-  // Step 1: Import cookies from Chrome
-  const browsers = await browserData.detectBrowsers();
-  const chrome = browsers.find(b => b.name === "chrome");
-  if (chrome) {
-    await browserData.startImport({
-      browser: "chrome",
-      profile: chrome.profiles[0] ?? chrome.dataDir,
-      dataTypes: ["cookies"],
-    });
-    console.log("Cookies imported and synced to browser session");
-  }
-
-  // Step 2: Open browser — now has imported cookies
-  const handle = await createBrowserPanel("https://github.com");
-  const page = await handle.page();
-
-  const title = await page.title();
-  console.log("Page title:", title);
-
-  // Check if logged in
-  const isLoggedIn = await page.evaluate(() =>
-    document.querySelector("img.avatar") !== null
-  );
-  console.log(isLoggedIn ? "Logged in!" : "Not logged in");
-`, timeout: 60000 })
-```
-
 ## Tips
 
+- **Use `scope` for all browser handles and pages** — they persist across eval calls, so you don't need to re-create them.
 - **Use `page.evaluate()` for complex DOM queries** — it's more reliable than individual selector methods and gives you full DOM API access.
 - **Use `page.goto(url, { waitUntil: "networkidle" })` for SPAs** — waits for AJAX requests to finish.
 - **Use `page.waitForSelector()` before interacting** — ensures elements exist before clicking/filling.
 - **Pass `timeout: 60000` for slow pages** — the default eval timeout may be too short for pages that load slowly.
 - **Imported cookies are auto-synced** — if you imported browser data via the browser-import skill, browser panels will have those cookies available automatically.
+- **After reload, reconnect via `scope.browser.id`** — the ID survives serialization, so you can reconnect without re-opening the panel.

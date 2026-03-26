@@ -48,3 +48,16 @@ export type {
   SandboxResult,
   CompileResult,
 } from "./sandbox.js";
+
+// REPL scope — persistent scope across eval calls
+export { ScopeManager } from "./scope.js";
+export type { ScopesApi, HydrateResult } from "./scope.js";
+export { DbScopePersistence } from "./scopePersistence.js";
+export type {
+  ScopePersistence,
+  ScopeEntry,
+  ScopeListEntry,
+  DbHandle,
+} from "./scopePersistence.js";
+export { serializeScope, deserializeScope } from "./scopeSerialize.js";
+export type { SerializedScope } from "./scopeSerialize.js";

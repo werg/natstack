@@ -117,6 +117,79 @@ Available without importing:
 
 - **`contextId`** (string) — the panel's context ID
 - **`chat`** (ChatSandboxValue) — publish messages, call methods, access RPC
+- **`scope`** (Record<string, unknown>) — REPL scope, persists across eval calls
+- **`scopes`** (ScopesApi) — scope history and persistence management
+
+## REPL Scope
+
+`scope` is a live in-memory object shared across eval calls. Store anything — handles, pages, functions, class instances, data — and it all works between calls within the same panel session. No serialization happens between eval calls; `scope` is the same in-memory Proxy every time.
+
+Serialization only matters in two situations:
+1. **Panel reload** — scope is rehydrated from DB. Data survives, functions/class instances are lost.
+2. **`scopes.get(id)`** — returns a serialized snapshot. Data only, no functions.
+
+### Basic Usage
+
+```
+// Call 1: Store data in scope
+eval({ code: `
+  scope.items = [1, 2, 3];
+  scope.name = "test";
+  console.log("Stored", scope.items.length, "items");
+` })
+
+// Call 2: Access persisted data
+eval({ code: `
+  console.log("Name:", scope.name);       // "test"
+  console.log("Items:", scope.items);      // [1, 2, 3]
+  scope.items.push(4);                     // deep mutation — auto-saved after eval
+` })
+```
+
+### scope vs scopes
+
+- **`scope`** — the live in-memory object. Holds everything including functions and class instances. Works perfectly between eval calls. This is what you read/write during normal operation.
+- **`scopes`** — management API for the serialized (DB) layer:
+  - `scopes.currentId` — current scope's durable UUID
+  - `scopes.push()` — serialize + archive current scope, start a fresh one (only serializable values carry over)
+  - `scopes.get(id)` — retrieve an archived scope by its durable ID (deserialized snapshot — data only, no functions)
+  - `scopes.list()` — list all scopes for this channel with keys and partial keys
+  - `scopes.save()` — force-serialize scope to DB now (use after non-eval writes)
+
+### Serialization
+
+Scope is serialized per-property when persisted:
+- **Kept:** primitives, plain objects, arrays, Date, Map, Set, RegExp
+- **Dropped:** functions, symbols, class instances, WeakRef/WeakMap/WeakSet, circular refs, depth > 20
+- **Partial restoration:** if `scope.browser = { id: "x", title: "Y", page: fn }`, after reload `scope.browser.id` and `scope.browser.title` survive but `scope.browser.page` is lost
+
+On reload, a system message lists what was restored, partially restored, and lost.
+
+### Deep Mutations
+
+Deep mutations (`scope.data.push(x)`, `scope.config.key = val`) are captured by the post-eval auto-save. No need for extra `scopes.save()` calls within eval.
+
+### Scope History
+
+Scopes are append-only. Each has a stable UUID:
+```
+// Push creates a new scope (old one is archived)
+eval({ code: `
+  scope.phase = "data-collection";
+  const oldId = scopes.currentId;
+  const newId = await scopes.push();
+  console.log("Old scope:", oldId, "New scope:", newId);
+  scope.phase = "analysis";  // new scope
+  const old = await scopes.get(oldId);
+  console.log("Old phase:", old.phase);  // "data-collection"
+` })
+```
+
+### Persistence Contract
+
+- **Automatic after every eval call** — no action needed
+- **Non-eval writes require explicit `scopes.save()`** — inline_ui button handlers, async callbacks, timers, feedback_custom interactions
+- Example: an inline_ui component modifies `scope.count++` on button click → call `scopes.save()` to persist
 
 ## Filesystem Access
 

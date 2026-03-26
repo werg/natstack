@@ -6,7 +6,7 @@
  * directly — no cross-context navigation needed.
  */
 
-import { pubsubConfig, id as panelClientId, contextId, rpc, focusPanel, useStateArgs, setStateArgs, buildPanelLink } from "@workspace/runtime";
+import { pubsubConfig, id as panelClientId, contextId, rpc, focusPanel, useStateArgs, setStateArgs, buildPanelLink, db } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Flex, Spinner, Text, Theme } from "@radix-ui/themes";
@@ -244,7 +244,7 @@ export default function ChatPanel() {
     onReloadPanel: handleReloadPanel,
   }), [handleNewConversation, handleAddAgent, handleRemoveAgent, availableAgents, handleFocusPanel, handleReloadPanel]);
 
-  // Sandbox config — provides RPC and import loading to agentic-chat (keeps it runtime-agnostic)
+  // Sandbox config — provides RPC, import loading, and DB to agentic-chat (keeps it runtime-agnostic)
   const sandboxConfig: SandboxConfig = useMemo(() => ({
     rpc: { call: (t: string, m: string, ...a: unknown[]) => rpc.call(t, m, ...a) },
     loadImport: async (specifier: string, ref: string | undefined, externals: string[]) => {
@@ -258,6 +258,7 @@ export default function ChatPanel() {
       const result = await rpc.call("main", "build.getBuild", specifier, ref, { library: true, externals }) as { bundle: string };
       return result.bundle;
     },
+    db: { open: (name: string) => db.open(name) },
   }), []);
 
   // Tool provider: only eval tool — all other operations use eval + runtime APIs
@@ -286,7 +287,19 @@ export default function ChatPanel() {
 - import { notifications } from "@workspace/runtime" — push notifications to shell chrome
 - import { openPanel, createBrowserPanel, focusPanel } from "@workspace/runtime" — panel navigation
 
-**Pre-injected variables (do NOT import these):** contextId, chat
+**Pre-injected variables (do NOT import these):** contextId, chat, scope, scopes
+
+**REPL scope** — \`scope\` is a live in-memory object shared across eval calls. Store anything — handles, pages, functions, data. It all works between calls within the same session.
+  Example: \`scope.page = await handle.page()\` in call 1, then \`await scope.page.click("button")\` in call 2.
+- \`scopes\` — scope management API:
+  - \`scopes.currentId\` — current scope's durable UUID
+  - \`scopes.push()\` — archive current scope, start new one (inherits serializable values only)
+  - \`scopes.get(id)\` — retrieve archived scope by ID (serialized snapshot — data only, no functions)
+  - \`scopes.list()\` — list all scope entries for this channel
+  - \`scopes.save()\` — force-persist scope to DB now
+- Scope is automatically serialized to DB after every eval call. Non-eval scope writes (inline_ui handlers, async callbacks) require explicit \`scopes.save()\`.
+- **What serialization keeps vs drops:** Primitives, plain objects, arrays, Date, Map, Set survive. Functions, class instances, and Playwright pages are dropped. This only matters on panel reload or \`scopes.get()\` — within a session, \`scope\` holds everything as-is.
+- On panel reload: \`scope.browser.id\` (string) survives even though \`scope.browser.page\` (function) is lost. Reconnect via \`getBrowserHandle(scope.browser.id)\`.
 
 IMPORTANT: Use static import syntax, NOT dynamic await import().
 The variable \`contextId\` is pre-injected — use it directly, do NOT import it from @workspace/runtime.`,
@@ -312,8 +325,13 @@ The variable \`contextId\` is pre-injected — use it directly, do NOT import it
           },
         });
 
+        const scopeKeys = Object.keys(deps.scope);
+        const scopeLine = scopeKeys.length > 0
+          ? `[scope] keys: ${scopeKeys.join(", ")} (${scopeKeys.length} total)`
+          : "[scope] (empty)";
+
         if (!result.success) {
-          throw new Error(result.error || "Eval failed");
+          throw new Error(`${result.error || "Eval failed"}\n${scopeLine}`);
         }
 
         // Format as a pre-structured ToolExecutionResult so the AI sees
@@ -336,6 +354,7 @@ The variable \`contextId\` is pre-injected — use it directly, do NOT import it
         if (parts.length === 0) {
           parts.push({ type: "text", text: "[eval] (no output)" });
         }
+        parts.push({ type: "text", text: scopeLine });
         return { content: parts };
       },
     };
