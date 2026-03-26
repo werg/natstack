@@ -1,6 +1,95 @@
+---
+name: api-integrations
+description: Connect to third-party APIs (Gmail, Notion, Slack, GitHub, Linear) via OAuth — setup, token management, npm SDK patterns, and building reusable integrations.
+---
+
 # API Integrations
 
 How to connect to and use third-party APIs (Gmail, Notion, Slack, GitHub, etc.) from agent eval code.
+
+## Prerequisites: OAuth Setup
+
+OAuth requires a Nango account (free). Check if it's configured:
+
+```
+eval({
+  code: `
+    import { oauth } from "@workspace/runtime";
+    const providers = await oauth.listProviders();
+    if (providers.length === 0) {
+      console.log("No OAuth providers configured.");
+      console.log("To set up OAuth:");
+      console.log("1. Sign up at https://app.nango.dev (free)");
+      console.log("2. In the Nango dashboard, enable the providers you need (Google, GitHub, etc.)");
+      console.log("3. Copy your secret key from Settings → Secret Key");
+      console.log("4. Add it to ~/.config/natstack/.secrets.yml:");
+      console.log("   nango: sk-your-secret-key-here");
+      console.log("5. Restart the workspace");
+    } else {
+      console.log("Available providers:", providers.map(p => p.key).join(", "));
+    }
+    const connections = await oauth.listConnections();
+    if (connections.length > 0) {
+      console.log("Active connections:", connections.map(c => c.provider + (c.email ? " (" + c.email + ")" : "")).join(", "));
+    }
+  `,
+  timeout: 10000
+})
+```
+
+### Agent-guided setup
+
+If OAuth isn't configured, guide the user through setup. The agent has tools to help:
+
+**Check for imported cookies first** — if the user imported browser data, they may already have Nango session cookies:
+```
+eval({
+  code: `
+    import { browserData } from "@workspace/panel-browser";
+    const cookies = await browserData.getCookies("nango.dev");
+    const hasCookies = cookies.length > 0;
+    console.log(hasCookies
+      ? "Found Nango cookies — can use browser panel for setup"
+      : "No Nango cookies — user should sign up via system browser or import cookies first");
+    return { hasCookies };
+  `,
+  timeout: 5000
+})
+```
+
+**If cookies available** — open Nango dashboard in a browser panel (with Playwright for automation):
+```
+eval({
+  code: `
+    import { createBrowserPanel } from "@workspace/runtime";
+    const panel = await createBrowserPanel("https://app.nango.dev");
+    console.log("Opened Nango dashboard — guide user through provider setup");
+  `,
+  timeout: 10000
+})
+```
+
+**If no cookies** — offer the user a choice: import browser data first (for seamless panel-based setup) or use their system browser directly. Use a `feedback_form` to let them decide.
+
+**After the user gets their secret key** — help them save it:
+```
+eval({
+  code: `
+    import { fs } from "@workspace/runtime";
+    // Read existing secrets, add nango key, write back
+    const secretsPath = "~/.config/natstack/.secrets.yml";
+    // Guide user to paste their key, then save it
+    console.log("Add this line to " + secretsPath + ":");
+    console.log("  nango: sk-your-secret-key-here");
+    console.log("Then restart the workspace.");
+  `,
+  timeout: 5000
+})
+```
+
+### Choosing how to sign in
+
+When connecting to an OAuth provider, the agent should consider whether to use the NatStack browser panel (with imported cookies/autofill) or the system browser (with existing sessions). See the `openIn` option in the OAuth flow summary below.
 
 ## The Spectrum
 
@@ -23,7 +112,7 @@ eval({
   code: `
     import { oauth } from "@workspace/runtime";
 
-    // See what providers are configured in Nango
+    // Check what providers are available
     const providers = await oauth.listProviders();
     console.log("Available:", providers.map(p => p.key));
 
@@ -142,11 +231,9 @@ eval({
   code: `
     import { oauth } from "@workspace/runtime";
 
-    // What providers are configured in Nango?
     const providers = await oauth.listProviders();
     console.log("Configured providers:", providers);
 
-    // What connections are already active?
     const connections = await oauth.listConnections();
     console.log("Active connections:", connections);
   `,
@@ -154,7 +241,7 @@ eval({
 })
 ```
 
-If a provider isn't configured, tell the user they need to add it in their Nango dashboard first.
+If no providers are configured, guide the user through the setup in the Prerequisites section above. If a specific provider isn't available, they need to enable it in their Nango dashboard (https://app.nango.dev).
 
 ## Pre-built integrations
 
@@ -234,17 +321,58 @@ All methods accept an optional `connectionId` (defaults to `"default-{provider}"
 
 | Step | What happens | User sees |
 |------|-------------|-----------|
-| `oauth.connect(provider, connId?, { scopes? })` | All-in-one: consent + auth + wait → `OAuthConnection` | Notification bar → browser sign-in |
+| `oauth.connect(provider, connId?, { scopes?, openIn? })` | All-in-one: consent + auth + wait → `OAuthConnection` | Notification bar → browser sign-in |
 | `oauth.requestConsent(provider, { scopes? })` | Just consent → `{ consented }` | Notification bar with Approve/Deny |
-| `oauth.startAuth(provider, connId?)` | Syncs cookies, opens browser panel → `{ authUrl, browserPanelId? }` | Browser panel with sign-in page |
+| `oauth.startAuth(provider, connId?, { openIn? })` | Syncs cookies, opens sign-in → `{ authUrl }` | Browser panel or system browser |
 | `oauth.waitForConnection(provider, connId?, timeoutMs?)` | Polls until connected → `OAuthConnection` | (agent waits) |
 | `oauth.getToken(provider, connId?)` | Returns cached/refreshed token → `{ accessToken, expiresAt, scopes }` | (invisible) |
 
-Imported browser cookies are synced before auth, so if the user imported Chrome cookies with an active session, they may already be logged in.
+### `openIn` option
+
+Controls where the sign-in page opens. Applies to `connect()` and `startAuth()`.
+
+| Value | Behavior | Best for |
+|-------|----------|----------|
+| `"panel"` (default) | NatStack browser panel | Imported cookies + autofill available |
+| `"external"` | System browser | User is already signed in there |
+
+**When to offer a choice:** If the user has imported browser cookies/passwords (via the browser-import skill), `"panel"` gives the best experience — the sign-in page may already be authenticated. If they haven't imported browser data, `"external"` is often smoother since they're likely already signed in there.
+
+Ask the user which they prefer using a `feedback_form`:
+
+```
+feedback_form({
+  title: "Open sign-in page",
+  fields: [
+    { name: "openIn", type: "select", label: "Where to sign in?",
+      options: [
+        { value: "panel", label: "NatStack browser (imported cookies + autofill)" },
+        { value: "external", label: "System browser (existing sessions)" }
+      ] }
+  ],
+  values: { openIn: "panel" }
+})
+```
+
+Then pass the result: `await oauth.connect("google-mail", undefined, { openIn: result.openIn })`.
+
+Imported browser cookies are synced before auth, so if the user imported Chrome cookies with an active session, the NatStack browser panel will already be logged in.
+
+## Self-hosted Nango
+
+By default, OAuth uses Nango Cloud (`https://api.nango.dev`). To use a self-hosted Nango instance, add this to `natstack.yml`:
+
+```yaml
+oauth:
+  nangoUrl: https://your-nango-instance.example.com
+```
+
+The secret key still goes in `~/.config/natstack/.secrets.yml` as `nango: sk-...`.
 
 ## Limitations
 
-- Only Nango-configured providers work with `oauth.*`. Check `oauth.listProviders()`.
+- Only providers enabled in your Nango dashboard work with `oauth.*`. Check `oauth.listProviders()`.
+- Interactive OAuth (`connect`, `startAuth`) must be called from a panel context, not from workers. Workers should use `getToken()` after the user has connected via a panel.
 - npm packages with native addons (`.node` files) can't be bundled — pure JS/TS only.
 - First npm install takes 10-30s. Use `timeout: 30000` or higher.
 - CORS is disabled for app panels, so `fetch()` works directly for any URL.

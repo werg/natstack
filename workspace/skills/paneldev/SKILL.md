@@ -1,6 +1,6 @@
 ---
 name: paneldev
-description: NatStack panel development docs - hooks, contracts, filesystem, git, AI. Read SKILL.md to start.
+description: Build and develop NatStack panels — project scaffolding, hooks, RPC contracts, workers, Durable Objects, AI integration, and development workflow.
 ---
 
 # Panel Development Skill

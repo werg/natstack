@@ -30,7 +30,6 @@ export type HarnessOutput =
 /** Per-turn settings the panel can pass to influence harness behavior */
 export interface HarnessSettings {
   model?: string;
-  systemPrompt?: string;
   maxTokens?: number;
   maxThinkingTokens?: number;
   temperature?: number;
@@ -39,6 +38,15 @@ export interface HarnessSettings {
 /** Configuration for a harness — passed via spawn-harness action */
 export interface HarnessConfig {
   systemPrompt?: string;
+  /**
+   * How the systemPrompt interacts with the SDK's built-in system prompt.
+   * - `"append"` (default): Appends to the SDK's default prompt AND the
+   *   base NatStack prompt (tool inventory, skill routing, interaction style).
+   * - `"replace-natstack"`: Replaces the NatStack prompt but still appends
+   *   to the SDK's built-in prompt (tool instructions, coding guidelines).
+   * - `"replace"`: Replaces everything — SDK defaults and NatStack prompt.
+   */
+  systemPromptMode?: "append" | "replace-natstack" | "replace";
   model?: string;
   temperature?: number;
   maxTokens?: number;

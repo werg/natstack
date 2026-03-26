@@ -45,6 +45,8 @@ interface ChatStateArgs {
   initialPrompt?: string;
   /** System prompt for the agent harness */
   systemPrompt?: string;
+  /** How systemPrompt interacts with base NatStack prompt and SDK defaults */
+  systemPromptMode?: "append" | "replace-natstack" | "replace";
 }
 
 /**
@@ -116,6 +118,7 @@ export default function ChatPanel() {
 
     const subscribeConfig: Record<string, unknown> = { handle: baseHandle };
     if (stateArgs.systemPrompt) subscribeConfig["systemPrompt"] = stateArgs.systemPrompt;
+    if (stateArgs.systemPromptMode) subscribeConfig["systemPromptMode"] = stateArgs.systemPromptMode;
     subscribeDOToChannel(workerSource, className, objectKey, channelName, resolvedContextId, subscribeConfig, true).catch((err: unknown) => {
       console.warn(`[ChatPanel] Failed to subscribe agent DO:`, err);
     });
@@ -311,10 +314,23 @@ The variable \`contextId\` is pre-injected — use it directly, do NOT import it
         if (!result.success) {
           throw new Error(result.error || "Eval failed");
         }
-        return {
-          consoleOutput: result.consoleOutput || "(no output)",
-          returnValue: result.returnValue,
-        };
+
+        // Format as a pre-structured ToolExecutionResult so the AI sees
+        // clean, readable text instead of double-escaped JSON.
+        const parts: Array<{ type: "text"; text: string }> = [];
+        if (result.consoleOutput) {
+          parts.push({ type: "text", text: `[eval] Console:\n${result.consoleOutput}` });
+        }
+        if (result.returnValue !== undefined && result.returnValue !== null) {
+          const formatted = typeof result.returnValue === "string"
+            ? result.returnValue
+            : JSON.stringify(result.returnValue, null, 2);
+          parts.push({ type: "text", text: `[eval] Return value:\n${formatted}` });
+        }
+        if (parts.length === 0) {
+          parts.push({ type: "text", text: "[eval] (no output)" });
+        }
+        return { content: parts };
       },
     };
 

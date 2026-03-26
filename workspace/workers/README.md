@@ -69,6 +69,10 @@ Returns configuration passed to the harness on spawn. Override to set system pro
 protected getHarnessConfig(): HarnessConfig {
   return {
     systemPrompt: 'You are a helpful coding assistant.',
+    // "append" (default): layers on NatStack base prompt + SDK defaults.
+    // "replace-natstack": replaces NatStack prompt, keeps SDK defaults.
+    // "replace": replaces everything (NatStack base + SDK defaults).
+    systemPromptMode: 'append',
     model: 'claude-sonnet-4-20250514',
     temperature: 0.7,
     maxTokens: 4096,
@@ -109,7 +113,7 @@ protected buildTurnInput(event: ChannelEvent): TurnInput {
 Declare the channel identity for this DO. Controls what handle, name, and callable methods are advertised.
 
 ```typescript
-protected getParticipantInfo(): ParticipantDescriptor {
+protected getParticipantInfo(channelId: string, config?: unknown): ParticipantDescriptor {
   return {
     handle: 'my-agent',
     name: 'My Agent',
@@ -458,7 +462,7 @@ export class CodeReviewWorker extends AgentWorkerBase {
     };
   }
 
-  protected override getParticipantInfo(): ParticipantDescriptor {
+  protected override getParticipantInfo(channelId: string, config?: unknown): ParticipantDescriptor {
     return {
       handle: 'code-reviewer',
       name: 'Code Reviewer',
