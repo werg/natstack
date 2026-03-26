@@ -138,7 +138,7 @@ function makeBrowserHandle(rpc: RpcBridge, id: string, title: string): BrowserHa
       if (!require) {
         throw new Error("handle.page() requires __natstackRequire__ (panel runtime)");
       }
-      const { BrowserImpl } = require("@workspace/playwright-core");
+      const { BrowserImpl } = require("@workspace/playwright-client");
       const wsEndpoint = await rpc.call<string>("main", "browser.getCdpEndpoint", id);
       const browser = await BrowserImpl.connect(wsEndpoint, { isElectronWebview: true });
       const page = browser.contexts()[0]?.pages()[0];

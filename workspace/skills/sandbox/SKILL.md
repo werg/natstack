@@ -63,3 +63,4 @@ See [INTERACTION_PATTERNS.md](INTERACTION_PATTERNS.md) for when to use inline UI
 3. **Components must `export default`** — named exports alone won't work for inline_ui/feedback_custom
 4. **Inline UI components receive `{ props, chat }`** — not raw props
 5. **Feedback components receive `{ onSubmit, onCancel, onError, chat }`**
+6. **Workspace code is built from git** — files under `workspace/` (`packages/`, `panels/`, `workers/`) are built artifacts. Editing them has no effect until committed, pushed, and rebuilt. Load the `paneldev` skill for this workflow.

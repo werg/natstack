@@ -9,6 +9,9 @@ import { BrowserImpl } from '@workspace/playwright-core';
 
 import type { Browser } from '@workspace/playwright-core';
 
+export { BrowserImpl };
+export type { Browser };
+
 export type Options = {
   headless?: boolean;
 };
