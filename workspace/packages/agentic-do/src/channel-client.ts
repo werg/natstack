@@ -25,12 +25,12 @@ export class ChannelClient {
     await this.rpc.call(this.doTarget, "send", participantId, messageId, content, opts);
   }
 
-  async update(participantId: string, messageId: string, content: string): Promise<void> {
-    await this.rpc.call(this.doTarget, "update", participantId, messageId, content);
+  async update(participantId: string, messageId: string, content: string, idempotencyKey?: string): Promise<void> {
+    await this.rpc.call(this.doTarget, "update", participantId, messageId, content, idempotencyKey);
   }
 
-  async complete(participantId: string, messageId: string): Promise<void> {
-    await this.rpc.call(this.doTarget, "complete", participantId, messageId);
+  async complete(participantId: string, messageId: string, idempotencyKey?: string): Promise<void> {
+    await this.rpc.call(this.doTarget, "complete", participantId, messageId, idempotencyKey);
   }
 
   async sendEphemeral(participantId: string, content: string, contentType?: string): Promise<void> {
@@ -59,6 +59,11 @@ export class ChannelClient {
 
   async cancelCall(callId: string): Promise<void> {
     await this.rpc.call(this.doTarget, "cancelMethodCall", callId);
+  }
+
+  /** Phase 2A: Fetch persisted events in a sequence range (for gap repair). */
+  async getEventRange(fromSeq: number, toSeq: number): Promise<ChannelEvent[]> {
+    return this.rpc.call(this.doTarget, "getEventRange", fromSeq, toSeq) as Promise<ChannelEvent[]>;
   }
 
   async updateConfig(config: Record<string, unknown>): Promise<Record<string, unknown>> {

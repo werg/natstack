@@ -324,6 +324,8 @@ export class AiChatWorker extends AgentWorkerBase {
             toolUseId: event.toolUseId,
             allow: true,
           });
+          // Clear continuation flag — harness will resume immediately
+          this.turns.setPendingContinuation(harnessId, false);
           if (writer) {
             await writer.startTyping();
             this.persistStreamState(harnessId, writer);
@@ -341,6 +343,8 @@ export class AiChatWorker extends AgentWorkerBase {
             toolUseId: event.toolUseId,
             allow: false,
           });
+          // Clear continuation flag — harness will resume (with denial)
+          this.turns.setPendingContinuation(harnessId, false);
           break;
         }
         this.pendingCall(callId, channelId, 'approval', {

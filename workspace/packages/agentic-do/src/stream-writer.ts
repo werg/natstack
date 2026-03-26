@@ -30,15 +30,20 @@ export class StreamWriter {
   }
 
   private async send(messageId: string, content: string, options?: SendMessageOptions): Promise<void> {
-    await this.channel.send(this.participantId, messageId, content, options);
+    await this.channel.send(this.participantId, messageId, content, {
+      ...options,
+      idempotencyKey: `${messageId}:send`,
+    });
   }
 
   private async update(messageId: string, content: string): Promise<void> {
+    // No idempotency key for streaming updates — content changes each call,
+    // and duplicate updates are harmless (same content overwrites itself)
     await this.channel.update(this.participantId, messageId, content);
   }
 
   private async complete(messageId: string): Promise<void> {
-    await this.channel.complete(this.participantId, messageId);
+    await this.channel.complete(this.participantId, messageId, `${messageId}:complete`);
   }
 
   async startTyping(): Promise<void> {

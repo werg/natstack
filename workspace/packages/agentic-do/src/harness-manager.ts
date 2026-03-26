@@ -22,17 +22,20 @@ export class HarnessManager {
         parent_id TEXT,
         fork_point_message_id INTEGER,
         external_session_id TEXT,
+        workerd_session_id TEXT,
         state TEXT,
         last_aligned_message_id INTEGER,
         created_at INTEGER NOT NULL
       )
     `);
+    // Migration: add column for existing DOs (safe no-op if already present)
+    try { this.sql.exec(`ALTER TABLE harnesses ADD COLUMN workerd_session_id TEXT`); } catch { /* already exists */ }
   }
 
-  register(harnessId: string, type: string): void {
+  register(harnessId: string, type: string, workerdSessionId?: string): void {
     this.sql.exec(
-      `INSERT OR REPLACE INTO harnesses (id, type, status, created_at) VALUES (?, ?, 'starting', ?)`,
-      harnessId, type, Date.now(),
+      `INSERT OR REPLACE INTO harnesses (id, type, status, workerd_session_id, created_at) VALUES (?, ?, 'starting', ?, ?)`,
+      harnessId, type, workerdSessionId ?? null, Date.now(),
     );
   }
 
@@ -71,6 +74,18 @@ export class HarnessManager {
         ? (row[0]!["last_aligned_message_id"] as number | null)
         : null,
     };
+  }
+
+  /** Check if a harness belongs to the current workerd session. */
+  isCurrentSession(harnessId: string, currentSessionId: string): boolean {
+    const row = this.sql.exec(
+      `SELECT workerd_session_id FROM harnesses WHERE id = ?`, harnessId,
+    ).toArray();
+    if (row.length === 0) return false;
+    const stored = row[0]!["workerd_session_id"] as string | null;
+    // If no session stored (legacy harness), allow it
+    if (!stored) return true;
+    return stored === currentSessionId;
   }
 
   /** Mark all active/starting harnesses as crashed (called on restart). */

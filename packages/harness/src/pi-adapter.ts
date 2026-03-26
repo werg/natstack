@@ -232,6 +232,67 @@ export interface PiAdapterOptions {
 }
 
 // =============================================================================
+// Phase 3C: Ordered async queue for harness output events
+// =============================================================================
+
+/**
+ * Phase 3C: Ordered async queue for harness output events.
+ * Ensures events are delivered in order even when pushEvent is async.
+ * Critical events (turn-complete, error) get one retry; streaming deltas are dropped on failure.
+ */
+class EventQueue {
+  private queue: HarnessOutput[] = [];
+  private flushing = false;
+  private flushPromise: Promise<void> | null = null;
+  private static readonly CRITICAL_TYPES = new Set(["turn-complete", "error", "tool-call", "approval-needed", "message-complete"]);
+
+  onCriticalFailure?: (event: HarnessOutput) => void;
+
+  constructor(
+    private pushEvent: (e: HarnessOutput) => void | Promise<void>,
+    private log: { error(...a: unknown[]): void },
+  ) {}
+
+  enqueue(event: HarnessOutput): void {
+    this.queue.push(event);
+    if (!this.flushing) {
+      this.flushPromise = this.flush();
+      void this.flushPromise;
+    }
+  }
+
+  /** Wait for all queued events to be flushed. */
+  async drain(): Promise<void> {
+    if (this.flushPromise) await this.flushPromise;
+  }
+
+  private async flush(): Promise<void> {
+    this.flushing = true;
+    while (this.queue.length > 0) {
+      const event = this.queue.shift()!;
+      try {
+        await Promise.resolve(this.pushEvent(event));
+      } catch (err) {
+        if (EventQueue.CRITICAL_TYPES.has(event.type)) {
+          this.log.error(`[EventQueue] pushEvent failed for critical ${event.type}, retrying once:`, err);
+          try {
+            await Promise.resolve(this.pushEvent(event));
+          } catch (retryErr) {
+            this.log.error(`[EventQueue] pushEvent retry failed for ${event.type}:`, retryErr);
+            // Notify failure callback so callers waiting on this event can unblock
+            this.onCriticalFailure?.(event);
+          }
+        } else {
+          this.log.error(`[EventQueue] pushEvent failed for ${event.type} (dropped):`, err);
+        }
+      }
+    }
+    this.flushing = false;
+    this.flushPromise = null;
+  }
+}
+
+// =============================================================================
 // Pi Adapter
 // =============================================================================
 
@@ -286,11 +347,27 @@ export class PiAdapter {
   private activeModel: string | undefined;
   private activeThinkingLevel: string | undefined;
 
+  /** Phase 3C: Ordered async queue for event delivery */
+  private eventQueue: EventQueue;
+
   constructor(
     private readonly config: HarnessConfig,
     private readonly deps: PiAdapterDeps,
     private readonly options?: PiAdapterOptions,
-  ) {}
+  ) {
+    this.eventQueue = new EventQueue(deps.pushEvent, console);
+    // Unblock pending approvals if their push critically fails
+    this.eventQueue.onCriticalFailure = (event) => {
+      if (event.type === "approval-needed") {
+        const e = event as { toolUseId: string };
+        const pending = this.pendingApprovals.get(e.toolUseId);
+        if (pending) {
+          this.pendingApprovals.delete(e.toolUseId);
+          pending.resolve({ allow: false });
+        }
+      }
+    };
+  }
 
   // ---------------------------------------------------------------------------
   // Command dispatch
@@ -331,6 +408,7 @@ export class PiAdapter {
     this.turnInProgress = true;
     try {
       await this.runTurn(input);
+      await this.eventQueue.drain();
     } finally {
       this.turnInProgress = false;
       this.drainQueue();
@@ -437,7 +515,7 @@ export class PiAdapter {
                   const displayName =
                     this.originalToDisplay.get(tool.name) ??
                     prettifyToolName(tool.name);
-                  this.deps.pushEvent({
+                  this.eventQueue.enqueue({
                     type: "action-start",
                     tool: displayName,
                     description: getToolDescription(displayName, params),
@@ -456,7 +534,7 @@ export class PiAdapter {
                   this.originalToDisplay.get(tool.name) ??
                   prettifyToolName(tool.name);
                 const finalParams = approval.updatedInput ?? params;
-                this.deps.pushEvent({
+                this.eventQueue.enqueue({
                   type: "action-start",
                   tool: displayName,
                   description: getToolDescription(displayName, finalParams),
@@ -541,13 +619,13 @@ export class PiAdapter {
         !this.streamState.messageCompleteEmitted
       ) {
         this.closeOpenBlocks();
-        this.deps.pushEvent({ type: "message-complete" });
+        this.eventQueue.enqueue({ type: "message-complete" });
       }
 
       // Emit turn-complete with session file as sessionId
       const usage = this.computeTurnUsage();
       const sessionId = this.session.sessionFile ?? "";
-      await this.deps.pushEvent({
+      this.eventQueue.enqueue({
         type: "turn-complete",
         sessionId,
         usage,
@@ -558,12 +636,12 @@ export class PiAdapter {
       if (!this.aborted) {
         const message = err instanceof Error ? err.message : String(err);
         log?.error("Pi turn error:", message);
-        await this.deps.pushEvent({ type: "error", error: message, code: "ADAPTER_ERROR" });
+        this.eventQueue.enqueue({ type: "error", error: message, code: "ADAPTER_ERROR" });
 
         // Emit turn-complete with sessionId for crash recovery
         const sessionId = this.session?.sessionFile ?? "";
         if (sessionId) {
-          await this.deps.pushEvent({
+          this.eventQueue.enqueue({
             type: "turn-complete",
             sessionId,
             usage: this.computeTurnUsage(),
@@ -576,7 +654,7 @@ export class PiAdapter {
       this.closeOpenBlocks();
       // Guarantee the DO always receives a turn-complete to advance its queue
       if (!this.turnCompleteEmitted) {
-        await this.deps.pushEvent({
+        this.eventQueue.enqueue({
           type: "turn-complete",
           sessionId: this.session?.sessionFile ?? "",
         });
@@ -661,7 +739,7 @@ export class PiAdapter {
     // so the server can use it for the next respawn.
 
     if (!turnSessionId) {
-      this.deps.pushEvent({
+      this.eventQueue.enqueue({
         type: "error",
         error: "Cannot fork: no session file (turnSessionId is empty)",
         code: "FORK_NO_SESSION",
@@ -689,7 +767,7 @@ export class PiAdapter {
       const targetEntry = messageEntries[idx];
 
       if (!targetEntry) {
-        this.deps.pushEvent({
+        this.eventQueue.enqueue({
           type: "error",
           error: `Cannot fork: no entry found at index ${forkPointMessageId}`,
           code: "FORK_NO_ENTRY",
@@ -699,7 +777,7 @@ export class PiAdapter {
 
       const newSessionFile = sm.createBranchedSession(targetEntry.id);
       if (!newSessionFile) {
-        this.deps.pushEvent({
+        this.eventQueue.enqueue({
           type: "error",
           error: "Fork failed: SessionManager returned no file (in-memory session?)",
           code: "FORK_FAILED",
@@ -712,13 +790,13 @@ export class PiAdapter {
       );
 
       // Emit turn-complete with the new session file so the server can respawn
-      this.deps.pushEvent({
+      this.eventQueue.enqueue({
         type: "turn-complete",
         sessionId: newSessionFile,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.deps.pushEvent({
+      this.eventQueue.enqueue({
         type: "error",
         error: `Fork error: ${message}`,
         code: "FORK_ERROR",
@@ -765,7 +843,7 @@ export class PiAdapter {
       case "message_start":
         // If we were thinking, close the thinking block
         if (this.streamState.isThinking) {
-          this.deps.pushEvent({ type: "thinking-end" });
+          this.eventQueue.enqueue({ type: "thinking-end" });
           this.streamState.isThinking = false;
         }
         break;
@@ -808,23 +886,23 @@ export class PiAdapter {
     if (ame.type === "thinking_delta" && ame.delta) {
       // Start thinking block if not already open
       if (!this.streamState.isThinking) {
-        this.deps.pushEvent({ type: "thinking-start" });
+        this.eventQueue.enqueue({ type: "thinking-start" });
         this.streamState.isThinking = true;
       }
-      this.deps.pushEvent({ type: "thinking-delta", content: ame.delta });
+      this.eventQueue.enqueue({ type: "thinking-delta", content: ame.delta });
     } else if (ame.type === "text_delta" && ame.delta) {
       // Close thinking block if open
       if (this.streamState.isThinking) {
-        this.deps.pushEvent({ type: "thinking-end" });
+        this.eventQueue.enqueue({ type: "thinking-end" });
         this.streamState.isThinking = false;
       }
       // Open text block if not already open
       if (!this.streamState.inTextBlock) {
-        this.deps.pushEvent({ type: "text-start" });
+        this.eventQueue.enqueue({ type: "text-start" });
         this.streamState.inTextBlock = true;
       }
       this.streamState.hasStreamedText = true;
-      this.deps.pushEvent({ type: "text-delta", content: ame.delta });
+      this.eventQueue.enqueue({ type: "text-delta", content: ame.delta });
     } else if (
       ame.type === "text_end" &&
       ame.content &&
@@ -832,18 +910,18 @@ export class PiAdapter {
     ) {
       // Fallback: text_end delivers full text when text_delta events were skipped
       if (this.streamState.isThinking) {
-        this.deps.pushEvent({ type: "thinking-end" });
+        this.eventQueue.enqueue({ type: "thinking-end" });
         this.streamState.isThinking = false;
       }
       if (!this.streamState.inTextBlock) {
-        this.deps.pushEvent({ type: "text-start" });
+        this.eventQueue.enqueue({ type: "text-start" });
         this.streamState.inTextBlock = true;
       }
       this.streamState.hasStreamedText = true;
-      this.deps.pushEvent({ type: "text-delta", content: ame.content });
+      this.eventQueue.enqueue({ type: "text-delta", content: ame.content });
     } else if (ame.type === "error") {
       this.deps.log?.warn(`Pi SDK error event: ${ame.reason ?? "unknown"}`);
-      this.deps.pushEvent({
+      this.eventQueue.enqueue({
         type: "error",
         error: ame.reason ?? "Pi SDK error",
         code: "PI_SDK_ERROR",
@@ -856,7 +934,7 @@ export class PiAdapter {
   ): void {
     // Close thinking if still open
     if (this.streamState.isThinking) {
-      this.deps.pushEvent({ type: "thinking-end" });
+      this.eventQueue.enqueue({ type: "thinking-end" });
       this.streamState.isThinking = false;
     }
 
@@ -868,11 +946,11 @@ export class PiAdapter {
       const fullText = textParts.map((c) => c.text).join("") ?? "";
       if (fullText) {
         if (!this.streamState.inTextBlock) {
-          this.deps.pushEvent({ type: "text-start" });
+          this.eventQueue.enqueue({ type: "text-start" });
           this.streamState.inTextBlock = true;
         }
         this.streamState.hasStreamedText = true;
-        this.deps.pushEvent({ type: "text-delta", content: fullText });
+        this.eventQueue.enqueue({ type: "text-delta", content: fullText });
         this.deps.log?.info(
           "Used message_end fallback (no streaming events received)",
         );
@@ -881,12 +959,12 @@ export class PiAdapter {
 
     // Close text block
     if (this.streamState.inTextBlock) {
-      this.deps.pushEvent({ type: "text-end" });
+      this.eventQueue.enqueue({ type: "text-end" });
       this.streamState.inTextBlock = false;
     }
 
     // Emit message-complete
-    this.deps.pushEvent({ type: "message-complete" });
+    this.eventQueue.enqueue({ type: "message-complete" });
     this.streamState.messageCompleteEmitted = true;
   }
 
@@ -895,11 +973,11 @@ export class PiAdapter {
   ): void {
     // Close any open blocks before the tool runs
     if (this.streamState.isThinking) {
-      this.deps.pushEvent({ type: "thinking-end" });
+      this.eventQueue.enqueue({ type: "thinking-end" });
       this.streamState.isThinking = false;
     }
     if (this.streamState.inTextBlock) {
-      this.deps.pushEvent({ type: "text-end" });
+      this.eventQueue.enqueue({ type: "text-end" });
       this.streamState.inTextBlock = false;
     }
 
@@ -916,7 +994,7 @@ export class PiAdapter {
     // Non-approval tools (Pi built-ins, ask_user) emit action-start immediately
     const displayName = prettifyToolName(event.toolName);
     const args = (event.args ?? {}) as Record<string, unknown>;
-    this.deps.pushEvent({
+    this.eventQueue.enqueue({
       type: "action-start",
       tool: displayName,
       description: getToolDescription(displayName, args),
@@ -940,7 +1018,7 @@ export class PiAdapter {
       .join("") ?? "";
 
     if (text) {
-      this.deps.pushEvent({
+      this.eventQueue.enqueue({
         type: "action-update",
         toolUseId,
         content: text,
@@ -954,7 +1032,7 @@ export class PiAdapter {
     const toolUseId =
       event.toolCallId ?? this.streamState.currentToolUseId ?? generateId();
 
-    this.deps.pushEvent({
+    this.eventQueue.enqueue({
       type: "action-end",
       toolUseId,
     });
@@ -992,16 +1070,11 @@ export class PiAdapter {
       };
       signal?.addEventListener("abort", onAbort, { once: true });
 
-      Promise.resolve(this.deps.pushEvent({
+      this.eventQueue.enqueue({
         type: "approval-needed",
         toolUseId,
         toolName,
         input,
-      })).catch((err) => {
-        this.deps.log?.error(`Failed to push approval-needed for ${toolName}:`, err);
-        // Unblock the tool call to prevent deadlock
-        this.pendingApprovals.delete(toolUseId);
-        resolve({ allow: false });
       });
     });
   }
@@ -1119,11 +1192,11 @@ export class PiAdapter {
   /** Close any open thinking/text blocks */
   private closeOpenBlocks(): void {
     if (this.streamState.isThinking) {
-      this.deps.pushEvent({ type: "thinking-end" });
+      this.eventQueue.enqueue({ type: "thinking-end" });
       this.streamState.isThinking = false;
     }
     if (this.streamState.inTextBlock) {
-      this.deps.pushEvent({ type: "text-end" });
+      this.eventQueue.enqueue({ type: "text-end" });
       this.streamState.inTextBlock = false;
     }
   }

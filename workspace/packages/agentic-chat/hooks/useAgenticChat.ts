@@ -132,12 +132,15 @@ export function useAgenticChat({
 
   // --- Build chat sandbox value (stale-ref safe — dereferences clientRef at call time) ---
   const chat: ChatSandboxValue = useMemo(() => ({
-    publish: (eventType: string, payload: unknown, opts?: { persist?: boolean }) => {
+    publish: (eventType: string, payload: unknown, opts?: { persist?: boolean; idempotencyKey?: string }) => {
       // Auto-generate id for message payloads (required by PubSub protocol)
       if (eventType === "message" && typeof payload === "object" && payload !== null && !("id" in payload)) {
         (payload as Record<string, unknown>)["id"] = crypto.randomUUID();
       }
-      return core.clientRef.current!.publish(eventType, payload, opts) as Promise<unknown>;
+      return core.clientRef.current!.publish(eventType, payload, {
+        ...opts,
+        idempotencyKey: opts?.idempotencyKey ?? crypto.randomUUID(),
+      }) as Promise<unknown>;
     },
     callMethod: async (pid: string, method: string, callArgs: unknown) => {
       const handle = core.clientRef.current!.callMethod(pid, method, callArgs);
@@ -340,7 +343,7 @@ export default function App({ props, chat }) {
               if (!client) return { ok: false, error: "Not connected" };
               const id = crypto.randomUUID();
               const data = JSON.stringify({ id, code, props });
-              await client.publish("message", { id, content: data, contentType: "inline_ui" }, { persist: true });
+              await client.publish("message", { id, content: data, contentType: "inline_ui" }, { persist: true, idempotencyKey: `inline_ui:${id}` });
               return { ok: true, id };
             },
           },
@@ -360,11 +363,12 @@ export default function App({ props, chat }) {
           if (hr.lost.length) parts.push(`Lost (must be re-created): [${hr.lost.join(", ")}]`);
           const hasDegradation = hr.partial.length > 0 || hr.lost.length > 0;
           const hint = hasDegradation ? " Functions and class instances don't survive reload — re-create them with eval if needed." : "";
+          const scopeMsgId = crypto.randomUUID();
           core.clientRef.current!.publish("message", {
-            id: crypto.randomUUID(),
+            id: scopeMsgId,
             content: `Scope refreshed (panel session restarted). ${parts.join(". ")}.${hint}`,
             kind: "system",
-          }, { persist: true });
+          }, { persist: true, idempotencyKey: `scope_hydrate:${scopeMsgId}` });
         }
       } catch (err) {
         console.error("[Chat] Connection error:", err);

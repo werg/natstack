@@ -82,9 +82,14 @@ export class TurnManager {
         sender_participant_id TEXT,
         stream_state TEXT,
         typing_content TEXT,
-        started_at INTEGER NOT NULL
+        started_at INTEGER NOT NULL,
+        last_activity_at INTEGER,
+        has_pending_continuation INTEGER DEFAULT 0
       )
     `);
+    // Migration: add columns for existing DOs (safe no-op if already present)
+    try { this.sql.exec(`ALTER TABLE active_turns ADD COLUMN last_activity_at INTEGER`); } catch { /* already exists */ }
+    try { this.sql.exec(`ALTER TABLE active_turns ADD COLUMN has_pending_continuation INTEGER DEFAULT 0`); } catch { /* already exists */ }
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS queued_turns (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,9 +114,10 @@ export class TurnManager {
       actionMessageId: null,
       typingMessageId: null,
     };
+    const now = Date.now();
     this.sql.exec(
-      `INSERT OR REPLACE INTO active_turns (harness_id, channel_id, reply_to_id, turn_message_id, sender_participant_id, stream_state, typing_content, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      harnessId, channelId, replyToId, turnMessageId ?? null, senderParticipantId ?? null, JSON.stringify(initialStreamState), typingContent ?? '', Date.now(),
+      `INSERT OR REPLACE INTO active_turns (harness_id, channel_id, reply_to_id, turn_message_id, sender_participant_id, stream_state, typing_content, started_at, last_activity_at, has_pending_continuation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      harnessId, channelId, replyToId, turnMessageId ?? null, senderParticipantId ?? null, JSON.stringify(initialStreamState), typingContent ?? '', now, now,
     );
   }
 
@@ -145,6 +151,42 @@ export class TurnManager {
 
   clearAllActive(): void {
     this.sql.exec(`DELETE FROM active_turns`);
+  }
+
+  /** Phase 1B: Update activity timestamp for watchdog. */
+  touchActive(harnessId: string): void {
+    this.sql.exec(
+      `UPDATE active_turns SET last_activity_at = ? WHERE harness_id = ?`,
+      Date.now(), harnessId,
+    );
+  }
+
+  /** Phase 1B: Set pending continuation flag (waiting for tool result/approval). */
+  setPendingContinuation(harnessId: string, pending: boolean): void {
+    this.sql.exec(
+      `UPDATE active_turns SET has_pending_continuation = ? WHERE harness_id = ?`,
+      pending ? 1 : 0, harnessId,
+    );
+  }
+
+  /** Phase 1B: Find turns that appear stalled (no activity and no pending continuation). */
+  getStaleActiveTurns(maxIdleMs: number): Array<{ harnessId: string; channelId: string; replyToId: string; typingContent: string; streamState: PersistedStreamState }> {
+    const cutoff = Date.now() - maxIdleMs;
+    const rows = this.sql.exec(
+      `SELECT harness_id, channel_id, reply_to_id, typing_content, stream_state
+       FROM active_turns
+       WHERE (last_activity_at IS NULL OR last_activity_at < ?)
+         AND has_pending_continuation = 0`,
+      cutoff,
+    ).toArray();
+    const defaultState: PersistedStreamState = { responseMessageId: null, thinkingMessageId: null, actionMessageId: null, typingMessageId: null };
+    return rows.map(r => ({
+      harnessId: r["harness_id"] as string,
+      channelId: r["channel_id"] as string,
+      replyToId: r["reply_to_id"] as string,
+      typingContent: (r["typing_content"] as string) ?? '',
+      streamState: r["stream_state"] ? JSON.parse(r["stream_state"] as string) : { ...defaultState },
+    }));
   }
 
   // --- In-flight turns ---

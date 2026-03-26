@@ -85,17 +85,17 @@ export function getNextExpiry(sql: SqlStorage): number | null {
 /**
  * Expire timed-out calls. Returns the expired call IDs and their caller IDs.
  */
-export function expireCalls(sql: SqlStorage): Array<{ callId: string; callerId: string }> {
+export function expireCalls(sql: SqlStorage): Array<{ callId: string; callerId: string; targetId: string }> {
   const now = Date.now();
   const expired = sql.exec(
-    `SELECT call_id, caller_id FROM pending_calls WHERE expires_at <= ?`, now,
+    `SELECT call_id, caller_id, target_id FROM pending_calls WHERE expires_at <= ?`, now,
   ).toArray();
 
-  const results: Array<{ callId: string; callerId: string }> = [];
+  const results: Array<{ callId: string; callerId: string; targetId: string }> = [];
   for (const row of expired) {
     const callId = row["call_id"] as string;
     sql.exec(`DELETE FROM pending_calls WHERE call_id = ?`, callId);
-    results.push({ callId, callerId: row["caller_id"] as string });
+    results.push({ callId, callerId: row["caller_id"] as string, targetId: row["target_id"] as string });
   }
 
   return results;

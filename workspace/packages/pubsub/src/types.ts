@@ -184,6 +184,8 @@ export interface PublishOptions {
   timeoutMs?: number;
   /** Binary attachments to send alongside JSON payload (server assigns IDs) */
   attachments?: AttachmentInput[];
+  /** Caller-provided idempotency key for dedup on retry. Must be stable across retries. */
+  idempotencyKey?: string;
 }
 
 /**

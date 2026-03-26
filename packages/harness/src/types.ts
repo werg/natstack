@@ -105,6 +105,7 @@ export interface SendMessageOptions {
   persist?: boolean;
   senderMetadata?: Record<string, unknown>;
   replyTo?: string;
+  idempotencyKey?: string;
 }
 
 /** Input for starting a new AI turn */

@@ -27,6 +27,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   protected turns: TurnManager;
   protected continuations: ContinuationStore;
 
+  /** Phase 0D: Transient poison message tracker (event id → attempt count). Resets on hibernation. */
+  private failedEvents = new Map<number, number>();
+  private static readonly POISON_MAX_ATTEMPTS = 3;
+
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
 
@@ -57,7 +61,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.identity.restore();
   }
 
-  static override schemaVersion = 4;
+  static override schemaVersion = 5;
 
   protected createTables(): void {
     this.identity.createTables();
@@ -65,6 +69,13 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.harnesses.createTables();
     this.turns.createTables();
     this.continuations.createTables();
+    // Phase 0A: Delivery cursor for event dedup
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS delivery_cursor (
+        channel_id TEXT PRIMARY KEY,
+        last_delivered_seq INTEGER NOT NULL
+      )
+    `);
   }
 
   // --- Identity bootstrap ---
@@ -331,7 +342,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   // --- Harness registration ---
 
   registerHarness(harnessId: string, type: string): void {
-    this.harnesses.register(harnessId, type);
+    this.harnesses.register(harnessId, type, this.identity.sessionId ?? undefined);
   }
 
   reactivateHarness(harnessId: string): void {
@@ -361,6 +372,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     this.setInFlightTurn(channelId, harnessId, triggerMessageId, triggerPubsubId, input);
     this.advanceCheckpoint(channelId, harnessId, triggerPubsubId);
+    // Phase 1B: Schedule watchdog when a turn starts
+    this.scheduleWatchdog();
   }
 
   // --- Approval level caching ---
@@ -379,6 +392,138 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     return !needsApprovalForTool(toolName, this.getApprovalLevel(channelId));
   }
 
+  // ── Channel event pipeline (dedup → gap repair → dispatch) ──────────────
+
+  /** Top-level handler for incoming channel events. Runs dedup, gap repair, poison skip, then dispatch. */
+  private async handleIncomingChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
+    const eventId = event.id;
+
+    // Phase 0A: Delivery cursor dedup — skip already-delivered events
+    if (eventId !== undefined && eventId > 0) {
+      const lastSeq = this.getDeliveryCursor(channelId);
+      if (eventId <= lastSeq) return;
+
+      // Phase 2B: Gap detection — repair missed events before processing this one
+      if (eventId > lastSeq + 1) {
+        await this.repairGap(channelId, lastSeq, eventId);
+      }
+
+      // Phase 0D: Skip poison messages that have failed too many times
+      const attempts = this.failedEvents.get(eventId) ?? 0;
+      if (attempts >= AgentWorkerBase.POISON_MAX_ATTEMPTS) {
+        console.error(`[AgentWorkerBase] Skipping poison event id=${eventId} after ${attempts} failed attempts`);
+        this.advanceDeliveryCursor(channelId, eventId);
+        this.failedEvents.delete(eventId);
+        return;
+      }
+    }
+
+    // Dispatch and track success/failure
+    try {
+      await this.dispatchChannelEvent(channelId, event);
+      if (eventId !== undefined && eventId > 0) {
+        this.advanceDeliveryCursor(channelId, eventId);
+        this.failedEvents.delete(eventId);
+      }
+    } catch (err) {
+      if (eventId !== undefined && eventId > 0) {
+        const count = (this.failedEvents.get(eventId) ?? 0) + 1;
+        this.failedEvents.set(eventId, count);
+        if (count >= AgentWorkerBase.POISON_MAX_ATTEMPTS) {
+          console.error(`[AgentWorkerBase] Poison event id=${eventId} failed ${count} times, will skip on next delivery:`, err);
+        } else {
+          console.warn(`[AgentWorkerBase] onChannelEvent failed for id=${eventId} (attempt ${count}/${AgentWorkerBase.POISON_MAX_ATTEMPTS}):`, err);
+        }
+      } else {
+        console.error("[AgentWorkerBase] onChannelEvent failed for ephemeral event:", err);
+      }
+    }
+  }
+
+  private getDeliveryCursor(channelId: string): number {
+    const cursor = this.sql.exec(
+      `SELECT last_delivered_seq FROM delivery_cursor WHERE channel_id = ?`, channelId,
+    ).toArray();
+    return cursor.length > 0 ? (cursor[0]!["last_delivered_seq"] as number) : 0;
+  }
+
+  private advanceDeliveryCursor(channelId: string, seq: number): void {
+    this.sql.exec(
+      `INSERT OR REPLACE INTO delivery_cursor (channel_id, last_delivered_seq) VALUES (?, ?)`,
+      channelId, seq,
+    );
+  }
+
+  /** Fetch and process events missed between lastSeq and eventId. */
+  private async repairGap(channelId: string, lastSeq: number, eventId: number): Promise<void> {
+    const gap = eventId - lastSeq - 1;
+    if (gap > 1000) {
+      console.error(`[AgentWorkerBase] Gap too large (${gap} events) in channel=${channelId}, skipping repair`);
+      return;
+    }
+    try {
+      const channel = this.createChannelClient(channelId);
+      const missed = await channel.getEventRange(lastSeq, eventId - 1);
+      if (!missed || !Array.isArray(missed)) return;
+
+      for (const missedEvent of missed) {
+        try {
+          await this.dispatchChannelEvent(channelId, missedEvent);
+          if (missedEvent.id !== undefined && missedEvent.id > 0) {
+            this.advanceDeliveryCursor(channelId, missedEvent.id);
+          }
+        } catch (missedErr) {
+          const missedId = missedEvent.id;
+          if (missedId !== undefined && missedId > 0) {
+            const count = (this.failedEvents.get(missedId) ?? 0) + 1;
+            this.failedEvents.set(missedId, count);
+            if (count >= AgentWorkerBase.POISON_MAX_ATTEMPTS) {
+              console.error(`[AgentWorkerBase] Poison event id=${missedId} in gap repair, skipping:`, missedErr);
+              this.advanceDeliveryCursor(channelId, missedId);
+            } else {
+              console.warn(`[AgentWorkerBase] Gap repair event id=${missedId} failed (attempt ${count}):`, missedErr);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`[AgentWorkerBase] Gap repair failed for channel=${channelId} gap=${lastSeq+1}..${eventId-1}:`, err);
+    }
+  }
+
+  /**
+   * Dispatch a channel event through config-update interception then to the subclass.
+   * Used by both the live path and gap repair to ensure consistent handling.
+   */
+  private async dispatchChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
+    // Config-update interception — apply approval level changes before subclass sees the event
+    if (event.type === "config-update") {
+      let newLevel: number | undefined;
+      try {
+        const config = typeof event.payload === "object" && event.payload !== null
+          ? event.payload as Record<string, unknown>
+          : {};
+        if ("approvalLevel" in config) {
+          newLevel = config["approvalLevel"] as number;
+        }
+      } catch { /* ignore parse errors */ }
+      if (newLevel !== undefined) {
+        this.setApprovalLevel(channelId, newLevel);
+        if (newLevel >= 2) {
+          try {
+            await this.reevaluatePendingApprovals(channelId);
+          } catch (err) {
+            console.error("[AgentWorkerBase] reevaluatePendingApprovals failed:", err);
+          }
+        }
+      }
+      return; // Config-update events are not dispatched to the subclass
+    }
+
+    // Dispatch to subclass
+    await this.onChannelEvent(channelId, event);
+  }
+
   protected async reevaluatePendingApprovals(channelId: string): Promise<void> {
     const pending = this.continuations.listForChannel(channelId, 'approval');
 
@@ -392,6 +537,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           toolUseId: context.toolUseId,
           allow: true,
         });
+        // Clear continuation flag — harness will resume immediately
+        this.turns.setPendingContinuation(context.harnessId, false);
         try {
           const channel = this.createChannelClient(channelId);
           await channel.cancelCall(call.callId);
@@ -416,6 +563,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       console.warn(`[AgentWorkerBase] onCallResult: no pending call for callId=${callId} (isError=${isError})`);
       return;
     }
+    // Phase 1B: Clear pending continuation — the harness will resume
+    const harnessId = (pending.context as Record<string, unknown>)["harnessId"] as string | undefined;
+    if (harnessId) {
+      this.turns.setPendingContinuation(harnessId, false);
+    }
     await this.handleCallResult(pending.type, pending.context, pending.channelId, result, isError);
   }
 
@@ -424,6 +576,58 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     _channelId: string, _result: unknown, _isError: boolean,
   ): Promise<void> {
     // Default: no-op
+  }
+
+  // --- Phase 1B: Turn watchdog ---
+
+  private static readonly WATCHDOG_INTERVAL_MS = 2 * 60 * 1000;   // Check every 2 min
+  private static readonly WATCHDOG_IDLE_MS = 10 * 60 * 1000;      // 10 min idle = stale
+
+  /** Schedule watchdog alarm to check for stale turns. */
+  protected scheduleWatchdog(): void {
+    if (this.getStateValue("watchdog_scheduled")) return;
+    this.setStateValue("watchdog_scheduled", "1");
+    this.setAlarm(AgentWorkerBase.WATCHDOG_INTERVAL_MS);
+  }
+
+  /** Check for and recover stale turns. Called from alarm handler. */
+  private async checkStaleTurns(): Promise<void> {
+    const staleTurns = this.turns.getStaleActiveTurns(AgentWorkerBase.WATCHDOG_IDLE_MS);
+    for (const stale of staleTurns) {
+      console.error(`[AgentWorkerBase] Watchdog: stale turn detected for harness=${stale.harnessId} on channel=${stale.channelId}`);
+      try {
+        // Publish error to channel BEFORE clearing active turn
+        const participantId = this.subscriptions.getParticipantId(stale.channelId);
+        if (participantId) {
+          const channel = this.createChannelClient(stale.channelId);
+          const writer = new StreamWriter(channel, participantId, stale.channelId, stale.replyToId, stale.typingContent, stale.streamState);
+          await writer.startText();
+          await writer.updateText("[Turn timed out — the AI process may have crashed or become unresponsive.]");
+          await writer.completeText();
+        }
+      } catch (err) {
+        console.error("[AgentWorkerBase] Watchdog: failed to publish error:", err);
+      }
+      // Clear the stale turn and harness
+      this.turns.clearActive(stale.harnessId);
+      this.harnesses.stop(stale.harnessId).catch(() => {});
+      // Queued turns remain in the queue — the next onChannelEvent will find
+      // no active harness, spawn a new one, and drain the queue naturally
+    }
+  }
+
+  override async alarm(): Promise<void> {
+    await super.alarm();
+    // Phase 1B: Watchdog check
+    if (this.getStateValue("watchdog_scheduled")) {
+      this.deleteStateValue("watchdog_scheduled");
+      await this.checkStaleTurns();
+      // Reschedule if there are still active turns
+      const activeTurns = this.sql.exec(`SELECT COUNT(*) as cnt FROM active_turns`).toArray();
+      if ((activeTurns[0]?.["cnt"] as number) > 0) {
+        this.scheduleWatchdog();
+      }
+    }
   }
 
   // --- Fork support ---
@@ -488,6 +692,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.sql.exec(`DELETE FROM queued_turns`);
     this.sql.exec(`DELETE FROM pending_calls`);
     this.sql.exec(`DELETE FROM checkpoints`);
+    this.sql.exec(`DELETE FROM delivery_cursor`);
 
     // 7. Clean state KV: remove bootstrap typing entries, rename approval level keys
     const stateRows = this.sql.exec(`SELECT key FROM state WHERE key LIKE 'bootstrap_typing:%'`).toArray();
@@ -615,33 +820,34 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         }
       }
 
-      // Channel DO sends proper ChannelEvent objects — intercept config-update events
+      // Channel DO sends proper ChannelEvent objects — intercept for dedup, gap detection, dispatch
       if (method === "onChannelEvent" && args.length === 2) {
-        const event = args[1] as ChannelEvent;
-        if (event.type === "config-update") {
-          const channelId = args[0] as string;
-          let newLevel: number | undefined;
-          try {
-            const config = typeof event.payload === "object" && event.payload !== null
-              ? event.payload as Record<string, unknown>
-              : {};
-            if ("approvalLevel" in config) {
-              newLevel = config["approvalLevel"] as number;
-            }
-          } catch { /* ignore parse errors */ }
-          if (newLevel !== undefined) {
-            this.setApprovalLevel(channelId, newLevel);
-            if (newLevel >= 2) {
-              try {
-                await this.reevaluatePendingApprovals(channelId);
-              } catch (err) {
-                console.error("[AgentWorkerBase] reevaluatePendingApprovals failed:", err);
-              }
-            }
-          }
+        await this.handleIncomingChannelEvent(args[0] as string, args[1] as ChannelEvent);
+        return new Response(JSON.stringify(null), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      // Phase 0C: Harness fencing — validate session for harness events
+      if (method === "onHarnessEvent" && args.length === 2) {
+        const harnessId = args[0] as string;
+        const sessionId = this.identity.sessionId;
+        if (sessionId && !this.harnesses.isCurrentSession(harnessId, sessionId)) {
+          console.warn(`[AgentWorkerBase] Rejecting event from stale harness ${harnessId} (wrong session)`);
+          // Best-effort stop of zombie harness
+          this.harnesses.stop(harnessId).catch(() => {});
           return new Response(JSON.stringify(null), {
             headers: { "Content-Type": "application/json" },
           });
+        }
+        // Phase 1B: Touch activity timestamp for watchdog
+        this.turns.touchActive(harnessId);
+        // Phase 1B: Track continuation state based on harness event type
+        const harnessEvent = args[1] as { type: string };
+        if (harnessEvent.type === "approval-needed" || harnessEvent.type === "tool-call") {
+          this.turns.setPendingContinuation(harnessId, true);
+        } else if (harnessEvent.type === "turn-complete" || harnessEvent.type === "error") {
+          this.turns.setPendingContinuation(harnessId, false);
         }
       }
 
@@ -674,6 +880,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const inFlightTurns = this.sql.exec(`SELECT * FROM in_flight_turns`).toArray();
     const queuedTurns = this.sql.exec(`SELECT * FROM queued_turns`).toArray();
     const pendingCalls = this.sql.exec(`SELECT * FROM pending_calls`).toArray();
-    return { subscriptions, harnesses, activeTurns, checkpoints, inFlightTurns, queuedTurns, pendingCalls };
+    const deliveryCursors = this.sql.exec(`SELECT * FROM delivery_cursor`).toArray();
+    return { subscriptions, harnesses, activeTurns, checkpoints, inFlightTurns, queuedTurns, pendingCalls, deliveryCursors };
   }
 }

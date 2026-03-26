@@ -521,14 +521,29 @@ export function useChatCore({
     if ((!hasText && !hasAttachments) || !clientRef.current?.connected) return;
     await stopTyping();
     const text = currentInput.trim();
+    // Idempotency key for this send operation — protects against transport-level
+    // retries (e.g., pubsub retry queue re-sending after reconnect)
+    const idempotencyKey = crypto.randomUUID();
+    // Optimistically clear input
     setInput("");
     inputRef.current = "";
-    const { messageId } = await clientRef.current.send(text || "", { attachments: hasAttachments ? attachments : undefined });
-    const selfId = clientRef.current.clientId ?? config.clientId;
-    setMessages((prev) => {
-      if (prev.some((m) => m.id === messageId)) return prev;
-      return [...prev, { id: messageId, senderId: selfId, content: text, complete: true, pending: true, kind: "message" }];
-    });
+    try {
+      const { messageId } = await clientRef.current.send(text || "", {
+        attachments: hasAttachments ? attachments : undefined,
+        idempotencyKey,
+      });
+      const selfId = clientRef.current.clientId ?? config.clientId;
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === messageId)) return prev;
+        return [...prev, { id: messageId, senderId: selfId, content: text, complete: true, pending: true, kind: "message" }];
+      });
+    } catch (err) {
+      // Restore draft so user can retry — rethrow so caller (ChatInput) keeps attachments
+      setInput(text);
+      inputRef.current = text;
+      console.error("[Chat] Send failed, draft restored:", err);
+      throw err;
+    }
   }, [config.clientId, clientRef, stopTyping, setMessages]);
 
   // --- Auto-send initial prompt once connected ---

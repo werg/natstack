@@ -39,7 +39,7 @@ const PARTICIPANT_CLEANUP_INTERVAL_MS = 60 * 1000; // 1 minute
 const REPLAY_LIMIT = 50;
 
 export class PubSubChannel extends DurableObjectBase {
-  static override schemaVersion = 1;
+  static override schemaVersion = 2;
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
@@ -82,6 +82,13 @@ export class PubSubChannel extends DurableObjectBase {
         method TEXT NOT NULL,
         args TEXT,
         expires_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+    `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS dedup_keys (
+        key TEXT PRIMARY KEY,
+        result_id INTEGER,
         created_at INTEGER NOT NULL
       )
     `);
@@ -360,6 +367,17 @@ export class PubSubChannel extends DurableObjectBase {
     content: string,
     opts?: SendOpts,
   ): Promise<void> {
+    // Phase 0B: Idempotency check
+    const idempotencyKey = opts?.idempotencyKey;
+    if (idempotencyKey) {
+      const existing = this.sql.exec(
+        `SELECT result_id FROM dedup_keys WHERE key = ?`, idempotencyKey,
+      ).toArray();
+      if (existing.length > 0) {
+        return;
+      }
+    }
+
     const ts = Date.now();
     const persist = opts?.persist !== false;
     const contentType = opts?.contentType;
@@ -386,9 +404,25 @@ export class PubSubChannel extends DurableObjectBase {
       );
       const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
 
+      if (idempotencyKey) {
+        this.sql.exec(
+          `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
+          idempotencyKey, id, Date.now(),
+        );
+        this.scheduleDedupCleanup();
+      }
+
       const event = buildChannelEvent(id, messageId, "message", payloadJson, participantId, senderMetadata, ts, true);
       broadcast(this.broadcastDeps, event, { kind: "persisted" }, participantId);
     } else {
+      if (idempotencyKey) {
+        this.sql.exec(
+          `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
+          idempotencyKey, null, Date.now(),
+        );
+        this.scheduleDedupCleanup();
+      }
+
       const event = buildChannelEvent(0, messageId, "message", payloadJson, participantId, senderMetadata, ts, false);
       broadcast(this.broadcastDeps, event, { kind: "ephemeral" }, participantId);
     }
@@ -402,7 +436,7 @@ export class PubSubChannel extends DurableObjectBase {
     participantId: string,
     type: string,
     payload: unknown,
-    opts?: { persist?: boolean; ref?: number; senderMetadata?: Record<string, unknown>; attachments?: StoredAttachment[] },
+    opts?: { persist?: boolean; ref?: number; senderMetadata?: Record<string, unknown>; attachments?: StoredAttachment[]; idempotencyKey?: string },
   ): Promise<{ id?: number }> {
     const ts = Date.now();
     const persist = opts?.persist !== false;
@@ -424,6 +458,17 @@ export class PubSubChannel extends DurableObjectBase {
           return { id: undefined };
         }
         // No pending call — fall through to normal broadcast
+      }
+    }
+
+    // Phase 0B: Idempotency check
+    const idempotencyKey = opts?.idempotencyKey;
+    if (idempotencyKey) {
+      const existing = this.sql.exec(
+        `SELECT result_id FROM dedup_keys WHERE key = ?`, idempotencyKey,
+      ).toArray();
+      if (existing.length > 0) {
+        return { id: existing[0]!["result_id"] as number | undefined };
       }
     }
 
@@ -449,10 +494,26 @@ export class PubSubChannel extends DurableObjectBase {
       );
       const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
 
+      if (idempotencyKey) {
+        this.sql.exec(
+          `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
+          idempotencyKey, id, Date.now(),
+        );
+        this.scheduleDedupCleanup();
+      }
+
       const event = buildChannelEvent(id, messageId, type, payloadJson, participantId, senderMetadata, ts, true, attachments);
       broadcast(this.broadcastDeps, event, { kind: "persisted", ref }, participantId);
       return { id };
     } else {
+      if (idempotencyKey) {
+        this.sql.exec(
+          `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
+          idempotencyKey, null, Date.now(),
+        );
+        this.scheduleDedupCleanup();
+      }
+
       const event = buildChannelEvent(0, messageId, type, payloadJson, participantId, senderMetadata, ts, false, attachments);
       broadcast(this.broadcastDeps, event, { kind: "ephemeral", ref }, participantId);
       return { id: undefined };
@@ -466,7 +527,18 @@ export class PubSubChannel extends DurableObjectBase {
     participantId: string,
     messageId: string,
     content: string,
+    idempotencyKey?: string,
   ): Promise<void> {
+    // Phase 0B: Idempotency check
+    if (idempotencyKey) {
+      const existing = this.sql.exec(
+        `SELECT result_id FROM dedup_keys WHERE key = ?`, idempotencyKey,
+      ).toArray();
+      if (existing.length > 0) {
+        return;
+      }
+    }
+
     const ts = Date.now();
 
     const senderMetadata = this.getSenderMetadata(participantId);
@@ -482,6 +554,14 @@ export class PubSubChannel extends DurableObjectBase {
     );
     const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
 
+    if (idempotencyKey) {
+      this.sql.exec(
+        `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
+        idempotencyKey, id, Date.now(),
+      );
+      this.scheduleDedupCleanup();
+    }
+
     const event = buildChannelEvent(id, messageId, "update-message", payloadJson, participantId, senderMetadata, ts, true);
     broadcast(this.broadcastDeps, event, { kind: "persisted" }, participantId);
   }
@@ -492,7 +572,18 @@ export class PubSubChannel extends DurableObjectBase {
   async complete(
     participantId: string,
     messageId: string,
+    idempotencyKey?: string,
   ): Promise<void> {
+    // Phase 0B: Idempotency check
+    if (idempotencyKey) {
+      const existing = this.sql.exec(
+        `SELECT result_id FROM dedup_keys WHERE key = ?`, idempotencyKey,
+      ).toArray();
+      if (existing.length > 0) {
+        return;
+      }
+    }
+
     const ts = Date.now();
 
     const senderMetadata = this.getSenderMetadata(participantId);
@@ -509,8 +600,29 @@ export class PubSubChannel extends DurableObjectBase {
     );
     const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
 
+    if (idempotencyKey) {
+      this.sql.exec(
+        `INSERT OR IGNORE INTO dedup_keys (key, result_id, created_at) VALUES (?, ?, ?)`,
+        idempotencyKey, id, Date.now(),
+      );
+      this.scheduleDedupCleanup();
+    }
+
     const event = buildChannelEvent(id, messageId, "update-message", payloadJson, participantId, senderMetadata, ts, true);
     broadcast(this.broadcastDeps, event, { kind: "persisted" }, participantId);
+  }
+
+  /**
+   * Phase 2A: Return persisted events in a sequence range (for gap repair).
+   * Returns events where fromSeq < id <= toSeq, ordered ascending.
+   */
+  async getEventRange(fromSeq: number, toSeq: number): Promise<ChannelEvent[]> {
+    const rows = this.sql.exec(
+      `SELECT id, message_id, type, content, sender_id, ts, sender_metadata, attachments
+       FROM messages WHERE id > ? AND id <= ? AND persist = 1 ORDER BY id ASC`,
+      fromSeq, toSeq,
+    ).toArray();
+    return rows.map(parseRowToChannelEvent);
   }
 
   /**
@@ -622,7 +734,7 @@ export class PubSubChannel extends DurableObjectBase {
     args: unknown,
   ): Promise<void> {
     storeCall(this.sql, callId, callerPid, targetPid, method, args);
-    this.rescheduleCallTimeout();
+    this.scheduleNextAlarm();
 
     // Deliver to target
     const target = this.sql.exec(
@@ -687,7 +799,7 @@ export class PubSubChannel extends DurableObjectBase {
     const pending = consumeCall(this.sql, callId);
     if (!pending) return;
     await this.deliverCallResult(pending.callerId, callId, content, isError);
-    this.rescheduleCallTimeout();
+    this.scheduleNextAlarm();
   }
 
   /**
@@ -699,7 +811,7 @@ export class PubSubChannel extends DurableObjectBase {
       `SELECT target_id FROM pending_calls WHERE call_id = ?`, callId,
     ).toArray();
     cancelCallDb(this.sql, callId);
-    this.rescheduleCallTimeout();
+    this.scheduleNextAlarm();
     // Notify the provider so it can abort the executing method
     if (call.length > 0) {
       const providerId = call[0]!["target_id"] as string;
@@ -770,12 +882,45 @@ export class PubSubChannel extends DurableObjectBase {
     }
   }
 
-  private rescheduleCallTimeout(): void {
-    const next = getNextExpiry(this.sql);
-    if (next !== null) {
-      const delayMs = Math.max(next - Date.now(), 100);
-      this.setAlarm(delayMs);
+  /**
+   * Unified alarm scheduler — computes the minimum next alarm time across all
+   * alarm sources (method call timeout, dedup cleanup, participant cleanup)
+   * to avoid one source overwriting another's sooner alarm.
+   */
+  private scheduleNextAlarm(): void {
+    const now = Date.now();
+    let nextMs = Infinity;
+
+    // Method call timeout — next expiry
+    const nextExpiry = getNextExpiry(this.sql);
+    if (nextExpiry !== null) {
+      nextMs = Math.min(nextMs, Math.max(nextExpiry - now, 100));
     }
+
+    // Dedup cleanup — absolute deadline stored as timestamp
+    const dedupDeadline = this.getStateValue("dedup_cleanup_at");
+    if (dedupDeadline) {
+      const dedupMs = Math.max(Number(dedupDeadline) - now, 100);
+      nextMs = Math.min(nextMs, dedupMs);
+    }
+
+    // Participant cleanup — 1 minute if RPC participants exist
+    const rpcCount = this.sql.exec(
+      `SELECT COUNT(*) as cnt FROM participants WHERE transport = 'rpc'`,
+    ).toArray();
+    if ((rpcCount[0]?.["cnt"] as number) > 0) {
+      nextMs = Math.min(nextMs, PARTICIPANT_CLEANUP_INTERVAL_MS);
+    }
+
+    if (nextMs < Infinity) {
+      this.setAlarm(nextMs);
+    }
+  }
+
+  private scheduleDedupCleanup(): void {
+    if (this.getStateValue("dedup_cleanup_at")) return;
+    this.setStateValue("dedup_cleanup_at", String(Date.now() + 5 * 60 * 1000));
+    this.scheduleNextAlarm();
   }
 
   // ── Alarm (method call timeout + stale participant cleanup) ──────────────
@@ -785,13 +930,30 @@ export class PubSubChannel extends DurableObjectBase {
 
     // Expire pending method calls
     const expired = expireCalls(this.sql);
-    for (const { callId, callerId } of expired) {
+    for (const { callId, callerId, targetId } of expired) {
       await this.deliverCallResult(callerId, callId, { error: "Method call timed out" }, true);
+      // Phase 1C: Notify the provider to stop executing the timed-out method
+      this.rpc.emit(targetId, "channel:message", {
+        channelId: this.objectKey,
+        message: { kind: "ephemeral", type: "method-cancel", payload: { callId }, senderId: "system", ts: Date.now() },
+      }).catch((err: unknown) => console.warn("[Channel] timeout cancel emit failed:", err));
     }
-    this.rescheduleCallTimeout();
-
     // Evict stale RPC participants (not DO participants — those are persistent)
     this.evictStaleParticipants();
+
+    // Phase 0B: Clean up expired dedup keys
+    const dedupCutoff = Date.now() - 5 * 60 * 1000;
+    this.sql.exec(`DELETE FROM dedup_keys WHERE created_at < ?`, dedupCutoff);
+    const remaining = this.sql.exec(`SELECT COUNT(*) as cnt FROM dedup_keys`).toArray();
+    if ((remaining[0]?.["cnt"] as number) === 0) {
+      this.deleteStateValue("dedup_cleanup_at");
+    } else {
+      // Reschedule for another 5 minutes
+      this.setStateValue("dedup_cleanup_at", String(Date.now() + 5 * 60 * 1000));
+    }
+
+    // Unified reschedule — computes minimum next alarm across all sources
+    this.scheduleNextAlarm();
   }
 
   private evictStaleParticipants(): void {
@@ -819,12 +981,7 @@ export class PubSubChannel extends DurableObjectBase {
   }
 
   private scheduleParticipantCleanup(): void {
-    const rpcCount = this.sql.exec(
-      `SELECT COUNT(*) as cnt FROM participants WHERE transport = 'rpc'`,
-    ).toArray();
-    if ((rpcCount[0]?.["cnt"] as number) > 0) {
-      this.setAlarm(PARTICIPANT_CLEANUP_INTERVAL_MS);
-    }
+    this.scheduleNextAlarm();
   }
 
   // ── Fork support ────────────────────────────────────────────────────────
@@ -852,6 +1009,8 @@ export class PubSubChannel extends DurableObjectBase {
     this.sql.exec(`DELETE FROM participants`);
     // Clear pending calls
     this.sql.exec(`DELETE FROM pending_calls`);
+    // Clear dedup keys
+    this.sql.exec(`DELETE FROM dedup_keys`);
   }
 
   // ── State introspection ─────────────────────────────────────────────────

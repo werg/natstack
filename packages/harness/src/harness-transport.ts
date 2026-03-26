@@ -44,9 +44,30 @@ export function createHarnessTransport(
   return new Promise((resolve, reject) => {
     const sourceHandlers = new Map<string, Set<MessageHandler>>();
     const anyHandlers = new Set<AnyMessageHandler>();
-    const outgoingBuffer: string[] = [];
+    // Phase 3D: Priority-aware split buffers — critical events never evicted
+    const criticalBuffer: string[] = [];
+    const streamBuffer: string[] = [];
+    const MAX_STREAM_BUFFER = 2000;
     let authenticated = false;
     let settled = false;
+
+    // Streaming delta types that can be dropped without data loss (final content is in completed message)
+    const EVICTABLE_EVENT_TYPES = new Set([
+      "text-delta", "thinking-delta", "action-update",
+      "text-start", "text-end", "thinking-start", "thinking-end",
+      "action-start", "action-end",
+    ]);
+
+    function isEvictable(msg: Record<string, unknown>): boolean {
+      if (msg["type"] !== "ws:rpc") return false;
+      const inner = msg["message"] as Record<string, unknown> | undefined;
+      if (!inner || inner["type"] !== "request") return false;
+      if (inner["method"] !== "harness.pushEvent") return false;
+      const args = inner["args"] as unknown[] | undefined;
+      if (!args || args.length < 2) return false;
+      const event = args[1] as Record<string, unknown> | undefined;
+      return event != null && EVICTABLE_EVENT_TYPES.has(event["type"] as string);
+    }
 
     const ws = new WebSocket(wsUrl);
 
@@ -74,18 +95,23 @@ export function createHarnessTransport(
       const data = JSON.stringify(msg);
       if (ws.readyState === WebSocket.OPEN && authenticated) {
         ws.send(data);
+        return;
+      }
+      if (isEvictable(msg as Record<string, unknown>)) {
+        streamBuffer.push(data);
+        if (streamBuffer.length > MAX_STREAM_BUFFER) streamBuffer.shift();
       } else {
-        outgoingBuffer.push(data);
-        if (outgoingBuffer.length > 500) outgoingBuffer.shift();
+        criticalBuffer.push(data);
       }
     };
 
     const flushOutgoing = () => {
       if (ws.readyState !== WebSocket.OPEN || !authenticated) return;
-      for (const data of outgoingBuffer) {
-        ws.send(data);
-      }
-      outgoingBuffer.length = 0;
+      // Flush critical first, then stream
+      for (const data of criticalBuffer) ws.send(data);
+      criticalBuffer.length = 0;
+      for (const data of streamBuffer) ws.send(data);
+      streamBuffer.length = 0;
     };
 
     const handleServerMessage = (msg: Record<string, unknown>): void => {

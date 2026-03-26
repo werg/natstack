@@ -470,7 +470,10 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       case "replay":
       case "persisted":
       case "ephemeral": {
-        if (msg.id !== undefined) lastSeenId = msg.id;
+        if (msg.id !== undefined) {
+          lastSeenId = msg.id;
+          if (msg.id > 0) lastSeenSeq = msg.id;
+        }
 
         const isPresence = msg.type === "presence";
 
@@ -692,12 +695,73 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     return btoa(binary);
   }
 
+  // Phase 2C: Gap detection state
+  let lastSeenSeq: number | undefined = opts.sinceId;
+  let repairingGap = false;
+  const gapBuffer: ServerMessage[] = [];
+  const MAX_GAP_SIZE = 500;
+
   // Register event listener for channel messages
   const removeEventListener = rpc.onEvent("channel:message", (_fromId: string, payload: unknown) => {
     if (closed) return;
     const data = payload as { channelId?: string; message?: ServerMessage };
     if (data.channelId !== channel) return;
-    if (data.message) handleServerMessage(data.message);
+    if (data.message) {
+      const msg = data.message;
+
+      // Buffer events that arrive during gap repair — process them after the gap is filled
+      if (repairingGap) {
+        gapBuffer.push(msg);
+        return;
+      }
+
+      // Phase 2C: Gap detection for persisted messages
+      if (msg.id !== undefined && msg.id > 0 && lastSeenSeq !== undefined) {
+        if (msg.id > lastSeenSeq + 1) {
+          const gap = msg.id - lastSeenSeq - 1;
+          if (gap <= MAX_GAP_SIZE) {
+            repairingGap = true;
+            rpc.call<Array<{ id: number; type: string; payload: unknown; senderId: string; ts: number; senderMetadata?: Record<string, unknown>; attachments?: unknown[] }>>(
+              doTarget, "getEventRange", lastSeenSeq, msg.id - 1,
+            ).then(events => {
+              if (events && Array.isArray(events)) {
+                for (const evt of events) {
+                  if (evt.id !== undefined && lastSeenSeq !== undefined && evt.id <= lastSeenSeq) continue;
+                  const replayMsg: ServerMessage = {
+                    kind: "persisted",
+                    id: evt.id,
+                    type: evt.type,
+                    payload: evt.payload,
+                    senderId: evt.senderId,
+                    ts: evt.ts,
+                    senderMetadata: evt.senderMetadata,
+                    attachments: evt.attachments as ServerMessage["attachments"],
+                  };
+                  handleServerMessage(replayMsg);
+                }
+              }
+            }).catch(err => {
+              console.warn("[RpcPubSubClient] Gap repair failed:", err);
+            }).finally(() => {
+              repairingGap = false;
+              // Process the triggering message, then any buffered events
+              handleServerMessage(msg);
+              const buffered = gapBuffer.splice(0);
+              for (const bufferedMsg of buffered) {
+                handleServerMessage(bufferedMsg);
+              }
+            });
+            return;
+          } else {
+            console.warn(`[RpcPubSubClient] Gap too large (${gap} events), skipping repair`);
+          }
+        }
+      }
+      if (msg.id !== undefined && msg.id > 0) {
+        lastSeenSeq = msg.id;
+      }
+      handleServerMessage(msg);
+    }
   });
 
   // Subscribe to channel
@@ -717,6 +781,43 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   // Heartbeat to prevent stale participant eviction
   const TOUCH_INTERVAL_MS = 60_000; // 1 minute
   let consecutiveTouchFailures = 0;
+  let reconnecting = false;
+  let reconnectAttempts = 0;
+  const MAX_RECONNECT_ATTEMPTS = 5;
+
+  async function attemptResubscription(): Promise<void> {
+    if (reconnecting || closed) return;
+    reconnecting = true;
+    reconnectAttempts++;
+    if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+      handleError(new PubSubError("Max reconnection attempts exceeded", "connection"));
+      reconnecting = false;
+      return;
+    }
+    // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+    const backoffMs = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 16000);
+    await new Promise(resolve => setTimeout(resolve, backoffMs));
+    if (closed) { reconnecting = false; return; }
+    try {
+      // Best-effort unsubscribe old session
+      await rpc.call(doTarget, "unsubscribe", pid).catch(() => {});
+      // Reset local roster and presence dedup state so replayed presence events are accepted
+      currentRoster = {};
+      rosterOpIds.clear();
+      // Re-subscribe with sinceId for catch-up replay
+      const resubMeta = { ...subscribeMetadata, sinceId: lastSeenSeq, replay: true };
+      await rpc.call(doTarget, "subscribe", pid, resubMeta);
+      consecutiveTouchFailures = 0;
+      reconnectAttempts = 0;
+      reconnecting = false;
+      for (const handler of reconnectHandlers) handler();
+    } catch (err) {
+      console.error("[RpcPubSubClient] Resubscription failed:", err);
+      reconnecting = false;
+      // Try again on next heartbeat failure
+    }
+  }
+
   const touchInterval = setInterval(() => {
     if (closed) return;
     rpc.call(doTarget, "touch", pid).then(() => {
@@ -726,6 +827,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       if (consecutiveTouchFailures >= 3) {
         console.error(`[PubSub] Heartbeat failed ${consecutiveTouchFailures} times:`, err);
         handleError(new PubSubError("Channel heartbeat failing — connection may be lost", "connection"));
+        // Phase 3A: Auto-resubscribe
+        void attemptResubscription();
       }
     });
   }, TOUCH_INTERVAL_MS);
@@ -803,13 +906,14 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     publishOptions: PublishOptions = {},
   ): Promise<number | undefined> {
     if (closed) throw new PubSubError("not connected", "connection");
-    const { persist = true, attachments } = publishOptions;
+    const { persist = true, attachments, idempotencyKey } = publishOptions;
 
     const result = await rpc.call<{ id?: number }>(doTarget, "publish", pid, type, payload, {
       persist,
       ref: undefined,
       senderMetadata: undefined,
       attachments: attachments ? toStoredAttachments(attachments) : undefined,
+      idempotencyKey,
     });
     return result?.id;
   }
@@ -838,6 +942,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       contentType?: string;
       at?: string[];
       metadata?: Record<string, unknown>;
+      idempotencyKey?: string;
     },
   ): Promise<{ messageId: string; pubsubId: number | undefined }> {
     const id = randomId();
@@ -850,6 +955,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     const pubsubId = await publish("message", messagePayload, {
       persist: sendOptions?.persist ?? true,
       attachments: sendOptions?.attachments,
+      idempotencyKey: sendOptions?.idempotencyKey,
     });
     return { messageId: id, pubsubId };
   }
@@ -868,8 +974,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     });
   }
 
-  async function completeMessage(id: string): Promise<number | undefined> {
-    return await publish("update-message", { id, complete: true }, { persist: true });
+  async function completeMessage(id: string, options?: { idempotencyKey?: string }): Promise<number | undefined> {
+    return await publish("update-message", { id, complete: true }, { persist: true, idempotencyKey: options?.idempotencyKey });
   }
 
   async function errorMessage(id: string, errorMsg: string, code?: string): Promise<number | undefined> {

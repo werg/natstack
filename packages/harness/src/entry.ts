@@ -286,13 +286,21 @@ async function main(): Promise<void> {
       // during the pushEvent await (synchronous dispatch through DO back to harness).
       const callId = randomUUID();
       log.info(`callMethod (async): ${method} -> ${participantId} (callId=${callId})`);
+      const CALL_STALL_WARN_MS = 60_000;   // 60s: warn
+      const CALL_HARD_TIMEOUT_MS = 360_000; // 6min: reject (above channel's 5min)
       const resultPromise = new Promise<unknown>((resolve, reject) => {
-        const timer = setTimeout(() => {
+        const warnTimer = setTimeout(() => {
           log.error(`callMethod STALLED: ${method} -> ${participantId} (callId=${callId}) — waiting >60s for tool-result. Promise is still pending.`);
-        }, 60_000);
+        }, CALL_STALL_WARN_MS);
+        const hardTimer = setTimeout(() => {
+          clearTimeout(warnTimer);
+          pendingToolResults.delete(callId);
+          log.error(`callMethod HARD TIMEOUT: ${method} -> ${participantId} (callId=${callId}) — rejecting after 6 minutes`);
+          reject(new Error(`callMethod hard timeout: ${method} -> ${participantId} after 6 minutes`));
+        }, CALL_HARD_TIMEOUT_MS);
         pendingToolResults.set(callId, {
-          resolve: (v) => { clearTimeout(timer); resolve(v); },
-          reject: (e) => { clearTimeout(timer); reject(e); },
+          resolve: (v) => { clearTimeout(warnTimer); clearTimeout(hardTimer); resolve(v); },
+          reject: (e) => { clearTimeout(warnTimer); clearTimeout(hardTimer); reject(e); },
         });
       });
       await pushEvent({
@@ -307,13 +315,24 @@ async function main(): Promise<void> {
     discoverMethods: async (): Promise<DiscoveredMethod[]> => {
       log.info("discoverMethods (async): emitting discover-methods event");
       // Register pending BEFORE emitting — result may arrive during pushEvent.
+      const DISCOVER_STALL_WARN_MS = 10_000;
+      const DISCOVER_HARD_TIMEOUT_MS = 60_000; // 1 minute for discover
       const resultPromise = new Promise<DiscoveredMethod[]>((resolve, reject) => {
-        const timer = setTimeout(() => {
+        const warnTimer = setTimeout(() => {
           log.error(`discoverMethods STALLED — waiting >10s for discover-methods-result. Promise is still pending.`);
-        }, 10_000);
+        }, DISCOVER_STALL_WARN_MS);
+        const hardTimer = setTimeout(() => {
+          clearTimeout(warnTimer);
+          // Remove this pending entry from the array
+          const idx = pendingDiscoverResults.findIndex(p => p.reject === rejectFn);
+          if (idx !== -1) pendingDiscoverResults.splice(idx, 1);
+          log.error(`discoverMethods HARD TIMEOUT — rejecting after 1 minute`);
+          reject(new Error(`discoverMethods hard timeout after 1 minute`));
+        }, DISCOVER_HARD_TIMEOUT_MS);
+        const rejectFn = (e: unknown) => { clearTimeout(warnTimer); clearTimeout(hardTimer); reject(e); };
         pendingDiscoverResults.push({
-          resolve: (v) => { clearTimeout(timer); resolve(v); },
-          reject: (e) => { clearTimeout(timer); reject(e); },
+          resolve: (v) => { clearTimeout(warnTimer); clearTimeout(hardTimer); resolve(v); },
+          reject: rejectFn,
         });
       });
       await pushEvent({ type: 'discover-methods' });

@@ -197,6 +197,7 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
       contentType?: string;
       at?: string[];
       metadata?: Record<string, unknown>;
+      idempotencyKey?: string;
     }
   ): Promise<{ messageId: string; pubsubId: number | undefined }>;
 
@@ -212,7 +213,7 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
   /**
    * Mark a message as complete. Convenience wrapper around publish("update-message", { id, complete: true }).
    */
-  complete(id: string): Promise<number | undefined>;
+  complete(id: string, options?: { idempotencyKey?: string }): Promise<number | undefined>;
 
   /**
    * Publish an error for a message. Convenience wrapper around publish("error", ...).
@@ -366,6 +367,17 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
     number,
     { resolve: () => void; reject: (err: Error) => void; timeoutId: ReturnType<typeof setTimeout> }
   >();
+
+  // Retry queue for publishes that failed during reconnection window
+  interface RetryEntry {
+    type: string;
+    payload: unknown;
+    options: PublishOptions;
+    resolve: (id?: number) => void;
+    reject: (err: Error) => void;
+  }
+  const retryQueue: RetryEntry[] = [];
+  const RETRY_QUEUE_MAX = 50;
 
   // Event handlers
   const errorHandlers = new Set<(error: Error) => void>();
@@ -810,6 +822,10 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
     }
 
     if (reconnectEnabled) {
+      // Phase 3B: Reject pending publishes from the old connection — callers should retry
+      rejectPendingPublishes(new PubSubError("connection lost, reconnecting", "connection"));
+      rejectPendingMetadataUpdates(new PubSubError("connection lost, reconnecting", "connection"));
+      rejectPendingConfigUpdates(new PubSubError("connection lost, reconnecting", "connection"));
       // Attempt reconnection
       scheduleReconnect();
     } else {
@@ -881,6 +897,10 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
       rejectPendingMetadataUpdates(error);
       rejectPendingConfigUpdates(error);
       rejectPendingMessagesBeforeRequests(error);
+      // Reject retry queue — reconnection gave up
+      for (const entry of retryQueue.splice(0)) {
+        entry.reject(error);
+      }
       return;
     }
 
@@ -926,6 +946,11 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
         reconnectAttempt = 0;
         for (const handler of reconnectHandlers) {
           handler();
+        }
+        // Flush retry queue — re-publish with original idempotency keys
+        const pending = retryQueue.splice(0);
+        for (const entry of pending) {
+          publish(entry.type, entry.payload, entry.options).then(entry.resolve, entry.reject);
         }
       }
       // Always send metadata after connection (avoids URL length limits)
@@ -977,10 +1002,19 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
     publishOptions: PublishOptions = {}
   ): Promise<number | undefined> {
     const ref = ++refCounter;
-    const { persist = true, timeoutMs = 30000, attachments } = publishOptions;
+    const { persist = true, timeoutMs = 30000, attachments, idempotencyKey } = publishOptions;
 
     return new Promise((resolve, reject) => {
       if (ws.readyState !== WebSocket.OPEN) {
+        // If reconnecting, queue for retry instead of rejecting immediately
+        if (reconnectEnabled && isReconnecting && !closed) {
+          if (retryQueue.length >= RETRY_QUEUE_MAX) {
+            const dropped = retryQueue.shift()!;
+            dropped.reject(new PubSubError("retry queue full, publish dropped", "connection"));
+          }
+          retryQueue.push({ type, payload, options: publishOptions, resolve: resolve as (id?: number) => void, reject });
+          return;
+        }
         reject(new PubSubError("not connected", "connection"));
         return;
       }
@@ -1023,6 +1057,7 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
           persist,
           ref,
           attachmentMeta,
+          ...(idempotencyKey ? { idempotencyKey } : {}),
         });
         const metadataBytes = new TextEncoder().encode(metadata);
         const metadataLen = metadataBytes.length;
@@ -1053,6 +1088,7 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
             payload,
             persist,
             ref,
+            ...(idempotencyKey ? { idempotencyKey } : {}),
           })
         );
       }
@@ -1639,6 +1675,7 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
     const pubsubId = await publish("message", payload, {
       persist: sendOptions?.persist ?? true,
       attachments: sendOptions?.attachments,
+      idempotencyKey: sendOptions?.idempotencyKey,
     });
     return { messageId: id, pubsubId };
   }
@@ -1657,8 +1694,8 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
     });
   }
 
-  async function completeMessage(id: string): Promise<number | undefined> {
-    return await publish("update-message", { id, complete: true }, { persist: true });
+  async function completeMessage(id: string, options?: { idempotencyKey?: string }): Promise<number | undefined> {
+    return await publish("update-message", { id, complete: true }, { persist: true, idempotencyKey: options?.idempotencyKey });
   }
 
   async function errorMessage(id: string, errorMsg: string, code?: string): Promise<number | undefined> {

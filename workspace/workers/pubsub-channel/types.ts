@@ -10,6 +10,7 @@ export interface SendOpts {
   persist?: boolean;
   senderMetadata?: Record<string, unknown>;
   replyTo?: string;
+  idempotencyKey?: string;
 }
 
 /** Result from subscribing a DO participant. */
