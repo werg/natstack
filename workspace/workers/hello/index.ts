@@ -12,7 +12,7 @@ export default {
     const runtime = createWorkerRuntime(env);
 
     // Handle incoming RPC calls
-    const rpcResponse = handleWorkerRpc(runtime, request);
+    const rpcResponse = await handleWorkerRpc(runtime, request);
     if (rpcResponse) return rpcResponse;
 
     const url = new URL(request.url);
