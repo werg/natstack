@@ -201,7 +201,10 @@ export default function EmailPanel() {
             )}
           </Flex>
           <Flex align="center" gap="2">
-            <Tabs.Root value={view} onValueChange={v => setView(v as typeof view)}>
+            <Tabs.Root value={view} onValueChange={v => {
+              setView(v as typeof view);
+              setStateArgs({ ...stateArgs, view: v, threadId: undefined });
+            }}>
               <Tabs.List size="1">
                 <Tabs.Trigger value="inbox">
                   <EnvelopeClosedIcon /> Inbox
@@ -240,7 +243,10 @@ export default function EmailPanel() {
           ) : view === "thread" ? (
             <ThreadView
               threadId={stateArgs?.threadId ?? ""}
-              onBack={() => setView("inbox")}
+              onBack={() => {
+                setView("inbox");
+                setStateArgs({ ...stateArgs, view: "inbox", threadId: undefined });
+              }}
               onReply={(threadId) => {
                 setView("compose");
                 setStateArgs({ ...stateArgs, view: "compose", threadId });
@@ -254,8 +260,12 @@ export default function EmailPanel() {
                 setComposeDraft(undefined);
                 parent.emit("message-sent", { to, subject });
                 setView("inbox");
+                setStateArgs({ ...stateArgs, view: "inbox", threadId: undefined });
               }}
-              onCancel={() => setView("inbox")}
+              onCancel={() => {
+                setView("inbox");
+                setStateArgs({ ...stateArgs, view: "inbox", threadId: undefined });
+              }}
             />
           ) : view === "calendar" ? (
             <CalendarView />
@@ -424,7 +434,10 @@ function MessageRow({
 
   return (
     <Box
+      role="button"
+      tabIndex={0}
       onClick={onClick}
+      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); } }}
       style={{
         padding: "8px 12px",
         cursor: "pointer",
@@ -433,6 +446,10 @@ function MessageRow({
       }}
       onMouseEnter={e => (e.currentTarget.style.backgroundColor = "var(--gray-a3)")}
       onMouseLeave={e =>
+        (e.currentTarget.style.backgroundColor = message.isUnread ? "var(--blue-a2)" : "")
+      }
+      onFocus={e => (e.currentTarget.style.backgroundColor = "var(--gray-a3)")}
+      onBlur={e =>
         (e.currentTarget.style.backgroundColor = message.isUnread ? "var(--blue-a2)" : "")
       }
     >

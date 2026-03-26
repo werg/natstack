@@ -109,7 +109,8 @@ export function createOAuthClient(rpc: RpcCaller): OAuthClient {
     },
     async connect(pk, cid, opts) {
       const connId = cid ?? defaultConnId(pk);
-      await rpc.call<{ consented: boolean }>("main", "oauth.requestConsent", pk, opts);
+      const { consented } = await rpc.call<{ consented: boolean }>("main", "oauth.requestConsent", pk, opts);
+      if (!consented) throw new Error(`User denied OAuth consent for "${pk}"`);
       await this.startAuth(pk, connId, { openIn: opts?.openIn });
       const deadline = Date.now() + 120_000;
       while (Date.now() < deadline) {

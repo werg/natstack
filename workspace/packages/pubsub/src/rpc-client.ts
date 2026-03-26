@@ -205,6 +205,10 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   // Method auto-execution
   const registeredMethods: Record<string, MethodDefinition> = { ...(providedMethods ?? {}) };
 
+  // Track AbortControllers for methods we're executing, keyed by callId.
+  // When a caller cancels, we abort the controller so the handler sees signal.aborted.
+  const executingMethods = new Map<string, AbortController>();
+
   // Method call tracking
   interface MethodCallState {
     readonly callId: string;
@@ -558,6 +562,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     }
 
     const abortController = new AbortController();
+    executingMethods.set(event.callId, abortController);
     const ctx: MethodExecutionContext = {
       callId: event.callId,
       callerId: event.senderId,
@@ -627,6 +632,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
         complete: true,
         isError: true,
       }, { persist: true }).catch(e => console.error("[PubSub] Failed to publish auto-execution error:", e));
+    } finally {
+      executingMethods.delete(event.callId);
     }
   }
 
@@ -880,6 +887,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           stream.close();
           rejectResult(new AgenticError("method call timeout", "timeout"));
           methodCallStates.delete(callId);
+          // Tell the DO to cancel so the provider can be notified
+          rpc.call(doTarget, "cancelMethodCall", callId).catch(() => {});
         }
       }, timeoutMs);
     }
@@ -958,6 +967,22 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       messageResolve(null);
       messageResolve = null;
     }
+    // Reject all pending method calls so callers don't hang
+    for (const [callId, state] of methodCallStates) {
+      if (!state.complete) {
+        state.complete = true;
+        state.isError = true;
+        state.stream.close();
+        state.reject(new Error("Channel closed"));
+      }
+      methodCallStates.delete(callId);
+    }
+    // Abort all executing methods so handlers see signal.aborted
+    for (const [, controller] of executingMethods) {
+      controller.abort();
+    }
+    executingMethods.clear();
+    for (const handler of disconnectHandlers) handler();
     rpc.call(doTarget, "unsubscribe", pid).catch(() => {});
   }
 

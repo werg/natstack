@@ -262,18 +262,21 @@ export class OAuthManager {
   async hasConsent(panelId: string, providerKey: string, requestedScopes?: string[]): Promise<boolean> {
     const handle = this.ensureDb();
     // Check panel-specific consent, then workspace-wide
-    const row = this.databaseManager.get<{ scopes: string }>(
+    const panelRow = this.databaseManager.get<{ scopes: string }>(
       handle,
       "SELECT scopes FROM oauth_consent WHERE panel_id = ? AND provider = ?",
       [panelId, providerKey],
-    ) ?? this.databaseManager.get<{ scopes: string }>(
+    );
+    const workspaceRow = panelId !== "*" ? this.databaseManager.get<{ scopes: string }>(
       handle,
       "SELECT scopes FROM oauth_consent WHERE panel_id = '*' AND provider = ?",
       [providerKey],
-    );
-    if (!row) return false;
+    ) : undefined;
+    if (!panelRow && !workspaceRow) return false;
     if (!requestedScopes || requestedScopes.length === 0) return true;
-    const grantedSet = new Set<string>(JSON.parse(row.scopes) as string[]);
+    const grantedSet = new Set<string>();
+    if (panelRow) for (const s of JSON.parse(panelRow.scopes) as string[]) grantedSet.add(s);
+    if (workspaceRow) for (const s of JSON.parse(workspaceRow.scopes) as string[]) grantedSet.add(s);
     return requestedScopes.every(s => grantedSet.has(s));
   }
 
