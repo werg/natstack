@@ -1660,6 +1660,7 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
       contentType?: string;
       at?: string[];
       metadata?: Record<string, unknown>;
+      idempotencyKey?: string;
     }
   ): Promise<{ messageId: string; pubsubId: number | undefined }> {
     const id = randomId();
