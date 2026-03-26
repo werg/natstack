@@ -219,7 +219,7 @@ export class GitServer {
             }
 
             // Mirror working tree to dev target directory (if configured)
-            if (this.devTargetDir) {
+            if (this.devTargetDir && !isGitHubPath(repo)) {
               this.syncToDevTarget(repo, repoDir);
             }
 
