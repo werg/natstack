@@ -170,6 +170,27 @@ import { fs } from "@workspace/runtime";
 const log = await git.log({ fs, dir: "/", depth: 5 });
 ```
 
+### Cloning Remote GitHub Repos
+
+The git server transparently proxies GitHub repositories. Use the path format `github.com/owner/repo` — the server auto-clones on first access.
+
+```typescript
+import git from "isomorphic-git";
+import http from "isomorphic-git/http/web";
+import { fs, gitConfig } from "@workspace/runtime";
+
+// Clone a public GitHub repo into the context folder
+await git.clone({
+  fs, http,
+  dir: "/my-lib",
+  url: `${gitConfig.serverUrl}/github.com/owner/repo`,
+  headers: { Authorization: `Bearer ${gitConfig.token}` },
+  depth: 1,
+});
+```
+
+Once cloned via the git server, the repo appears in the workspace tree and can be referenced by other workspace operations. Private repos require a GitHub token configured in the workspace's `natstack.yml` or `.secrets.yml`.
+
 ## Browser Data (`@workspace/panel-browser`)
 
 ```typescript
