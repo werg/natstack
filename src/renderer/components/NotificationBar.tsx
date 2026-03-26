@@ -166,10 +166,14 @@ export function NotificationBar() {
       return;
     }
     const el = barRef.current;
-    if (el) {
-      void view.updateLayout({ notificationBarHeight: el.offsetHeight });
-    }
+    if (!el) return;
+    void view.updateLayout({ notificationBarHeight: el.offsetHeight });
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) void view.updateLayout({ notificationBarHeight: entry.contentRect.height });
+    });
+    observer.observe(el);
     return () => {
+      observer.disconnect();
       void view.updateLayout({ notificationBarHeight: 0 });
     };
   }, [isVisible, notifications.size]);

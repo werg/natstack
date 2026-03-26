@@ -131,6 +131,7 @@ export default function ChatPanel() {
     stateArgs.agentSource,
     stateArgs.channelName,
     stateArgs.systemPrompt,
+    stateArgs.systemPromptMode,
   ]);
 
   // Clear initialPrompt from persisted stateArgs after capture.
@@ -322,9 +323,14 @@ The variable \`contextId\` is pre-injected — use it directly, do NOT import it
           parts.push({ type: "text", text: `[eval] Console:\n${result.consoleOutput}` });
         }
         if (result.returnValue !== undefined && result.returnValue !== null) {
-          const formatted = typeof result.returnValue === "string"
-            ? result.returnValue
-            : JSON.stringify(result.returnValue, null, 2);
+          let formatted: string;
+          try {
+            formatted = typeof result.returnValue === "string"
+              ? result.returnValue
+              : JSON.stringify(result.returnValue, null, 2);
+          } catch {
+            formatted = String(result.returnValue);
+          }
           parts.push({ type: "text", text: `[eval] Return value:\n${formatted}` });
         }
         if (parts.length === 0) {

@@ -44,6 +44,7 @@ interface GmailHistoryResponse {
     }>;
   }>;
   historyId: string;
+  nextPageToken?: string;
 }
 
 interface GmailProfileResponse {
@@ -147,12 +148,24 @@ export class EmailSyncWorker extends DurableObjectBase {
     accessToken: string,
     startHistoryId: string,
   ): Promise<GmailHistoryResponse> {
-    const params = new URLSearchParams({
-      startHistoryId,
-      historyTypes: "messageAdded",
-      maxResults: String(MAX_MESSAGES_PER_SYNC),
-    });
-    return this.gmailFetch(`/history?${params}`, accessToken);
+    // Paginate through all history pages to avoid missing messages
+    let pageToken: string | undefined;
+    let combined: GmailHistoryResponse = { historyId: startHistoryId };
+    do {
+      const params = new URLSearchParams({
+        startHistoryId,
+        historyTypes: "messageAdded",
+        maxResults: String(MAX_MESSAGES_PER_SYNC),
+      });
+      if (pageToken) params.set("pageToken", pageToken);
+      const page = await this.gmailFetch<GmailHistoryResponse>(`/history?${params}`, accessToken);
+      combined.historyId = page.historyId;
+      if (page.history) {
+        combined.history = [...(combined.history ?? []), ...page.history];
+      }
+      pageToken = page.nextPageToken;
+    } while (pageToken);
+    return combined;
   }
 
   private async getMessageMetadata(
