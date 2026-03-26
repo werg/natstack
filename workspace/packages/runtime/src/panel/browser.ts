@@ -1,8 +1,13 @@
 /**
  * Browser panel API — create and control external-URL panels with CDP access.
  *
- * Primary automation path: `createBrowserPanel(url)` returns a `BrowserHandle`
- * with typed methods for navigation and CDP endpoint retrieval.
+ * Primary automation path:
+ *   const handle = await createBrowserPanel("https://example.com");
+ *   const page = await handle.page();
+ *   await page.click("button");
+ *
+ * The `page()` method connects Playwright via CDP automatically —
+ * no manual CDP endpoint or sleep needed.
  *
  * Fire-and-forget path: `window.open("https://...")` in Electron mode also
  * creates browser panels; the parent is notified via `onChildCreated`.
@@ -16,6 +21,12 @@ import { buildPanelLink } from "../core/panelLinks.js";
 export interface BrowserHandle {
   readonly id: string;
   readonly title: string;
+  /**
+   * Connect Playwright and return the page. No manual sleep or CDP endpoint needed.
+   * The returned page has methods: goto, evaluate, click, fill, type,
+   * waitForSelector, querySelector, screenshot, title, content, close.
+   */
+  page(): Promise<any>;
   getCdpEndpoint(): Promise<string>;
   navigate(url: string): Promise<void>;
   goBack(): Promise<void>;
@@ -120,6 +131,20 @@ function makeBrowserHandle(rpc: RpcBridge, id: string, title: string): BrowserHa
   return {
     id,
     title,
+    async page() {
+      const require = (globalThis as Record<string, unknown>)["__natstackRequire__"] as
+        | ((id: string) => { BrowserImpl: { connect(ws: string, opts: object): Promise<any> } })
+        | undefined;
+      if (!require) {
+        throw new Error("handle.page() requires __natstackRequire__ (panel runtime)");
+      }
+      const { BrowserImpl } = require("@workspace/playwright-core");
+      const wsEndpoint = await rpc.call<string>("main", "browser.getCdpEndpoint", id);
+      const browser = await BrowserImpl.connect(wsEndpoint, { isElectronWebview: true });
+      const page = browser.contexts()[0]?.pages()[0];
+      if (!page) throw new Error("No page found in browser panel");
+      return page;
+    },
     getCdpEndpoint: () => rpc.call<string>("main", "browser.getCdpEndpoint", id),
     navigate: (u) => rpc.call<void>("main", "browser.navigate", id, u),
     goBack: () => rpc.call<void>("main", "browser.goBack", id),

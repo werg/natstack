@@ -45,7 +45,7 @@ export function App() {
   useEffect(() => {
     workspace.getActive().then((name) => {
       setActiveWorkspaceName(name);
-    }).catch(() => {});
+    }).catch(err => console.error("[App] Failed to get active workspace:", err));
   }, [setActiveWorkspaceName]);
 
   // Listen for system theme changes via shell event

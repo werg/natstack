@@ -135,4 +135,5 @@ describe("effectiveVersion", () => {
       expect(result.removed).toEqual([]);
     });
   });
+
 });

@@ -12,7 +12,7 @@ inline_ui({
 import { useState, useEffect, useCallback } from "react";
 import { Button, Flex, Text, Table, Badge, TextField, Box, Spinner, IconButton } from "@radix-ui/themes";
 import { EyeOpenIcon, EyeClosedIcon, CopyIcon, CheckIcon, MagnifyingGlassIcon } from "@radix-ui/react-icons";
-import { createBrowserDataApi } from "@workspace/panel-browser";
+import { browserData } from "@workspace/panel-browser";
 
 export default function PasswordVault({ props, chat }) {
   const [passwords, setPasswords] = useState([]);
@@ -20,14 +20,13 @@ export default function PasswordVault({ props, chat }) {
   const [filter, setFilter] = useState("");
   const [revealed, setRevealed] = useState(new Set());
   const [copied, setCopied] = useState(null);
-  const api = createBrowserDataApi(chat.rpc);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const result = await api.getPasswords(filter || undefined);
+    const result = await browserData.getPasswords();
     setPasswords(result);
     setLoading(false);
-  }, [filter]);
+  }, []);
 
   useEffect(() => { load(); }, [load]);
 
@@ -45,6 +44,10 @@ export default function PasswordVault({ props, chat }) {
     setTimeout(() => setCopied(null), 2000);
   };
 
+  const filtered = filter
+    ? passwords.filter(p => p.origin_url.includes(filter) || p.username.includes(filter))
+    : passwords;
+
   return (
     <Flex direction="column" gap="2">
       <Box style={{ position: "relative" }}>
@@ -55,7 +58,7 @@ export default function PasswordVault({ props, chat }) {
 
       {loading ? <Spinner size="1" /> : (
         <>
-          <Text size="1" color="gray">{passwords.length} passwords{filter ? " matching " + filter : ""}</Text>
+          <Text size="1" color="gray">{filtered.length} passwords{filter ? " matching " + filter : ""}</Text>
           <Box style={{ maxHeight: 350, overflow: "auto" }}>
             <Table.Root size="1">
               <Table.Header>
@@ -67,7 +70,7 @@ export default function PasswordVault({ props, chat }) {
                 </Table.Row>
               </Table.Header>
               <Table.Body>
-                {passwords.slice(0, 50).map(p => (
+                {filtered.slice(0, 50).map(p => (
                   <Table.Row key={p.id}>
                     <Table.Cell><Text size="1" style={{ maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis" }}>{p.origin_url}</Text></Table.Cell>
                     <Table.Cell>
@@ -111,10 +114,8 @@ export default function PasswordVault({ props, chat }) {
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const api = createBrowserDataApi(rpc);
-  const match = await api.getPasswordForSite("https://github.com/login");
+  import { browserData } from "@workspace/panel-browser";
+  const match = await browserData.getPasswordForSite("https://github.com/login");
   if (match) {
     console.log("Found:", match.username, "for", match.origin_url);
   } else {
@@ -128,11 +129,9 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const api = createBrowserDataApi(rpc);
+  import { browserData } from "@workspace/panel-browser";
   // Formats: "csv-chrome", "csv-firefox", "json"
-  const exported = await api.exportPasswords("json");
+  const exported = await browserData.exportPasswords("json");
   const parsed = JSON.parse(exported);
   console.log(parsed.length + " passwords exported");
   return { count: parsed.length };

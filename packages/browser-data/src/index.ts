@@ -30,7 +30,7 @@ export type {
   ImportPhase,
 } from "./types.js";
 
-// Schemas
+// Schemas & helpers
 export {
   BrowserNameSchema,
   BrowserFamilySchema,
@@ -44,6 +44,7 @@ export {
   BROWSER_NAMES,
   BROWSER_FAMILIES,
   IMPORT_DATA_TYPES,
+  resolveProfilePath,
 } from "./types.js";
 
 // Errors

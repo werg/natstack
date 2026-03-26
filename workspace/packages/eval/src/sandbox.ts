@@ -52,7 +52,10 @@ export interface SandboxOptions {
   syntax?: "typescript" | "jsx" | "tsx";
   /** Timeout in ms for async operations (default: 10s, max: 90s, 0 = skip async) */
   timeout?: number;
-  /** Workspace packages to build and load before execution */
+  /** Packages to build and load before execution.
+   *  - Workspace packages: value is "latest" or a git ref (branch/tag/SHA)
+   *  - npm packages: value is "npm:<version>" (e.g. "npm:^4.17.21", "npm:latest")
+   */
   imports?: Record<string, string>;
   /** Console streaming callback */
   onConsole?: (formatted: string) => void;
@@ -287,12 +290,22 @@ export async function executeSandbox(
       };
     }
 
+    // Debug: log available modules and what the code requires
+    if (transformed.requires.length > 0) {
+      const moduleMap = getModuleMap();
+      const available = Object.keys(moduleMap);
+      options.onConsole?.(`[eval] Requires: ${transformed.requires.join(", ")}`);
+      options.onConsole?.(`[eval] Available modules: ${available.join(", ")}`);
+    }
+
     const validation = validateRequires(transformed.requires, requireFn);
     if (!validation.valid) {
+      const moduleMap = getModuleMap();
+      const available = Object.keys(moduleMap);
       return {
         success: false,
         consoleOutput: "",
-        error: validation.error ?? `Module "${validation.missingModule}" not available.`,
+        error: `Module "${validation.missingModule}" not available. Available: ${available.join(", ")}`,
       };
     }
 
@@ -341,10 +354,15 @@ export async function executeSandbox(
       };
     }
   } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    const errorStack = err instanceof Error ? err.stack : undefined;
+    // Include stack in console output for debugging RPC/OAuth errors
+    const consoleEntries = capture.getEntries();
+    const debugInfo = errorStack ? `\n[eval] Error stack: ${errorStack}` : "";
     return {
       success: false,
-      consoleOutput: formatConsoleOutput(capture.getEntries()),
-      error: err instanceof Error ? err.message : String(err),
+      consoleOutput: formatConsoleOutput(consoleEntries) + debugInfo,
+      error: errorMessage,
     };
   } finally {
     unsubscribe();

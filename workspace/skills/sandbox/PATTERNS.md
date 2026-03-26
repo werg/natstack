@@ -51,18 +51,130 @@ eval({ code: `
   }
 
   const matches = await grep("/src", "TODO");
-  console.log(JSON.stringify(matches, null, 2));
+  console.log(matches);
   return matches;
 `, timeout: 30000 })
 ```
+
+## Use an npm Package (lodash)
+
+```
+eval({
+  code: `
+    import _ from "lodash";
+    const data = [
+      { name: "Alice", age: 30 },
+      { name: "Bob", age: 25 },
+      { name: "Charlie", age: 35 },
+    ];
+    console.log("Grouped by age > 28:", _.groupBy(data, d => d.age > 28 ? "senior" : "junior"));
+    console.log("Sorted by age:", _.sortBy(data, "age").map(d => d.name));
+  `,
+  imports: { "lodash": "npm:^4.17.21" },
+  timeout: 30000
+})
+```
+
+## Use an npm Package (date-fns)
+
+```
+eval({
+  code: `
+    import { format, addDays, differenceInDays } from "date-fns";
+    const today = new Date();
+    const nextWeek = addDays(today, 7);
+    console.log("Today:", format(today, "yyyy-MM-dd"));
+    console.log("Next week:", format(nextWeek, "yyyy-MM-dd"));
+    console.log("Days between:", differenceInDays(nextWeek, today));
+  `,
+  imports: { "date-fns": "npm:^3.6.0" },
+  timeout: 30000
+})
+```
+
+## Use a Scoped npm Package (@faker-js/faker)
+
+```
+eval({
+  code: `
+    import { faker } from "@faker-js/faker";
+    for (let i = 0; i < 5; i++) {
+      console.log(faker.person.fullName(), "-", faker.internet.email());
+    }
+  `,
+  imports: { "@faker-js/faker": "npm:^9.0.0" },
+  timeout: 30000
+})
+```
+
+## Preload npm Package for Inline UI
+
+npm packages aren't directly available in `inline_ui`. Preload via `eval` first — the module stays in the module map:
+
+```
+// Step 1: preload
+eval({
+  code: `import _ from "lodash"; console.log("lodash loaded");`,
+  imports: { "lodash": "npm:^4.17.21" },
+  timeout: 30000
+})
+
+// Step 2: use in inline_ui (lodash is now in the module map)
+inline_ui({
+  code: `
+import { useState } from "react";
+import { Button, Flex, Text } from "@radix-ui/themes";
+import _ from "lodash";
+
+export default function Shuffler({ props }) {
+  const [items, setItems] = useState(props.items);
+  return (
+    <Flex direction="column" gap="2">
+      <Button size="1" onClick={() => setItems(_.shuffle([...items]))}>Shuffle</Button>
+      {items.map((item, i) => <Text key={i} size="2">{item}</Text>)}
+    </Flex>
+  );
+}`,
+  props: { items: ["Apple", "Banana", "Cherry", "Date", "Elderberry"] }
+})
+```
+
+## Connect to an API with OAuth + npm SDK
+
+The general pattern for any OAuth-protected API: connect once, then use the official SDK.
+
+```
+eval({
+  code: `
+    import { oauth } from "@workspace/runtime";
+    import { Client } from "@notionhq/client";
+
+    // Connect if needed (one-time — triggers consent + browser sign-in)
+    const conn = await oauth.getConnection("notion");
+    if (!conn.connected) await oauth.connect("notion");
+
+    // Use the official SDK with the OAuth token
+    const token = await oauth.getToken("notion");
+    const notion = new Client({ auth: token.accessToken });
+    const results = await notion.search({ query: "meeting notes" });
+    for (const page of results.results) {
+      if (page.object === "page") {
+        console.log("-", page.properties?.Name?.title?.[0]?.text?.content ?? page.id);
+      }
+    }
+  `,
+  imports: { "@notionhq/client": "npm:^2.2.0" },
+  timeout: 60000
+})
+```
+
+Works with any configured OAuth provider. Check `await oauth.listProviders()` to see what's available.
 
 ## Import Cookies from Chrome
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const browserData = createBrowserDataApi(rpc);
+  import { browserData } from "@workspace/panel-browser";
   const browsers = await browserData.detectBrowsers();
   const chrome = browsers.find(b => b.name === "chrome");
   if (!chrome) { console.log("Chrome not found"); return; }
@@ -70,10 +182,10 @@ eval({ code: `
   const defaultProfile = chrome.profiles.find(p => p.isDefault) || chrome.profiles[0];
   const result = await browserData.startImport({
     browser: "chrome",
-    profilePath: defaultProfile.path,
+    profile: defaultProfile,
     dataTypes: ["cookies"],
   });
-  console.log("Import result:", JSON.stringify(result, null, 2));
+  console.log("Import result:", result);
   return result;
 `, timeout: 60000 })
 ```
@@ -82,9 +194,7 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const browserData = createBrowserDataApi(rpc);
+  import { browserData } from "@workspace/panel-browser";
   const dump = await browserData.exportAll();
   console.log("Exported " + dump.length + " bytes");
   return JSON.parse(dump);
@@ -93,13 +203,11 @@ eval({ code: `
 
 ## Sync Cookies to Browser Session
 
-After importing cookies, sync them to the active browser session so they're used by browser panels:
+Cookies are auto-synced after `startImport`. Use this to re-sync after manual changes, or to sync only a specific domain:
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const browserData = createBrowserDataApi(rpc);
+  import { browserData } from "@workspace/panel-browser";
   const result = await browserData.syncCookiesToSession("github.com");
   console.log("Synced:", result.synced, "Failed:", result.failed);
 ` })
@@ -113,12 +221,11 @@ inline_ui({
 import { useState, useEffect } from "react";
 import { Button, Flex, Text, Table, Badge, TextField } from "@radix-ui/themes";
 import { TrashIcon } from "@radix-ui/react-icons";
-import { createBrowserDataApi } from "@workspace/panel-browser";
+import { browserData } from "@workspace/panel-browser";
 
 export default function CookieManager({ props, chat }) {
   const [cookies, setCookies] = useState([]);
   const [filter, setFilter] = useState("");
-  const browserData = createBrowserDataApi(chat.rpc);
 
   const load = () => browserData.getCookies(filter || undefined).then(setCookies);
   useEffect(() => { load(); }, [filter]);
@@ -152,9 +259,9 @@ export default function CookieManager({ props, chat }) {
         <Table.Body>
           {cookies.slice(0, 50).map(c => (
             <Table.Row key={c.id}>
-              <Table.Cell><Text size="1">{c.host}</Text></Table.Cell>
+              <Table.Cell><Text size="1">{c.domain}</Text></Table.Cell>
               <Table.Cell><Text size="1">{c.name}</Text></Table.Cell>
-              <Table.Cell><Text size="1" color="gray">{c.expiry ? new Date(c.expiry * 1000).toLocaleDateString() : "session"}</Text></Table.Cell>
+              <Table.Cell><Text size="1" color="gray">{c.expiration_date ? new Date(c.expiration_date * 1000).toLocaleDateString() : "session"}</Text></Table.Cell>
               <Table.Cell>
                 <Button size="1" variant="ghost" color="red" onClick={() => handleDelete(c.id)}>
                   <TrashIcon />
@@ -254,21 +361,20 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { createBrowserPanel, rpc } from "@workspace/runtime";
-  import { createBrowserDataApi } from "@workspace/panel-browser";
+  import { createBrowserPanel } from "@workspace/runtime";
+  import { browserData } from "@workspace/panel-browser";
 
   // Open the site in a browser panel
   const handle = await createBrowserPanel("https://github.com");
   console.log("Opened browser panel");
 
   // Import cookies from Chrome for that domain
-  const browserData = createBrowserDataApi(rpc);
   const browsers = await browserData.detectBrowsers();
   const chrome = browsers.find(b => b.name === "chrome");
   if (chrome) {
     await browserData.startImport({
       browser: "chrome",
-      profilePath: chrome.profiles[0]?.path ?? chrome.dataDir,
+      profile: chrome.profiles[0] ?? chrome.dataDir,
       dataTypes: ["cookies"],
     });
     // Sync to the browser session

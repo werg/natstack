@@ -21,6 +21,7 @@ export type ServicePolicy = {
  */
 export interface PolicyRegistry {
   getPolicy(service: string): ServicePolicy | undefined;
+  getMethodPolicy?(service: string, method: string): ServicePolicy | undefined;
 }
 
 /**
@@ -33,8 +34,17 @@ export function checkServiceAccess(
   service: string,
   callerKind: CallerKind,
   registry: PolicyRegistry,
+  method?: string,
 ): void {
-  const policy = registry.getPolicy(service);
+  let policy: ServicePolicy | undefined;
+
+  if (method && registry.getMethodPolicy) {
+    policy = registry.getMethodPolicy(service, method);
+  }
+
+  if (!policy) {
+    policy = registry.getPolicy(service);
+  }
 
   if (!policy) {
     throw new Error(

@@ -1,0 +1,127 @@
+# Email Panel — Design & Gap Analysis
+
+## Overview
+
+This panel is an example app that tests NatStack's panel system against a
+real-world use case: integrating with Gmail and Google Calendar APIs. It
+deliberately pushes against the current system boundaries to identify what
+runtime services need to be added.
+
+## Architecture
+
+```
+panels/email/
+├── package.json      # Panel manifest
+├── contract.ts       # RPC contract (agents/parent panels can search mail, compose, etc.)
+├── oauth.ts          # Token provider using @workspace/runtime's OAuth service
+├── index.tsx         # UI — inbox, thread view, compose, calendar
+└── DESIGN.md         # This file
+```
+
+### Key design decision: OAuth abstraction layer
+
+The panel doesn't embed any specific auth strategy. Instead, `oauth.ts` defines
+an `OAuthTokenProvider` interface wrapping the runtime's built-in OAuth service:
+
+```ts
+interface OAuthTokenProvider {
+  getToken(): Promise<OAuthToken>;
+  getConnection(): Promise<OAuthConnection>;
+  connect(onProgress?: ConnectProgress): Promise<OAuthConnection>;
+  disconnect(): Promise<void>;
+}
+```
+
+`createTokenProvider()` delegates to `@workspace/runtime`'s OAuth client. The
+staged connect flow gives the UI progress feedback at each step:
+consent → auth browser panel → wait for connection.
+
+Gmail/Calendar API calls use the `@workspace/integrations` package, which wraps
+`oauth.getToken()` + raw `fetch()` against the Google REST APIs.
+
+## What works today
+
+- **Panel structure** — standard panel, auto-mounts, themes, state args all work
+- **RPC contract** — parent panels and agents can call `search()`, `compose()`,
+  `getThread()`, `getCalendarEvents()` on the email panel
+- **UI** — full inbox/thread/compose/calendar UI using Radix
+- **Database** — connection persistence via `db.open("email-panel")`
+- **Cookie detection** — can check if Google cookies exist via `browser-data` service
+
+## What's missing (gaps identified)
+
+### 1. OAuth Runtime Service — RESOLVED
+
+Implemented as `@workspace/runtime`'s `oauth` client backed by the server-side
+OAuth service (uses Nango Cloud for token management). The API:
+
+```ts
+import { oauth } from "@workspace/runtime";
+
+const providers = await oauth.listProviders();
+const token = await oauth.getToken("google-mail");
+const connection = await oauth.connect("google-mail");
+const status = await oauth.getConnection("google-mail");
+await oauth.disconnect("google-mail");
+```
+
+Server-side: Nango secret key configured in `~/.config/natstack/.secrets.yml`. The `oauthService`
+handles token refresh, consent notifications, cookie pre-sync for auth browser
+panels, and per-caller consent tracking.
+
+### 2. OAuth Permissions — RESOLVED
+
+OAuth consent is fully dynamic per-panel ID. When a panel calls
+`oauth.requestConsent()`, a consent notification appears in the shell chrome.
+The user approves/denies per panel, with an "Always Allow" option for
+workspace-wide approval. No static manifest declarations needed.
+
+### 3. Fetch from Panel Context — RESOLVED
+
+CORS is stripped for app panels (defaultSession). Panels can call external APIs
+directly via `fetch()`. Browser panels (persist:browser partition) retain
+normal CORS behavior.
+
+### 4. Background Sync / Push Notifications (nice-to-have)
+
+For a real email client, you'd want:
+- Background polling or push notifications for new mail
+- This could be a worker (like `workers/hello`) that polls and publishes
+  to a PubSub channel
+- The panel subscribes to the channel for real-time updates
+
+This actually fits NatStack's existing worker + PubSub architecture well.
+
+## How an agent would use this panel
+
+```ts
+// From an agentic chat, the AI could:
+
+// 1. Open the email panel
+await openPanel("panels/email", {
+  stateArgs: { provider: "google-mail" }
+});
+
+// 2. Search for messages (via RPC contract)
+const results = await emailPanel.call.search("from:alice subject:meeting");
+
+// 3. Read a thread
+const thread = await emailPanel.call.getThread(results[0].threadId);
+
+// 4. Compose a reply
+await emailPanel.call.compose({
+  to: "alice@example.com",
+  subject: "Re: Meeting",
+  body: "Sounds good, see you then!"
+});
+
+// 5. Check calendar
+const events = await emailPanel.call.getCalendarEvents();
+```
+
+## Implementation Priority
+
+1. **OAuth service** — unblocks all API-based panels, not just email
+2. **Permissions for OAuth** — security boundary for untrusted panels
+3. **HTTP proxy service** — enables browser-mode panels to call external APIs
+4. **Background worker pattern** — document the worker + PubSub polling pattern

@@ -3,7 +3,7 @@
  * Shared by both panel and worker entry points.
  */
 
-import type { RpcBridge } from "@natstack/rpc";
+import type { RpcCaller } from "@natstack/rpc";
 
 export interface WorkspaceEntry {
   name: string;
@@ -38,7 +38,7 @@ export interface WorkspaceClient {
   switchTo(name: string): Promise<void>;
 }
 
-export function createWorkspaceClient(rpc: RpcBridge): WorkspaceClient {
+export function createWorkspaceClient(rpc: RpcCaller): WorkspaceClient {
   return {
     list: () => rpc.call("main", "workspace.list"),
     getActive: () => rpc.call("main", "workspace.getActive"),

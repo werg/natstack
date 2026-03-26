@@ -81,34 +81,29 @@ const roles = await ai.listRoles();
 
 Create and control browser panels via Playwright/CDP. Works in both Electron and headless (with extension) modes.
 
-### Typed API (recommended)
+### Quick pattern
 
 ```typescript
 import { createBrowserPanel, openExternal } from "@workspace/runtime";
-import { connect } from "@workspace/playwright-client";
 
-// 1. Create a browser panel — returns a BrowserHandle
+// Create a browser panel and get a Playwright page
 const handle = await createBrowserPanel("https://example.com", { focus: true });
+const page = await handle.page();
 
-// 2. Connect Playwright via CDP
-const cdpUrl = await handle.getCdpEndpoint();
-const browser = await connect(cdpUrl, "chromium", {});
-const page = browser.contexts()[0]?.pages()[0];
-
-// 3. Interact with the page
+// Interact
 await page.fill("input[name=query]", "NatStack");
 await page.click(".search-button");
-const text = await page.textContent(".results .first");
+const text = await page.evaluate(() =>
+  document.querySelector(".results .first")?.textContent
+);
 
-// 4. Navigate and control
+// Navigate via handle (doesn't need Playwright)
 await handle.navigate("https://other.com");
 await handle.goBack();
 await handle.reload();
-
-// 5. Close when done
 await handle.close();
 
-// Open in system browser (no CDP access)
+// Open in system browser (no automation)
 await openExternal("https://docs.example.com");
 ```
 
@@ -121,7 +116,7 @@ import { onChildCreated, getBrowserHandle } from "@workspace/runtime";
 
 onChildCreated(({ childId, url }) => {
   const handle = getBrowserHandle(childId);
-  // handle.getCdpEndpoint(), handle.navigate(), etc.
+  // handle.page(), handle.navigate(), etc.
 });
 window.open("https://example.com");
 ```
@@ -130,7 +125,7 @@ window.open("https://example.com");
 
 | Method | Description |
 |--------|-------------|
-| `getCdpEndpoint()` | Get CDP WebSocket URL for Playwright |
+| `page()` | Connect Playwright, return page for automation |
 | `navigate(url)` | Load a URL |
 | `goBack()` | Navigate back |
 | `goForward()` | Navigate forward |

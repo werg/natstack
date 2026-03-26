@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, type RefObject } from "react";
-import { connect, isAggregatedEvent } from "@natstack/pubsub";
+import { connect, connectViaRpc, isAggregatedEvent } from "@natstack/pubsub";
 import type {
   PubSubClient,
   RosterUpdate,
@@ -89,7 +89,7 @@ export function useChannelConnection({
     async (options: ConnectOptions): Promise<PubSubClient<ChatParticipantMetadata>> => {
       const { channelId, methods, channelConfig, contextId } = options;
 
-      if (!config.serverUrl || !config.token) {
+      if (!config.rpc && (!config.serverUrl || !config.token)) {
         const error = new Error("PubSub configuration not available");
         callbacksRef.current.onError?.(error);
         setStatus("error");
@@ -102,23 +102,36 @@ export function useChannelConnection({
       setStatus("connecting");
 
       try {
-        const newClient = connect<ChatParticipantMetadata>({
-          serverUrl: config.serverUrl,
-          token: config.token,
-          channel: channelId,
-          // Pass contextId for channel authorization (passed separately from channelConfig)
-          contextId,
-          // Pass channel config (set when creating, read by joiners from server)
-          channelConfig,
-          handle: metadata.handle,
-          name: metadata.name,
-          type: metadata.type,
-          reconnect: true,
-          clientId: config.clientId,
-          methods,
-          replayMode: "collect",
-          replayMessageLimit: 200,
-        });
+        const newClient = config.rpc
+          ? connectViaRpc<ChatParticipantMetadata>({
+              rpc: config.rpc,
+              channel: channelId,
+              contextId,
+              channelConfig,
+              handle: metadata.handle,
+              name: metadata.name,
+              type: metadata.type,
+              reconnect: true,
+              clientId: config.clientId,
+              methods,
+              replayMode: "collect",
+              replayMessageLimit: 200,
+            })
+          : connect<ChatParticipantMetadata>({
+              serverUrl: config.serverUrl,
+              token: config.token,
+              channel: channelId,
+              contextId,
+              channelConfig,
+              handle: metadata.handle,
+              name: metadata.name,
+              type: metadata.type,
+              reconnect: true,
+              clientId: config.clientId,
+              methods,
+              replayMode: "collect",
+              replayMessageLimit: 200,
+            });
 
         // Wait for the initial replay to complete
         await newClient.ready();

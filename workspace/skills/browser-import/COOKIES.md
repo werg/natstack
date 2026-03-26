@@ -14,18 +14,17 @@ inline_ui({
 import { useState, useEffect, useCallback } from "react";
 import { Button, Flex, Text, Table, Badge, TextField, Box, Separator, Spinner } from "@radix-ui/themes";
 import { TrashIcon, UpdateIcon, MagnifyingGlassIcon } from "@radix-ui/react-icons";
-import { createBrowserDataApi } from "@workspace/panel-browser";
+import { browserData } from "@workspace/panel-browser";
 
 export default function CookieManager({ props, chat }) {
   const [cookies, setCookies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState(props.domain || "");
   const [syncStatus, setSyncStatus] = useState(null);
-  const api = createBrowserDataApi(chat.rpc);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const result = await api.getCookies(filter || undefined);
+    const result = await browserData.getCookies(filter || undefined);
     setCookies(result);
     setLoading(false);
   }, [filter]);
@@ -33,19 +32,19 @@ export default function CookieManager({ props, chat }) {
   useEffect(() => { load(); }, [load]);
 
   const handleDelete = async (id) => {
-    await api.deleteCookie(id);
+    await browserData.deleteCookie(id);
     setCookies(prev => prev.filter(c => c.id !== id));
   };
 
   const handleClear = async () => {
-    const count = await api.clearCookies(filter || undefined);
+    const count = await browserData.clearCookies(filter || undefined);
     chat.publish("message", { content: "Cleared " + count + " cookies" + (filter ? " for " + filter : "") });
     load();
   };
 
   const handleSync = async () => {
     setSyncStatus("syncing");
-    const result = await api.syncCookiesToSession(filter || undefined);
+    const result = await browserData.syncCookiesToSession(filter || undefined);
     setSyncStatus("Synced " + result.synced + (result.failed > 0 ? ", " + result.failed + " failed" : ""));
     setTimeout(() => setSyncStatus(null), 3000);
   };
@@ -133,10 +132,8 @@ export default function CookieManager({ props, chat }) {
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const api = createBrowserDataApi(rpc);
-  const cookies = await api.getCookies("github.com");
+  import { browserData } from "@workspace/panel-browser";
+  const cookies = await browserData.getCookies("github.com");
   console.log(cookies.length + " cookies for github.com");
   for (const c of cookies.slice(0, 10)) {
     console.log("  " + c.name + " = " + (c.value?.slice(0, 20) || "(empty)") + "...");
@@ -149,10 +146,8 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const api = createBrowserDataApi(rpc);
-  const result = await api.syncCookiesToSession("github.com");
+  import { browserData } from "@workspace/panel-browser";
+  const result = await browserData.syncCookiesToSession("github.com");
   console.log("Synced:", result.synced, "Failed:", result.failed);
   return result;
 ` })
@@ -162,10 +157,8 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const api = createBrowserDataApi(rpc);
-  const result = await api.syncCookiesFromSession("github.com");
+  import { browserData } from "@workspace/panel-browser";
+  const result = await browserData.syncCookiesFromSession("github.com");
   console.log("Captured", result.synced, "cookies from browser session");
   return result;
 ` })
@@ -175,11 +168,9 @@ eval({ code: `
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const api = createBrowserDataApi(rpc);
+  import { browserData } from "@workspace/panel-browser";
   // Formats: "json" or "netscape-txt" (curl/wget compatible)
-  const exported = await api.exportCookies("netscape-txt");
+  const exported = await browserData.exportCookies("netscape-txt");
   console.log(exported.slice(0, 500));
   return exported;
 ` })

@@ -83,7 +83,7 @@ export interface EndpointInfo {
  * Proxy type for typed RPC calls.
  * Transforms ExposedMethods into callable async functions.
  */
-export type TypedCallProxy<T extends Rpc.ExposedMethods> = {
+export type TypedCallProxy<T extends Record<string, Rpc.AnyFunction>> = {
   [K in keyof T]: T[K] extends (...args: infer A) => infer R
     ? (...args: A) => Promise<Awaited<R>>
     : never;
@@ -117,7 +117,7 @@ export type TypedCallProxy<T extends Rpc.ExposedMethods> = {
  * ```
  */
 export interface ParentHandle<
-  T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+  T extends Record<string, Rpc.AnyFunction> = Rpc.ExposedMethods,
   E extends Rpc.RpcEventMap = Rpc.RpcEventMap,
   EmitE extends Rpc.RpcEventMap = Rpc.RpcEventMap
 > {
@@ -169,7 +169,7 @@ export interface ParentHandle<
  * One side of a panel contract (child or parent).
  */
 export interface ContractSide<
-  Methods extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+  Methods extends Record<string, Rpc.AnyFunction> = Rpc.ExposedMethods,
   Emits extends EventSchemaMap = EventSchemaMap
 > {
   readonly methods?: Methods;
@@ -181,9 +181,9 @@ export interface ContractSide<
  * Defines RPC methods and events for both sides.
  */
 export interface PanelContract<
-  ChildMethods extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+  ChildMethods extends Record<string, Rpc.AnyFunction> = Rpc.ExposedMethods,
   ChildEmits extends EventSchemaMap = EventSchemaMap,
-  ParentMethods extends Rpc.ExposedMethods = Rpc.ExposedMethods,
+  ParentMethods extends Record<string, Rpc.AnyFunction> = Rpc.ExposedMethods,
   ParentEmits extends EventSchemaMap = EventSchemaMap
 > {
   readonly source: string;

@@ -1,9 +1,11 @@
 /**
  * Fork orchestration logic — extracted for testability.
  *
- * The fetch handler in index.ts calls fork() with a Runtime (for RPC)
- * and workerdPort (for DO dispatch via fetch).
+ * The fetch handler in index.ts calls fork() with a Runtime (for RPC).
+ * All DO communication goes through the RPC bridge using "do:source:className:objectKey" targets.
  */
+
+import type { RpcCaller } from "@natstack/rpc";
 
 export interface DORef {
   source: string;
@@ -33,27 +35,21 @@ interface ParticipantInfo {
 }
 
 export interface ForkRuntime {
+  rpc: RpcCaller;
   callMain<T>(method: string, ...args: unknown[]): Promise<T>;
 }
 
-// ─── DO dispatch helper ─────────────────────────────────────────────────────
+// ─── DO dispatch via RPC ────────────────────────────────────────────────────
 
-export async function callDO<T = unknown>(
-  workerdPort: number, ref: DORef, method: string, ...args: unknown[]
+/** Build a DO RPC target ID from a DORef: "do:{source}:{className}:{objectKey}" */
+function doTarget(ref: DORef): string {
+  return `do:${ref.source}:${ref.className}:${ref.objectKey}`;
+}
+
+async function callDO<T = unknown>(
+  rpc: RpcCaller, ref: DORef, method: string, ...args: unknown[]
 ): Promise<T> {
-  const url = `http://127.0.0.1:${workerdPort}/_w/${ref.source}/${encodeURIComponent(ref.className)}/${encodeURIComponent(ref.objectKey)}/${encodeURIComponent(method)}`;
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(args),
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`DO call ${ref.className}/${ref.objectKey}.${method} failed (${resp.status}): ${text}`);
-  }
-  const ct = resp.headers.get("content-type") ?? "";
-  if (ct.includes("application/json")) return resp.json() as Promise<T>;
-  return undefined as T;
+  return rpc.call<T>(doTarget(ref), method, ...args);
 }
 
 // ─── Fork orchestration ─────────────────────────────────────────────────────
@@ -64,14 +60,15 @@ const CHANNEL_REF = (key: string): DORef => ({
   objectKey: key,
 });
 
-export async function fork(runtime: ForkRuntime, workerdPort: number, opts: ForkOpts): Promise<ForkResult> {
+export async function fork(runtime: ForkRuntime, opts: ForkOpts): Promise<ForkResult> {
+  const { rpc } = runtime;
   const exclude = new Set(opts.exclude ?? []);
   const replace = opts.replace ?? {};
 
   // 1. Fetch roster and contextId from channel
   const [roster, contextId] = await Promise.all([
-    callDO<ParticipantInfo[]>(workerdPort, CHANNEL_REF(opts.channelId), "getParticipants"),
-    callDO<string | null>(workerdPort, CHANNEL_REF(opts.channelId), "getContextId"),
+    callDO<ParticipantInfo[]>(rpc, CHANNEL_REF(opts.channelId), "getParticipants"),
+    callDO<string | null>(rpc, CHANNEL_REF(opts.channelId), "getContextId"),
   ]);
 
   if (!contextId) throw new Error(`Channel ${opts.channelId} has no contextId`);
@@ -94,11 +91,11 @@ export async function fork(runtime: ForkRuntime, workerdPort: number, opts: Fork
   // 2. Preflight: clones need ≤1 sub, replacements need 0
   const preflightResults = await Promise.all([
     ...toClone.map(async (p) => {
-      const r = await callDO<{ ok: boolean; subscriptionCount: number; reason?: string }>(workerdPort, p.doRef!, "canFork");
+      const r = await callDO<{ ok: boolean; subscriptionCount: number; reason?: string }>(rpc, p.doRef!, "canFork");
       return { participantId: p.participantId, ...r };
     }),
     ...toReplace.map(async ({ participantId, doRef }) => {
-      const r = await callDO<{ ok: boolean; subscriptionCount: number; reason?: string }>(workerdPort, doRef, "canFork");
+      const r = await callDO<{ ok: boolean; subscriptionCount: number; reason?: string }>(rpc, doRef, "canFork");
       if (r.ok && r.subscriptionCount > 0) {
         return { participantId, ok: false as const, reason: "replacement DO already has subscriptions" };
       }
@@ -120,7 +117,7 @@ export async function fork(runtime: ForkRuntime, workerdPort: number, opts: Fork
     // Clone channel
     await runtime.callMain("workerd.cloneDO", CHANNEL_REF(opts.channelId), forkedChannelId);
     clonedRefs.push(CHANNEL_REF(forkedChannelId));
-    await callDO(workerdPort, CHANNEL_REF(forkedChannelId), "postClone", opts.channelId, opts.forkPointPubsubId);
+    await callDO(rpc, CHANNEL_REF(forkedChannelId), "postClone", opts.channelId, opts.forkPointPubsubId);
 
     // Clone each agent DO
     for (const p of toClone) {
@@ -129,13 +126,13 @@ export async function fork(runtime: ForkRuntime, workerdPort: number, opts: Fork
       await runtime.callMain("workerd.cloneDO", ref, forkedKey);
       const clonedRef: DORef = { source: ref.source, className: ref.className, objectKey: forkedKey };
       clonedRefs.push(clonedRef);
-      await callDO(workerdPort, clonedRef, "postClone", ref.objectKey, forkedChannelId, opts.channelId, opts.forkPointPubsubId);
+      await callDO(rpc, clonedRef, "postClone", ref.objectKey, forkedChannelId, opts.channelId, opts.forkPointPubsubId);
       clonedParticipants.push(p.participantId);
     }
 
     // Subscribe replacement DOs
     for (const { participantId, doRef } of toReplace) {
-      await callDO(workerdPort, doRef, "subscribeChannel", { channelId: forkedChannelId, contextId });
+      await callDO(rpc, doRef, "subscribeChannel", { channelId: forkedChannelId, contextId });
       replacedParticipants.push(participantId);
     }
   } catch (err) {
@@ -149,7 +146,7 @@ export async function fork(runtime: ForkRuntime, workerdPort: number, opts: Fork
 
     // Best-effort rollback: unsubscribe replacements (safe — canFork verified 0 subs)
     for (const { doRef } of toReplace.filter((_, i) => i < replacedParticipants.length)) {
-      try { await callDO(workerdPort, doRef, "unsubscribeChannel", forkedChannelId); }
+      try { await callDO(rpc, doRef, "unsubscribeChannel", forkedChannelId); }
       catch (e) { console.error(`[fork] Rollback unsubscribe failed for ${doRef.objectKey}:`, e); }
     }
 

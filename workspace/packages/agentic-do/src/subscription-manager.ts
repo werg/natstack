@@ -29,10 +29,10 @@ export class SubscriptionManager {
     `);
   }
 
-  /** Build the participant ID from the DO's identity (route path). */
+  /** Build the participant ID from the DO's identity. */
   private buildParticipantId(): string {
     const ref = this.identity.ref;
-    return `/_w/${ref.source}/${encodeURIComponent(ref.className)}/${encodeURIComponent(ref.objectKey)}`;
+    return `do:${ref.source}:${ref.className}:${ref.objectKey}`;
   }
 
   async subscribe(opts: {

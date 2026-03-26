@@ -4,12 +4,17 @@
  * Shows: fs access, database, workspace tree, and basic HTTP handling.
  */
 
-import { createWorkerRuntime } from "@workspace/runtime/worker";
+import { createWorkerRuntime, handleWorkerRpc } from "@workspace/runtime/worker";
 import type { WorkerEnv, ExecutionContext } from "@workspace/runtime/worker";
 
 export default {
   async fetch(request: Request, env: WorkerEnv, _ctx: ExecutionContext) {
     const runtime = createWorkerRuntime(env);
+
+    // Handle incoming RPC calls
+    const rpcResponse = await handleWorkerRpc(runtime, request);
+    if (rpcResponse) return rpcResponse;
+
     const url = new URL(request.url);
 
     if (url.pathname === "/tree") {

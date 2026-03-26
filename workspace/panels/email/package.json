@@ -1,0 +1,45 @@
+{
+  "name": "@workspace-panels/email",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "type": "app",
+    "title": "Email",
+    "entry": "index.tsx",
+    "stateArgs": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "OAuth provider key (e.g. 'google-mail')"
+        },
+        "connectionId": {
+          "type": "string",
+          "description": "OAuth connection ID for authenticated API access"
+        },
+        "view": {
+          "type": "string",
+          "enum": ["inbox", "thread", "compose", "calendar"],
+          "description": "Initial view to open"
+        },
+        "threadId": {
+          "type": "string",
+          "description": "Thread ID to open (when view=thread)"
+        }
+      }
+    }
+  },
+  "exports": {
+    ".": "./index.tsx",
+    "./contract": "./contract.ts"
+  },
+  "dependencies": {
+    "@workspace/runtime": "workspace:*",
+    "@workspace/integrations": "workspace:*",
+    "@workspace/react": "workspace:*",
+    "@radix-ui/themes": "^3.2.1",
+    "@radix-ui/react-icons": "^1.3.2",
+    "zod": "^3.22.0"
+  }
+}

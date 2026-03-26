@@ -1,6 +1,6 @@
 ---
 name: browser-import
-description: Browser data import — discover browsers, import cookies/passwords/bookmarks/history, manage and sync imported data. Read SKILL.md to start.
+description: Import browser data into the workspace — discover installed browsers, import cookies/passwords/bookmarks/history, manage and sync imported data.
 ---
 
 # Browser Data Import Skill
@@ -27,8 +27,8 @@ See the sandbox skill's [INTERACTION_PATTERNS.md](../sandbox/INTERACTION_PATTERN
 All browser data operations go through `@workspace/panel-browser`, which wraps RPC calls to the `browser-data` service. The service reads browser profile databases directly (SQLite for Chrome/Firefox, plist for Safari).
 
 ```
-Sandbox code / Inline UI
-  → createBrowserDataApi(rpc)  or  createBrowserDataApi(chat.rpc)
+Sandbox code (eval / inline_ui / feedback_custom)
+  → import { browserData } from "@workspace/panel-browser"
     → rpc.call("main", "browser-data.*")
       → BrowserDataService (Electron main process)
         → reads Chrome/Firefox/Safari profile databases
@@ -37,25 +37,24 @@ Sandbox code / Inline UI
 ## Quick Reference
 
 ```typescript
-import { createBrowserDataApi } from "@workspace/panel-browser";
-import { rpc } from "@workspace/runtime";  // or use chat.rpc in components
-const api = createBrowserDataApi(rpc);
+// In eval, inline_ui, and feedback_custom:
+import { browserData } from "@workspace/panel-browser";
 ```
 
 | Method | What it does |
 |--------|-------------|
-| `api.detectBrowsers()` | Find installed browsers + profiles |
-| `api.startImport(request)` | Import data types from a browser profile |
-| `api.getImportHistory()` | Past import results |
-| `api.getCookies(domain?)` | Browse stored cookies |
-| `api.syncCookiesToSession(domain?)` | Push cookies to active browser session |
-| `api.syncCookiesFromSession(domain?)` | Pull cookies from active session |
-| `api.getPasswords(domain?)` | Browse stored passwords |
-| `api.getPasswordForSite(url)` | Find password for a URL |
-| `api.getBookmarks(folder?)` | Browse bookmarks by folder |
-| `api.searchBookmarks(query)` | Full-text bookmark search |
-| `api.getHistory(query)` | Browse/search history |
-| `api.exportAll()` | Export everything as JSON |
+| `browserData.detectBrowsers()` | Find installed browsers + profiles → `DetectedBrowser[]` |
+| `browserData.startImport({ browser, profile, dataTypes })` | Import data from a browser profile → `ImportResult[]` (use `profile: detectedProfile` from detectBrowsers) |
+| `browserData.getImportHistory()` | Past import results |
+| `browserData.getCookies(domain?)` | Browse stored cookies |
+| `browserData.syncCookiesToSession(domain?)` | Push cookies to active browser session |
+| `browserData.syncCookiesFromSession(domain?)` | Pull cookies from active session |
+| `browserData.getPasswords()` | Get all stored passwords |
+| `browserData.getPasswordForSite(url)` | Find password for a URL |
+| `browserData.getBookmarks(folder?)` | Browse bookmarks by folder |
+| `browserData.searchBookmarks(query)` | Full-text bookmark search |
+| `browserData.getHistory(query)` | Browse/search history |
+| `browserData.exportAll()` | Export everything as JSON |
 
 ## Data Types
 
@@ -87,15 +86,10 @@ interface StoredCookie {
   domain: string;              // e.g. ".github.com" — the domain/host field
   host_only: number;           // 0 or 1
   path: string;
-  expiration_date: number | null;  // Unix timestamp (ms), null for session cookies
+  expiration_date: number | null;  // Unix timestamp, null for session cookies
   secure: number;              // 0 or 1
   http_only: number;           // 0 or 1
   same_site: string;
-  source_scheme: string | null;
-  source_port: number;
-  source_browser: string | null;
-  created_at: number;
-  last_accessed: number | null;
 }
 ```
 
@@ -111,7 +105,6 @@ interface StoredPassword {
   realm: string;
   date_created: number | null;
   date_last_used: number | null;
-  date_password_changed: number | null;
   times_used: number;
 }
 ```
@@ -123,15 +116,49 @@ interface DetectedBrowser {
   name: string;          // "chrome" | "firefox" | "safari" | etc.
   family: string;        // "chromium" | "firefox" | "webkit"
   displayName: string;   // "Google Chrome"
+  version?: string;
   dataDir: string;       // path to browser data directory
   profiles: DetectedProfile[];
+  tccBlocked?: boolean;  // macOS: needs Full Disk Access permission
 }
 
 interface DetectedProfile {
-  id: string;
+  id: string;            // short identifier (e.g. "Default", "Profile 1")
   displayName: string;
   path: string;          // full path to profile directory
   isDefault: boolean;
+  avatarUrl?: string;    // Chrome profile avatar
+}
+```
+
+### startImport Request & Response
+
+```typescript
+// Request — pass `profile` (preferred) or `profilePath`
+interface ImportRequest {
+  browser: string;
+  profile: DetectedProfile | string;  // pass the profile object or its .path
+  dataTypes: string[];
+  masterPassword?: string;            // Firefox only
+  csvPasswordFile?: string;           // Chrome/Safari CSV export
+}
+
+// Response — array, one entry per requested dataType
+interface ImportResult {
+  dataType: string;      // "cookies" | "passwords" | "bookmarks" | etc.
+  success: boolean;
+  itemCount: number;     // items successfully imported
+  skippedCount: number;  // items skipped (decryption failures, duplicates)
+  error?: string;
+  warnings: string[];
+}
+```
+
+**Common mistake**: `startImport` returns `ImportResult[]` (an array), not an object keyed by data type. Iterate the array to build summaries:
+```typescript
+const results = await browserData.startImport({ browser: "chrome", profile, dataTypes: ["cookies"] });
+for (const r of results) {
+  console.log(`${r.dataType}: ${r.itemCount} imported, ${r.skippedCount} skipped`);
 }
 ```
 
@@ -146,8 +173,15 @@ Imported cookies are **automatically synced** to the shared browser session (`pe
 
 ## Typical Agent Workflow
 
-1. **Discover**: `eval` → `detectBrowsers()` → log what's available
+1. **Discover**: `eval` → `detectBrowsers()` → get `DetectedBrowser[]` with profiles
 2. **Ask user**: `feedback_form` or `inline_ui` → which browser/profile/data types
-3. **Import**: `eval` → `startImport(request)` → log results (cookies auto-synced to browser session)
+3. **Import**: `eval` → `startImport({ browser, profile, dataTypes })` → returns `ImportResult[]` (cookies auto-synced to browser session)
 4. **Show results**: `inline_ui` → interactive data managers (cookie table, password vault, etc.)
 5. **Verify**: `eval` → open browser panel, check authentication state
+6. **Suggest OAuth**: After a successful import, always ask the user if they'd like to set up OAuth for API access (Gmail, GitHub, Slack, etc.). Imported cookies make sign-in seamless. Load the `api-integrations` skill for the setup guide.
+
+**Step 6 is important.** The whole point of importing cookies is often to enable authenticated API access. Don't just import and stop — proactively offer the next step:
+
+> "Your cookies are imported! Would you like to set up OAuth so I can access Gmail, GitHub, or other APIs on your behalf? Your imported cookies will make the sign-in process seamless."
+
+If they say yes, load the `api-integrations` skill and follow its Prerequisites section. If OAuth is already configured, offer to connect to a provider right away using `openIn: "panel"` (their imported cookies will pre-authenticate the browser panel).

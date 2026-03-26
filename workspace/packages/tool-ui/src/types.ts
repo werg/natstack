@@ -25,17 +25,28 @@ export type FeedbackResult =
   | { type: "error"; message: string };
 
 /**
- * Props passed to feedback components (both TSX and schema-based).
+ * Completion callbacks shared by all feedback types (schema-based and TSX).
  */
-export interface FeedbackComponentProps {
+export interface FeedbackCallbacks {
   /** Call when user submits data successfully */
   onSubmit: (value: unknown) => void;
   /** Call when user cancels (no data) */
   onCancel: () => void;
   /** Call when an error occurs */
   onError: (message: string) => void;
+}
+
+/**
+ * Props passed to TSX feedback components (feedback_custom).
+ * Extends callbacks with sandbox bindings (chat, scope, scopes).
+ */
+export interface FeedbackComponentProps extends FeedbackCallbacks {
   /** Chat API — publish messages, access runtime, etc. */
-  chat?: Record<string, unknown>;
+  chat: Record<string, unknown>;
+  /** REPL scope — shared read+write state across eval, inline_ui, feedback_custom */
+  scope: Record<string, unknown>;
+  /** Scopes API — call scopes.save() to persist scope changes from component handlers */
+  scopes: Record<string, unknown>;
 }
 
 // ============================================================================

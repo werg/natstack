@@ -1,0 +1,17 @@
+{
+  "name": "@workspace-workers/email-sync",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "type": "worker",
+    "entry": "index.ts",
+    "title": "Email Sync Worker",
+    "durable": {
+      "classes": [{ "className": "EmailSyncWorker" }]
+    }
+  },
+  "dependencies": {
+    "@workspace/runtime": "workspace:*"
+  }
+}

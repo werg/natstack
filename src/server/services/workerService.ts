@@ -80,17 +80,27 @@ export function createWorkerService(deps: {
             "getParticipants",
           ) as Array<{ participantId: string; metadata: Record<string, unknown> }>;
           return (participants ?? [])
-            .filter((p) => p.participantId.startsWith("/_w/"))
+            .filter((p) => p.participantId.startsWith("do:"))
             .map((p) => {
-              const parts = p.participantId.split("/").filter(Boolean);
+              // Format: "do:{source}:{className}:{objectKey}"
+              // Source contains "/" but no ":", className has no ":"
+              const body = p.participantId.slice(3);
+              const slashIdx = body.indexOf("/");
+              const colonAfterSlash = slashIdx >= 0 ? body.indexOf(":", slashIdx) : -1;
+              if (colonAfterSlash === -1) return null;
+              const source = body.slice(0, colonAfterSlash);
+              const rest = body.slice(colonAfterSlash + 1);
+              const nextColon = rest.indexOf(":");
+              if (nextColon === -1) return null;
               return {
                 participantId: p.participantId,
-                source: `${parts[1]}/${parts[2]}`,
-                className: decodeURIComponent(parts[3] ?? ""),
-                objectKey: decodeURIComponent(parts[4] ?? ""),
+                source,
+                className: rest.slice(0, nextColon),
+                objectKey: rest.slice(nextColon + 1),
                 channelId,
               };
-            });
+            })
+            .filter(Boolean);
         }
 
         case "callDO": {

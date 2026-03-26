@@ -15,6 +15,7 @@ import {
   exportNetscapeCookies,
   exportJson,
   deriveCookieUrl,
+  resolveProfilePath,
 } from "@natstack/browser-data";
 import type {
   ImportRequest,
@@ -223,6 +224,7 @@ export function createBrowserDataService(deps: {
         // ---- Import ----
         case "startImport": {
           const [request] = args as [ImportRequest];
+          const profilePath = resolveProfilePath(request);
           const results = await runImportPipeline(
             request,
             browserDataStore,
@@ -235,7 +237,7 @@ export function createBrowserDataService(deps: {
           for (const result of results) {
             browserDataStore.importLog.log({
               browser: request.browser,
-              profilePath: request.profilePath,
+              profilePath,
               dataType: result.dataType,
               itemsImported: result.itemCount,
               itemsSkipped: result.skippedCount,
@@ -258,8 +260,12 @@ export function createBrowserDataService(deps: {
           if (cookieResult) {
             try {
               await syncStoreCookiesToSession(browserDataStore);
-            } catch {
-              // Non-fatal: cookies are in the store, session sync can be retried
+            } catch (err) {
+              console.error("[browser-data] Cookie session sync failed after import:", err);
+              cookieResult.warnings.push(
+                `Cookies imported to store but session sync failed: ${err instanceof Error ? err.message : String(err)}. ` +
+                `Use syncCookiesToSession() to retry.`,
+              );
             }
           }
 

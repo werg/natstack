@@ -564,7 +564,7 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
             }));
             const trailingUpdates = msg.trailingUpdates?.map(m => ({
               ...m,
-              attachments: convertWireAttachments((m as Record<string, unknown>)["attachments"] as unknown[] | undefined),
+              attachments: convertWireAttachments((m as unknown as Record<string, unknown>)["attachments"] as unknown[] | undefined),
             }));
             pending.resolve({
               messages,
@@ -739,7 +739,7 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
         // Convert wire-format attachments (base64) to client format (Uint8Array).
         // Binary frames already have decoded attachments; JSON events may have inline base64.
         const clientAttachments = msg.attachments instanceof Array && msg.attachments.length > 0 &&
-          msg.attachments[0] && typeof (msg.attachments[0] as Record<string, unknown>)["data"] === "string"
+          msg.attachments[0] && typeof (msg.attachments[0] as unknown as Record<string, unknown>)["data"] === "string"
           ? convertWireAttachments(msg.attachments)
           : msg.attachments as Attachment[] | undefined;
 
@@ -1398,6 +1398,7 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
 
   // Method auto-execution for provided methods
   const registeredMethods: Record<string, MethodDefinition> = { ...(providedMethods ?? {}) };
+  const executingMethods = new Map<string, AbortController>();
 
   async function handleMethodCallExec(event: IncomingMethodCallEvent): Promise<void> {
     // Only handle calls targeting this client
@@ -1424,6 +1425,7 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
     }
 
     const abortController = new AbortController();
+    executingMethods.set(event.callId, abortController);
     const ctx: MethodExecutionContext = {
       callId: event.callId,
       callerId: event.senderId,
@@ -1494,7 +1496,9 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
         content: { error: errorMsg },
         complete: true,
         isError: true,
-      }, { persist: true }).catch(() => {});
+      }, { persist: true }).catch(e => console.error("[PubSub] Failed to publish auto-execution error:", e));
+    } finally {
+      executingMethods.delete(event.callId);
     }
   }
 
@@ -1502,6 +1506,18 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
   // This is callback-based (not iterator-based) to avoid competing with messages()
   rawMessageCallbacks.add((pubsubMsg: PubSubMessage) => {
     try {
+      // Handle method-cancel before normal event parsing (not a recognized event type)
+      if (pubsubMsg.type === "method-cancel" && pubsubMsg.kind !== "replay") {
+        const cancelPayload = pubsubMsg.payload as { callId?: string } | undefined;
+        if (cancelPayload?.callId) {
+          const controller = executingMethods.get(cancelPayload.callId);
+          if (controller) {
+            controller.abort();
+            executingMethods.delete(cancelPayload.callId);
+          }
+        }
+      }
+
       const event = parseIncoming(pubsubMsg);
       if (!event) return;
 
@@ -1777,7 +1793,7 @@ function connectImpl<T extends ParticipantMetadata = ParticipantMetadata>(
         stream.close();
         rejectResult(new AgenticError("cancelled", "cancelled"));
         methodCallStates.delete(callId);
-        await publish("method-cancel", { callId }, { persist: true }).catch(() => {});
+        await publish("method-cancel", { callId }, { persist: true }).catch(e => console.warn("[PubSub] Failed to publish method cancel:", e));
       },
       get complete() { return state.complete; },
       get isError() { return state.isError; },

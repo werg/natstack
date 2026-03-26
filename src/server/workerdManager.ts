@@ -76,6 +76,8 @@ export interface WorkerCreateOptions {
   /** Build at a specific git ref (branch, tag, or commit SHA).
    *  Use a commit SHA for immutable pinning (content-addressed cache guarantees same build). */
   ref?: string;
+  /** ID of the creating caller (panel, worker, DO). Used for parent handle support. */
+  parentId?: string;
 }
 
 export interface WorkerInstance {
@@ -91,6 +93,8 @@ export interface WorkerInstance {
   buildKey?: string;
   /** Git ref this instance is built at (branch, tag, or commit SHA). */
   ref?: string;
+  /** ID of the parent panel that created this worker (for parent handle support). */
+  parentId?: string;
   status: "building" | "starting" | "running" | "stopped" | "error";
 }
 
@@ -103,8 +107,6 @@ export interface WorkerdManagerDeps {
   workspacePath: string;
   /** State directory — used for DO storage (localDisk). */
   statePath: string;
-  /** Server HTTP base URL (for harness API) — injected as SERVER_URL binding for DOs */
-  serverUrl?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +197,7 @@ export class WorkerdManager {
       stateArgs: options.stateArgs,
       limits: options.limits,  // mandatory — always present
       ref: options.ref,
+      parentId: options.parentId,
       status: "building",
     };
 
@@ -323,17 +326,15 @@ export class WorkerdManager {
         { name: "WORKERD_SESSION_ID", text: this.sessionId },
       ];
 
-      // Server URL for direct DO communication (harness API)
-      if (this.deps.serverUrl) {
-        bindings.push({ name: "SERVER_URL", text: this.deps.serverUrl });
-      }
+      // Server URL for RPC bridge (DOs use HttpRpcBridge via POST /rpc)
+      bindings.push({ name: "SERVER_URL", text: `http://127.0.0.1:${this.deps.rpcPort}` });
 
       // DO storage: create a disk service and reference it by name
       const diskServiceName = `${doService.serviceName}_disk`;
       const doStoragePath = path.join(this.deps.statePath, ".databases", "workerd-do");
       fs.mkdirSync(doStoragePath, { recursive: true });
 
-      // Network service for outbound fetch (PubSub HTTP, Server harness API).
+      // Network service for outbound fetch (RPC HTTP bridge, PubSub HTTP).
       // DOs are autonomous — they make direct HTTP calls to localhost services.
       const networkServiceName = `${doService.serviceName}_network`;
 
@@ -375,11 +376,17 @@ export class WorkerdManager {
         { name: "RPC_AUTH_TOKEN", text: instance.token },
         { name: "WORKER_ID", text: instance.name },
         { name: "CONTEXT_ID", text: instance.contextId },
+        { name: "SERVER_URL", text: `http://127.0.0.1:${this.deps.rpcPort}` },
       ];
 
       // Inject stateArgs as a JSON binding so workers can access initial state
       if (instance.stateArgs && Object.keys(instance.stateArgs).length > 0) {
         bindings.push({ name: "STATE_ARGS", json: JSON.stringify(instance.stateArgs) });
+      }
+
+      // Inject parent ID if provided (for parent handle support)
+      if (instance.parentId) {
+        bindings.push({ name: "PARENT_ID", text: instance.parentId });
       }
 
       // Add user-defined env as text bindings
@@ -402,16 +409,21 @@ export class WorkerdManager {
         }
       }
 
+      // Network service for outbound fetch (API calls, RPC).
+      const networkServiceName = `${name}_network`;
+
       // Build workerd service config
       const workerDef: {
         modules: object[];
         bindings: object[];
         compatibilityDate: string;
+        globalOutbound?: string;
         limits?: { cpuMs?: number; subrequests?: number };
       } = {
         modules: [{ name: "worker.js", esModule: bundleContent }],
         bindings,
         compatibilityDate: "2024-01-01",
+        globalOutbound: networkServiceName,
       };
 
       // Apply resource limits
@@ -424,6 +436,7 @@ export class WorkerdManager {
       }
 
       services.push({ name, worker: workerDef });
+      services.push({ name: networkServiceName, network: { allow: ["public", "local"], deny: [] } });
     }
 
     // Collect DO class info for router generation (only those whose service was successfully built).

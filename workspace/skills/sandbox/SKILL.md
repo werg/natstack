@@ -1,6 +1,6 @@
 ---
 name: sandbox
-description: Chat panel sandbox — eval tool, inline UI, feedback components, and full runtime API reference. Read SKILL.md to start.
+description: Execute code in the chat sandbox — eval tool, inline UI components, feedback forms, browser automation, and all runtime APIs (fs, db, git, workers, ai).
 ---
 
 # Sandbox Execution Skill
@@ -45,11 +45,12 @@ These modules are available via `import` / `require()` in sandbox code:
 |--------|-----------------|
 | `@workspace/runtime` | rpc, fs, db, workers, ai, workspace, git, panel navigation |
 | `@workspace/panel-browser` | Browser data import/export (cookies, passwords, bookmarks, history) |
-| `@workspace/playwright-client` | Playwright browser automation via CDP (pages, locators, screenshots) |
+| `@workspace/playwright-client` | Playwright browser automation (advanced — prefer `handle.page()` from `@workspace/runtime`) |
 | `react` | React hooks and component APIs |
 | `@radix-ui/themes` | UI components (Button, Flex, Card, Table, TextField, etc.) |
 | `@radix-ui/react-icons` | Icon components |
 | `isomorphic-git` | Git operations (clone, fetch, checkout, etc.) |
+| **Any npm package** | Use the `imports` parameter with `"npm:<version>"` in eval — see [EVAL.md](EVAL.md). Not available in inline_ui/feedback_custom (use eval to preload first) |
 
 ## Interaction Patterns
 

@@ -1,6 +1,25 @@
 # Runtime API Reference
 
-All APIs available to sandbox code via `import` or `chat.rpc.call()`.
+All APIs available to sandbox code via `import`, `chat.rpc.call()`, or pre-injected variables.
+
+## REPL Scope (pre-injected)
+
+```typescript
+// Pre-injected — do NOT import
+scope    // Record<string, unknown> — current active scope, read+write, persists across eval calls
+scopes   // ScopesApi — scope history + persistence management
+```
+
+| Property/Method | Description |
+|----------------|-------------|
+| `scope.x = val` | Store a value that persists across eval calls |
+| `scopes.currentId` | Current scope's durable UUID |
+| `scopes.push()` | Archive current scope, start new one → returns new ID |
+| `scopes.get(id)` | Retrieve archived scope by ID → read-only plain object |
+| `scopes.list()` | List all scopes for this channel |
+| `scopes.save()` | Force-persist scope to DB now (use after non-eval writes) |
+
+Scope is automatically persisted after every eval call. Primitives, plain objects, arrays, Date, Map, Set, RegExp survive serialization. Functions and class instances are dropped but their serializable properties are kept (e.g., `scope.browser.id` survives even though `scope.browser.page` is lost).
 
 ## Filesystem (`fs`)
 
@@ -154,10 +173,7 @@ const log = await git.log({ fs, dir: "/", depth: 5 });
 ## Browser Data (`@workspace/panel-browser`)
 
 ```typescript
-import { createBrowserDataApi } from "@workspace/panel-browser";
-import { rpc } from "@workspace/runtime";
-// or in components: createBrowserDataApi(chat.rpc)
-const browserData = createBrowserDataApi(rpc);
+import { browserData } from "@workspace/panel-browser";
 ```
 
 ### Detection
@@ -176,7 +192,7 @@ const browserData = createBrowserDataApi(rpc);
 | `startImport(request)` | Import data from a browser profile |
 | `getImportHistory()` | Past import results |
 
-`ImportRequest`: `{ browser: BrowserName, profilePath: string, dataTypes: ImportDataType[], masterPassword?, csvPasswordFile? }`
+`ImportRequest`: `{ browser: BrowserName, profile: DetectedProfile | string, dataTypes: ImportDataType[], masterPassword?, csvPasswordFile? }`
 `ImportDataType`: `"bookmarks" \| "history" \| "cookies" \| "passwords" \| "autofill" \| "searchEngines" \| "extensions" \| "permissions" \| "settings" \| "favicons"`
 
 ### Bookmarks
@@ -189,7 +205,7 @@ const browserData = createBrowserDataApi(rpc);
 
 ### Passwords
 
-`getPasswords(domain?)`, `getPasswordForSite(url)`, `addPassword(entry)`, `updatePassword(id, partial)`, `deletePassword(id)`
+`getPasswords()`, `getPasswordForSite(url)`, `addPassword(entry)`, `updatePassword(id, partial)`, `deletePassword(id)`
 
 ### Cookies
 
@@ -212,13 +228,14 @@ Formats — bookmarks: `"html" \| "json" \| "chrome-json"`, passwords: `"csv-chr
 ## Panel Navigation
 
 ```typescript
-import { openPanel, createBrowserPanel, focusPanel, buildPanelLink, openExternal, closeSelf } from "@workspace/runtime";
+import { openPanel, createBrowserPanel, getBrowserHandle, focusPanel, buildPanelLink, openExternal, closeSelf } from "@workspace/runtime";
 ```
 
 | Function | Description |
 |----------|-------------|
 | `openPanel(source, opts?)` | Open any panel — URLs become browser panels, source paths open workspace panels. Returns `{ id }` for browser panels |
 | `createBrowserPanel(url, opts?)` | Open URL in browser panel, returns `BrowserHandle` (use when you need CDP/automation) |
+| `getBrowserHandle(id)` | Reconnect to an existing browser panel by ID (use after reload when `scope.browser.id` survived but methods were lost) |
 | `focusPanel(panelId)` | Focus an existing panel by its ID (does NOT open new panels) |
 | `buildPanelLink(source, opts?)` | Build URL for panel navigation (low-level — prefer `openPanel`) |
 | `openExternal(url)` | Open in OS default browser |
@@ -230,25 +247,20 @@ import { openPanel, createBrowserPanel, focusPanel, buildPanelLink, openExternal
 - To focus a panel you already have the ID for: `focusPanel(panelId)`
 - `buildPanelLink` just builds a URL string — you still need `window.open(link)` to open it
 
-`BrowserHandle`: `getCdpEndpoint()`, `navigate(url)`, `goBack()`, `goForward()`, `reload()`, `stop()`, `close()`.
+`BrowserHandle`: `page()`, `navigate(url)`, `goBack()`, `goForward()`, `reload()`, `stop()`, `close()`.
 
-## Browser Automation (`@workspace/playwright-client`)
-
-```typescript
-import { connect } from "@workspace/playwright-client";
-```
-
-Full Playwright API via CDP. Connect to a browser panel to automate pages.
+## Browser Automation
 
 ```typescript
 const handle = await createBrowserPanel("https://example.com");
-const browser = await connect(await handle.getCdpEndpoint(), "chromium", {});
-const page = browser.contexts()[0]?.pages()[0];
+const page = await handle.page();
 ```
 
-Key `Page` methods: `goto(url)`, `title()`, `content()`, `click(selector)`, `fill(selector, value)`, `screenshot(opts?)`, `evaluate(fn)`, `locator(selector)`, `waitForSelector(selector)`, `waitForURL(url)`, `waitForLoadState(state)`.
+`handle.page()` connects Playwright via CDP and returns a page object. No manual CDP endpoints or imports needed.
 
-Key `Locator` methods: `click()`, `fill(value)`, `textContent()`, `innerText()`, `getAttribute(name)`, `isVisible()`, `count()`, `first()`, `nth(i)`, `filter(opts)`, `screenshot()`.
+Key `Page` methods: `goto(url, opts?)`, `title()`, `content()`, `url()`, `click(selector)`, `fill(selector, value)`, `type(selector, text)`, `waitForSelector(selector)`, `querySelector(selector)`, `evaluate(fn, ...args)`, `screenshot(opts?)`, `close()`.
+
+Use `page.evaluate()` for complex DOM queries — gives you full DOM API access in the page context.
 
 See [BROWSER_AUTOMATION.md](BROWSER_AUTOMATION.md) for full API reference and examples.
 
@@ -261,6 +273,7 @@ import { rpc } from "@workspace/runtime";
 | RPC Call | Description |
 |----------|-------------|
 | `rpc.call("main", "build.getBuild", source, ref?, opts?)` | Build a panel/worker/agent |
+| `rpc.call("main", "build.getBuildNpm", specifier, version, externals?)` | Install + bundle an npm package as CJS for sandbox use |
 | `rpc.call("main", "build.getEffectiveVersion", name)` | Get effective version |
 | `rpc.call("main", "build.hasUnit", name)` | Check if build unit exists |
 | `rpc.call("main", "typecheck.check", source)` | Type-check a panel |
@@ -269,8 +282,88 @@ import { rpc } from "@workspace/runtime";
 
 ```typescript
 import { rpc } from "@workspace/runtime";
-const result = await rpc.call("main", "test.run", "panels/my-app");
+const result = await rpc.call("main", "test.run", contextId, "panels/my-app");
 ```
+
+## OAuth (`oauth`)
+
+```typescript
+import { oauth } from "@workspace/runtime";
+```
+
+Manage OAuth connections. Handles token refresh, consent prompts, and browser sign-in automatically.
+
+**Setup:** Requires a Nango secret key in `~/.config/natstack/.secrets.yml` (`nango: sk-...`). Sign up free at https://app.nango.dev, then configure providers in the Nango dashboard. Use the `api-integrations` skill for full setup guidance.
+
+| Method | Description |
+|--------|-------------|
+| `listProviders()` | List configured providers → `[{ key, provider }]` |
+| `listConnections()` | List active connections → `OAuthConnection[]` |
+| `getConnection(providerKey, connectionId?)` | Check connection status → `OAuthConnection` |
+| `getToken(providerKey, connectionId?)` | Get access token (auto-refreshes) → `{ accessToken, expiresAt, scopes }` |
+| `requestConsent(providerKey, { scopes? })` | Request user consent (shows notification in shell) → `{ consented }` |
+| `startAuth(providerKey, connectionId?, { openIn? })` | Sync cookies + open sign-in (`openIn`: `"panel"` (default) or `"external"`) → `{ authUrl }` |
+| `waitForConnection(providerKey, connectionId?, timeoutMs?)` | Poll until connected → `OAuthConnection` |
+| `connect(providerKey, connectionId?, { scopes?, openIn? })` | All-in-one: consent + auth + wait → `OAuthConnection` |
+| `disconnect(providerKey, connectionId?)` | Revoke connection |
+| `listConsents()` | List consent records for this caller → `ConsentRecord[]` |
+
+`OAuthConnection`: `{ id, provider, email?, connected, lastRefreshed? }`.
+`ConsentRecord`: `{ callerId, provider, scopes, grantedAt }`.
+
+**Quick connect pattern:**
+```typescript
+const conn = await oauth.getConnection("notion");
+if (!conn.connected) {
+  await oauth.requestConsent("notion", { scopes: ["database:read"] });
+  await oauth.startAuth("notion");
+  await oauth.waitForConnection("notion");
+}
+const token = await oauth.getToken("notion");
+```
+
+## Integrations (`@workspace/integrations`)
+
+Pre-built API clients that wrap OAuth + fetch. See `api-integrations` skill for the full spectrum from quick experiments to custom libraries.
+
+For APIs without a pre-built integration, use `oauth.getToken()` + the official npm SDK directly:
+
+```typescript
+import { oauth } from "@workspace/runtime";
+import { Client } from "@notionhq/client";  // npm SDK, installed via imports param
+
+const token = await oauth.getToken("notion");
+const notion = new Client({ auth: token.accessToken });
+const results = await notion.search({ query: "my tasks" });
+```
+
+Pre-built wrappers for Gmail and Calendar:
+
+```typescript
+import { gmail, calendar } from "@workspace/integrations";
+
+const messages = await gmail.search("from:alice");
+await gmail.send({ to: ["bob@example.com"], subject: "Hi", body: "Hello!" });
+const events = await calendar.listEvents();
+
+// Bootstrap OAuth if needed
+await gmail.ensureConnected();
+```
+
+## Notifications (`notifications`)
+
+```typescript
+import { notifications } from "@workspace/runtime";
+```
+
+Push notifications to the shell chrome area (toasts, errors).
+
+| Method | Description |
+|--------|-------------|
+| `show({ type, title, message?, ttl?, actions? })` | Show notification → returns ID |
+| `dismiss(id)` | Dismiss a notification |
+
+Types: `"info"` (5s auto-dismiss), `"success"` (3s), `"warning"` (8s), `"error"` (manual dismiss).
 
 ## Ad Block
 

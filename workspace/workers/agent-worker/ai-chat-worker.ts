@@ -1,6 +1,39 @@
 import { AgentWorkerBase } from "@workspace/agentic-do";
 import type { ChannelEvent, HarnessConfig, HarnessOutput, ParticipantDescriptor } from "@natstack/harness/types";
 
+/**
+ * Default system prompt appended to the SDK's built-in prompt for all chat panels.
+ *
+ * This covers NatStack-specific knowledge: available tools, workspace skills,
+ * interaction patterns, and runtime APIs. The SDK's built-in prompt already
+ * handles general coding behavior, tool usage patterns, and safety guidelines.
+ */
+const CHAT_SYSTEM_PROMPT = `You are an AI assistant in a NatStack workspace — a local, AI-powered environment with stackable panels, browser automation, and a code sandbox.
+
+## Tool guidance
+
+- **eval** is your primary tool. Use it for all actions — files, databases, APIs, panels, browsers. Use static imports (not dynamic await import()). \`contextId\`, \`chat\`, \`scope\`, and \`scopes\` are pre-injected. Every eval result includes a \`[scope]\` summary showing current keys.
+- Use **inline_ui** for interactive results (tables, dashboards, action buttons). Use **feedback_form** when you need a user choice before continuing.
+- Call **set_title** after the first substantive exchange.
+
+## Scope
+
+\`scope\` is a live in-memory object shared across eval calls — store anything (handles, pages, functions, data) and it all works between calls. After every eval, the result includes a \`[scope]\` line listing current keys. Scope is serialized to DB automatically; on panel reload, data survives but functions and class instances are lost. A system message will list what was restored, partially restored, or lost.
+
+## Workspace skills
+
+Load a skill when the conversation enters its domain — don't guess at APIs when a skill has the reference.
+
+- **sandbox** — eval/inline_ui/feedback patterns, runtime API reference (fs, db, git, workers, ai, oauth), browser automation
+- **paneldev** — building panels, workers, Durable Objects, RPC contracts, development workflow
+- **browser-import** — importing cookies, passwords, bookmarks, history from installed browsers
+- **api-integrations** — connecting to OAuth APIs (Gmail, GitHub, Slack, Notion, Linear)
+- **onboarding** — first-time setup, workspace configuration, NatStack overview
+
+## Style
+
+Show, don't tell — use eval to demonstrate. Use inline_ui for rich results. Use feedback_form for choices, not text questions.
+`;
 
 /**
  * AiChatWorker — The default AI chat Durable Object.
@@ -10,13 +43,13 @@ import type { ChannelEvent, HarnessConfig, HarnessOutput, ParticipantDescriptor 
  * that no instance fields need to survive across DO invocations.
  *
  * Key flows:
- *   1. First user message → spawn harness via this.server.spawnHarness()
- *   2. Subsequent messages → start-turn command via this.server.sendHarnessCommand()
- *   3. Harness events → streamed to channel via StreamWriter (async PubSub HTTP)
- *   4. Crash recovery → respawn via this.server.spawnHarness()
+ *   1. First user message → spawn harness via RPC harness.spawn
+ *   2. Subsequent messages → start-turn command via RPC harness.sendCommand
+ *   3. Harness events → streamed to channel via StreamWriter (async PubSub RPC)
+ *   4. Crash recovery → respawn via RPC harness.spawn
  *   5. Tool approval → async via PubSub callMethod + onCallResult continuation
  *
- * All methods return void — side effects are direct HTTP calls, not action arrays.
+ * All methods return void — side effects are RPC calls, not action arrays.
  */
 export class AiChatWorker extends AgentWorkerBase {
   static override schemaVersion = 3;
@@ -26,6 +59,7 @@ export class AiChatWorker extends AgentWorkerBase {
   protected override getHarnessConfig(): HarnessConfig {
     return {
       toolAllowlist: ["eval", "feedback_form", "feedback_custom", "set_title", "inline_ui"],
+      systemPrompt: CHAT_SYSTEM_PROMPT,
     };
   }
 
@@ -101,7 +135,7 @@ export class AiChatWorker extends AgentWorkerBase {
       }
 
       // Spawn harness via server API
-      await this.server.spawnHarness({
+      await this.rpc.call("main", "harness.spawn", {
         doRef: this.doRef,
         harnessId,
         type: this.getHarnessType(),
@@ -111,7 +145,7 @@ export class AiChatWorker extends AgentWorkerBase {
       });
     } else if (this.getActiveTurn(activeHarnessId)) {
       // Turn in progress — send to harness first, only enqueue on success
-      await this.server.sendHarnessCommand(activeHarnessId, {
+      await this.rpc.call("main", "harness.sendCommand", activeHarnessId, {
         type: "start-turn",
         input,
       });
@@ -131,7 +165,7 @@ export class AiChatWorker extends AgentWorkerBase {
       this.advanceCheckpoint(channelId, activeHarnessId, event.id);
 
       // Send start-turn command to harness
-      await this.server.sendHarnessCommand(activeHarnessId, {
+      await this.rpc.call("main", "harness.sendCommand", activeHarnessId, {
         type: "start-turn",
         input,
       });
@@ -285,7 +319,7 @@ export class AiChatWorker extends AgentWorkerBase {
 
         // Check if channel's approval level allows auto-approval
         if (this.shouldAutoApprove(channelId, event.toolName)) {
-          await this.server.sendHarnessCommand(harnessId, {
+          await this.rpc.call("main", "harness.sendCommand", harnessId, {
             type: "approve-tool",
             toolUseId: event.toolUseId,
             allow: true,
@@ -302,7 +336,7 @@ export class AiChatWorker extends AgentWorkerBase {
         const activeTurnForApproval = this.getActiveTurn(harnessId);
         const panelId = activeTurnForApproval?.senderParticipantId;
         if (!panelId) {
-          await this.server.sendHarnessCommand(harnessId, {
+          await this.rpc.call("main", "harness.sendCommand", harnessId, {
             type: "approve-tool",
             toolUseId: event.toolUseId,
             allow: false,
@@ -378,7 +412,7 @@ export class AiChatWorker extends AgentWorkerBase {
           }
         }
 
-        await this.server.sendHarnessCommand(harnessId, {
+        await this.rpc.call("main", "harness.sendCommand", harnessId, {
           type: "discover-methods-result",
           methods,
         });
@@ -416,7 +450,7 @@ export class AiChatWorker extends AgentWorkerBase {
     switch (methodName) {
       case "pause":
         if (activeId) {
-          await this.server.sendHarnessCommand(activeId, { type: "interrupt" });
+          await this.rpc.call("main", "harness.sendCommand", activeId, { type: "interrupt" });
           return { result: { paused: true } };
         }
         return { result: { error: "no active harness" }, isError: true };
@@ -447,7 +481,7 @@ export class AiChatWorker extends AgentWorkerBase {
         }
         const currentActiveId = this.getActiveHarness();
         if (currentActiveId === harnessId) {
-          await this.server.sendHarnessCommand(harnessId, {
+          await this.rpc.call("main", "harness.sendCommand", harnessId, {
             type: "approve-tool",
             toolUseId,
             allow,
@@ -460,7 +494,7 @@ export class AiChatWorker extends AgentWorkerBase {
       case 'tool-call': {
         const { harnessId, callId } = context as { harnessId: string; callId: string };
         // Deliver tool result back to harness
-        await this.server.sendHarnessCommand(harnessId, {
+        await this.rpc.call("main", "harness.sendCommand", harnessId, {
           type: "tool-result",
           callId,
           result,
@@ -510,7 +544,7 @@ export class AiChatWorker extends AgentWorkerBase {
       persist: false,
     });
 
-    await this.server.spawnHarness({
+    await this.rpc.call("main", "harness.spawn", {
       doRef: this.doRef,
       harnessId,
       type: this.getHarnessType(),
@@ -541,9 +575,26 @@ export class AiChatWorker extends AgentWorkerBase {
     const sub = this.getSubscriptionConfig(channelId);
     if (!sub) return base;
 
+    // systemPromptMode controls how the subscription prompt interacts with the
+    // base CHAT_SYSTEM_PROMPT and SDK defaults:
+    //   "append" (default) — subscription prompt layers on top of the base
+    //   "replace-natstack" — subscription prompt replaces NatStack base, still appended to SDK defaults
+    //   "replace" — subscription prompt replaces both NatStack base AND SDK defaults
+    const subPrompt = sub["systemPrompt"] as string | undefined;
+    const subMode = (sub["systemPromptMode"] as HarnessConfig["systemPromptMode"] | undefined);
+    const mergedPrompt = subMode === "replace" || subMode === "replace-natstack"
+      ? (subPrompt ?? base.systemPrompt)
+      : subPrompt && base.systemPrompt
+        ? `${base.systemPrompt}\n\n${subPrompt}`
+        : subPrompt ?? base.systemPrompt;
+    // "replace-natstack" swaps out the NatStack prompt but still appends to SDK defaults,
+    // so it maps to "append" for the harness-level mode.
+    const harnessMode = subMode === "replace-natstack" ? "append" : subMode;
+
     return {
       ...base,
-      ...(sub["systemPrompt"] ? { systemPrompt: sub["systemPrompt"] as string } : {}),
+      ...(mergedPrompt ? { systemPrompt: mergedPrompt } : {}),
+      ...(harnessMode ? { systemPromptMode: harnessMode } : {}),
       ...(sub["model"] ? { model: sub["model"] as string } : {}),
       ...(sub["temperature"] != null
         ? { temperature: sub["temperature"] as number }
@@ -593,7 +644,7 @@ export class AiChatWorker extends AgentWorkerBase {
     }
 
     // Respawn via server API
-    await this.server.spawnHarness({
+    await this.rpc.call("main", "harness.spawn", {
       doRef: this.doRef,
       harnessId,
       type: this.getHarnessType(),

@@ -1,62 +1,11 @@
 /**
- * Replay logic — sends historical messages to newly connected participants.
- * Uses parseRowToChannelEvent() as the single row parser for all paths.
+ * Replay logic — shared helpers for message history queries.
+ * Uses parseRowToChannelEvent() as the single row parser.
  */
 
 import type { SqlStorage } from "@workspace/runtime/worker";
 import type { WsMessageEntry } from "@natstack/pubsub";
-import { parseRowToChannelEvent, channelEventToWsJson, sendWsEvent } from "./broadcast.js";
-import { sendJson } from "./ws-protocol.js";
-
-/**
- * Replay roster-ops (presence events) from the beginning.
- * These are replayed separately to reconstruct the full roster history.
- */
-export function replayRosterOps(ws: WebSocket, sql: SqlStorage): void {
-  const rows = sql.exec(
-    `SELECT id, message_id, type, content, sender_id, ts, sender_metadata FROM messages WHERE type = 'presence' ORDER BY id ASC`,
-  ).toArray();
-
-  for (const row of rows) {
-    const event = parseRowToChannelEvent(row);
-    sendWsEvent(ws, event, "replay");
-  }
-}
-
-/**
- * Replay messages since sinceId (exclusive), excluding presence events.
- * Presence is handled separately by replayRosterOps.
- */
-export function replayMessages(ws: WebSocket, sql: SqlStorage, sinceId: number): void {
-  const rows = sql.exec(
-    `SELECT id, message_id, type, content, sender_id, ts, sender_metadata, attachments
-     FROM messages WHERE id > ? AND type != 'presence' ORDER BY id ASC`,
-    sinceId,
-  ).toArray();
-
-  for (const row of rows) {
-    const event = parseRowToChannelEvent(row);
-    sendWsEvent(ws, event, "replay");
-  }
-}
-
-/**
- * Replay with an anchored limit: find the Nth-from-last "message" type row
- * and replay from there.
- */
-export function replayAnchored(ws: WebSocket, sql: SqlStorage, limit: number): void {
-  const anchorRows = sql.exec(
-    `SELECT id FROM messages WHERE type = 'message' ORDER BY id DESC LIMIT 1 OFFSET ?`,
-    limit - 1,
-  ).toArray();
-
-  if (anchorRows.length > 0) {
-    const anchorId = anchorRows[0]!["id"] as number;
-    replayMessages(ws, sql, anchorId - 1);
-  } else {
-    replayMessages(ws, sql, 0);
-  }
-}
+import { parseRowToChannelEvent } from "./broadcast.js";
 
 /**
  * Get messages before a given ID (for pagination).

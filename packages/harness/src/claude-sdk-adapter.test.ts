@@ -672,10 +672,15 @@ describe('ClaudeSdkAdapter', () => {
         input: { content: 'test', senderId: 'user-1' },
       });
 
-      expect(capturedOptions?.["systemPrompt"]).toBe('Custom system prompt here.');
+      // In default append mode, systemPrompt is wrapped in a preset object
+      expect(capturedOptions?.["systemPrompt"]).toEqual({
+        type: 'preset',
+        preset: 'claude_code',
+        append: 'Custom system prompt here.',
+      });
     });
 
-    it('should prefer per-turn settings systemPrompt over config', async () => {
+    it('should use plain string in replace mode', async () => {
       const sdkMessages = [
         {
           type: 'result',
@@ -694,20 +699,16 @@ describe('ClaudeSdkAdapter', () => {
       const { ClaudeSdkAdapter: MockedAdapter } = await import('./claude-sdk-adapter.js');
       const deps = createDeps();
       const adapter = new MockedAdapter(
-        createConfig({ systemPrompt: 'Config prompt' }),
+        createConfig({ systemPrompt: 'Full replacement prompt.', systemPromptMode: 'replace' }),
         deps,
       );
 
       await adapter.handleCommand({
         type: 'start-turn',
-        input: {
-          content: 'test',
-          senderId: 'user-1',
-          settings: { systemPrompt: 'Per-turn prompt' },
-        },
+        input: { content: 'test', senderId: 'user-1' },
       });
 
-      expect(capturedOptions?.["systemPrompt"]).toBe('Per-turn prompt');
+      expect(capturedOptions?.["systemPrompt"]).toBe('Full replacement prompt.');
     });
   });
 

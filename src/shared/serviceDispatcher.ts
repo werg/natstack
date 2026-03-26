@@ -197,6 +197,12 @@ export class ServiceDispatcher {
   getPolicy(service: string): ServicePolicy | undefined {
     return this.definitions.get(service)?.policy;
   }
+
+  getMethodPolicy(service: string, method: string): ServicePolicy | undefined {
+    const def = this.definitions.get(service);
+    if (!def) return undefined;
+    return def.methods[method]?.policy;
+  }
 }
 
 /**

@@ -362,6 +362,59 @@ async function main() {
   container.register(rpcService(createTypecheckService({ contextFolderManager })));
   container.register(rpcService(createEventsServiceDefinition(eventService)));
 
+  // ── Notification service ──
+  const { createNotificationService } = await import("./services/notificationService.js");
+  const notificationResult = createNotificationService({ eventService });
+  const notificationInternal = notificationResult.internal;
+  container.register(rpcService(notificationResult.definition));
+
+  // ── OAuth service (works in both Electron and standalone modes) ──
+  {
+    const { OAuthManager } = await import("../shared/oauth/oauthManager.js");
+    const { createOAuthService } = await import("./services/oauthService.js");
+    let oauthManager: InstanceType<typeof OAuthManager>;
+    container.register({
+      name: "oauth",
+      dependencies: ["databaseManager"],
+      optionalDependencies: ["panelRegistry"],
+      async start() {
+        const nangoUrl = workspace.config.oauth?.nangoUrl ?? process.env["NANGO_URL"] ?? "https://api.nango.dev";
+        const nangoSecret = process.env["NANGO_SECRET_KEY"] ?? "";
+        oauthManager = new OAuthManager({
+          nangoUrl,
+          nangoSecretKey: nangoSecret,
+          databaseManager,
+        });
+      },
+      async stop() {
+        oauthManager?.close();
+      },
+      getServiceDefinition() {
+        let panelRegistry: import("../shared/panelRegistry.js").PanelRegistry | undefined;
+        try { panelRegistry = container.get<import("../shared/panelRegistry.js").PanelRegistry>("panelRegistry"); } catch { /* not available in Electron mode */ }
+
+        const syncCookiesToSession = async (domain: string) => {
+          try {
+            return await dispatcher.dispatch(
+              { callerId: "oauth-service", callerKind: "server" },
+              "browser-data",
+              "syncCookiesToSession",
+              [domain],
+            ) as { synced: number; failed: number };
+          } catch { /* non-fatal: browser-data service may not be registered */ }
+          return { synced: 0, failed: 0 };
+        };
+
+        return createOAuthService({
+          oauthManager,
+          panelRegistry,
+          notificationService: notificationInternal,
+          syncCookiesToSession,
+        });
+      },
+    });
+  }
+
   // ── DODispatch (source-scoped HTTP dispatch to Durable Objects) ──
 
   container.register({
@@ -389,6 +442,16 @@ async function main() {
           throw new Error(`DO dispatch failed (${resp.status}): ${body}`);
         }
         return await resp.json();
+      });
+
+      // Wire per-instance identity tokens into DO dispatch.
+      doDispatch.setTokenManager(tokenManager);
+      doDispatch.setGetWorkerdUrl(() => {
+        const port = workerdManager.getPort();
+        if (!port) {
+          throw new Error("workerd not running — cannot build workerd URL");
+        }
+        return `http://127.0.0.1:${port}`;
       });
 
       return doDispatch;
@@ -468,60 +531,6 @@ async function main() {
     async stop(instance: import("./harnessManager.js").HarnessManager) { await instance?.stopAll(); },
   });
 
-  // ── Harness HTTP API server (DOs call this to manage harness processes) ──
-  // Starts early (before workerdManager) so the port is known.
-  // Deps are wired lazily — they resolve after container.startAll() completes,
-  // and no requests arrive until workerd is up.
-
-  let harnessApiDeps: import("./harnessApi.js").HarnessApiDeps | null = null;
-
-  container.register({
-    name: "harnessApiServer",
-    async start() {
-      const http = await import("node:http");
-      const { handleHarnessApiRequest } = await import("./harnessApi.js");
-
-      const server = http.createServer(async (req, res) => {
-        try {
-          if (!harnessApiDeps) {
-            res.writeHead(503, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Server not ready" }));
-            return;
-          }
-          const handled = await handleHarnessApiRequest(req, res, harnessApiDeps);
-          if (!handled) {
-            res.writeHead(404, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Not found" }));
-          }
-        } catch (err) {
-          console.error("[HarnessApiServer] Unhandled error:", err);
-          if (!res.headersSent) {
-            res.writeHead(500, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Internal server error" }));
-          }
-        }
-      });
-
-      const port = await new Promise<number>((resolve, reject) => {
-        server.listen(0, "127.0.0.1", () => {
-          const addr = server.address();
-          if (addr && typeof addr === "object") {
-            resolve(addr.port);
-          } else {
-            reject(new Error("Failed to get harness API server address"));
-          }
-        });
-        server.once("error", reject);
-      });
-
-      return { server, port };
-    },
-    async stop(instance: { server: import("node:http").Server; port: number }) {
-      await new Promise<void>((resolve) => {
-        instance?.server?.close(() => resolve());
-      });
-    },
-  });
 
   // ── Harness RPC service ──
 
@@ -537,6 +546,7 @@ async function main() {
         harnessServiceDef = createHarnessService({
           doDispatch,
           harnessManager: harnessManagerInst,
+          contextFolderManager,
         });
       },
       getServiceDefinition() {
@@ -607,13 +617,12 @@ async function main() {
     let buildSystemForWorkerd: import("./buildV2/index.js").BuildSystemV2 | null = null;
     container.register({
       name: "workerdManager",
-      dependencies: ["buildSystem", "rpcServer", "fsService", "harnessApiServer"],
+      dependencies: ["buildSystem", "rpcServer", "fsService"],
       async start(resolve) {
         const { WorkerdManager } = await import("./workerdManager.js");
         buildSystemForWorkerd = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
         const { port: rpcPort } = resolve<{ port: number }>("rpcServer")!;
         const fsServiceInst = resolve<import("../shared/fsService.js").FsService>("fsService")!;
-        const { port: harnessApiPort } = resolve<{ port: number }>("harnessApiServer")!;
 
         workerdManagerInstance = new WorkerdManager({
           tokenManager,
@@ -622,8 +631,6 @@ async function main() {
           getBuild: (unitPath, ref) => buildSystemForWorkerd!.getBuild(unitPath, ref),
           workspacePath,
           statePath,
-          // pubsubUrl removed — channel DOs replace PubSub server
-          serverUrl: `http://127.0.0.1:${harnessApiPort}`,
         });
 
         // Wire push trigger to restart workers on source rebuild
@@ -960,25 +967,18 @@ async function main() {
   // ── Start all services in dependency order ──
   await container.startAll();
 
-  // Wire harness API deps now that all services are up.
-  // No requests can arrive before workerd starts (which depends on harnessApiServer),
-  // and workerd is what routes DO outbound fetch() calls to this server.
-  harnessApiDeps = {
-    harnessManager: container.get<import("./harnessManager.js").HarnessManager>("harnessManager"),
-    doDispatch: container.get<import("./doDispatch.js").DODispatch>("doDispatch"),
-    contextFolderManager,
-    validateToken: (token) => {
-      const result = tokenManager.validateToken(token);
-      if (!result) return { valid: false };
-      return { valid: true, callerId: result.callerId, callerKind: result.callerKind };
-    },
-  };
-
   // Wire DODispatch to workerdManager for restart recovery
   const workerdManager = container.get<import("./workerdManager.js").WorkerdManager>("workerdManager");
   const doDispatchInst = container.get<import("./doDispatch.js").DODispatch>("doDispatch");
 
   doDispatchInst.setEnsureDO((source, className, objectKey) => workerdManager.ensureDO(source, className, objectKey));
+
+  // Wire workerdUrl into rpcServer for HTTP relay to workers/DOs
+  const rpcServerInstance = container.get<{ server: import("./rpcServer.js").RpcServer; port: number }>("rpcServer").server;
+  const workerdPort = workerdManager.getPort();
+  if (workerdPort) {
+    rpcServerInstance.setWorkerdUrl(`http://127.0.0.1:${workerdPort}`);
+  }
 
   dispatcher.markInitialized();
 
@@ -1034,13 +1034,10 @@ async function main() {
       console.warn("[Server] Failed to register headless service:", err);
     }
 
-    const harnessApiPort = container.get<{ port: number }>("harnessApiServer").port;
-
     console.log("natstack-server ready:");
     console.log(`  Git:       http://127.0.0.1:${gitServer.getPort()}`);
     console.log(`  Workerd:   http://127.0.0.1:${workerdMgr?.getPort() ?? '?'}`);
     console.log(`  RPC:       ws://127.0.0.1:${rpcPort}`);
-    console.log(`  Harness:   http://127.0.0.1:${harnessApiPort}`);
     if (panelHttpPort) {
       console.log(`  Panels:    http://127.0.0.1:${panelHttpPort}`);
       console.log(`  Panel API: http://127.0.0.1:${panelHttpPort}/api/panels`);

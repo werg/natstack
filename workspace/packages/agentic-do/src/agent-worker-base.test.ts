@@ -20,13 +20,28 @@ class TestAgent extends AgentWorkerBase {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function mockFetch() {
-  return vi.fn(async () => ({
-    ok: true,
-    status: 200,
-    headers: { get: (h: string) => h === "content-type" ? "application/json" : null },
-    json: async () => ({ ok: true, participantId: "p-new", channelConfig: null }),
-    text: async () => JSON.stringify({ ok: true, participantId: "p-new", channelConfig: null }),
-  }));
+  return vi.fn(async (url: string) => {
+    // RPC calls go to /rpc and expect { result: ... } envelope
+    if (typeof url === "string" && url.includes("/rpc")) {
+      const rpcResult = { result: { ok: true, participantId: "p-new", channelConfig: null } };
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (h: string) => h === "content-type" ? "application/json" : null },
+        json: async () => rpcResult,
+        text: async () => JSON.stringify(rpcResult),
+      };
+    }
+    // Legacy postToDO calls
+    const legacyResult = { ok: true, participantId: "p-new", channelConfig: null };
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: (h: string) => h === "content-type" ? "application/json" : null },
+      json: async () => legacyResult,
+      text: async () => JSON.stringify(legacyResult),
+    };
+  });
 }
 
 async function createAgent(objectKey = "agent-1") {
@@ -178,8 +193,15 @@ describe("AgentWorkerBase fork support", () => {
       expect(subs[0]!["channel_id"]).toBe("forked-channel");
       expect(subs[0]!["context_id"]).toBe("ctx-1");
 
-      const subscribeCalls = (fetchMock.mock.calls as unknown as Array<[string, { body: string }]>)
-        .filter(([url]) => url.includes("/subscribe"));
+      // ChannelClient now uses RPC (POST /rpc with subscribe in the body)
+      const rpcCalls = (fetchMock.mock.calls as unknown as Array<[string, { body: string }]>)
+        .filter(([url]) => url.includes("/rpc"));
+      const subscribeCalls = rpcCalls.filter(([_url, init]) => {
+        try {
+          const body = JSON.parse(init.body);
+          return body.method === "subscribe";
+        } catch { return false; }
+      });
       expect(subscribeCalls.length).toBeGreaterThan(0);
 
       vi.unstubAllGlobals();

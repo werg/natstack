@@ -6,7 +6,7 @@
  * directly — no cross-context navigation needed.
  */
 
-import { pubsubConfig, id as panelClientId, contextId, rpc, focusPanel, useStateArgs, setStateArgs, buildPanelLink } from "@workspace/runtime";
+import { pubsubConfig, id as panelClientId, contextId, rpc, focusPanel, useStateArgs, setStateArgs, buildPanelLink, db } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Flex, Spinner, Text, Theme } from "@radix-ui/themes";
@@ -15,6 +15,7 @@ import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDe
 import { SANDBOX_DEFAULT_TIMEOUT_MS, SANDBOX_MAX_TIMEOUT_MS, SANDBOX_FRAMEWORK_TIMEOUT_MS } from "@workspace/eval";
 import { z } from "zod";
 import type { MethodDefinition } from "@natstack/pubsub";
+import { resolveChatContextId } from "./bootstrap.js";
 
 /** Stable metadata object — avoids creating a new object every render */
 const PANEL_METADATA = { name: "Chat Panel", type: "panel" as const, handle: "user" };
@@ -44,6 +45,8 @@ interface ChatStateArgs {
   initialPrompt?: string;
   /** System prompt for the agent harness */
   systemPrompt?: string;
+  /** How systemPrompt interacts with base NatStack prompt and SDK defaults */
+  systemPromptMode?: "append" | "replace-natstack" | "replace";
 }
 
 /**
@@ -59,6 +62,9 @@ async function subscribeDOToChannel(
   config?: Record<string, unknown>,
   replay?: boolean,
 ): Promise<{ ok: boolean; participantId?: string }> {
+  if (!channelContextId) {
+    throw new Error("Cannot subscribe an agent DO without a context ID");
+  }
   // callDO dispatches via DODispatch which internally ensures the DO is alive
   // on failure (ensureDO + retry). No eager setup needed.
   return rpc.call<{ ok: boolean; participantId?: string }>(
@@ -87,6 +93,7 @@ async function unsubscribeDOFromChannel(
 export default function ChatPanel() {
   const theme = usePanelTheme();
   const stateArgs = useStateArgs<ChatStateArgs>();
+  const resolvedContextId = resolveChatContextId(stateArgs.contextId, contextId);
 
   // Auto-bootstrap: when no channelName, generate one and spawn the default agent
   const [bootstrapChannel, setBootstrapChannel] = useState<string | null>(null);
@@ -94,7 +101,7 @@ export default function ChatPanel() {
   const bootstrapAttempted = useRef(false);
 
   useEffect(() => {
-    if (stateArgs.channelName || bootstrapAttempted.current) return;
+    if (stateArgs.channelName || bootstrapAttempted.current || !resolvedContextId) return;
     bootstrapAttempted.current = true;
 
     const workerSource = stateArgs.agentSource ?? DEFAULT_WORKER_SOURCE;
@@ -107,17 +114,25 @@ export default function ChatPanel() {
     const objectKey = `${baseHandle}-${crypto.randomUUID().slice(0, 8)}`;
     const pending = [{ agentId: className, handle: baseHandle }];
 
-    void setStateArgs({ channelName });
+    void setStateArgs({ channelName, contextId: resolvedContextId, pendingAgents: pending });
 
     const subscribeConfig: Record<string, unknown> = { handle: baseHandle };
     if (stateArgs.systemPrompt) subscribeConfig["systemPrompt"] = stateArgs.systemPrompt;
-    subscribeDOToChannel(workerSource, className, objectKey, channelName, contextId, subscribeConfig, true).catch((err: unknown) => {
+    if (stateArgs.systemPromptMode) subscribeConfig["systemPromptMode"] = stateArgs.systemPromptMode;
+    subscribeDOToChannel(workerSource, className, objectKey, channelName, resolvedContextId, subscribeConfig, true).catch((err: unknown) => {
       console.warn(`[ChatPanel] Failed to subscribe agent DO:`, err);
     });
 
     setBootstrapChannel(channelName);
     setBootstrapPending(pending);
-  }, [stateArgs.channelName]);
+  }, [
+    resolvedContextId,
+    stateArgs.agentClass,
+    stateArgs.agentSource,
+    stateArgs.channelName,
+    stateArgs.systemPrompt,
+    stateArgs.systemPromptMode,
+  ]);
 
   // Clear initialPrompt from persisted stateArgs after capture.
   // useChatCore captures the value in a ref on first render, so this
@@ -135,6 +150,7 @@ export default function ChatPanel() {
     serverUrl: pubsubConfig?.serverUrl ?? "",
     token: pubsubConfig?.token ?? "",
     clientId: panelClientId,
+    rpc,
   };
 
   // New Conversation: force re-bootstrap to get a fresh panel with no stateArgs.
@@ -172,6 +188,10 @@ export default function ChatPanel() {
   }, []);
 
   const handleAddAgent = useCallback(async (channelName: string, channelContextId?: string, agentId?: string) => {
+    const activeContextId = resolveChatContextId(channelContextId, contextId);
+    if (!activeContextId) {
+      throw new Error("Cannot add an agent without a context ID");
+    }
     const agent = agentId
       ? availableAgents.find(a => a.id === agentId || a.className === agentId)
       : availableAgents[0];
@@ -184,7 +204,7 @@ export default function ChatPanel() {
       className,
       objectKey,
       channelName,
-      channelContextId ?? contextId,
+      activeContextId,
     );
     return { agentId: agent?.id ?? DEFAULT_WORKER_SOURCE, handle };
   }, [availableAgents]);
@@ -224,13 +244,21 @@ export default function ChatPanel() {
     onReloadPanel: handleReloadPanel,
   }), [handleNewConversation, handleAddAgent, handleRemoveAgent, availableAgents, handleFocusPanel, handleReloadPanel]);
 
-  // Sandbox config — provides RPC and import loading to agentic-chat (keeps it runtime-agnostic)
+  // Sandbox config — provides RPC, import loading, and DB to agentic-chat (keeps it runtime-agnostic)
   const sandboxConfig: SandboxConfig = useMemo(() => ({
     rpc: { call: (t: string, m: string, ...a: unknown[]) => rpc.call(t, m, ...a) },
     loadImport: async (specifier: string, ref: string | undefined, externals: string[]) => {
+      // npm: prefix → install from npm registry and bundle
+      if (ref?.startsWith("npm:")) {
+        const version = ref.slice(4) || "latest";
+        const result = await rpc.call("main", "build.getBuildNpm", specifier, version, externals) as { bundle: string };
+        return result.bundle;
+      }
+      // Default: workspace package build
       const result = await rpc.call("main", "build.getBuild", specifier, ref, { library: true, externals }) as { bundle: string };
       return result.bundle;
     },
+    db: { open: (name: string) => db.open(name) },
   }), []);
 
   // Tool provider: only eval tool — all other operations use eval + runtime APIs
@@ -242,33 +270,45 @@ export default function ChatPanel() {
 - Top-level await supported (async operations, fetch, timers)
 - Console output streams to the agent in real-time
 - Dynamic imports: build workspace packages on-demand from any git ref
+- npm packages: install and bundle third-party npm packages on-demand
 
 **Available modules** (via import/require):
-- @workspace/runtime — rpc, fs, db, workers, workspace APIs
+- @workspace/runtime — rpc, fs, db, workers, workspace, oauth, notifications APIs
+- @workspace/panel-browser — browserData API for detecting/importing browser data
 - react, @radix-ui/themes, @radix-ui/react-icons — for component rendering
 - Any module in the panel's exposeModules list
 
-**Side effects you can trigger:**
-- File system: read/write files via rpc.call("main", "fs.readFile", path)
-- Database: query/mutate via rpc.call("main", "db.query", sql)
-- Worker management: create/destroy workers via rpc
-- Panel navigation: openPanel(source) to open panels, focusPanel(id) to focus existing ones
-- Send messages to chat: chat.publish("message", { content: "..." })
-- Call channel methods: chat.callMethod(participantId, method, args)
+**Key imports from @workspace/runtime:**
+- import { rpc } from "@workspace/runtime" — raw RPC calls to any service
+- import { oauth } from "@workspace/runtime" — OAuth token management (getToken, connect, listProviders, etc.)
+- import { fs } from "@workspace/runtime" — filesystem read/write
+- import { db } from "@workspace/runtime" — SQLite database access
+- import { workers } from "@workspace/runtime" — worker lifecycle management
+- import { notifications } from "@workspace/runtime" — push notifications to shell chrome
+- import { openPanel, createBrowserPanel, focusPanel } from "@workspace/runtime" — panel navigation
 
-**Pre-injected variables:** contextId, chat
+**Pre-injected variables (do NOT import these):** contextId, chat, scope, scopes
 
-Use static ESM imports (transformed to require() automatically):
-- import { rpc, openPanel, createBrowserPanel, focusPanel } from "@workspace/runtime"
+**REPL scope** — \`scope\` is a live in-memory object shared across eval calls. Store anything — handles, pages, functions, data. It all works between calls within the same session.
+  Example: \`scope.page = await handle.page()\` in call 1, then \`await scope.page.click("button")\` in call 2.
+- \`scopes\` — scope management API:
+  - \`scopes.currentId\` — current scope's durable UUID
+  - \`scopes.push()\` — archive current scope, start new one (inherits serializable values only)
+  - \`scopes.get(id)\` — retrieve archived scope by ID (serialized snapshot — data only, no functions)
+  - \`scopes.list()\` — list all scope entries for this channel
+  - \`scopes.save()\` — force-persist scope to DB now
+- Scope is automatically serialized to DB after every eval call. Non-eval scope writes (inline_ui handlers, async callbacks) require explicit \`scopes.save()\`.
+- **What serialization keeps vs drops:** Primitives, plain objects, arrays, Date, Map, Set survive. Functions, class instances, and Playwright pages are dropped. This only matters on panel reload or \`scopes.get()\` — within a session, \`scope\` holds everything as-is.
+- On panel reload: \`scope.browser.id\` (string) survives even though \`scope.browser.page\` (function) is lost. Reconnect via \`getBrowserHandle(scope.browser.id)\`.
 
-The variable \`contextId\` is pre-injected — use it directly, do NOT import it from @workspace/runtime.
-IMPORTANT: Use static import syntax, NOT dynamic await import().`,
+IMPORTANT: Use static import syntax, NOT dynamic await import().
+The variable \`contextId\` is pre-injected — use it directly, do NOT import it from @workspace/runtime.`,
       parameters: z.object({
         code: z.string().describe("The TypeScript/JavaScript code to execute"),
         syntax: z.enum(["typescript", "jsx", "tsx"]).default("tsx").describe("Target syntax"),
         timeout: z.number().default(SANDBOX_DEFAULT_TIMEOUT_MS).describe(`Timeout in ms (default: ${SANDBOX_DEFAULT_TIMEOUT_MS}, max: ${SANDBOX_MAX_TIMEOUT_MS}).`),
         imports: z.record(z.string(), z.string()).optional()
-          .describe("Workspace packages to build on-demand. Values: \"latest\" (current HEAD) or a git ref (branch/tag/SHA). E.g. { \"@workspace-skills/paneldev\": \"latest\" }"),
+          .describe("Packages to build on-demand. For workspace packages, values are \"latest\" (current HEAD) or a git ref. For npm packages, use \"npm:<version>\" (e.g. \"npm:^4.17.21\") or \"npm:latest\". Examples: { \"@workspace-skills/paneldev\": \"latest\", \"lodash\": \"npm:^4.17.21\", \"d3\": \"npm:7\" }"),
       }),
       streaming: true,
       timeout: SANDBOX_FRAMEWORK_TIMEOUT_MS,
@@ -281,17 +321,41 @@ IMPORTANT: Use static import syntax, NOT dynamic await import().`,
           imports: typedArgs.imports,
           bindings: { contextId: deps.contextId, chat: deps.chat },
           onConsole: (formatted: string) => {
-            void ctx.stream({ type: "console", content: formatted }).catch(() => {});
+            void ctx.stream({ type: "console", content: formatted }).catch(err => console.warn("[Chat] Console stream failed:", err));
           },
         });
 
+        const scopeKeys = Object.keys(deps.scope);
+        const scopeLine = scopeKeys.length > 0
+          ? `[scope] keys: ${scopeKeys.join(", ")} (${scopeKeys.length} total)`
+          : "[scope] (empty)";
+
         if (!result.success) {
-          throw new Error(result.error || "Eval failed");
+          throw new Error(`${result.error || "Eval failed"}\n${scopeLine}`);
         }
-        return {
-          consoleOutput: result.consoleOutput || "(no output)",
-          returnValue: result.returnValue,
-        };
+
+        // Format as a pre-structured ToolExecutionResult so the AI sees
+        // clean, readable text instead of double-escaped JSON.
+        const parts: Array<{ type: "text"; text: string }> = [];
+        if (result.consoleOutput) {
+          parts.push({ type: "text", text: `[eval] Console:\n${result.consoleOutput}` });
+        }
+        if (result.returnValue !== undefined && result.returnValue !== null) {
+          let formatted: string;
+          try {
+            formatted = typeof result.returnValue === "string"
+              ? result.returnValue
+              : JSON.stringify(result.returnValue, null, 2);
+          } catch {
+            formatted = String(result.returnValue);
+          }
+          parts.push({ type: "text", text: `[eval] Return value:\n${formatted}` });
+        }
+        if (parts.length === 0) {
+          parts.push({ type: "text", text: "[eval] (no output)" });
+        }
+        parts.push({ type: "text", text: scopeLine });
+        return { content: parts };
       },
     };
 
@@ -301,7 +365,6 @@ IMPORTANT: Use static import syntax, NOT dynamic await import().`,
   // Resolve channel name: from stateArgs (existing chat) or bootstrap (new chat)
   const channelName = stateArgs.channelName ?? bootstrapChannel;
   const pendingAgents = stateArgs.pendingAgents ?? bootstrapPending ?? undefined;
-  const resolvedContextId = stateArgs.contextId ?? contextId;
 
   // Still bootstrapping — show a brief loading indicator
   if (!channelName) {

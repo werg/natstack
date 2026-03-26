@@ -26,7 +26,7 @@ export interface SubscribeResult {
 export interface ParticipantInfo {
   id: string;
   metadata: Record<string, unknown>;
-  transport: "ws" | "do";
+  transport: "rpc" | "do";
   connectedAt: number;
   doSource?: string;
   doClass?: string;
@@ -47,25 +47,10 @@ export interface PresencePayload {
   leaveReason?: "graceful" | "disconnect";
 }
 
-/** WS-specific metadata passed alongside a ChannelEvent to broadcast(). */
+/** Metadata passed alongside a ChannelEvent to broadcast(). */
 export interface BroadcastEnvelope {
   kind: "persisted" | "ephemeral";
   ref?: number;
-}
-
-/** Client message format received from WebSocket clients. */
-export type ClientMessage =
-  | { action: "publish"; type: string; payload: unknown; persist?: boolean; ref?: number; attachmentMeta?: AttachmentMeta[] }
-  | { action: "update-metadata"; payload: unknown; ref?: number }
-  | { action: "close"; ref?: number }
-  | { action: "update-config"; config: Partial<ChannelConfig>; ref?: number }
-  | { action: "get-messages-before"; beforeId: number; limit?: number; ref?: number };
-
-/** Attachment metadata from binary wire format. */
-export interface AttachmentMeta {
-  mimeType: string;
-  name?: string;
-  size: number;
 }
 
 /** Attachment stored in messages table (JSON). */

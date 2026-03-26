@@ -15,6 +15,10 @@ export function createRoutingBridge(electronBridge: RpcBridge, serverBridge: Rpc
     get selfId() { return electronBridge.selfId; },
 
     call<T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T> {
+      // Route DO/worker targets to server (the server relay handles them)
+      if (targetId.startsWith("do:") || targetId.startsWith("worker:")) {
+        return serverBridge.call<T>(targetId, method, ...args);
+      }
       // Only route to server for service calls to "main" — panel-to-panel RPC
       // (targetId is a panel/worker ID) always goes through Electron.
       const service = method.split(".")[0]!;
@@ -25,6 +29,10 @@ export function createRoutingBridge(electronBridge: RpcBridge, serverBridge: Rpc
     },
 
     emit(targetId: string, event: string, payload: unknown): Promise<void> {
+      // Route DO/worker targets to server (the server relay handles them)
+      if (targetId.startsWith("do:") || targetId.startsWith("worker:")) {
+        return serverBridge.emit(targetId, event, payload);
+      }
       // Events always via Electron (panel-tree, theme changes come from Electron)
       return electronBridge.emit(targetId, event, payload);
     },
@@ -55,6 +63,11 @@ export function createRoutingBridge(electronBridge: RpcBridge, serverBridge: Rpc
       // - Server: tool execution requests (ws:tool-exec → synthetic ai.executeTool)
       electronBridge.exposeMethod(method, handler);
       serverBridge.exposeMethod(method, handler);
+    },
+
+    expose(methods: Record<string, (...args: any[]) => any>): void {
+      electronBridge.expose(methods);
+      serverBridge.expose(methods);
     },
   };
 }

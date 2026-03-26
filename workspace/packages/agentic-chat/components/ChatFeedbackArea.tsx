@@ -1,3 +1,4 @@
+import { useCallback } from "react";
 import { Flex } from "@radix-ui/themes";
 import {
   FeedbackContainer,
@@ -10,7 +11,10 @@ import { useChatContext } from "../context/ChatContext";
  * Reads from ChatContext.
  */
 export function ChatFeedbackArea() {
-  const { activeFeedbacks, onFeedbackDismiss, onFeedbackError, chat } = useChatContext();
+  const { activeFeedbacks, onFeedbackDismiss, onFeedbackError, chat, scope, scopes, scopeManager } = useChatContext();
+
+  // DOM event delegation — silent best-effort persist after user interaction
+  const onInteraction = useCallback(() => scopeManager?.schedulePersist(2000), [scopeManager]);
 
   if (activeFeedbacks.size === 0) return null;
 
@@ -57,12 +61,22 @@ export function ChatFeedbackArea() {
             onDismiss={() => onFeedbackDismiss(feedback.callId)}
             onError={(error) => onFeedbackError(feedback.callId, error)}
           >
-            <FeedbackComponent
-              onSubmit={(value) => feedback.complete({ type: "submit", value })}
-              onCancel={() => feedback.complete({ type: "cancel" })}
-              onError={(message) => feedback.complete({ type: "error", message })}
-              chat={chat as unknown as Record<string, unknown>}
-            />
+            <div onClickCapture={onInteraction} onInputCapture={onInteraction} onChangeCapture={onInteraction}>
+              <FeedbackComponent
+                onSubmit={(value) => {
+                  const done = () => feedback.complete({ type: "submit", value });
+                  scopeManager ? void scopeManager.persist().catch(() => {}).then(done) : done();
+                }}
+                onCancel={() => {
+                  const done = () => feedback.complete({ type: "cancel" });
+                  scopeManager ? void scopeManager.persist().catch(() => {}).then(done) : done();
+                }}
+                onError={(message) => feedback.complete({ type: "error", message })}
+                chat={chat as unknown as Record<string, unknown>}
+                scope={scope}
+                scopes={scopes as unknown as Record<string, unknown>}
+              />
+            </div>
           </FeedbackContainer>
         );
       })}

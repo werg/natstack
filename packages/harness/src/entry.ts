@@ -162,12 +162,18 @@ async function createAdapter(
       };
 
       // Resource loader with skills enabled.
+      // Default to appending the custom prompt to the SDK's built-in system prompt
+      // so skill discovery, tool instructions, and coding guidelines are preserved.
+      const promptMode = config.systemPromptMode ?? 'append';
       const resourceLoader = new piSdk.DefaultResourceLoader({
         cwd,
         additionalSkillPaths: [join(cwd, "skills")],
         settingsManager: piSdk.SettingsManager.inMemory(),
-        ...(config.systemPrompt && {
+        ...(config.systemPrompt && promptMode === 'replace' && {
           systemPromptOverride: () => config.systemPrompt!,
+        }),
+        ...(config.systemPrompt && promptMode === 'append' && {
+          appendSystemPrompt: config.systemPrompt,
         }),
       });
       await resourceLoader.reload();

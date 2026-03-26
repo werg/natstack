@@ -176,7 +176,10 @@ export const ImportDataTypeSchema = z.enum(IMPORT_DATA_TYPES);
 
 export interface ImportRequest {
   browser: BrowserName;
-  profilePath: string;
+  /** Pass a DetectedProfile object or a profile path string. Preferred over profilePath. */
+  profile?: DetectedProfile | string;
+  /** @deprecated Use `profile` instead. Full path to the profile directory. */
+  profilePath?: string;
   dataTypes: ImportDataType[];
   masterPassword?: string;
   csvPasswordFile?: string;
@@ -184,11 +187,26 @@ export interface ImportRequest {
 
 export const ImportRequestSchema = z.object({
   browser: BrowserNameSchema,
-  profilePath: z.string(),
+  profile: z.union([DetectedProfileSchema, z.string()]).optional(),
+  profilePath: z.string().optional(),
   dataTypes: z.array(ImportDataTypeSchema),
   masterPassword: z.string().optional(),
   csvPasswordFile: z.string().optional(),
-});
+}).refine(
+  (r) => r.profile != null || r.profilePath != null,
+  { message: "Either 'profile' (DetectedProfile or path string) or 'profilePath' is required" },
+);
+
+/** Resolve an ImportRequest's profile/profilePath to a concrete path string. */
+export function resolveProfilePath(request: ImportRequest): string {
+  if (request.profile != null) {
+    return typeof request.profile === "string" ? request.profile : request.profile.path;
+  }
+  if (request.profilePath != null) {
+    return request.profilePath;
+  }
+  throw new Error("Either 'profile' or 'profilePath' must be provided");
+}
 
 export type ImportPhase =
   | "copying" | "reading" | "decrypting" | "normalizing"

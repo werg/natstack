@@ -19,7 +19,51 @@ export type EventName =
   | "browser-import-progress"
   | "browser-import-complete"
   | "browser-data-changed"
-  | "autofill:save-prompt";
+  | "autofill:save-prompt"
+  | "notification:show"
+  | "notification:dismiss"
+  | "notification:action";
+
+/**
+ * Action button definition for notifications.
+ */
+export interface NotificationAction {
+  id: string;
+  label: string;
+  variant?: "solid" | "soft" | "ghost";
+}
+
+/**
+ * OAuth consent metadata for consent-type notifications.
+ */
+export interface NotificationConsentData {
+  provider: string;
+  scopes: string[];
+  /** ID of the caller requesting access (panel ID or worker ID) */
+  callerId: string;
+  /** Human-readable name of the caller */
+  callerTitle: string;
+  /** Whether the caller is a worker (affects display text) */
+  callerKind: "panel" | "worker";
+}
+
+/**
+ * Payload for showing a notification in the shell chrome area.
+ */
+export interface NotificationPayload {
+  id: string;
+  type: "info" | "success" | "warning" | "error" | "consent";
+  title: string;
+  message?: string;
+  /** Structured consent data (only for type: "consent") */
+  consent?: NotificationConsentData;
+  /** Auto-dismiss after this many ms (0 = manual dismiss only, default varies by type) */
+  ttl?: number;
+  /** Action buttons */
+  actions?: NotificationAction[];
+  /** Panel that triggered this notification */
+  sourcePanelId?: string;
+}
 
 /**
  * Event payloads for type safety.
@@ -50,6 +94,9 @@ export interface EventPayloads {
   }[];
   "browser-data-changed": { dataType: string };
   "autofill:save-prompt": { panelId: string; origin: string; username: string; isUpdate: boolean };
+  "notification:show": NotificationPayload;
+  "notification:dismiss": { id: string };
+  "notification:action": { id: string; actionId: string };
 }
 
 /**
@@ -67,6 +114,9 @@ export const VALID_EVENT_NAMES: EventName[] = [
   "browser-import-complete",
   "browser-data-changed",
   "autofill:save-prompt",
+  "notification:show",
+  "notification:dismiss",
+  "notification:action",
 ];
 
 /**

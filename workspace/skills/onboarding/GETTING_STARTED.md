@@ -51,10 +51,8 @@ Quick start — detect what browsers are available:
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const api = createBrowserDataApi(rpc);
-  const browsers = await api.detectBrowsers();
+  import { browserData } from "@workspace/panel-browser";
+  const browsers = await browserData.detectBrowsers();
   for (const b of browsers) {
     const status = b.tccBlocked ? " (blocked — needs permission)" : "";
     console.log(b.displayName + status + " — " + b.profiles.length + " profile(s)");

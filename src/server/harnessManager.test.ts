@@ -18,6 +18,7 @@ function createMockBridge(id = "mock-bridge"): RpcBridge {
   return {
     selfId: id,
     exposeMethod: vi.fn(),
+    expose: vi.fn(),
     call: vi.fn(),
     emit: vi.fn(),
     onEvent: vi.fn(() => () => {}),

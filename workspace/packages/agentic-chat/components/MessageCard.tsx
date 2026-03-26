@@ -1,4 +1,4 @@
-import React, { useCallback, type ComponentType } from "react";
+import React, { useCallback } from "react";
 import { Box, Card, Flex, IconButton, Text } from "@radix-ui/themes";
 import { CopyIcon, CheckIcon } from "@radix-ui/react-icons";
 import { CONTENT_TYPE_INLINE_UI } from "@natstack/pubsub";
@@ -7,7 +7,7 @@ import { MessageContent } from "./MessageContent";
 import { ImageGallery } from "./ImageGallery";
 import { InlineUiMessage, parseInlineUiData } from "./InlineUiMessage";
 import { AgentDisconnectedMessage } from "./AgentDisconnectedMessage";
-import type { ChatMessage, ChatParticipantMetadata } from "../types";
+import type { ChatMessage, ChatParticipantMetadata, InlineUiComponentEntry } from "../types";
 
 interface MessageCardProps {
   msg: ChatMessage;
@@ -16,11 +16,7 @@ interface MessageCardProps {
   isStreaming: boolean;
   /** Whether this specific message was just copied (shows checkmark icon) */
   isCopied: boolean;
-  inlineUiComponents?: Map<string, {
-    Component?: ComponentType<{ props: Record<string, unknown>; chat?: Record<string, unknown> }>;
-    cacheKey: string;
-    error?: string;
-  }>;
+  inlineUiComponents?: Map<string, InlineUiComponentEntry>;
   onInterrupt: (msgId: string, senderId: string) => void;
   onCopy: (msgId: string, content: string) => void;
   onFocusPanel?: (panelId: string) => void;

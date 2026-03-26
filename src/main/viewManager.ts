@@ -83,6 +83,8 @@ export interface LayoutState {
   sidebarWidth: number;
   /** Height of save-password bar (0 when hidden) */
   saveBarHeight: number;
+  /** Height of notification bar (0 when hidden) */
+  notificationBarHeight: number;
 }
 
 export class ViewManager {
@@ -98,6 +100,7 @@ export class ViewManager {
     sidebarVisible: false,
     sidebarWidth: 260,
     saveBarHeight: 0,
+    notificationBarHeight: 0,
   };
   /** ID of the currently visible panel (to apply bounds updates) */
   private visiblePanelId: string | null = null;
@@ -493,9 +496,9 @@ export class ViewManager {
     const size = this.window.getContentSize();
     const windowWidth = size[0] ?? 0;
     const windowHeight = size[1] ?? 0;
-    const { titleBarHeight, sidebarVisible, sidebarWidth, saveBarHeight } = this.layoutState;
+    const { titleBarHeight, sidebarVisible, sidebarWidth, saveBarHeight, notificationBarHeight } = this.layoutState;
     const effectiveSidebarWidth = sidebarVisible ? sidebarWidth : 0;
-    const topOffset = titleBarHeight + saveBarHeight;
+    const topOffset = titleBarHeight + notificationBarHeight + saveBarHeight;
 
     return {
       x: effectiveSidebarWidth,

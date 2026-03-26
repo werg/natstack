@@ -7,7 +7,7 @@ export function createBuildService(deps: {
 }): ServiceDefinition {
   return {
     name: "build",
-    description: "Build system (getBuild, recompute, gc, getAboutPages)",
+    description: "Build system (getBuild, getBuildNpm, recompute, gc, getAboutPages)",
     policy: { allowed: ["panel", "shell", "server", "worker"] },
     methods: {
       getBuild: {
@@ -18,6 +18,13 @@ export function createBuildService(deps: {
             library: z.boolean().optional(),
             externals: z.array(z.string()).optional(),
           }).optional(),
+        ]),
+      },
+      getBuildNpm: {
+        args: z.tuple([
+          z.string(),
+          z.string(),
+          z.array(z.string()).optional(),
         ]),
       },
       getEffectiveVersion: { args: z.tuple([z.string()]) },
@@ -33,6 +40,11 @@ export function createBuildService(deps: {
           args[0] as string,
           args[1] as string | undefined,
           args[2] as BuildUnitOptions | undefined,
+        );
+        case "getBuildNpm": return bs.getBuildNpm(
+          args[0] as string,
+          args[1] as string,
+          args[2] as string[] | undefined,
         );
         case "getEffectiveVersion": return bs.getEffectiveVersion(args[0] as string);
         case "recompute": return bs.recompute();

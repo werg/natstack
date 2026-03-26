@@ -21,20 +21,18 @@ feedback_custom({
   title: "Import Browser Data",
   code: `... import wizard from DISCOVERY.md ...`
 })
-// → returns { browser, profilePath, dataTypes }
+// → returns { browser, profile, dataTypes }
 ```
 
 ### Step 2: Import
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const api = createBrowserDataApi(rpc);
+  import { browserData } from "@workspace/panel-browser";
 
-  const results = await api.startImport({
+  const results = await browserData.startImport({
     browser: "${selection.browser}",
-    profilePath: "${selection.profilePath}",
+    profile: "${selection.profile}",
     dataTypes: ${JSON.stringify(selection.dataTypes)},
   });
 
@@ -52,18 +50,17 @@ Cookies were auto-synced during import — just open a browser panel and check.
 ```
 eval({ code: `
   import { createBrowserPanel } from "@workspace/runtime";
-  import { connect } from "@workspace/playwright-client";
 
   // Open target site — imported cookies are already in the browser session
   const handle = await createBrowserPanel("https://github.com");
-  const browser = await connect(await handle.getCdpEndpoint(), "chromium", {});
-  const page = browser.contexts()[0]?.pages()[0];
+  const page = await handle.page();
 
-  if (page) {
-    await page.waitForLoadState("networkidle");
-    const avatar = await page.locator("img.avatar").count();
-    console.log(avatar > 0 ? "✅ Logged in to GitHub!" : "❌ Not logged in");
-  }
+  const title = await page.title();
+  console.log("Page title:", title);
+  const isLoggedIn = await page.evaluate(() =>
+    document.querySelector("img.avatar") !== null
+  );
+  console.log(isLoggedIn ? "Logged in to GitHub!" : "Not logged in");
 `, timeout: 30000 })
 ```
 
@@ -82,12 +79,10 @@ User asks "import my GitHub cookies" — targeted flow.
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const api = createBrowserDataApi(rpc);
+  import { browserData } from "@workspace/panel-browser";
 
   // Find a browser with cookies for this domain
-  const browsers = await api.detectBrowsers();
+  const browsers = await browserData.detectBrowsers();
   const available = browsers.filter(b => !b.tccBlocked && b.profiles.length > 0);
 
   if (available.length === 0) {
@@ -100,14 +95,14 @@ eval({ code: `
   const profile = browser.profiles.find(p => p.isDefault) || browser.profiles[0];
   console.log("Importing cookies from", browser.displayName, "—", profile.displayName);
 
-  await api.startImport({
+  await browserData.startImport({
     browser: browser.name,
-    profilePath: profile.path,
+    profile,
     dataTypes: ["cookies"],
   });
 
   // Check if we got GitHub cookies (auto-synced to browser session during import)
-  const cookies = await api.getCookies("github.com");
+  const cookies = await browserData.getCookies("github.com");
   console.log("Found", cookies.length, "GitHub cookies (auto-synced to browser session)");
 
   return { browser: browser.displayName, profile: profile.displayName, cookieCount: cookies.length };
@@ -120,11 +115,9 @@ Compare what data exists across multiple browsers.
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc } from "@workspace/runtime";
-  const api = createBrowserDataApi(rpc);
+  import { browserData } from "@workspace/panel-browser";
 
-  const browsers = await api.detectBrowsers();
+  const browsers = await browserData.detectBrowsers();
   const comparison = [];
 
   for (const browser of browsers) {
@@ -134,9 +127,9 @@ eval({ code: `
     }
     for (const profile of browser.profiles) {
       // Import everything to count items
-      const results = await api.startImport({
+      const results = await browserData.startImport({
         browser: browser.name,
-        profilePath: profile.path,
+        profile,
         dataTypes: ["cookies", "passwords", "bookmarks", "history"],
       });
       comparison.push({
@@ -205,11 +198,10 @@ Dump all imported data for backup or migration.
 
 ```
 eval({ code: `
-  import { createBrowserDataApi } from "@workspace/panel-browser";
-  import { rpc, fs } from "@workspace/runtime";
-  const api = createBrowserDataApi(rpc);
+  import { browserData } from "@workspace/panel-browser";
+  import { fs } from "@workspace/runtime";
 
-  const dump = await api.exportAll();
+  const dump = await browserData.exportAll();
   const path = "/exports/browser-data-" + new Date().toISOString().slice(0, 10) + ".json";
   await fs.mkdir("/exports", { recursive: true });
   await fs.writeFile(path, dump);
@@ -223,7 +215,7 @@ eval({ code: `
 The agent should compose these building blocks based on what the user actually asks:
 
 - **"Import my Chrome cookies"** → skip wizard, auto-detect Chrome, import cookies only, show cookie manager
-- **"Set up GitHub authentication"** → import cookies (auto-synced) → open browser panel → verify login → leave cookie manager filtered to github.com
+- **"Set up GitHub authentication"** → import cookies (auto-synced) → set up OAuth (see `api-integrations` skill) → connect with `openIn: "panel"` (imported cookies make sign-in seamless)
 - **"What browsers do I have?"** → discovery only, show rich browser cards
 - **"Show me my saved passwords"** → import passwords if not already imported → show password vault
 - **"Import everything from Firefox"** → detect Firefox → import all types → show summary → leave managers for each type

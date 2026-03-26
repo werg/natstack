@@ -43,14 +43,14 @@ async onChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
 
 ## Server-Side Components
 
-### HarnessApi (`src/server/harnessApi.ts`)
+### HarnessService (`src/server/services/harnessService.ts`)
 
-HTTP endpoints called by DOs directly via fetch():
-- `POST /harness/spawn` — spawn a new harness process
-- `POST /harness/{id}/command` — send a command to a running harness
-- `POST /harness/{id}/stop` — stop a harness process
-- `POST /do/clone` — clone a DO's SQLite (self-class only)
-- `POST /validate-token` — validate a caller token, returns identity
+RPC service for harness lifecycle management. DOs call via `this.rpc.call("main", "harness.*", ...)`:
+- `harness.spawn` — spawn a new harness process (returns `{ ok, harnessId }`)
+- `harness.sendCommand` — send a command to a running harness (start-turn, approve-tool, interrupt, etc.)
+- `harness.stop` — stop a harness process
+- `harness.pushEvent` — receive HarnessOutput events from harness processes
+- `harness.getStatus` — get harness status
 
 ### DODispatch (`src/server/doDispatch.ts`)
 
@@ -115,7 +115,7 @@ Panel sends message → Channel DO → callback to Worker DO → onChannelEvent(
   4. Send bootstrap typing indicator via channel.send()
   5. Call this.server.spawnHarness() with initialInput
 
-Server handles /harness/spawn:
+Server handles harness.spawn RPC:
   1. Ensure context folder
   2. Fork Node.js process
   3. Wait for WebSocket authentication
@@ -175,6 +175,8 @@ Harness process dies → HarnessManager detects exit → DODispatch
 
 | Service | Method | Purpose |
 |---------|--------|---------|
+| `build` | `getBuild` | Build a workspace package (panel/worker/library) on demand |
+| `build` | `getBuildNpm` | Install + bundle an npm package as CJS for sandbox eval |
 | `workers` | `listSources` | Available worker DO classes |
 | `workers` | `getChannelWorkers` | DOs subscribed to a channel |
 | `workers` | `callDO` | Call a DO method (subscribe/unsubscribe) |
@@ -189,7 +191,7 @@ Harness process dies → HarnessManager detects exit → DODispatch
 |---------|----------|----------|
 | `@natstack/harness` | `packages/harness/` | Types (HarnessOutput, ChannelEvent), SDK adapters |
 | `@natstack/pubsub` | `workspace/packages/pubsub/` | PubSubClient (panel-side), protocol types, approval schemas |
-| `@workspace/runtime` | `workspace/packages/runtime/` | DurableObjectBase, ServerDOClient |
+| `@workspace/runtime` | `workspace/packages/runtime/` | DurableObjectBase, HttpRpcBridge, shared clients (OAuth, DB, FS) |
 | `@workspace/agentic-do` | `workspace/packages/agentic-do/` | AgentWorkerBase, ChannelClient, StreamWriter, composable modules |
 | Workers | `workspace/workers/` | DO implementations (agent-worker, test-agent) |
 

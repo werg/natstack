@@ -2,7 +2,11 @@
   "compilerOptions": {
     "target": "ES2020",
     "module": "ESNext",
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2020",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "jsx": "react-jsx",
     "noEmit": true,
     "rootDir": ".",
@@ -18,51 +22,195 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "moduleResolution": "bundler",
-    "types": ["node", "vitest/globals"],
+    "types": [
+      "node",
+      "vitest/globals"
+    ],
     "baseUrl": ".",
     "paths": {
-      "@natstack/ai": ["packages/ai/src/index.ts"],
-      "@natstack/browser-data": ["packages/browser-data/src/index.ts"],
-      "@natstack/dev-log": ["packages/dev-log/src/index.ts"],
-      "@natstack/env-paths": ["packages/env-paths/src/index.ts"],
-      "@natstack/git": ["packages/git/src/index.ts"],
-      "@natstack/git-server": ["packages/git-server/src/index.ts"],
-      "@natstack/harness": ["packages/harness/src/index.ts"],
-      "@natstack/harness/entry": ["packages/harness/src/entry.ts"],
-      "@natstack/harness/types": ["packages/harness/src/types.ts"],
-      "@natstack/port-utils": ["packages/port-utils/src/index.ts"],
-      "@natstack/process-adapter": ["packages/process-adapter/src/index.ts"],
-      "@natstack/pubsub": ["workspace/packages/pubsub/src/index.ts"],
-      "@natstack/rpc": ["packages/rpc/src/index.ts"],
-      "@natstack/typecheck": ["packages/typecheck/src/index.ts"],
-      "@natstack/types": ["packages/types/src/index.ts"],
-      "@workspace/about-shared/serviceAdapters": ["workspace/packages/about-shared/serviceAdapters.ts"],
-      "@workspace/about-shared/types": ["workspace/packages/about-shared/types.ts"],
-      "@workspace/agentic-chat": ["workspace/packages/agentic-chat/index.ts"],
-      "@workspace/agentic-chat/types": ["workspace/packages/agentic-chat/types.ts"],
-      "@workspace/agentic-components": ["workspace/packages/agentic-components/index.ts"],
-      "@workspace/agentic-components/types": ["workspace/packages/agentic-components/types.ts"],
-      "@workspace/agentic-do": ["workspace/packages/agentic-do/src/index.ts"],
-      "@workspace/core": ["workspace/packages/core/src/index.ts"],
-      "@workspace/core/form-schema": ["workspace/packages/core/src/form-schema.ts"],
-      "@workspace/eval": ["workspace/packages/eval/src/index.ts"],
-      "@workspace/git-ui": ["workspace/packages/git-ui/src/index.ts"],
-      "@workspace/git-ui/constants": ["workspace/packages/git-ui/src/constants.ts"],
-      "@workspace/git-ui/monaco": ["workspace/packages/git-ui/src/monaco.ts"],
-      "@workspace/panel-browser": ["workspace/packages/panel-browser/src/index.ts"],
-      "@workspace/playwright-client": ["workspace/packages/playwright-client/src/index.ts"],
-      "@workspace/playwright-core": ["workspace/packages/playwright-core/src/index.ts"],
-      "@workspace/playwright-protocol": ["workspace/packages/playwright-protocol/src/index.ts"],
-      "@workspace/react": ["workspace/packages/react/src/index.ts"],
-      "@workspace/runtime": ["workspace/packages/runtime/src/panel/index.ts"],
-      "@workspace/runtime/worker": ["workspace/packages/runtime/src/worker/index.ts"],
-      "@workspace/runtime/worker/test-utils": ["workspace/packages/runtime/src/worker/durable-test-utils.ts"],
-      "@workspace/runtime/workerd-client": ["workspace/packages/runtime/src/shared/workerd.ts"],
-      "@workspace/tool-ui": ["workspace/packages/tool-ui/src/index.ts"],
-      "@workspace-workers/*": ["workspace/workers/*/index.ts"],
-      "modern-monaco/editor-core": ["workspace/packages/git-ui/node_modules/modern-monaco/types/monaco.d.ts"]
+      "@natstack/ai": [
+        "packages/ai/src/index.ts"
+      ],
+      "@natstack/browser-data": [
+        "packages/browser-data/src/index.ts"
+      ],
+      "@natstack/dev-log": [
+        "packages/dev-log/src/index.ts"
+      ],
+      "@natstack/env-paths": [
+        "packages/env-paths/src/index.ts"
+      ],
+      "@natstack/git": [
+        "packages/git/src/index.ts"
+      ],
+      "@natstack/git-server": [
+        "packages/git-server/src/index.ts"
+      ],
+      "@natstack/harness": [
+        "packages/harness/src/index.ts"
+      ],
+      "@natstack/harness/entry": [
+        "packages/harness/src/entry.ts"
+      ],
+      "@natstack/harness/types": [
+        "packages/harness/src/types.ts"
+      ],
+      "@natstack/port-utils": [
+        "packages/port-utils/src/index.ts"
+      ],
+      "@natstack/process-adapter": [
+        "packages/process-adapter/src/index.ts"
+      ],
+      "@natstack/pubsub": [
+        "workspace/packages/pubsub/src/index.ts"
+      ],
+      "@natstack/rpc": [
+        "packages/rpc/src/index.ts"
+      ],
+      "@natstack/typecheck": [
+        "packages/typecheck/src/index.ts"
+      ],
+      "@natstack/types": [
+        "packages/types/src/index.ts"
+      ],
+      "@workspace-about/about": [
+        "workspace/about/about/index.tsx"
+      ],
+      "@workspace-about/adblock": [
+        "workspace/about/adblock/index.tsx"
+      ],
+      "@workspace-about/dirty-repo": [
+        "workspace/about/dirty-repo/index.tsx"
+      ],
+      "@workspace-about/git-init": [
+        "workspace/about/git-init/index.tsx"
+      ],
+      "@workspace-about/help": [
+        "workspace/about/help/index.tsx"
+      ],
+      "@workspace-about/keyboard-shortcuts": [
+        "workspace/about/keyboard-shortcuts/index.tsx"
+      ],
+      "@workspace-about/model-provider-config": [
+        "workspace/about/model-provider-config/index.tsx"
+      ],
+      "@workspace-about/new": [
+        "workspace/about/new/index.tsx"
+      ],
+      "@workspace-panels/chat": [
+        "workspace/panels/chat/index.tsx"
+      ],
+      "@workspace-panels/email": [
+        "workspace/panels/email/index.tsx"
+      ],
+      "@workspace-panels/email/contract": [
+        "workspace/panels/email/contract.ts"
+      ],
+      "@workspace-skills/paneldev": [
+        "workspace/skills/paneldev/index.ts"
+      ],
+      "@workspace-workers/agent-worker": [
+        "workspace/workers/agent-worker/index.ts"
+      ],
+      "@workspace-workers/email-sync": [
+        "workspace/workers/email-sync/index.ts"
+      ],
+      "@workspace-workers/fork": [
+        "workspace/workers/fork/index.ts"
+      ],
+      "@workspace-workers/hello": [
+        "workspace/workers/hello/index.ts"
+      ],
+      "@workspace-workers/pubsub-channel": [
+        "workspace/workers/pubsub-channel/index.ts"
+      ],
+      "@workspace-workers/test-agent": [
+        "workspace/workers/test-agent/index.ts"
+      ],
+      "@workspace/about-shared/serviceAdapters": [
+        "workspace/packages/about-shared/serviceAdapters.ts"
+      ],
+      "@workspace/about-shared/types": [
+        "workspace/packages/about-shared/types.ts"
+      ],
+      "@workspace/agentic-chat": [
+        "workspace/packages/agentic-chat/index.ts"
+      ],
+      "@workspace/agentic-chat/styles.css": [
+        "workspace/packages/agentic-chat/styles.css"
+      ],
+      "@workspace/agentic-chat/types": [
+        "workspace/packages/agentic-chat/types.ts"
+      ],
+      "@workspace/agentic-components": [
+        "workspace/packages/agentic-components/index.ts"
+      ],
+      "@workspace/agentic-components/types": [
+        "workspace/packages/agentic-components/types.ts"
+      ],
+      "@workspace/agentic-do": [
+        "workspace/packages/agentic-do/src/index.ts"
+      ],
+      "@workspace/core": [
+        "workspace/packages/core/src/index.ts"
+      ],
+      "@workspace/core/form-schema": [
+        "workspace/packages/core/src/form-schema.ts"
+      ],
+      "@workspace/eval": [
+        "workspace/packages/eval/src/index.ts"
+      ],
+      "@workspace/git-ui": [
+        "workspace/packages/git-ui/src/index.ts"
+      ],
+      "@workspace/git-ui/constants": [
+        "workspace/packages/git-ui/src/constants.ts"
+      ],
+      "@workspace/git-ui/monaco": [
+        "workspace/packages/git-ui/src/monaco.ts"
+      ],
+      "@workspace/integrations": [
+        "workspace/packages/integrations/src/index.ts"
+      ],
+      "@workspace/integrations/calendar": [
+        "workspace/packages/integrations/src/calendar.ts"
+      ],
+      "@workspace/integrations/gmail": [
+        "workspace/packages/integrations/src/gmail.ts"
+      ],
+      "@workspace/panel-browser": [
+        "workspace/packages/panel-browser/src/index.ts"
+      ],
+      "@workspace/react": [
+        "workspace/packages/react/src/index.ts"
+      ],
+      "@workspace/runtime": [
+        "workspace/packages/runtime/src/panel/index.ts"
+      ],
+      "@workspace/runtime/worker": [
+        "workspace/packages/runtime/src/worker/index.ts"
+      ],
+      "@workspace/runtime/worker/test-utils": [
+        "workspace/packages/runtime/src/worker/durable-test-utils.ts"
+      ],
+      "@workspace/runtime/workerd-client": [
+        "workspace/packages/runtime/src/shared/workerd.ts"
+      ],
+      "@workspace/svelte": [
+        "workspace/packages/svelte/src/index.ts"
+      ],
+      "@workspace/tool-ui": [
+        "workspace/packages/tool-ui/src/index.ts"
+      ]
     }
   },
-  "include": ["workspace/**/*"],
-  "exclude": ["node_modules", "**/dist", "**/node_modules", "workspace/packages/playwright-*"]
+  "include": [
+    "workspace/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "**/dist",
+    "**/node_modules",
+    "workspace/packages/playwright-*"
+  ]
 }

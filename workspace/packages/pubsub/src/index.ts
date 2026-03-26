@@ -70,6 +70,8 @@
 export * from "./types.js";
 export { connect } from "./client.js";
 export type { PubSubClient } from "./client.js";
+export { connectViaRpc } from "./rpc-client.js";
+export type { RpcConnectOptions } from "./rpc-client.js";
 
 // Content type constants
 export * from "./content-types.js";
