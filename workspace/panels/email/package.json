@@ -16,7 +16,7 @@
         },
         "connectionId": {
           "type": "string",
-          "description": "Nango connection ID for authenticated API access"
+          "description": "OAuth connection ID for authenticated API access"
         },
         "view": {
           "type": "string",

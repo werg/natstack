@@ -7,7 +7,7 @@
  * - Cookie pre-sync: before opening the OAuth browser panel, syncs
  *   imported cookies for the provider's auth domains so the user
  *   may already be logged in.
- * - Browser panel: opens the Nango auth URL in a managed browser panel
+ * - Browser panel: opens the OAuth auth URL in a managed browser panel
  *   where autofill handles password entry automatically.
  */
 
@@ -38,16 +38,15 @@ const PROVIDER_AUTH_DOMAINS: Record<string, string[]> = {
 
 export function createOAuthService(deps: {
   oauthManager: OAuthManager;
-  panelRegistry: PanelRegistry;
+  panelRegistry?: PanelRegistry;
   notificationService: NotificationServiceInternal;
   syncCookiesToSession?: (domain: string) => Promise<{ synced: number; failed: number }>;
-  openBrowserPanel?: (callerId: string, url: string, opts?: { name?: string; focus?: boolean }) => Promise<{ id: string; title: string }>;
 }): ServiceDefinition {
-  const { oauthManager, panelRegistry, notificationService, syncCookiesToSession, openBrowserPanel } = deps;
+  const { oauthManager, panelRegistry, notificationService, syncCookiesToSession } = deps;
 
   /** Get a human-readable title for the caller (panel or worker). */
   function getCallerTitle(callerId: string, callerKind: string): string {
-    if (callerKind === "panel") {
+    if (callerKind === "panel" && panelRegistry) {
       const panels = panelRegistry.listPanels();
       const panel = panels.find(p => p.panelId === callerId);
       return panel?.title ?? callerId;
@@ -78,7 +77,7 @@ export function createOAuthService(deps: {
 
   return {
     name: "oauth",
-    description: "OAuth token management via Nango with dynamic consent",
+    description: "OAuth token management with dynamic consent",
     policy: { allowed: ["shell", "panel", "worker"] },
     methods: {
       getToken: {
@@ -93,6 +92,7 @@ export function createOAuthService(deps: {
       },
       startAuth: {
         args: z.tuple([z.string(), z.string()]),
+        policy: { allowed: ["panel"] as CallerKind[] },
       },
       disconnect: {
         args: z.tuple([z.string(), z.string()]),
@@ -177,22 +177,11 @@ export function createOAuthService(deps: {
 
           const authUrl = await oauthManager.getAuthUrl(providerKey, connectionId);
 
-          // Open browser panel for sign-in. Works for any caller —
-          // createBrowserPanel resolves a parent panel automatically.
-          let browserPanelId: string | undefined;
-          if (openBrowserPanel) {
-            try {
-              const result = await openBrowserPanel(callerId, authUrl, {
-                name: `Sign in — ${providerKey}`,
-                focus: true,
-              });
-              browserPanelId = result.id;
-            } catch {
-              // Non-fatal: caller can open URL manually
-            }
-          }
-
-          return { authUrl, browserPanelId };
+          // Return the auth URL — the client-side OAuthClient handles opening
+          // it in a browser panel or system browser based on the caller's
+          // openIn preference. Server-side cookie pre-sync above ensures
+          // the browser panel (if used) will have imported cookies available.
+          return { authUrl };
         }
 
         case "disconnect": {

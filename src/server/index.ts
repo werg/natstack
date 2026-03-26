@@ -368,6 +368,53 @@ async function main() {
   const notificationInternal = notificationResult.internal;
   container.register(rpcService(notificationResult.definition));
 
+  // ── OAuth service (works in both Electron and standalone modes) ──
+  {
+    const { OAuthManager } = await import("../shared/oauth/oauthManager.js");
+    const { createOAuthService } = await import("./services/oauthService.js");
+    let oauthManager: InstanceType<typeof OAuthManager>;
+    container.register({
+      name: "oauth",
+      dependencies: ["databaseManager"],
+      optionalDependencies: ["panelRegistry"],
+      async start() {
+        const nangoUrl = workspace.config.oauth?.nangoUrl ?? process.env["NANGO_URL"] ?? "https://api.nango.dev";
+        const nangoSecret = process.env["NANGO_SECRET_KEY"] ?? "";
+        oauthManager = new OAuthManager({
+          nangoUrl,
+          nangoSecretKey: nangoSecret,
+          databaseManager,
+        });
+      },
+      async stop() {
+        oauthManager?.close();
+      },
+      getServiceDefinition() {
+        let panelRegistry: import("../shared/panelRegistry.js").PanelRegistry | undefined;
+        try { panelRegistry = container.get<import("../shared/panelRegistry.js").PanelRegistry>("panelRegistry"); } catch { /* not available in Electron mode */ }
+
+        const syncCookiesToSession = async (domain: string) => {
+          try {
+            return await dispatcher.dispatch(
+              { callerId: "oauth-service", callerKind: "server" },
+              "browser-data",
+              "syncCookiesToSession",
+              [domain],
+            ) as { synced: number; failed: number };
+          } catch { /* non-fatal: browser-data service may not be registered */ }
+          return { synced: 0, failed: 0 };
+        };
+
+        return createOAuthService({
+          oauthManager,
+          panelRegistry,
+          notificationService: notificationInternal,
+          syncCookiesToSession,
+        });
+      },
+    });
+  }
+
   // ── DODispatch (source-scoped HTTP dispatch to Durable Objects) ──
 
   container.register({
@@ -671,65 +718,6 @@ async function main() {
         return new PanelRegistry({ workspace, eventService });
       },
     });
-
-    // ── OAuth service (needs panelRegistry for consent, browser-data for cookie sync) ──
-    {
-      const { OAuthManager } = await import("../shared/oauth/oauthManager.js");
-      const { createOAuthService } = await import("./services/oauthService.js");
-      let oauthManager: InstanceType<typeof OAuthManager>;
-      container.register({
-        name: "oauth",
-        dependencies: ["panelRegistry", "databaseManager"],
-        optionalDependencies: ["panelLifecycle"],
-        async start(resolve) {
-          const registry = resolve<import("../shared/panelRegistry.js").PanelRegistry>("panelRegistry")!;
-          const nangoUrl = workspace.config.oauth?.nangoUrl ?? process.env["NANGO_URL"] ?? "";
-          const nangoSecret = process.env["NANGO_SECRET_KEY"] ?? "";
-          oauthManager = new OAuthManager({
-            nangoUrl,
-            nangoSecretKey: nangoSecret,
-            databaseManager,
-          });
-          return { oauthManager, registry };
-        },
-        async stop() {
-          oauthManager?.close();
-        },
-        getServiceDefinition() {
-          const registry = container.get<import("../shared/panelRegistry.js").PanelRegistry>("panelRegistry");
-          let lifecycle: import("../shared/panelLifecycle.js").PanelLifecycle | undefined;
-          try { lifecycle = container.get<import("../shared/panelLifecycle.js").PanelLifecycle>("panelLifecycle"); } catch { /* optional */ }
-
-          // Wire cookie sync callback — calls browser-data service to sync
-          // imported cookies to the Electron session before OAuth browser panels.
-          // This means if the user imported Chrome cookies with a Google session,
-          // the OAuth browser panel will already be logged in.
-          const syncCookiesToSession = async (domain: string) => {
-            try {
-              return await dispatcher.dispatch(
-                { callerId: "oauth-service", callerKind: "server" },
-                "browser-data",
-                "syncCookiesToSession",
-                [domain],
-              ) as { synced: number; failed: number };
-            } catch { /* non-fatal: browser-data service may not be registered */ }
-            return { synced: 0, failed: 0 };
-          };
-
-          // Wire browser panel callback — opens the auth URL in a managed
-          // browser panel that inherits synced cookies and has autofill attached.
-          const openBrowserPanel = lifecycle?.createBrowserPanel?.bind(lifecycle) ?? undefined;
-
-          return createOAuthService({
-            oauthManager,
-            panelRegistry: registry,
-            notificationService: notificationInternal,
-            syncCookiesToSession,
-            openBrowserPanel,
-          });
-        },
-      });
-    }
 
     // PanelLifecycle
     const { PanelLifecycle } = await import("../shared/panelLifecycle.js");

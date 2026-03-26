@@ -6,7 +6,7 @@
  * identifies what runtime services need to be added (primarily OAuth).
  *
  * Architecture:
- * - oauth.ts    — Token provider abstraction (Nango vs cookie-based)
+ * - oauth.ts    — Token provider abstraction (OAuth service)
  * - gmail.ts    — Gmail & Calendar REST API clients
  * - contract.ts — RPC contract for parent panel communication
  * - index.tsx   — UI (this file)
@@ -174,7 +174,7 @@ export default function EmailPanel() {
         : msg.includes("timed out")
           ? "Sign-in timed out. Click Connect to try again."
           : msg.includes("not configured")
-            ? "OAuth is not configured. Add a Nango instance URL to your workspace config."
+            ? "OAuth is not configured. Ask the agent to help you set up Nango for OAuth access."
             : msg;
       setConnectionStatus({ connected: false, error: userMessage, checking: false });
     }

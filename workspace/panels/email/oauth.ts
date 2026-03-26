@@ -1,7 +1,7 @@
 /**
  * OAuth provider abstraction for the email panel.
  *
- * Now uses the NatStack runtime's built-in OAuth service (backed by Nango).
+ * Uses the NatStack runtime's built-in OAuth service.
  * The runtime handles token refresh, consent prompts, and connection lifecycle.
  *
  * The connect flow uses staged methods so the panel can show appropriate

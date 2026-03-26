@@ -86,8 +86,9 @@ export class OAuthManager {
   private assertConfigured(): void {
     if (!this.isConfigured) {
       throw new Error(
-        "OAuth not configured. Set oauth.nangoUrl in natstack.yml and " +
-        "add nango secret to ~/.config/natstack/.secrets.yml",
+        "OAuth not configured. Add your Nango secret key to ~/.config/natstack/.secrets.yml:\n" +
+        "  nango: sk-your-nango-secret-key\n" +
+        "Sign up free at https://app.nango.dev to get a secret key.",
       );
     }
   }

@@ -37,17 +37,6 @@ export interface GmailThread {
   snippet: string;
 }
 
-export interface CalendarEvent {
-  id: string;
-  summary: string;
-  description?: string;
-  start: string;
-  end: string;
-  location?: string;
-  attendees: string[];
-  htmlLink?: string;
-}
-
 export interface SendOptions {
   to: string[];
   cc?: string[];

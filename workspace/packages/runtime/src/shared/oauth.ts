@@ -50,17 +50,22 @@ export interface OAuthClient {
   /** List all active connections. */
   listConnections(): Promise<OAuthConnection[]>;
 
-  /** List configured OAuth providers from Nango. */
+  /** List configured OAuth providers. */
   listProviders(): Promise<Array<{ key: string; provider: string }>>;
 
   /**
    * All-in-one connect (consent + auth + wait). Blocks until complete.
    * For better UX, use the staged methods instead: requestConsent → startAuth → waitForConnection.
    * Only available in panels — workers cannot drive the interactive auth flow.
+   *
+   * @param opts.openIn - Where to open the sign-in page:
+   *   - `"panel"` (default) — NatStack browser panel (benefits: imported cookies, autofill)
+   *   - `"external"` — system browser (benefits: existing sessions)
    */
   connect(providerKey: string, connectionId?: string, opts?: {
     scopes?: string[];
     reason?: string;
+    openIn?: "panel" | "external";
   }): Promise<OAuthConnection>;
 
   /**
@@ -72,13 +77,18 @@ export interface OAuthClient {
 
   /**
    * Stage 2: Start the auth flow. Syncs imported cookies for the provider,
-   * opens the Nango auth URL in a browser panel, and returns immediately.
-   * The browser panel has autofill for imported passwords.
+   * returns the auth URL, and opens it based on `openIn`.
+   *
+   * @param opts.openIn - Where to open the sign-in page:
+   *   - `"panel"` (default) — NatStack browser panel (imported cookies + autofill)
+   *   - `"external"` — system browser (existing sessions)
    */
-  startAuth(providerKey: string, connectionId?: string): Promise<OAuthStartAuthResult>;
+  startAuth(providerKey: string, connectionId?: string, opts?: {
+    openIn?: "panel" | "external";
+  }): Promise<OAuthStartAuthResult>;
 
   /**
-   * Stage 3: Wait for the OAuth flow to complete in the browser panel.
+   * Stage 3: Wait for the OAuth flow to complete.
    * Polls the connection status until connected or timeout.
    */
   waitForConnection(providerKey: string, connectionId?: string, timeoutMs?: number): Promise<OAuthConnection>;
@@ -99,11 +109,8 @@ export function createOAuthClient(rpc: RpcCaller): OAuthClient {
     },
     async connect(pk, cid, opts) {
       const connId = cid ?? defaultConnId(pk);
-      // Stage 1: consent
       await rpc.call<{ consented: boolean }>("main", "oauth.requestConsent", pk, opts);
-      // Stage 2: start auth (opens browser panel)
-      await rpc.call<OAuthStartAuthResult>("main", "oauth.startAuth", pk, connId);
-      // Stage 3: poll for connection (client-side, doesn't block RPC handler)
+      await this.startAuth(pk, connId, { openIn: opts?.openIn });
       const deadline = Date.now() + 120_000;
       while (Date.now() < deadline) {
         const conn = await rpc.call<OAuthConnection>("main", "oauth.getConnection", pk, connId);
@@ -115,8 +122,45 @@ export function createOAuthClient(rpc: RpcCaller): OAuthClient {
     async requestConsent(pk, opts) {
       return rpc.call<{ consented: boolean }>("main", "oauth.requestConsent", pk, opts);
     },
-    async startAuth(pk, cid) {
-      return rpc.call<OAuthStartAuthResult>("main", "oauth.startAuth", pk, cid ?? defaultConnId(pk));
+    async startAuth(pk, cid, opts) {
+      const result = await rpc.call<OAuthStartAuthResult>("main", "oauth.startAuth", pk, cid ?? defaultConnId(pk));
+      // Open sign-in page client-side based on openIn preference.
+      // If we can't open a browser at all, throw immediately rather than
+      // letting the caller poll waitForConnection until timeout.
+      if (result.authUrl) {
+        const openIn = opts?.openIn ?? "panel";
+        const errors: string[] = [];
+        let opened = false;
+        if (openIn === "panel") {
+          try {
+            await rpc.call("main", "bridge.createBrowserPanel", result.authUrl, { name: `Sign in — ${pk}`, focus: true });
+            opened = true;
+          } catch (e: any) {
+            errors.push(`createBrowserPanel: ${e.message}`);
+            try {
+              await rpc.call("main", "bridge.openExternal", result.authUrl);
+              opened = true;
+            } catch (e2: any) {
+              errors.push(`openExternal: ${e2.message}`);
+            }
+          }
+        } else {
+          try {
+            await rpc.call("main", "bridge.openExternal", result.authUrl);
+            opened = true;
+          } catch (e: any) {
+            errors.push(`openExternal: ${e.message}`);
+          }
+        }
+        if (!opened) {
+          throw new Error(
+            `Cannot open sign-in page for "${pk}". ` +
+            "Interactive OAuth must be initiated from a panel context, not a worker. " +
+            `Use oauth.getToken() in workers after connecting from a panel. [${errors.join("; ")}]`,
+          );
+        }
+      }
+      return result;
     },
     async waitForConnection(pk, cid, timeoutMs) {
       const connId = cid ?? defaultConnId(pk);

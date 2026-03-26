@@ -13,8 +13,7 @@ runtime services need to be added.
 panels/email/
 ├── package.json      # Panel manifest
 ├── contract.ts       # RPC contract (agents/parent panels can search mail, compose, etc.)
-├── oauth.ts          # Token provider abstraction (Nango vs cookie-based)
-├── gmail.ts          # Gmail & Calendar REST API clients
+├── oauth.ts          # Token provider using @workspace/runtime's OAuth service
 ├── index.tsx         # UI — inbox, thread view, compose, calendar
 └── DESIGN.md         # This file
 ```
@@ -22,23 +21,23 @@ panels/email/
 ### Key design decision: OAuth abstraction layer
 
 The panel doesn't embed any specific auth strategy. Instead, `oauth.ts` defines
-an `OAuthTokenProvider` interface:
+an `OAuthTokenProvider` interface wrapping the runtime's built-in OAuth service:
 
 ```ts
 interface OAuthTokenProvider {
   getToken(): Promise<OAuthToken>;
   getConnection(): Promise<OAuthConnection>;
-  connect(): Promise<OAuthConnection>;
+  connect(onProgress?: ConnectProgress): Promise<OAuthConnection>;
   disconnect(): Promise<void>;
 }
 ```
 
-Two strategies implement this:
-- **`createNangoProvider()`** — delegates to a (not-yet-built) `oauth` runtime service
-- **`createCookieProvider()`** — attempts to use imported browser cookies
+`createTokenProvider()` delegates to `@workspace/runtime`'s OAuth client. The
+staged connect flow gives the UI progress feedback at each step:
+consent → auth browser panel → wait for connection.
 
-This means the Gmail/Calendar API layer (`gmail.ts`) is auth-agnostic — it just
-calls `tokenProvider.getToken()` and adds the Bearer header.
+Gmail/Calendar API calls use the `@workspace/integrations` package, which wraps
+`oauth.getToken()` + raw `fetch()` against the Google REST APIs.
 
 ## What works today
 
@@ -51,48 +50,24 @@ calls `tokenProvider.getToken()` and adds the Bearer header.
 
 ## What's missing (gaps identified)
 
-### 1. OAuth Runtime Service (critical)
+### 1. OAuth Runtime Service — RESOLVED
 
-**The biggest gap.** Panels currently have no way to obtain OAuth access tokens
-for third-party APIs. This is the single most important addition needed.
-
-Recommended API surface:
+Implemented as `@workspace/runtime`'s `oauth` client backed by the server-side
+OAuth service (uses Nango Cloud for token management). The API:
 
 ```ts
-// New addition to @workspace/runtime
 import { oauth } from "@workspace/runtime";
 
-// List configured integrations
-const integrations = await oauth.listIntegrations();
-
-// Get a valid access token (auto-refreshes)
+const providers = await oauth.listProviders();
 const token = await oauth.getToken("google-mail");
-
-// Initiate OAuth flow (opens browser panel with auth URL)
 const connection = await oauth.connect("google-mail");
-
-// Check connection status
-const status = await oauth.getConnectionStatus("google-mail");
-
-// Disconnect
+const status = await oauth.getConnection("google-mail");
 await oauth.disconnect("google-mail");
 ```
 
-**Server-side implementation options:**
-
-| Approach | Pros | Cons |
-|----------|------|------|
-| **Nango** | Handles 250+ providers, token refresh, re-auth | External dependency |
-| **Built-in OAuth** | No external deps, full control | Must implement refresh logic per provider |
-| **Hybrid** | Nango for production, built-in for dev/testing | More code paths |
-
-**Recommendation: Nango-first with a pluggable backend.** The server-side
-`oauth` service should:
-1. Accept a Nango server URL + secret key in `natstack.yml`
-2. Proxy token requests through the Nango API
-3. Cache tokens server-side with automatic refresh
-4. Support a `connect()` flow that opens the Nango auth URL in a browser panel
-5. Store connection metadata per context
+Server-side: Nango secret key configured in `~/.config/natstack/.secrets.yml`. The `oauthService`
+handles token refresh, consent notifications, cookie pre-sync for auth browser
+panels, and per-caller consent tracking.
 
 ### 2. OAuth Permissions — RESOLVED
 
