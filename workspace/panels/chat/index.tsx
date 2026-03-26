@@ -137,11 +137,12 @@ export default function ChatPanel() {
   // Clear initialPrompt from persisted stateArgs after capture.
   // useChatCore captures the value in a ref on first render, so this
   // won't interfere with the auto-send — but prevents re-send on reload.
+  // Use null (not undefined) because undefined is dropped by JSON serialization.
   const initialPromptCleared = useRef(false);
   useEffect(() => {
     if (stateArgs.initialPrompt && !initialPromptCleared.current) {
       initialPromptCleared.current = true;
-      void setStateArgs({ initialPrompt: undefined });
+      void setStateArgs({ initialPrompt: null });
     }
   }, [stateArgs.initialPrompt]);
 

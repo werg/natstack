@@ -867,6 +867,12 @@ export class PanelLifecycle implements BridgePanelManager {
     const currentArgs = getPanelStateArgs(panel) ?? {};
     const merged = { ...currentArgs, ...updates };
 
+    // Treat explicit null as "delete this key" — undefined can't survive JSON
+    // serialization over RPC, so callers use null to signal removal.
+    for (const key of Object.keys(merged)) {
+      if (merged[key] === null) delete merged[key];
+    }
+
     const validation = validateStateArgs(merged, schema);
     if (!validation.success) {
       throw new Error(`Invalid stateArgs: ${validation.error}`);
