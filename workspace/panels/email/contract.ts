@@ -57,6 +57,7 @@ export const emailContract = defineContract({
       "connection-changed": z.object({
         connected: z.boolean(),
         email: z.string().optional(),
+        provider: z.string().optional(),
       }),
       "thread-opened": z.object({
         threadId: z.string(),

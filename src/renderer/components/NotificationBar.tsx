@@ -91,14 +91,6 @@ export function NotificationBar() {
     }, []),
   );
 
-  // Handle dismiss requests
-  useShellEvent(
-    "notification:dismiss",
-    useCallback((payload: { id: string }) => {
-      dismissNotification(payload.id);
-    }, []),
-  );
-
   const dismissNotification = useCallback((id: string) => {
     setNotifications((prev) => {
       const next = new Map(prev);
@@ -114,6 +106,14 @@ export function NotificationBar() {
     // instead of hanging for the full timeout
     void notification.reportAction(id, "dismiss");
   }, []);
+
+  // Handle dismiss requests
+  useShellEvent(
+    "notification:dismiss",
+    useCallback((payload: { id: string }) => {
+      dismissNotification(payload.id);
+    }, [dismissNotification]),
+  );
 
   const handleAction = useCallback(
     (notificationId: string, actionId: string) => {

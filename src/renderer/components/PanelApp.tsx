@@ -30,11 +30,11 @@ function PanelAppContent() {
 
   // Convert panel initialization errors into notifications
   useShellEvent("panel-initialization-error", useCallback((payload: { path: string; error: string }) => {
-    void notification.show({
+    notification.show({
       type: "error",
       title: "Failed to initialize panels",
       message: payload.error,
-    });
+    }).catch((err: unknown) => console.error("Failed to show panel-initialization-error notification", err));
   }, []));
 
   // Use refs for callback handlers to avoid complex state patterns

@@ -13,7 +13,7 @@ export function createViewService(deps: {
       setBounds: { args: z.tuple([z.string(), z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() })]) },
       setVisible: { args: z.tuple([z.string(), z.boolean()]) },
       setThemeCss: { args: z.tuple([z.string()]) },
-      updateLayout: { args: z.tuple([z.object({ titleBarHeight: z.number().optional(), sidebarVisible: z.boolean().optional(), sidebarWidth: z.number().optional(), saveBarHeight: z.number().optional() })]) },
+      updateLayout: { args: z.tuple([z.object({ titleBarHeight: z.number().optional(), sidebarVisible: z.boolean().optional(), sidebarWidth: z.number().optional(), saveBarHeight: z.number().optional(), notificationBarHeight: z.number().optional() })]) },
       setShellOverlay: { args: z.tuple([z.boolean()]) },
       browserNavigate: { args: z.tuple([z.string(), z.string()]) },
       browserGoBack: { args: z.tuple([z.string()]) },
@@ -41,7 +41,7 @@ export function createViewService(deps: {
           return;
         }
         case "updateLayout": {
-          const layoutUpdate = args[0] as { titleBarHeight?: number; sidebarVisible?: boolean; sidebarWidth?: number; saveBarHeight?: number };
+          const layoutUpdate = args[0] as { titleBarHeight?: number; sidebarVisible?: boolean; sidebarWidth?: number; saveBarHeight?: number; notificationBarHeight?: number };
           vm.updateLayout(layoutUpdate);
           return;
         }

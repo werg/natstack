@@ -195,11 +195,9 @@ export class EmailSyncWorker extends DurableObjectBase {
 
   // --- HTTP dispatch methods (/{objectKey}/{method}) ---
 
-  protected async startSync(args: unknown[]): Promise<{ ok: boolean; config: SyncConfig }> {
-    const [body] = args as [
-      { connectionId: string; providerKey: string; intervalMs?: number; pubsubChannel?: string },
-    ];
-
+  protected async startSync(
+    body: { connectionId: string; providerKey: string; intervalMs?: number; pubsubChannel?: string },
+  ): Promise<{ ok: boolean; config: SyncConfig }> {
     const config: SyncConfig = {
       connectionId: body.connectionId,
       providerKey: body.providerKey,
@@ -223,7 +221,7 @@ export class EmailSyncWorker extends DurableObjectBase {
     return { ok: true, config };
   }
 
-  protected async stopSync(_args: unknown[]): Promise<{ ok: boolean }> {
+  protected async stopSync(): Promise<{ ok: boolean }> {
     const status = this.getStatus();
     status.running = false;
     this.setStatus(status);
@@ -231,7 +229,7 @@ export class EmailSyncWorker extends DurableObjectBase {
     return { ok: true };
   }
 
-  protected async syncNow(_args: unknown[]): Promise<{ ok: boolean; newMessages: number }> {
+  protected async syncNow(): Promise<{ ok: boolean; newMessages: number }> {
     const config = this.getConfig();
     if (!config) throw new Error("Sync not configured — call startSync first");
     const count = await this.doSync(config);
@@ -264,7 +262,8 @@ export class EmailSyncWorker extends DurableObjectBase {
       console.error("[EmailSyncWorker] Sync error:", err);
     }
 
-    if (status.running) {
+    // Re-read status from storage in case stopSync() ran concurrently during doSync()
+    if (this.getStatus().running) {
       this.setAlarm(config.intervalMs);
     }
   }
