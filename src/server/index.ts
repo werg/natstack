@@ -246,6 +246,7 @@ async function main() {
   const gitServer = new GitServer(tokenManager, {
     port: workspaceConfig.git?.port,
     reposPath: workspacePath,
+    devTargetDir: workspaceConfig.git?.devTargetDir,
     github: {
       ...githubConfig,
       token: githubConfig?.token ?? process.env["GITHUB_TOKEN"],

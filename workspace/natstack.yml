@@ -26,6 +26,9 @@ initPanels:
 # Git server configuration
 git:
   port: 63524
+  # Mirror pushed changes back to a dev template directory (excluding .git).
+  # Useful for syncing workspace edits back into a monorepo checkout:
+  # devTargetDir: /home/you/natstack/workspace
 
 # OAuth configuration (optional)
 # Uses Nango Cloud (https://api.nango.dev) by default.

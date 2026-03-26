@@ -47,6 +47,11 @@ export interface GitServerConfig {
   initPatterns?: string[];
   /** GitHub proxy configuration for transparent cloning */
   github?: GitHubProxyConfig;
+  /**
+   * When set, every push mirrors the updated working tree (excluding .git)
+   * to `<devTargetDir>/<repo>/`, keeping a dev template directory in sync.
+   */
+  devTargetDir?: string;
 }
 
 export class GitServer {
@@ -64,6 +69,9 @@ export class GitServer {
   // Push event listeners
   private pushListeners: Set<(event: GitPushEvent) => void> = new Set();
 
+  // Dev target directory for mirroring pushes
+  private devTargetDir: string | null;
+
   // GitHub proxy configuration
   private githubConfig: Required<GitHubProxyConfig> = {
     enabled: true,
@@ -75,6 +83,7 @@ export class GitServer {
     this.configuredPort = config?.port ?? DEFAULT_GIT_SERVER_PORT;
     this.configuredReposPath = config?.reposPath ?? null;
     this.initPatterns = config?.initPatterns ?? ["panels/*", "packages/*"];
+    this.devTargetDir = config?.devTargetDir ?? null;
     this.authManager = new GitAuthManager(tokenManager);
 
     if (config?.github) {
@@ -208,6 +217,12 @@ export class GitServer {
             if (resetErr) {
               log.verbose(` Post-push checkout failed for ${repo}: ${resetErr.message}`);
             }
+
+            // Mirror working tree to dev target directory (if configured)
+            if (this.devTargetDir) {
+              this.syncToDevTarget(repo, repoDir);
+            }
+
             // Emit push event after checkout so listeners see the updated working tree
             const event: GitPushEvent = { repo, branch, commit: push.commit };
             for (const fn of this.pushListeners) fn(event);
@@ -435,6 +450,37 @@ export class GitServer {
         });
       }
     } catch { /* ignore — non-critical */ }
+  }
+
+  // ===========================================================================
+  // Dev Target Sync
+  // ===========================================================================
+
+  /**
+   * Mirror a repo's working tree to the dev target directory, excluding .git
+   * and runtime artifacts. Runs async — errors are logged but don't block.
+   */
+  private syncToDevTarget(repo: string, repoDir: string): void {
+    const targetDir = path.join(this.devTargetDir!, repo);
+    fs.mkdirSync(targetDir, { recursive: true });
+
+    // rsync with --delete so removed files are reflected; trailing slashes
+    // ensure we sync contents, not the directory itself.
+    execFile(
+      "rsync",
+      ["-a", "--delete",
+       "--exclude", ".git",
+       "--exclude", "node_modules",
+       "--exclude", ".cache",
+       `${repoDir}/`, `${targetDir}/`],
+      (err) => {
+        if (err) {
+          log.verbose(` Dev-target sync failed for ${repo}: ${err.message}`);
+        } else {
+          log.verbose(` Synced ${repo} -> ${targetDir}`);
+        }
+      }
+    );
   }
 
   // ===========================================================================

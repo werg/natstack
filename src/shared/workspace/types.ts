@@ -123,6 +123,12 @@ export interface GitConfig {
   port?: number;
   /** GitHub proxy settings for transparent cloning */
   github?: GitHubProxyConfig;
+  /**
+   * Absolute path to a directory where pushed changes are mirrored.
+   * When set, every push copies the updated working tree (excluding .git)
+   * to `<devTargetDir>/<repo>/`, keeping a dev template in sync.
+   */
+  devTargetDir?: string;
 }
 
 /**
