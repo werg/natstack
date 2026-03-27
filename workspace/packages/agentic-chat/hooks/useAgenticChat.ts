@@ -1,8 +1,12 @@
 /**
  * useAgenticChat — Thin composer hook.
  *
- * Composes useChatCore + all feature hooks (roster tracking, pending agents,
- * feedback, tools, debug, inline UI) into the full ChatContextValue.
+ * Composes useChatCore + feature hooks (pending agents, feedback, tools,
+ * debug, inline UI) into the full ChatContextValue.
+ *
+ * Roster tracking, pending agent timeouts, debug events, and dirty repo
+ * warnings are now handled by SessionManager via useChatCore — the feature
+ * hooks are retained as stubs for backward compatibility only.
  *
  * For minimal chat (no tools, no feedback, no debug), use useChatCore directly.
  */
@@ -12,14 +16,12 @@ import { z } from "zod";
 import type { ChannelConfig, MethodDefinition } from "@natstack/pubsub";
 import { executeSandbox, ScopeManager, DbScopePersistence } from "@workspace/eval";
 import type { SandboxOptions, SandboxResult, HydrateResult } from "@workspace/eval";
-import { useChatCore, type FeatureEventHandlers, type RosterExtension, type ReconnectExtension } from "./core/useChatCore";
-import { useRosterTracking } from "./features/useRosterTracking";
-import { usePendingAgents } from "./features/usePendingAgents";
+import { useChatCore } from "./core/useChatCore";
 import { useChatFeedback } from "./features/useChatFeedback";
 import { useChatTools } from "./features/useChatTools";
 import { useChatDebug } from "./features/useChatDebug";
 import { useInlineUi } from "./features/useInlineUi";
-import type { EventMiddleware } from "./useAgentEvents";
+import type { EventMiddleware } from "@workspace/agentic-core";
 import type {
   ConnectionConfig,
   AgenticChatActions,
@@ -68,11 +70,6 @@ export function useAgenticChat({
   initialPrompt,
   sandbox,
 }: UseAgenticChatOptions): { contextValue: ChatContextValue; inputContextValue: ChatInputContextValue } {
-  // --- Extension refs (populated below, read by core via refs) ---
-  const featureHandlersRef = useRef<FeatureEventHandlers>({});
-  const rosterExtensionsRef = useRef<RosterExtension[]>([]);
-  const reconnectExtensionsRef = useRef<ReconnectExtension[]>([]);
-
   // --- Sandbox config ref (stable access in callbacks) ---
   const sandboxRef = useRef(sandbox);
   sandboxRef.current = sandbox;
@@ -105,7 +102,7 @@ export function useAgenticChat({
     };
   }, []);
 
-  // --- Core ---
+  // --- Core (now handles roster tracking, pending agents, debug, dirty repo) ---
   const core = useChatCore({
     config,
     channelName,
@@ -115,20 +112,15 @@ export function useAgenticChat({
     theme,
     eventMiddleware,
     initialPrompt,
-    featureHandlersRef,
-    rosterExtensionsRef,
-    reconnectExtensionsRef,
   });
 
-  // --- Feature hooks ---
-  const roster = useRosterTracking({
-    setMessages: core.setMessages,
-    configClientId: config.clientId,
-  });
-
-  const pending = usePendingAgents({
-    initialPendingAgents: pendingAgentInfos,
-  });
+  // --- Seed pending agents into SessionManager when they arrive ---
+  useEffect(() => {
+    if (!pendingAgentInfos?.length) return;
+    for (const agent of pendingAgentInfos) {
+      core.addPendingAgent(agent.handle, agent.agentId);
+    }
+  }, [pendingAgentInfos, core.addPendingAgent]);
 
   // --- Build chat sandbox value (stale-ref safe — dereferences clientRef at call time) ---
   const chat: ChatSandboxValue = useMemo(() => ({
@@ -197,33 +189,6 @@ export function useAgenticChat({
   const debug = useChatDebug();
 
   const inlineUi = useInlineUi({ messages: core.messages });
-
-  // --- Combine participants (must happen before wiring refs) ---
-  const allParticipants = useMemo(() => {
-    return { ...roster.historicalParticipants, ...core.participants };
-  }, [roster.historicalParticipants, core.participants]);
-
-  // FIX: participantsRef must include historical participants so that
-  // dispatchAgenticEvent can look up method descriptions for agents
-  // that have left and rejoined with a different client ID.
-  core.participantsRef.current = allParticipants;
-
-  // --- Wire up extension refs (synchronous, during render) ---
-  featureHandlersRef.current = {
-    setDebugEvents: debug.setDebugEvents,
-    setDirtyRepoWarnings: debug.setDirtyRepoWarnings,
-    setPendingAgents: pending.setPendingAgents,
-    expectedStops: roster.expectedStopsRef.current,
-  };
-
-  rosterExtensionsRef.current = [
-    roster.rosterExtension,
-    pending.rosterExtension,
-  ];
-
-  reconnectExtensionsRef.current = [
-    roster.onReconnect,
-  ];
 
   // --- Stable refs for connection effect (avoids unstable object deps) ---
   const feedbackRef = useRef(feedback);
@@ -384,15 +349,11 @@ export default function App({ props, chat }) {
     if (!actions?.onAddAgent) return;
     const launcherContextId = core.clientRef.current?.contextId;
     const result = await actions.onAddAgent(channelName, launcherContextId, agentId);
-    // If the callback returns agent info, track it as pending for badge/timeout feedback
+    // If the callback returns agent info, track it as pending via SessionManager
     if (result?.agentId && result?.handle) {
-      pending.setPendingAgents(prev => {
-        const next = new Map(prev);
-        next.set(result.handle, { agentId: result.agentId, status: "starting" });
-        return next;
-      });
+      core.addPendingAgent(result.handle, result.agentId);
     }
-  }, [channelName, core.clientRef, actions, pending.setPendingAgents]);
+  }, [channelName, core.clientRef, actions, core.addPendingAgent]);
 
   const handleRemoveAgent = useCallback(async (handle: string) => {
     if (!actions?.onRemoveAgent) return;
@@ -422,11 +383,11 @@ export default function App({ props, chat }) {
     hasMoreHistory: core.hasMoreHistory,
     loadingMore: core.loadingMore,
     participants: core.participants,
-    allParticipants,
-    debugEvents: debug.debugEvents,
+    allParticipants: core.allParticipants,
+    debugEvents: core.debugEvents,
     debugConsoleAgent: debug.debugConsoleAgent,
-    dirtyRepoWarnings: debug.dirtyRepoWarnings,
-    pendingAgents: pending.pendingAgents,
+    dirtyRepoWarnings: core.dirtyRepoWarnings,
+    pendingAgents: core.pendingAgents,
     activeFeedbacks: feedback.activeFeedbacks,
     theme,
     onLoadEarlierMessages: core.loadEarlierMessages,
@@ -435,7 +396,7 @@ export default function App({ props, chat }) {
     onFeedbackDismiss: feedback.onFeedbackDismiss,
     onFeedbackError: feedback.onFeedbackError,
     onDebugConsoleChange: debug.setDebugConsoleAgent,
-    onDismissDirtyWarning: debug.onDismissDirtyWarning,
+    onDismissDirtyWarning: core.onDismissDirtyWarning,
     onAddAgent,
     availableAgents,
     onRemoveAgent,
@@ -445,11 +406,11 @@ export default function App({ props, chat }) {
   }), [
     core.connected, core.status, channelName, sessionEnabled, chat,
     core.messages, core.methodEntries, inlineUi.inlineUiComponents, core.hasMoreHistory, core.loadingMore,
-    core.participants, allParticipants,
-    debug.debugEvents, debug.debugConsoleAgent, debug.dirtyRepoWarnings, pending.pendingAgents,
+    core.participants, core.allParticipants,
+    core.debugEvents, debug.debugConsoleAgent, core.dirtyRepoWarnings, core.pendingAgents,
     feedback.activeFeedbacks, theme,
     core.loadEarlierMessages, core.handleInterruptAgent, core.handleCallMethod,
-    feedback.onFeedbackDismiss, feedback.onFeedbackError, debug.setDebugConsoleAgent, debug.onDismissDirtyWarning,
+    feedback.onFeedbackDismiss, feedback.onFeedbackError, debug.setDebugConsoleAgent, core.onDismissDirtyWarning,
     onAddAgent, availableAgents, onRemoveAgent, onFocusPanel, onReloadPanel,
     chatTools.toolApprovalValue,
   ]);

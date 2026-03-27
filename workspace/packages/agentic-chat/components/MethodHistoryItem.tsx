@@ -51,25 +51,9 @@ function CodePreview({ code }: { code: string }) {
   );
 }
 
-export type MethodCallStatus = "pending" | "success" | "error";
-
-export interface MethodHistoryEntry {
-  callId: string;
-  methodName: string;
-  /** Human-readable description of the method (from MethodAdvertisement) */
-  description?: string;
-  args: unknown;
-  status: MethodCallStatus;
-  consoleOutput?: string;
-  result?: unknown;
-  error?: string;
-  startedAt: number;
-  completedAt?: number;
-  providerId?: string;
-  callerId?: string;
-  handledLocally?: boolean;
-  progress?: number;
-}
+// Re-export from agentic-core (canonical location)
+export type { MethodCallStatus, MethodHistoryEntry } from "@workspace/agentic-core";
+import type { MethodCallStatus, MethodHistoryEntry } from "@workspace/agentic-core";
 
 const METHOD_STATUS_COLOR: Record<MethodCallStatus, "gray" | "green" | "red"> = {
   pending: "gray",

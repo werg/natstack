@@ -30,15 +30,11 @@ export type { ChatProviderProps } from "./context/ChatProvider";
 export { useAgenticChat } from "./hooks/useAgenticChat";
 export type { UseAgenticChatOptions } from "./hooks/useAgenticChat";
 
-// Core hook (minimum viable chat — no tools, feedback, debug, or roster tracking)
+// Core hook (minimum viable chat — delegates to SessionManager)
 export { useChatCore } from "./hooks/core/useChatCore";
-export type { UseChatCoreOptions, ChatCoreState, FeatureEventHandlers, RosterExtension, ReconnectExtension } from "./hooks/core/useChatCore";
+export type { UseChatCoreOptions, ChatCoreState } from "./hooks/core/useChatCore";
 
-// Feature hooks (composable additions to core)
-export { useRosterTracking } from "./hooks/features/useRosterTracking";
-export type { RosterTrackingState } from "./hooks/features/useRosterTracking";
-export { usePendingAgents } from "./hooks/features/usePendingAgents";
-export type { PendingAgentsState } from "./hooks/features/usePendingAgents";
+// Feature hooks
 export { useChatFeedback } from "./hooks/features/useChatFeedback";
 export type { ChatFeedbackState } from "./hooks/features/useChatFeedback";
 export { useChatTools } from "./hooks/features/useChatTools";
@@ -48,22 +44,13 @@ export type { ChatDebugState } from "./hooks/features/useChatDebug";
 export { useInlineUi } from "./hooks/features/useInlineUi";
 export type { InlineUiState } from "./hooks/features/useInlineUi";
 
-export { useChannelConnection } from "./hooks/useChannelConnection";
-export type {
-  UseChannelConnectionOptions,
-  UseChannelConnectionResult,
-  ConnectOptions,
-  ConnectionStatus,
-} from "./hooks/useChannelConnection";
-
-export { useMethodHistory } from "./hooks/useMethodHistory";
-
-export { dispatchAgenticEvent } from "./hooks/useAgentEvents";
+// Event dispatch and types (canonical source: @workspace/agentic-core)
+export { dispatchAgenticEvent } from "@workspace/agentic-core";
 export type {
   AgentEventHandlers,
   DirtyRepoDetails,
   EventMiddleware,
-} from "./hooks/useAgentEvents";
+} from "@workspace/agentic-core";
 
 // --- High-level components ---
 export { AgenticChat } from "./components/AgenticChat";
@@ -89,7 +76,9 @@ export type { InlineItem } from "./components/InlineGroup";
 export { ThinkingPill, ExpandedThinking, PREVIEW_MAX_LENGTH } from "./components/ThinkingMessage";
 export { ActionPill, ExpandedAction, parseActionData } from "./components/ActionMessage";
 export { CompactMethodPill, ExpandedMethodDetail } from "./components/MethodHistoryItem";
-export type { MethodHistoryEntry, MethodCallStatus } from "./components/MethodHistoryItem";
+// MethodHistoryEntry + MethodCallStatus canonical source is @workspace/agentic-core;
+// re-exported here for backward compatibility.
+export type { MethodHistoryEntry, MethodCallStatus } from "@workspace/agentic-core";
 export { MethodArgumentsModal } from "./components/MethodArgumentsModal";
 export { TypingPill, parseTypingData } from "./components/TypingMessage";
 export { TypingIndicator } from "./components/TypingIndicator";

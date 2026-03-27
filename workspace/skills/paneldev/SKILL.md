@@ -73,3 +73,8 @@ eval({ code: `
 | Create workspace | `eval` — `workspace.create("name", { forkFrom: "default" })` |
 | Set init panels | `eval` — `workspace.setInitPanels([{ source: "panels/my-app" }])` |
 | Switch workspace | `eval` — `workspace.switchTo("name")` |
+
+## Environment Compatibility
+
+- Panel lifecycle operations (`openPanel`, `createBrowserPanel`, `focusPanel`, panel reload) require **panel context**.
+- Project scaffolding (`createProject`), git operations (`commitAndPush`), typecheck, and tests work in **headless** sessions via eval + RPC.

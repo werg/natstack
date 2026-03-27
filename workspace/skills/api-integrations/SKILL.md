@@ -377,3 +377,9 @@ The secret key still goes in `~/.config/natstack/.secrets.yml` as `nango: sk-...
 - npm packages with native addons (`.node` files) can't be bundled — pure JS/TS only.
 - First npm install takes 10-30s. Use `timeout: 30000` or higher.
 - CORS is disabled for app panels, so `fetch()` works directly for any URL.
+
+## Environment Compatibility
+
+- Core API integration features (`oauth.getToken`, `oauth.listProviders`, SDK usage via eval) work in **headless** sessions.
+- `feedback_form` for sign-in choice and interactive OAuth (`oauth.connect`, `oauth.startAuth`) are **panel-only**.
+- Headless agents should use `getToken()` after the user has connected via a panel.

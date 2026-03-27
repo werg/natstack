@@ -136,6 +136,12 @@
       "@workspace/agentic-chat": [
         "workspace/packages/agentic-chat/index.ts"
       ],
+      "@workspace/agentic-core": [
+        "workspace/packages/agentic-core/src/index.ts"
+      ],
+      "@workspace/agentic-session": [
+        "workspace/packages/agentic-session/src/index.ts"
+      ],
       "@workspace/agentic-chat/styles.css": [
         "workspace/packages/agentic-chat/styles.css"
       ],

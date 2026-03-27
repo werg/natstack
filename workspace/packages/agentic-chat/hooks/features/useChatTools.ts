@@ -15,12 +15,13 @@ import {
 } from "@workspace/tool-ui";
 import type { ToolApprovalProps, useFeedbackManager } from "@workspace/tool-ui";
 import type { SandboxOptions, SandboxResult } from "@workspace/eval";
-import type { UseChannelConnectionResult } from "../useChannelConnection";
+import type { PubSubClient } from "@natstack/pubsub";
 import type { ToolProvider, ChatSandboxValue } from "../../types";
 import type { ScopesApi } from "@workspace/eval";
+import type { ChatParticipantMetadata } from "@workspace/agentic-core";
 
 interface UseChatToolsOptions {
-  clientRef: UseChannelConnectionResult["clientRef"];
+  clientRef: React.RefObject<PubSubClient<ChatParticipantMetadata> | null>;
   tools?: ToolProvider;
   addFeedback: ReturnType<typeof useFeedbackManager>["addFeedback"];
   removeFeedback: ReturnType<typeof useFeedbackManager>["removeFeedback"];

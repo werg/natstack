@@ -595,6 +595,19 @@ export class AiChatWorker extends AgentWorkerBase {
     // so it maps to "append" for the harness-level mode.
     const harnessMode = subMode === "replace-natstack" ? "append" : subMode;
 
+    // toolAllowlist merge: subscription can only restrict (intersection), not expand.
+    // This prevents a subscription from granting tools the worker class didn't intend.
+    const subAllowlist = sub["toolAllowlist"] as string[] | undefined;
+    let mergedAllowlist: string[] | undefined;
+    if (subAllowlist && base.toolAllowlist) {
+      const baseSet = new Set(base.toolAllowlist);
+      mergedAllowlist = subAllowlist.filter(t => baseSet.has(t));
+    } else if (subAllowlist) {
+      mergedAllowlist = subAllowlist;
+    } else {
+      mergedAllowlist = base.toolAllowlist;
+    }
+
     return {
       ...base,
       ...(mergedPrompt ? { systemPrompt: mergedPrompt } : {}),
@@ -606,6 +619,7 @@ export class AiChatWorker extends AgentWorkerBase {
       ...(sub["maxTokens"] != null
         ? { maxTokens: sub["maxTokens"] as number }
         : {}),
+      ...(mergedAllowlist ? { toolAllowlist: mergedAllowlist } : {}),
     };
   }
 

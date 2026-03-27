@@ -5,7 +5,7 @@ import { ChatLayout } from "./ChatLayout";
 import { ChatProvider } from "../context/ChatProvider";
 import { useAgenticChat } from "../hooks/useAgenticChat";
 import type { ChatParticipantMetadata, ConnectionConfig, AgenticChatActions, ToolProvider, SandboxConfig } from "../types";
-import type { EventMiddleware } from "../hooks/useAgentEvents";
+import type { EventMiddleware } from "@workspace/agentic-core";
 
 export interface AgenticChatProps {
   /** Connection configuration (server URL, token, client ID) */

@@ -374,7 +374,28 @@ if (config?.model) {
 }
 ```
 
-The built-in `AiChatWorker` merges subscription config with `getHarnessConfig()` automatically -- per-channel overrides for `systemPrompt`, `model`, `temperature`, and `maxTokens` take precedence.
+The built-in `AiChatWorker` merges subscription config with `getHarnessConfig()` automatically -- per-channel overrides for `systemPrompt`, `model`, `temperature`, `maxTokens`, and `toolAllowlist` take precedence. The `toolAllowlist` merge uses intersection semantics — a subscription can only restrict, not expand.
+
+## Headless Agentic Sessions
+
+To run an agentic session without a chat panel (from a worker, test harness, or server), use `@workspace/agentic-session`. See the **headless-sessions** skill for full documentation.
+
+```typescript
+import { HeadlessSession, createWorkerSandboxConfig } from "@workspace/agentic-session";
+
+const session = await HeadlessSession.createWithAgent({
+  config: { serverUrl: pubsubUrl, token, clientId: `worker-${objectKey}` },
+  sandbox: createWorkerSandboxConfig(rpc),
+  rpcCall: (t, m, ...a) => rpc.call(t, m, ...a),
+  source: "agent-worker",
+  className: "AiChatWorker",
+  contextId,
+});
+
+await session.send("Analyze the data in scope.dataset");
+const response = await session.waitForAgentMessage();
+await session.close();
+```
 
 ## 10. Creating Workers with paneldev
 

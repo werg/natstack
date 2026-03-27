@@ -2,7 +2,8 @@
  * Agent Event Dispatcher
  *
  * Handles incoming agentic events and routes them to appropriate state handlers.
- * Extracted from chat/index.tsx for better organization and testability.
+ * Pure function — no React or browser dependencies.
+ * Extracted from useAgentEvents.ts for headless reuse.
  */
 
 import type {
@@ -14,8 +15,7 @@ import type {
   AggregatedMessage,
 } from "@natstack/pubsub";
 import type { Participant, Attachment } from "@natstack/pubsub";
-import type { MethodHistoryEntry } from "../components/MethodHistoryItem";
-import type { ChatParticipantMetadata, ChatMessage, PendingAgent } from "../types";
+import type { MethodHistoryEntry, ChatParticipantMetadata, ChatMessage, PendingAgent } from "./types.js";
 
 // ===========================================================================
 // Aggregated → ChatMessage Converter
@@ -245,15 +245,6 @@ export function dispatchAgenticEvent(
 
     case "method-call": {
       const isLocal = event.providerId === selfId;
-      // Always create a method history entry — even for locally-handled methods
-      // (eval, inline_ui, feedback_custom) so the UI can show args/code/results.
-      // Skip only non-replay remote calls that are handled elsewhere.
-      if (event.kind !== "replay" && isLocal) {
-        // For locally-handled methods, the feedback hooks (useChatFeedback)
-        // create their own entries for feedback_form/feedback_custom. But
-        // for other local methods (eval, inline_ui, set_title), we still
-        // need an entry to display args in the UI.
-      }
       handlers.addMethodHistoryEntry({
         callId: event.callId,
         methodName: event.methodName,

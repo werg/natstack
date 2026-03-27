@@ -25,8 +25,7 @@ import {
 } from "@workspace/tool-ui";
 import { compileComponent } from "@workspace/eval";
 import type { FeedbackComponentProps } from "@workspace/tool-ui";
-import type { MethodHistoryEntry } from "../../components/MethodHistoryItem";
-import type { ChatSandboxValue } from "../../types";
+import type { MethodHistoryEntry, ChatSandboxValue } from "@workspace/agentic-core";
 
 interface UseChatFeedbackOptions {
   addMethodHistoryEntry: (entry: MethodHistoryEntry) => void;

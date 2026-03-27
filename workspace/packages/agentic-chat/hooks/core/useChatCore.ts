@@ -1,131 +1,44 @@
 /**
  * useChatCore — Minimum viable chat hook.
  *
- * Handles: messages, connection, pagination, typing, send, input state,
- * method history, basic participants, channel title, interrupt/call.
+ * Delegates connection, messages, method history, event dispatch, typing,
+ * pagination, roster tracking, pending agents, debug events, and dirty repo
+ * warnings to SessionManager from @workspace/agentic-core.
  *
- * Feature hooks (roster tracking, debug, feedback, tools, inline UI,
- * pending agents) compose on top via extension refs.
+ * Retains in the React layer: input state, image cleanup, channel title,
+ * initial prompt auto-send, inputContextValue memoization.
  */
 
-import { useState, useCallback, useMemo, useRef, useEffect, useReducer } from "react";
-import { CONTENT_TYPE_TYPING } from "@natstack/pubsub";
+import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import type {
-  IncomingEvent,
+  PubSubClient,
   IncomingMethodResult,
-  AggregatedEvent,
-  AggregatedMessage,
-  TypingData,
   ChannelConfig,
+  AttachmentInput,
+  AgentDebugPayload,
+  Participant,
 } from "@natstack/pubsub";
-import type { Participant, RosterUpdate, AttachmentInput } from "@natstack/pubsub";
-import { useChannelConnection } from "../useChannelConnection";
-import type { UseChannelConnectionResult } from "../useChannelConnection";
-import { useMethodHistory } from "../useMethodHistory";
+import type { MethodDefinition } from "@natstack/pubsub";
 import {
-  dispatchAgenticEvent,
-  aggregatedToChatMessage,
-  type AgentEventHandlers,
-  type EventMiddleware,
-} from "../useAgentEvents";
+  SessionManager,
+  type SessionManagerConfig,
+  type MessageWindowState,
+  type MessageWindowAction,
+} from "@workspace/agentic-core";
+import type { EventMiddleware, DirtyRepoDetails } from "@workspace/agentic-core";
 import { cleanupPendingImages, type PendingImage } from "../../utils/imageUtils";
-import type { MethodHistoryEntry } from "../../components/MethodHistoryItem";
+import type { MethodHistoryEntry } from "@workspace/agentic-core";
 import type {
   ChatMessage,
   ChatParticipantMetadata,
   ConnectionConfig,
-  ChatInputContextValue,
-} from "../../types";
-
-// =============================================================================
-// Message window reducer — single source of truth for messages + pagination
-// =============================================================================
-
-const MAX_VISIBLE_MESSAGES = 500;
-const TRIM_THRESHOLD = MAX_VISIBLE_MESSAGES * 2;
-
-export interface MessageWindowState {
-  messages: ChatMessage[];
-  oldestLoadedId: number | null;
-  paginationExhausted: boolean;
-}
-
-export type MessageWindowAction =
-  | { type: "replace"; updater: (prev: ChatMessage[]) => ChatMessage[] }
-  | { type: "prepend"; olderMessages: ChatMessage[]; newCursor: number; exhausted: boolean };
-
-const messageWindowInitialState: MessageWindowState = {
-  messages: [],
-  oldestLoadedId: null,
-  paginationExhausted: false,
-};
-
-function messageWindowReducer(state: MessageWindowState, action: MessageWindowAction): MessageWindowState {
-  switch (action.type) {
-    case "replace": {
-      const updated = action.updater(state.messages);
-      if (updated === state.messages) return state;
-
-      // Auto-trim if over threshold
-      if (updated.length > TRIM_THRESHOLD) {
-        const trimmed = updated.slice(-MAX_VISIBLE_MESSAGES);
-        const trimFirstPubsubId = trimmed[0]?.pubsubId;
-        return {
-          messages: trimmed,
-          oldestLoadedId: trimFirstPubsubId ?? state.oldestLoadedId,
-          paginationExhausted: false,
-        };
-      }
-
-      // Initialize cursor if not yet set
-      let { oldestLoadedId } = state;
-      if (oldestLoadedId === null && updated.length > 0) {
-        const firstWithId = updated.find((m) => m.pubsubId !== undefined);
-        if (firstWithId?.pubsubId !== undefined) {
-          oldestLoadedId = firstWithId.pubsubId;
-        }
-      }
-
-      return { ...state, messages: updated, oldestLoadedId };
-    }
-    case "prepend": {
-      const existingPubsubIds = new Set(
-        state.messages.filter((m) => m.pubsubId != null).map((m) => m.pubsubId)
-      );
-      const existingMsgIds = new Set(state.messages.map((m) => m.id));
-      const deduped = action.olderMessages.filter(
-        (m) => (!m.pubsubId || !existingPubsubIds.has(m.pubsubId)) && !existingMsgIds.has(m.id)
-      );
-      const merged = deduped.length > 0 ? [...deduped, ...state.messages] : state.messages;
-      return {
-        messages: merged,
-        oldestLoadedId: action.newCursor,
-        paginationExhausted: action.exhausted,
-      };
-    }
-  }
-}
+  PendingAgent,
+} from "@workspace/agentic-core";
+import type { ChatInputContextValue } from "../../types";
 
 // =============================================================================
 // Types
 // =============================================================================
-
-/** Additional event handlers provided by feature hooks */
-export interface FeatureEventHandlers {
-  setDebugEvents?: AgentEventHandlers["setDebugEvents"];
-  setDirtyRepoWarnings?: AgentEventHandlers["setDirtyRepoWarnings"];
-  setPendingAgents?: AgentEventHandlers["setPendingAgents"];
-  expectedStops?: Set<string>;
-}
-
-/** Roster extension callback — called after basic participant update */
-export type RosterExtension = (
-  roster: RosterUpdate<ChatParticipantMetadata>,
-  prevParticipants: Record<string, Participant<ChatParticipantMetadata>>,
-) => void;
-
-/** Reconnect extension callback — called when the client reconnects */
-export type ReconnectExtension = () => void;
 
 export interface UseChatCoreOptions {
   config: ConnectionConfig;
@@ -137,12 +50,6 @@ export interface UseChatCoreOptions {
   eventMiddleware?: EventMiddleware[];
   /** If set, automatically sent as the first user message once connected */
   initialPrompt?: string;
-  /** Ref populated by composer with feature hook event handlers */
-  featureHandlersRef?: React.MutableRefObject<FeatureEventHandlers>;
-  /** Ref populated by composer with roster extension callbacks */
-  rosterExtensionsRef?: React.MutableRefObject<RosterExtension[]>;
-  /** Ref populated by composer with reconnect extension callbacks */
-  reconnectExtensionsRef?: React.MutableRefObject<ReconnectExtension[]>;
 }
 
 export interface ChatCoreState {
@@ -155,13 +62,16 @@ export interface ChatCoreState {
   // Connection
   connected: boolean;
   status: string;
-  clientRef: UseChannelConnectionResult["clientRef"];
-  connectToChannel: UseChannelConnectionResult["connect"];
+  clientRef: React.RefObject<PubSubClient<ChatParticipantMetadata> | null>;
+  connectToChannel: (options: { channelId: string; methods: Record<string, MethodDefinition>; channelConfig?: ChannelConfig; contextId?: string }) => Promise<PubSubClient<ChatParticipantMetadata>>;
   hasConnectedRef: React.MutableRefObject<boolean>;
 
   // Participants (current roster only)
   participants: Record<string, Participant<ChatParticipantMetadata>>;
   participantsRef: React.MutableRefObject<Record<string, Participant<ChatParticipantMetadata>>>;
+
+  // All participants (current + historical, from SessionManager)
+  allParticipants: Record<string, Participant<ChatParticipantMetadata>>;
 
   // Input
   input: string;
@@ -186,6 +96,13 @@ export interface ChatCoreState {
   handleInterruptAgent: (agentId: string, messageId?: string, agentHandle?: string) => Promise<void>;
   handleCallMethod: (providerId: string, methodName: string, args: unknown) => void;
   stopTyping: () => Promise<void>;
+
+  // Agent state (from SessionManager)
+  debugEvents: Array<AgentDebugPayload & { ts: number }>;
+  dirtyRepoWarnings: Map<string, DirtyRepoDetails>;
+  pendingAgents: Map<string, PendingAgent>;
+  addPendingAgent: (handle: string, agentId: string) => void;
+  onDismissDirtyWarning: (agentName: string) => void;
 
   // Refs
   selfIdRef: React.MutableRefObject<string | null>;
@@ -215,45 +132,44 @@ export function useChatCore({
   theme = "dark",
   eventMiddleware,
   initialPrompt,
-  featureHandlersRef,
-  rosterExtensionsRef,
-  reconnectExtensionsRef,
 }: UseChatCoreOptions): ChatCoreState {
+  // --- Stable refs ---
   const selfIdRef = useRef<string | null>(null);
   const hasConnectedRef = useRef(false);
   const participantsRef = useRef<Record<string, Participant<ChatParticipantMetadata>>>({});
-  const prevParticipantsRef = useRef<Record<string, Participant<ChatParticipantMetadata>>>({});
-  const eventMiddlewareRef = useRef(eventMiddleware);
-  eventMiddlewareRef.current = eventMiddleware;
   const inputRef = useRef("");
 
-  // --- Message state ---
-  const [messageWindow, dispatch] = useReducer(messageWindowReducer, messageWindowInitialState);
-  const { messages } = messageWindow;
-  const setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>> = useCallback(
-    (action: React.SetStateAction<ChatMessage[]>) => {
-      dispatch({ type: "replace", updater: typeof action === "function" ? action : () => action });
-    },
-    []
-  );
+  // --- SessionManager (created once) ---
+  const managerRef = useRef<SessionManager | null>(null);
+  if (!managerRef.current) {
+    const managerConfig: SessionManagerConfig = {
+      config,
+      metadata,
+      eventMiddleware,
+    };
+    managerRef.current = new SessionManager(managerConfig);
+  }
+  const manager = managerRef.current;
+
+  // --- React state driven by SessionManager events ---
+  const [messages, setMessagesState] = useState<ChatMessage[]>([]);
+  const [connected, setConnected] = useState(false);
+  const [status, setStatus] = useState("Connecting...");
+  const [participants, setParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
+  const [allParticipants, setAllParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
+  const [methodEntries, setMethodEntries] = useState<Map<string, MethodHistoryEntry>>(new Map());
+  const [hasMoreHistory, setHasMoreHistory] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [debugEvents, setDebugEvents] = useState<Array<AgentDebugPayload & { ts: number }>>([]);
+  const [dirtyRepoWarnings, setDirtyRepoWarnings] = useState<Map<string, DirtyRepoDetails>>(new Map());
+  const [pendingAgents, setPendingAgents] = useState<Map<string, PendingAgent>>(new Map());
+
+  // --- Client ref (synced with manager.client) ---
+  const clientRef = useRef<PubSubClient<ChatParticipantMetadata> | null>(null);
 
   // --- Input state ---
   const [input, setInput] = useState("");
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
-  const [status, setStatus] = useState("Connecting...");
-  const [participants, setParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
-
-  // --- Pagination ---
-  const [firstChatMessageId, setFirstChatMessageId] = useState<number | undefined>();
-  const [loadingMore, setLoadingMore] = useState(false);
-
-  const hasMoreHistory = useMemo(() => {
-    if (messageWindow.paginationExhausted) return false;
-    if (messageWindow.oldestLoadedId === null) return false;
-    // firstChatMessageId is undefined when there are no chat messages yet
-    if (firstChatMessageId === undefined) return false;
-    return messageWindow.oldestLoadedId > firstChatMessageId;
-  }, [messageWindow.paginationExhausted, messageWindow.oldestLoadedId, firstChatMessageId]);
 
   // --- Cleanup pending images on unmount ---
   const pendingImagesRef = useRef(pendingImages);
@@ -262,246 +178,168 @@ export function useChatCore({
     return () => { cleanupPendingImages(pendingImagesRef.current); };
   }, []);
 
-  // --- Method history ---
-  const { methodEntries, addMethodHistoryEntry, updateMethodHistoryEntry, handleMethodResult, clearMethodHistory } =
-    useMethodHistory({ setMessages, clientId: config.clientId });
+  // --- Subscribe to SessionManager events ---
+  useEffect(() => {
+    const unsubs: Array<() => void> = [];
 
-  // --- Channel connection ---
-  const { clientRef, connected, clientId, connect: connectToChannel } = useChannelConnection({
-    config,
-    metadata,
-    onEvent: useCallback(
-      (event: IncomingEvent) => {
-        try {
-          const selfId = selfIdRef.current ?? config.clientId;
-          const ext = featureHandlersRef?.current;
-          dispatchAgenticEvent(
-            event,
-            {
-              setMessages,
-              addMethodHistoryEntry,
-              handleMethodResult,
-              setDebugEvents: ext?.setDebugEvents,
-              setDirtyRepoWarnings: ext?.setDirtyRepoWarnings,
-              setPendingAgents: ext?.setPendingAgents,
-              expectedStops: ext?.expectedStops,
-            },
-            selfId,
-            participantsRef.current,
-            eventMiddlewareRef.current,
-          );
-        } catch (err) {
-          console.error("[Chat] Event dispatch error:", err);
-        }
-      },
-      [setMessages, addMethodHistoryEntry, handleMethodResult, config.clientId, featureHandlersRef]
-    ),
-    onAggregatedEvent: useCallback((event: AggregatedEvent) => {
-      switch (event.type) {
-        case "message": {
-          const chatMsg = aggregatedToChatMessage(event);
-          setMessages(prev => {
-            if (chatMsg.pubsubId && prev.some(m => m.pubsubId === chatMsg.pubsubId)) return prev;
-            const existingIdx = prev.findIndex(m => m.id === chatMsg.id);
-            if (existingIdx >= 0) {
-              // Backfill pubsubId from server on locally-sent messages
-              const existing = prev[existingIdx]!;
-              if (chatMsg.pubsubId && !existing.pubsubId) {
-                const updated = [...prev];
-                updated[existingIdx] = { ...existing, pubsubId: chatMsg.pubsubId, pending: false };
-                return updated;
-              }
-              return prev;
-            }
-            return [...prev, chatMsg];
-          });
-          break;
-        }
-        case "method-call": {
-          addMethodHistoryEntry({
-            callId: event.callId,
-            methodName: event.methodName,
-            description: undefined,
-            args: event.args,
-            status: "pending",
-            startedAt: event.ts,
-            providerId: event.providerId,
-            callerId: event.senderId,
-            handledLocally: false,
-          });
-          break;
-        }
-        case "method-result": {
-          const isError = event.status === "error";
-          handleMethodResult({
-            kind: "replay",
-            senderId: event.senderId,
-            ts: event.ts,
-            callId: event.callId,
-            content: event.content,
-            complete: event.status !== "incomplete",
-            isError,
-            pubsubId: event.pubsubId,
-            senderMetadata: {
-              name: event.senderName,
-              type: event.senderType,
-              handle: event.senderHandle,
-            },
-          } as IncomingMethodResult);
-          break;
-        }
+    unsubs.push(manager.on("messagesChanged", (msgs) => {
+      setMessagesState([...msgs] as ChatMessage[]);
+      // Sync pagination state for correct React re-renders
+      setOldestLoadedId(manager.oldestLoadedId);
+      setPaginationExhausted(manager.paginationExhausted);
+      setHasMoreHistory(manager.hasMoreHistory);
+    }));
+
+    unsubs.push(manager.on("connectionChanged", (isConnected, connectionStatus) => {
+      setConnected(isConnected);
+      setStatus(connectionStatus);
+      // Sync clientRef
+      clientRef.current = manager.client;
+      // Sync selfId
+      if (isConnected && manager.client) {
+        selfIdRef.current = manager.client.clientId ?? config.clientId;
       }
-    }, [setMessages, addMethodHistoryEntry, handleMethodResult]),
-    onRoster: useCallback((roster: RosterUpdate<ChatParticipantMetadata>) => {
-      const prev = prevParticipantsRef.current;
+      // Update hasMoreHistory on connection change
+      setHasMoreHistory(manager.hasMoreHistory);
+    }));
 
-      // Basic participant update
-      setParticipants(roster.participants);
+    unsubs.push(manager.on("participantsChanged", (parts) => {
+      setParticipants({ ...parts });
+    }));
 
-      // Call roster extensions (roster tracking, pending agents, etc.)
-      const extensions = rosterExtensionsRef?.current ?? [];
-      for (const ext of extensions) {
-        ext(roster, prev);
-      }
+    unsubs.push(manager.on("allParticipantsChanged", (allParts) => {
+      const mutableAllParts = { ...allParts };
+      setAllParticipants(mutableAllParts);
+      participantsRef.current = mutableAllParts;
+    }));
 
-      prevParticipantsRef.current = roster.participants;
-    }, [rosterExtensionsRef]),
-    onReconnect: useCallback(() => {
-      prevParticipantsRef.current = {};
-      // Call reconnect extensions (roster tracking clears disconnect messages, resets suppression)
-      const extensions = reconnectExtensionsRef?.current ?? [];
-      for (const ext of extensions) {
-        ext();
-      }
-    }, [reconnectExtensionsRef]),
-    onError: useCallback((error: Error) => {
+    unsubs.push(manager.on("methodHistoryChanged", (entries) => {
+      setMethodEntries(new Map(entries));
+    }));
+
+    unsubs.push(manager.on("pendingAgentsChanged", (agents) => {
+      setPendingAgents(new Map(agents));
+    }));
+
+    unsubs.push(manager.on("debugEvent", (event) => {
+      setDebugEvents((prev) => [...prev, event]);
+    }));
+
+    unsubs.push(manager.on("dirtyRepoWarning", (handle, details) => {
+      setDirtyRepoWarnings((prev) => {
+        const next = new Map(prev);
+        next.set(handle, details);
+        return next;
+      });
+    }));
+
+    unsubs.push(manager.on("error", (error) => {
       console.error("[Chat] Connection error:", error);
       setStatus(`Error: ${error.message}`);
-    }, []),
-  });
+    }));
 
-  // Sync participantsRef
-  participantsRef.current = participants;
+    return () => {
+      for (const unsub of unsubs) unsub();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [manager, config.clientId]);
 
-  // Synchronous guard for pagination
-  const loadingMoreRef = useRef(false);
-
-  // Sync firstChatMessageId on every ready
-  useEffect(() => {
-    const client = clientRef.current;
-    if (!client || !connected) return;
-    return client.onReady(() => {
-      setFirstChatMessageId(client.firstChatMessageId);
-    });
-  }, [connected, clientRef]);
-
-  // Load earlier messages
-  const loadEarlierMessages = useCallback(async () => {
-    const client = clientRef.current;
-    const oldestLoadedId = messageWindow.oldestLoadedId;
-    if (!client || loadingMoreRef.current || !hasMoreHistory || !oldestLoadedId) return;
-    loadingMoreRef.current = true;
-    setLoadingMore(true);
-    try {
-      let currentBeforeId = oldestLoadedId;
-      let olderMessages: ChatMessage[] = [];
-      let hasMore = true;
-
-      while (hasMore && olderMessages.length === 0) {
-        const result = await client.getMessagesBefore(currentBeforeId, 50);
-        // Convert raw messages to AggregatedMessage for aggregatedToChatMessage
-        olderMessages = result.messages
-          .filter((msg) => msg.type === "message")
-          .map((msg) => {
-            const payload = typeof msg.payload === "string" ? JSON.parse(msg.payload as string) : msg.payload;
-            const p = payload as Record<string, unknown> | null;
-            const meta = msg.senderMetadata as Record<string, unknown> | undefined;
-            const aggregated: AggregatedMessage = {
-              kind: "replay",
-              aggregated: true,
-              type: "message",
-              id: (p?.["id"] as string) ?? String(msg.id),
-              pubsubId: msg.id,
-              content: (p?.["content"] as string) ?? "",
-              complete: (p?.["complete"] as boolean) ?? true,
-              incomplete: false,
-              replyTo: p?.["replyTo"] as string | undefined,
-              contentType: p?.["contentType"] as string | undefined,
-              metadata: p?.["metadata"] as Record<string, unknown> | undefined,
-              error: p?.["error"] as string | undefined,
-              senderId: msg.senderId,
-              senderName: meta?.["name"] as string | undefined,
-              senderType: meta?.["type"] as string | undefined,
-              senderHandle: meta?.["handle"] as string | undefined,
-              ts: msg.ts,
-            };
-            return aggregatedToChatMessage(aggregated);
-          });
-        hasMore = result.hasMore;
-
-        if (result.messages.length > 0) {
-          currentBeforeId = result.messages[0]!.id;
-        } else {
-          hasMore = false;
-          break;
-        }
-      }
-
-      dispatch({ type: "prepend", olderMessages, newCursor: currentBeforeId, exhausted: !hasMore });
-    } catch (err) {
-      console.error("[Chat] Failed to load earlier messages:", err);
-    } finally {
-      loadingMoreRef.current = false;
-      setLoadingMore(false);
-    }
-  }, [clientRef, messageWindow.oldestLoadedId, hasMoreHistory]);
-
-  useEffect(() => { selfIdRef.current = clientId; }, [clientId]);
-
-  // Channel title subscription
-  useEffect(() => {
-    const client = clientRef.current;
-    if (!client || !connected) return;
-    const initialTitle = client.channelConfig?.title;
-    if (initialTitle) document.title = initialTitle;
-    const unsubscribe = client.onConfigChange((cfg: ChannelConfig) => {
-      if (cfg.title) document.title = cfg.title;
-    });
-    return () => { unsubscribe(); };
-  }, [connected, clientRef]);
-
-  // --- Typing indicators ---
-  const typingMessageIdRef = useRef<string | null>(null);
-  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const TYPING_DEBOUNCE_MS = 2000;
-
+  // --- Dispose manager on unmount ---
   useEffect(() => {
     return () => {
-      if (typingTimeoutRef.current) { clearTimeout(typingTimeoutRef.current); typingTimeoutRef.current = null; }
+      manager.dispose();
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [manager]);
 
+  // --- Connect (delegates to manager) ---
+  const connectToChannel = useCallback(
+    async (options: { channelId: string; methods: Record<string, MethodDefinition>; channelConfig?: ChannelConfig; contextId?: string }): Promise<PubSubClient<ChatParticipantMetadata>> => {
+      await manager.connect(options.channelId, {
+        methods: options.methods,
+        channelConfig: options.channelConfig,
+        contextId: options.contextId,
+      });
+      // The client is now available
+      const client = manager.client!;
+      clientRef.current = client;
+      selfIdRef.current = client.clientId ?? config.clientId;
+
+      // Channel title subscription — cleaned up when client is closed by manager
+      const initialTitle = client.channelConfig?.title;
+      if (initialTitle) document.title = initialTitle;
+      client.onConfigChange((cfg: ChannelConfig) => {
+        if (cfg.title) document.title = cfg.title;
+      });
+
+      return client;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [manager, config.clientId]
+  );
+
+  // --- Pagination state (tracked separately for React re-renders) ---
+  const [oldestLoadedId, setOldestLoadedId] = useState<number | null>(null);
+  const [paginationExhausted, setPaginationExhausted] = useState(false);
+
+  // --- setMessages (delegates to manager's public API) ---
+  const setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>> = useCallback(
+    (action: React.SetStateAction<ChatMessage[]>) => {
+      const updater = typeof action === "function" ? action : () => action;
+      manager.updateMessages(updater);
+    },
+    [manager]
+  );
+
+  // --- dispatch (delegates to manager's public API) ---
+  const dispatch: React.Dispatch<MessageWindowAction> = useCallback(
+    (action: MessageWindowAction) => {
+      manager.dispatchMessageAction(action);
+    },
+    [manager]
+  );
+
+  // --- messageWindow (driven by React state for correct re-renders) ---
+  const messageWindow: MessageWindowState = useMemo(() => ({
+    messages,
+    oldestLoadedId,
+    paginationExhausted,
+  }), [messages, oldestLoadedId, paginationExhausted]);
+
+  // --- Method history wrappers (delegate to manager's public API) ---
+  const addMethodHistoryEntry = useCallback(
+    (entry: MethodHistoryEntry) => {
+      manager.addMethodHistoryEntry(entry);
+    },
+    [manager]
+  );
+
+  const updateMethodHistoryEntry = useCallback(
+    (callId: string, updates: Partial<MethodHistoryEntry>) => {
+      manager.updateMethodHistoryEntry(callId, updates);
+    },
+    [manager]
+  );
+
+  const handleMethodResult = useCallback(
+    (result: IncomingMethodResult) => {
+      manager.handleMethodResult(result);
+    },
+    [manager]
+  );
+
+  const clearMethodHistory = useCallback(() => {
+    manager.clearMethodHistory();
+  }, [manager]);
+
+  // --- Typing ---
   const stopTyping = useCallback(async () => {
-    if (typingTimeoutRef.current) { clearTimeout(typingTimeoutRef.current); typingTimeoutRef.current = null; }
-    if (typingMessageIdRef.current && clientRef.current?.connected) {
-      await clientRef.current.update(typingMessageIdRef.current, "", { complete: true, persist: false });
-      typingMessageIdRef.current = null;
-    }
-  }, [clientRef]);
+    await manager.stopTyping();
+  }, [manager]);
 
   const startTyping = useCallback(async () => {
-    const client = clientRef.current;
-    if (!client?.connected) return;
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    if (!typingMessageIdRef.current) {
-      const typingData: TypingData = { senderId: client.clientId ?? config.clientId, senderName: metadata.name, senderType: metadata.type };
-      const { messageId } = await client.send(JSON.stringify(typingData), { contentType: CONTENT_TYPE_TYPING, persist: false });
-      typingMessageIdRef.current = messageId;
-    }
-    typingTimeoutRef.current = setTimeout(() => {
-      void stopTyping().catch((err) => console.error("[Chat] Stop typing timeout error:", err));
-    }, TYPING_DEBOUNCE_MS);
-  }, [clientRef, config.clientId, metadata.name, metadata.type, stopTyping]);
+    await manager.startTyping();
+  }, [manager]);
 
   const handleInputChange = useCallback((value: string) => {
     setInput(value);
@@ -518,24 +356,14 @@ export function useChatCore({
     const currentInput = inputRef.current;
     const hasText = currentInput.trim().length > 0;
     const hasAttachments = attachments && attachments.length > 0;
-    if ((!hasText && !hasAttachments) || !clientRef.current?.connected) return;
-    await stopTyping();
+    if ((!hasText && !hasAttachments) || !manager.client?.connected) return;
     const text = currentInput.trim();
-    // Idempotency key for this send operation — protects against transport-level
-    // retries (e.g., pubsub retry queue re-sending after reconnect)
-    const idempotencyKey = crypto.randomUUID();
     // Optimistically clear input
     setInput("");
     inputRef.current = "";
     try {
-      const { messageId } = await clientRef.current.send(text || "", {
+      await manager.send(text || "", {
         attachments: hasAttachments ? attachments : undefined,
-        idempotencyKey,
-      });
-      const selfId = clientRef.current.clientId ?? config.clientId;
-      setMessages((prev) => {
-        if (prev.some((m) => m.id === messageId)) return prev;
-        return [...prev, { id: messageId, senderId: selfId, content: text, complete: true, pending: true, kind: "message" }];
       });
     } catch (err) {
       // Restore draft so user can retry — rethrow so caller (ChatInput) keeps attachments
@@ -544,45 +372,71 @@ export function useChatCore({
       console.error("[Chat] Send failed, draft restored:", err);
       throw err;
     }
-  }, [config.clientId, clientRef, stopTyping, setMessages]);
+  }, [manager]);
 
   // --- Auto-send initial prompt once connected ---
-  // Capture in a ref so clearing stateArgs in the parent doesn't lose the value
   const initialPromptCaptured = useRef(initialPrompt);
   const initialPromptSentRef = useRef(false);
   useEffect(() => {
     const prompt = initialPromptCaptured.current;
-    if (!prompt || !connected || !clientRef.current || initialPromptSentRef.current) return;
+    if (!prompt || !connected || !manager.client || initialPromptSentRef.current) return;
     initialPromptSentRef.current = true;
     inputRef.current = prompt;
     sendMessage().catch((err) => console.warn("[Chat] Failed to send initial prompt:", err));
-  }, [connected, sendMessage]);
+  }, [connected, sendMessage, manager]);
+
+  // --- Load earlier messages ---
+  const loadEarlierMessages = useCallback(async () => {
+    if (loadingMore || !hasMoreHistory) return;
+    setLoadingMore(true);
+    try {
+      await manager.loadEarlierMessages();
+      setHasMoreHistory(manager.hasMoreHistory);
+    } catch (err) {
+      console.error("[Chat] Failed to load earlier messages:", err);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [manager, loadingMore, hasMoreHistory]);
 
   // --- Interrupt / call method ---
   const handleInterruptAgent = useCallback(
     async (agentId: string, _messageId?: string, agentHandle?: string) => {
-      if (!clientRef.current) return;
+      if (!manager.client) return;
       const roster = participantsRef.current;
-      let targetId = agentId;
+      let resolvedId = agentId;
       if (!roster[agentId] && agentHandle) {
         const byHandle = Object.values(roster).find(p => p.metadata.handle === agentHandle && p.metadata.type !== "panel");
-        if (byHandle) { targetId = byHandle.id; } else { console.warn(`Cannot interrupt: agent ${agentHandle} not in roster`); return; }
+        if (byHandle) { resolvedId = byHandle.id; } else { console.warn(`Cannot interrupt: agent ${agentHandle} not in roster`); return; }
       }
-      try { await clientRef.current.callMethod(targetId, "pause", { reason: "User interrupted execution" }).result; }
-      catch (error) { console.error("Failed to interrupt agent:", error); }
+      await manager.interrupt(resolvedId);
     },
-    [clientRef]
+    [manager]
   );
 
   const handleCallMethod = useCallback(
     (providerId: string, methodName: string, args: unknown) => {
-      if (!clientRef.current) return;
-      void clientRef.current.callMethod(providerId, methodName, args).result.catch((error: unknown) => {
+      void manager.callMethod(providerId, methodName, args).catch((error: unknown) => {
         console.error(`Failed to call method ${methodName} on ${providerId}:`, error);
       });
     },
-    [clientRef]
+    [manager]
   );
+
+  // --- addPendingAgent (delegates to manager) ---
+  const addPendingAgent = useCallback((handle: string, agentId: string) => {
+    manager.addPendingAgent(handle, agentId);
+  }, [manager]);
+
+  // --- Dismiss dirty repo warning ---
+  const onDismissDirtyWarning = useCallback((agentName: string) => {
+    manager.dismissDirtyRepoWarning(agentName);
+    setDirtyRepoWarnings(prev => {
+      const next = new Map(prev);
+      next.delete(agentName);
+      return next;
+    });
+  }, [manager]);
 
   // --- Input context value ---
   const inputContextValue: ChatInputContextValue = useMemo(() => ({
@@ -605,6 +459,7 @@ export function useChatCore({
     hasConnectedRef,
     participants,
     participantsRef,
+    allParticipants,
     input,
     pendingImages,
     handleInputChange,
@@ -621,6 +476,11 @@ export function useChatCore({
     handleInterruptAgent,
     handleCallMethod,
     stopTyping,
+    debugEvents,
+    dirtyRepoWarnings,
+    pendingAgents,
+    addPendingAgent,
+    onDismissDirtyWarning,
     selfIdRef,
     sessionEnabled: true,
     channelName,

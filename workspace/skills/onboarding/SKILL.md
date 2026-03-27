@@ -65,3 +65,7 @@ See the sandbox skill's [INTERACTION_PATTERNS.md](../sandbox/INTERACTION_PATTERN
 - **Show, don't tell** — use `eval` and `inline_ui` to demonstrate concepts live rather than just describing them.
 - **Reference, don't repeat** — point to existing skill docs for deep dives rather than duplicating content.
 - **Go step by step** — confirm each step works before moving to the next.
+
+## Environment Compatibility
+
+- Onboarding is **panel-only** -- it depends on `inline_ui`, interactive workflows, and browser import features that require a panel rendering context.

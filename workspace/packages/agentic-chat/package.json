@@ -8,6 +8,7 @@
     "./styles.css": "./styles.css"
   },
   "dependencies": {
+    "@workspace/agentic-core": "workspace:*",
     "@natstack/pubsub": "workspace:*",
     "@workspace/eval": "workspace:*",
     "@workspace/tool-ui": "workspace:*",

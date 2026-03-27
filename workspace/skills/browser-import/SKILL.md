@@ -185,3 +185,8 @@ Imported cookies are **automatically synced** to the shared browser session (`pe
 > "Your cookies are imported! Would you like to set up OAuth so I can access Gmail, GitHub, or other APIs on your behalf? Your imported cookies will make the sign-in process seamless."
 
 If they say yes, load the `api-integrations` skill and follow its Prerequisites section. If OAuth is already configured, offer to connect to a provider right away using `openIn: "panel"` (their imported cookies will pre-authenticate the browser panel).
+
+## Environment Compatibility
+
+- Browser import is **panel-only** -- it requires a browser context (`@workspace/panel-browser`) and inline UI for interactive flows.
+- Headless sessions cannot use this skill.

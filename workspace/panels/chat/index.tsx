@@ -11,7 +11,8 @@ import { usePanelTheme } from "@workspace/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Flex, Spinner, Text, Theme } from "@radix-ui/themes";
 import { AgenticChat, ErrorBoundary } from "@workspace/agentic-chat";
-import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDeps, SandboxConfig } from "@workspace/agentic-chat";
+import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDeps } from "@workspace/agentic-chat";
+import { createPanelSandboxConfig } from "@workspace/agentic-core";
 import { SANDBOX_DEFAULT_TIMEOUT_MS, SANDBOX_MAX_TIMEOUT_MS, SANDBOX_FRAMEWORK_TIMEOUT_MS } from "@workspace/eval";
 import { z } from "zod";
 import type { MethodDefinition } from "@natstack/pubsub";
@@ -246,21 +247,7 @@ export default function ChatPanel() {
   }), [handleNewConversation, handleAddAgent, handleRemoveAgent, availableAgents, handleFocusPanel, handleReloadPanel]);
 
   // Sandbox config — provides RPC, import loading, and DB to agentic-chat (keeps it runtime-agnostic)
-  const sandboxConfig: SandboxConfig = useMemo(() => ({
-    rpc: { call: (t: string, m: string, ...a: unknown[]) => rpc.call(t, m, ...a) },
-    loadImport: async (specifier: string, ref: string | undefined, externals: string[]) => {
-      // npm: prefix → install from npm registry and bundle
-      if (ref?.startsWith("npm:")) {
-        const version = ref.slice(4) || "latest";
-        const result = await rpc.call("main", "build.getBuildNpm", specifier, version, externals) as { bundle: string };
-        return result.bundle;
-      }
-      // Default: workspace package build
-      const result = await rpc.call("main", "build.getBuild", specifier, ref, { library: true, externals }) as { bundle: string };
-      return result.bundle;
-    },
-    db: { open: (name: string) => db.open(name) },
-  }), []);
+  const sandboxConfig = useMemo(() => createPanelSandboxConfig(rpc, db), []);
 
   // Tool provider: only eval tool — all other operations use eval + runtime APIs
   const toolProvider: ToolProvider = useCallback((deps: ToolProviderDeps) => {
