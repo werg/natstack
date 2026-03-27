@@ -1,4 +1,3 @@
-// @ts-expect-error — sql.js has no bundled type declarations
 import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
 
 interface SqlResult {
