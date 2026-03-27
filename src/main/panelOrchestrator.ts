@@ -43,7 +43,11 @@ export interface PanelOrchestratorDeps {
   protocol: "http" | "https";
   gatewayPort: number;
 
-  sendToClient: (callerId: string, msg: unknown) => void;
+  /**
+   * Send an event to a panel. In IPC mode, this calls
+   * webContents.send("natstack:event", event, payload).
+   */
+  sendPanelEvent: (panelId: string, event: string, payload: unknown) => void;
   workspaceConfig?: WorkspaceConfig;
 }
 
@@ -65,7 +69,6 @@ export class PanelOrchestrator implements BridgePanelManager {
   private get panelHttpServer() { return this.deps.panelHttpServer; }
   private get cdpServer() { return this.deps.cdpServer; }
   private get ccConversationManager() { return this.deps.ccConversationManager; }
-  private get sendToClient() { return this.deps.sendToClient; }
   private get workspaceConfig() { return this.deps.workspaceConfig; }
 
   // =========================================================================
@@ -369,8 +372,6 @@ export class PanelOrchestrator implements BridgePanelManager {
       gitBaseUrl: string;
     };
 
-    // Local Electron token (different issuer than server)
-    const rpcToken = this.tokenManager.ensureToken(callerId, "panel");
     const parentId = this.registry.findParentId(callerId);
     const stateArgs = getPanelStateArgs(panel) ?? {};
     const env = panel.snapshot.options.env ?? {};
@@ -382,9 +383,7 @@ export class PanelOrchestrator implements BridgePanelManager {
       parentId,
       theme: this.currentTheme,
       rpcPort: creds.rpcPort,
-      rpcToken,
-      serverRpcPort: creds.rpcPort,
-      serverRpcToken: creds.serverRpcToken,
+      rpcToken: creds.serverRpcToken,
       gitToken: creds.gitToken,
       gitBaseUrl: creds.gitBaseUrl,
       workerdPort: creds.workerdPort,
@@ -406,15 +405,8 @@ export class PanelOrchestrator implements BridgePanelManager {
   ): Promise<unknown> {
     const validated = await this.serverClient.call("panel", "updateStateArgs", [panelId, updates]);
     this.registry.updateStateArgs(panelId, validated as Record<string, unknown>);
-
-    if (this.sendToClient) {
-      this.sendToClient(panelId, {
-        type: "ws:event",
-        event: "stateArgs:updated",
-        payload: validated,
-      });
-    }
-
+    // stateArgs:updated event is now emitted by the server bridge handler
+    // over the server WS, not via Electron IPC.
     return validated;
   }
 
@@ -516,7 +508,7 @@ export class PanelOrchestrator implements BridgePanelManager {
   broadcastTheme(theme: "light" | "dark"): void {
     for (const entry of this.registry.listPanels()) {
       if (this.getPanelView()?.hasView(entry.panelId)) {
-        this.sendPanelEvent(entry.panelId, { type: "theme", theme });
+        this.deps.sendPanelEvent(entry.panelId, "runtime:theme", { theme });
       }
     }
   }
@@ -550,12 +542,16 @@ export class PanelOrchestrator implements BridgePanelManager {
   // =========================================================================
 
   sendPanelEvent(panelId: string, payload: unknown): void {
-    if (!this.sendToClient) return;
-    this.sendToClient(panelId, {
-      type: "ws:event",
-      event: "panel:event",
-      payload: { panelId, ...payload as Record<string, unknown> },
-    });
+    const data = payload as Record<string, unknown>;
+    if (data["type"] === "focus") {
+      this.deps.sendPanelEvent(panelId, "runtime:focus", null);
+    } else if (data["type"] === "theme") {
+      this.deps.sendPanelEvent(panelId, "runtime:theme", { theme: data["theme"] });
+    } else if (data["type"] === "child-created") {
+      this.deps.sendPanelEvent(panelId, "runtime:child-created", { childId: data["childId"], url: data["url"] });
+    } else if (data["type"] === "child-creation-error") {
+      this.deps.sendPanelEvent(panelId, "runtime:child-creation-error", { url: data["url"], error: data["error"] });
+    }
   }
 
   // =========================================================================

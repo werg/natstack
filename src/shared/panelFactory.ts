@@ -35,10 +35,10 @@ export interface BuildBootstrapConfigOpts {
   source: string;
   parentId: string | null;
   theme: "light" | "dark";
+  /** Single RPC port (server WS) — panels have one connection now */
   rpcPort: number;
+  /** Single RPC token (server-issued) */
   rpcToken: string;
-  serverRpcPort: number;
-  serverRpcToken: string;
   gitToken: string;
   gitBaseUrl: string;
   workerdPort: number;
@@ -101,7 +101,7 @@ export function buildBootstrapConfig(opts: BuildBootstrapConfigOpts): unknown {
   };
   const pubsubConfig = {
     serverUrl: `${wsProtocol}://${subdomain}.${host}:${port}/_w/workers/pubsub-channel/PubSubChannel`,
-    token: opts.serverRpcToken,
+    token: opts.rpcToken,
   };
 
   return {
@@ -111,8 +111,6 @@ export function buildBootstrapConfig(opts: BuildBootstrapConfigOpts): unknown {
     theme: opts.theme,
     rpcPort: opts.rpcPort,
     rpcToken: opts.rpcToken,
-    serverRpcPort: opts.serverRpcPort,
-    serverRpcToken: opts.serverRpcToken,
     gitConfig,
     pubsubConfig,
     env: {

@@ -6,16 +6,11 @@
  *
  * Expects these globals to be set before this script runs:
  * - globalThis.__natstackId (string) — panel ID (viewId)
- * - globalThis.__natstackRpcPort (number) — RPC server port
+ * - globalThis.__natstackRpcPort (number) — server RPC port
  * - globalThis.__natstackRpcToken (string) — auth token for ws:auth
  *
- * Optional (Electron dual-process mode):
- * - globalThis.__natstackServerRpcPort (number) — server-process RPC port
- * - globalThis.__natstackServerRpcToken (string) — server-process auth token
- *
  * Sets:
- * - globalThis.__natstackTransport — the TransportBridge instance
- * - globalThis.__natstackServerTransport — server transport (if server globals present)
+ * - globalThis.__natstackTransport — the TransportBridge instance (single server WS)
  */
 
 import { createWsTransport } from "../preload/wsTransport.js";
@@ -27,10 +22,8 @@ const rpcPort: number = globalThis.__natstackRpcPort;
 const authToken: string = globalThis.__natstackRpcToken;
 
 // Derive WebSocket URL from page context (supports both ws:// and wss://)
-// __natstackRpcHost is set by Electron to point to the local RPC server;
-// standalone/remote panels use location.hostname (the server host).
 const wsScheme = location.protocol === "https:" ? "wss" : "ws";
-const wsHost: string = globalThis.__natstackRpcHost || location.hostname || "127.0.0.1";
+const wsHost: string = location.hostname || "127.0.0.1";
 const wsUrl = `${wsScheme}://${wsHost}:${rpcPort}`;
 
 globalThis.__natstackTransport = createWsTransport({
@@ -42,33 +35,10 @@ globalThis.__natstackTransport = createWsTransport({
 });
 
 // ---------------------------------------------------------------------------
-// Server-process transport (Electron dual-process mode)
+// stateArgs listener
 // ---------------------------------------------------------------------------
-// In Electron, panels need a second WS connection to the server process for
-// AI streaming, DB, build, and other server-side services.  The routing bridge
-// in @workspace/runtime dispatches calls to the appropriate transport.
-
-const serverRpcPort: number | undefined = globalThis.__natstackServerRpcPort;
-const serverAuthToken: string | undefined = globalThis.__natstackServerRpcToken;
-
-if (serverRpcPort && serverAuthToken) {
-  // Server transport always connects to the panel's origin host (location.hostname),
-  // NOT __natstackRpcHost. In remote mode, the server is on the remote host;
-  // __natstackRpcHost points to Electron's local machine for shell services only.
-  const serverHost = location.hostname || "127.0.0.1";
-  const serverWsUrl = `${wsScheme}://${serverHost}:${serverRpcPort}`;
-  globalThis.__natstackServerTransport = createWsTransport({
-    viewId,
-    wsPort: serverRpcPort,
-    authToken: serverAuthToken,
-    callerKind: "panel",
-    wsUrl: serverWsUrl,
-  });
-}
-
-// ---------------------------------------------------------------------------
-// stateArgs listener (mirrors setupStateArgsListener in preload)
-// ---------------------------------------------------------------------------
+// The server emits stateArgs:updated back to the panel over the server WS
+// after persisting. This listener works in both Electron and standalone.
 
 globalThis.__natstackTransport.onMessage((_fromId: string, message: any) => {
   if (message?.type === "event" && message.event === "stateArgs:updated") {

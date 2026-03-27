@@ -7,7 +7,8 @@
  * 1. Reads bootstrap data from nonce-keyed `_ns_boot_{bk}` cookie or sessionStorage
  * 2. Seeds panelId, rpcPort, rpcToken into sessionStorage
  * 3. Loads `/__transport.js` (browser RPC transport)
- * 4. Calls `bridge.getBootstrapConfig` via RPC to get full config
+ * 4. Gets full config via __natstackElectron.getBootstrapConfig (Electron)
+ *    or bridge.getBootstrapConfig RPC (standalone)
  * 5. Sets `globalThis.__natstack*` globals
  * 6. Sets `globalThis.__natstackContextReady = true`
  * 7. Loads `./bundle.js` as a module
@@ -40,17 +41,10 @@ export const CONFIG_LOADER_JS = `(async () => {
   const bk = url.searchParams.get("_bk");
   const urlPid = url.searchParams.get("pid");
 
-  // Electron path: all credentials in URL params
-  let serverRpcPort = null;
-  let serverRpcToken = null;
-  let rpcHost = null;
   if (urlPid) {
     pid = urlPid;
     if (url.searchParams.has("rpcPort")) rpcPort = Number(url.searchParams.get("rpcPort"));
     if (url.searchParams.has("rpcToken")) rpcToken = url.searchParams.get("rpcToken");
-    if (url.searchParams.has("serverRpcPort")) serverRpcPort = Number(url.searchParams.get("serverRpcPort"));
-    if (url.searchParams.has("serverRpcToken")) serverRpcToken = url.searchParams.get("serverRpcToken");
-    if (url.searchParams.has("rpcHost")) rpcHost = url.searchParams.get("rpcHost");
   }
 
   // Browser path: credentials in nonce-keyed boot cookie
@@ -68,9 +62,6 @@ export const CONFIG_LOADER_JS = `(async () => {
         pid = boot.pid;
         rpcPort = boot.rpcPort;
         rpcToken = boot.rpcToken;
-        if (boot.serverRpcPort) serverRpcPort = boot.serverRpcPort;
-        if (boot.serverRpcToken) serverRpcToken = boot.serverRpcToken;
-        if (boot.rpcHost) rpcHost = boot.rpcHost;
         // Delete the one-time cookie
         document.cookie = cookieName + "=; Max-Age=0; Path=/; SameSite=Strict";
       } catch { /* ignore parse errors */ }
@@ -82,18 +73,12 @@ export const CONFIG_LOADER_JS = `(async () => {
     sessionStorage.setItem("__natstackPanelId", pid);
     if (rpcPort) sessionStorage.setItem("__natstackRpcPort", String(rpcPort));
     if (rpcToken) sessionStorage.setItem("__natstackRpcToken", rpcToken);
-    if (serverRpcPort) sessionStorage.setItem("__natstackServerRpcPort", String(serverRpcPort));
-    if (serverRpcToken) sessionStorage.setItem("__natstackServerRpcToken", serverRpcToken);
-    if (rpcHost) sessionStorage.setItem("__natstackRpcHost", rpcHost);
     sessionStorage.setItem("__natstackSource", currentSource);
     // Clean all bootstrap params from URL
     url.searchParams.delete("_bk");
     url.searchParams.delete("pid");
     url.searchParams.delete("rpcPort");
     url.searchParams.delete("rpcToken");
-    url.searchParams.delete("serverRpcPort");
-    url.searchParams.delete("serverRpcToken");
-    url.searchParams.delete("rpcHost");
     history.replaceState(null, "", url.pathname + (url.search || ""));
   }
 
@@ -102,13 +87,9 @@ export const CONFIG_LOADER_JS = `(async () => {
     const storedSource = sessionStorage.getItem("__natstackSource");
     if (storedSource && storedSource !== currentSource) {
       // Cross-source navigation on same subdomain — stale identity.
-      // Clear stale data and redirect with ?_fresh to force re-bootstrap.
       sessionStorage.removeItem("__natstackPanelId");
       sessionStorage.removeItem("__natstackRpcPort");
       sessionStorage.removeItem("__natstackRpcToken");
-      sessionStorage.removeItem("__natstackServerRpcPort");
-      sessionStorage.removeItem("__natstackServerRpcToken");
-      sessionStorage.removeItem("__natstackRpcHost");
       sessionStorage.removeItem("__natstackSource");
       location.href = url.pathname + "?_fresh";
       return;
@@ -116,34 +97,24 @@ export const CONFIG_LOADER_JS = `(async () => {
     pid = sessionStorage.getItem("__natstackPanelId");
     rpcPort = Number(sessionStorage.getItem("__natstackRpcPort")) || null;
     rpcToken = sessionStorage.getItem("__natstackRpcToken");
-    if (!serverRpcPort) serverRpcPort = Number(sessionStorage.getItem("__natstackServerRpcPort")) || null;
-    if (!serverRpcToken) serverRpcToken = sessionStorage.getItem("__natstackServerRpcToken");
-    if (!rpcHost) rpcHost = sessionStorage.getItem("__natstackRpcHost");
   }
 
   // ── 4. No bootstrap data — force re-bootstrap ──
-  // Redirect with ?_fresh to force the server to run bootstrapBrowserTab,
-  // which creates a panel on-demand and sets a fresh boot cookie.
-  // This handles: cleared sessionStorage, fresh authed tab, etc.
   if (!pid || !rpcPort || !rpcToken) {
     if (!url.searchParams.has("_fresh")) {
       location.href = url.pathname + "?_fresh";
       return;
     }
-    // If we already tried ?_fresh and still have no data, show fallback
     const root = document.getElementById("root");
     if (root) root.innerHTML = "<p>Open this panel from NatStack.</p>";
     return;
   }
 
-  // ── 5. Set transport globals (including server RPC — must be set BEFORE loading transport) ──
+  // ── 5. Set transport globals ──
   globalThis.__natstackId = pid;
   globalThis.__natstackRpcPort = rpcPort;
   globalThis.__natstackRpcToken = rpcToken;
   globalThis.__natstackKind = "panel";
-  if (serverRpcPort) globalThis.__natstackServerRpcPort = serverRpcPort;
-  if (serverRpcToken) globalThis.__natstackServerRpcToken = serverRpcToken;
-  if (rpcHost) globalThis.__natstackRpcHost = rpcHost;
 
   // ── 6. Load transport ──
   await new Promise((resolve, reject) => {
@@ -154,49 +125,61 @@ export const CONFIG_LOADER_JS = `(async () => {
     document.head.appendChild(s);
   });
 
-  // ── 7. RPC call: bridge.getBootstrapConfig ──
-  const transport = globalThis.__natstackTransport;
-  if (!transport) {
-    const root = document.getElementById("root");
-    if (root) root.textContent = "Transport failed to initialize";
-    return;
-  }
-
+  // ── 7. Get bootstrap config ──
+  // In Electron mode, __natstackElectron.getBootstrapConfig is available via
+  // the panel preload. In standalone mode, we use RPC over the server WS.
   let cfg;
-  try {
-    const requestId = crypto.randomUUID();
-    cfg = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Bootstrap config timeout")), 10000);
-      const unsub = transport.onMessage((fromId, msg) => {
-        if (msg && msg.type === "response" && msg.requestId === requestId) {
-          clearTimeout(timeout);
-          unsub();
-          if (msg.error) reject(new Error(msg.error));
-          else resolve(msg.result);
-        }
-      });
-      transport.send("main", {
-        type: "request",
-        requestId: requestId,
-        fromId: pid,
-        method: "bridge.getBootstrapConfig",
-        args: [],
-      });
-    });
-  } catch (err) {
-    // Stale credentials (revoked token, panel closed, etc.) — clear and re-bootstrap.
-    // Only auto-recover once to avoid infinite loops.
-    if (!url.searchParams.has("_fresh")) {
-      sessionStorage.removeItem("__natstackPanelId");
-      sessionStorage.removeItem("__natstackRpcPort");
-      sessionStorage.removeItem("__natstackRpcToken");
-      sessionStorage.removeItem("__natstackSource");
-      location.href = url.pathname + "?_fresh";
+  const electron = globalThis.__natstackElectron;
+  if (electron && electron.getBootstrapConfig) {
+    try {
+      cfg = await electron.getBootstrapConfig();
+    } catch (err) {
+      const root = document.getElementById("root");
+      if (root) root.textContent = "Failed to load config: " + (err.message || err);
       return;
     }
-    const root = document.getElementById("root");
-    if (root) root.textContent = "Failed to load config: " + (err.message || err);
-    return;
+  } else {
+    // Standalone: manual request/response handshake over __natstackTransport
+    const transport = globalThis.__natstackTransport;
+    if (!transport) {
+      const root = document.getElementById("root");
+      if (root) root.textContent = "Transport failed to initialize";
+      return;
+    }
+
+    try {
+      const requestId = crypto.randomUUID();
+      cfg = await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("Bootstrap config timeout")), 10000);
+        const unsub = transport.onMessage((fromId, msg) => {
+          if (msg && msg.type === "response" && msg.requestId === requestId) {
+            clearTimeout(timeout);
+            unsub();
+            if (msg.error) reject(new Error(msg.error));
+            else resolve(msg.result);
+          }
+        });
+        transport.send("main", {
+          type: "request",
+          requestId: requestId,
+          fromId: pid,
+          method: "bridge.getBootstrapConfig",
+          args: [],
+        });
+      });
+    } catch (err) {
+      if (!url.searchParams.has("_fresh")) {
+        sessionStorage.removeItem("__natstackPanelId");
+        sessionStorage.removeItem("__natstackRpcPort");
+        sessionStorage.removeItem("__natstackRpcToken");
+        sessionStorage.removeItem("__natstackSource");
+        location.href = url.pathname + "?_fresh";
+        return;
+      }
+      const root = document.getElementById("root");
+      if (root) root.textContent = "Failed to load config: " + (err.message || err);
+      return;
+    }
   }
 
   // ── 8. Set remaining globals from RPC config ──
@@ -216,11 +199,6 @@ export const CONFIG_LOADER_JS = `(async () => {
     __natstackStateArgs: effectiveStateArgs,
     process: { env: cfg.env },
   });
-
-  if (cfg.serverRpcPort) {
-    globalThis.__natstackServerRpcPort = cfg.serverRpcPort;
-    globalThis.__natstackServerRpcToken = cfg.serverRpcToken;
-  }
 
   // ── 9. Ready — load bundle ──
   globalThis.__natstackContextReady = true;

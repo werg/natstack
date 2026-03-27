@@ -72,11 +72,13 @@ interface CliArgs {
   host?: string;
   bindHost?: string;
   protocol?: "http" | "https";
+  tlsCert?: string;
+  tlsKey?: string;
 }
 
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {};
-  const known = new Set(["workspace", "workspace-dir", "app-root", "log-level", "serve-panels", "panel-port", "init", "host", "bind-host", "protocol"]);
+  const known = new Set(["workspace", "workspace-dir", "app-root", "log-level", "serve-panels", "panel-port", "init", "host", "bind-host", "protocol", "tls-cert", "tls-key"]);
   /** Flags that don't take a value */
   const booleanFlags = new Set(["serve-panels", "init"]);
 
@@ -153,6 +155,12 @@ function parseArgs(argv: string[]): CliArgs {
           process.exit(1);
         }
         args.protocol = value;
+        break;
+      case "tls-cert":
+        args.tlsCert = value;
+        break;
+      case "tls-key":
+        args.tlsKey = value;
         break;
     }
   }
@@ -497,6 +505,9 @@ async function main() {
     name: "rpcServer",
     dependencies: ["tokenManager"],
     async start() {
+      // In IPC mode, panels now connect to the server WS, so the server's
+      // RpcServer needs a panelManager for panel-to-panel RPC auth.
+      // We'll wire it lazily after panelService starts.
       const server = new RpcServer({ tokenManager, dispatcher });
       if (ipcChannel) {
         // IPC mode: server binds its own socket (Electron connects directly)
@@ -729,6 +740,7 @@ async function main() {
   const hostConfig = resolveHostConfig({
     rpcPort: 0, panelHttpPort: 0, gitPort: gitServer.getPort(), workerdPort: 0, // ports filled later
     host: args.host, bindHost: args.bindHost, protocol: args.protocol,
+    tlsCert: args.tlsCert, tlsKey: args.tlsKey,
   });
 
   const { registerPanelServices } = await import("./panelRuntimeRegistration.js");
@@ -743,10 +755,9 @@ async function main() {
     const { registerStandalonePanelRuntime } = await import("./panelRuntimeRegistration.js");
     const standaloneSessions = new Map<string, import("./standaloneBridge.js").StandaloneSession>();
     await registerStandalonePanelRuntime({ ...commonDeps, standaloneSessions });
-  } else {
-    const { registerIpcPanelRuntime } = await import("./panelRuntimeRegistration.js");
-    await registerIpcPanelRuntime(commonDeps);
   }
+  // IPC mode: no additional registration needed — panelHttpWiring handles
+  // isIpcMode directly (onDemandCreate throws, listPanels returns []).
 
   // ── Start all services in dependency order ──
   await container.startAll();
@@ -764,6 +775,36 @@ async function main() {
     rpcServerInstance.setWorkerdUrl(`http://127.0.0.1:${workerdPort}`);
   }
 
+  // Wire panel-to-panel auth (PersistenceRelationshipProvider) — panels now
+  // connect to the server WS in both IPC and standalone modes.
+  {
+    const panelServiceData = container.get<{
+      persistence: import("../shared/db/panelPersistence.js").PanelPersistence;
+    }>("panelService");
+    if (panelServiceData?.persistence) {
+      const persistence = panelServiceData.persistence;
+      rpcServerInstance.setPanelManager({
+        getPanel(panelId: string) { return persistence.getPanel(panelId); },
+        findParentId(panelId: string) {
+          return persistence.getParentId(panelId);
+        },
+        isDescendantOf(panelId: string, ancestorId: string): boolean {
+          let current = panelId;
+          const visited = new Set<string>();
+          while (current) {
+            if (visited.has(current)) return false;
+            visited.add(current);
+            const parentId = persistence.getParentId(current);
+            if (!parentId) return false;
+            if (parentId === ancestorId) return true;
+            current = parentId;
+          }
+          return false;
+        },
+      });
+    }
+  }
+
   dispatcher.markInitialized();
 
   // Validate that SERVER_SERVICE_NAMES covers all server-side services.
@@ -773,7 +814,7 @@ async function main() {
     const { SERVER_SERVICE_NAMES } = await import("@natstack/rpc");
     const sharedSet = new Set<string>(SERVER_SERVICE_NAMES);
     // Services that live on both Electron and server, or are internal lifecycle only
-    const localOnly = new Set(["events", "bridge", "browser"]);
+    const localOnly = new Set(["events", "browser"]);
     for (const name of dispatcher.getServices()) {
       if (!sharedSet.has(name) && !localOnly.has(name)) {
         console.warn(
@@ -817,6 +858,8 @@ async function main() {
       workerdPort: workerdMgr?.getPort() ?? null,
       externalHost: hostConfig.externalHost,
       bindHost: hostConfig.bindHost,
+      tlsCert: hostConfig.tlsCert,
+      tlsKey: hostConfig.tlsKey,
     });
     const gatewayPort = await gateway.start(0);
 
@@ -827,7 +870,7 @@ async function main() {
     // Update panel-facing URLs to route through the gateway
     const panelServiceData = container.get<{ urlConfig: import("./services/panelService.js").PanelUrlConfig }>("panelService");
     if (panelServiceData?.urlConfig) {
-      panelServiceData.urlConfig.setGatewayPort(gatewayPort);
+      panelServiceData.urlConfig.finalizeForGateway(gatewayPort);
     }
 
     // Restart workerd so DO/worker bindings pick up the real gateway port.

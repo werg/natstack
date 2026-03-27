@@ -1,28 +1,17 @@
 /**
  * Shell preload script.
- * Creates a WS transport for the shell renderer to communicate with main process.
+ * Creates an IPC transport for the shell renderer to communicate with main process.
  * The shell client (src/renderer/shell/client.ts) reads __natstackTransport directly.
  */
 
-import { createWsTransport, type TransportBridge } from "./wsTransport.js";
-import { parseWsPort, parseShellToken } from "./preloadUtils.js";
+import { createIpcTransport } from "./ipcTransport.js";
+import type { TransportBridge } from "./wsTransport.js";
 
 // =============================================================================
-// Shell WS Transport
+// Shell IPC Transport
 // =============================================================================
 
-const wsPort = parseWsPort();
-const shellToken = parseShellToken();
-if (!wsPort || !shellToken) {
-  throw new Error("Shell WS config not provided (--natstack-ws-port and --natstack-shell-token required)");
-}
-
-const shellTransport: TransportBridge = createWsTransport({
-  viewId: "shell",
-  wsPort,
-  authToken: shellToken,
-  callerKind: "shell",
-});
+const shellTransport: TransportBridge = createIpcTransport();
 
 // Expose the transport global for the shell client's direct @workspace/rpc bridge
 declare global {

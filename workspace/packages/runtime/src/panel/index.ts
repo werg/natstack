@@ -5,7 +5,7 @@ if (typeof globalThis.Buffer === "undefined") {
   globalThis.Buffer = Buffer;
 }
 
-import { createPanelTransport, createServerTransport } from "./transport.js";
+import { createPanelTransport } from "./transport.js";
 import { fs } from "./fs.js"; // RPC-backed fs (server-side per-context folders)
 import { initRuntime } from "../setup/initRuntime.js";
 export type { ThemeAppearance, RuntimeFs, FileStats, MkdirOptions, RmOptions } from "../types.js";
@@ -13,7 +13,6 @@ export type { ThemeAppearance, RuntimeFs, FileStats, MkdirOptions, RmOptions } f
 // Initialize runtime with panel-specific providers
 const { runtime, config } = initRuntime({
   createTransport: createPanelTransport,
-  createServerTransport,
   fs,
 });
 

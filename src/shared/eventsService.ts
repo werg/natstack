@@ -139,9 +139,37 @@ export class EventService {
   }
 
   /**
+   * Register an external subscriber (e.g., IPC-backed) for a callerId.
+   * Used when the caller doesn't have a WebSocket (shell IPC transport).
+   */
+  registerSubscriber(callerId: string, subscriber: Subscriber): void {
+    // Remove existing stale subscriber
+    const existing = this.subscribersByCallerId.get(callerId);
+    if (existing) {
+      for (const eventSubs of this.subscribers.values()) {
+        eventSubs.delete(callerId);
+      }
+      this.subscribersByCallerId.delete(callerId);
+    }
+    this.subscribersByCallerId.set(callerId, subscriber);
+    subscriber.onDestroyed(() => {
+      if (this.subscribersByCallerId.get(callerId) === subscriber) {
+        this.subscribersByCallerId.delete(callerId);
+        for (const eventSubs of this.subscribers.values()) {
+          eventSubs.delete(callerId);
+        }
+      }
+    });
+  }
+
+  /**
    * Get or create a subscriber for a callerId from a WS client.
    */
   getOrCreateSubscriber(ctx: ServiceContext): Subscriber {
+    // Allow pre-registered subscribers (e.g., IPC-backed shell subscriber)
+    const preRegistered = this.subscribersByCallerId.get(ctx.callerId);
+    if (preRegistered && preRegistered.isAlive) return preRegistered;
+
     if (!ctx.wsClient) {
       throw new Error("Event subscriptions require a WS connection");
     }

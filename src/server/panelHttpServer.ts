@@ -82,8 +82,6 @@ export interface PanelHttpCallbacks {
     panelId: string;
     rpcPort: number;
     rpcToken: string;
-    serverRpcPort?: number;
-    serverRpcToken?: string;
   }>;
 
   /** Management API: list all panels */
@@ -565,8 +563,6 @@ export class PanelHttpServer {
       const bootData: Record<string, unknown> = {
         pid: result.panelId, rpcPort: result.rpcPort, rpcToken: result.rpcToken,
       };
-      if (result.serverRpcPort) bootData["serverRpcPort"] = result.serverRpcPort;
-      if (result.serverRpcToken) bootData["serverRpcToken"] = result.serverRpcToken;
 
       // Preserve user query params (stateArgs, etc.) through the redirect.
       // Remove internal bootstrap params (_fresh, _bk) and add the new _bk.

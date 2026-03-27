@@ -132,14 +132,23 @@ export function createOAuthClient(rpc: RpcCaller): OAuthClient {
         const openIn = opts?.openIn ?? "panel";
         const errors: string[] = [];
         let opened = false;
+        const electron = (globalThis as any).__natstackElectron;
         if (openIn === "panel") {
           try {
-            await rpc.call("main", "bridge.createBrowserPanel", result.authUrl, { name: `Sign in — ${pk}`, focus: true });
+            if (electron?.createBrowserPanel) {
+              await electron.createBrowserPanel(result.authUrl, { name: `Sign in — ${pk}`, focus: true });
+            } else {
+              await rpc.call("main", "bridge.createBrowserPanel", result.authUrl, { name: `Sign in — ${pk}`, focus: true });
+            }
             opened = true;
           } catch (e: any) {
             errors.push(`createBrowserPanel: ${e.message}`);
             try {
-              await rpc.call("main", "bridge.openExternal", result.authUrl);
+              if (electron?.openExternal) {
+                await electron.openExternal(result.authUrl);
+              } else {
+                await rpc.call("main", "bridge.openExternal", result.authUrl);
+              }
               opened = true;
             } catch (e2: any) {
               errors.push(`openExternal: ${e2.message}`);
@@ -147,7 +156,11 @@ export function createOAuthClient(rpc: RpcCaller): OAuthClient {
           }
         } else {
           try {
-            await rpc.call("main", "bridge.openExternal", result.authUrl);
+            if (electron?.openExternal) {
+              await electron.openExternal(result.authUrl);
+            } else {
+              await rpc.call("main", "bridge.openExternal", result.authUrl);
+            }
             opened = true;
           } catch (e: any) {
             errors.push(`openExternal: ${e.message}`);

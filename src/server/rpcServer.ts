@@ -102,6 +102,11 @@ export class RpcServer {
     this.dispatcher = deps.dispatcher;
   }
 
+  /** Set the panel manager for panel-to-panel RPC authorization (can be wired after construction). */
+  setPanelManager(pm: PanelManagerLike): void {
+    this.deps.panelManager = pm;
+  }
+
   /** Register a callback for client disconnect events. */
   setOnClientDisconnect(handler: (callerId: string, callerKind: CallerKind) => void): void {
     this.deps.onClientDisconnect = handler;

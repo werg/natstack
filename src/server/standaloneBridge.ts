@@ -101,8 +101,6 @@ export function createStandalonePanelManager(deps: StandaloneBridgeDeps): Bridge
         theme: "dark",
         rpcPort: deps.gatewayPort,
         rpcToken,
-        serverRpcPort: deps.gatewayPort,
-        serverRpcToken: rpcToken,
         gitToken,
         gitBaseUrl,
         workerdPort: deps.gatewayPort,

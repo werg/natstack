@@ -3,7 +3,7 @@
  *
  * Extracts all panel-runtime service registration from server/index.ts.
  * Two entry points:
- * - registerIpcPanelRuntime: Electron IPC mode (PanelHttpServer throws on onDemandCreate)
+ * - registerPanelServices: shared services (panel, panelHttp, fs, bridge in IPC mode)
  * - registerStandalonePanelRuntime: standalone mode (onDemandCreate → panel.create, CDP bridge)
  */
 
@@ -212,30 +212,32 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
       const onDemandInFlight = new Map<string, Promise<any>>();
 
       panelHttpServer.setCallbacks({
-        onDemandCreate: async (source, subdomain) => {
-          const inflight = onDemandInFlight.get(subdomain);
-          if (inflight) return inflight;
+        onDemandCreate: deps.isIpcMode
+          ? async () => {
+              throw new Error("Panel creation via browser request is not supported in IPC mode. Panels are managed by Electron.");
+            }
+          : async (source, subdomain) => {
+              const inflight = onDemandInFlight.get(subdomain);
+              if (inflight) return inflight;
 
-          const promise = (async () => {
-            const serverCtx = { callerId: "server:panelHttp", callerKind: "server" as const };
-            const result = await dispatcher.dispatch(
-              serverCtx, "panel", "create",
-              [source, { contextId: subdomain, isRoot: true, addAsRoot: true }],
-            ) as import("../shared/panelFactory.js").PanelCreateResult;
+              const promise = (async () => {
+                const serverCtx = { callerId: "server:panelHttp", callerKind: "server" as const };
+                const result = await dispatcher.dispatch(
+                  serverCtx, "panel", "create",
+                  [source, { contextId: subdomain, isRoot: true, addAsRoot: true }],
+                ) as import("../shared/panelFactory.js").PanelCreateResult;
 
-            return {
-              panelId: result.panelId,
-              rpcPort: getRpcPort(),
-              rpcToken: result.rpcToken,
-              serverRpcPort: getRpcPort(),
-              serverRpcToken: result.rpcToken,
-            };
-          })();
+                return {
+                  panelId: result.panelId,
+                  rpcPort: getRpcPort(),
+                  rpcToken: result.rpcToken,
+                };
+              })();
 
-          onDemandInFlight.set(subdomain, promise);
-          try { return await promise; }
-          finally { onDemandInFlight.delete(subdomain); }
-        },
+              onDemandInFlight.set(subdomain, promise);
+              try { return await promise; }
+              finally { onDemandInFlight.delete(subdomain); }
+            },
         listPanels: () => [], // Standalone overrides; IPC mode panels tracked on Electron side
         getBuild: (source, ref) => buildSystem.getBuild(source, ref),
         onBuildComplete: (source, error) => {
@@ -253,6 +255,147 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
       });
     },
   });
+
+  // ===========================================================================
+  // Bridge RPC service (IPC mode — server-side bridge for data/persistence)
+  // ===========================================================================
+  // In IPC mode, panels send bridge.* calls to the server WS. The server
+  // handles data/persistence methods here. Electron-only methods (openDevtools,
+  // openFolderDialog) are handled via __natstackElectron IPC in the panel
+  // preload, not through this service.
+  // In standalone mode, registerStandalonePanelRuntime registers its own
+  // bridge service with the full standalone implementation.
+
+  if (deps.isIpcMode) {
+    const { SERVER_BRIDGE_METHODS } = await import("../shared/bridgeMethodSchemas.js");
+    container.register({
+      name: "ipcBridge",
+      dependencies: ["panelService", "rpcServer"],
+      async start() {},
+      getServiceDefinition() {
+        return {
+          name: "bridge",
+          description: "Panel lifecycle bridge (IPC mode — server-side data ops)",
+          policy: { allowed: ["panel", "shell", "server"] },
+          methods: SERVER_BRIDGE_METHODS,
+          handler: async (ctx, method, serviceArgs) => {
+            // Delegate all bridge methods to the panel service via dispatcher.
+            // The panel service handles: closeSelf→close, getInfo, setStateArgs,
+            // focusPanel, getBootstrapConfig, getWorkspaceTree, listBranches, etc.
+            const args = serviceArgs as unknown[];
+            switch (method) {
+              case "closeSelf":
+                return dispatcher.dispatch(ctx, "panel", "close", [ctx.callerId]);
+              case "closeChild": {
+                const [childId] = args as [string];
+                // Verify caller is the parent
+                const panelSvcInst = container.get<{
+                  persistence: import("../shared/db/panelPersistence.js").PanelPersistence;
+                }>("panelService");
+                const parentId = panelSvcInst?.persistence?.getParentId(childId);
+                if (parentId !== ctx.callerId) {
+                  throw new Error(`Panel ${ctx.callerId} is not the parent of ${childId}`);
+                }
+                return dispatcher.dispatch(ctx, "panel", "close", [childId]);
+              }
+              case "getInfo": {
+                // Build panel info from persistence
+                const panelServiceInst = container.get<{
+                  persistence: import("../shared/db/panelPersistence.js").PanelPersistence;
+                }>("panelService");
+                const panel = panelServiceInst?.persistence?.getPanel(ctx.callerId);
+                if (!panel) throw new Error(`Panel not found: ${ctx.callerId}`);
+                const snapshot = panel.snapshot;
+                return {
+                  panelId: ctx.callerId,
+                  partition: snapshot.contextId,
+                  contextId: snapshot.contextId,
+                };
+              }
+              case "setStateArgs": {
+                const [updates] = args as [Record<string, unknown>];
+                const validated = await dispatcher.dispatch(ctx, "panel", "updateStateArgs", [ctx.callerId, updates]);
+                // Emit stateArgs:updated event back to the panel over server WS
+                const rpcResult = container.get<{ server: import("./rpcServer.js").RpcServer }>("rpcServer");
+                rpcResult?.server?.sendToClient(ctx.callerId, {
+                  type: "ws:event",
+                  event: "stateArgs:updated",
+                  payload: validated,
+                } as import("../shared/ws/protocol.js").WsServerMessage);
+                return validated;
+              }
+              case "focusPanel": {
+                // In IPC mode, focus is Electron-owned. Forward to panel service
+                // for persistence, but the actual view focusing happens via
+                // __natstackElectron.focusPanel from the panel side.
+                const [targetId] = args as [string];
+                return dispatcher.dispatch(ctx, "panel", "updateSelectedPath", [targetId]);
+              }
+              case "getBootstrapConfig": {
+                // In IPC mode, panels normally get bootstrap config via
+                // __natstackElectron.getBootstrapConfig(). This path handles the
+                // fallback when __natstackElectron is not available (shouldn't
+                // happen in IPC mode, but handles edge cases gracefully).
+                const creds = await dispatcher.dispatch(
+                  { ...ctx, callerKind: "server" }, "panel", "getCredentials", [ctx.callerId],
+                ) as {
+                  serverRpcToken: string;
+                  gitToken: string;
+                  rpcPort: number;
+                  workerdPort: number;
+                  gitBaseUrl: string;
+                  gitConfig: { serverUrl: string; token: string; sourceRepo?: string };
+                  pubsubConfig: { serverUrl: string; token: string };
+                };
+                // Build the full bootstrap config using the panel's persistence data
+                const bsPanelSvc = container.get<{
+                  persistence: import("../shared/db/panelPersistence.js").PanelPersistence;
+                }>("panelService");
+                const bsPanel = bsPanelSvc?.persistence?.getPanel(ctx.callerId);
+                if (!bsPanel) throw new Error(`Panel not found: ${ctx.callerId}`);
+                const snapshot = bsPanel.snapshot;
+                return {
+                  panelId: ctx.callerId,
+                  contextId: snapshot.contextId,
+                  parentId: bsPanelSvc?.persistence?.getParentId(ctx.callerId) ?? null,
+                  theme: "dark",
+                  rpcPort: creds.rpcPort,
+                  rpcToken: creds.serverRpcToken,
+                  gitConfig: creds.gitConfig,
+                  pubsubConfig: creds.pubsubConfig,
+                  env: snapshot.options?.env ?? {},
+                  stateArgs: snapshot.stateArgs ?? {},
+                };
+              }
+              case "getWorkspaceTree":
+                return dispatcher.dispatch({ ...ctx, callerKind: "server" }, "git", "getWorkspaceTree", []);
+              case "listBranches": {
+                const [repoPath] = args as [string];
+                return dispatcher.dispatch({ ...ctx, callerKind: "server" }, "git", "listBranches", [repoPath]);
+              }
+              case "listCommits": {
+                const [repoPath, ref, limit] = args as [string, string?, number?];
+                return dispatcher.dispatch({ ...ctx, callerKind: "server" }, "git", "listCommits", [repoPath, ref ?? "HEAD", limit ?? 50]);
+              }
+              case "createBrowserPanel": {
+                // In IPC mode, browser panel creation is Electron-owned
+                // Panels call __natstackElectron.createBrowserPanel directly
+                throw new Error("createBrowserPanel is handled via Electron IPC in IPC mode");
+              }
+              case "createRepo": {
+                const [repoPath] = args as [string];
+                return dispatcher.dispatch({ ...ctx, callerKind: "server" }, "git", "createRepo", [repoPath]);
+              }
+              case "openExternal":
+                throw new Error("openExternal is handled via Electron IPC in IPC mode");
+              default:
+                throw new Error(`Unknown bridge method: ${method}`);
+            }
+          },
+        };
+      },
+    });
+  }
 
   // ===========================================================================
   // FS RPC service (always registered — server owns filesystem access)
@@ -286,43 +429,6 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
       },
     });
   }
-}
-
-/**
- * Register IPC-mode panel runtime.
- * Overrides onDemandCreate to throw — live panels are Electron-owned, not server-created.
- * listPanels returns [] — live panel tracking is on the Electron side.
- */
-export async function registerIpcPanelRuntime(deps: CommonDeps): Promise<void> {
-  const { container } = deps;
-
-  // Override panelHttpWiring callbacks for IPC mode:
-  // onDemandCreate throws instead of silently creating ephemeral sessions.
-  container.register({
-    name: "ipcPanelOverride",
-    dependencies: ["panelHttpServer", "panelHttpWiring", "buildSystem", "rpcServer"],
-    async start(resolve) {
-      const { server: panelHttpServer } = resolve<{ server: import("./panelHttpServer.js").PanelHttpServer }>("panelHttpServer")!;
-      const buildSystem = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
-      const { server: rpcServer } = resolve<{ server: import("./rpcServer.js").RpcServer; port: number }>("rpcServer")!;
-
-      // Re-set callbacks with explicit throw for onDemandCreate
-      panelHttpServer.setCallbacks({
-        onDemandCreate: async () => {
-          throw new Error("Panel creation via browser request is not supported in IPC mode. Panels are managed by Electron.");
-        },
-        listPanels: () => [], // Live panels are Electron-owned
-        getBuild: (source, ref) => buildSystem!.getBuild(source, ref),
-        onBuildComplete: (source, error) => {
-          rpcServer.broadcastToAdmins({
-            type: "ws:event",
-            event: "build:complete",
-            payload: { source, error },
-          } as import("../shared/ws/protocol.js").WsServerMessage);
-        },
-      });
-    },
-  });
 }
 
 /**
@@ -404,7 +510,7 @@ export async function registerStandalonePanelRuntime(deps: CommonDeps & {
             for (const session of standaloneSessions.values()) {
               if (session.source === source && session.subdomain === subdomain) {
                 const rpcToken = tokenManager.ensureToken(session.panelId, "panel");
-                return { panelId: session.panelId, rpcPort: getLiveRpcPort(), rpcToken, serverRpcPort: getLiveRpcPort(), serverRpcToken: rpcToken };
+                return { panelId: session.panelId, rpcPort: getLiveRpcPort(), rpcToken };
               }
             }
             const inflight = standaloneOnDemandInFlight.get(subdomain);
@@ -430,8 +536,6 @@ export async function registerStandalonePanelRuntime(deps: CommonDeps & {
                 panelId: result.panelId,
                 rpcPort: getLiveRpcPort(),
                 rpcToken: result.rpcToken,
-                serverRpcPort: getLiveRpcPort(),
-                serverRpcToken: result.rpcToken,
               };
             })();
             standaloneOnDemandInFlight.set(subdomain, promise);

@@ -1,4 +1,4 @@
-import { app, dialog, BaseWindow, nativeTheme, session } from "electron";
+import { app, dialog, BaseWindow, nativeTheme, session, ipcMain } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 // Silence Electron security warnings in dev; panels run in isolated webviews.
@@ -100,7 +100,7 @@ let cdpServer: CdpServer | null = null;
 let panelRegistry: PanelRegistry | null = null;
 let panelOrchestrator: PanelOrchestrator | null = null;
 let panelView: PanelView | null = null;
-let rpcServer: import("../server/rpcServer.js").RpcServer | null = null;
+let ipcDispatcher: import("./ipcDispatcher.js").IpcDispatcher | null = null;
 let serverSession: SessionConnection | null = null;
 let mainWindow: BaseWindow | null = null;
 let viewManager: ViewManager | null = null;
@@ -113,7 +113,7 @@ log.info(` Starting in main mode`);
 // Window Creation
 // =============================================================================
 
-function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
+function createWindow(): void {
   // Create BaseWindow (no webContents of its own)
   // Start hidden to avoid layout flash - shown after shell content loads
   mainWindow = new BaseWindow({
@@ -128,15 +128,12 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
       : {}),
   });
 
-  // Initialize ViewManager with shell view (pass WS connection args to shell preload)
+  // Initialize ViewManager with shell view (IPC transport — no WS args needed)
   viewManager = new ViewManager({
     window: mainWindow,
     shellPreload: path.join(__dirname, "preload.cjs"),
     shellHtmlPath: path.join(__dirname, "index.html"),
-    shellAdditionalArguments: [
-      `--natstack-ws-port=${wsArgs.rpcPort}`,
-      `--natstack-shell-token=${wsArgs.shellToken}`,
-    ],
+    shellAdditionalArguments: [],
     devTools: false,
   });
 
@@ -154,19 +151,25 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
     cdpServer.setViewManager(viewManager);
   }
 
-  if (viewManager && panelRegistry && panelOrchestrator && cdpServer && serverSession && rpcServer) {
+  if (viewManager && panelRegistry && panelOrchestrator && cdpServer && serverSession) {
     panelView = new PanelView({
       viewManager,
       panelRegistry,
       tokenManager,
       panelHttpServer: serverSession.panelHttpServer,
-      rpcPort: wsArgs.rpcPort,
       serverInfo: serverSession.serverInfo,
       cdpServer,
       panelOrchestrator,
-      sendToClient: (callerId, msg) => rpcServer!.sendToClient(callerId, msg as import("../shared/ws/protocol.js").WsServerMessage),
+      sendPanelEvent: (panelId, event, payload) => {
+        const wc = viewManager?.getWebContents(panelId);
+        if (wc && !wc.isDestroyed()) {
+          wc.send("natstack:event", event, payload);
+        }
+      },
       autofillManager: autofillManager ?? undefined,
       autofillPreloadPath: path.join(__dirname, "autofillPreload.cjs"),
+      panelPreloadPath: path.join(__dirname, "panelPreload.cjs"),
+      browserPreloadPath: path.join(__dirname, "browserPreload.cjs"),
     });
 
     // Wire autofill overlay to window, z-order changes, and panel switches
@@ -342,18 +345,19 @@ app.on("ready", async () => {
     // Create PanelRegistry (pure in-memory — server owns persistence)
     panelRegistry = new PanelRegistry({ eventService });
 
-    // Create RpcServer (needed by PanelOrchestrator for sendToClient)
-    const { RpcServer: RpcServerClass } = await import("../server/rpcServer.js");
-    rpcServer = new RpcServerClass({
-      tokenManager: tokenManager,
-      dispatcher,
-      panelManager: panelRegistry, // PanelRegistry implements PanelRelationshipProvider
-    });
-    const rpcPort = await rpcServer.start();
-    log.info(`[RPC] Server started on port ${rpcPort}`);
-
     // PanelHttpServer is created by serverSession (RPC-backed proxy)
     const conn = serverSession!;
+
+    // Create IpcDispatcher (replaces Electron-side RpcServer for shell)
+    // Forwards server-service calls to the server, dispatches Electron-local
+    // services to the local dispatcher.
+    const { IpcDispatcher } = await import("./ipcDispatcher.js");
+    ipcDispatcher = new IpcDispatcher({
+      dispatcher,
+      serverClient: conn.serverClient,
+      getShellWebContents: () => viewManager?.getShellWebContents() ?? null,
+      eventService,
+    });
     log.info(`[PanelHTTP] Using server's panel HTTP via gateway port ${conn.gatewayPort}`);
 
     // Create PanelOrchestrator
@@ -368,7 +372,12 @@ app.on("ready", async () => {
       externalHost: conn.externalHost,
       protocol: conn.protocol,
       gatewayPort: conn.gatewayPort,
-      sendToClient: (callerId, msg) => rpcServer!.sendToClient(callerId, msg as import("../shared/ws/protocol.js").WsServerMessage),
+      sendPanelEvent: (panelId, event, payload) => {
+        const wc = viewManager?.getWebContents(panelId);
+        if (wc && !wc.isDestroyed()) {
+          wc.send("natstack:event", event, payload);
+        }
+      },
       workspaceConfig: conn.workspaceConfig,
     });
 
@@ -513,10 +522,103 @@ app.on("ready", async () => {
 
     dispatcher.markInitialized();
 
-    // Generate shell token and create window
-    const shellToken = tokenManager.ensureToken("shell", "shell");
+    // =========================================================================
+    // Register ipcMain.handle handlers for __natstackElectron (panel preload)
+    // =========================================================================
+    // These handlers service panel IPC calls. Caller identity is resolved
+    // via ViewManager's findViewIdByWebContentsId (which tracks the
+    // webContents.id → viewId mapping for all created views).
+    // The shell webContents is registered as viewId "shell".
+
+    const resolveCallerId = (event: Electron.IpcMainInvokeEvent): string => {
+      if (!viewManager) throw new Error("ViewManager not initialized");
+      // Check if it's the shell
+      const shellContents = viewManager.getShellWebContents();
+      if (shellContents && !shellContents.isDestroyed() && shellContents.id === event.sender.id) {
+        return "shell";
+      }
+      const viewId = viewManager.findViewIdByWebContentsId(event.sender.id);
+      if (!viewId) throw new Error("Unknown caller webContents");
+      return viewId;
+    };
+
+    // Panel lifecycle
+    ipcMain.handle("natstack:closeSelf", async (event) => {
+      const callerId = resolveCallerId(event);
+      return panelOrchestrator!.closePanel(callerId);
+    });
+    ipcMain.handle("natstack:closeChild", async (event, childId: string) => {
+      const callerId = resolveCallerId(event);
+      return panelOrchestrator!.closeChild(callerId, childId);
+    });
+    ipcMain.handle("natstack:focusPanel", async (event, panelId: string) => {
+      panelOrchestrator!.focusPanel(panelId);
+    });
+    ipcMain.handle("natstack:createBrowserPanel", async (event, url: string, opts?: { name?: string; focus?: boolean }) => {
+      const callerId = resolveCallerId(event);
+      return panelOrchestrator!.createBrowserPanel(callerId, url, opts);
+    });
+    ipcMain.handle("natstack:getBootstrapConfig", async (event) => {
+      const callerId = resolveCallerId(event);
+      return panelOrchestrator!.getBootstrapConfig(callerId);
+    });
+
+    // Electron-native
+    ipcMain.handle("natstack:openDevtools", async (event) => {
+      const callerId = resolveCallerId(event);
+      if (!viewManager) throw new Error("ViewManager not initialized");
+      viewManager.openDevTools(callerId);
+    });
+    ipcMain.handle("natstack:openFolderDialog", async (_event, opts?: { title?: string }) => {
+      const result = await dialog.showOpenDialog({
+        properties: ["openDirectory", "createDirectory"],
+        title: opts?.title ?? "Select Folder",
+      });
+      return result.canceled ? null : result.filePaths[0] ?? null;
+    });
+    ipcMain.handle("natstack:openExternal", async (_event, url: string) => {
+      if (!/^https?:\/\//i.test(url)) {
+        throw new Error("openExternal only supports http/https URLs");
+      }
+      const { shell } = await import("electron");
+      await shell.openExternal(url);
+    });
+
+    // Browser automation (CdpServer)
+    ipcMain.handle("natstack:getCdpEndpoint", async (event, browserId: string) => {
+      const callerId = resolveCallerId(event);
+      const { getCdpEndpointForCaller } = await import("./services/browserService.js");
+      return getCdpEndpointForCaller(cdpServer!, browserId, callerId);
+    });
+    ipcMain.handle("natstack:navigate", async (event, browserId: string, url: string) => {
+      resolveCallerId(event); // auth check
+      const wc = viewManager!.getWebContents(browserId);
+      if (!wc) throw new Error(`Browser webContents not found for ${browserId}`);
+      try { await wc.loadURL(url); } catch (err) {
+        const error = err as { code?: string; errno?: number };
+        if (error.errno === -3 || error.code === "ERR_ABORTED") return;
+        throw err;
+      }
+    });
+    ipcMain.handle("natstack:goBack", async (event, browserId: string) => {
+      resolveCallerId(event);
+      viewManager!.getWebContents(browserId)?.goBack();
+    });
+    ipcMain.handle("natstack:goForward", async (event, browserId: string) => {
+      resolveCallerId(event);
+      viewManager!.getWebContents(browserId)?.goForward();
+    });
+    ipcMain.handle("natstack:reload", async (event, browserId: string) => {
+      resolveCallerId(event);
+      viewManager!.getWebContents(browserId)?.reload();
+    });
+    ipcMain.handle("natstack:stop", async (event, browserId: string) => {
+      resolveCallerId(event);
+      viewManager!.getWebContents(browserId)?.stop();
+    });
+
     // createWindow will create ViewManager, PanelView, and initialize panel tree
-    void createWindow({ rpcPort, shellToken });
+    void createWindow();
 
     performance.mark("startup:window-created");
 
@@ -560,12 +662,6 @@ app.on("ready", async () => {
       );
     }
     serverSession = null;
-    if (rpcServer) {
-      cleanupPromises.push(
-        rpcServer.stop().catch((e) => console.error("[App] rpcServer cleanup error:", e))
-      );
-      rpcServer = null;
-    }
     if (cdpServer) {
       cleanupPromises.push(
         cdpServer.stop().catch((e) => console.error("[App] cdpServer cleanup error:", e))
@@ -621,7 +717,7 @@ app.on("will-quit", (event) => {
     }
   };
 
-  const hasResourcesToClean = serverSession || rpcServer || cdpServer;
+  const hasResourcesToClean = serverSession || cdpServer;
   if (hasResourcesToClean) {
     isCleaningUp = true;
     event.preventDefault();
@@ -644,16 +740,6 @@ app.on("will-quit", (event) => {
         );
       }
       serverSession = null;
-    }
-
-    // Electron-local servers
-    if (rpcServer) {
-      stopPromises.push(
-        rpcServer
-          .stop()
-          .then(() => console.log("[App] RPC server stopped"))
-          .catch((e) => console.error("[App] Error stopping RPC server:", e))
-      );
     }
 
     if (cdpServer) {
@@ -683,12 +769,8 @@ app.on("will-quit", (event) => {
 });
 
 app.on("activate", () => {
-  if (mainWindow === null && rpcServer) {
-    const shellToken = tokenManager.ensureToken("shell", "shell");
-    const rpcPort = rpcServer.getPort();
-    if (rpcPort) {
-      void createWindow({ rpcPort, shellToken });
-    }
+  if (mainWindow === null && serverSession) {
+    void createWindow();
   }
 });
 

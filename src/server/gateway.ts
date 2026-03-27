@@ -9,6 +9,8 @@
  */
 
 import { createServer, request, type Server as HttpServer, type IncomingMessage, type ServerResponse } from "http";
+import { createServer as createHttpsServer } from "https";
+import * as fs from "fs";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Duplex } from "stream";
 import { createDevLogger } from "@natstack/dev-log";
@@ -42,6 +44,10 @@ export interface GatewayDeps {
   externalHost: string;
   /** Bind host (default "0.0.0.0") */
   bindHost?: string;
+  /** Path to TLS certificate file (enables HTTPS) */
+  tlsCert?: string;
+  /** Path to TLS private key file (enables HTTPS) */
+  tlsKey?: string;
 }
 
 export class Gateway {
@@ -54,9 +60,9 @@ export class Gateway {
   }
 
   async start(port: number): Promise<number> {
-    const { rpcHandler, panelHttpHandler, gitPort, workerdPort } = this.deps;
+    const { rpcHandler, panelHttpHandler, gitPort, workerdPort, tlsCert, tlsKey } = this.deps;
 
-    this.server = createServer((req, res) => {
+    const requestHandler = (req: IncomingMessage, res: ServerResponse) => {
       const url = req.url ?? "/";
 
       // /_w/ → workerd reverse proxy
@@ -82,7 +88,17 @@ export class Gateway {
 
       res.writeHead(404, { "Content-Type": "text/plain" });
       res.end("Not Found");
-    });
+    };
+
+    // Create HTTP or HTTPS server
+    if (tlsCert && tlsKey) {
+      this.server = createHttpsServer(
+        { cert: fs.readFileSync(tlsCert), key: fs.readFileSync(tlsKey) },
+        requestHandler,
+      );
+    } else {
+      this.server = createServer(requestHandler);
+    }
 
     // WebSocket upgrade routing
     this.wss = new WebSocketServer({ noServer: true });

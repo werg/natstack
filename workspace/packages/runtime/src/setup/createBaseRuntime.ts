@@ -7,8 +7,7 @@
  * Does NOT include: stateArgs, parent handles, panel-specific features.
  */
 
-import { createRpcBridge, type RpcBridge, type RpcTransport } from "@natstack/rpc";
-import { createRoutingBridge } from "../shared/routingBridge.js";
+import { createRpcBridge, type RpcTransport } from "@natstack/rpc";
 import { createDbClient } from "../shared/database.js";
 import { createWorkerdClient } from "../shared/workerd.js";
 import type {
@@ -22,10 +21,8 @@ import type { RuntimeFs, ThemeAppearance } from "../types.js";
 
 export interface BaseRuntimeDeps {
   selfId: string;
-  /** Primary transport (IPC for panels, WS for workers) */
+  /** Primary transport (single WS for panels, WS for workers) */
   createTransport: () => RpcTransport;
-  /** Optional secondary transport for routing bridge (panels use this for server) */
-  createServerTransport?: () => RpcTransport | null;
   id: string;
   contextId: string;
   initialTheme: ThemeAppearance;
@@ -39,22 +36,7 @@ export function createBaseRuntime(deps: BaseRuntimeDeps) {
   deps.setupGlobals?.();
 
   const primaryTransport = deps.createTransport();
-  const primaryBridge = createRpcBridge({ selfId: deps.selfId, transport: primaryTransport });
-
-  // Create routing bridge if secondary transport available
-  let rpc: RpcBridge = primaryBridge;
-  if (deps.createServerTransport) {
-    const serverTransport = deps.createServerTransport();
-    if (serverTransport) {
-      const serverBridge = createRpcBridge({
-        selfId: deps.selfId,
-        transport: serverTransport,
-        callTimeoutMs: 30000,
-        aiCallTimeoutMs: 300000,
-      });
-      rpc = createRoutingBridge(primaryBridge, serverBridge);
-    }
-  }
+  const rpc = createRpcBridge({ selfId: deps.selfId, transport: primaryTransport });
 
   const fs = deps.fs;
   const callMain = <T>(method: string, ...args: unknown[]) => rpc.call<T>("main", method, ...args);
@@ -82,11 +64,25 @@ export function createBaseRuntime(deps: BaseRuntimeDeps) {
     for (const listener of themeListeners) listener(currentTheme);
   };
 
+  // Theme events come from:
+  // - Electron: via __natstackElectron.addEventListener
+  // - Server WS: via rpc.onEvent (for both Electron and standalone)
   const themeUnsubscribers = [rpc.onEvent("runtime:theme", onThemeEvent)];
+
+  // Focus listeners — maintained as a direct set so Electron IPC events
+  // can trigger them without going through the RPC bridge.
+  const focusCallbacks = new Set<() => void>();
   const focusUnsubscribers: Array<() => void> = [];
 
+  // Also listen for focus via RPC (standalone mode, server-sent events)
+  const rpcFocusUnsub = rpc.onEvent("runtime:focus", () => {
+    for (const cb of focusCallbacks) cb();
+  });
+  focusUnsubscribers.push(rpcFocusUnsub);
+
   const onFocus = (callback: () => void) => {
-    const unsub = rpc.onEvent("runtime:focus", () => callback());
+    focusCallbacks.add(callback);
+    const unsub = () => { focusCallbacks.delete(callback); };
     focusUnsubscribers.push(unsub);
     return () => {
       unsub();
@@ -95,11 +91,28 @@ export function createBaseRuntime(deps: BaseRuntimeDeps) {
     };
   };
 
+  // Wire __natstackElectron events if available (Electron mode)
+  const electron = (globalThis as any).__natstackElectron;
+  let electronListenerId: number | undefined;
+  if (electron?.addEventListener) {
+    electronListenerId = electron.addEventListener((event: string, payload: unknown) => {
+      if (event === "runtime:theme") {
+        onThemeEvent("main", payload);
+      } else if (event === "runtime:focus") {
+        // Directly invoke focus callbacks — no RPC bridge roundtrip needed
+        for (const cb of focusCallbacks) cb();
+      }
+    });
+  }
+
   const destroy = () => {
     for (const unsub of themeUnsubscribers) unsub();
     for (const unsub of focusUnsubscribers) unsub();
     focusUnsubscribers.length = 0;
     themeListeners.clear();
+    if (electronListenerId !== undefined && electron?.removeEventListener) {
+      electron.removeEventListener(electronListenerId);
+    }
   };
 
   const onConnectionError = (

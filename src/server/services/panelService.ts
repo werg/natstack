@@ -51,8 +51,8 @@ export class PanelUrlConfig {
   get pubsubBaseUrl() { return this._pubsubBaseUrl; }
   get gatewayPort() { return this._gatewayPort; }
 
-  /** Update URLs to route through the gateway (called after gateway.start()). */
-  setGatewayPort(port: number): void {
+  /** Finalize URLs to route through the gateway (called after gateway.start()). */
+  finalizeForGateway(port: number): void {
     const wsProto = this.protocol === "https" ? "wss" : "ws";
     this._gatewayPort = port;
     this._gitBaseUrl = `${this.protocol}://${this.externalHost}:${port}/_git`;

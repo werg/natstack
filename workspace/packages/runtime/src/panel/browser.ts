@@ -37,6 +37,7 @@ export interface BrowserHandle {
 }
 
 let _rpc: RpcBridge | null = null;
+const electron = (globalThis as any).__natstackElectron;
 
 /** @internal Called once from panel/index.ts to inject the RPC bridge. */
 export function _initBrowserBridge(rpc: RpcBridge): void {
@@ -56,20 +57,28 @@ export async function createBrowserPanel(
   url: string,
   options?: { name?: string; focus?: boolean },
 ): Promise<BrowserHandle> {
-  const rpc = getRpc();
-  const { id, title } = await rpc.call<{ id: string; title: string }>(
-    "main",
-    "bridge.createBrowserPanel",
-    url,
-    options,
-  );
-  return makeBrowserHandle(rpc, id, title);
+  let result: { id: string; title: string };
+  if (electron?.createBrowserPanel) {
+    result = await electron.createBrowserPanel(url, options) as { id: string; title: string };
+  } else {
+    const rpc = getRpc();
+    result = await rpc.call<{ id: string; title: string }>(
+      "main",
+      "bridge.createBrowserPanel",
+      url,
+      options,
+    );
+  }
+  return makeBrowserHandle(getRpc(), result.id, result.title);
 }
 
 /**
  * Open a URL in the system browser (no CDP access).
  */
 export async function openExternal(url: string): Promise<void> {
+  if (electron?.openExternal) {
+    return electron.openExternal(url);
+  }
   await getRpc().call<void>("main", "bridge.openExternal", url);
 }
 
@@ -80,13 +89,32 @@ export async function openExternal(url: string): Promise<void> {
 export function onChildCreated(
   handler: (info: { childId: string; url: string }) => void,
 ): () => void {
+  // In Electron mode, child-created events come via __natstackElectron IPC.
+  // In standalone mode, they come via the server WS (rpc.onEvent).
+  const unsubs: Array<() => void> = [];
+
+  if (electron?.addEventListener) {
+    const listenerId = electron.addEventListener((event: string, payload: unknown) => {
+      if (event === "runtime:child-created") {
+        const data = payload as { childId?: string; url?: string } | null;
+        if (data?.childId && data?.url) {
+          handler({ childId: data.childId, url: data.url });
+        }
+      }
+    });
+    unsubs.push(() => electron.removeEventListener(listenerId));
+  }
+
+  // Also listen on RPC events (works in both modes; standalone relies on this)
   const rpc = getRpc();
-  return rpc.onEvent("runtime:child-created", (_fromId, payload) => {
+  unsubs.push(rpc.onEvent("runtime:child-created", (_fromId, payload) => {
     const data = payload as { childId?: string; url?: string } | null;
     if (data?.childId && data?.url) {
       handler({ childId: data.childId, url: data.url });
     }
-  });
+  }));
+
+  return () => { for (const unsub of unsubs) unsub(); };
 }
 
 /**
@@ -139,18 +167,44 @@ function makeBrowserHandle(rpc: RpcBridge, id: string, title: string): BrowserHa
         throw new Error("handle.page() requires __natstackRequire__ (panel runtime)");
       }
       const { BrowserImpl } = require("@workspace/playwright-client");
-      const wsEndpoint = await rpc.call<string>("main", "browser.getCdpEndpoint", id);
+      let wsEndpoint: string;
+      if (electron?.getCdpEndpoint) {
+        wsEndpoint = await electron.getCdpEndpoint(id);
+      } else {
+        wsEndpoint = await rpc.call<string>("main", "browser.getCdpEndpoint", id);
+      }
       const browser = await BrowserImpl.connect(wsEndpoint, { isElectronWebview: true });
       const page = browser.contexts()[0]?.pages()[0];
       if (!page) throw new Error("No page found in browser panel");
       return page;
     },
-    getCdpEndpoint: () => rpc.call<string>("main", "browser.getCdpEndpoint", id),
-    navigate: (u) => rpc.call<void>("main", "browser.navigate", id, u),
-    goBack: () => rpc.call<void>("main", "browser.goBack", id),
-    goForward: () => rpc.call<void>("main", "browser.goForward", id),
-    reload: () => rpc.call<void>("main", "browser.reload", id),
-    stop: () => rpc.call<void>("main", "browser.stop", id),
-    close: () => rpc.call<void>("main", "bridge.closeChild", id),
+    getCdpEndpoint: () => {
+      if (electron?.getCdpEndpoint) return electron.getCdpEndpoint(id);
+      return rpc.call<string>("main", "browser.getCdpEndpoint", id);
+    },
+    navigate: (u) => {
+      if (electron?.navigate) return electron.navigate(id, u);
+      return rpc.call<void>("main", "browser.navigate", id, u);
+    },
+    goBack: () => {
+      if (electron?.goBack) return electron.goBack(id);
+      return rpc.call<void>("main", "browser.goBack", id);
+    },
+    goForward: () => {
+      if (electron?.goForward) return electron.goForward(id);
+      return rpc.call<void>("main", "browser.goForward", id);
+    },
+    reload: () => {
+      if (electron?.reload) return electron.reload(id);
+      return rpc.call<void>("main", "browser.reload", id);
+    },
+    stop: () => {
+      if (electron?.stop) return electron.stop(id);
+      return rpc.call<void>("main", "browser.stop", id);
+    },
+    close: () => {
+      if (electron?.closeChild) return electron.closeChild(id);
+      return rpc.call<void>("main", "bridge.closeChild", id);
+    },
   };
 }

@@ -25,6 +25,10 @@ export interface HostConfig {
   gitPort: number;
   /** The workerd port */
   workerdPort: number;
+  /** Path to TLS certificate file (enables HTTPS gateway) */
+  tlsCert?: string;
+  /** Path to TLS private key file (enables HTTPS gateway) */
+  tlsKey?: string;
 }
 
 /**
@@ -48,6 +52,8 @@ export function resolveHostConfig(opts: {
   host?: string;
   bindHost?: string;
   protocol?: "http" | "https";
+  tlsCert?: string;
+  tlsKey?: string;
 }): HostConfig {
   if (opts.remoteUrl) {
     const url = new URL(opts.remoteUrl);
@@ -85,5 +91,7 @@ export function resolveHostConfig(opts: {
     panelHttpPort: opts.panelHttpPort,
     gitPort: opts.gitPort,
     workerdPort: opts.workerdPort,
+    tlsCert: opts.tlsCert,
+    tlsKey: opts.tlsKey,
   };
 }

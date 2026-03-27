@@ -22,7 +22,6 @@ import { _initStateArgsBridge } from "../panel/stateArgs.js";
 export interface RuntimeDeps {
   selfId: string;
   createTransport: () => RpcTransport;
-  createServerTransport?: () => RpcTransport | null;
   id: string;
   contextId: string;
   parentId: string | null;
@@ -54,6 +53,8 @@ export function createRuntime(deps: RuntimeDeps) {
     return createParentHandleFromContract(getParent(), contract);
   };
 
+  const electron = (globalThis as any).__natstackElectron;
+
   return {
     id: base.id,
     parentId: deps.parentId,
@@ -70,8 +71,14 @@ export function createRuntime(deps: RuntimeDeps) {
     onConnectionError: base.onConnectionError,
 
     getInfo: () => base.callMain<EndpointInfo>("bridge.getInfo"),
-    closeSelf: () => base.callMain<void>("bridge.closeSelf"),
-    focusPanel: (panelId: string) => base.callMain<void>("bridge.focusPanel", panelId),
+    closeSelf: () => {
+      if (electron) return electron.closeSelf();
+      return base.callMain<void>("bridge.closeSelf");
+    },
+    focusPanel: (panelId: string) => {
+      if (electron) return electron.focusPanel(panelId);
+      return base.callMain<void>("bridge.focusPanel", panelId);
+    },
     getWorkspaceTree: base.getWorkspaceTree,
     listBranches: base.listBranches,
     listCommits: base.listCommits,

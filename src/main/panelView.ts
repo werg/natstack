@@ -66,10 +66,11 @@ export class PanelView implements PanelViewLike {
   private readonly cdpServer: CdpServerLike;
   private readonly panelOrchestrator: PanelOrchestratorLike;
   private readonly externalHost: string;
-  private readonly rpcPort: number | null;
-  private sendToClient?: (callerId: string, msg: unknown) => void;
+  private sendPanelEvent?: (panelId: string, event: string, payload: unknown) => void;
   private autofillManager?: AutofillManagerLike;
   private autofillPreloadPath?: string;
+  private panelPreloadPath?: string;
+  private browserPreloadPath?: string;
 
   private browserStateCleanup = new Map<string, { cleanup: () => void; destroyedHandler: () => void }>();
   private linkInterceptionHandlers = new Map<string, (event: Electron.Event, url: string) => void>();
@@ -86,26 +87,28 @@ export class PanelView implements PanelViewLike {
     panelRegistry: PanelRegistry;
     tokenManager: TokenManager;
     panelHttpServer: PanelHttpServerLike;
-    rpcPort: number | null;
     serverInfo: ServerInfoLike;
     cdpServer: CdpServerLike;
     panelOrchestrator: PanelOrchestratorLike;
-    sendToClient?: (callerId: string, msg: unknown) => void;
+    sendPanelEvent?: (panelId: string, event: string, payload: unknown) => void;
     autofillManager?: AutofillManagerLike;
     autofillPreloadPath?: string;
+    panelPreloadPath?: string;
+    browserPreloadPath?: string;
   }) {
     this.viewManager = deps.viewManager;
     this.panelRegistry = deps.panelRegistry;
     this.tokenManager = deps.tokenManager;
     this.panelHttpServer = deps.panelHttpServer;
-    this.rpcPort = deps.rpcPort;
     this.serverInfo = deps.serverInfo;
     this.cdpServer = deps.cdpServer;
     this.panelOrchestrator = deps.panelOrchestrator;
     this.externalHost = deps.serverInfo.externalHost;
-    this.sendToClient = deps.sendToClient;
+    this.sendPanelEvent = deps.sendPanelEvent;
     this.autofillManager = deps.autofillManager;
     this.autofillPreloadPath = deps.autofillPreloadPath;
+    this.panelPreloadPath = deps.panelPreloadPath;
+    this.browserPreloadPath = deps.browserPreloadPath;
   }
 
   // ==== PanelViewLike implementation ========================================
@@ -127,7 +130,7 @@ export class PanelView implements PanelViewLike {
     }
 
     const view = this.viewManager.createView({
-      id: panelId, type: "panel", preload: null,
+      id: panelId, type: "panel", preload: this.panelPreloadPath ?? null,
       url: viewUrl, parentId: parentId ?? undefined,
       injectHostThemeVariables: true,
     });
@@ -195,7 +198,7 @@ export class PanelView implements PanelViewLike {
 
     const view = this.viewManager.createView({
       id: panelId, type: "panel",
-      preload: this.autofillPreloadPath ?? null,
+      preload: this.browserPreloadPath ?? this.autofillPreloadPath ?? null,
       url, parentId: parentId ?? undefined,
       partition: BROWSER_SESSION_PARTITION,
       injectHostThemeVariables: false,
@@ -254,7 +257,7 @@ export class PanelView implements PanelViewLike {
     const ctxId = opts?.contextId ?? getPanelContextId(panel);
     const subdomain = contextIdToSubdomain(ctxId);
     const source = opts?.source ?? getPanelSource(panel);
-    const rpcToken = this.tokenManager.ensureToken(panelId, "panel");
+    const serverRpcToken = await this.serverInfo.ensurePanelToken(panelId, "panel");
     const protocol = this.serverInfo.protocol;
     const origin = `${protocol}://${subdomain}.${this.externalHost}:${this.panelHttpPort}`;
     const bk = randomBytes(8).toString("hex");
@@ -265,15 +268,15 @@ export class PanelView implements PanelViewLike {
       url: `${origin}/`, name: "_ns_session", value: sid,
       path: "/", httpOnly: true, sameSite: "strict",
     });
+    // Single credential set: panels connect only to the server
     await electronSession.defaultSession.cookies.set({
       url: `${origin}/`, name: `_ns_boot_${bk}`,
-      value: encodeURIComponent(JSON.stringify({ pid: panelId, rpcPort: this.rpcPort!, rpcToken, rpcHost: "127.0.0.1" })),
+      value: encodeURIComponent(JSON.stringify({ pid: panelId, rpcPort: this.serverInfo.rpcPort, rpcToken: serverRpcToken })),
       path: "/", httpOnly: false, sameSite: "strict",
       expirationDate: Math.floor(Date.now() / 1000) + 60,
     });
 
-    const serverRpcToken = await this.serverInfo.ensurePanelToken(panelId, "panel");
-    return `${origin}/${source}/?pid=${encodeURIComponent(panelId)}&_bk=${bk}&rpcPort=${this.rpcPort!}&rpcToken=${encodeURIComponent(rpcToken)}&serverRpcPort=${this.serverInfo.rpcPort}&serverRpcToken=${encodeURIComponent(serverRpcToken)}&rpcHost=127.0.0.1`;
+    return `${origin}/${source}/?pid=${encodeURIComponent(panelId)}&_bk=${bk}&rpcPort=${this.serverInfo.rpcPort}&rpcToken=${encodeURIComponent(serverRpcToken)}`;
   }
 
   // ==== Browser state tracking ==============================================
@@ -410,10 +413,7 @@ export class PanelView implements PanelViewLike {
       if (/^https?:\/\//i.test(url)) {
         void this.panelOrchestrator.createBrowserPanel(panelId, url, { focus: true })
           .then(({ id }) => {
-            this.sendToClient?.(panelId, {
-              type: "ws:event", event: "panel:event",
-              payload: { panelId, type: "child-created", childId: id, url },
-            });
+            this.sendPanelEvent?.(panelId, "runtime:child-created", { childId: id, url });
           })
           .catch((err: unknown) => this.handleChildCreationError(panelId, err, url));
         return { action: "deny" as const };
@@ -427,10 +427,7 @@ export class PanelView implements PanelViewLike {
           event.preventDefault();
           void this.panelOrchestrator.createBrowserPanel(panelId, url, { focus: true })
             .then(({ id }) => {
-              this.sendToClient?.(panelId, {
-                type: "ws:event", event: "panel:event",
-                payload: { panelId, type: "child-created", childId: id, url },
-              });
+              this.sendPanelEvent?.(panelId, "runtime:child-created", { childId: id, url });
             })
             .catch((err: unknown) => this.handleChildCreationError(panelId, err, url));
         }
@@ -501,10 +498,7 @@ export class PanelView implements PanelViewLike {
   private handleChildCreationError(parentId: string, error: unknown, url: string): void {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[PanelView] Failed to create child from ${url}:`, error);
-    this.sendToClient?.(parentId, {
-      type: "ws:event", event: "panel:event",
-      payload: { panelId: parentId, type: "child-creation-error", url, error: message },
-    });
+    this.sendPanelEvent?.(parentId, "runtime:child-creation-error", { url, error: message });
   }
 
   // ==== Cross-context navigation ============================================
