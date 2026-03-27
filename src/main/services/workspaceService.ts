@@ -1,17 +1,25 @@
 import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { CentralDataManager } from "../../shared/centralData.js";
 import type { WorkspaceConfig } from "../../shared/workspace/types.js";
-import { createAndRegisterWorkspace, deleteWorkspaceDir } from "../../shared/workspace/loader.js";
 
+/**
+ * Electron-side workspace service.
+ *
+ * Pure RPC adapter — all catalog/filesystem operations delegate to the server's
+ * workspaceInfo service. The only Electron-local concern is `select` which calls
+ * app.relaunch() after telling the server to touch the workspace.
+ */
 export function createWorkspaceService(deps: {
-  centralData: CentralDataManager | null;
   activeWorkspaceName: string;
   getWorkspaceConfig: () => Promise<WorkspaceConfig> | WorkspaceConfig;
   setWorkspaceConfigField: (key: string, value: unknown) => void;
-  /** Restart the app with a different workspace. Injected so headless can provide its own. */
+  /** Restart the app with a different workspace. Inherently Electron-local (app.relaunch). */
   restartWithWorkspace: (name: string) => void;
+  /** Server RPC client */
+  serverClient: { call(service: string, method: string, args: unknown[]): Promise<unknown> };
 }): ServiceDefinition {
+  const sc = deps.serverClient;
+
   return {
     name: "workspace",
     description: "Workspace management (list, create, select, delete, config)",
@@ -30,49 +38,41 @@ export function createWorkspaceService(deps: {
       }))]) },
     },
     handler: async (ctx, method, args) => {
-      // Only shell callers can delete workspaces
       if (method === "delete" && ctx.callerKind !== "shell") {
         throw new Error("Only the shell UI can delete workspaces");
       }
 
       switch (method) {
         case "list":
-          if (!deps.centralData) throw new Error("Workspace catalog not available in remote mode");
-          return deps.centralData.listWorkspaces();
+          return sc.call("workspaceInfo", "listWorkspaces", []);
 
         case "create": {
-          if (!deps.centralData) throw new Error("Workspace creation not available in remote mode");
           const [name, opts] = args as [string, { forkFrom?: string } | undefined];
-          return createAndRegisterWorkspace(name, deps.centralData, opts);
+          return sc.call("workspaceInfo", "createWorkspace", [name, opts]);
         }
 
         case "select": {
           const name = args[0] as string;
-          deps.centralData?.touchWorkspace(name);
+          // Server-side: touch workspace in catalog
+          void sc.call("workspaceInfo", "touchWorkspace", [name]).catch(() => {});
+          // Client-side: Electron relaunch (inherently local)
           deps.restartWithWorkspace(name);
           return;
         }
 
         case "delete": {
-          if (!deps.centralData) throw new Error("Workspace deletion not available in remote mode");
           const name = args[0] as string;
           if (name === deps.activeWorkspaceName) {
             throw new Error("Cannot delete the currently running workspace");
           }
-          deleteWorkspaceDir(name);
-          deps.centralData.removeWorkspace(name);
-          return;
+          return sc.call("workspaceInfo", "deleteWorkspace", [name]);
         }
 
         case "getActive":
           return deps.activeWorkspaceName;
 
-        case "getActiveEntry": {
-          if (!deps.centralData) return { name: deps.activeWorkspaceName };
-          const entry = deps.centralData.getWorkspaceEntry(deps.activeWorkspaceName);
-          if (!entry) throw new Error(`Active workspace "${deps.activeWorkspaceName}" not found in registry`);
-          return entry;
-        }
+        case "getActiveEntry":
+          return sc.call("workspaceInfo", "getWorkspaceEntry", [deps.activeWorkspaceName]);
 
         case "getConfig":
           return await deps.getWorkspaceConfig();

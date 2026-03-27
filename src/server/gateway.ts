@@ -1,38 +1,52 @@
 /**
  * Gateway — Single-port HTTP/WS router for NatStack server.
  *
- * Multiplexes:
- * - Panel HTTP requests → PanelHttpServer (by subdomain)
- * - WebSocket /rpc → RpcServer
- * - Git HTTP (smart protocol) → GitServer reverse proxy
- * - Workerd /_w/ → Workerd reverse proxy
+ * In-process routing for RPC and PanelHttp (zero-overhead handler dispatch).
+ * Reverse proxy only for external processes (git server, workerd).
  *
- * In standalone mode, this provides a single entry point for all services.
- * In Electron IPC mode, this is not used (Electron connects directly to ports).
+ * The gateway is always present in standalone mode. In Electron IPC mode,
+ * the Electron process runs its own RpcServer — the gateway is not needed.
  */
 
-import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from "http";
+import { createServer, request, type Server as HttpServer, type IncomingMessage, type ServerResponse } from "http";
+import { WebSocketServer, WebSocket } from "ws";
 import type { Duplex } from "stream";
-import { createProxyRequest } from "./gatewayProxy.js";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("Gateway");
 
+/** Handler interface for PanelHttpServer (in-process dispatch) */
+export interface PanelHttpHandler {
+  handleGatewayRequest(req: IncomingMessage, res: ServerResponse): void;
+  handleGatewayUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
+}
+
+/** Handler interface for RpcServer (in-process dispatch) */
+export interface RpcHandler {
+  /** Accept a pre-upgraded WebSocket connection from the gateway */
+  handleGatewayWsConnection(ws: WebSocket): void;
+  /** Handle an HTTP POST /rpc request */
+  handleGatewayHttpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> | void;
+}
+
 export interface GatewayDeps {
-  /** RPC WS port for /rpc path upgrades */
-  rpcPort: number;
-  /** Panel HTTP port for subdomain-based routing */
-  panelHttpPort: number | null;
-  /** Git server port for /_git/ path */
-  gitPort: number;
-  /** Workerd port for /_w/ path */
-  workerdPort: number | null;
+  /** In-process RPC handler */
+  rpcHandler?: RpcHandler;
+  /** In-process panel HTTP handler */
+  panelHttpHandler?: PanelHttpHandler;
+  /** Git server port for /_git/ path (reverse proxy) */
+  gitPort?: number;
+  /** Workerd port for /_w/ path (reverse proxy) */
+  workerdPort?: number | null;
   /** External hostname for subdomain extraction */
   externalHost: string;
+  /** Bind host (default "0.0.0.0") */
+  bindHost?: string;
 }
 
 export class Gateway {
   private server: HttpServer | null = null;
+  private wss: WebSocketServer | null = null;
   private deps: GatewayDeps;
 
   constructor(deps: GatewayDeps) {
@@ -40,25 +54,30 @@ export class Gateway {
   }
 
   async start(port: number): Promise<number> {
-    const { rpcPort, panelHttpPort, gitPort, workerdPort } = this.deps;
+    const { rpcHandler, panelHttpHandler, gitPort, workerdPort } = this.deps;
 
     this.server = createServer((req, res) => {
       const url = req.url ?? "/";
 
-      // /_w/ → workerd proxy
+      // /_w/ → workerd reverse proxy
       if (url.startsWith("/_w/") && workerdPort) {
-        return createProxyRequest(req, res, workerdPort, url);
+        return proxyRequest(req, res, workerdPort, url);
       }
 
-      // /_git/ → git server proxy
-      if (url.startsWith("/_git/")) {
+      // /_git/ → git server reverse proxy
+      if (url.startsWith("/_git/") && gitPort) {
         const gitPath = url.slice(5); // strip /_git prefix
-        return createProxyRequest(req, res, gitPort, gitPath);
+        return proxyRequest(req, res, gitPort, gitPath);
       }
 
-      // Everything else → panel HTTP server
-      if (panelHttpPort) {
-        return createProxyRequest(req, res, panelHttpPort, url, req.headers.host);
+      // POST /rpc → RPC handler (in-process)
+      if (url === "/rpc" && req.method === "POST" && rpcHandler) {
+        return rpcHandler.handleGatewayHttpRequest(req, res);
+      }
+
+      // Everything else → panel HTTP handler (in-process)
+      if (panelHttpHandler) {
+        return panelHttpHandler.handleGatewayRequest(req, res);
       }
 
       res.writeHead(404, { "Content-Type": "text/plain" });
@@ -66,33 +85,38 @@ export class Gateway {
     });
 
     // WebSocket upgrade routing
+    this.wss = new WebSocketServer({ noServer: true });
+
     this.server.on("upgrade", (req, socket, head) => {
       const url = req.url ?? "/";
 
-      // /rpc → RPC WebSocket server
-      if (url === "/rpc" || url.startsWith("/rpc?")) {
-        const proxyReq = createUpgradeProxy(req, socket, head, rpcPort);
-        return proxyReq;
+      // /rpc → RPC WebSocket (in-process via WSS)
+      if ((url === "/rpc" || url.startsWith("/rpc?")) && rpcHandler) {
+        this.wss!.handleUpgrade(req, socket, head, (ws) => {
+          rpcHandler.handleGatewayWsConnection(ws);
+        });
+        return;
       }
 
       // /_w/ → workerd WebSocket proxy
       if (url.startsWith("/_w/") && workerdPort) {
-        return createUpgradeProxy(req, socket, head, workerdPort);
+        return proxyUpgrade(req, socket, head, workerdPort);
       }
 
-      // Default: panel HTTP server (subdomain WebSocket connections)
-      if (panelHttpPort) {
-        return createUpgradeProxy(req, socket, head, panelHttpPort);
+      // Default: panel HTTP handler (CDP bridge, etc.)
+      if (panelHttpHandler) {
+        return panelHttpHandler.handleGatewayUpgrade(req, socket, head);
       }
 
       socket.destroy();
     });
 
+    const bindHost = this.deps.bindHost ?? "0.0.0.0";
     return new Promise((resolve, reject) => {
-      this.server!.listen(port, "0.0.0.0", () => {
+      this.server!.listen(port, bindHost, () => {
         const addr = this.server!.address();
         const assignedPort = typeof addr === "object" && addr ? addr.port : port;
-        log.info(`Gateway listening on port ${assignedPort}`);
+        log.info(`Gateway listening on ${bindHost}:${assignedPort}`);
         resolve(assignedPort);
       });
       this.server!.on("error", reject);
@@ -105,6 +129,10 @@ export class Gateway {
   }
 
   async stop(): Promise<void> {
+    if (this.wss) {
+      this.wss.close();
+      this.wss = null;
+    }
     if (!this.server) return;
     return new Promise((resolve) => {
       this.server!.close(() => resolve());
@@ -112,10 +140,45 @@ export class Gateway {
   }
 }
 
-/**
- * Proxy a WebSocket upgrade request to a local service port.
- */
-function createUpgradeProxy(
+// ===========================================================================
+// Reverse proxy helpers (for external processes: git, workerd)
+// ===========================================================================
+
+function proxyRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  targetPort: number,
+  targetPath: string,
+  hostHeader?: string,
+): void {
+  const proxyReq = request(
+    {
+      hostname: "127.0.0.1",
+      port: targetPort,
+      path: targetPath,
+      method: req.method,
+      headers: {
+        ...req.headers,
+        ...(hostHeader ? { host: hostHeader } : {}),
+      },
+    },
+    (proxyRes) => {
+      res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
+      proxyRes.pipe(res);
+    },
+  );
+
+  proxyReq.on("error", (err) => {
+    if (!res.headersSent) {
+      res.writeHead(502, { "Content-Type": "text/plain" });
+    }
+    res.end(`Gateway proxy error: ${err.message}`);
+  });
+
+  req.pipe(proxyReq);
+}
+
+function proxyUpgrade(
   req: IncomingMessage,
   socket: Duplex,
   head: Buffer,
@@ -123,7 +186,6 @@ function createUpgradeProxy(
 ): void {
   const { connect } = require("net") as typeof import("net");
   const targetSocket = connect(targetPort, "127.0.0.1", () => {
-    // Rebuild the HTTP upgrade request
     const headers = Object.entries(req.headers)
       .filter(([, v]) => v !== undefined)
       .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
@@ -133,7 +195,6 @@ function createUpgradeProxy(
     targetSocket.write(upgradeReq);
     if (head.length > 0) targetSocket.write(head);
 
-    // Bi-directional pipe
     socket.pipe(targetSocket);
     targetSocket.pipe(socket);
   });

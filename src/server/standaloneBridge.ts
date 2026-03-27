@@ -39,6 +39,9 @@ export interface StandaloneBridgeDeps {
   cdpBridge: CdpBridge | null;
   rpcPort: number;
   workerdPort: number;
+  protocol: "http" | "https";
+  externalHost: string;
+  gatewayPort: number;
 }
 
 /**
@@ -88,21 +91,24 @@ export function createStandalonePanelManager(deps: StandaloneBridgeDeps): Bridge
 
       const rpcToken = tokenManager.ensureToken(callerId, "panel");
       const gitToken = gitServer.getTokenForPanel(callerId);
-      const gitBaseUrl = `http://127.0.0.1:${gitServer.getPort()}`;
+      const gitBaseUrl = `${deps.protocol}://${deps.externalHost}:${deps.gatewayPort}/_git`;
 
       return buildBootstrapConfig({
         panelId: callerId,
         contextId: session.contextId,
         source: session.source,
         parentId: session.parentId,
-        theme: "dark", // default theme in standalone mode
-        rpcPort,
+        theme: "dark",
+        rpcPort: deps.gatewayPort,
         rpcToken,
-        serverRpcPort: rpcPort,
+        serverRpcPort: deps.gatewayPort,
         serverRpcToken: rpcToken,
         gitToken,
         gitBaseUrl,
-        workerdPort,
+        workerdPort: deps.gatewayPort,
+        externalHost: deps.externalHost,
+        protocol: deps.protocol,
+        gatewayPort: deps.gatewayPort,
         stateArgs: session.stateArgs,
       });
     },

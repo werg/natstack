@@ -47,6 +47,7 @@ export class PanelRegistry implements PanelRelationshipProvider {
   private rootPanels: Panel[] = [];
   private focusedPanelId: string | null = null;
   private reservedPanelIds: Set<string> = new Set();
+  private collapsedIds: Set<string> = new Set();
   private currentTheme: "light" | "dark" = "light";
 
   // Debounce state for panel tree update notifications
@@ -444,7 +445,7 @@ export class PanelRegistry implements PanelRelationshipProvider {
    * Populate the in-memory registry from server-loaded tree data.
    * Called at startup with the result of server panel.loadTree() RPC.
    */
-  populateFromServer(rootPanels: Panel[]): void {
+  populateFromServer(rootPanels: Panel[], collapsedPanelIds?: string[]): void {
     if (rootPanels.length === 0) return;
 
     log.verbose(` Populating ${rootPanels.length} root panel(s) from server`);
@@ -460,13 +461,20 @@ export class PanelRegistry implements PanelRelationshipProvider {
       }
     };
     buildMap(rootPanels);
+
+    if (collapsedPanelIds) {
+      this.collapsedIds = new Set(collapsedPanelIds);
+    }
   }
 
-  /**
-   * Return list of live panel IDs for shutdown cleanup.
-   */
-  getLivePanelIds(): string[] {
-    return [...this.panels.keys()];
+  // Collapsed state accessors
+  getCollapsedIds(): string[] { return [...this.collapsedIds]; }
+  setCollapsed(panelId: string, collapsed: boolean): void {
+    if (collapsed) this.collapsedIds.add(panelId);
+    else this.collapsedIds.delete(panelId);
+  }
+  setCollapsedBatch(panelIds: string[], collapsed: boolean): void {
+    for (const id of panelIds) this.setCollapsed(id, collapsed);
   }
 
   // ==========================================================================

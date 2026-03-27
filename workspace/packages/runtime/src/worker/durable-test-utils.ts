@@ -1,4 +1,4 @@
-import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
+import initSqlJs, { type BindParams, type Database, type SqlJsStatic } from "sql.js";
 
 interface SqlResult {
   toArray(): Record<string, unknown>[];
@@ -61,7 +61,7 @@ function createSqlProxy(db: Database) {
 
       if (isQuery) {
         const stmt = db.prepare(query);
-        if (bindings.length > 0) stmt.bind(bindings);
+        if (bindings.length > 0) stmt.bind(bindings as BindParams);
         const rows: Record<string, unknown>[] = [];
         while (stmt.step()) rows.push(stmt.getAsObject() as Record<string, unknown>);
         stmt.free();
@@ -76,7 +76,7 @@ function createSqlProxy(db: Database) {
         if (bindings.length === 0) {
           db.run(query);
         } else {
-          db.run(query, bindings);
+          db.run(query, bindings as BindParams);
         }
         return {
           toArray() { return []; },

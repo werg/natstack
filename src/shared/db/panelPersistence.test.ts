@@ -11,14 +11,9 @@ describe("panelPersistence exports", () => {
     }
   });
 
-  it("exports getPanelPersistence function", () => {
+  it("exports createPanelPersistence function", () => {
     if (!mod) return; // skip if import failed
-    expect(typeof mod.getPanelPersistence).toBe("function");
-  });
-
-  it("exports resetPanelPersistence function", () => {
-    if (!mod) return; // skip if import failed
-    expect(typeof mod.resetPanelPersistence).toBe("function");
+    expect(typeof mod.createPanelPersistence).toBe("function");
   });
 
   it("exports PanelPersistence class", () => {

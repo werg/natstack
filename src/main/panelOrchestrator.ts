@@ -36,48 +36,37 @@ export interface PanelOrchestratorDeps {
   serverClient: ServerClient;
 
   getPanelView?: () => PanelViewLike | null;
-  cdpServer?: { revokeTokenForPanel(panelId: string): void; unregisterBrowser?(panelId: string): void } | null;
-  ccConversationManager?: { endPanelConversations(panelId: string): void } | null;
-  panelHttpServer?: PanelHttpServerLike | null;
-  panelHttpPort?: number;
-  externalHost?: string;
+  cdpServer: { revokeTokenForPanel(panelId: string): void; unregisterBrowser?(panelId: string): void };
+  ccConversationManager?: { endPanelConversations(panelId: string): void };
+  panelHttpServer: PanelHttpServerLike;
+  externalHost: string;
+  protocol: "http" | "https";
+  gatewayPort: number;
 
-  sendToClient?: (callerId: string, msg: unknown) => void;
+  sendToClient: (callerId: string, msg: unknown) => void;
   workspaceConfig?: WorkspaceConfig;
 }
 
 export class PanelOrchestrator implements BridgePanelManager {
-  private readonly registry: PanelRegistry;
-  private readonly tokenManager: TokenManager;
-  private readonly eventService: EventService;
-  /** Exposed for PanelView to make direct panel service calls */
-  readonly serverClient: ServerClient;
-
-  private readonly getPanelView: () => PanelViewLike | null;
-  private readonly cdpServer: { revokeTokenForPanel(panelId: string): void; unregisterBrowser?(panelId: string): void } | null;
-  private readonly ccConversationManager: { endPanelConversations(panelId: string): void } | null;
-  private readonly panelHttpServer: PanelHttpServerLike | null;
-  private readonly panelHttpPort: number | undefined;
-  private readonly externalHost: string;
-  private readonly sendToClient: ((callerId: string, msg: unknown) => void) | undefined;
-  private readonly workspaceConfig: WorkspaceConfig | undefined;
-
+  private readonly deps: PanelOrchestratorDeps;
   private currentTheme: "light" | "dark" = "dark";
 
   constructor(deps: PanelOrchestratorDeps) {
-    this.registry = deps.registry;
-    this.tokenManager = deps.tokenManager;
-    this.eventService = deps.eventService;
-    this.serverClient = deps.serverClient;
-    this.getPanelView = deps.getPanelView ?? (() => null);
-    this.cdpServer = deps.cdpServer ?? null;
-    this.ccConversationManager = deps.ccConversationManager ?? null;
-    this.panelHttpServer = deps.panelHttpServer ?? null;
-    this.panelHttpPort = deps.panelHttpPort;
-    this.externalHost = deps.externalHost ?? "localhost";
-    this.sendToClient = deps.sendToClient;
-    this.workspaceConfig = deps.workspaceConfig;
+    this.deps = deps;
   }
+
+  // Convenience accessors
+  private get registry() { return this.deps.registry; }
+  private get tokenManager() { return this.deps.tokenManager; }
+  private get eventService() { return this.deps.eventService; }
+  private get serverClient() { return this.deps.serverClient; }
+  private get externalHost() { return this.deps.externalHost; }
+  private getPanelView() { return this.deps.getPanelView?.() ?? null; }
+  private get panelHttpServer() { return this.deps.panelHttpServer; }
+  private get cdpServer() { return this.deps.cdpServer; }
+  private get ccConversationManager() { return this.deps.ccConversationManager; }
+  private get sendToClient() { return this.deps.sendToClient; }
+  private get workspaceConfig() { return this.deps.workspaceConfig; }
 
   // =========================================================================
   // Panel creation
@@ -400,6 +389,8 @@ export class PanelOrchestrator implements BridgePanelManager {
       gitBaseUrl: creds.gitBaseUrl,
       workerdPort: creds.workerdPort,
       externalHost: this.externalHost,
+      protocol: this.deps.protocol,
+      gatewayPort: this.deps.gatewayPort,
       env: env as Record<string, string>,
       stateArgs: stateArgs as Record<string, unknown>,
     });
@@ -427,8 +418,17 @@ export class PanelOrchestrator implements BridgePanelManager {
     return validated;
   }
 
-  updatePanelContext(panelId: string, contextId: string): void {
-    void this.serverClient.call("panel", "updateContext", [panelId, { contextId }]);
+  async updatePanelContext(panelId: string, contextId: string, source?: string, stateArgs?: Record<string, unknown>): Promise<void> {
+    await this.serverClient.call("panel", "updateContext", [panelId, {
+      contextId,
+      ...(source !== undefined && { source }),
+      ...(stateArgs !== undefined && { stateArgs }),
+    }]);
+  }
+
+  /** Generic server RPC call — exposes server access without leaking serverClient reference. */
+  callServer(service: string, method: string, args: unknown[]): Promise<unknown> {
+    return this.serverClient.call(service, method, args);
   }
 
   // =========================================================================
@@ -460,9 +460,12 @@ export class PanelOrchestrator implements BridgePanelManager {
   // =========================================================================
 
   async initializePanelTree(): Promise<void> {
-    // Load tree from server persistence
-    const serverTree = await this.serverClient.call("panel", "loadTree", []) as Panel[];
-    this.registry.populateFromServer(serverTree);
+    // Load tree + collapsed IDs from server in one call
+    const { rootPanels, collapsedIds } = await this.serverClient.call("panel", "loadTree", []) as {
+      rootPanels: Panel[];
+      collapsedIds: string[];
+    };
+    this.registry.populateFromServer(rootPanels, collapsedIds);
 
     const roots = this.registry.getRootPanels();
     if (roots.length > 0) {
@@ -556,6 +559,31 @@ export class PanelOrchestrator implements BridgePanelManager {
   }
 
   // =========================================================================
+  // Persistence delegation (server-first)
+  // =========================================================================
+
+  async movePanel(panelId: string, newParentId: string | null, targetPosition: number): Promise<void> {
+    await this.serverClient.call("panel", "movePanel", [panelId, newParentId, targetPosition]);
+    this.registry.movePanel(panelId, newParentId, targetPosition);
+  }
+
+  async setCollapsed(panelId: string, collapsed: boolean): Promise<void> {
+    await this.serverClient.call("panel", "setCollapsed", [panelId, collapsed]);
+  }
+
+  async expandIds(panelIds: string[]): Promise<void> {
+    await this.serverClient.call("panel", "setCollapsedBatch", [panelIds, false]);
+  }
+
+  async getCollapsedIds(): Promise<string[]> {
+    return this.serverClient.call("panel", "getCollapsedIds", []) as Promise<string[]>;
+  }
+
+  persistFocusedPath(panelId: string): void {
+    void this.serverClient.call("panel", "updateSelectedPath", [panelId]).catch(() => {});
+  }
+
+  // =========================================================================
   // URL helpers
   // =========================================================================
 
@@ -572,14 +600,12 @@ export class PanelOrchestrator implements BridgePanelManager {
       return source.slice("browser:".length);
     }
 
-    const port = this.panelHttpPort ?? this.panelHttpServer?.getPort?.();
-    if (!port) return null;
-
     return buildPanelUrl({
       source,
       contextId: getPanelContextId(panel),
-      panelHttpPort: port,
+      panelHttpPort: this.deps.gatewayPort,
       externalHost: this.externalHost,
+      protocol: this.deps.protocol,
     });
   }
 

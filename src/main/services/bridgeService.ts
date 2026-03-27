@@ -40,7 +40,7 @@ export function createBridgeService(deps: {
         case "createRepo": {
           const [repoPath] = args as [string];
           // Delegate to server git service
-          await deps.panelOrchestrator.serverClient.call("git", "createRepo", [repoPath]);
+          await deps.panelOrchestrator.callServer("git", "createRepo", [repoPath]);
           return;
         }
 

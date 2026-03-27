@@ -54,7 +54,7 @@ function createMockDeps(overrides: Partial<WorkerdManagerDeps> = {}): WorkerdMan
       unregisterCallerContext: vi.fn(),
       closeHandlesForCaller: vi.fn(),
     } as any,
-    rpcPort: 9999,
+    getRpcPort: () => 9999,
     getBuild: vi.fn().mockResolvedValue({
       bundle: 'export default { fetch() { return new Response("ok"); } };',
       metadata: { ev: "abc123" },

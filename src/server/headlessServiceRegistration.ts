@@ -67,14 +67,15 @@ function writeConnectionJson(configDir: string, ports: ServicePorts): void {
     ? `http://127.0.0.1:${ports.panelPort}`
     : null;
 
+  const gw = ports.gatewayPort ?? null;
   const connection = {
-    rpcPort: ports.rpcPort,
+    rpcPort: gw ?? ports.rpcPort,
     panelPort: ports.panelPort,
     gitPort: ports.gitPort,
     adminToken: ports.adminToken,
-    serverUrl,
-    gatewayPort: ports.gatewayPort ?? null,
-    gatewayUrl: ports.gatewayPort ? `http://127.0.0.1:${ports.gatewayPort}` : null,
+    serverUrl: gw ? `http://127.0.0.1:${gw}` : serverUrl,
+    gatewayPort: gw,
+    gatewayUrl: gw ? `http://127.0.0.1:${gw}` : null,
   };
 
   const filePath = path.join(configDir, "connection.json");
@@ -163,11 +164,13 @@ try {
       const config = JSON.parse(raw);
       writeMessage({
         success: true,
-        serverUrl: config.serverUrl || null,
+        serverUrl: config.serverUrl || config.gatewayUrl || null,
         managementToken: config.adminToken || null,
         rpcPort: config.rpcPort,
         panelPort: config.panelPort,
         gitPort: config.gitPort,
+        gatewayPort: config.gatewayPort || null,
+        gatewayUrl: config.gatewayUrl || null,
       });
     } catch {
       writeMessage({ success: false, error: "connection.json not found or invalid" });

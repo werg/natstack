@@ -2,7 +2,7 @@
  * PanelHttpServer — Zero per-panel state HTTP server.
  *
  * **Source-based URL routing**:
- *   URL = `http://{contextSubdomain}.localhost:{port}/{source}/`
+ *   URL = `{protocol}://{contextSubdomain}.{externalHost}:{port}/{source}/`
  *   - Subdomain = context (origin/storage partition)
  *   - Path = source (which panel code, e.g. `panels/my-app`)
  *
@@ -146,14 +146,17 @@ const ASSET_MIME_TYPES: Record<string, string> = {
  * Extract subdomain from a Host header value.
  * Returns null for bare localhost / 127.0.0.1.
  */
-function extractSubdomain(host: string): string | null {
-  const match = host.match(/^([a-z0-9][a-z0-9-]*[a-z0-9])\.localhost(:\d+)?$/i);
-  // Single-char subdomains also valid
-  if (!match) {
-    const single = host.match(/^([a-z0-9])\.localhost(:\d+)?$/i);
-    return single?.[1]?.toLowerCase() ?? null;
-  }
-  return match[1]!.toLowerCase();
+/**
+ * Extract subdomain from a Host header, parameterized by the external host.
+ * e.g., for externalHost "localhost": "ctx-abc.localhost:5173" → "ctx-abc"
+ * e.g., for externalHost "my-server.com": "ctx-abc.my-server.com:8080" → "ctx-abc"
+ */
+function extractSubdomain(hostHeader: string, externalHost: string): string | null {
+  const escapedHost = externalHost.replace(/\./g, "\\.");
+  const multi = hostHeader.match(new RegExp(`^([a-z0-9][a-z0-9-]*[a-z0-9])\\.${escapedHost}(:\\d+)?$`, "i"));
+  if (multi) return multi[1]!.toLowerCase();
+  const single = hostHeader.match(new RegExp(`^([a-z0-9])\\.${escapedHost}(:\\d+)?$`, "i"));
+  return single?.[1]?.toLowerCase() ?? null;
 }
 
 function escapeHtml(s: string): string {
@@ -206,6 +209,8 @@ export class PanelHttpServer {
   private port: number | null = null;
   private host: string;
   private managementToken: string | null;
+  private externalHost: string;
+  private protocol: "http" | "https";
 
   /**
    * Source registry: deterministic subdomain → panel source info.
@@ -220,9 +225,11 @@ export class PanelHttpServer {
   private wss: WebSocketServer | null = null;
   private cdpBridge: CdpBridge | null = null;
 
-  constructor(host = "127.0.0.1", managementToken?: string) {
+  constructor(host = "127.0.0.1", managementToken?: string, externalHost = "localhost", protocol: "http" | "https" = "http") {
     this.host = host;
     this.managementToken = managementToken ?? null;
+    this.externalHost = externalHost;
+    this.protocol = protocol;
   }
 
   // =========================================================================
@@ -257,6 +264,21 @@ export class PanelHttpServer {
   // Server lifecycle
   // =========================================================================
 
+  /**
+   * Initialize handlers without binding a socket.
+   * Call this when the gateway owns the socket and dispatches to us.
+   */
+  initHandlers(): void {
+    if (this.handlersInitialized) return;
+    this.handlersInitialized = true;
+    // WSS in noServer mode — gateway calls handleGatewayUpgrade for CDP
+    this.wss = new WebSocketServer({ noServer: true });
+  }
+  private handlersInitialized = false;
+
+  /**
+   * Start with own socket (non-gateway mode).
+   */
   async start(port = 0): Promise<number> {
     this.httpServer = createServer((req, res) => {
       this.handleRequest(req, res).catch((err) => {
@@ -277,6 +299,7 @@ export class PanelHttpServer {
         socket.destroy();
       }
     });
+    this.handlersInitialized = true;
 
     await new Promise<void>((resolve, reject) => {
       this.httpServer!.on("error", reject);
@@ -285,17 +308,23 @@ export class PanelHttpServer {
 
     const addr = this.httpServer.address();
     this.port = typeof addr === "object" && addr ? addr.port : port;
-    log.info(`Panel HTTP server listening on http://${this.host}:${this.port}`);
+    log.info(`Panel HTTP server listening on ${this.protocol}://${this.host}:${this.port}`);
     return this.port;
   }
 
-  getPort(): number | null {
+  /** Set the port (used when gateway owns the socket). */
+  setPort(port: number): void {
+    this.port = port;
+  }
+
+  getPort(): number {
+    if (this.port === null) throw new Error("PanelHttpServer not started");
     return this.port;
   }
 
   /** Origin URL for a panel's subdomain. */
   private getPanelOrigin(subdomain: string): string {
-    return `http://${subdomain}.localhost:${this.port}`;
+    return `${this.protocol}://${subdomain}.${this.externalHost}:${this.port}`;
   }
 
   // =========================================================================
@@ -383,6 +412,30 @@ export class PanelHttpServer {
   }
 
   // =========================================================================
+  // Gateway in-process handlers
+  // =========================================================================
+
+  /** Handle an HTTP request from the gateway (in-process dispatch). */
+  handleGatewayRequest(req: import("http").IncomingMessage, res: import("http").ServerResponse): void {
+    this.handleRequest(req, res).catch((err) => {
+      log.warn(`Request handler error: ${err}`);
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "text/plain" });
+        res.end("Internal Server Error");
+      }
+    });
+  }
+
+  /** Handle a WebSocket upgrade from the gateway (CDP bridge). */
+  handleGatewayUpgrade(req: import("http").IncomingMessage, socket: import("stream").Duplex, head: Buffer): void {
+    if (this.cdpBridge && this.wss) {
+      this.cdpBridge.handleUpgrade(req, socket, head, this.wss);
+    } else {
+      socket.destroy();
+    }
+  }
+
+  // =========================================================================
   // Request routing
   // =========================================================================
 
@@ -392,7 +445,7 @@ export class PanelHttpServer {
   ): Promise<void> {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     const pathname = url.pathname;
-    const subdomain = extractSubdomain(req.headers.host ?? "");
+    const subdomain = extractSubdomain(req.headers.host ?? "", this.externalHost);
 
     // ── Management API on bare host (no subdomain) ───────────────────────
     if (!subdomain && pathname.startsWith("/api/")) {
@@ -662,7 +715,7 @@ export class PanelHttpServer {
   private serveApiPanels(res: import("http").ServerResponse): void {
     const panels = (this.callbacks?.listPanels() ?? []).map(p => ({
       ...p,
-      url: `http://${p.subdomain}.localhost:${this.port}/${p.source}/`,
+      url: `${this.protocol}://${p.subdomain}.${this.externalHost}:${this.port}/${p.source}/`,
     }));
 
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -697,7 +750,7 @@ export class PanelHttpServer {
 <body>
   <h1>Building Panel</h1>
   <div class="spinner"></div>
-  <p>The panel at <code>${escapeHtml(subdomain)}.localhost</code> is still building. This page will refresh automatically.</p>
+  <p>The panel at <code>${escapeHtml(subdomain)}.${escapeHtml(this.externalHost)}</code> is still building. This page will refresh automatically.</p>
 </body>
 </html>`;
 
@@ -728,7 +781,7 @@ export class PanelHttpServer {
   <h1>Build Failed</h1>
   <p>The panel <code>${escapeHtml(source)}</code> failed to build:</p>
   <pre>${escapeHtml(error)}</pre>
-  <p><a href="http://127.0.0.1:${this.port}/">View active panels</a></p>
+  <p><a href="${this.protocol}://${this.externalHost}:${this.port}/">View active panels</a></p>
 </body>
 </html>`;
 
@@ -823,11 +876,11 @@ export class PanelHttpServer {
 
     // Active panels: currently running with direct links
     const activeEntries = runningPanels.map(p => {
-      const url = `http://${p.subdomain}.localhost:${this.port}/${p.source}/`;
+      const url = `${this.protocol}://${p.subdomain}.${this.externalHost}:${this.port}/${p.source}/`;
       return `<li>
   <a href="${url}">${escapeHtml(p.title)}</a>
   <span class="badge running">running</span>
-  <small class="sub">${escapeHtml(p.subdomain)}.localhost/${escapeHtml(p.source)}</small>
+  <small class="sub">${escapeHtml(p.subdomain)}.${this.externalHost}/${escapeHtml(p.source)}</small>
 </li>`;
     });
 
@@ -838,7 +891,7 @@ export class PanelHttpServer {
         const origin = this.getPanelOrigin(subdomain);
         return `<li>
   <a href="${origin}/${escapeHtml(source)}/">${escapeHtml(name)}</a>
-  <small class="sub">${escapeHtml(subdomain)}.localhost/${escapeHtml(source)}</small>
+  <small class="sub">${escapeHtml(subdomain)}.${escapeHtml(this.externalHost)}/${escapeHtml(source)}</small>
 </li>`;
       });
 
@@ -896,8 +949,8 @@ export class PanelHttpServer {
 </head>
 <body>
   <h1>Panel Closed</h1>
-  <p>The panel at <code>${escapeHtml(subdomain)}.localhost</code> is no longer running.</p>
-  <p><a href="http://127.0.0.1:${this.port}/">View active panels</a></p>
+  <p>The panel at <code>${escapeHtml(subdomain)}.${escapeHtml(this.externalHost)}</code> is no longer running.</p>
+  <p><a href="${this.protocol}://${this.externalHost}:${this.port}/">View active panels</a></p>
 </body>
 </html>`;
 

@@ -50,20 +50,22 @@ export interface PanelRelationshipProvider {
  * IPC) and headless (in-process token maps).
  */
 export interface ServerInfoLike {
+  /** Protocol for panel-facing URLs */
+  protocol: "http" | "https";
   rpcPort: number;
   gitBaseUrl: string;
   workerdPort: number;
   /** External hostname for panel URLs (e.g., "localhost" or "my-server.example.com") */
-  externalHost?: string;
+  externalHost: string;
   /** Gateway port that multiplexes all services */
-  gatewayPort?: number;
+  gatewayPort: number;
   createPanelToken(panelId: string, kind: string): Promise<string> | string;
   ensurePanelToken(panelId: string, kind: string): Promise<string> | string;
   revokePanelToken(panelId: string): Promise<void> | void;
   getPanelToken(panelId: string): Promise<string | null> | string | null;
   getGitTokenForPanel(panelId: string): Promise<string> | string;
   revokeGitToken(panelId: string): Promise<void> | void;
-  call?(service: string, method: string, args: unknown[]): Promise<unknown>;
+  call(service: string, method: string, args: unknown[]): Promise<unknown>;
 }
 
 /**
@@ -91,7 +93,7 @@ export interface PanelHttpServerLike {
   clearSubdomainSessions(subdomain: string): void;
   hasBuild(source: string): boolean;
   invalidateBuild(source: string): void;
-  getPort?(): number | null;
+  getPort(): number;
 }
 
 /**

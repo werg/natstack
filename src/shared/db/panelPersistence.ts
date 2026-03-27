@@ -15,7 +15,7 @@
 import Database from "better-sqlite3";
 import * as path from "path";
 import * as fs from "fs";
-import type { Workspace } from "../workspace/types.js";
+// Workspace type no longer needed — PanelPersistence takes { statePath, workspaceId } directly
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("PanelPersistence");
@@ -66,33 +66,17 @@ export interface UpdatePanelInput {
   parentId?: string | null;
 }
 
-/**
- * Singleton PanelPersistence instance.
- */
-let instance: PanelPersistence | null = null;
-
-/**
- * Get the singleton PanelPersistence instance.
- * Must be called with workspace on first invocation.
- */
-export function getPanelPersistence(workspace?: Workspace): PanelPersistence {
-  if (!instance) {
-    if (!workspace) {
-      throw new Error("PanelPersistence requires workspace on first initialization");
-    }
-    instance = new PanelPersistence(workspace);
-  }
-  return instance;
+export interface PanelPersistenceConfig {
+  statePath: string;
+  workspaceId: string;
 }
 
 /**
- * Reset the singleton instance (for testing).
+ * Create a PanelPersistence instance.
+ * Startup code should create this explicitly and pass it to consumers.
  */
-export function resetPanelPersistence(): void {
-  if (instance) {
-    instance.close();
-    instance = null;
-  }
+export function createPanelPersistence(config: PanelPersistenceConfig): PanelPersistence {
+  return new PanelPersistence(config);
 }
 
 /**
@@ -103,26 +87,18 @@ export function resetPanelPersistence(): void {
  */
 export class PanelPersistence {
   private db: Database.Database | null = null;
-  private workspaceId: string | null = null;
-  private workspace: Workspace;
+  private readonly config: PanelPersistenceConfig;
 
-  constructor(workspace: Workspace) {
-    this.workspace = workspace;
+  constructor(config: PanelPersistenceConfig) {
+    this.config = config;
   }
 
   /**
    * Ensure the database is open and initialized.
    */
   private ensureOpen(): Database.Database {
-    const workspace = this.workspace;
-
-    // Check if workspace changed
-    if (this.workspaceId !== workspace.config.id) {
-      this.close();
-    }
-
     if (!this.db) {
-      const dbDir = path.join(workspace.statePath, ".databases");
+      const dbDir = path.join(this.config.statePath, ".databases");
       fs.mkdirSync(dbDir, { recursive: true });
 
       const dbPath = path.join(dbDir, "panels.db");
@@ -135,7 +111,6 @@ export class PanelPersistence {
 
       // Initialize schema
       initializePanelSchema(this.db);
-      this.workspaceId = workspace.config.id;
 
       log.verbose(` Opened database: ${dbPath}`);
     }
@@ -147,7 +122,7 @@ export class PanelPersistence {
    * Get the current workspace ID.
    */
   getWorkspaceId(): string {
-    return this.workspace.config.id;
+    return this.config.workspaceId;
   }
 
   /**
@@ -165,7 +140,6 @@ export class PanelPersistence {
     if (this.db) {
       this.db.close();
       this.db = null;
-      this.workspaceId = null;
     }
   }
 

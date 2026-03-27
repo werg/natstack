@@ -27,6 +27,39 @@ import {
 } from "../../shared/panelFactory.js";
 import { createSnapshot, getPanelSource, getPanelContextId, getPanelStateArgs } from "../../shared/panel/accessors.js";
 
+/**
+ * Mutable URL config for panel-facing endpoints.
+ * In IPC mode, values are set once at creation. In standalone mode,
+ * `setGatewayPort()` updates URLs after the gateway binds.
+ */
+export class PanelUrlConfig {
+  protocol: "http" | "https";
+  externalHost: string;
+  private _gitBaseUrl: string;
+  private _pubsubBaseUrl: string;
+  private _gatewayPort: number;
+
+  constructor(opts: { protocol: "http" | "https"; externalHost: string; gitBaseUrl: string; pubsubBaseUrl: string; gatewayPort: number }) {
+    this.protocol = opts.protocol;
+    this.externalHost = opts.externalHost;
+    this._gitBaseUrl = opts.gitBaseUrl;
+    this._pubsubBaseUrl = opts.pubsubBaseUrl;
+    this._gatewayPort = opts.gatewayPort;
+  }
+
+  get gitBaseUrl() { return this._gitBaseUrl; }
+  get pubsubBaseUrl() { return this._pubsubBaseUrl; }
+  get gatewayPort() { return this._gatewayPort; }
+
+  /** Update URLs to route through the gateway (called after gateway.start()). */
+  setGatewayPort(port: number): void {
+    const wsProto = this.protocol === "https" ? "wss" : "ws";
+    this._gatewayPort = port;
+    this._gitBaseUrl = `${this.protocol}://${this.externalHost}:${port}/_git`;
+    this._pubsubBaseUrl = `${wsProto}://default.${this.externalHost}:${port}`;
+  }
+}
+
 export interface PanelServiceDeps {
   persistence: PanelPersistence;
   searchIndex: PanelSearchIndex | null;
@@ -34,14 +67,18 @@ export interface PanelServiceDeps {
   fsService: FsService;
   gitServer: GitServer;
   workspacePath: string;
-  rpcPort: number;
+  /** Live RPC port getter — returns gateway port in standalone mode. */
+  getRpcPort: () => number;
   workerdPort: number;
+  /** Mutable URL config — reads are late-bound so gateway port updates propagate. */
+  urlConfig: PanelUrlConfig;
 }
 
 export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
   const {
     persistence, searchIndex, tokenManager, fsService,
-    gitServer, workspacePath, rpcPort, workerdPort,
+    gitServer, workspacePath, getRpcPort, workerdPort,
+    urlConfig,
   } = deps;
 
   // Internal helpers
@@ -212,16 +249,20 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           // FS context registration (skip browser panels)
           fsService.registerPanelContext(panelId, contextId);
 
-          // Build env
+          // Build env — use pre-computed panel-facing URLs
           const serverRpcToken = rpcToken;
+          const gitBaseUrl = urlConfig.gitBaseUrl;
           const env = buildPanelEnv({
             panelId,
-            gitBaseUrl: `http://127.0.0.1:${gitServer.getPort()}`,
+            gitBaseUrl,
             gitToken,
             serverRpcToken,
             workerdPort,
             contextId,
             sourceRepo: relativePath,
+            externalHost: urlConfig.externalHost,
+            protocol: urlConfig.protocol,
+            gatewayPort: urlConfig.gatewayPort,
             baseEnv: opts?.env,
           });
 
@@ -314,22 +355,21 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           const [panelId] = a as [string];
           const serverRpcToken = tokenManager.ensureToken(panelId, "panel");
           const gitToken = gitServer.getTokenForPanel(panelId);
-          const gitBaseUrl = `http://127.0.0.1:${gitServer.getPort()}`;
 
           return {
             serverRpcToken,
             gitToken,
             gitConfig: {
-              serverUrl: gitBaseUrl,
+              serverUrl: urlConfig.gitBaseUrl,
               token: gitToken,
             },
             pubsubConfig: {
-              serverUrl: `ws://default.localhost:${workerdPort}/_w/workers/pubsub-channel/PubSubChannel`,
+              serverUrl: `${urlConfig.pubsubBaseUrl}/_w/workers/pubsub-channel/PubSubChannel`,
               token: serverRpcToken,
             },
-            rpcPort,
+            rpcPort: getRpcPort(),
             workerdPort,
-            gitBaseUrl,
+            gitBaseUrl: urlConfig.gitBaseUrl,
           };
         }
 
@@ -452,8 +492,10 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           const tree = persistence.getFullTree();
           // Clean up childless autoArchiveWhenEmpty panels (e.g., unused launcher UIs)
           cleanupChildlessAutoArchivePanels(tree, persistence);
-          // Return only non-archived panels
-          return tree.filter(p => !persistence.isArchived(p.id));
+          // Return tree + collapsed IDs in one call (eliminates a round-trip)
+          const rootPanels = tree.filter(p => !persistence.isArchived(p.id));
+          const collapsedIds = persistence.getCollapsedIds();
+          return { rootPanels, collapsedIds };
         }
 
         case "shutdownCleanup": {

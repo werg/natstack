@@ -101,7 +101,8 @@ export interface WorkerInstance {
 export interface WorkerdManagerDeps {
   tokenManager: TokenManager;
   fsService: FsService;
-  rpcPort: number;
+  /** Live RPC port getter — returns gateway port in standalone mode. */
+  getRpcPort: () => number;
   getBuild: (unitPath: string, ref?: string) => Promise<BuildResult>;
   /** Workspace source root — used for WORKER_SOURCE binding. */
   workspacePath: string;
@@ -317,7 +318,7 @@ export class WorkerdManager {
       const serviceToken = this.deps.tokenManager.ensureToken(serviceCallerId, "worker");
 
       const bindings: object[] = [
-        { name: "RPC_WS_URL", text: `ws://127.0.0.1:${this.deps.rpcPort}` },
+        { name: "RPC_WS_URL", text: `ws://127.0.0.1:${this.deps.getRpcPort()}` },
         { name: "RPC_AUTH_TOKEN", text: serviceToken },
         // Source-scoped class identity
         { name: "WORKER_SOURCE", text: doService.source },
@@ -327,7 +328,7 @@ export class WorkerdManager {
       ];
 
       // Server URL for RPC bridge (DOs use HttpRpcBridge via POST /rpc)
-      bindings.push({ name: "SERVER_URL", text: `http://127.0.0.1:${this.deps.rpcPort}` });
+      bindings.push({ name: "SERVER_URL", text: `http://127.0.0.1:${this.deps.getRpcPort()}` });
 
       // DO storage: create a disk service and reference it by name
       const diskServiceName = `${doService.serviceName}_disk`;
@@ -372,11 +373,11 @@ export class WorkerdManager {
 
       // Build bindings array
       const bindings: object[] = [
-        { name: "RPC_WS_URL", text: `ws://127.0.0.1:${this.deps.rpcPort}` },
+        { name: "RPC_WS_URL", text: `ws://127.0.0.1:${this.deps.getRpcPort()}` },
         { name: "RPC_AUTH_TOKEN", text: instance.token },
         { name: "WORKER_ID", text: instance.name },
         { name: "CONTEXT_ID", text: instance.contextId },
-        { name: "SERVER_URL", text: `http://127.0.0.1:${this.deps.rpcPort}` },
+        { name: "SERVER_URL", text: `http://127.0.0.1:${this.deps.getRpcPort()}` },
       ];
 
       // Inject stateArgs as a JSON binding so workers can access initial state

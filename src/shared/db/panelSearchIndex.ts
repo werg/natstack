@@ -6,7 +6,7 @@
  */
 
 import type Database from "better-sqlite3";
-import { getPanelPersistence } from "./panelPersistence.js";
+import type { PanelPersistence } from "./panelPersistence.js";
 import type { DbPanelRow } from "./panelSchema.js";
 import { createDevLogger } from "@natstack/dev-log";
 
@@ -41,7 +41,11 @@ interface IndexablePanel {
  * PanelSearchIndex class for managing FTS5 index.
  */
 export class PanelSearchIndex {
-  private get persistence() { return getPanelPersistence(); }
+  private readonly persistence: PanelPersistence;
+
+  constructor(persistence: PanelPersistence) {
+    this.persistence = persistence;
+  }
 
   /**
    * Index a panel for full-text search.
@@ -275,22 +279,10 @@ export class PanelSearchIndex {
   }
 }
 
-// Singleton instance
-let instance: PanelSearchIndex | null = null;
-
 /**
- * Get the singleton PanelSearchIndex instance.
+ * Create a PanelSearchIndex instance.
+ * Startup code should create this explicitly and pass it to consumers.
  */
-export function getPanelSearchIndex(): PanelSearchIndex {
-  if (!instance) {
-    instance = new PanelSearchIndex();
-  }
-  return instance;
-}
-
-/**
- * Reset the singleton instance (for testing).
- */
-export function resetPanelSearchIndex(): void {
-  instance = null;
+export function createPanelSearchIndex(persistence: PanelPersistence): PanelSearchIndex {
+  return new PanelSearchIndex(persistence);
 }

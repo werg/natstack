@@ -40,9 +40,9 @@ interface PanelOrchestratorLike {
     callerId: string, url: string,
     options?: { name?: string; focus?: boolean },
   ): Promise<{ id: string; title: string }>;
-  updatePanelContext(panelId: string, contextId: string): void;
-  /** Server RPC client for direct panel service calls (title, context, etc.) */
-  serverClient?: { call(service: string, method: string, args: unknown[]): Promise<unknown> };
+  updatePanelContext(panelId: string, contextId: string, source?: string, stateArgs?: Record<string, unknown>): Promise<void>;
+  /** Generic server RPC call */
+  callServer(service: string, method: string, args: unknown[]): Promise<unknown>;
 }
 
 interface AutofillManagerLike {
@@ -61,13 +61,12 @@ export class PanelView implements PanelViewLike {
   private viewManager: ViewManager;
   private readonly panelRegistry: PanelRegistry;
   private readonly tokenManager: TokenManager;
-  private readonly panelHttpServer: PanelHttpServerLike | null;
-  private readonly panelHttpPort: number | null;
-  private readonly rpcPort: number | null;
+  private readonly panelHttpServer: PanelHttpServerLike;
   private readonly serverInfo: ServerInfoLike;
   private readonly cdpServer: CdpServerLike;
   private readonly panelOrchestrator: PanelOrchestratorLike;
   private readonly externalHost: string;
+  private readonly rpcPort: number | null;
   private sendToClient?: (callerId: string, msg: unknown) => void;
   private autofillManager?: AutofillManagerLike;
   private autofillPreloadPath?: string;
@@ -79,12 +78,14 @@ export class PanelView implements PanelViewLike {
   private readonly MAX_CRASHES = 3;
   private readonly CRASH_WINDOW_MS = 60000;
 
+  /** Derive panel HTTP port from serverInfo.gatewayPort */
+  private get panelHttpPort() { return this.serverInfo.gatewayPort; }
+
   constructor(deps: {
     viewManager: ViewManager;
     panelRegistry: PanelRegistry;
     tokenManager: TokenManager;
-    panelHttpServer: PanelHttpServerLike | null;
-    panelHttpPort: number | null;
+    panelHttpServer: PanelHttpServerLike;
     rpcPort: number | null;
     serverInfo: ServerInfoLike;
     cdpServer: CdpServerLike;
@@ -97,12 +98,11 @@ export class PanelView implements PanelViewLike {
     this.panelRegistry = deps.panelRegistry;
     this.tokenManager = deps.tokenManager;
     this.panelHttpServer = deps.panelHttpServer;
-    this.panelHttpPort = deps.panelHttpPort;
     this.rpcPort = deps.rpcPort;
     this.serverInfo = deps.serverInfo;
     this.cdpServer = deps.cdpServer;
     this.panelOrchestrator = deps.panelOrchestrator;
-    this.externalHost = deps.serverInfo.externalHost ?? "localhost";
+    this.externalHost = deps.serverInfo.externalHost;
     this.sendToClient = deps.sendToClient;
     this.autofillManager = deps.autofillManager;
     this.autofillPreloadPath = deps.autofillPreloadPath;
@@ -122,8 +122,8 @@ export class PanelView implements PanelViewLike {
 
     // Set auth cookies before creating the view
     let viewUrl = url;
-    if (this.panelHttpServer && this.panelHttpPort && panel) {
-      viewUrl = await this.setAuthCookiesAndBuildUrl(panelId, panel, contextId);
+    if (panel) {
+      viewUrl = await this.setAuthCookiesAndBuildUrl(panelId, panel, contextId ? { contextId } : undefined);
     }
 
     const view = this.viewManager.createView({
@@ -244,18 +244,22 @@ export class PanelView implements PanelViewLike {
 
   // ==== Auth cookie helper ==================================================
 
-  /** Set subdomain auth + boot cookies and return the authenticated URL. */
+  /**
+   * Set subdomain auth + boot cookies and return the authenticated URL.
+   * Accepts optional overrides for cross-context navigation.
+   */
   private async setAuthCookiesAndBuildUrl(
-    panelId: string, panel: Panel, contextId?: string,
+    panelId: string, panel: Panel, opts?: { contextId?: string; source?: string },
   ): Promise<string> {
-    const ctxId = contextId ?? getPanelContextId(panel);
+    const ctxId = opts?.contextId ?? getPanelContextId(panel);
     const subdomain = contextIdToSubdomain(ctxId);
-    const source = getPanelSource(panel);
+    const source = opts?.source ?? getPanelSource(panel);
     const rpcToken = this.tokenManager.ensureToken(panelId, "panel");
-    const origin = `http://${subdomain}.${this.externalHost}:${this.panelHttpPort}`;
+    const protocol = this.serverInfo.protocol;
+    const origin = `${protocol}://${subdomain}.${this.externalHost}:${this.panelHttpPort}`;
     const bk = randomBytes(8).toString("hex");
 
-    const sid = await this.panelHttpServer!.ensureSubdomainSession(subdomain);
+    const sid = await this.panelHttpServer.ensureSubdomainSession(subdomain);
     const { session: electronSession } = await import("electron");
     await electronSession.defaultSession.cookies.set({
       url: `${origin}/`, name: "_ns_session", value: sid,
@@ -305,7 +309,7 @@ export class PanelView implements PanelViewLike {
           if (panel && pathSource && getPanelSource(panel) !== pathSource) {
             panel.snapshot.source = pathSource;
             // Persist source change to server (handles autoArchiveWhenEmpty sync)
-            void this.panelOrchestrator.serverClient?.call("panel", "updateContext", [panelId, { source: pathSource }]).catch(() => {});
+            void this.panelOrchestrator.callServer("panel", "updateContext", [panelId, { source: pathSource }]).catch(() => {});
           }
         } catch { /* non-URL navigation */ }
       },
@@ -387,7 +391,7 @@ export class PanelView implements PanelViewLike {
     if (state.pageTitle !== undefined) {
       panel.title = state.pageTitle;
       // Persist title to server (fire-and-forget)
-      void this.panelOrchestrator.serverClient?.call("panel", "updateTitle", [panelId, state.pageTitle]).catch(() => {});
+      void this.panelOrchestrator.callServer("panel", "updateTitle", [panelId, state.pageTitle]).catch(() => {});
     }
     this.panelRegistry.notifyPanelTreeUpdate();
   }
@@ -418,7 +422,7 @@ export class PanelView implements PanelViewLike {
     });
 
     const willNavigateHandler = (event: Electron.Event, url: string) => {
-      if (!url.includes(`.${this.externalHost}:`) && !url.includes(`//${this.externalHost}:`)) {
+      if (!this.isManagedHost(url)) {
         if (/^https?:\/\//i.test(url)) {
           event.preventDefault();
           void this.panelOrchestrator.createBrowserPanel(panelId, url, { focus: true })
@@ -434,13 +438,14 @@ export class PanelView implements PanelViewLike {
       }
 
       const panel = this.panelRegistry.getPanel(panelId);
-      if (!panel || !this.panelHttpServer || !this.panelHttpPort) return;
+      if (!panel) return;
 
       const currentSubdomain = contextIdToSubdomain(getPanelContextId(panel));
       try {
         const targetUrl = new URL(url);
-        const targetSubdomain = targetUrl.hostname.endsWith(".localhost")
-          ? targetUrl.hostname.slice(0, -".localhost".length) : null;
+        const hostSuffix = `.${this.externalHost}`;
+        const targetSubdomain = targetUrl.hostname.endsWith(hostSuffix)
+          ? targetUrl.hostname.slice(0, -hostSuffix.length) : null;
         if (!targetSubdomain || targetSubdomain === currentSubdomain) return;
 
         event.preventDefault();
@@ -453,10 +458,18 @@ export class PanelView implements PanelViewLike {
     contents.on("will-navigate", willNavigateHandler);
   }
 
+  /** Check if a URL targets our managed host (with or without explicit port). */
+  private isManagedHost(url: string): boolean {
+    try {
+      const u = new URL(url);
+      return u.hostname.endsWith(`.${this.externalHost}`) || u.hostname === this.externalHost;
+    } catch { return false; }
+  }
+
   private parseLocalhostUrl(url: string): ParsedPanelUrl | null {
     try {
       const u = new URL(url);
-      if (!u.hostname.endsWith(".localhost") && u.hostname !== "localhost") return null;
+      if (!u.hostname.endsWith(`.${this.externalHost}`) && u.hostname !== this.externalHost) return null;
 
       const match = u.pathname.match(/^\/([^/]+\/[^/]+)(\/.*)?$/);
       if (!match) return null;
@@ -497,13 +510,13 @@ export class PanelView implements PanelViewLike {
   // ==== Cross-context navigation ============================================
 
   /**
-   * Handle cross-subdomain navigation: update panel context in-place and
-   * re-navigate with proper auth cookies.
+   * Handle cross-subdomain navigation: navigate first, then persist on success.
+   * Uses shared setAuthCookiesAndBuildUrl (no duplicated cookie logic).
    */
   private async handleCrossContextNavigation(
     panelId: string, panel: Panel, targetUrl: URL, targetSubdomain: string,
   ): Promise<void> {
-    if (!this.panelHttpServer || !this.panelHttpPort) return;
+    // panelHttpServer and panelHttpPort (from serverInfo.gatewayPort) are always available
 
     const pathMatch = targetUrl.pathname.match(/^\/([^/]+\/[^/]+)(\/.*)?$/);
     if (!pathMatch) { log.warn(`[CrossCtx] Cannot parse source from URL: ${targetUrl.href}`); return; }
@@ -517,62 +530,48 @@ export class PanelView implements PanelViewLike {
     const newContextId = targetUrl.searchParams.get("contextId") ?? targetSubdomain;
     log.info(`[CrossCtx] Panel ${panelId}: context switch ${contextIdToSubdomain(getPanelContextId(panel))} -> ${targetSubdomain} (source: ${source})`);
 
-    const oldContextId = panel.snapshot.contextId;
+    // Step 1: Build auth URL using shared cookie helper (no duplicated logic)
+    const authUrl = await this.setAuthCookiesAndBuildUrl(panelId, panel, {
+      contextId: newContextId,
+      source,
+    });
+
+    // Step 2: Set source locally BEFORE navigation so the didNavigate handler
+    // doesn't see a diff and fire a spurious updateContext call.
     const oldSource = panel.snapshot.source;
+    const oldContextId = panel.snapshot.contextId;
     const oldStateArgs = panel.snapshot.stateArgs;
-    const oldAutoArchive = panel.snapshot.autoArchiveWhenEmpty;
+    panel.snapshot.source = source;
+    panel.snapshot.contextId = newContextId;
+    if (stateArgs !== undefined) panel.snapshot.stateArgs = stateArgs;
 
+    // Step 3: Navigate — if this fails, rollback local state
     try {
-      const rpcToken = this.tokenManager.ensureToken(panelId, "panel");
-      const origin = `http://${targetSubdomain}.${this.externalHost}:${this.panelHttpPort}`;
-      const bk = randomBytes(8).toString("hex");
-
-      const sid = await this.panelHttpServer.ensureSubdomainSession(targetSubdomain);
-      const { session: electronSession } = await import("electron");
-      await electronSession.defaultSession.cookies.set({
-        url: `${origin}/`, name: "_ns_session", value: sid,
-        path: "/", httpOnly: true, sameSite: "strict",
-      });
-      await electronSession.defaultSession.cookies.set({
-        url: `${origin}/`, name: `_ns_boot_${bk}`,
-        value: encodeURIComponent(JSON.stringify({ pid: panelId, rpcPort: this.rpcPort!, rpcToken, rpcHost: "127.0.0.1" })),
-        path: "/", httpOnly: false, sameSite: "strict",
-        expirationDate: Math.floor(Date.now() / 1000) + 60,
-      });
-
-      const serverRpcToken = await this.serverInfo.ensurePanelToken(panelId, "panel");
-      const authUrl = `${origin}/${source}/?pid=${encodeURIComponent(panelId)}&_bk=${bk}&rpcPort=${this.rpcPort!}&rpcToken=${encodeURIComponent(rpcToken)}&serverRpcPort=${this.serverInfo.rpcPort}&serverRpcToken=${encodeURIComponent(serverRpcToken)}&rpcHost=127.0.0.1`;
-
-      panel.snapshot.contextId = newContextId;
-      panel.snapshot.source = source;
-      // autoArchiveWhenEmpty sync handled server-side in updateContext
-      if (stateArgs !== undefined) panel.snapshot.stateArgs = stateArgs;
-
-      // Update fsService mapping so RPC-backed fs calls route to the new context
-      this.panelOrchestrator.updatePanelContext(panelId, newContextId);
-
       await this.viewManager.navigateView(panelId, authUrl);
-
-      // Persist context change to server (fire-and-forget)
-      void this.panelOrchestrator.serverClient?.call("panel", "updateContext", [panelId, {
-        contextId: newContextId,
-        source: panel.snapshot.source,
-        stateArgs: panel.snapshot.stateArgs,
-      }]).catch(() => {});
-      this.panelRegistry.notifyPanelTreeUpdate();
     } catch (err) {
-      panel.snapshot.contextId = oldContextId;
       panel.snapshot.source = oldSource;
+      panel.snapshot.contextId = oldContextId;
       panel.snapshot.stateArgs = oldStateArgs;
-      if (oldAutoArchive) {
-        panel.snapshot.autoArchiveWhenEmpty = true;
-      } else {
-        delete panel.snapshot.autoArchiveWhenEmpty;
-      }
-      // Restore old fs context mapping on failure
-      if (oldContextId) this.panelOrchestrator.updatePanelContext(panelId, oldContextId);
       throw err;
     }
+
+    // Step 4: Navigation succeeded — persist to server + update fs context.
+    // If server persist fails, rollback local state so view and server stay consistent.
+    try {
+      await this.panelOrchestrator.updatePanelContext(panelId, newContextId, source, stateArgs);
+    } catch (persistErr) {
+      log.warn(`[CrossCtx] Server persist failed for ${panelId}, rolling back:`, persistErr);
+      panel.snapshot.source = oldSource;
+      panel.snapshot.contextId = oldContextId;
+      panel.snapshot.stateArgs = oldStateArgs;
+      // Navigate back to original URL
+      try {
+        const rollbackUrl = await this.setAuthCookiesAndBuildUrl(panelId, panel);
+        await this.viewManager.navigateView(panelId, rollbackUrl);
+      } catch { /* best-effort rollback */ }
+      throw persistErr;
+    }
+    this.panelRegistry.notifyPanelTreeUpdate();
   }
 
   // ==== Crash recovery ======================================================

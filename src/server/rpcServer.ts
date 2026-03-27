@@ -117,6 +117,29 @@ export class RpcServer {
     this.workerdUrl = url;
   }
 
+  /**
+   * Initialize handlers without binding a socket.
+   * Call this when the gateway owns the socket and dispatches to us.
+   */
+  initHandlers(): void {
+    if (this.handlersInitialized) return;
+    this.handlersInitialized = true;
+
+    // WSS in noServer mode — gateway calls handleUpgrade then handleGatewayWsConnection
+    this.wss = new WebSocketServer({ noServer: true });
+
+    // Register revocation-driven disconnect
+    this.deps.tokenManager.onRevoke((callerId) => {
+      const client = this.callerToClient.get(callerId);
+      if (!client) return;
+      client.ws.close(4001, "Token revoked");
+    });
+  }
+  private handlersInitialized = false;
+
+  /**
+   * Start with own socket (non-gateway mode, e.g. Electron local RPC).
+   */
   async start(): Promise<number> {
     const port = await findServicePort("rpc");
 
@@ -129,9 +152,10 @@ export class RpcServer {
         }
       });
     });
+    // When self-hosting, WSS is attached to our own server
     this.wss = new WebSocketServer({ server: this.httpServer });
-
     this.wss.on("connection", (ws) => this.handleConnection(ws));
+    this.handlersInitialized = true;
 
     // Register revocation-driven disconnect
     this.deps.tokenManager.onRevoke((callerId) => {
@@ -147,6 +171,11 @@ export class RpcServer {
 
     this.port = port;
     return port;
+  }
+
+  /** Set the port (used when gateway owns the socket). */
+  setPort(port: number): void {
+    this.port = port;
   }
 
   getPort(): number | null {
@@ -870,6 +899,20 @@ export class RpcServer {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(msg));
     }
+  }
+
+  // ===========================================================================
+  // Gateway in-process handlers
+  // ===========================================================================
+
+  /** Accept a pre-upgraded WebSocket from the gateway (no WSS needed on our side). */
+  handleGatewayWsConnection(ws: WebSocket): void {
+    this.handleConnection(ws);
+  }
+
+  /** Handle an HTTP POST /rpc from the gateway (in-process dispatch). */
+  async handleGatewayHttpRequest(req: import("http").IncomingMessage, res: import("http").ServerResponse): Promise<void> {
+    await this.handleHttpRequest(req, res);
   }
 
   /** Shut down the server */

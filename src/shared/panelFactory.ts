@@ -42,7 +42,9 @@ export interface BuildBootstrapConfigOpts {
   gitToken: string;
   gitBaseUrl: string;
   workerdPort: number;
-  externalHost?: string;
+  externalHost: string;
+  protocol: "http" | "https";
+  gatewayPort: number;
   env?: Record<string, string>;
   stateArgs?: Record<string, unknown>;
 }
@@ -51,7 +53,8 @@ export interface BuildPanelUrlOpts {
   source: string;
   contextId: string;
   panelHttpPort: number;
-  externalHost?: string;
+  externalHost: string;
+  protocol: "http" | "https";
 }
 
 export interface BuildPanelEnvOpts {
@@ -62,7 +65,9 @@ export interface BuildPanelEnvOpts {
   workerdPort: number;
   contextId: string;
   sourceRepo: string;
-  externalHost?: string;
+  externalHost: string;
+  protocol: "http" | "https";
+  gatewayPort: number;
   baseEnv?: Record<string, string> | null;
 }
 
@@ -85,7 +90,9 @@ export function resolveSource(
  */
 export function buildBootstrapConfig(opts: BuildBootstrapConfigOpts): unknown {
   const subdomain = contextIdToSubdomain(opts.contextId);
-  const host = opts.externalHost ?? "localhost";
+  const host = opts.externalHost;
+  const wsProtocol = opts.protocol === "https" ? "wss" : "ws";
+  const port = opts.gatewayPort;
 
   const gitConfig = {
     serverUrl: opts.gitBaseUrl,
@@ -93,7 +100,7 @@ export function buildBootstrapConfig(opts: BuildBootstrapConfigOpts): unknown {
     sourceRepo: opts.source,
   };
   const pubsubConfig = {
-    serverUrl: `ws://${subdomain}.${host}:${opts.workerdPort}/_w/workers/pubsub-channel/PubSubChannel`,
+    serverUrl: `${wsProtocol}://${subdomain}.${host}:${port}/_w/workers/pubsub-channel/PubSubChannel`,
     token: opts.serverRpcToken,
   };
 
@@ -127,9 +134,10 @@ export function buildPanelUrl(opts: BuildPanelUrlOpts): string {
     return opts.source.slice("browser:".length);
   }
 
-  const host = opts.externalHost ?? "localhost";
+  const protocol = opts.protocol;
+  const host = opts.externalHost;
   const subdomain = contextIdToSubdomain(opts.contextId);
-  return `http://${subdomain}.${host}:${opts.panelHttpPort}/${opts.source}/`;
+  return `${protocol}://${subdomain}.${host}:${opts.panelHttpPort}/${opts.source}/`;
 }
 
 /**
@@ -143,10 +151,12 @@ export function buildPanelEnv(opts: BuildPanelEnvOpts): Record<string, string> {
   });
 
   const panelSubdomain = contextIdToSubdomain(opts.contextId);
-  const envHost = opts.externalHost ?? "localhost";
-  const pubsubConfig = opts.workerdPort
+  const envHost = opts.externalHost;
+  const wsProtocol = opts.protocol === "https" ? "wss" : "ws";
+  const wsPort = opts.gatewayPort;
+  const pubsubConfig = wsPort
     ? JSON.stringify({
-        serverUrl: `ws://${panelSubdomain}.${envHost}:${opts.workerdPort}/_w/workers/pubsub-channel/PubSubChannel`,
+        serverUrl: `${wsProtocol}://${panelSubdomain}.${envHost}:${wsPort}/_w/workers/pubsub-channel/PubSubChannel`,
         token: opts.serverRpcToken,
       })
     : "";
