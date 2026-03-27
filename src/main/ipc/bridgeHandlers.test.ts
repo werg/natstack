@@ -39,10 +39,9 @@ describe("bridgeService", () => {
   };
 
   const svc = createBridgeService({
-    panelLifecycle: pm as any,
+    panelOrchestrator: pm as any,
     cdpServer: cdpServer as any,
     getViewManager: mockGetViewManager as any,
-    workspace: null,
     serverInfo: {} as any,
   });
   const handler = svc.handler;

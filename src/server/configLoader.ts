@@ -43,12 +43,14 @@ export const CONFIG_LOADER_JS = `(async () => {
   // Electron path: all credentials in URL params
   let serverRpcPort = null;
   let serverRpcToken = null;
+  let rpcHost = null;
   if (urlPid) {
     pid = urlPid;
     if (url.searchParams.has("rpcPort")) rpcPort = Number(url.searchParams.get("rpcPort"));
     if (url.searchParams.has("rpcToken")) rpcToken = url.searchParams.get("rpcToken");
     if (url.searchParams.has("serverRpcPort")) serverRpcPort = Number(url.searchParams.get("serverRpcPort"));
     if (url.searchParams.has("serverRpcToken")) serverRpcToken = url.searchParams.get("serverRpcToken");
+    if (url.searchParams.has("rpcHost")) rpcHost = url.searchParams.get("rpcHost");
   }
 
   // Browser path: credentials in nonce-keyed boot cookie
@@ -68,6 +70,7 @@ export const CONFIG_LOADER_JS = `(async () => {
         rpcToken = boot.rpcToken;
         if (boot.serverRpcPort) serverRpcPort = boot.serverRpcPort;
         if (boot.serverRpcToken) serverRpcToken = boot.serverRpcToken;
+        if (boot.rpcHost) rpcHost = boot.rpcHost;
         // Delete the one-time cookie
         document.cookie = cookieName + "=; Max-Age=0; Path=/; SameSite=Strict";
       } catch { /* ignore parse errors */ }
@@ -81,6 +84,7 @@ export const CONFIG_LOADER_JS = `(async () => {
     if (rpcToken) sessionStorage.setItem("__natstackRpcToken", rpcToken);
     if (serverRpcPort) sessionStorage.setItem("__natstackServerRpcPort", String(serverRpcPort));
     if (serverRpcToken) sessionStorage.setItem("__natstackServerRpcToken", serverRpcToken);
+    if (rpcHost) sessionStorage.setItem("__natstackRpcHost", rpcHost);
     sessionStorage.setItem("__natstackSource", currentSource);
     // Clean all bootstrap params from URL
     url.searchParams.delete("_bk");
@@ -89,6 +93,7 @@ export const CONFIG_LOADER_JS = `(async () => {
     url.searchParams.delete("rpcToken");
     url.searchParams.delete("serverRpcPort");
     url.searchParams.delete("serverRpcToken");
+    url.searchParams.delete("rpcHost");
     history.replaceState(null, "", url.pathname + (url.search || ""));
   }
 
@@ -103,6 +108,7 @@ export const CONFIG_LOADER_JS = `(async () => {
       sessionStorage.removeItem("__natstackRpcToken");
       sessionStorage.removeItem("__natstackServerRpcPort");
       sessionStorage.removeItem("__natstackServerRpcToken");
+      sessionStorage.removeItem("__natstackRpcHost");
       sessionStorage.removeItem("__natstackSource");
       location.href = url.pathname + "?_fresh";
       return;
@@ -112,6 +118,7 @@ export const CONFIG_LOADER_JS = `(async () => {
     rpcToken = sessionStorage.getItem("__natstackRpcToken");
     if (!serverRpcPort) serverRpcPort = Number(sessionStorage.getItem("__natstackServerRpcPort")) || null;
     if (!serverRpcToken) serverRpcToken = sessionStorage.getItem("__natstackServerRpcToken");
+    if (!rpcHost) rpcHost = sessionStorage.getItem("__natstackRpcHost");
   }
 
   // ── 4. No bootstrap data — force re-bootstrap ──
@@ -136,6 +143,7 @@ export const CONFIG_LOADER_JS = `(async () => {
   globalThis.__natstackKind = "panel";
   if (serverRpcPort) globalThis.__natstackServerRpcPort = serverRpcPort;
   if (serverRpcToken) globalThis.__natstackServerRpcToken = serverRpcToken;
+  if (rpcHost) globalThis.__natstackRpcHost = rpcHost;
 
   // ── 6. Load transport ──
   await new Promise((resolve, reject) => {

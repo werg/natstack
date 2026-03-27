@@ -9,7 +9,7 @@ import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("App");
 import { PanelRegistry } from "../shared/panelRegistry.js";
-import { PanelLifecycle } from "../shared/panelLifecycle.js";
+import { PanelOrchestrator } from "./panelOrchestrator.js";
 import { PanelView } from "./panelView.js";
 import { setupMenu, setMenuPanelLifecycle, setMenuPanelRegistry, setMenuViewManager, setMenuEventService } from "./menu.js";
 import { getAppRoot } from "./paths.js";
@@ -20,7 +20,7 @@ import {
   deleteWorkspaceDir,
 } from "../shared/workspace/loader.js";
 import { getWorkspaceDir } from "@natstack/env-paths";
-import type { Workspace } from "../shared/workspace/types.js";
+// Workspace type no longer needed — config comes from server via workspaceInfo RPC
 import { CentralDataManager } from "../shared/centralData.js";
 import { CdpServer } from "./cdpServer.js";
 import { TokenManager } from "../shared/tokenManager.js";
@@ -38,14 +38,10 @@ import { rpcService } from "../shared/managedService.js";
 import { createEventsServiceDefinition } from "../shared/eventsService.js";
 import { setupTestApi } from "./testApi.js";
 import { AdBlockManager } from "./adblock/index.js";
-import { ContextFolderManager } from "../shared/contextFolderManager.js";
-import { FsService } from "../shared/fsService.js";
 import { startMemoryMonitor, setMemoryMonitorViewManager } from "./memoryMonitor.js";
 import { ServerProcessManager, type ServerPorts } from "./serverProcessManager.js";
 import { createServerClient, type ServerClient } from "./serverClient.js";
 import type { ServerInfo } from "./serverInfo.js";
-import { getPanelPersistence } from "../shared/db/panelPersistence.js";
-import { getPanelSearchIndex } from "../shared/db/panelSearchIndex.js";
 import { getPanelSource } from "../shared/panelTypes.js";
 
 // =============================================================================
@@ -84,66 +80,75 @@ if (process.env["NATSTACK_DEBUG_PATHS"] === "1") {
 // Load central environment variables first (.env and .secrets.yml from ~/.config/natstack/)
 loadCentralEnv();
 
-// Resolve workspace: --workspace=name → env NATSTACK_WORKSPACE → (dev: fresh random) → last-opened → auto-create "default"
-const wsName = resolveWorkspaceName();
+const isRemoteMode = !!(process.env["NATSTACK_REMOTE_URL"] && process.env["NATSTACK_REMOTE_TOKEN"]);
 const centralData = new CentralDataManager();
-let wsDir: string;
-let workspace: Workspace | null = null;
+let wsDir: string | null = null;
+let workspaceId: string = "unknown";
 let isEphemeralDevWorkspace = false;
 
-try {
-  const appRoot = getAppRoot();
-  if (wsName) {
-    // Managed workspace by name — must exist on disk
-    const resolved = resolveOrCreateWorkspace({ name: wsName, appRoot });
-    wsDir = resolved.wsDir;
-    workspace = resolved.workspace;
-    centralData.addWorkspace(wsName);
-  } else if (isDev()) {
-    // Dev mode: always create a fresh workspace from the template
-    const { randomBytes } = require("crypto") as typeof import("crypto");
-    const devName = `dev-${randomBytes(4).toString("hex")}`;
-    const resolved = resolveOrCreateWorkspace({ name: devName, appRoot, init: true });
-    wsDir = resolved.wsDir;
-    workspace = resolved.workspace;
-    centralData.addWorkspace(devName);
-    isEphemeralDevWorkspace = true;
-  } else {
-    // No explicit workspace — try last-opened from registry
-    const last = centralData.getLastOpenedWorkspace();
-    if (last) {
-      const resolved = resolveOrCreateWorkspace({ name: last.name, appRoot });
+// Local mode: resolve workspace from disk (needed to spawn the server)
+// Remote mode: skip — workspace lives on the remote server
+if (!isRemoteMode) {
+  const wsName = resolveWorkspaceName();
+  try {
+    const appRoot = getAppRoot();
+    if (wsName) {
+      const resolved = resolveOrCreateWorkspace({ name: wsName, appRoot });
       wsDir = resolved.wsDir;
-      workspace = resolved.workspace;
-      centralData.touchWorkspace(last.name);
+      workspaceId = resolved.workspace.config.id;
+      centralData.addWorkspace(wsName);
+    } else if (isDev()) {
+      const { randomBytes } = require("crypto") as typeof import("crypto");
+      const devName = `dev-${randomBytes(4).toString("hex")}`;
+      const resolved = resolveOrCreateWorkspace({ name: devName, appRoot, init: true });
+      wsDir = resolved.wsDir;
+      workspaceId = resolved.workspace.config.id;
+      centralData.addWorkspace(devName);
+      isEphemeralDevWorkspace = true;
     } else {
-      // First run: auto-create "default" workspace from the shipped template
-      const resolved = resolveOrCreateWorkspace({ name: "default", appRoot, init: true });
-      wsDir = resolved.wsDir;
-      workspace = resolved.workspace;
-      centralData.addWorkspace("default");
+      const last = centralData.getLastOpenedWorkspace();
+      if (last) {
+        const resolved = resolveOrCreateWorkspace({ name: last.name, appRoot });
+        wsDir = resolved.wsDir;
+        workspaceId = resolved.workspace.config.id;
+        centralData.touchWorkspace(last.name);
+      } else {
+        const resolved = resolveOrCreateWorkspace({ name: "default", appRoot, init: true });
+        wsDir = resolved.wsDir;
+        workspaceId = resolved.workspace.config.id;
+        centralData.addWorkspace("default");
+      }
     }
+    log.info(`[Workspace] Loaded: ${wsDir} (id: ${workspaceId})`);
+  } catch (error) {
+    console.error("[Workspace] Failed to initialize workspace:", error);
+    app.quit();
+    process.exit(1);
   }
-  log.info(`[Workspace] Loaded: ${workspace.path} (id: ${workspace.config.id})`);
-} catch (error) {
-  console.error("[Workspace] Failed to initialize workspace:", error);
-  app.quit();
-  process.exit(1);
-}
 
-// Set Electron's userData to the workspace state dir — all internal storage scoped here
-app.setPath("userData", path.join(wsDir!, "state"));
+  // Set Electron's userData to the workspace state dir
+  app.setPath("userData", path.join(wsDir!, "state"));
+} else {
+  // Remote mode: use a central config directory for Electron internals
+  const { getCentralConfigDirectory } = require("./paths.js") as { getCentralConfigDirectory(): string };
+  const remoteStateDir = path.join(getCentralConfigDirectory(), "remote-state");
+  require("fs").mkdirSync(remoteStateDir, { recursive: true });
+  app.setPath("userData", remoteStateDir);
+  log.info("[Workspace] Remote mode — workspace on server");
+}
 
 const tokenManager = new TokenManager();
 let cdpServer: CdpServer | null = null;
 let panelRegistry: PanelRegistry | null = null;
-let panelLifecycle: PanelLifecycle | null = null;
+let panelOrchestrator: PanelOrchestrator | null = null;
 let panelView: PanelView | null = null;
 let rpcServer: import("../server/rpcServer.js").RpcServer | null = null;
 let serverProcessManager: ServerProcessManager | null = null;
 let serverClient: ServerClient | null = null;
 let serverInfo: ServerInfo | null = null;
-let panelHttpServer: import("../server/panelHttpServer.js").PanelHttpServer | null = null;
+// panelHttpServer is on the server — Electron uses RPC to interact with it
+let remotePanelHttp: import("../shared/panelInterfaces.js").PanelHttpServerLike | null = null;
+let panelHttpPort: number = 0;
 let mainWindow: BaseWindow | null = null;
 let viewManager: ViewManager | null = null;
 let isCleaningUp = false; // Prevent re-entry in will-quit handler
@@ -161,11 +166,13 @@ log.info(` Starting in main mode`);
 // ServerInfo Builder
 // =============================================================================
 
-function buildServerInfo(ports: ServerPorts): ServerInfo {
+function buildServerInfo(ports: ServerPorts, externalHost = "localhost"): ServerInfo {
+  const host = externalHost === "localhost" ? "127.0.0.1" : externalHost;
   return {
     rpcPort: ports.rpcPort,
-    gitBaseUrl: `http://127.0.0.1:${ports.gitPort}`,
+    gitBaseUrl: `http://${host}:${ports.gitPort}`,
     workerdPort: ports.workerdPort ?? 0,
+    externalHost,
     createPanelToken: (panelId, kind) =>
       requireServerClient().call("tokens", "create", [panelId, kind]) as Promise<string>,
     ensurePanelToken: (panelId, kind) =>
@@ -223,9 +230,7 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
   });
 
   // Set native window title for OS taskbar / window switcher (Alt+Tab / dock)
-  if (workspace) {
-    mainWindow.setTitle(`NatStack — ${workspace.config.id}`);
-  }
+  mainWindow.setTitle(`NatStack — ${workspaceId}`);
 
   mainWindow.on("closed", () => {
     mainWindow = null;
@@ -233,23 +238,22 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
     panelView = null;  // Clear so getPanelView() returns null until recreated
   });
 
-  // PanelView is resolved lazily by PanelLifecycle via getPanelView()
+  // PanelView is resolved lazily by PanelOrchestrator via getPanelView()
   if (cdpServer && viewManager) {
     cdpServer.setViewManager(viewManager);
   }
 
-  if (viewManager && panelRegistry && panelLifecycle && panelHttpServer && cdpServer && serverInfo && rpcServer) {
+  if (viewManager && panelRegistry && panelOrchestrator && cdpServer && serverInfo && rpcServer) {
     panelView = new PanelView({
       viewManager,
       panelRegistry,
       tokenManager,
-      panelHttpServer,
-      panelHttpPort: panelHttpServer.getPort(),
+      panelHttpServer: remotePanelHttp,
+      panelHttpPort,
       rpcPort: wsArgs.rpcPort,
       serverInfo,
       cdpServer,
-      panelLifecycle,
-      sourceRoot: workspace!.path,
+      panelOrchestrator,
       sendToClient: (callerId, msg) => rpcServer!.sendToClient(callerId, msg as import("../shared/ws/protocol.js").WsServerMessage),
       autofillManager: autofillManager ?? undefined,
       autofillPreloadPath: path.join(__dirname, "autofillPreload.cjs"),
@@ -266,7 +270,7 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
       panelView!.handleViewCrashed(viewId, reason);
     });
 
-    setupTestApi(panelLifecycle, panelRegistry, panelView);
+    setupTestApi(panelOrchestrator, panelRegistry, panelView);
   }
 
   // Optional memory diagnostics (env-driven).
@@ -297,8 +301,8 @@ function createWindow(wsArgs: { rpcPort: number; shellToken: string }): void {
   });
 
   // Initialize panel tree after window is ready
-  if (panelLifecycle) {
-    panelLifecycle.initializePanelTree().catch((error) => {
+  if (panelOrchestrator) {
+    panelOrchestrator.initializePanelTree().catch((error) => {
       console.error("[App] Failed to initialize panel tree:", error);
       eventService.emit("panel-initialization-error", {
         path: "",
@@ -377,33 +381,112 @@ app.on("ready", async () => {
 
   performance.mark("startup:services-registered");
 
+  // Build event handler — receives build:complete events from server
+  function handleServerEvent(event: string, payload: unknown) {
+    if (event !== "build:complete" || !panelRegistry || !panelOrchestrator) return;
+    const { source, error } = payload as { source: string; error?: string };
+    const allPanels = panelRegistry.listPanels();
+    for (const entry of allPanels) {
+      const panel = panelRegistry.getPanel(entry.panelId);
+      if (panel && getPanelSource(panel) === source) {
+        if (error) {
+          panelRegistry.updateArtifacts(entry.panelId, {
+            buildState: "error",
+            error,
+            buildProgress: error,
+          });
+        } else {
+          panelRegistry.updateArtifacts(entry.panelId, {
+            htmlPath: panelOrchestrator.getPanelUrl(entry.panelId) ?? undefined,
+            buildState: "ready",
+          });
+        }
+      }
+    }
+    panelRegistry.notifyPanelTreeUpdate();
+  }
+
   try {
     performance.mark("startup:server-spawn-begin");
-    // Spawn server as child process
-    serverProcessManager = new ServerProcessManager({
-      wsDir,
-      appRoot: getAppRoot(),
-      onCrash: (code) => {
-        console.error(`[App] Server process crashed with code ${code}`);
-        dialog.showErrorBox(
-          "Server Process Crashed",
-          "The NatStack server process exited unexpectedly. The app will now restart."
-        );
-        app.relaunch();
-        app.exit(1);
-      },
-    });
 
-    const ports = await serverProcessManager.start();
+    // Phase 1: Obtain server connection — local spawn or remote
+    const remoteUrl = process.env["NATSTACK_REMOTE_URL"];
+    const remoteToken = process.env["NATSTACK_REMOTE_TOKEN"];
+    let externalHost = "localhost";
+    let ports: ServerPorts;
+
+    if (remoteUrl && remoteToken) {
+      // Remote mode: connect to existing server
+      const remoteUrlParsed = new URL(remoteUrl);
+      externalHost = remoteUrlParsed.hostname;
+      const remotePort = parseInt(remoteUrlParsed.port) || 80;
+
+      serverClient = await createServerClient(remotePort, remoteToken, {
+        wsUrl: `${remoteUrlParsed.protocol === "https:" ? "wss" : "ws"}://${externalHost}:${remotePort}/rpc`,
+        onDisconnect: () => {
+          dialog.showErrorBox(
+            "Remote Server Disconnected",
+            "The connection to the remote NatStack server was lost. The app will now exit."
+          );
+          app.exit(1);
+        },
+        onEvent: handleServerEvent,
+      });
+
+      // Get port info from server (remote mode uses gateway for everything)
+      ports = {
+        rpcPort: remotePort,
+        gitPort: remotePort,
+        pubsubPort: 0,
+        workerdPort: remotePort,
+        gatewayPort: remotePort,
+        adminToken: remoteToken,
+      };
+      log.info(`[Server] Connected to remote server at ${remoteUrl}`);
+    } else {
+      // Local mode: spawn server as child process
+      serverProcessManager = new ServerProcessManager({
+        wsDir: wsDir!,
+        appRoot: getAppRoot(),
+        onCrash: (code) => {
+          console.error(`[App] Server process crashed with code ${code}`);
+          dialog.showErrorBox(
+            "Server Process Crashed",
+            "The NatStack server process exited unexpectedly. The app will now restart."
+          );
+          app.relaunch();
+          app.exit(1);
+        },
+      });
+
+      ports = await serverProcessManager.start();
+      log.info(`[Server] Child process started (RPC: ${ports.rpcPort}, Git: ${ports.gitPort})`);
+
+      // Connect to server as admin
+      serverClient = await createServerClient(ports.rpcPort, ports.adminToken, {
+        onDisconnect: () => {
+          console.error("[App] Server process disconnected");
+        },
+        onEvent: handleServerEvent,
+      });
+    }
     performance.mark("startup:server-spawned");
-    log.info(`[Server] Child process started (RPC: ${ports.rpcPort}, Git: ${ports.gitPort}, PubSub: ${ports.pubsubPort})`);
-
-    // Connect to server as admin
-    serverClient = await createServerClient(ports.rpcPort, ports.adminToken);
     performance.mark("startup:server-connected");
-    log.info("[Server] Admin WS client connected");
+    log.info("[Server] Admin client connected");
 
-    serverInfo = buildServerInfo(ports);
+    serverInfo = buildServerInfo(ports, externalHost);
+
+    // Phase 2: Get workspace metadata from server
+    const wsInfo = await requireServerClient().call("workspaceInfo", "getInfo", []) as {
+      path: string; statePath: string; contextsPath: string;
+      config: import("../shared/workspace/types.js").WorkspaceConfig;
+    };
+    workspaceId = wsInfo.config.id;
+    log.info(`[Workspace] Server workspace: ${wsInfo.config.id}`);
+
+    if (mainWindow) {
+      mainWindow.setTitle(`NatStack — ${workspaceId}`);
+    }
 
     // CDP server (Electron-local) — must start before panel services
     cdpServer = new CdpServer(tokenManager);
@@ -411,66 +494,54 @@ app.on("ready", async () => {
     const cdpPort = await cdpServer.start();
     log.info(`[CDP] Server started on port ${cdpPort}`);
 
-    // Filesystem service — per-context sandboxed fs via RPC
-    const contextFolderManager = new ContextFolderManager({
-      sourcePath: workspace!.path,
-      contextsRoot: workspace!.contextsPath,
-      getWorkspaceTree: () =>
-        requireServerClient().call("git", "getWorkspaceTree", []) as Promise<any>,
-    });
-    const fsService = new FsService(contextFolderManager);
+    // Create PanelRegistry (pure in-memory — server owns persistence)
+    panelRegistry = new PanelRegistry({ eventService });
 
-    // Create PanelRegistry (data layer)
-    const persistence = getPanelPersistence(workspace);
-    const searchIndex = getPanelSearchIndex();
-    panelRegistry = new PanelRegistry({
-      workspace,
-      eventService,
-      persistence,
-      searchIndex,
-    });
-
-    // Create RpcServer (needed by PanelLifecycle for sendToClient)
+    // Create RpcServer (needed by PanelOrchestrator for sendToClient)
     const { RpcServer: RpcServerClass } = await import("../server/rpcServer.js");
     rpcServer = new RpcServerClass({
       tokenManager: tokenManager,
       dispatcher,
       panelManager: panelRegistry, // PanelRegistry implements PanelRelationshipProvider
-      onClientDisconnect: (callerId, callerKind) => {
-        const handleKey = callerKind === "panel" || callerKind === "worker" ? callerId : `server:${callerId}`;
-        fsService.closeHandlesForCaller(handleKey);
-      },
     });
     const rpcPort = await rpcServer.start();
     log.info(`[RPC] Server started on port ${rpcPort}`);
 
-    // Create PanelHttpServer (needed by PanelLifecycle for build state)
-    const { PanelHttpServer } = await import("../server/panelHttpServer.js");
-    const { randomBytes } = await import("crypto");
-    panelHttpServer = new PanelHttpServer("127.0.0.1", randomBytes(32).toString("hex"));
-    const panelHttpPort = await panelHttpServer.start(0);
-    log.info(`[PanelHTTP] Panel HTTP server started on port ${panelHttpPort}`);
+    // Use server's PanelHttpServer via RPC (no local PanelHttpServer)
+    panelHttpPort = ports.panelHttpPort ?? 0;
+    log.info(`[PanelHTTP] Using server's panel HTTP on port ${panelHttpPort}`);
 
-    // Create PanelLifecycle (orchestration layer) — fully initialized at construction
-    // getPanelView resolves lazily: PanelView is created after createWindow()
-    panelLifecycle = new PanelLifecycle({
+    // Thin RPC-backed PanelHttpServerLike for PanelOrchestrator
+    remotePanelHttp = {
+      ensureSubdomainSession: (subdomain) =>
+        requireServerClient().call("panelHttp", "ensureSubdomainSession", [subdomain]) as Promise<string>,
+      clearSubdomainSessions: (subdomain) => {
+        void requireServerClient().call("panelHttp", "clearSubdomainSessions", [subdomain]).catch(() => {});
+      },
+      hasBuild: (_source) => false, // Conservative — server tracks build cache
+      invalidateBuild: (source) => {
+        void requireServerClient().call("panelHttp", "invalidateBuild", [source]).catch(() => {});
+      },
+    };
+
+    // Create PanelOrchestrator
+    panelOrchestrator = new PanelOrchestrator({
       registry: panelRegistry,
       tokenManager,
-      fsService,
       eventService,
-      panelsRoot: workspace!.path,
-      serverInfo,
+      serverClient: requireServerClient(),
       cdpServer,
       getPanelView: () => panelView,
-      panelHttpServer,
+      panelHttpServer: remotePanelHttp,
       panelHttpPort,
+      externalHost,
       sendToClient: (callerId, msg) => rpcServer!.sendToClient(callerId, msg as import("../shared/ws/protocol.js").WsServerMessage),
-      workspaceConfig: workspace!.config,
+      workspaceConfig: wsInfo.config,
     });
 
     // Set up test API for E2E testing (only when NATSTACK_TEST_MODE=1)
-    setupTestApi(panelLifecycle, panelRegistry, null);
-    setMenuPanelLifecycle(panelLifecycle);
+    setupTestApi(panelOrchestrator, panelRegistry, null);
+    setMenuPanelLifecycle(panelOrchestrator);
     setMenuPanelRegistry(panelRegistry);
     setMenuEventService(eventService);
 
@@ -478,44 +549,6 @@ app.on("ready", async () => {
 
     // Autofill manager — password auto-fill for browser panels
     const { AutofillManager } = await import("./autofill/autofillManager.js");
-
-    // Wire PanelHttpServer callbacks
-    panelHttpServer.setCallbacks({
-      onDemandCreate: async (source, subdomain) => {
-        const panelId = await panelLifecycle!.createPanelOnDemand(source, subdomain);
-        const rpcToken = tokenManager.ensureToken(panelId, "panel");
-        const serverRpcToken = await serverInfo!.ensurePanelToken(panelId, "panel");
-        return { panelId, rpcPort, rpcToken, serverRpcPort: serverInfo!.rpcPort, serverRpcToken };
-      },
-      listPanels: () => panelLifecycle!.listPanels(),
-      onBuildComplete: (source, error) => {
-        // Per-panel fan-out: notify all panels using this source
-        const allPanels = panelRegistry!.listPanels();
-        for (const entry of allPanels) {
-          const panel = panelRegistry!.getPanel(entry.panelId);
-          if (panel && getPanelSource(panel) === source) {
-            if (error) {
-              panelRegistry!.updateArtifacts(entry.panelId, {
-                buildState: "error",
-                error,
-                buildProgress: error,
-              });
-            } else {
-              panelRegistry!.updateArtifacts(entry.panelId, {
-                htmlPath: panelLifecycle!.getPanelUrl(entry.panelId) ?? undefined,
-                buildState: "ready",
-              });
-            }
-          }
-        }
-        panelRegistry!.notifyPanelTreeUpdate();
-      },
-      getBuild: async (source) => {
-        return serverInfo!.call("build", "getBuild", [source]) as Promise<
-          import("../server/buildV2/buildStore.js").BuildResult
-        >;
-      },
-    });
 
     // Register all Electron-main RPC services via ServiceContainer
     // PanelView needs viewManager which doesn't exist yet, so we use a lazy wrapper
@@ -534,8 +567,7 @@ app.on("ready", async () => {
     const { createAdblockService } = await import("./services/adblockService.js");
     const { createBridgeService } = await import("./services/bridgeService.js");
     const { createBrowserService } = await import("./services/browserService.js");
-    const { createFsServiceDefinition } = await import("./services/fsServiceDef.js");
-    const { createGitLocalService } = await import("./services/gitLocalService.js");
+    // FS and git-local services removed — server owns these via panel service
     const { createBrowserDataService } = await import("./services/browserDataService.js");
     const { BrowserDataStore } = await import("@natstack/browser-data");
     const { getCentralConfigDirectory } = await import("./paths.js");
@@ -544,26 +576,28 @@ app.on("ready", async () => {
 
     // Shell-only services
     electronContainer.register(rpcService(createAppService({
-      panelLifecycle, serverClient, getViewManager,
+      panelOrchestrator, serverClient, getViewManager,
     })));
     electronContainer.register(rpcService(createPanelShellService({
-      panelLifecycle, panelRegistry,
+      panelOrchestrator, panelRegistry,
       get panelView(): PanelView { return getPanelView(); },
       getViewManager,
+      serverClient: requireServerClient(),
     })));
     electronContainer.register(rpcService(createViewService({ getViewManager })));
     electronContainer.register(rpcService(createMenuService({
-      panelLifecycle, panelRegistry, getViewManager, serverClient,
+      panelOrchestrator, panelRegistry, getViewManager, serverClient,
     })));
-    // Workspace config manager for atomic config reads/writes
-    const { createWorkspaceConfigManager } = await import("../shared/workspace/loader.js");
-    const wsConfigPath = path.join(workspace!.path, "natstack.yml");
-    const wsConfigManager = createWorkspaceConfigManager(wsConfigPath, workspace!.config);
+    // Workspace config via server RPC (server owns the config file)
     electronContainer.register(rpcService(createWorkspaceService({
-      centralData,
-      activeWorkspaceName: workspace!.config.id,
-      getWorkspaceConfig: wsConfigManager.get,
-      setWorkspaceConfigField: wsConfigManager.set,
+      centralData: isRemoteMode ? null : centralData,
+      activeWorkspaceName: workspaceId,
+      getWorkspaceConfig: () =>
+        requireServerClient().call("workspaceInfo", "getConfig", []) as Promise<import("../shared/workspace/types.js").WorkspaceConfig>,
+      setWorkspaceConfigField: (key, value) => {
+        void requireServerClient().call("workspaceInfo", "setConfigField", [key, value]).catch((e: unknown) =>
+          console.error("[Workspace] Failed to set config field:", e));
+      },
       restartWithWorkspace: (name: string) => {
         // Strip existing --workspace=... or --workspace <value> args, then add the new one
         const filteredArgs: string[] = [];
@@ -587,13 +621,12 @@ app.on("ready", async () => {
 
     // Locally-hosted services
     electronContainer.register(rpcService(createBridgeService({
-      panelLifecycle, cdpServer, getViewManager, workspace, serverInfo,
+      panelOrchestrator, cdpServer, getViewManager, serverInfo,
     })));
     electronContainer.register(rpcService(createBrowserService({
       cdpServer, getViewManager, panelRegistry,
     })));
-    electronContainer.register(rpcService(createFsServiceDefinition({ fsService })));
-    electronContainer.register(rpcService(createGitLocalService()));
+    // FS and git-local services removed — server-side only now
     {
       let browserDataStore: InstanceType<typeof BrowserDataStore>;
       electronContainer.register({
@@ -706,12 +739,6 @@ app.on("ready", async () => {
       );
       cdpServer = null;
     }
-    if (panelHttpServer) {
-      cleanupPromises.push(
-        panelHttpServer.stop().catch((e) => console.error("[App] panelHttpServer cleanup error:", e))
-      );
-      panelHttpServer = null;
-    }
     await Promise.all(cleanupPromises);
 
     dialog.showErrorBox(
@@ -735,10 +762,13 @@ app.on("will-quit", (event) => {
     return;
   }
 
-  // Run panel cleanup (archive childless shell panels)
-  if (panelRegistry) {
+  // Run panel cleanup via server (archive childless shell panels)
+  if (panelRegistry && serverClient) {
     try {
-      panelRegistry.runShutdownCleanup();
+      const livePanelIds = panelRegistry.getLivePanelIds();
+      // Fire-and-forget — shutdown shouldn't block on this
+      void serverClient.call("panel", "shutdownCleanup", [livePanelIds]).catch((e: unknown) =>
+        console.error("[App] Failed to run shutdown cleanup:", e));
     } catch (e) {
       console.error("[App] Failed to run shutdown cleanup:", e);
     }
@@ -746,18 +776,18 @@ app.on("will-quit", (event) => {
 
   // Cleanup helper for ephemeral dev workspaces (called sync, after servers stop)
   const cleanupDevWorkspace = () => {
-    if (isEphemeralDevWorkspace && workspace) {
+    if (isEphemeralDevWorkspace && workspaceId) {
       try {
-        deleteWorkspaceDir(workspace.config.id);
-        centralData.removeWorkspace(workspace.config.id);
-        console.log(`[App] Deleted ephemeral dev workspace "${workspace.config.id}"`);
+        deleteWorkspaceDir(workspaceId);
+        centralData.removeWorkspace(workspaceId);
+        console.log(`[App] Deleted ephemeral dev workspace "${workspaceId}"`);
       } catch (e) {
         console.error("[App] Failed to delete dev workspace:", e);
       }
     }
   };
 
-  const hasResourcesToClean = serverClient || serverProcessManager || rpcServer || cdpServer || panelHttpServer;
+  const hasResourcesToClean = serverClient || serverProcessManager || rpcServer || cdpServer;
   if (hasResourcesToClean) {
     isCleaningUp = true;
     event.preventDefault();
@@ -800,15 +830,6 @@ app.on("will-quit", (event) => {
           .stop()
           .then(() => console.log("[App] CDP server stopped"))
           .catch((e) => console.error("[App] Error stopping CDP server:", e))
-      );
-    }
-
-    if (panelHttpServer) {
-      stopPromises.push(
-        panelHttpServer
-          .stop()
-          .then(() => console.log("[App] Panel HTTP server stopped"))
-          .catch((e) => console.error("[App] Error stopping panel HTTP server:", e))
       );
     }
 

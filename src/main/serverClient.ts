@@ -1,9 +1,8 @@
 /**
  * ServerClient — WebSocket admin client that connects Electron to the server.
  *
- * Handles RPC calls for Electron-internal operations (tokens, git, build,
- * ai.reinitialize, etc.). Panels connect directly to the server for AI
- * streaming, tool execution, and other backend services.
+ * Supports both local (ws://127.0.0.1:{port}) and remote (ws://{host}:{port}/rpc)
+ * connections. Handles RPC calls, disconnect recovery, and server event delivery.
  */
 
 import { WebSocket } from "ws";
@@ -28,18 +27,36 @@ export interface ServerClient {
   close(): Promise<void>;
 }
 
+export interface ServerClientOptions {
+  /** Full WebSocket URL (e.g., "ws://127.0.0.1:3000" or "ws://remote.example.com:8080/rpc") */
+  wsUrl?: string;
+  /** Called when the connection is lost */
+  onDisconnect?: () => void;
+  /** Called when the server sends an event */
+  onEvent?: (event: string, payload: unknown) => void;
+}
+
+/**
+ * Create a server client connected to a local or remote server.
+ *
+ * @param serverRpcPort - Port number (used to build ws://127.0.0.1:{port} when wsUrl is not provided)
+ * @param adminToken - Authentication token
+ * @param options - Optional: wsUrl override, disconnect callback, event handler
+ */
 export async function createServerClient(
   serverRpcPort: number,
-  adminToken: string
+  adminToken: string,
+  options?: ServerClientOptions,
 ): Promise<ServerClient> {
   const pendingCalls = new Map<string, PendingCall>();
+  const wsUrl = options?.wsUrl ?? `ws://127.0.0.1:${serverRpcPort}`;
 
-  const ws = new WebSocket(`ws://127.0.0.1:${serverRpcPort}`);
+  const ws = new WebSocket(wsUrl);
 
   // Wait for connection + auth
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
-      reject(new Error("Server WS connection timeout (10s)"));
+      reject(new Error(`Server WS connection timeout (10s): ${wsUrl}`));
       ws.close();
     }, 10_000);
 
@@ -91,15 +108,21 @@ export async function createServerClient(
           }
         }
       }
+    } else if (msg.type === "ws:event") {
+      options?.onEvent?.(
+        (msg as any).event as string,
+        (msg as any).payload,
+      );
     }
   });
 
-  // On disconnect, reject all pending calls
+  // On disconnect, reject all pending calls and notify
   ws.on("close", () => {
     for (const [, pending] of pendingCalls) {
       pending.reject(new Error("Server disconnected"));
     }
     pendingCalls.clear();
+    options?.onDisconnect?.();
   });
 
   const client: ServerClient = {

@@ -1,7 +1,7 @@
 import { Menu, type MenuItemConstructorOptions } from "electron";
 import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { PanelLifecycle } from "../../shared/panelLifecycle.js";
+import type { PanelOrchestrator } from "../panelOrchestrator.js";
 import type { PanelRegistry } from "../../shared/panelRegistry.js";
 import type { ViewManager } from "../viewManager.js";
 import type { ServerClient } from "../serverClient.js";
@@ -9,7 +9,7 @@ import type { PanelContextMenuAction } from "../../shared/types.js";
 import { buildHamburgerMenuTemplate } from "../menu.js";
 
 export function createMenuService(deps: {
-  panelLifecycle: PanelLifecycle;
+  panelOrchestrator: PanelOrchestrator;
   panelRegistry: PanelRegistry;
   getViewManager: () => ViewManager;
   serverClient: ServerClient | null;
@@ -25,7 +25,7 @@ export function createMenuService(deps: {
     },
     handler: async (_ctx, method, args) => {
       const vm = deps.getViewManager();
-      const lifecycle = deps.panelLifecycle;
+      const lifecycle = deps.panelOrchestrator;
       const registry = deps.panelRegistry;
 
       switch (method) {

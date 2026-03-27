@@ -2,13 +2,13 @@
  * Shared cross-boundary interfaces.
  *
  * BridgePanelManager: minimal surface used by bridge handlers (implemented by
- * PanelLifecycle).
+ * PanelOrchestrator on Electron, standaloneBridge on server).
  *
  * PanelRelationshipProvider: panel tree relationship queries used by RpcServer
  * for panel-to-panel authorization (implemented by PanelRegistry).
  *
  * ServerInfoLike, PanelViewLike, PanelHttpServerLike: narrow dependency
- * abstractions used by PanelLifecycle and entry points for cross-process wiring.
+ * abstractions for cross-process wiring.
  */
 
 /**
@@ -53,6 +53,10 @@ export interface ServerInfoLike {
   rpcPort: number;
   gitBaseUrl: string;
   workerdPort: number;
+  /** External hostname for panel URLs (e.g., "localhost" or "my-server.example.com") */
+  externalHost?: string;
+  /** Gateway port that multiplexes all services */
+  gatewayPort?: number;
   createPanelToken(panelId: string, kind: string): Promise<string> | string;
   ensurePanelToken(panelId: string, kind: string): Promise<string> | string;
   revokePanelToken(panelId: string): Promise<void> | void;
@@ -80,9 +84,10 @@ export interface PanelViewLike {
 
 /**
  * HTTP panel server abstraction — optional in both modes.
+ * ensureSubdomainSession is async to support remote server calls.
  */
 export interface PanelHttpServerLike {
-  ensureSubdomainSession(subdomain: string): string;
+  ensureSubdomainSession(subdomain: string): Promise<string> | string;
   clearSubdomainSessions(subdomain: string): void;
   hasBuild(source: string): boolean;
   invalidateBuild(source: string): void;

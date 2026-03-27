@@ -1,7 +1,7 @@
 /**
  * Common bridge handler logic shared between Electron and headless modes.
  *
- * Both `src/main/services/bridgeService.ts` and `src/server/headlessBridge.ts`
+ * Both `src/main/services/bridgeService.ts` and `src/server/standaloneBridge.ts`
  * delegate portable cases here. Environment-specific cases (Electron dialogs,
  * DevTools) remain in the environment-specific files.
  */

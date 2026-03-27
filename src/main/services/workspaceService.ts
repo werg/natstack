@@ -5,10 +5,10 @@ import type { WorkspaceConfig } from "../../shared/workspace/types.js";
 import { createAndRegisterWorkspace, deleteWorkspaceDir } from "../../shared/workspace/loader.js";
 
 export function createWorkspaceService(deps: {
-  centralData: CentralDataManager;
+  centralData: CentralDataManager | null;
   activeWorkspaceName: string;
-  getWorkspaceConfig: () => WorkspaceConfig;
-  setWorkspaceConfigField: (key: "initPanels", value: unknown) => void;
+  getWorkspaceConfig: () => Promise<WorkspaceConfig> | WorkspaceConfig;
+  setWorkspaceConfigField: (key: string, value: unknown) => void;
   /** Restart the app with a different workspace. Injected so headless can provide its own. */
   restartWithWorkspace: (name: string) => void;
 }): ServiceDefinition {
@@ -37,21 +37,24 @@ export function createWorkspaceService(deps: {
 
       switch (method) {
         case "list":
+          if (!deps.centralData) throw new Error("Workspace catalog not available in remote mode");
           return deps.centralData.listWorkspaces();
 
         case "create": {
+          if (!deps.centralData) throw new Error("Workspace creation not available in remote mode");
           const [name, opts] = args as [string, { forkFrom?: string } | undefined];
           return createAndRegisterWorkspace(name, deps.centralData, opts);
         }
 
         case "select": {
           const name = args[0] as string;
-          deps.centralData.touchWorkspace(name);
+          deps.centralData?.touchWorkspace(name);
           deps.restartWithWorkspace(name);
           return;
         }
 
         case "delete": {
+          if (!deps.centralData) throw new Error("Workspace deletion not available in remote mode");
           const name = args[0] as string;
           if (name === deps.activeWorkspaceName) {
             throw new Error("Cannot delete the currently running workspace");
@@ -65,13 +68,14 @@ export function createWorkspaceService(deps: {
           return deps.activeWorkspaceName;
 
         case "getActiveEntry": {
+          if (!deps.centralData) return { name: deps.activeWorkspaceName };
           const entry = deps.centralData.getWorkspaceEntry(deps.activeWorkspaceName);
           if (!entry) throw new Error(`Active workspace "${deps.activeWorkspaceName}" not found in registry`);
           return entry;
         }
 
         case "getConfig":
-          return deps.getWorkspaceConfig();
+          return await deps.getWorkspaceConfig();
 
         case "setInitPanels": {
           const [initPanels] = args as [Array<{ source: string; stateArgs?: Record<string, unknown> }>];

@@ -29,17 +29,28 @@ export const DEFAULT_MAX_STEPS = 10;
 // =============================================================================
 
 /**
- * Permissive CSP for panels and workers.
+ * Build a permissive CSP for panels and workers.
  * Allows connections to localhost services (git, pubsub) and external APIs.
+ * When externalHost is provided, also allows connections to that host.
  */
-export const PANEL_CSP = [
-  "default-src 'self' https: data: blob:",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https: http://localhost:* http://127.0.0.1:*",
-  "style-src 'self' 'unsafe-inline' https:",
-  "img-src 'self' https: data: blob:",
-  "font-src 'self' https: data:",
-  "connect-src 'self' ws://127.0.0.1:* wss://127.0.0.1:* http://127.0.0.1:* https://127.0.0.1:* ws://localhost:* wss://localhost:* http://localhost:* https://localhost:* ws: wss: https:",
-].join("; ");
+export function buildPanelCsp(externalHost?: string): string {
+  const hostEntries = externalHost && externalHost !== "localhost"
+    ? ` ws://*.${externalHost}:* wss://*.${externalHost}:* http://*.${externalHost}:* https://*.${externalHost}:*`
+    : "";
+  return [
+    "default-src 'self' https: data: blob:",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' https: http://localhost:* http://127.0.0.1:*",
+    "style-src 'self' 'unsafe-inline' https:",
+    "img-src 'self' https: data: blob:",
+    "font-src 'self' https: data:",
+    `connect-src 'self' ws://127.0.0.1:* wss://127.0.0.1:* http://127.0.0.1:* https://127.0.0.1:* ws://localhost:* wss://localhost:* http://localhost:* https://localhost:* ws: wss: https:${hostEntries}`,
+  ].join("; ");
+}
+
+/**
+ * Default CSP for localhost-only panels (backwards compatible).
+ */
+export const PANEL_CSP = buildPanelCsp();
 
 /**
  * CSP meta tag for HTML injection.

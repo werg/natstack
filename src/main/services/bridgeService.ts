@@ -1,22 +1,16 @@
 import { dialog } from "electron";
-import { existsSync } from "fs";
-import { mkdir, writeFile } from "fs/promises";
-import { join, resolve } from "path";
-import { execSync } from "child_process";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { PanelLifecycle } from "../../shared/panelLifecycle.js";
+import type { PanelOrchestrator } from "../panelOrchestrator.js";
 import type { CdpServer } from "../cdpServer.js";
 import type { ViewManager } from "../viewManager.js";
-import type { Workspace } from "../../shared/workspace/types.js";
 import type { ServerInfo } from "../serverInfo.js";
 import { handleCommonBridgeMethod } from "../../shared/bridgeHandlersCommon.js";
 import { BRIDGE_METHOD_SCHEMAS } from "../../shared/bridgeMethodSchemas.js";
 
 export function createBridgeService(deps: {
-  panelLifecycle: PanelLifecycle;
+  panelOrchestrator: PanelOrchestrator;
   cdpServer: CdpServer;
   getViewManager: () => ViewManager;
-  workspace: Workspace | null;
   serverInfo: ServerInfo;
 }): ServiceDefinition {
   return {
@@ -25,7 +19,7 @@ export function createBridgeService(deps: {
     policy: { allowed: ["panel", "shell", "server"] },
     methods: BRIDGE_METHOD_SCHEMAS,
     handler: async (ctx, method, args) => {
-      const lifecycle = deps.panelLifecycle;
+      const lifecycle = deps.panelOrchestrator;
       const callerId = ctx.callerId;
 
       // Try common handlers first (shared with headless mode)
@@ -45,20 +39,8 @@ export function createBridgeService(deps: {
 
         case "createRepo": {
           const [repoPath] = args as [string];
-          if (!repoPath?.trim()) throw new Error("Repo path is required");
-          const workspace = deps.workspace;
-          if (!workspace) throw new Error("No active workspace");
-          const absolutePath = resolve(workspace.path, repoPath);
-          if (!absolutePath.startsWith(workspace.path + "/") && absolutePath !== workspace.path) {
-            throw new Error(`Invalid repo path: escapes workspace root`);
-          }
-          if (existsSync(absolutePath)) throw new Error(`Path already exists: ${repoPath}`);
-          await mkdir(absolutePath, { recursive: true });
-          execSync("git init", { cwd: absolutePath, stdio: "pipe" });
-          const repoName = repoPath.split("/").pop() ?? "project";
-          await writeFile(join(absolutePath, "README.md"), `# ${repoName}\n\nA new NatStack project.\n`, "utf-8");
-          execSync("git add README.md", { cwd: absolutePath, stdio: "pipe" });
-          execSync('git commit -m "Initial commit"', { cwd: absolutePath, stdio: "pipe" });
+          // Delegate to server git service
+          await deps.panelOrchestrator.serverClient.call("git", "createRepo", [repoPath]);
           return;
         }
 

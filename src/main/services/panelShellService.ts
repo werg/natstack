@@ -1,21 +1,21 @@
 import { z } from "zod";
 import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { PanelLifecycle } from "../../shared/panelLifecycle.js";
+import type { PanelOrchestrator } from "../panelOrchestrator.js";
 import type { PanelRegistry } from "../../shared/panelRegistry.js";
 import type { PanelView } from "../panelView.js";
 import type { ViewManager } from "../viewManager.js";
 import type { ThemeAppearance } from "../../shared/types.js";
-import { getPanelPersistence } from "../../shared/db/panelPersistence.js";
-import { getPanelSearchIndex } from "../../shared/db/panelSearchIndex.js";
+import type { ServerClient } from "../serverClient.js";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("PanelShellService");
 
 export function createPanelShellService(deps: {
-  panelLifecycle: PanelLifecycle;
+  panelOrchestrator: PanelOrchestrator;
   panelRegistry: PanelRegistry;
   panelView: PanelView;
   getViewManager: () => ViewManager;
+  serverClient?: ServerClient;
 }): ServiceDefinition {
   return {
     name: "panel",
@@ -41,7 +41,7 @@ export function createPanelShellService(deps: {
       expandIds: { args: z.tuple([z.array(z.string())]) },
     },
     handler: async (_ctx, method, args) => {
-      const lifecycle = deps.panelLifecycle;
+      const lifecycle = deps.panelOrchestrator;
       const registry = deps.panelRegistry;
       const pv = deps.panelView;
       const vm = deps.getViewManager();
@@ -59,9 +59,8 @@ export function createPanelShellService(deps: {
 
           try {
             registry.updateSelectedPath(panelId);
-            const persistence = getPanelPersistence();
-            persistence.updateSelectedPath(panelId);
-            getPanelSearchIndex().incrementAccessCount(panelId);
+            // Persist to server (fire-and-forget)
+            void lifecycle.focusPanel(panelId);
             registry.notifyPanelTreeUpdate();
             vm.refreshVisiblePanel();
             void lifecycle.rebuildUnloadedPanel(panelId).catch((err: unknown) => console.warn(`[Panel] Rebuild failed for ${panelId}:`, err));
@@ -150,6 +149,8 @@ export function createPanelShellService(deps: {
             targetPosition: number;
           };
           registry.movePanel(panelId, newParentId, targetPosition);
+          // Persist to server (fire-and-forget)
+          void deps.serverClient?.call("panel", "movePanel", [panelId, newParentId, targetPosition]).catch(() => {});
           return;
         }
 
@@ -168,17 +169,20 @@ export function createPanelShellService(deps: {
         }
 
         case "getCollapsedIds":
-          return registry.getCollapsedIds();
+          // Fetch from server persistence
+          return deps.serverClient?.call("panel", "getCollapsedIds", []) ?? [];
 
         case "setCollapsed": {
           const [panelId, collapsed] = args as [string, boolean];
-          registry.setCollapsed(panelId, collapsed);
+          // Persist to server
+          void deps.serverClient?.call("panel", "setCollapsed", [panelId, collapsed]).catch(() => {});
           return;
         }
 
         case "expandIds": {
           const [panelIds] = args as [string[]];
-          registry.expandIds(panelIds);
+          // Persist to server
+          void deps.serverClient?.call("panel", "setCollapsedBatch", [panelIds, false]).catch(() => {});
           return;
         }
 

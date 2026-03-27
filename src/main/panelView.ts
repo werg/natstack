@@ -3,7 +3,7 @@
  *
  * Manages WebContentsView lifecycle: creating views, tracking browser state,
  * intercepting navigation, and handling crashes. Implements PanelViewLike so
- * PanelLifecycle can drive view creation without Electron imports.
+ * PanelOrchestrator can drive view creation without Electron imports.
  */
 
 import { randomBytes } from "crypto";
@@ -11,40 +11,17 @@ import { createDevLogger } from "@natstack/dev-log";
 import type { ViewManager } from "./viewManager.js";
 import type { PanelRegistry } from "../shared/panelRegistry.js";
 import type { TokenManager } from "../shared/tokenManager.js";
-import type { PanelViewLike, PanelHttpServerLike, ServerInfoLike } from "../shared/panelLifecycle.js";
+import type { PanelViewLike, PanelHttpServerLike, ServerInfoLike } from "../shared/panelInterfaces.js";
 import { BROWSER_SESSION_PARTITION } from "../shared/panelInterfaces.js";
-import { getCurrentSnapshot, getPanelSource, getPanelContextId, loadPanelManifest } from "../shared/panelTypes.js";
+import { getCurrentSnapshot, getPanelSource, getPanelContextId } from "../shared/panelTypes.js";
 import { contextIdToSubdomain } from "../shared/panelIdUtils.js";
-import type { Panel, PanelSnapshot } from "../shared/types.js";
+import type { Panel } from "../shared/types.js";
 import { logMemorySnapshot } from "./memoryMonitor.js";
-import { getPanelPersistence } from "../shared/db/panelPersistence.js";
-import { getPanelSearchIndex } from "../shared/db/panelSearchIndex.js";
-import * as path from "path";
+// Persistence removed — server panel service handles all persistence
 
 const log = createDevLogger("PanelView");
 
-/**
- * Re-derive manifest-backed snapshot fields (currently only autoArchiveWhenEmpty)
- * from the new source's manifest. Called when a panel navigates to a different source.
- */
-export function syncSnapshotFromManifest(
-  snapshot: PanelSnapshot,
-  newSource: string,
-  sourceRoot: string,
-): void {
-  let autoArchive: boolean | undefined;
-  try {
-    const manifest = loadPanelManifest(path.join(sourceRoot, newSource));
-    autoArchive = manifest.autoArchiveWhenEmpty;
-  } catch {
-    // Manifest not loadable (e.g., browser panel) — clear the flag
-  }
-  if (autoArchive) {
-    snapshot.autoArchiveWhenEmpty = true;
-  } else {
-    delete snapshot.autoArchiveWhenEmpty;
-  }
-}
+// syncSnapshotFromManifest moved server-side (panelService.updateContext handles autoArchiveWhenEmpty)
 
 // Narrow interfaces for dependencies
 interface CdpServerLike {
@@ -53,7 +30,7 @@ interface CdpServerLike {
   revokeTokenForPanel(panelId: string): void;
 }
 
-interface PanelLifecycleLike {
+interface PanelOrchestratorLike {
   createPanel(
     callerId: string, source: string,
     options?: { name?: string; contextId?: string; focus?: boolean; env?: Record<string, string> },
@@ -64,6 +41,8 @@ interface PanelLifecycleLike {
     options?: { name?: string; focus?: boolean },
   ): Promise<{ id: string; title: string }>;
   updatePanelContext(panelId: string, contextId: string): void;
+  /** Server RPC client for direct panel service calls (title, context, etc.) */
+  serverClient?: { call(service: string, method: string, args: unknown[]): Promise<unknown> };
 }
 
 interface AutofillManagerLike {
@@ -87,8 +66,8 @@ export class PanelView implements PanelViewLike {
   private readonly rpcPort: number | null;
   private readonly serverInfo: ServerInfoLike;
   private readonly cdpServer: CdpServerLike;
-  private readonly panelLifecycle: PanelLifecycleLike;
-  private readonly sourceRoot: string;
+  private readonly panelOrchestrator: PanelOrchestratorLike;
+  private readonly externalHost: string;
   private sendToClient?: (callerId: string, msg: unknown) => void;
   private autofillManager?: AutofillManagerLike;
   private autofillPreloadPath?: string;
@@ -109,8 +88,7 @@ export class PanelView implements PanelViewLike {
     rpcPort: number | null;
     serverInfo: ServerInfoLike;
     cdpServer: CdpServerLike;
-    panelLifecycle: PanelLifecycleLike;
-    sourceRoot: string;
+    panelOrchestrator: PanelOrchestratorLike;
     sendToClient?: (callerId: string, msg: unknown) => void;
     autofillManager?: AutofillManagerLike;
     autofillPreloadPath?: string;
@@ -123,8 +101,8 @@ export class PanelView implements PanelViewLike {
     this.rpcPort = deps.rpcPort;
     this.serverInfo = deps.serverInfo;
     this.cdpServer = deps.cdpServer;
-    this.panelLifecycle = deps.panelLifecycle;
-    this.sourceRoot = deps.sourceRoot;
+    this.panelOrchestrator = deps.panelOrchestrator;
+    this.externalHost = deps.serverInfo.externalHost ?? "localhost";
     this.sendToClient = deps.sendToClient;
     this.autofillManager = deps.autofillManager;
     this.autofillPreloadPath = deps.autofillPreloadPath;
@@ -274,10 +252,10 @@ export class PanelView implements PanelViewLike {
     const subdomain = contextIdToSubdomain(ctxId);
     const source = getPanelSource(panel);
     const rpcToken = this.tokenManager.ensureToken(panelId, "panel");
-    const origin = `http://${subdomain}.localhost:${this.panelHttpPort}`;
+    const origin = `http://${subdomain}.${this.externalHost}:${this.panelHttpPort}`;
     const bk = randomBytes(8).toString("hex");
 
-    const sid = this.panelHttpServer!.ensureSubdomainSession(subdomain);
+    const sid = await this.panelHttpServer!.ensureSubdomainSession(subdomain);
     const { session: electronSession } = await import("electron");
     await electronSession.defaultSession.cookies.set({
       url: `${origin}/`, name: "_ns_session", value: sid,
@@ -285,13 +263,13 @@ export class PanelView implements PanelViewLike {
     });
     await electronSession.defaultSession.cookies.set({
       url: `${origin}/`, name: `_ns_boot_${bk}`,
-      value: encodeURIComponent(JSON.stringify({ pid: panelId, rpcPort: this.rpcPort!, rpcToken })),
+      value: encodeURIComponent(JSON.stringify({ pid: panelId, rpcPort: this.rpcPort!, rpcToken, rpcHost: "127.0.0.1" })),
       path: "/", httpOnly: false, sameSite: "strict",
       expirationDate: Math.floor(Date.now() / 1000) + 60,
     });
 
     const serverRpcToken = await this.serverInfo.ensurePanelToken(panelId, "panel");
-    return `${origin}/${source}/?pid=${encodeURIComponent(panelId)}&_bk=${bk}&rpcPort=${this.rpcPort!}&rpcToken=${encodeURIComponent(rpcToken)}&serverRpcPort=${this.serverInfo.rpcPort}&serverRpcToken=${encodeURIComponent(serverRpcToken)}`;
+    return `${origin}/${source}/?pid=${encodeURIComponent(panelId)}&_bk=${bk}&rpcPort=${this.rpcPort!}&rpcToken=${encodeURIComponent(rpcToken)}&serverRpcPort=${this.serverInfo.rpcPort}&serverRpcToken=${encodeURIComponent(serverRpcToken)}&rpcHost=127.0.0.1`;
   }
 
   // ==== Browser state tracking ==============================================
@@ -326,8 +304,8 @@ export class PanelView implements PanelViewLike {
           const panel = this.panelRegistry.getPanel(panelId);
           if (panel && pathSource && getPanelSource(panel) !== pathSource) {
             panel.snapshot.source = pathSource;
-            this.syncSnapshotWithSource(panel, pathSource);
-            this.panelRegistry.persistPanel(panel, this.panelRegistry.findParentId(panelId));
+            // Persist source change to server (handles autoArchiveWhenEmpty sync)
+            void this.panelOrchestrator.serverClient?.call("panel", "updateContext", [panelId, { source: pathSource }]).catch(() => {});
           }
         } catch { /* non-URL navigation */ }
       },
@@ -408,9 +386,8 @@ export class PanelView implements PanelViewLike {
 
     if (state.pageTitle !== undefined) {
       panel.title = state.pageTitle;
-      try { getPanelPersistence().setTitle(panelId, state.pageTitle); }
-      catch (error) { console.error(`[PanelView] Failed to persist title for ${panelId}:`, error); }
-      try { getPanelSearchIndex().updateTitle(panelId, state.pageTitle); } catch (e) { console.warn(`[PanelView] Search index update failed for ${panelId}:`, e); }
+      // Persist title to server (fire-and-forget)
+      void this.panelOrchestrator.serverClient?.call("panel", "updateTitle", [panelId, state.pageTitle]).catch(() => {});
     }
     this.panelRegistry.notifyPanelTreeUpdate();
   }
@@ -422,12 +399,12 @@ export class PanelView implements PanelViewLike {
       const url = details.url;
       const parsed = this.parseLocalhostUrl(url);
       if (parsed) {
-        void this.panelLifecycle.createPanel(panelId, parsed.source, parsed.options, parsed.stateArgs)
+        void this.panelOrchestrator.createPanel(panelId, parsed.source, parsed.options, parsed.stateArgs)
           .catch((err: unknown) => this.handleChildCreationError(panelId, err, url));
         return { action: "deny" as const };
       }
       if (/^https?:\/\//i.test(url)) {
-        void this.panelLifecycle.createBrowserPanel(panelId, url, { focus: true })
+        void this.panelOrchestrator.createBrowserPanel(panelId, url, { focus: true })
           .then(({ id }) => {
             this.sendToClient?.(panelId, {
               type: "ws:event", event: "panel:event",
@@ -441,10 +418,10 @@ export class PanelView implements PanelViewLike {
     });
 
     const willNavigateHandler = (event: Electron.Event, url: string) => {
-      if (!url.includes(".localhost:") && !url.includes("//localhost:")) {
+      if (!url.includes(`.${this.externalHost}:`) && !url.includes(`//${this.externalHost}:`)) {
         if (/^https?:\/\//i.test(url)) {
           event.preventDefault();
-          void this.panelLifecycle.createBrowserPanel(panelId, url, { focus: true })
+          void this.panelOrchestrator.createBrowserPanel(panelId, url, { focus: true })
             .then(({ id }) => {
               this.sendToClient?.(panelId, {
                 type: "ws:event", event: "panel:event",
@@ -508,13 +485,6 @@ export class PanelView implements PanelViewLike {
     }
   }
 
-  /**
-   * Sync manifest-derived snapshot fields after a source change.
-   */
-  private syncSnapshotWithSource(panel: Panel, newSource: string): void {
-    syncSnapshotFromManifest(panel.snapshot, newSource, this.sourceRoot);
-  }
-
   private handleChildCreationError(parentId: string, error: unknown, url: string): void {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[PanelView] Failed to create child from ${url}:`, error);
@@ -554,10 +524,10 @@ export class PanelView implements PanelViewLike {
 
     try {
       const rpcToken = this.tokenManager.ensureToken(panelId, "panel");
-      const origin = `http://${targetSubdomain}.localhost:${this.panelHttpPort}`;
+      const origin = `http://${targetSubdomain}.${this.externalHost}:${this.panelHttpPort}`;
       const bk = randomBytes(8).toString("hex");
 
-      const sid = this.panelHttpServer.ensureSubdomainSession(targetSubdomain);
+      const sid = await this.panelHttpServer.ensureSubdomainSession(targetSubdomain);
       const { session: electronSession } = await import("electron");
       await electronSession.defaultSession.cookies.set({
         url: `${origin}/`, name: "_ns_session", value: sid,
@@ -565,25 +535,30 @@ export class PanelView implements PanelViewLike {
       });
       await electronSession.defaultSession.cookies.set({
         url: `${origin}/`, name: `_ns_boot_${bk}`,
-        value: encodeURIComponent(JSON.stringify({ pid: panelId, rpcPort: this.rpcPort!, rpcToken })),
+        value: encodeURIComponent(JSON.stringify({ pid: panelId, rpcPort: this.rpcPort!, rpcToken, rpcHost: "127.0.0.1" })),
         path: "/", httpOnly: false, sameSite: "strict",
         expirationDate: Math.floor(Date.now() / 1000) + 60,
       });
 
       const serverRpcToken = await this.serverInfo.ensurePanelToken(panelId, "panel");
-      const authUrl = `${origin}/${source}/?pid=${encodeURIComponent(panelId)}&_bk=${bk}&rpcPort=${this.rpcPort!}&rpcToken=${encodeURIComponent(rpcToken)}&serverRpcPort=${this.serverInfo.rpcPort}&serverRpcToken=${encodeURIComponent(serverRpcToken)}`;
+      const authUrl = `${origin}/${source}/?pid=${encodeURIComponent(panelId)}&_bk=${bk}&rpcPort=${this.rpcPort!}&rpcToken=${encodeURIComponent(rpcToken)}&serverRpcPort=${this.serverInfo.rpcPort}&serverRpcToken=${encodeURIComponent(serverRpcToken)}&rpcHost=127.0.0.1`;
 
       panel.snapshot.contextId = newContextId;
       panel.snapshot.source = source;
-      this.syncSnapshotWithSource(panel, source);
+      // autoArchiveWhenEmpty sync handled server-side in updateContext
       if (stateArgs !== undefined) panel.snapshot.stateArgs = stateArgs;
 
       // Update fsService mapping so RPC-backed fs calls route to the new context
-      this.panelLifecycle.updatePanelContext(panelId, newContextId);
+      this.panelOrchestrator.updatePanelContext(panelId, newContextId);
 
       await this.viewManager.navigateView(panelId, authUrl);
 
-      this.panelRegistry.persistPanel(panel, this.panelRegistry.findParentId(panelId));
+      // Persist context change to server (fire-and-forget)
+      void this.panelOrchestrator.serverClient?.call("panel", "updateContext", [panelId, {
+        contextId: newContextId,
+        source: panel.snapshot.source,
+        stateArgs: panel.snapshot.stateArgs,
+      }]).catch(() => {});
       this.panelRegistry.notifyPanelTreeUpdate();
     } catch (err) {
       panel.snapshot.contextId = oldContextId;
@@ -595,7 +570,7 @@ export class PanelView implements PanelViewLike {
         delete panel.snapshot.autoArchiveWhenEmpty;
       }
       // Restore old fs context mapping on failure
-      if (oldContextId) this.panelLifecycle.updatePanelContext(panelId, oldContextId);
+      if (oldContextId) this.panelOrchestrator.updatePanelContext(panelId, oldContextId);
       throw err;
     }
   }

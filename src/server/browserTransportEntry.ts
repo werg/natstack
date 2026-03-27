@@ -27,8 +27,10 @@ const rpcPort: number = globalThis.__natstackRpcPort;
 const authToken: string = globalThis.__natstackRpcToken;
 
 // Derive WebSocket URL from page context (supports both ws:// and wss://)
+// __natstackRpcHost is set by Electron to point to the local RPC server;
+// standalone/remote panels use location.hostname (the server host).
 const wsScheme = location.protocol === "https:" ? "wss" : "ws";
-const wsHost = location.hostname || "127.0.0.1";
+const wsHost: string = globalThis.__natstackRpcHost || location.hostname || "127.0.0.1";
 const wsUrl = `${wsScheme}://${wsHost}:${rpcPort}`;
 
 globalThis.__natstackTransport = createWsTransport({
@@ -50,7 +52,11 @@ const serverRpcPort: number | undefined = globalThis.__natstackServerRpcPort;
 const serverAuthToken: string | undefined = globalThis.__natstackServerRpcToken;
 
 if (serverRpcPort && serverAuthToken) {
-  const serverWsUrl = `${wsScheme}://${wsHost}:${serverRpcPort}`;
+  // Server transport always connects to the panel's origin host (location.hostname),
+  // NOT __natstackRpcHost. In remote mode, the server is on the remote host;
+  // __natstackRpcHost points to Electron's local machine for shell services only.
+  const serverHost = location.hostname || "127.0.0.1";
+  const serverWsUrl = `${wsScheme}://${serverHost}:${serverRpcPort}`;
   globalThis.__natstackServerTransport = createWsTransport({
     viewId,
     wsPort: serverRpcPort,

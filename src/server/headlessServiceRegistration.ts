@@ -36,6 +36,7 @@ export interface ServicePorts {
   panelPort: number | null;
   gitPort: number;
   adminToken: string;
+  gatewayPort?: number;
 }
 
 /**
@@ -72,6 +73,8 @@ function writeConnectionJson(configDir: string, ports: ServicePorts): void {
     gitPort: ports.gitPort,
     adminToken: ports.adminToken,
     serverUrl,
+    gatewayPort: ports.gatewayPort ?? null,
+    gatewayUrl: ports.gatewayPort ? `http://127.0.0.1:${ports.gatewayPort}` : null,
   };
 
   const filePath = path.join(configDir, "connection.json");

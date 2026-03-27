@@ -36,7 +36,6 @@ function makeEventService(): EventService {
 
 function makeRegistry(eventService?: EventService) {
   return new PanelRegistry({
-    workspace: null,
     eventService: eventService ?? makeEventService(),
   });
 }
@@ -345,101 +344,7 @@ describe("PanelRegistry", () => {
   // Headless paginated queries (in-memory)
   // -------------------------------------------------------------------------
 
-  // -------------------------------------------------------------------------
-  // cleanupChildlessAutoArchivePanels (via loadTree / runShutdownCleanup)
-  // -------------------------------------------------------------------------
-
-  describe("cleanupChildlessAutoArchivePanels", () => {
-    function makeMockPersistence(panels: Panel[]) {
-      const archived = new Set<string>();
-      return {
-        getFullTree: () => panels.filter((p) => !archived.has(p.id)),
-        isArchived: (id: string) => archived.has(id),
-        archivePanel: (id: string) => { archived.add(id); },
-        archived, // exposed for assertions
-      };
-    }
-
-    it("archives a root panel with autoArchiveWhenEmpty and no children", async () => {
-      const launcher = makePanel("launcher", {
-        snapshot: { source: "about/new", contextId: "ctx-1", options: {}, autoArchiveWhenEmpty: true },
-      });
-      const persistence = makeMockPersistence([launcher]);
-      const reg = new PanelRegistry({
-        workspace: null,
-        eventService: makeEventService(),
-        persistence: persistence as any,
-      });
-
-      await reg.loadTree();
-
-      expect(persistence.archived.has("launcher")).toBe(true);
-      expect(reg.getRootPanels()).toEqual([]);
-    });
-
-    it("does NOT archive a panel without autoArchiveWhenEmpty", async () => {
-      const chat = makePanel("chat", {
-        snapshot: { source: "panels/chat", contextId: "ctx-1", options: {} },
-      });
-      const persistence = makeMockPersistence([chat]);
-      const reg = new PanelRegistry({
-        workspace: null,
-        eventService: makeEventService(),
-        persistence: persistence as any,
-      });
-
-      await reg.loadTree();
-
-      expect(persistence.archived.has("chat")).toBe(false);
-      expect(reg.getRootPanels().length).toBe(1);
-    });
-
-    it("does NOT archive autoArchiveWhenEmpty panel that has children", async () => {
-      const child = makePanel("child");
-      const shell = makePanel("shell", {
-        snapshot: { source: "about/new", contextId: "ctx-1", options: {}, autoArchiveWhenEmpty: true },
-        children: [child],
-      });
-      const persistence = makeMockPersistence([shell]);
-      const reg = new PanelRegistry({
-        workspace: null,
-        eventService: makeEventService(),
-        persistence: persistence as any,
-      });
-
-      await reg.loadTree();
-
-      expect(persistence.archived.has("shell")).toBe(false);
-      expect(reg.getRootPanels().length).toBe(1);
-      expect(reg.getPanel("child")).toBeDefined();
-    });
-
-    it("archives navigated panel that still carries stale autoArchiveWhenEmpty (the bug)", async () => {
-      // Simulates the bug: about/new navigated to panels/chat but autoArchiveWhenEmpty persisted
-      const stalePanel = makePanel("nav-chat", {
-        snapshot: {
-          source: "panels/chat",
-          contextId: "ctx-1",
-          options: {},
-          autoArchiveWhenEmpty: true, // stale flag from about/new
-        },
-      });
-      const persistence = makeMockPersistence([stalePanel]);
-      const reg = new PanelRegistry({
-        workspace: null,
-        eventService: makeEventService(),
-        persistence: persistence as any,
-      });
-
-      await reg.loadTree();
-
-      // This IS the bug: the panel gets incorrectly archived
-      // The fix is in PanelView (clearing the flag on navigation), not here.
-      // This test documents the cleanup behavior.
-      expect(persistence.archived.has("nav-chat")).toBe(true);
-      expect(reg.getRootPanels()).toEqual([]);
-    });
-  });
+  // cleanupChildlessAutoArchivePanels tests removed — cleanup logic now in server panel service
 
   // -------------------------------------------------------------------------
   // Headless paginated queries (in-memory)

@@ -369,7 +369,7 @@ async function main() {
     });
   }
   container.register(rpcService(createTokensService({ tokenManager }), ["tokenManager"]));
-  container.register(rpcService(createGitService({ gitServer, tokenManager }), ["gitServer"]));
+  container.register(rpcService(createGitService({ gitServer, tokenManager, workspacePath }), ["gitServer"]));
   container.register(rpcService(createTestService({ contextFolderManager, workspacePath, panelTestSetupPath })));
   container.register(rpcService(createDbService({ databaseManager }), ["databaseManager"]));
   container.register(rpcService(createTypecheckService({ contextFolderManager })));
@@ -697,190 +697,349 @@ async function main() {
   }
 
   // ===========================================================================
+  // Panel service (always registered — server is the sole persistence writer)
+  // ===========================================================================
+
+  {
+    const { createPanelService } = await import("./services/panelService.js");
+    const { getPanelPersistence } = await import("../shared/db/panelPersistence.js");
+    const { getPanelSearchIndex } = await import("../shared/db/panelSearchIndex.js");
+
+    container.register({
+      name: "panelService",
+      dependencies: ["fsService", "rpcServer"],
+      async start(resolve) {
+        const fsServiceInst = resolve<import("../shared/fsService.js").FsService>("fsService")!;
+        const { port: rpcPortVal } = resolve<{ port: number }>("rpcServer")!;
+        const persistence = getPanelPersistence(workspace);
+        const searchIndex = getPanelSearchIndex();
+        const wkrdPort = resolve<import("./workerdManager.js").WorkerdManager>("workerdManager")?.getPort() ?? 0;
+
+        return {
+          persistence,
+          searchIndex,
+          definition: createPanelService({
+            persistence,
+            searchIndex,
+            tokenManager,
+            fsService: fsServiceInst,
+            gitServer,
+            workspacePath,
+            rpcPort: rpcPortVal,
+            workerdPort: wkrdPort,
+          }),
+        };
+      },
+      getServiceDefinition() {
+        const inst = container.get<{ definition: import("../shared/serviceDefinition.js").ServiceDefinition }>("panelService");
+        return inst?.definition;
+      },
+    });
+  }
+
+  // ===========================================================================
+  // WorkspaceInfo service (always registered)
+  // ===========================================================================
+
+  {
+    const { createWorkspaceInfoService } = await import("./services/workspaceInfoService.js");
+    const { createWorkspaceConfigManager } = await import("../shared/workspace/loader.js");
+    const wsConfigPath = path.join(workspacePath, "natstack.yml");
+    const wsConfigManager = createWorkspaceConfigManager(wsConfigPath, workspaceConfig);
+
+    container.register(rpcService(createWorkspaceInfoService({
+      workspace,
+      getConfig: wsConfigManager.get,
+      setConfigField: wsConfigManager.set as (key: string, value: unknown) => void,
+    })));
+  }
+
+  // ===========================================================================
+  // PanelHttpServer (always registered — serves panel assets)
+  // ===========================================================================
+
+  {
+    const { PanelHttpServer } = await import("./panelHttpServer.js");
+    container.register({
+      name: "panelHttpServer",
+      async start() {
+        const server = new PanelHttpServer("127.0.0.1", adminToken);
+        let envPanelPort: number | undefined;
+        if (process.env["NATSTACK_PANEL_PORT"]) {
+          envPanelPort = parseInt(process.env["NATSTACK_PANEL_PORT"], 10);
+          if (isNaN(envPanelPort)) {
+            console.warn("[Server] NATSTACK_PANEL_PORT is not a valid number, ignoring");
+            envPanelPort = undefined;
+          }
+        }
+        const port = await server.start(args.panelPort ?? envPanelPort ?? 0);
+        return { server, port };
+      },
+      async stop(instance: { server: import("./panelHttpServer.js").PanelHttpServer; port: number }) {
+        await instance?.server?.stop();
+      },
+    });
+
+    // PanelHttp RPC service — wraps PanelHttpServer for RPC access
+    const { createPanelHttpService } = await import("./services/panelHttpService.js");
+    container.register({
+      name: "panelHttpRpc",
+      dependencies: ["panelHttpServer"],
+      async start() {},
+      getServiceDefinition() {
+        const httpResult = container.get<{ server: import("./panelHttpServer.js").PanelHttpServer }>("panelHttpServer");
+        return createPanelHttpService({ panelHttpServer: httpResult.server });
+      },
+    });
+
+    // Wire PanelHttpServer callbacks (universal — works in both IPC and standalone modes)
+    container.register({
+      name: "panelHttpWiring",
+      dependencies: ["panelHttpServer", "buildSystem", "rpcServer", "panelService"],
+      async start(resolve) {
+        const { server: panelHttpServer } = resolve<{ server: import("./panelHttpServer.js").PanelHttpServer }>("panelHttpServer")!;
+        const buildSystem = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
+        const { server: rpcServer, port: rpcPortVal } = resolve<{ server: import("./rpcServer.js").RpcServer; port: number }>("rpcServer")!;
+
+        // Populate source registry from build graph
+        const graph = buildSystem.getGraph();
+        const panelNodes = graph.allNodes().filter((n) => n.kind === "panel");
+        const sanitize = (s: string) =>
+          s.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+        const rawEntries = panelNodes.map((n) => ({
+          subdomain: sanitize(n.relativePath.split("/").pop() ?? n.relativePath) || "panel",
+          source: n.relativePath,
+          name: n.manifest.title ?? n.name,
+        }));
+        const counts = new Map<string, number>();
+        for (const e of rawEntries) counts.set(e.subdomain, (counts.get(e.subdomain) ?? 0) + 1);
+        for (const e of rawEntries) {
+          if ((counts.get(e.subdomain) ?? 0) > 1) e.subdomain = sanitize(e.source);
+        }
+        const assigned = new Set<string>();
+        for (const e of rawEntries) {
+          let candidate = e.subdomain.slice(0, 63).replace(/-$/, "");
+          let suffix = 1;
+          while (assigned.has(candidate)) {
+            const tag = `-${suffix}`;
+            candidate = e.subdomain.slice(0, 63 - tag.length).replace(/-$/, "") + tag;
+            suffix++;
+          }
+          e.subdomain = candidate;
+          assigned.add(candidate);
+        }
+        panelHttpServer.populateSourceRegistry(rawEntries);
+
+        // On-demand create coalescing map
+        const onDemandInFlight = new Map<string, Promise<any>>();
+
+        panelHttpServer.setCallbacks({
+          onDemandCreate: async (source, subdomain) => {
+            // Coalesce concurrent requests
+            const inflight = onDemandInFlight.get(subdomain);
+            if (inflight) return inflight;
+
+            const promise = (async () => {
+              // Delegate to the panel service — one creation path for all panels
+              const serverCtx = { callerId: "server:panelHttp", callerKind: "server" as const };
+              const result = await dispatcher.dispatch(
+                serverCtx, "panel", "create",
+                [source, { contextId: subdomain, isRoot: true, addAsRoot: true }],
+              ) as import("../shared/panelFactory.js").PanelCreateResult;
+
+              return {
+                panelId: result.panelId,
+                rpcPort: rpcPortVal,
+                rpcToken: result.rpcToken,
+                serverRpcPort: rpcPortVal,
+                serverRpcToken: result.rpcToken,
+              };
+            })();
+
+            onDemandInFlight.set(subdomain, promise);
+            try { return await promise; }
+            finally { onDemandInFlight.delete(subdomain); }
+          },
+          listPanels: () => [], // Standalone overrides this; IPC mode panels tracked on Electron side
+          getBuild: (source, ref) => buildSystem.getBuild(source, ref),
+          onBuildComplete: (source, error) => {
+            // Broadcast build events to all RPC clients (Electron admin picks these up)
+            rpcServer.broadcastToAdmins({
+              type: "ws:event",
+              event: "build:complete",
+              payload: { source, error },
+            } as import("../shared/ws/protocol.js").WsServerMessage);
+          },
+        });
+
+        // Wire push trigger → invalidate build cache + broadcast
+        buildSystem.onPushBuild((source) => {
+          panelHttpServer.invalidateBuild(source);
+        });
+      },
+    });
+  }
+
+  // ===========================================================================
+  // FS RPC service (always registered — server owns filesystem access)
+  // ===========================================================================
+
+  {
+    const { handleFsCall } = await import("../shared/fsService.js");
+    let fsServiceInstance: import("../shared/fsService.js").FsService;
+    container.register({
+      name: "fsRpc",
+      dependencies: ["fsService"],
+      async start(resolve) {
+        fsServiceInstance = resolve<import("../shared/fsService.js").FsService>("fsService")!;
+      },
+      getServiceDefinition() {
+        const fsMethodSchema = { args: z.tuple([z.string()]).rest(z.unknown()) };
+        return {
+          name: "fs",
+          description: "Per-context filesystem operations (sandboxed to context folder)",
+          policy: { allowed: ["panel", "server", "worker"] },
+          methods: {
+            readFile: fsMethodSchema, writeFile: fsMethodSchema,
+            readdir: fsMethodSchema, mkdir: fsMethodSchema,
+            stat: fsMethodSchema, open: fsMethodSchema,
+            close: fsMethodSchema, read: fsMethodSchema, write: fsMethodSchema,
+          },
+          handler: async (ctx, method, serviceArgs) => {
+            return handleFsCall(fsServiceInstance, ctx, method, serviceArgs as unknown[]);
+          },
+        };
+      },
+    });
+  }
+
+  // ===========================================================================
   // Standalone-mode services (conditionally registered)
   // ===========================================================================
 
   if (!ipcChannel) {
-    const { handleHeadlessBridgeCall } = await import("./headlessBridge.js");
+    const { handleStandaloneBridgeCall, createStandalonePanelManager } = await import("./standaloneBridge.js");
 
-    // PanelHttpServer (optional — only when --serve-panels)
-    if (args.servePanels) {
-      const { PanelHttpServer } = await import("./panelHttpServer.js");
-      container.register({
-        name: "panelHttpServer",
-        async start() {
-          const server = new PanelHttpServer("127.0.0.1", adminToken);
-          let envPanelPort: number | undefined;
-          if (process.env["NATSTACK_PANEL_PORT"]) {
-            envPanelPort = parseInt(process.env["NATSTACK_PANEL_PORT"], 10);
-            if (isNaN(envPanelPort)) {
-              console.warn("[Server] NATSTACK_PANEL_PORT is not a valid number, ignoring");
-              envPanelPort = undefined;
-            }
-          }
-          const port = await server.start(args.panelPort ?? envPanelPort ?? 0);
-          return { server, port };
-        },
-        async stop(instance: { server: import("./panelHttpServer.js").PanelHttpServer; port: number }) {
-          await instance?.server?.stop();
-        },
-      });
-    }
+    // Standalone session map (flat, no tree, no persistence)
+    const standaloneSessions = new Map<string, import("./standaloneBridge.js").StandaloneSession>();
 
-    // PanelRegistry (no persistence in headless mode)
-    const { PanelRegistry } = await import("../shared/panelRegistry.js");
-    container.register({
-      name: "panelRegistry",
-      async start() {
-        return new PanelRegistry({ workspace, eventService });
-      },
-    });
-
-    // PanelLifecycle
-    const { PanelLifecycle } = await import("../shared/panelLifecycle.js");
-    container.register({
-      name: "panelLifecycle",
-      dependencies: ["panelRegistry", "fsService", "rpcServer"],
-      optionalDependencies: ["panelHttpServer", "harnessManager"],
-      async start(resolve) {
-        const registry = resolve<import("../shared/panelRegistry.js").PanelRegistry>("panelRegistry")!;
-        const fsService = resolve<import("../shared/fsService.js").FsService>("fsService")!;
-        const { server: rpcServer, port: rpcPort } = resolve<{ server: import("./rpcServer.js").RpcServer; port: number }>("rpcServer")!;
-        const httpResult = resolve<{ server: import("./panelHttpServer.js").PanelHttpServer; port: number }>("panelHttpServer", true);
-
-        const lifecycle = new PanelLifecycle({
-          registry,
-          tokenManager,
-          fsService,
-          eventService,
-          panelsRoot: workspacePath,
-          serverInfo: {
-            rpcPort,
-            gitBaseUrl: `http://127.0.0.1:${gitServer.getPort()}`,
-            workerdPort: resolve<import("./workerdManager.js").WorkerdManager>("workerdManager")?.getPort() ?? 0,
-            createPanelToken: (panelId, kind) => tokenManager.createToken(panelId, kind as import("../shared/serviceDispatcher.js").CallerKind),
-            ensurePanelToken: (panelId, kind) => tokenManager.ensureToken(panelId, kind as import("../shared/serviceDispatcher.js").CallerKind),
-            revokePanelToken: (panelId) => { tokenManager.revokeToken(panelId); },
-            getPanelToken: (panelId) => { try { return tokenManager.getToken(panelId); } catch { return null; } },
-            getGitTokenForPanel: (panelId) => gitServer.getTokenForPanel(panelId),
-            revokeGitToken: (panelId) => { gitServer.revokeTokenForPanel(panelId); },
-          },
-          panelHttpServer: httpResult?.server as import("../shared/panelInterfaces.js").PanelHttpServerLike | null ?? null,
-          panelHttpPort: httpResult?.port,
-          sendToClient: (callerId, msg) => rpcServer.sendToClient(callerId, msg as import("../shared/ws/protocol.js").WsServerMessage),
-        });
-
-        // Wire disconnect handler: panelLifecycle (high-level) subscribes to
-        // rpcServer (low-level) events — dependency flows in the right direction.
-        const harnessManagerInst = resolve<import("./harnessManager.js").HarnessManager>("harnessManager", true);
-        rpcServer.setOnClientDisconnect((callerId, callerKind) => {
-          const handleKey = callerKind === "panel" || callerKind === "worker" ? callerId : `server:${callerId}`;
-          fsService.closeHandlesForCaller(handleKey);
-          if (callerKind === "panel") {
-            lifecycle.closePanel(callerId);
-          } else if (callerKind === "harness") {
-            harnessManagerInst?.notifyDisconnected(callerId);
-          }
-        });
-
-        return lifecycle;
-      },
-    });
-
-    // Bridge RPC service
+    // Bridge RPC service (standalone mode — uses session map, not PanelLifecycle)
     {
       const { BRIDGE_METHOD_SCHEMAS } = await import("../shared/bridgeMethodSchemas.js");
-      let bridgeDeps: Parameters<typeof handleHeadlessBridgeCall>[0];
+      let standalonePm: import("../shared/panelInterfaces.js").BridgePanelManager;
+      let bridgeDeps: import("./standaloneBridge.js").StandaloneBridgeDeps;
       container.register({
         name: "bridge",
-        dependencies: ["panelLifecycle"],
+        dependencies: ["fsService", "rpcServer"],
         optionalDependencies: ["panelServing"],
         async start(resolve) {
-          const lifecycle = resolve<import("../shared/panelLifecycle.js").PanelLifecycle>("panelLifecycle")!;
+          const fsServiceInst = resolve<import("../shared/fsService.js").FsService>("fsService")!;
+          const { port: rpcPortVal } = resolve<{ port: number }>("rpcServer")!;
           const panelServingResult = resolve<{ cdpBridge: import("./cdpBridge.js").CdpBridge }>("panelServing", true);
           const cdpBridge = panelServingResult?.cdpBridge ?? null;
-          bridgeDeps = { pm: lifecycle, gitServer, cdpBridge };
+          const wkrdPort = resolve<import("./workerdManager.js").WorkerdManager>("workerdManager")?.getPort() ?? 0;
+
+          bridgeDeps = {
+            sessions: standaloneSessions,
+            tokenManager,
+            fsService: fsServiceInst,
+            gitServer,
+            cdpBridge,
+            rpcPort: rpcPortVal,
+            workerdPort: wkrdPort,
+          };
+          standalonePm = createStandalonePanelManager(bridgeDeps);
         },
         getServiceDefinition() {
           return {
             name: "bridge",
-            description: "Panel lifecycle (headless mode)",
+            description: "Panel lifecycle (standalone mode)",
             policy: { allowed: ["panel", "shell", "server"] },
             methods: BRIDGE_METHOD_SCHEMAS,
             handler: async (ctx, method, serviceArgs) => {
-              return handleHeadlessBridgeCall(bridgeDeps, ctx.callerId, method, serviceArgs as unknown[]);
+              return handleStandaloneBridgeCall(bridgeDeps, standalonePm, ctx.callerId, method, serviceArgs as unknown[]);
             },
           };
         },
       });
     }
 
-    // On-demand panel wiring + CDP bridge + browser service (when --serve-panels)
+    // CDP bridge + browser service (when --serve-panels)
     if (args.servePanels) {
       let panelServingCdpBridge: import("./cdpBridge.js").CdpBridge;
       container.register({
         name: "panelServing",
-        dependencies: ["panelHttpServer", "panelLifecycle", "panelRegistry", "buildSystem"],
+        dependencies: ["panelHttpServer", "panelHttpWiring", "buildSystem", "rpcServer"],
         async start(resolve) {
           const { server: panelHttpServer, port: panelHttpPort } = resolve<{ server: import("./panelHttpServer.js").PanelHttpServer; port: number }>("panelHttpServer")!;
-          const lifecycle = resolve<import("../shared/panelLifecycle.js").PanelLifecycle>("panelLifecycle")!;
-          const registry = resolve<import("../shared/panelRegistry.js").PanelRegistry>("panelRegistry")!;
           const buildSystem = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
-          const { server: rpcServer, port: rpcPort } = resolve<{ server: import("./rpcServer.js").RpcServer; port: number }>("rpcServer")!;
+          const { server: rpcServer, port: rpcPortVal } = resolve<{ server: import("./rpcServer.js").RpcServer; port: number }>("rpcServer")!;
 
-          // Compute deterministic subdomains
-          const graph = buildSystem.getGraph();
-          const panelNodes = graph.allNodes().filter((n) => n.kind === "panel");
-          const sanitize = (s: string) =>
-            s.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
-          const rawEntries = panelNodes.map((n) => ({
-            subdomain: sanitize(n.relativePath.split("/").pop() ?? n.relativePath) || "panel",
-            source: n.relativePath,
-            name: n.manifest.title ?? n.name,
-          }));
-          const counts = new Map<string, number>();
-          for (const e of rawEntries) counts.set(e.subdomain, (counts.get(e.subdomain) ?? 0) + 1);
-          for (const e of rawEntries) {
-            if ((counts.get(e.subdomain) ?? 0) > 1) e.subdomain = sanitize(e.source);
-          }
-          const assigned = new Set<string>();
-          for (const e of rawEntries) {
-            let candidate = e.subdomain.slice(0, 63).replace(/-$/, "");
-            let suffix = 1;
-            while (assigned.has(candidate)) {
-              const tag = `-${suffix}`;
-              candidate = e.subdomain.slice(0, 63 - tag.length).replace(/-$/, "") + tag;
-              suffix++;
-            }
-            e.subdomain = candidate;
-            assigned.add(candidate);
-          }
-          panelHttpServer.populateSourceRegistry(rawEntries);
-
+          // Standalone override: use panel service for creation + track sessions for listing/auth
+          const standaloneOnDemandInFlight = new Map<string, Promise<any>>();
           panelHttpServer.setCallbacks({
             onDemandCreate: async (source, subdomain) => {
-              const panelId = await lifecycle.createPanelOnDemand(source, subdomain);
-              const rpcToken = tokenManager.ensureToken(panelId, "panel");
-              return { panelId, rpcPort, rpcToken, serverRpcPort: rpcPort, serverRpcToken: rpcToken };
+              // Check existing sessions
+              for (const session of standaloneSessions.values()) {
+                if (session.source === source && session.subdomain === subdomain) {
+                  const rpcToken = tokenManager.ensureToken(session.panelId, "panel");
+                  return { panelId: session.panelId, rpcPort: rpcPortVal, rpcToken, serverRpcPort: rpcPortVal, serverRpcToken: rpcToken };
+                }
+              }
+              const inflight = standaloneOnDemandInFlight.get(subdomain);
+              if (inflight) return inflight;
+              const promise = (async () => {
+                // Delegate to panel service — unified creation path
+                const serverCtx = { callerId: "server:panelHttp", callerKind: "server" as const };
+                const result = await dispatcher.dispatch(
+                  serverCtx, "panel", "create",
+                  [source, { contextId: subdomain, isRoot: true, addAsRoot: true }],
+                ) as import("../shared/panelFactory.js").PanelCreateResult;
+
+                // Track in standalone session map for CDP auth + listPanels
+                const { contextIdToSubdomain } = await import("../shared/panelIdUtils.js");
+                standaloneSessions.set(result.panelId, {
+                  panelId: result.panelId,
+                  source,
+                  subdomain: contextIdToSubdomain(subdomain),
+                  contextId: subdomain,
+                  stateArgs: {},
+                  parentId: null,
+                });
+
+                return {
+                  panelId: result.panelId,
+                  rpcPort: rpcPortVal,
+                  rpcToken: result.rpcToken,
+                  serverRpcPort: rpcPortVal,
+                  serverRpcToken: result.rpcToken,
+                };
+              })();
+              standaloneOnDemandInFlight.set(subdomain, promise);
+              try { return await promise; } finally { standaloneOnDemandInFlight.delete(subdomain); }
             },
-            listPanels: () => lifecycle.listPanels(),
+            listPanels: () => [...standaloneSessions.values()].map(s => ({
+              panelId: s.panelId, title: s.source, subdomain: s.subdomain,
+              source: s.source, parentId: s.parentId, contextId: s.contextId,
+            })),
             getBuild: (source, ref) => buildSystem.getBuild(source, ref),
           });
 
-          buildSystem.onPushBuild((source) => { panelHttpServer.invalidateBuild(source); });
-          console.log(`  On-demand panels: ${rawEntries.map((e) => e.subdomain).join(", ") || "(none)"}`);
-
-          // CDP bridge
+          // CDP bridge — uses session map for auth
           const { CdpBridge } = await import("./cdpBridge.js");
           const cdpBridge = new CdpBridge({
             tokenManager,
             adminToken,
-            canAccessBrowser: (requestingPanelId, browserId) =>
-              registry.isDescendantOf(browserId, requestingPanelId) ||
-              registry.isDescendantOf(requestingPanelId, browserId),
-            panelOwnsBrowser: (requestingPanelId, browserId) =>
-              registry.findParentId(browserId) === requestingPanelId,
-            isPanelKnown: (browserId) => registry.getPanel(browserId) != null,
+            canAccessBrowser: (requestingPanelId, browserId) => {
+              const browserSession = standaloneSessions.get(browserId);
+              return browserSession?.parentId === requestingPanelId ||
+                standaloneSessions.get(requestingPanelId)?.parentId === browserId;
+            },
+            panelOwnsBrowser: (requestingPanelId, browserId) => {
+              const browserSession = standaloneSessions.get(browserId);
+              return browserSession?.parentId === requestingPanelId;
+            },
+            isPanelKnown: (browserId) => standaloneSessions.has(browserId),
             port: panelHttpPort,
           });
           panelHttpServer.setCdpBridge(cdpBridge);
@@ -894,7 +1053,7 @@ async function main() {
         getServiceDefinition() {
           return {
             name: "browser",
-            description: "CDP/browser automation (headless mode)",
+            description: "CDP/browser automation (standalone mode)",
             policy: { allowed: ["shell", "panel", "server"] },
             methods: {
               getCdpEndpoint: { args: z.tuple([z.string()]) },
@@ -927,7 +1086,7 @@ async function main() {
         getServiceDefinition() {
           return {
             name: "browser",
-            description: "CDP/browser automation (headless mode - unavailable)",
+            description: "CDP/browser automation (standalone mode - unavailable)",
             policy: { allowed: ["shell", "panel", "server"] },
             methods: {},
             handler: async () => { throw new Error("browser service requires --serve-panels mode"); },
@@ -936,32 +1095,32 @@ async function main() {
       });
     }
 
-    // FS RPC service (standalone only — Electron main process provides its own fs service)
-    const { handleFsCall } = await import("../shared/fsService.js");
+    // Wire disconnect handler for standalone mode
     {
-      let fsServiceInstance: import("../shared/fsService.js").FsService;
       container.register({
-        name: "fsRpc",
-        dependencies: ["fsService"],
+        name: "standaloneDisconnect",
+        dependencies: ["rpcServer", "fsService"],
+        optionalDependencies: ["harnessManager"],
         async start(resolve) {
-          fsServiceInstance = resolve<import("../shared/fsService.js").FsService>("fsService")!;
-        },
-        getServiceDefinition() {
-          const fsMethodSchema = { args: z.tuple([z.string()]).rest(z.unknown()) };
-          return {
-            name: "fs",
-            description: "Per-context filesystem operations (sandboxed to context folder)",
-            policy: { allowed: ["panel", "server", "worker"] },
-            methods: {
-              readFile: fsMethodSchema, writeFile: fsMethodSchema,
-              readdir: fsMethodSchema, mkdir: fsMethodSchema,
-              stat: fsMethodSchema, open: fsMethodSchema,
-              close: fsMethodSchema, read: fsMethodSchema, write: fsMethodSchema,
-            },
-            handler: async (ctx, method, serviceArgs) => {
-              return handleFsCall(fsServiceInstance, ctx, method, serviceArgs as unknown[]);
-            },
-          };
+          const { server: rpcServerInst } = resolve<{ server: import("./rpcServer.js").RpcServer }>("rpcServer")!;
+          const fsServiceInst = resolve<import("../shared/fsService.js").FsService>("fsService")!;
+          const harnessManagerInst = resolve<import("./harnessManager.js").HarnessManager>("harnessManager", true);
+
+          rpcServerInst.setOnClientDisconnect((callerId, callerKind) => {
+            const handleKey = callerKind === "panel" || callerKind === "worker" ? callerId : `server:${callerId}`;
+            fsServiceInst.closeHandlesForCaller(handleKey);
+            if (callerKind === "panel") {
+              // Clean up standalone session on disconnect
+              const session = standaloneSessions.get(callerId);
+              if (session) {
+                tokenManager.revokeToken(callerId);
+                fsServiceInst.unregisterPanelContext(callerId);
+                standaloneSessions.delete(callerId);
+              }
+            } else if (callerKind === "harness") {
+              harnessManagerInst?.notifyDisconnected(callerId);
+            }
+          });
         },
       });
     }
@@ -992,10 +1151,10 @@ async function main() {
   {
     const { SERVER_SERVICE_NAMES } = await import("@natstack/rpc");
     const sharedSet = new Set<string>(SERVER_SERVICE_NAMES);
-    // Services that intentionally live on both Electron and server (not routed via SERVER_SERVICE_NAMES)
-    const dualHosted = new Set(["events", "bridge", "browser", "fs", "workerd"]);
+    // Services that live on both Electron and server, or are internal lifecycle only
+    const localOnly = new Set(["events", "bridge", "browser"]);
     for (const name of dispatcher.getServices()) {
-      if (!sharedSet.has(name) && !dualHosted.has(name)) {
+      if (!sharedSet.has(name) && !localOnly.has(name)) {
         console.warn(
           `[Server] Service "${name}" is registered on the server but missing from SERVER_SERVICE_NAMES in @natstack/rpc. ` +
           `Panel calls to this service will be misrouted in Electron mode.`
@@ -1010,6 +1169,9 @@ async function main() {
 
   const rpcPort = container.get<{ port: number }>("rpcServer").port;
   const workerdMgr = container.get<import("./workerdManager.js").WorkerdManager>("workerdManager");
+  const panelHttpPort = container.has("panelHttpServer")
+    ? container.get<{ port: number }>("panelHttpServer").port
+    : null;
 
   if (ipcChannel) {
     ipcChannel.postMessage({
@@ -1018,12 +1180,20 @@ async function main() {
       gitPort: gitServer.getPort(),
       pubsubPort: 0, // deprecated — channel DOs replace PubSub server
       workerdPort: workerdMgr?.getPort() ?? 0,
+      panelHttpPort: panelHttpPort ?? 0,
       adminToken,
     });
   } else {
-    const panelHttpPort = container.has("panelHttpServer")
-      ? container.get<{ port: number }>("panelHttpServer").port
-      : null;
+    // Start gateway in standalone mode — single entry point for all services
+    const { Gateway } = await import("./gateway.js");
+    const gateway = new Gateway({
+      rpcPort,
+      panelHttpPort,
+      gitPort: gitServer.getPort(),
+      workerdPort: workerdMgr?.getPort() ?? null,
+      externalHost: "localhost",
+    });
+    const gatewayPort = await gateway.start(0);
 
     // Register for browser extension auto-discovery (idempotent file writes)
     const { registerHeadlessService } = await import("./headlessServiceRegistration.js");
@@ -1033,18 +1203,19 @@ async function main() {
         panelPort: panelHttpPort,
         gitPort: gitServer.getPort(),
         adminToken,
+        gatewayPort,
       });
     } catch (err) {
       console.warn("[Server] Failed to register headless service:", err);
     }
 
     console.log("natstack-server ready:");
+    console.log(`  Gateway:   http://127.0.0.1:${gatewayPort}`);
     console.log(`  Git:       http://127.0.0.1:${gitServer.getPort()}`);
     console.log(`  Workerd:   http://127.0.0.1:${workerdMgr?.getPort() ?? '?'}`);
     console.log(`  RPC:       ws://127.0.0.1:${rpcPort}`);
     if (panelHttpPort) {
       console.log(`  Panels:    http://127.0.0.1:${panelHttpPort}`);
-      console.log(`  Panel API: http://127.0.0.1:${panelHttpPort}/api/panels`);
     }
     console.log(`  Admin token: ${adminToken}`);
   }

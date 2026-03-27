@@ -1,26 +1,22 @@
 /**
- * PanelRegistry — Authoritative data store for panel tree state.
+ * PanelRegistry — Pure in-memory data store for panel tree state.
  *
  * Owns:
  * - The in-memory panel map and root panel list
  * - Tree relationships (parent/child, selectedChildId)
- * - Persistence to SQLite (when available)
- * - Search indexing
  * - Debounced tree-update notifications via EventService
  *
  * Does NOT own:
- * - Electron views, tokens, build orchestration (PanelView / PanelLifecycle)
- * - State-arg validation against manifests (PanelLifecycle)
+ * - Persistence (server panel service owns SQLite via PanelPersistence)
+ * - Electron views, tokens, build orchestration
+ * - State-arg validation against manifests
  */
 
 import { createDevLogger } from "@natstack/dev-log";
 import type { Panel, PanelArtifacts, PanelInfo, PanelSummary } from "./types.js";
-import { getCurrentSnapshot, getPanelSource, getPanelContextId } from "./panel/accessors.js";
+import { getPanelSource, getPanelContextId } from "./panel/accessors.js";
 import { contextIdToSubdomain } from "./panelIdUtils.js";
-import type { PanelPersistence } from "./db/panelPersistence.js";
-import type { PanelSearchIndex } from "./db/panelSearchIndex.js";
 import type { EventService } from "./eventsService.js";
-import type { Workspace } from "./workspace/types.js";
 import type { PanelRelationshipProvider } from "./panelInterfaces.js";
 
 const log = createDevLogger("PanelRegistry");
@@ -39,10 +35,7 @@ export interface PanelListItem {
 }
 
 export interface PanelRegistryOptions {
-  workspace: Workspace | null;
   eventService: EventService;
-  persistence?: PanelPersistence;
-  searchIndex?: PanelSearchIndex;
 }
 
 // ============================================================================
@@ -61,16 +54,10 @@ export class PanelRegistry implements PanelRelationshipProvider {
   private treeUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly TREE_UPDATE_DEBOUNCE_MS = 16; // ~1 frame at 60fps
 
-  private readonly workspace: Workspace | null;
   private readonly eventService: EventService;
-  private readonly persistence: PanelPersistence | null;
-  private readonly searchIndex: PanelSearchIndex | null;
 
   constructor(opts: PanelRegistryOptions) {
-    this.workspace = opts.workspace;
     this.eventService = opts.eventService;
-    this.persistence = opts.persistence ?? null;
-    this.searchIndex = opts.searchIndex ?? null;
   }
 
   // ==========================================================================
@@ -173,27 +160,13 @@ export class PanelRegistry implements PanelRelationshipProvider {
   }
 
   /**
-   * Get children with pagination, enriched with runtime buildState.
-   * When persistence is available, queries the DB; otherwise uses in-memory data.
+   * Get children with pagination (pure in-memory).
    */
   getChildrenPaginated(
     parentId: string,
     offset: number,
     limit: number,
   ): { children: PanelSummary[]; total: number; hasMore: boolean } {
-    if (this.persistence) {
-      const result = this.persistence.getChildrenPaginated(parentId, offset, limit);
-      const enrichedChildren = result.children.map((summary) => {
-        const panel = this.panels.get(summary.id);
-        return {
-          ...summary,
-          buildState: panel?.artifacts?.buildState,
-        };
-      });
-      return { ...result, children: enrichedChildren };
-    }
-
-    // In-memory fallback (headless mode)
     const parent = this.panels.get(parentId);
     if (!parent) return { children: [], total: 0, hasMore: false };
 
@@ -215,26 +188,12 @@ export class PanelRegistry implements PanelRelationshipProvider {
   }
 
   /**
-   * Get root panels with pagination, enriched with runtime buildState.
-   * When persistence is available, queries the DB; otherwise uses in-memory data.
+   * Get root panels with pagination (pure in-memory).
    */
   getRootPanelsPaginated(
     offset: number,
     limit: number,
   ): { panels: PanelSummary[]; total: number; hasMore: boolean } {
-    if (this.persistence) {
-      const result = this.persistence.getRootPanelsPaginated(offset, limit);
-      const enrichedPanels = result.panels.map((summary) => {
-        const panel = this.panels.get(summary.id);
-        return {
-          ...summary,
-          buildState: panel?.artifacts?.buildState,
-        };
-      });
-      return { ...result, panels: enrichedPanels };
-    }
-
-    // In-memory fallback (headless mode)
     const total = this.rootPanels.length;
     const sliced = this.rootPanels.slice(offset, offset + limit);
 
@@ -249,14 +208,6 @@ export class PanelRegistry implements PanelRelationshipProvider {
       total,
       hasMore: offset + sliced.length < total,
     };
-  }
-
-  /**
-   * Get all collapsed panel IDs for the current workspace.
-   */
-  getCollapsedIds(): string[] {
-    if (!this.persistence) return [];
-    return this.persistence.getCollapsedIds();
   }
 
   // ==========================================================================
@@ -294,7 +245,6 @@ export class PanelRegistry implements PanelRelationshipProvider {
       this.panels = new Map([[panel.id, panel]]);
     }
 
-    this.persistPanel(panel, parentId);
     this.notifyPanelTreeUpdate();
   }
 
@@ -312,7 +262,6 @@ export class PanelRegistry implements PanelRelationshipProvider {
           // Auto-select the next remaining child (or null if none left)
           const nextChild = parent.children.length > 0 ? parent.children[parent.children.length - 1]!.id : null;
           parent.selectedChildId = nextChild;
-          this.persistence?.setSelectedChild(parent.id, nextChild);
         }
       }
     } else {
@@ -321,13 +270,6 @@ export class PanelRegistry implements PanelRelationshipProvider {
 
     this.panels.delete(panelId);
     this.notifyPanelTreeUpdate();
-  }
-
-  /**
-   * Archive a panel in the persistence layer (soft delete).
-   */
-  archivePanel(panelId: string): void {
-    this.persistence?.archivePanel(panelId);
   }
 
   /**
@@ -384,9 +326,6 @@ export class PanelRegistry implements PanelRelationshipProvider {
       this.rootPanels.splice(clampedPosition, 0, panel);
     }
 
-    // Persist to database
-    this.persistence?.movePanel(panelId, newParentId, targetPosition);
-
     this.notifyPanelTreeUpdate();
   }
 
@@ -426,21 +365,7 @@ export class PanelRegistry implements PanelRelationshipProvider {
   }
 
   /**
-   * Set collapse state for a single panel.
-   */
-  setCollapsed(panelId: string, collapsed: boolean): void {
-    this.persistence?.setCollapsed(panelId, collapsed);
-  }
-
-  /**
-   * Expand multiple panels (set collapsed = false).
-   */
-  expandIds(panelIds: string[]): void {
-    this.persistence?.setCollapsedBatch(panelIds, false);
-  }
-
-  /**
-   * Update raw state args on a panel (no manifest validation — that's PanelLifecycle's job).
+   * Update raw state args on a panel (no manifest validation — caller's job).
    */
   updateStateArgs(panelId: string, stateArgs: Record<string, unknown>): void {
     const panel = this.panels.get(panelId);
@@ -448,7 +373,6 @@ export class PanelRegistry implements PanelRelationshipProvider {
       throw new Error(`Panel not found: ${panelId}`);
     }
     panel.snapshot.stateArgs = stateArgs;
-    this.persistPanel(panel, this.findParentId(panelId));
   }
 
   /**
@@ -517,26 +441,16 @@ export class PanelRegistry implements PanelRelationshipProvider {
   }
 
   /**
-   * Load the panel tree from persistence (DB) into memory.
-   * Call on startup when persistence is available.
+   * Populate the in-memory registry from server-loaded tree data.
+   * Called at startup with the result of server panel.loadTree() RPC.
    */
-  async loadTree(): Promise<void> {
-    if (!this.persistence) return;
+  populateFromServer(rootPanels: Panel[]): void {
+    if (rootPanels.length === 0) return;
 
-    const existingPanels = this.persistence.getFullTree();
-    if (existingPanels.length === 0) return;
+    log.verbose(` Populating ${rootPanels.length} root panel(s) from server`);
+    this.rootPanels = rootPanels;
+    this.panels.clear();
 
-    // Clean up childless shell panels from previous session
-    this.cleanupChildlessAutoArchivePanels(existingPanels, this.persistence);
-
-    // Filter out panels that were archived during cleanup
-    const remaining = existingPanels.filter((p) => !this.persistence!.isArchived(p.id));
-    if (remaining.length === 0) return;
-
-    log.verbose(` Restoring ${remaining.length} root panel(s) from database`);
-    this.rootPanels = remaining;
-
-    // Rebuild the panels map
     const buildMap = (panels: Panel[]) => {
       for (const panel of panels) {
         this.panels.set(panel.id, panel);
@@ -545,83 +459,14 @@ export class PanelRegistry implements PanelRelationshipProvider {
         }
       }
     };
-    buildMap(remaining);
+    buildMap(rootPanels);
   }
 
   /**
-   * Run shutdown cleanup: archive childless shell panels so they don't
-   * clutter the tree on next startup.
+   * Return list of live panel IDs for shutdown cleanup.
    */
-  runShutdownCleanup(): void {
-    if (!this.persistence) return;
-    log.verbose(` Running shutdown cleanup`);
-    this.cleanupChildlessAutoArchivePanels(this.rootPanels, this.persistence);
-  }
-
-  /**
-   * Persist a panel to the database and index for search.
-   */
-  persistPanel(panel: Panel, parentId: string | null): void {
-    if (!this.persistence) return;
-
-    try {
-      const persistence = this.persistence;
-      const currentSnapshot = getCurrentSnapshot(panel);
-
-      // Check if panel already exists
-      const existingPanel = persistence.getPanel(panel.id);
-
-      // If the panel exists but is archived, unarchive it and update
-      if (existingPanel && persistence.isArchived(panel.id)) {
-        persistence.unarchivePanel(panel.id);
-        persistence.updatePanel(panel.id, {
-          parentId,
-          snapshot: panel.snapshot,
-        });
-        if (parentId) {
-          persistence.setSelectedChild(parentId, panel.id);
-        }
-        return;
-      }
-
-      if (!existingPanel) {
-        persistence.createPanel({
-          id: panel.id,
-          title: panel.title,
-          parentId,
-          snapshot: currentSnapshot,
-        });
-
-        if (parentId) {
-          persistence.setSelectedChild(parentId, panel.id);
-          const inMemoryParent = this.panels.get(parentId);
-          if (inMemoryParent) {
-            inMemoryParent.selectedChildId = panel.id;
-          }
-        }
-      } else {
-        persistence.updatePanel(panel.id, {
-          parentId,
-          snapshot: currentSnapshot,
-        });
-      }
-
-      // Index panel for search
-      if (this.searchIndex) {
-        try {
-          const source = currentSnapshot.source;
-          this.searchIndex.indexPanel({
-            id: panel.id,
-            title: panel.title,
-            path: source,
-          });
-        } catch (indexError) {
-          console.error(`[PanelRegistry] Failed to index panel ${panel.id}:`, indexError);
-        }
-      }
-    } catch (error) {
-      console.error(`[PanelRegistry] Failed to persist panel ${panel.id}:`, error);
-    }
+  getLivePanelIds(): string[] {
+    return [...this.panels.keys()];
   }
 
   // ==========================================================================
@@ -633,30 +478,5 @@ export class PanelRegistry implements PanelRelationshipProvider {
       ...panel,
       children: panel.children.map((child) => this.serializePanel(child)),
     };
-  }
-
-  /**
-   * Archive panels with autoArchiveWhenEmpty that have no children.
-   * These are typically launcher UIs — a childless launcher was never used.
-   */
-  private cleanupChildlessAutoArchivePanels(
-    panels: Panel[],
-    persistence: PanelPersistence,
-  ): void {
-    for (const panel of panels) {
-      if (panel.children.length > 0) {
-        this.cleanupChildlessAutoArchivePanels(panel.children, persistence);
-        panel.children = panel.children.filter((c) => !persistence.isArchived(c.id));
-      }
-
-      if (panel.snapshot.autoArchiveWhenEmpty && panel.children.length === 0) {
-        log.verbose(` Archiving childless auto-archive panel: ${panel.id}`);
-        try {
-          persistence.archivePanel(panel.id);
-        } catch (e) {
-          console.error(`[PanelRegistry] Failed to archive panel ${panel.id}:`, e);
-        }
-      }
-    }
   }
 }

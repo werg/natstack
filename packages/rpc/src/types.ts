@@ -160,15 +160,19 @@ export const SERVER_SERVICE_NAMES = [
   "ai",
   "build",
   "db",
+  "fs",
   "git",
   "harness",
   "notification",
   "oauth",
+  "panel",
+  "panelHttp",
   "test",
   "tokens",
   "typecheck",
   "workerd",
   "workers",
+  "workspaceInfo",
 ] as const;
 
 export type ServerServiceName = (typeof SERVER_SERVICE_NAMES)[number];

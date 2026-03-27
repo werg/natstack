@@ -1,11 +1,11 @@
 /**
  * Test API for E2E testing.
  *
- * Exposes PanelLifecycle + PanelRegistry methods to Playwright tests via Electron's evaluate().
+ * Exposes PanelOrchestrator + PanelRegistry methods to Playwright tests via Electron's evaluate().
  * Only loaded when NATSTACK_TEST_MODE=1 environment variable is set.
  */
 
-import type { PanelLifecycle } from "../shared/panelLifecycle.js";
+import type { PanelOrchestrator } from "./panelOrchestrator.js";
 import type { PanelRegistry } from "../shared/panelRegistry.js";
 import type { PanelView } from "./panelView.js";
 import type { Panel } from "../shared/types.js";
@@ -56,7 +56,7 @@ declare global {
  * This is only called when NATSTACK_TEST_MODE=1.
  */
 export function setupTestApi(
-  panelLifecycle: PanelLifecycle,
+  panelOrchestrator: PanelOrchestrator,
   panelRegistry: PanelRegistry,
   panelView: PanelView | null,
 ): void {
@@ -94,11 +94,11 @@ export function setupTestApi(
     },
 
     async createPanel(parentId, source, options) {
-      return panelLifecycle.createPanel(parentId, source, options ?? {});
+      return panelOrchestrator.createPanel(parentId, source, options ?? {});
     },
 
     async closePanel(id) {
-      return panelLifecycle.closePanel(id);
+      return panelOrchestrator.closePanel(id);
     },
 
     isPanelLoaded(panelId): boolean {

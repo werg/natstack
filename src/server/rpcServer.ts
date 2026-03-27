@@ -544,6 +544,15 @@ export class RpcServer {
     return this.callerToClient.get(callerId);
   }
 
+  /** Broadcast a message to all admin/server-kind clients */
+  broadcastToAdmins(msg: WsServerMessage): void {
+    for (const client of this.callerToClient.values()) {
+      if (client.callerKind === "server" && client.ws.readyState === WebSocket.OPEN) {
+        this.sendToWs(client.ws, msg);
+      }
+    }
+  }
+
   // ===========================================================================
   // StreamTarget factory
   // ===========================================================================

@@ -1,11 +1,11 @@
 import { app, Menu, MenuItemConstructorOptions, type WebContents } from "electron";
 import type { EventService } from "../shared/eventsService.js";
 import type { ViewManager } from "./viewManager.js";
-import type { PanelLifecycle } from "../shared/panelLifecycle.js";
+import type { BridgePanelManager } from "../shared/panelInterfaces.js";
 import type { PanelRegistry } from "../shared/panelRegistry.js";
 
 // Set during initialization — always non-null after startup
-let _menuPanelLifecycle: PanelLifecycle | null = null;
+let _menuPanelLifecycle: BridgePanelManager | null = null;
 let _menuPanelRegistry: PanelRegistry | null = null;
 let _menuViewManager: ViewManager | null = null;
 let _menuEventService: EventService | null = null;
@@ -27,7 +27,7 @@ export function setMenuViewManager(vm: ViewManager): void {
 }
 
 /** Set the panel lifecycle for menu operations. Called from index.ts. */
-export function setMenuPanelLifecycle(lc: PanelLifecycle): void {
+export function setMenuPanelLifecycle(lc: BridgePanelManager): void {
   _menuPanelLifecycle = lc;
 }
 
