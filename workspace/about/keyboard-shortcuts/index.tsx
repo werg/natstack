@@ -69,7 +69,7 @@ function KeyboardShortcutsPage() {
     <Box p="4" style={{ maxWidth: "700px", margin: "0 auto" }}>
       <Heading size="7" mb="4">Keyboard Shortcuts</Heading>
 
-      <ScrollArea style={{ height: "calc(100vh - 100px)" }}>
+      <ScrollArea style={{ height: "calc(100dvh - 100px)" }}>
         <Flex direction="column" gap="4">
           {shortcutGroups.map((group) => (
             <Card key={group.title}>

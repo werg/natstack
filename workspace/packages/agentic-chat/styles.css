@@ -91,14 +91,17 @@
   animation: slide-up-fade-in 0.2s ease-out;
 }
 
-/* Copy button - always visible but transparent, full opacity on hover */
+/* Copy button — visible at baseline opacity on touch, hover-reveal on mouse */
 .message-card .copy-button {
-  opacity: 0.25;
+  opacity: 0.6;
   transition: opacity 0.15s ease-in-out;
 }
-
-.message-card .copy-button:hover {
-  opacity: 1;
+@media (hover: hover) {
+  .message-card .copy-button { opacity: 0.25; }
+  .message-card .copy-button:hover { opacity: 1; }
+}
+@media (pointer: coarse) {
+  .message-card .copy-button { padding: 8px; }
 }
 
 /* Markdown code blocks (rehype-highlight / highlight.js) */

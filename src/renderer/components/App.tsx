@@ -19,7 +19,7 @@ let LazyMainMode = lazy(() => import("./MainMode"));
 
 function LoadingSpinner() {
   return (
-    <Flex align="center" justify="center" style={{ height: "100vh" }}>
+    <Flex align="center" justify="center" style={{ height: "100dvh" }}>
       <Spinner size="3" />
     </Flex>
   );

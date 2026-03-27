@@ -9,6 +9,7 @@
  */
 
 import { useState, useCallback, useEffect, useMemo, useRef, memo, type CSSProperties } from "react";
+import { useTouchDevice } from "@workspace/react/responsive";
 import { useAtomValue, useSetAtom } from "jotai";
 import {
   CaretRightIcon,
@@ -93,6 +94,7 @@ interface SortableTreeItemProps {
   projectedDepth: number | null;
   isDraggingAny: boolean;
   showIndicatorBelow: boolean;
+  isTouch: boolean;
   onSelect: (panelId: string) => void;
   onToggleCollapse: (panelId: string) => void;
   onPanelAction?: (panelId: string, action: PanelContextMenuAction) => void;
@@ -108,6 +110,7 @@ const SortableTreeItem = memo(function SortableTreeItem({
   projectedDepth,
   isDraggingAny,
   showIndicatorBelow,
+  isTouch,
   onSelect,
   onToggleCollapse,
   onPanelAction,
@@ -336,8 +339,8 @@ const SortableTreeItem = memo(function SortableTreeItem({
           />
         )}
 
-        {/* Archive (X) button - shown on hover, hidden during drag */}
-        {isHovered && !isDraggingAny && (
+        {/* Archive (X) button - shown on hover (or always on touch), hidden during drag */}
+        {(isHovered || isTouch) && !isDraggingAny && (
           <IconButton
             size="1"
             variant="ghost"
@@ -381,6 +384,7 @@ const SortableTreeItem = memo(function SortableTreeItem({
     prev.projectedDepth === next.projectedDepth &&
     prev.isDraggingAny === next.isDraggingAny &&
     prev.showIndicatorBelow === next.showIndicatorBelow &&
+    prev.isTouch === next.isTouch &&
     prev.onSelect === next.onSelect &&
     prev.onToggleCollapse === next.onToggleCollapse &&
     prev.onPanelAction === next.onPanelAction &&
@@ -448,6 +452,7 @@ export function LazyPanelTreeSidebar({
 }: LazyPanelTreeSidebarProps) {
   const activeWorkspaceName = useAtomValue(activeWorkspaceNameAtom);
   const setWorkspaceChooserOpen = useSetAtom(workspaceChooserDialogOpenAtom);
+  const isTouch = useTouchDevice();
 
   const {
     flattenedItems,
@@ -597,6 +602,7 @@ export function LazyPanelTreeSidebar({
                   projectedDepth={item.id === indicatorItemId ? projectedDepth : null}
                   isDraggingAny={activeId !== null}
                   showIndicatorBelow={showIndicatorBelow}
+                  isTouch={isTouch}
                   onSelect={onSelect}
                   onToggleCollapse={toggleCollapse}
                   onPanelAction={onPanelAction}

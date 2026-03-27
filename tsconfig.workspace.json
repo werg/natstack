@@ -184,6 +184,9 @@
       "@workspace/react": [
         "workspace/packages/react/src/index.ts"
       ],
+      "@workspace/react/responsive": [
+        "workspace/packages/react/src/responsive.ts"
+      ],
       "@workspace/runtime": [
         "workspace/packages/runtime/src/panel/index.ts"
       ],

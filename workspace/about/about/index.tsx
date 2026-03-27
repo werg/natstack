@@ -18,7 +18,7 @@ function AboutPage() {
   }, []);
 
   return (
-    <Flex align="center" justify="center" style={{ height: "100vh" }}>
+    <Flex align="center" justify="center" style={{ height: "100dvh" }}>
       <Card size="3" style={{ maxWidth: "400px", textAlign: "center" }}>
         <Flex direction="column" align="center" gap="4">
           <Box

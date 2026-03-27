@@ -3,7 +3,8 @@
   "version": "0.1.0-6f86d7420ac2",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./responsive": "./src/responsive.ts"
   },
   "dependencies": {
     "@natstack/types": "workspace:*",

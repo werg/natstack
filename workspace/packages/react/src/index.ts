@@ -16,3 +16,6 @@ export { createReactPanelMount, type ReactPanelOptions, type ReactPanelInstance 
 
 // Form rendering components
 export { FormRenderer, formatSliderValue, type FormRendererProps, type CustomFieldRendererProps } from './FormRenderer.js';
+
+// Responsive hooks
+export { useIsMobile, useTouchDevice, useViewportHeight } from './responsive.js';

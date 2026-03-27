@@ -10,6 +10,7 @@ import {
 } from "@radix-ui/react-icons";
 import { Box, Flex, IconButton, Text, Tooltip } from "@radix-ui/themes";
 import { useState, type CSSProperties, type MouseEvent } from "react";
+import { useTouchDevice } from "@workspace/react/responsive";
 
 import { useNavigation } from "./NavigationContext";
 import { panel } from "../shell/client";
@@ -204,6 +205,7 @@ function HoverableBreadcrumbItem({
   onArchive,
 }: HoverableBreadcrumbItemProps) {
   const [isHovered, setIsHovered] = useState(false);
+  const isTouch = useTouchDevice();
 
   const handleArchive = (e: MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation();
@@ -230,7 +232,7 @@ function HoverableBreadcrumbItem({
       >
         {title}
       </Text>
-      {isHovered && onArchive && (
+      {(isHovered || isTouch) && onArchive && (
         <IconButton
           size="1"
           variant="ghost"

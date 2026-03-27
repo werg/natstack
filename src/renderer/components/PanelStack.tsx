@@ -53,7 +53,7 @@ function captureHostThemeCss(): string {
   const cssVariables = `:root { ${declarations.join("; ")} }`;
   const baseline = `html, body { margin: 0; padding: 0; height: 100%; }
 #root {
-  min-height: 100vh;
+  min-height: 100dvh;
   box-sizing: border-box;
 }`;
 
@@ -478,7 +478,9 @@ export function PanelStack({
             style={{
               cursor: "col-resize",
               flexShrink: 0,
+              width: 8,
               height: "100%",
+              touchAction: "none",
               backgroundColor:
                 isResizingSidebar || isResizeHover ? "var(--gray-8)" : "var(--gray-6)",
               transition: "background-color 120ms ease-out",

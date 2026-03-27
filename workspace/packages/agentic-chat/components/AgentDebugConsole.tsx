@@ -109,7 +109,7 @@ export function AgentDebugConsole({
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog.Content style={{ maxWidth: 700, maxHeight: "80vh" }}>
+      <Dialog.Content style={{ maxWidth: 700, maxHeight: "80dvh" }}>
         <Dialog.Title>Debug Console: @{agentHandle}</Dialog.Title>
         <Dialog.Description size="2" color="gray" mb="3">
           Agent logs, stdout/stderr output, and lifecycle events

@@ -94,7 +94,7 @@ function PanelAppContent() {
   }, [navigateToId]);
 
   return (
-    <Flex direction="column" height="100vh" style={{ overflow: "hidden" }}>
+    <Flex direction="column" height="100dvh" style={{ overflow: "hidden" }}>
       <TitleBar title={currentTitle} onNavigateToId={navigateToId} onPanelAction={handlePanelAction} onArchive={handleArchive} />
       <NotificationBar />
       <PanelStack

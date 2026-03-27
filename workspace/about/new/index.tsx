@@ -93,7 +93,7 @@ function NewPanelPage() {
     <Box p="4" style={{ maxWidth: "700px", margin: "0 auto" }}>
       <Heading size="7" mb="4">New Panel</Heading>
 
-      <ScrollArea style={{ height: "calc(100vh - 100px)" }}>
+      <ScrollArea style={{ height: "calc(100dvh - 100px)" }}>
         <Flex direction="column" gap="4">
           {/* Chat prompt input */}
           <Card>

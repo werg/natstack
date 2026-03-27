@@ -60,7 +60,7 @@ export function ImageGallery({ attachments, maxVisible = 4 }: ImageGalleryProps)
   };
 
   const isSingle = imageAttachments.length === 1;
-  const thumbSize = isSingle ? undefined : 120;
+  const thumbSize = 120;
 
   return (
     <>
@@ -77,10 +77,10 @@ export function ImageGallery({ attachments, maxVisible = 4 }: ImageGalleryProps)
             <img
               src={preview.url}
               alt={preview.attachment.name || `Image ${index + 1}`}
-              width={thumbSize}
-              height={thumbSize}
+              width={isSingle ? undefined : thumbSize}
+              height={isSingle ? undefined : thumbSize}
               style={{
-                maxWidth: isSingle ? 400 : thumbSize,
+                maxWidth: isSingle ? "min(400px, 100%)" : `min(${thumbSize}px, calc(50% - 8px))`,
                 maxHeight: isSingle ? 300 : thumbSize,
                 objectFit: "cover",
                 display: "block",
@@ -133,7 +133,7 @@ export function ImageGallery({ attachments, maxVisible = 4 }: ImageGalleryProps)
 
       {/* Lightbox dialog */}
       <Dialog.Root open={selectedImage !== null} onOpenChange={(open) => !open && setSelectedImage(null)}>
-        <Dialog.Content maxWidth="90vw" style={{ maxHeight: "90vh", padding: 0 }}>
+        <Dialog.Content maxWidth="90vw" style={{ maxHeight: "90dvh", padding: 0 }}>
           {selectedImage && (
             <Flex direction="column" height="100%">
               {/* Header */}
@@ -148,15 +148,16 @@ export function ImageGallery({ attachments, maxVisible = 4 }: ImageGalleryProps)
                 </Flex>
                 <Flex gap="2">
                   <IconButton
-                    size="1"
+                    size="2"
                     variant="ghost"
                     onClick={() => handleDownload(selectedImage)}
                     title="Download"
+                    style={{ padding: 8 }}
                   >
                     <DownloadIcon />
                   </IconButton>
                   <Dialog.Close>
-                    <IconButton size="1" variant="ghost" title="Close">
+                    <IconButton size="2" variant="ghost" title="Close" style={{ padding: 8 }}>
                       <Cross2Icon />
                     </IconButton>
                   </Dialog.Close>
@@ -167,7 +168,7 @@ export function ImageGallery({ attachments, maxVisible = 4 }: ImageGalleryProps)
                 <img
                   src={selectedImage.url}
                   alt={selectedImage.attachment.name || "Image"}
-                  style={{ maxWidth: "100%", maxHeight: "calc(90vh - 80px)", objectFit: "contain" }}
+                  style={{ maxWidth: "100%", maxHeight: "calc(90dvh - 80px)", objectFit: "contain" }}
                 />
               </Flex>
             </Flex>

@@ -13,6 +13,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import "./styles.css";
 import {
   rpc,
   useStateArgs,
@@ -182,7 +183,7 @@ export default function EmailPanel() {
 
   return (
     <Theme appearance={appearance} accentColor="blue">
-      <Flex direction="column" style={{ height: "100vh", overflow: "hidden" }}>
+      <Flex direction="column" style={{ height: "100dvh", overflow: "hidden", boxSizing: "border-box", paddingBottom: "env(safe-area-inset-bottom, 0)", paddingTop: "env(safe-area-inset-top, 0)" }}>
         {/* Header */}
         <Flex
           align="center"
@@ -438,20 +439,12 @@ function MessageRow({
       tabIndex={0}
       onClick={onClick}
       onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); } }}
+      className={`email-message-row${message.isUnread ? " email-message-row--unread" : ""}`}
       style={{
         padding: "8px 12px",
         cursor: "pointer",
         borderBottom: "1px solid var(--gray-a3)",
-        backgroundColor: message.isUnread ? "var(--blue-a2)" : undefined,
       }}
-      onMouseEnter={e => (e.currentTarget.style.backgroundColor = "var(--gray-a3)")}
-      onMouseLeave={e =>
-        (e.currentTarget.style.backgroundColor = message.isUnread ? "var(--blue-a2)" : "")
-      }
-      onFocus={e => (e.currentTarget.style.backgroundColor = "var(--gray-a3)")}
-      onBlur={e =>
-        (e.currentTarget.style.backgroundColor = message.isUnread ? "var(--blue-a2)" : "")
-      }
     >
       <Flex justify="between" align="start" gap="2">
         <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>

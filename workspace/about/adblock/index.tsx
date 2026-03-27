@@ -244,7 +244,7 @@ function AdBlockSettingsPage() {
 
   if (loading) {
     return (
-      <Flex align="center" justify="center" gap="2" style={{ height: "100vh" }}>
+      <Flex align="center" justify="center" gap="2" style={{ height: "100dvh" }}>
         <Spinner />
         <Text>Loading ad block settings...</Text>
       </Flex>
@@ -253,7 +253,7 @@ function AdBlockSettingsPage() {
 
   if (error) {
     return (
-      <Flex align="center" justify="center" direction="column" gap="3" style={{ height: "100vh" }}>
+      <Flex align="center" justify="center" direction="column" gap="3" style={{ height: "100dvh" }}>
         <Text color="red">Error: {error}</Text>
         <Button onClick={loadData}>Retry</Button>
       </Flex>

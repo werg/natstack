@@ -30,7 +30,15 @@ import "../styles.css";
 export const ChatLayout = React.memo(function ChatLayout() {
   return (
     <>
-      <Flex direction="column" height="100vh" p="2" gap="2">
+      <Flex
+        direction="column"
+        gap="2"
+        style={{
+          height: "100dvh",
+          boxSizing: "border-box",
+          padding: "max(var(--space-2), env(safe-area-inset-top, 0)) max(var(--space-2), env(safe-area-inset-right, 0)) max(var(--space-2), env(safe-area-inset-bottom, 0)) max(var(--space-2), env(safe-area-inset-left, 0))",
+        }}
+      >
         <ChatHeader />
         <ChatDirtyRepoWarnings />
         <ChatMessageArea />

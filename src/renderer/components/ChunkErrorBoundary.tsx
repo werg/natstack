@@ -38,7 +38,7 @@ export class ChunkErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.error) {
       return (
-        <Flex direction="column" align="center" justify="center" gap="3" style={{ height: "100vh" }}>
+        <Flex direction="column" align="center" justify="center" gap="3" style={{ height: "100dvh" }}>
           <Text size="3" weight="medium" color="red">
             Failed to load application
           </Text>

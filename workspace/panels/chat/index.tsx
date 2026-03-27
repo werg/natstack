@@ -372,7 +372,7 @@ The variable \`contextId\` is pre-injected — use it directly, do NOT import it
     return (
       <ErrorBoundary>
         <Theme appearance={theme}>
-          <Flex align="center" justify="center" gap="2" style={{ height: "100vh" }}>
+          <Flex align="center" justify="center" gap="2" style={{ height: "100dvh" }}>
             <Spinner />
             <Text size="2" color="gray">Starting chat...</Text>
           </Flex>

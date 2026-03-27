@@ -32,6 +32,6 @@ if (shouldAutoMount(userModule)) {
   cdnStylesheets: [
     "https://cdn.jsdelivr.net/npm/@radix-ui/themes@3.2.1/styles.css",
   ],
-  additionalCss: "#root, #root > .radix-themes { min-height: 100vh; }",
+  additionalCss: "#root, #root > .radix-themes { min-height: 100dvh; }",
   rootElementHtml: '<div id="root"></div>',
 };

@@ -53,7 +53,7 @@ function HelpPage() {
     <Box p="4" style={{ maxWidth: "800px", margin: "0 auto" }}>
       <Heading size="7" mb="4">Help & Documentation</Heading>
 
-      <ScrollArea style={{ height: "calc(100vh - 100px)" }}>
+      <ScrollArea style={{ height: "calc(100dvh - 100px)" }}>
         <Flex direction="column" gap="4">
           {helpSections.map((section) => (
             <Card key={section.title}>

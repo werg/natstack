@@ -1,7 +1,9 @@
 import React, { useRef } from "react";
-import { Badge, Button, DropdownMenu, Flex, Text } from "@radix-ui/themes";
+import { Badge, Button, DropdownMenu, Flex, IconButton, Text } from "@radix-ui/themes";
+import { PlusIcon } from "@radix-ui/react-icons";
 import type { Participant } from "@natstack/pubsub";
 import type { ToolApprovalProps } from "@workspace/tool-ui";
+import { useIsMobile } from "@workspace/react";
 import { useChatContext } from "../context/ChatContext";
 import type { ChatParticipantMetadata, PendingAgent } from "../types";
 import { ParticipantBadgeMenu } from "./ParticipantBadgeMenu";
@@ -45,6 +47,7 @@ export function ChatHeader() {
     availableAgents,
     onRemoveAgent,
   } = useChatContext();
+  const isMobile = useIsMobile();
 
   // Memoize participant active status: single reverse scan instead of O(P*M) filter per render.
   // Stabilised with a ref — return the previous Map reference when the values haven't
@@ -83,6 +86,7 @@ export function ChatHeader() {
       availableAgents={availableAgents}
       onRemoveAgent={onRemoveAgent}
       onDebugConsoleChange={onDebugConsoleChange}
+      isMobile={isMobile}
     />
   );
 }
@@ -103,6 +107,7 @@ interface ChatHeaderInnerProps {
   availableAgents?: Array<{ id: string; name: string; proposedHandle: string }>;
   onRemoveAgent?: (handle: string) => void;
   onDebugConsoleChange?: (agentHandle: string | null) => void;
+  isMobile: boolean;
 }
 
 function chatHeaderInnerPropsEqual(prev: ChatHeaderInnerProps, next: ChatHeaderInnerProps): boolean {
@@ -119,6 +124,7 @@ function chatHeaderInnerPropsEqual(prev: ChatHeaderInnerProps, next: ChatHeaderI
     prev.availableAgents === next.availableAgents &&
     prev.onRemoveAgent === next.onRemoveAgent &&
     prev.onDebugConsoleChange === next.onDebugConsoleChange &&
+    prev.isMobile === next.isMobile &&
     mapsShallowEqual(prev.participantActiveStatus, next.participantActiveStatus)
   );
 }
@@ -137,9 +143,10 @@ const ChatHeaderInner = React.memo(function ChatHeaderInner({
   availableAgents,
   onRemoveAgent,
   onDebugConsoleChange,
+  isMobile,
 }: ChatHeaderInnerProps) {
   return (
-    <Flex justify="between" align="center" flexShrink="0">
+    <Flex justify="between" align="center" flexShrink="0" wrap="wrap" gap="2">
       <Flex gap="2" align="center">
         <Text size="5" weight="bold">
           Agentic Chat
@@ -149,7 +156,7 @@ const ChatHeaderInner = React.memo(function ChatHeaderInner({
           {sessionEnabled ? "Session" : "Ephemeral"}
         </Badge>
       </Flex>
-      <Flex gap="2" align="center">
+      <Flex gap="2" align="center" wrap="wrap">
         <Badge color={connected ? "green" : "gray"}>{connected ? "Connected" : status}</Badge>
         {Object.values(participants).map((p) => {
           const hasActive = participantActiveStatus.get(p.id) ?? false;
@@ -179,7 +186,11 @@ const ChatHeaderInner = React.memo(function ChatHeaderInner({
         {onAddAgent && availableAgents && availableAgents.length > 0 ? (
           <DropdownMenu.Root>
             <DropdownMenu.Trigger>
-              <Button variant="soft" size="1">Add Agent</Button>
+              {isMobile ? (
+                <IconButton variant="soft" size="1" aria-label="Add Agent"><PlusIcon /></IconButton>
+              ) : (
+                <Button variant="soft" size="1">Add Agent</Button>
+              )}
             </DropdownMenu.Trigger>
             <DropdownMenu.Content>
               {availableAgents.map((agent) => (
@@ -190,9 +201,15 @@ const ChatHeaderInner = React.memo(function ChatHeaderInner({
             </DropdownMenu.Content>
           </DropdownMenu.Root>
         ) : onAddAgent ? (
-          <Button variant="soft" size="1" onClick={() => onAddAgent()}>
-            Add Agent
-          </Button>
+          isMobile ? (
+            <IconButton variant="soft" size="1" onClick={() => onAddAgent()} aria-label="Add Agent">
+              <PlusIcon />
+            </IconButton>
+          ) : (
+            <Button variant="soft" size="1" onClick={() => onAddAgent()}>
+              Add Agent
+            </Button>
+          )
         ) : null}
         {toolApproval && (
           <ToolPermissionsDropdown

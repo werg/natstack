@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Box, Callout, Card, Flex, IconButton, TextArea } from "@radix-ui/themes";
 import { PaperPlaneIcon, ImageIcon } from "@radix-ui/react-icons";
+import { useIsMobile, useTouchDevice, useViewportHeight } from "@workspace/react";
 import { useChatContext } from "../context/ChatContext";
 import { useChatInputContext } from "../context/ChatInputContext";
 import { ImageInput, getAttachmentInputsFromPendingImages } from "./ImageInput";
@@ -15,6 +16,9 @@ const MAX_IMAGE_COUNT = 10;
 export function ChatInput() {
   const { connected } = useChatContext();
   const { input, pendingImages, onInputChange, onSendMessage, onImagesChange } = useChatInputContext();
+  const isMobile = useIsMobile();
+  const isTouch = useTouchDevice();
+  const viewportHeight = useViewportHeight();
 
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -157,8 +161,8 @@ export function ChatInput() {
             ref={textAreaRef}
             size="2"
             variant="surface"
-            style={{ flex: 1, minHeight: 48, maxHeight: 200, resize: "none" }}
-            placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
+            style={{ flex: 1, minHeight: 48, maxHeight: isMobile ? Math.min(150, viewportHeight * 0.25) : 200, resize: "none" }}
+            placeholder={isMobile ? "Type a message..." : "Type a message... (Enter to send, Shift+Enter for new line)"}
             value={input}
             onChange={(e) => onInputChange(e.target.value)}
             onInput={handleTextAreaInput}
@@ -168,7 +172,7 @@ export function ChatInput() {
           <Flex direction="column" gap="2">
             <IconButton
               variant="ghost"
-              size="2"
+              size={isTouch ? "3" : "2"}
               onClick={toggleImageInput}
               disabled={!connected}
               color={pendingImages.length > 0 ? "blue" : "gray"}
@@ -179,7 +183,7 @@ export function ChatInput() {
             <IconButton
               onClick={handleSendClick}
               disabled={!connected || (!input.trim() && pendingImages.length === 0)}
-              size="2"
+              size={isTouch ? "3" : "2"}
               variant="soft"
             >
               <PaperPlaneIcon />

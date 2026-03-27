@@ -73,7 +73,7 @@ export function SettingsDialog({ isSetupMode = false }: SettingsDialogProps) {
 
   return (
     <Dialog.Root open={effectiveIsOpen} onOpenChange={handleOpenChange}>
-      <Dialog.Content maxWidth="550px" style={{ maxHeight: "80vh" }}>
+      <Dialog.Content maxWidth="550px" style={{ maxHeight: "80dvh" }}>
         {isSetupMode ? (
           <>
             <Dialog.Title>

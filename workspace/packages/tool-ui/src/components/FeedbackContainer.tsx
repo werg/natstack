@@ -9,6 +9,7 @@
 import { Box, Button, Card, Flex, ScrollArea, Text } from "@radix-ui/themes";
 import { Cross2Icon, DragHandleHorizontalIcon } from "@radix-ui/react-icons";
 import { type ReactNode, useState, useCallback, useRef, useEffect } from "react";
+import { useViewportHeight } from "@workspace/react";
 import { ErrorBoundary } from "./ErrorBoundary";
 
 export interface FeedbackContainerProps {
@@ -42,36 +43,39 @@ export function FeedbackContainer({
   const dragStartHeight = useRef(0);
   const cardRef = useRef<HTMLDivElement>(null);
 
-  const maxHeight = typeof window !== "undefined"
-    ? Math.floor(window.innerHeight * maxHeightFraction)
-    : 400;
+  const viewportHeight = useViewportHeight();
+  const maxHeight = Math.floor(viewportHeight * maxHeightFraction);
+  const maxHeightRef = useRef(maxHeight);
+  maxHeightRef.current = maxHeight;
 
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
     setIsDragging(true);
     dragStartY.current = e.clientY;
-    // Measure current rendered height as drag start
     dragStartHeight.current = cardRef.current?.offsetHeight ?? 200;
   }, []);
 
   useEffect(() => {
     if (!isDragging) return;
 
-    const handleMouseMove = (e: MouseEvent) => {
+    const handlePointerMove = (e: PointerEvent) => {
       const deltaY = dragStartY.current - e.clientY;
-      const newHeight = Math.min(maxHeight, Math.max(minHeight, dragStartHeight.current + deltaY));
+      const newHeight = Math.min(maxHeightRef.current, Math.max(minHeight, dragStartHeight.current + deltaY));
       setManualHeight(newHeight);
     };
 
-    const handleMouseUp = () => setIsDragging(false);
+    const handlePointerUp = () => setIsDragging(false);
 
-    document.addEventListener("mousemove", handleMouseMove);
-    document.addEventListener("mouseup", handleMouseUp);
+    document.addEventListener("pointermove", handlePointerMove);
+    document.addEventListener("pointerup", handlePointerUp);
+    document.addEventListener("pointercancel", handlePointerUp);
     return () => {
-      document.removeEventListener("mousemove", handleMouseMove);
-      document.removeEventListener("mouseup", handleMouseUp);
+      document.removeEventListener("pointermove", handlePointerMove);
+      document.removeEventListener("pointerup", handlePointerUp);
+      document.removeEventListener("pointercancel", handlePointerUp);
     };
-  }, [isDragging, minHeight, maxHeight]);
+  }, [isDragging, minHeight]);
 
   return (
     <Card
@@ -91,9 +95,9 @@ export function FeedbackContainer({
     >
       {/* Drag handle at top edge */}
       <Box
-        onMouseDown={handleMouseDown}
+        onPointerDown={handlePointerDown}
         style={{
-          height: 8,
+          height: 16,
           cursor: "ns-resize",
           display: "flex",
           alignItems: "center",
@@ -102,6 +106,7 @@ export function FeedbackContainer({
           borderBottom: "1px solid var(--gray-5)",
           flexShrink: 0,
           userSelect: "none",
+          touchAction: "none",
         }}
       >
         <DragHandleHorizontalIcon style={{ color: "var(--gray-9)", width: 16, height: 16 }} />
