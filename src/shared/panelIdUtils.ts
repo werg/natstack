@@ -54,7 +54,8 @@ export function computePanelId(params: {
       const segment = sanitizePanelIdSegment(requestedId);
       return `tree/${segment}`;
     }
-    return `tree/${escapedPath}`;
+    const nonce = generatePanelNonce();
+    return `tree/${escapedPath}/${nonce}`;
   }
 
   // Parent prefix: use parent's full ID, or "tree" for root panels

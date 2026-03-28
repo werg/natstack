@@ -193,6 +193,87 @@ describe("PubSubChannel", () => {
     });
   });
 
+  describe("method result delivery", () => {
+    it("broadcasts a persisted method-result even when the caller is a DO", async () => {
+      const { instance, sql } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+
+      const mockRpc = {
+        emit: vi.fn().mockResolvedValue(undefined),
+        call: vi.fn().mockResolvedValue(undefined),
+      };
+      (instance as any)._rpc = mockRpc;
+
+      sql.exec(
+        `INSERT INTO participants (id, metadata, transport, connected_at, do_source, do_class, do_key)
+         VALUES (?, '{}', 'do', ?, 'workers/agent-worker', 'AiChatWorker', 'agent-1')`,
+        "do:workers/agent-worker:AiChatWorker:agent-1", Date.now(),
+      );
+      sql.exec(
+        `INSERT INTO participants (id, metadata, transport, connected_at)
+         VALUES (?, '{}', 'rpc', ?)`,
+        "panel-1", Date.now(),
+      );
+      sql.exec(
+        `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        "call-1",
+        "do:workers/agent-worker:AiChatWorker:agent-1",
+        "panel-1",
+        "eval",
+        "{}",
+        Date.now() + 60_000,
+        Date.now(),
+      );
+
+      await instance.publish("panel-1", "method-result", {
+        callId: "call-1",
+        content: { ok: true, result: 42 },
+        complete: true,
+        isError: false,
+      }, { persist: true });
+
+      expect(mockRpc.call).toHaveBeenCalledWith(
+        "do:workers/agent-worker:AiChatWorker:agent-1",
+        "onCallResult",
+        "call-1",
+        { ok: true, result: 42 },
+        false,
+      );
+
+      expect(mockRpc.emit).toHaveBeenCalledWith(
+        "panel-1",
+        "channel:message",
+        expect.objectContaining({
+          channelId: "test-channel",
+          message: expect.objectContaining({
+            kind: "persisted",
+            type: "method-result",
+            payload: expect.objectContaining({
+              callId: "call-1",
+              content: { ok: true, result: 42 },
+              complete: true,
+              isError: false,
+            }),
+          }),
+        }),
+      );
+
+      const persisted = sql.exec(
+        `SELECT type, sender_id, content FROM messages WHERE type = 'method-result'`,
+      ).toArray();
+      expect(persisted).toHaveLength(1);
+      expect(persisted[0]!["sender_id"]).toBe("do:workers/agent-worker:AiChatWorker:agent-1");
+      expect(JSON.parse(persisted[0]!["content"] as string)).toMatchObject({
+        callId: "call-1",
+        content: { ok: true, result: 42 },
+        complete: true,
+        isError: false,
+      });
+    });
+  });
+
   describe("postClone()", () => {
     it("fixes __objectKey identity after clone", async () => {
       const { instance, sql } = await createTestDO(PubSubChannel, {

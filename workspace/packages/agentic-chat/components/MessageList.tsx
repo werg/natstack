@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from "react";
 import { Box, Button, Card, Flex, ScrollArea, Text } from "@radix-ui/themes";
-import { prettifyToolName } from "@natstack/pubsub";
 import type { Participant } from "@natstack/pubsub";
 import type { MethodHistoryEntry } from "./MethodHistoryItem";
 import { InlineGroup, type InlineItem } from "./InlineGroup";
@@ -80,22 +79,10 @@ function buildInlineItems(
     }
   });
 
-  // Collect method tool names — when a method entry exists with rich data
-  // (args, result, code), prefer it over the lightweight action pill
-  const methodToolNames = new Set<string>();
-  for (const item of inlineItems) {
-    if (item.type === "method") {
-      methodToolNames.add(prettifyToolName(item.entry.methodName));
-    }
-  }
-
   return inlineItems.filter((item, i) => {
     if (item.type === "action" && item.data.toolUseId) {
       const lastIndex = lastActionIndexByToolUseId.get(item.data.toolUseId);
       if (lastIndex !== undefined && i !== lastIndex) return false;
-      // Prefer method entry over action when both exist (method has args/result/code)
-      const actionToolName = prettifyToolName(item.data.type);
-      if (methodToolNames.has(actionToolName)) return false;
     }
     return true;
   });

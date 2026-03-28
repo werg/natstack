@@ -854,31 +854,31 @@ export class PubSubChannel extends DurableObjectBase {
           }
         }
       }
-    } else {
-      // Persist and broadcast result as a normal channel message
-      const ts = Date.now();
-      const payload = { callId, content: result, complete: true, isError: isError ?? false };
-      const payloadJson = JSON.stringify(payload);
-      const messageId = crypto.randomUUID();
+    }
 
-      this.sql.exec(
-        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist, sender_metadata)
-         VALUES (?, 'method-result', ?, ?, ?, 1, NULL)`,
-        messageId, payloadJson, callerId, ts,
-      );
-      const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
+    // Persist and broadcast result as a normal channel message so provider-side
+    // clients can clear pending tool state even when the actual caller is a DO.
+    const ts = Date.now();
+    const payload = { callId, content: result, complete: true, isError: isError ?? false };
+    const payloadJson = JSON.stringify(payload);
+    const messageId = crypto.randomUUID();
 
-      const event: ChannelEvent = {
-        id, messageId, type: "method-result",
-        payload, senderId: callerId, ts, persist: true,
-      };
-      const msg = channelEventToWsJson(event, "persisted");
-      // Emit to all participants via RPC (caller picks it up by callId)
-      const participants = this.sql.exec(`SELECT id FROM participants`).toArray();
-      const data = { channelId: this.objectKey, message: msg };
-      for (const p of participants) {
-        this.rpc.emit(p["id"] as string, "channel:message", data).catch(err => console.warn(`[Channel] emit failed:`, err));
-      }
+    this.sql.exec(
+      `INSERT INTO messages (message_id, type, content, sender_id, ts, persist, sender_metadata)
+       VALUES (?, 'method-result', ?, ?, ?, 1, NULL)`,
+      messageId, payloadJson, callerId, ts,
+    );
+    const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
+
+    const event: ChannelEvent = {
+      id, messageId, type: "method-result",
+      payload, senderId: callerId, ts, persist: true,
+    };
+    const msg = channelEventToWsJson(event, "persisted");
+    const participants = this.sql.exec(`SELECT id FROM participants`).toArray();
+    const data = { channelId: this.objectKey, message: msg };
+    for (const p of participants) {
+      this.rpc.emit(p["id"] as string, "channel:message", data).catch(err => console.warn(`[Channel] emit failed:`, err));
     }
   }
 

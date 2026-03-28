@@ -43,9 +43,9 @@ describe("generatePanelNonce", () => {
 });
 
 describe("computePanelId", () => {
-  it("root panels get tree/{escapedPath}", () => {
+  it("root panels get tree/{escapedPath}/{nonce}", () => {
     const id = computePanelId({ relativePath: "src/index.ts", isRoot: true });
-    expect(id).toBe("tree/src~index.ts");
+    expect(id).toMatch(/^tree\/src~index\.ts\/[a-z0-9]+-deadbeef$/);
   });
 
   it("named children get {parentId}/{name}", () => {
