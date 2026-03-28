@@ -1,5 +1,5 @@
 /**
- * Method History Tracker — headless equivalent of useMethodHistory.
+ * Method History Tracker — tracks method call lifecycle with auto-pruning.
  *
  * Tracks method call lifecycle (pending → success/error), with
  * auto-pruning of completed entries to bound memory usage.

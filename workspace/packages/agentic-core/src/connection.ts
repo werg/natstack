@@ -1,7 +1,7 @@
 /**
  * ConnectionManager — Headless PubSub connection lifecycle.
  *
- * Equivalent of useChannelConnection but without React hooks.
+ * PubSub connection lifecycle — connect, disconnect, event loop, roster.
  * Manages connect/disconnect, event loop, roster, reconnect.
  */
 

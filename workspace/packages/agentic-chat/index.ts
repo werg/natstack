@@ -44,14 +44,6 @@ export type { ChatDebugState } from "./hooks/features/useChatDebug";
 export { useInlineUi } from "./hooks/features/useInlineUi";
 export type { InlineUiState } from "./hooks/features/useInlineUi";
 
-// Event dispatch and types (canonical source: @workspace/agentic-core)
-export { dispatchAgenticEvent } from "@workspace/agentic-core";
-export type {
-  AgentEventHandlers,
-  DirtyRepoDetails,
-  EventMiddleware,
-} from "@workspace/agentic-core";
-
 // --- High-level components ---
 export { AgenticChat } from "./components/AgenticChat";
 export type { AgenticChatProps } from "./components/AgenticChat";
@@ -76,9 +68,6 @@ export type { InlineItem } from "./components/InlineGroup";
 export { ThinkingPill, ExpandedThinking, PREVIEW_MAX_LENGTH } from "./components/ThinkingMessage";
 export { ActionPill, ExpandedAction, parseActionData } from "./components/ActionMessage";
 export { CompactMethodPill, ExpandedMethodDetail } from "./components/MethodHistoryItem";
-// MethodHistoryEntry + MethodCallStatus canonical source is @workspace/agentic-core;
-// re-exported here for backward compatibility.
-export type { MethodHistoryEntry, MethodCallStatus } from "@workspace/agentic-core";
 export { MethodArgumentsModal } from "./components/MethodArgumentsModal";
 export { TypingPill, parseTypingData } from "./components/TypingMessage";
 export { TypingIndicator } from "./components/TypingIndicator";

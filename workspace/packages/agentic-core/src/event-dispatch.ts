@@ -3,7 +3,7 @@
  *
  * Handles incoming agentic events and routes them to appropriate state handlers.
  * Pure function — no React or browser dependencies.
- * Extracted from useAgentEvents.ts for headless reuse.
+ * Pure function — no React or browser dependencies.
  */
 
 import type {
