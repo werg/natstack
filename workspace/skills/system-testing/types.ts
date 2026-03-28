@@ -1,4 +1,5 @@
 import type { ChatMessage } from "@workspace/agentic-core";
+import type { SessionSnapshot } from "@workspace/agentic-session";
 
 export interface TestCase {
   name: string;
@@ -15,9 +16,14 @@ export interface TestCase {
 }
 
 export interface TestExecutionResult {
+  /** Full conversation messages */
   messages: ChatMessage[];
+  /** Wall-clock duration in ms */
   duration: number;
+  /** Transport/session-level error (if the session itself failed) */
   error?: string;
+  /** Full diagnostic snapshot from the session (method history, debug events, participants) */
+  snapshot?: SessionSnapshot;
 }
 
 export interface TestResult {
@@ -34,7 +40,7 @@ export interface TestSuiteResult {
   skipped: number;
   duration: number;
   results: Array<{
-    test: { name: string; category: string; description: string };
+    test: { name: string; category: string; description: string; prompt: string };
     result: TestResult;
     execution: TestExecutionResult;
   }>;

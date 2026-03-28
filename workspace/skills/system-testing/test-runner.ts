@@ -1,11 +1,15 @@
 import type { TestCase, TestSuiteResult, TestExecutionResult, TestResult } from "./types.js";
 import type { HeadlessRunner } from "./runner.js";
 import type { ChatMessage } from "@workspace/agentic-core";
+import type { SessionSnapshot } from "@workspace/agentic-session";
 
 export class TestRunner {
   constructor(
     private runner: HeadlessRunner,
-    private opts?: { onTestStart?: (test: TestCase) => void; onTestEnd?: (test: TestCase, result: TestResult) => void }
+    private opts?: {
+      onTestStart?: (test: TestCase) => void;
+      onTestEnd?: (test: TestCase, result: TestResult, execution: TestExecutionResult) => void;
+    }
   ) {}
 
   async runSuite(tests: TestCase[], filter?: { category?: string; name?: string }): Promise<TestSuiteResult> {
@@ -23,14 +27,14 @@ export class TestRunner {
       this.opts?.onTestStart?.(test);
       const { result, execution } = await this.runOne(test);
       results.push({
-        test: { name: test.name, category: test.category, description: test.description },
+        test: { name: test.name, category: test.category, description: test.description, prompt: test.prompt },
         result,
         execution,
       });
       if (execution.error) errored++;
       else if (result.passed) passed++;
       else failed++;
-      this.opts?.onTestEnd?.(test, result);
+      this.opts?.onTestEnd?.(test, result, execution);
     }
 
     return {
@@ -56,17 +60,21 @@ export class TestRunner {
       await session.sendAndWait(test.prompt, { timeout });
 
       const messages = [...session.messages] as ChatMessage[];
+      const snapshot = session.snapshot();
       const duration = Date.now() - startTime;
-      const execution: TestExecutionResult = { messages, duration };
+      const execution: TestExecutionResult = { messages, duration, snapshot };
       const result = test.validate(execution);
       return { result, execution };
     } catch (err) {
       const duration = Date.now() - startTime;
       const messages = session ? ([...session.messages] as ChatMessage[]) : [];
+      let snapshot: SessionSnapshot | undefined;
+      try { snapshot = session?.snapshot(); } catch { /* session may be dead */ }
       const execution: TestExecutionResult = {
         messages,
         duration,
         error: err instanceof Error ? err.message : String(err),
+        snapshot,
       };
       return {
         result: { passed: false, reason: `Error: ${execution.error}` },
