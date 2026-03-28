@@ -54,8 +54,8 @@ natstack-server ready:
 | `--host <hostname>` | `NATSTACK_HOST` | External hostname; also sets bind to `0.0.0.0` |
 | `--bind-host <addr>` | `NATSTACK_BIND_HOST` | Explicit bind address (overrides `--host` default) |
 | `--protocol <http\|https>` | `NATSTACK_PROTOCOL` | Protocol for panel-facing URLs |
-| `--cert <path>` | — | TLS certificate file (PEM). Enables HTTPS with `--key`. |
-| `--key <path>` | — | TLS private key file (PEM). Required with `--cert`. |
+| `--tls-cert <path>` | — | TLS certificate file (PEM). Enables HTTPS with `--tls-key`. |
+| `--tls-key <path>` | — | TLS private key file (PEM). Required with `--tls-cert`. |
 | `--serve-panels` | — | Enable panel HTTP serving |
 | `--panel-port <port>` | — | Port for panel HTTP (default: auto-assigned) |
 | `--init` | — | Auto-create workspace from template if it doesn't exist |
@@ -82,12 +82,12 @@ To serve over HTTPS directly (without a reverse proxy):
 node dist/server/index.js \
   --workspace my-workspace \
   --host my-server.example.com \
-  --cert /path/to/cert.pem \
-  --key /path/to/key.pem \
+  --tls-cert /path/to/cert.pem \
+  --tls-key /path/to/key.pem \
   --serve-panels
 ```
 
-Both `--cert` and `--key` must be provided together. When TLS is enabled, the gateway serves HTTPS and the RPC endpoint accepts WSS connections.
+Both `--tls-cert` and `--tls-key` must be provided together. When TLS is enabled, the gateway serves HTTPS and the RPC endpoint accepts WSS connections.
 
 Alternatively, place a reverse proxy (nginx, caddy) in front and use `--protocol https` to tell NatStack that panel-facing URLs should use HTTPS.
 
