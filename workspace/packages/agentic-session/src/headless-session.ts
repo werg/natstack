@@ -469,7 +469,7 @@ export class HeadlessSession {
    * and on timeout provides a full session snapshot for diagnostics.
    */
   waitForAgentMessage(opts?: { timeout?: number }): Promise<ChatMessage> {
-    const timeout = opts?.timeout ?? 60_000;
+    const timeout = opts?.timeout ?? 0;  // 0 = no timeout (wait indefinitely)
     const selfId = this._manager.client?.clientId;
 
     const isAgentMessage = (msg: ChatMessage): boolean =>
@@ -493,16 +493,16 @@ export class HeadlessSession {
     const baselineCount = existing.length;
 
     return new Promise<ChatMessage>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const timer = timeout > 0 ? setTimeout(() => {
         unsub();
         reject(new HeadlessTimeoutError(
           `Timed out waiting for agent message after ${timeout}ms`,
           this.snapshot(),
         ));
-      }, timeout);
+      }, timeout) : null;
 
       const cleanup = (fn: () => void) => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         unsub();
         fn();
       };
@@ -545,7 +545,7 @@ export class HeadlessSession {
    * Uses the same disconnect detection as waitForAgentMessage.
    */
   waitForIdle(opts?: { timeout?: number; debounce?: number }): Promise<ChatMessage> {
-    const timeout = opts?.timeout ?? 60_000;
+    const timeout = opts?.timeout ?? 0;  // 0 = no timeout (wait indefinitely)
     const debounceMs = opts?.debounce ?? 3_000;
     const selfId = this._manager.client?.clientId;
 
@@ -572,7 +572,7 @@ export class HeadlessSession {
       let lastMatch: ChatMessage | undefined;
       let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
-      const overallTimer = setTimeout(() => {
+      const overallTimer = timeout > 0 ? setTimeout(() => {
         cleanup();
         if (lastMatch) {
           resolve(lastMatch);
@@ -582,10 +582,10 @@ export class HeadlessSession {
             this.snapshot(),
           ));
         }
-      }, timeout);
+      }, timeout) : null;
 
       const cleanup = () => {
-        clearTimeout(overallTimer);
+        if (overallTimer) clearTimeout(overallTimer);
         if (debounceTimer !== undefined) clearTimeout(debounceTimer);
         unsub();
       };

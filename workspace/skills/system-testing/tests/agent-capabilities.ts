@@ -7,7 +7,6 @@ export const agentCapabilityTests: TestCase[] = [
     description: "Agent stores something in scope and retrieves it later",
     category: "agent-capabilities",
     prompt: "Store something in scope and then retrieve it in a separate step. Tell me what you stored and got back.",
-    timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -23,7 +22,6 @@ export const agentCapabilityTests: TestCase[] = [
     description: "Agent recovers from a thrown error and retries successfully",
     category: "agent-capabilities",
     prompt: "Run some code that will fail, then recover and run something that succeeds. Tell me about both outcomes.",
-    timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -40,7 +38,6 @@ export const agentCapabilityTests: TestCase[] = [
     description: "Agent generates a large data structure and reports on it",
     category: "agent-capabilities",
     prompt: "Generate a large array of objects and tell me how many you created.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const hasNumber = /\d{2,}/.test(msg);
@@ -55,7 +52,6 @@ export const agentCapabilityTests: TestCase[] = [
     description: "Dynamically import an external package and use it",
     category: "agent-capabilities",
     prompt: "Import an external package and use it for something useful. Tell me what you imported and what happened.",
-    timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -71,7 +67,6 @@ export const agentCapabilityTests: TestCase[] = [
     description: "Console output is captured and reported",
     category: "agent-capabilities",
     prompt: "Run some code that logs to the console, then tell me what the output was.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -87,7 +82,6 @@ export const agentCapabilityTests: TestCase[] = [
     description: "Multiple scope assignments persist independently",
     category: "agent-capabilities",
     prompt: "Store several different values in scope across separate code executions, then read them all back. Confirm they all persisted.",
-    timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();

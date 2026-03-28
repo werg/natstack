@@ -7,7 +7,6 @@ export const gitTests: TestCase[] = [
     description: "Initialize a git repo, create a file, and commit",
     category: "git",
     prompt: "Initialize a new git repo, create a file, and commit it. Tell me the commit hash.",
-    timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       // Commit hashes are hex strings of 7+ chars
@@ -23,7 +22,6 @@ export const gitTests: TestCase[] = [
     description: "Create and switch branches",
     category: "git",
     prompt: "In a git repo, create a new branch, switch to it, and make a commit. Tell me the branch name.",
-    timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -39,7 +37,6 @@ export const gitTests: TestCase[] = [
     description: "Modify a file and check git status/diff",
     category: "git",
     prompt: "In a git repo, modify a tracked file and check the diff. Tell me what changed.",
-    timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -56,7 +53,6 @@ export const gitTests: TestCase[] = [
     description: "Make multiple commits and view the log",
     category: "git",
     prompt: "Create a git repo, make a few commits, and show the log. Tell me the commit messages.",
-    timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -72,7 +68,6 @@ export const gitTests: TestCase[] = [
     description: "Stash changes, verify clean state, then pop",
     category: "git",
     prompt: "In a git repo, modify a file, stash the changes, verify the working tree is clean, then pop the stash. Tell me what happened at each step.",
-    timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -88,7 +83,6 @@ export const gitTests: TestCase[] = [
     description: "Push a commit to the workspace git server",
     category: "git",
     prompt: "Set up a repo and try to push a commit to the workspace git server. Report the result.",
-    timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();

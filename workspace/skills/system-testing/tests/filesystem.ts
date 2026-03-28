@@ -7,7 +7,6 @@ export const filesystemTests: TestCase[] = [
     description: "Write and read a text file",
     category: "filesystem",
     prompt: "Write some text to a file and read it back. Tell me what you wrote and what you got back.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -23,7 +22,6 @@ export const filesystemTests: TestCase[] = [
     description: "Write binary data and decode it back",
     category: "filesystem",
     prompt: "Write some binary data to a file, read it back, and decode it. Tell me what you get.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -39,7 +37,6 @@ export const filesystemTests: TestCase[] = [
     description: "Append content to a file and verify all content is present",
     category: "filesystem",
     prompt: "Write a line to a file, then append another line, then read the whole file. Tell me all the content.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -55,7 +52,6 @@ export const filesystemTests: TestCase[] = [
     description: "Create nested directories and list contents",
     category: "filesystem",
     prompt: "Create a nested directory structure and list its contents. Tell me what directories you created.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -71,7 +67,6 @@ export const filesystemTests: TestCase[] = [
     description: "Get file statistics including size and modification time",
     category: "filesystem",
     prompt: "Write a file and then get its stats. Tell me the size and when it was last modified.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -87,7 +82,6 @@ export const filesystemTests: TestCase[] = [
     description: "Copy or rename a file and verify the result",
     category: "filesystem",
     prompt: "Write a file, then copy or rename it, and verify the new file has the same content. Tell me what happened.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -103,7 +97,6 @@ export const filesystemTests: TestCase[] = [
     description: "Create and recursively remove a directory",
     category: "filesystem",
     prompt: "Create a directory with some files inside, then remove it all. Verify it's gone.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -120,7 +113,6 @@ export const filesystemTests: TestCase[] = [
     description: "Create and read through a symbolic link",
     category: "filesystem",
     prompt: "Create a file, make a symlink pointing to it, and read through the symlink. Verify the content matches.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -136,7 +128,6 @@ export const filesystemTests: TestCase[] = [
     description: "Use low-level file handles to write and read",
     category: "filesystem",
     prompt: "Open a file using low-level file handle APIs, write something, close it, then read it back. Tell me what happened.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();

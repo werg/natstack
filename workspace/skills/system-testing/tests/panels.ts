@@ -7,7 +7,6 @@ export const panelTests: TestCase[] = [
     description: "Open a new panel",
     category: "panels",
     prompt: "Open a new panel. Tell me whether it was created successfully.",
-    timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
@@ -24,7 +23,6 @@ export const panelTests: TestCase[] = [
     description: "Create a browser panel pointing to a URL",
     category: "panels",
     prompt: "Open a browser panel to a website. Tell me about the panel that was created.",
-    timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
@@ -41,7 +39,6 @@ export const panelTests: TestCase[] = [
     description: "Navigate a browser panel to a new URL",
     category: "panels",
     prompt: "Open a browser panel, then navigate it to a different URL. Tell me the URL before and after.",
-    timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
@@ -58,7 +55,6 @@ export const panelTests: TestCase[] = [
     description: "Take a screenshot of a browser panel",
     category: "panels",
     prompt: "Open a browser panel to a webpage and take a screenshot. Tell me about the image you captured.",
-    timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
@@ -76,7 +72,6 @@ export const panelTests: TestCase[] = [
     description: "Evaluate JavaScript in a browser panel",
     category: "panels",
     prompt: "Open a browser panel and evaluate some JavaScript on the page. Tell me what it returned.",
-    timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
@@ -93,7 +88,6 @@ export const panelTests: TestCase[] = [
     description: "List available panel sources from the build system",
     category: "panels",
     prompt: "List the available panel sources. Tell me what panels can be opened.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };

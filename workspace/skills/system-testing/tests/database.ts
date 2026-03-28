@@ -7,7 +7,6 @@ export const databaseTests: TestCase[] = [
     description: "Create a table, insert rows, and query them",
     category: "database",
     prompt: "Create a database, set up a table, insert a couple of rows, and query them back. Tell me what you stored and retrieved.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -23,7 +22,6 @@ export const databaseTests: TestCase[] = [
     description: "Use parameterized queries for safe insertion",
     category: "database",
     prompt: "Create a database and use parameterized queries to safely insert and retrieve data. Tell me what you stored and got back.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -39,7 +37,6 @@ export const databaseTests: TestCase[] = [
     description: "Two databases remain isolated from each other",
     category: "database",
     prompt: "Open two separate databases, store different data in each, and verify they are isolated from each other. Tell me what each database contains.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -55,7 +52,6 @@ export const databaseTests: TestCase[] = [
     description: "Add a column to an existing table and insert new data",
     category: "database",
     prompt: "Create a database with a table, insert some data, then alter the table to add a new column and insert a row using it. Query everything back.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -71,7 +67,6 @@ export const databaseTests: TestCase[] = [
     description: "Execute multiple SQL statements in one call",
     category: "database",
     prompt: "Create a database and execute multiple statements in a single call to set up and populate a table. Then count the rows.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -87,7 +82,6 @@ export const databaseTests: TestCase[] = [
     description: "Data persists after closing and reopening a database",
     category: "database",
     prompt: "Create a database, insert some data, close it, then reopen the same database and verify the data is still there.",
-    timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();

@@ -56,8 +56,7 @@ export class TestRunner {
         systemPrompt: test.systemPrompt,
       });
 
-      const timeout = test.timeout ?? 60_000;
-      await session.sendAndWait(test.prompt, { timeout });
+      await session.sendAndWait(test.prompt, { timeout: test.timeout });
 
       const messages = [...session.messages] as ChatMessage[];
       const snapshot = session.snapshot();

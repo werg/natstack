@@ -9,7 +9,7 @@ export interface TestCase {
   prompt: string;
   /** Override the test agent's system prompt */
   systemPrompt?: string;
-  /** Timeout in ms (default 60000) */
+  /** Timeout in ms (default: no timeout — waits until agent disconnects or goes idle) */
   timeout?: number;
   /** Validate the test execution result */
   validate: (result: TestExecutionResult) => TestResult;

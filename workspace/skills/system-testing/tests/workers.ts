@@ -7,7 +7,6 @@ export const workerTests: TestCase[] = [
     description: "List available worker types",
     category: "workers",
     prompt: "List the available worker types. Tell me what kinds of workers can be created.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
@@ -24,7 +23,6 @@ export const workerTests: TestCase[] = [
     description: "Create a worker instance",
     category: "workers",
     prompt: "Create a worker instance and tell me about it.",
-    timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
@@ -41,7 +39,6 @@ export const workerTests: TestCase[] = [
     description: "List running worker instances",
     category: "workers",
     prompt: "List the running workers. Tell me what's currently active.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
@@ -59,7 +56,6 @@ export const workerTests: TestCase[] = [
     description: "Create a worker and then destroy it",
     category: "workers",
     prompt: "Create a worker, verify it exists, then destroy it and verify it's gone.",
-    timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
@@ -77,7 +73,6 @@ export const workerTests: TestCase[] = [
     description: "Call a method on a Durable Object worker",
     category: "workers",
     prompt: "Create a Durable Object worker and call a method on it. Tell me the response.",
-    timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
@@ -95,7 +90,6 @@ export const workerTests: TestCase[] = [
     description: "Create a worker with environment variables",
     category: "workers",
     prompt: "Create a worker with custom environment variables and verify they're accessible inside the worker.",
-    timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };

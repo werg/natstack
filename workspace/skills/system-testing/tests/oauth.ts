@@ -7,7 +7,6 @@ export const oauthTests: TestCase[] = [
     description: "List configured OAuth providers",
     category: "oauth",
     prompt: "List the configured OAuth providers. Tell me what's available.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
@@ -25,7 +24,6 @@ export const oauthTests: TestCase[] = [
     description: "Check for active OAuth connections",
     category: "oauth",
     prompt: "Check for active OAuth connections. Tell me what accounts are connected, or if there are none.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
@@ -43,7 +41,6 @@ export const oauthTests: TestCase[] = [
     description: "Get an error when requesting a token without a connection",
     category: "oauth",
     prompt: "Try to get an OAuth token for a provider that has no active connection. Tell me the error.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };

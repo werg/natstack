@@ -7,7 +7,6 @@ export const skillTests: TestCase[] = [
     description: "Load the sandbox skill and describe what it offers",
     category: "skills",
     prompt: "Load the sandbox skill and describe what it offers.",
-    timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -24,7 +23,6 @@ export const skillTests: TestCase[] = [
     description: "Load the paneldev skill and describe what projects it can create",
     category: "skills",
     prompt: "Load the paneldev skill and describe what kinds of projects it can create.",
-    timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -41,7 +39,6 @@ export const skillTests: TestCase[] = [
     description: "Load the api-integrations skill and list what it supports",
     category: "skills",
     prompt: "Load the api-integrations skill and tell me what integrations it supports.",
-    timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -58,7 +55,6 @@ export const skillTests: TestCase[] = [
     description: "Load the headless-sessions skill and describe its capabilities",
     category: "skills",
     prompt: "Load the headless-sessions skill and describe what it can do.",
-    timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();

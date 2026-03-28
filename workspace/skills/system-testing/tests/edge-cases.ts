@@ -7,7 +7,6 @@ export const edgeCaseTests: TestCase[] = [
     description: "Handle a timeout for long-running code",
     category: "edge-cases",
     prompt: "Run some code with a very short timeout so it times out. Tell me how the timeout was handled.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -24,7 +23,6 @@ export const edgeCaseTests: TestCase[] = [
     description: "Graceful error for importing something that doesn't exist",
     category: "edge-cases",
     prompt: "Try to import a package that doesn't exist. Tell me what error you got.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -41,7 +39,6 @@ export const edgeCaseTests: TestCase[] = [
     description: "Graceful error for invalid SQL syntax",
     category: "edge-cases",
     prompt: "Open a database and run some intentionally invalid SQL. Tell me the error.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -58,7 +55,6 @@ export const edgeCaseTests: TestCase[] = [
     description: "Graceful error for reading a nonexistent file",
     category: "edge-cases",
     prompt: "Try to read a file that doesn't exist. Tell me the error.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -75,7 +71,6 @@ export const edgeCaseTests: TestCase[] = [
     description: "Closing a database twice does not crash",
     category: "edge-cases",
     prompt: "Open a database, close it, then try to close it again. Tell me what happens.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();

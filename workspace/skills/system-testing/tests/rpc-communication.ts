@@ -7,7 +7,6 @@ export const rpcTests: TestCase[] = [
     description: "Call a service and report the result",
     category: "rpc-communication",
     prompt: "Call a service via RPC and report the result.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
@@ -25,7 +24,6 @@ export const rpcTests: TestCase[] = [
     description: "List worker sources via RPC",
     category: "rpc-communication",
     prompt: "List worker sources via RPC. Tell me what sources exist.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };

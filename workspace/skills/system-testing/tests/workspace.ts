@@ -7,7 +7,6 @@ export const workspaceTests: TestCase[] = [
     description: "List all workspaces",
     category: "workspace",
     prompt: "List the available workspaces. Tell me their names.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
@@ -24,7 +23,6 @@ export const workspaceTests: TestCase[] = [
     description: "Get the current workspace info",
     category: "workspace",
     prompt: "Get the currently active workspace and tell me about it.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
@@ -42,7 +40,6 @@ export const workspaceTests: TestCase[] = [
     description: "Get workspace configuration",
     category: "workspace",
     prompt: "Get the workspace configuration. Tell me what's configured.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };

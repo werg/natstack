@@ -7,7 +7,6 @@ export const aiTests: TestCase[] = [
     description: "Generate a short AI response",
     category: "ai",
     prompt: "Use the AI client to generate a short text response. Tell me what it said.",
-    timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
@@ -25,7 +24,6 @@ export const aiTests: TestCase[] = [
     description: "Stream an AI response and collect the full output",
     category: "ai",
     prompt: "Use the AI client to stream a response and collect all the chunks. Tell me the full output.",
-    timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
@@ -43,7 +41,6 @@ export const aiTests: TestCase[] = [
     description: "AI uses a custom tool during generation",
     category: "ai",
     prompt: "Use the AI client with a custom tool definition and get it to use the tool. Tell me whether it invoked the tool and what happened.",
-    timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
@@ -60,7 +57,6 @@ export const aiTests: TestCase[] = [
     description: "List available AI models",
     category: "ai",
     prompt: "List the available AI models. Tell me what's configured.",
-    timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };

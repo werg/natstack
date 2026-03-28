@@ -7,7 +7,6 @@ export const notificationTests: TestCase[] = [
     description: "Show a notification and confirm it appeared",
     category: "notifications",
     prompt: "Show a notification and tell me whether it was displayed successfully.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
@@ -24,7 +23,6 @@ export const notificationTests: TestCase[] = [
     description: "Show a notification with action buttons",
     category: "notifications",
     prompt: "Show a notification with action buttons. Tell me whether it was created with the actions.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };

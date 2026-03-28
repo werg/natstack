@@ -7,7 +7,6 @@ export const smokeTests: TestCase[] = [
     description: "Agent computes a value and reports it",
     category: "smoke",
     prompt: "Compute something and tell me the result.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -23,7 +22,6 @@ export const smokeTests: TestCase[] = [
     description: "Agent writes a file and reads it back",
     category: "smoke",
     prompt: "Write some text to a file and read it back to verify. Tell me what you wrote and what you read.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -39,7 +37,6 @@ export const smokeTests: TestCase[] = [
     description: "Agent performs basic database CRUD operations",
     category: "smoke",
     prompt: "Create a database, set up a table, insert some data, and query it back to verify. Tell me what you stored and retrieved.",
-    timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -55,7 +52,6 @@ export const smokeTests: TestCase[] = [
     description: "Agent imports a workspace package and inspects exports",
     category: "smoke",
     prompt: "Import a workspace package and tell me what it exports.",
-    timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();

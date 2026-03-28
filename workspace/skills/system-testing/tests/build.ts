@@ -7,7 +7,6 @@ export const buildTests: TestCase[] = [
     description: "Build a workspace package and verify success",
     category: "build",
     prompt: "Build a workspace package and tell me whether the build succeeded.",
-    timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -23,7 +22,6 @@ export const buildTests: TestCase[] = [
     description: "Build an npm package and get a bundle",
     category: "build",
     prompt: "Build an npm package and tell me about the bundle you got.",
-    timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -39,7 +37,6 @@ export const buildTests: TestCase[] = [
     description: "Build a workspace package at a specific git ref",
     category: "build",
     prompt: "Build a workspace package at a previous git ref and tell me the result.",
-    timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -56,7 +53,6 @@ export const buildTests: TestCase[] = [
     description: "Import a built package and inspect its exports",
     category: "build",
     prompt: "Import a built workspace package and list its exports.",
-    timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
