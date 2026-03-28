@@ -132,6 +132,7 @@ function releaseSemaphore(): void {
 
 // Build coalescing: dedup concurrent builds of the same key
 const inFlightBuilds = new Map<string, Promise<BuildResult>>();
+const inFlightLibraryBuilds = new Map<string, Promise<{ bundle: string }>>();
 
 // ---------------------------------------------------------------------------
 // Resolve Plugin
@@ -1361,16 +1362,16 @@ export async function buildPlatformLibrary(
   if (cached) return cached.bundle;
 
   // Check in-flight
-  const inFlight = inFlightBuilds.get(buildKey);
+  const inFlight = inFlightLibraryBuilds.get(buildKey);
   if (inFlight) return (await inFlight).bundle;
 
   const buildPromise = doPlatformBuild(specifier, externals, buildKey);
-  inFlightBuilds.set(buildKey, buildPromise);
+  inFlightLibraryBuilds.set(buildKey, buildPromise);
 
   try {
     return (await buildPromise).bundle;
   } finally {
-    inFlightBuilds.delete(buildKey);
+    inFlightLibraryBuilds.delete(buildKey);
   }
 }
 
@@ -1378,7 +1379,7 @@ async function doPlatformBuild(
   specifier: string,
   externals: string[],
   buildKey: string,
-): Promise<BuildResult> {
+): Promise<{ bundle: string }> {
   await acquireSemaphore();
 
   try {
@@ -1400,7 +1401,9 @@ async function doPlatformBuild(
         entryPoints: [entryFile],
         bundle: true,
         format: "cjs",
-        platform: "browser",
+        // Use "neutral" not "browser" — @natstack/* packages (like git wrapping
+        // isomorphic-git) work with injected fs, not Node.js builtins.
+        platform: "neutral",
         outfile: path.join(outdir, "bundle.js"),
         write: true,
         external: externals,
@@ -1421,7 +1424,7 @@ async function doPlatformBuild(
       };
       buildStore.put(buildKey, artifacts, metadata);
 
-      return { bundle: bundleContent, manifest: null } as unknown as BuildResult;
+      return { bundle: bundleContent };
     } finally {
       try { fs.rmSync(outdir, { recursive: true, force: true }); } catch { /* ignore */ }
     }

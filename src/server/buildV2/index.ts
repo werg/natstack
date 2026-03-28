@@ -216,7 +216,8 @@ export async function initBuildSystemV2(
           // so eval can import them.
           if (unitPath.startsWith("@natstack/") && options?.library) {
             const bundle = await buildPlatformLibrary(unitPath, options.externals ?? []);
-            return { bundle, manifest: null } as unknown as BuildResult;
+            // Library builds only need the bundle string — callers destructure { bundle }
+            return { bundle } as BuildResult;
           }
           throw new Error(`Unknown build unit: ${unitPath}`);
         }
