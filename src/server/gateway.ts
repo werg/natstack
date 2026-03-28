@@ -127,12 +127,13 @@ export class Gateway {
       socket.destroy();
     });
 
+    const isTls = !!(tlsCert && tlsKey);
     const bindHost = this.deps.bindHost ?? "0.0.0.0";
     return new Promise((resolve, reject) => {
       this.server!.listen(port, bindHost, () => {
         const addr = this.server!.address();
         const assignedPort = typeof addr === "object" && addr ? addr.port : port;
-        log.info(`Gateway listening on ${bindHost}:${assignedPort}`);
+        log.info(`Gateway listening on ${bindHost}:${assignedPort}${isTls ? " (TLS)" : ""}`);
         resolve(assignedPort);
       });
       this.server!.on("error", reject);

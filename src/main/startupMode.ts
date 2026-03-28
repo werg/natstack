@@ -13,6 +13,7 @@ import { getAppRoot, getCentralConfigDirectory } from "./paths.js";
 import {
   resolveWorkspaceName,
   resolveOrCreateWorkspace,
+  loadCentralConfig,
 } from "../shared/workspace/loader.js";
 import type { CentralDataManager } from "../shared/centralData.js";
 
@@ -23,12 +24,15 @@ export type StartupMode =
   | { kind: "remote"; remoteUrl: URL; adminToken: string };
 
 /**
- * Parse remote startup mode from env vars.
+ * Parse remote startup mode from env vars, falling back to config.yml.
  * Returns null if not in remote mode.
+ *
+ * Priority: environment variables > config.yml > nothing
  */
 export function parseRemoteStartupMode(): { remoteUrl: URL; adminToken: string } | null {
-  const rawUrl = process.env["NATSTACK_REMOTE_URL"];
-  const adminToken = process.env["NATSTACK_REMOTE_TOKEN"];
+  const centralConfig = loadCentralConfig();
+  const rawUrl = process.env["NATSTACK_REMOTE_URL"] ?? centralConfig.remote?.url;
+  const adminToken = process.env["NATSTACK_REMOTE_TOKEN"] ?? centralConfig.remote?.token;
 
   if (!rawUrl || !adminToken) return null;
 

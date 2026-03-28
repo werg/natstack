@@ -326,6 +326,13 @@ app.on("ready", async () => {
     serverSession = await establishServerSession({
       mode: startupMode,
       onServerEvent: handleServerEvent,
+      onConnectionStatusChanged: (status) => {
+        eventService.emit("server-connection-changed", {
+          status,
+          isRemote: startupMode.kind === "remote",
+          remoteHost: startupMode.kind === "remote" ? startupMode.remoteUrl.hostname : undefined,
+        });
+      },
     });
     workspaceId = serverSession.workspaceId;
 
@@ -421,6 +428,8 @@ app.on("ready", async () => {
     // Shell-only services
     electronContainer.register(rpcService(createAppService({
       panelOrchestrator, serverClient: sc, getViewManager,
+      connectionMode: startupMode.kind === "remote" ? "remote" : "local",
+      remoteHost: startupMode.kind === "remote" ? startupMode.remoteUrl.hostname : undefined,
     })));
     electronContainer.register(rpcService(createPanelShellService({
       panelOrchestrator, panelRegistry,

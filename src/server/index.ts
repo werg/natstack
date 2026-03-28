@@ -74,13 +74,56 @@ interface CliArgs {
   protocol?: "http" | "https";
   tlsCert?: string;
   tlsKey?: string;
+  printToken?: boolean;
+  help?: boolean;
+}
+
+function printHelp(): void {
+  console.log(`
+natstack-server — Headless and standalone NatStack server
+
+Usage:
+  node dist/server/index.js [options]
+
+Options:
+  --workspace <name>       Workspace name to resolve (default: last-opened or "default")
+  --workspace-dir <path>   Explicit workspace directory path
+  --app-root <path>        Application root directory (default: cwd)
+  --host <hostname>        External hostname (also sets bind to 0.0.0.0)
+  --bind-host <addr>       Explicit bind address (default: 127.0.0.1, or 0.0.0.0 with --host)
+  --protocol <http|https>  Protocol for panel-facing URLs (default: http)
+  --tls-cert <path>        TLS certificate file (PEM). Enables HTTPS when used with --tls-key.
+  --tls-key <path>         TLS private key file (PEM). Required when --tls-cert is provided.
+  --serve-panels           Enable panel HTTP serving
+  --panel-port <port>      Port for panel HTTP (default: auto-assigned)
+  --init                   Auto-create workspace from template if it doesn't exist
+  --log-level <level>      Log verbosity
+  --print-token            Print the admin token in NATSTACK_ADMIN_TOKEN=... format
+  --help                   Show this help message and exit
+
+Environment variables:
+  NATSTACK_ADMIN_TOKEN     Use a stable admin token instead of generating a random one
+  NATSTACK_HOST            External hostname (same as --host)
+  NATSTACK_BIND_HOST       Explicit bind address (same as --bind-host)
+  NATSTACK_PROTOCOL        Protocol for panel URLs (same as --protocol)
+  NATSTACK_WORKSPACE       Workspace name (same as --workspace)
+  NATSTACK_WORKSPACE_DIR   Workspace directory (same as --workspace-dir)
+  NATSTACK_APP_ROOT        Application root (same as --app-root)
+  NATSTACK_LOG_LEVEL       Log verbosity (same as --log-level)
+
+Remote Electron connection:
+  To connect an Electron frontend to this server, set these env vars before
+  launching the Electron app:
+    NATSTACK_REMOTE_URL=http://<host>:<gateway-port>
+    NATSTACK_REMOTE_TOKEN=<admin-token>
+`);
 }
 
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {};
-  const known = new Set(["workspace", "workspace-dir", "app-root", "log-level", "serve-panels", "panel-port", "init", "host", "bind-host", "protocol", "tls-cert", "tls-key"]);
+  const known = new Set(["workspace", "workspace-dir", "app-root", "log-level", "serve-panels", "panel-port", "init", "host", "bind-host", "protocol", "tls-cert", "tls-key", "print-token", "help"]);
   /** Flags that don't take a value */
-  const booleanFlags = new Set(["serve-panels", "init"]);
+  const booleanFlags = new Set(["serve-panels", "init", "print-token", "help"]);
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -162,6 +205,12 @@ function parseArgs(argv: string[]): CliArgs {
       case "tls-key":
         args.tlsKey = value;
         break;
+      case "print-token":
+        args.printToken = true;
+        break;
+      case "help":
+        args.help = true;
+        break;
     }
   }
 
@@ -173,6 +222,18 @@ let args: CliArgs = {};
 if (!ipcChannel) {
   // Standalone mode: parse CLI args, set env vars
   args = parseArgs(process.argv.slice(2));
+  if (args.help) {
+    printHelp();
+    process.exit(0);
+  }
+  if (args.tlsCert && !args.tlsKey) {
+    console.error("--tls-cert requires --tls-key");
+    process.exit(1);
+  }
+  if (args.tlsKey && !args.tlsCert) {
+    console.error("--tls-key requires --tls-cert");
+    process.exit(1);
+  }
   if (args.workspaceDir) process.env["NATSTACK_WORKSPACE_DIR"] = args.workspaceDir;
   process.env["NATSTACK_APP_ROOT"] = args.appRoot ?? process.cwd();
   if (args.logLevel) process.env["NATSTACK_LOG_LEVEL"] = args.logLevel;
@@ -851,6 +912,7 @@ async function main() {
     const panelHttpServer = container.has("panelHttpServer")
       ? container.get<{ server: import("./panelHttpServer.js").PanelHttpServer }>("panelHttpServer")?.server
       : null;
+
     const gateway = new Gateway({
       rpcHandler: rpcServerInstance,
       panelHttpHandler: panelHttpServer ?? undefined,
@@ -894,15 +956,32 @@ async function main() {
       console.warn("[Server] Failed to register headless service:", err);
     }
 
+    // Write admin token to a well-known file for scripting
+    const tokenFilePath = path.join(statePath, "admin-token");
+    try {
+      fs.writeFileSync(tokenFilePath, adminToken, { mode: 0o600 });
+    } catch (err) {
+      console.warn("[Server] Failed to write admin token file:", err);
+    }
+
+    const isTls = !!(hostConfig.tlsCert && hostConfig.tlsKey);
+    const proto = isTls ? "https" : "http";
+    const wsProto = isTls ? "wss" : "ws";
     console.log("natstack-server ready:");
-    console.log(`  Gateway:   http://localhost:${gatewayPort}`);
-    console.log(`  Git:       (via gateway /_git/)`);
-    console.log(`  Workerd:   (via gateway /_w/)`);
-    console.log(`  RPC:       ws://localhost:${gatewayPort}/rpc`);
+    console.log(`  Gateway:     ${proto}://${hostConfig.externalHost}:${gatewayPort}`);
+    console.log(`  Git:         (via gateway /_git/)`);
+    console.log(`  Workerd:     (via gateway /_w/)`);
+    console.log(`  RPC:         ${wsProto}://${hostConfig.externalHost}:${gatewayPort}/rpc`);
     if (panelHttpPort) {
-      console.log(`  Panels:    http://localhost:${panelHttpPort}`);
+      console.log(`  Panels:      ${proto}://${hostConfig.externalHost}:${panelHttpPort}`);
     }
     console.log(`  Admin token: ${adminToken}`);
+    console.log(`  Token file:  ${tokenFilePath}`);
+
+    if (args.printToken) {
+      // Machine-readable token output on its own line for scripting
+      console.log(`\nNATSTACK_ADMIN_TOKEN=${adminToken}`);
+    }
   }
 
   // ===========================================================================

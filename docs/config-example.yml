@@ -31,6 +31,18 @@ cache:
   expirationMs: 300000         # Expiration time in milliseconds (default: 300000 = 5 minutes)
 
 # ============================================================================
+# Remote Server Configuration
+# ============================================================================
+# Connect the Electron frontend to a standalone NatStack server instead of
+# spawning a local server child process. Both fields are required.
+# Environment variables NATSTACK_REMOTE_URL and NATSTACK_REMOTE_TOKEN
+# take precedence over these values.
+
+# remote:
+#   url: http://my-server.example.com:3000
+#   token: your-admin-token-here
+
+# ============================================================================
 # Size Reference Guide
 # ============================================================================
 # 1 KB = 1024 bytes

@@ -102,6 +102,13 @@ export interface CentralConfig {
   models?: ModelRoleConfig;
   /** Build cache configuration */
   cache?: CacheConfig;
+  /** Remote server configuration (Electron connects to a standalone server) */
+  remote?: {
+    /** Full URL to the remote server gateway (e.g., "http://my-server:3000") */
+    url?: string;
+    /** Admin token for the remote server */
+    token?: string;
+  };
 }
 
 /**

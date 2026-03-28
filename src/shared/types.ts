@@ -44,6 +44,12 @@ export type ThemeAppearance = "light" | "dark";
 
 export interface AppInfo {
   version: string;
+  /** Connection mode: "local" (child process) or "remote" (standalone server) */
+  connectionMode: "local" | "remote";
+  /** Remote server hostname (only when connectionMode is "remote") */
+  remoteHost?: string;
+  /** Current connection status */
+  connectionStatus: "connected" | "connecting" | "disconnected";
 }
 
 export interface PanelInfo {

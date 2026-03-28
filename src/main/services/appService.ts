@@ -11,6 +11,8 @@ export function createAppService(deps: {
   panelOrchestrator: PanelOrchestrator;
   serverClient: ServerClient | null;
   getViewManager: () => ViewManager;
+  connectionMode: "local" | "remote";
+  remoteHost?: string;
 }): ServiceDefinition {
   return {
     name: "app",
@@ -28,7 +30,12 @@ export function createAppService(deps: {
     handler: async (_ctx, method, args) => {
       switch (method) {
         case "getInfo":
-          return { version: app.getVersion() };
+          return {
+            version: app.getVersion(),
+            connectionMode: deps.connectionMode,
+            remoteHost: deps.remoteHost,
+            connectionStatus: deps.serverClient?.getConnectionStatus?.() ?? "connected",
+          };
 
         case "getSystemTheme":
           return nativeTheme.shouldUseDarkColors ? "dark" : "light";

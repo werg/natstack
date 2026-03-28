@@ -10,7 +10,7 @@ import { dialog, app } from "electron";
 import { createDevLogger } from "@natstack/dev-log";
 import { getAppRoot } from "./paths.js";
 import { ServerProcessManager, type ServerPorts } from "./serverProcessManager.js";
-import { createServerClient, type ServerClient } from "./serverClient.js";
+import { createServerClient, type ServerClient, type ConnectionStatus } from "./serverClient.js";
 import { createPanelHttpProxy } from "./panelHttpProxy.js";
 import type { PanelHttpServerLike, ServerInfoLike } from "../shared/panelInterfaces.js";
 import type { ServerInfo } from "./serverInfo.js";
@@ -81,6 +81,7 @@ function buildServerInfo(
 export async function establishServerSession(args: {
   mode: StartupMode;
   onServerEvent: (event: string, payload: unknown) => void;
+  onConnectionStatusChanged?: (status: ConnectionStatus) => void;
 }): Promise<SessionConnection> {
   const { mode, onServerEvent } = args;
 
@@ -91,7 +92,7 @@ export async function establishServerSession(args: {
   let externalHost: string;
 
   if (mode.kind === "remote") {
-    // Remote mode: connect to existing server
+    // Remote mode: connect to existing server with automatic reconnection
     const { remoteUrl, adminToken } = mode;
     externalHost = remoteUrl.hostname;
     protocol = remoteUrl.protocol === "https:" ? "https" : "http";
@@ -99,10 +100,16 @@ export async function establishServerSession(args: {
 
     serverClient = await createServerClient(remotePort, adminToken, {
       wsUrl: `${protocol === "https" ? "wss" : "ws"}://${externalHost}:${remotePort}/rpc`,
+      reconnect: true,
+      maxReconnectAttempts: 10,
+      onConnectionStatusChanged: (status) => {
+        args.onConnectionStatusChanged?.(status);
+      },
       onDisconnect: () => {
+        // Called only after all reconnection attempts are exhausted
         dialog.showErrorBox(
           "Remote Server Disconnected",
-          "The connection to the remote NatStack server was lost. The app will now exit."
+          "The connection to the remote NatStack server was lost and could not be re-established after multiple attempts. The app will now exit."
         );
         app.exit(1);
       },

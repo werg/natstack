@@ -22,7 +22,8 @@ export type EventName =
   | "autofill:save-prompt"
   | "notification:show"
   | "notification:dismiss"
-  | "notification:action";
+  | "notification:action"
+  | "server-connection-changed";
 
 /**
  * Action button definition for notifications.
@@ -97,6 +98,14 @@ export interface EventPayloads {
   "notification:show": NotificationPayload;
   "notification:dismiss": { id: string };
   "notification:action": { id: string; actionId: string };
+  "server-connection-changed": {
+    /** Current connection status */
+    status: "connected" | "connecting" | "disconnected";
+    /** Whether running in remote mode (false = local server child process) */
+    isRemote: boolean;
+    /** Remote server hostname (only when isRemote) */
+    remoteHost?: string;
+  };
 }
 
 /**
@@ -117,6 +126,7 @@ export const VALID_EVENT_NAMES: EventName[] = [
   "notification:show",
   "notification:dismiss",
   "notification:action",
+  "server-connection-changed",
 ];
 
 /**

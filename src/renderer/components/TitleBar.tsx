@@ -7,13 +7,15 @@ import {
   ChevronRightIcon,
   DividerVerticalIcon,
   PlusIcon,
+  GlobeIcon,
 } from "@radix-ui/react-icons";
 import { Box, Flex, IconButton, Text, Tooltip } from "@radix-ui/themes";
-import { useState, type CSSProperties, type MouseEvent } from "react";
+import { useState, useCallback, useEffect, type CSSProperties, type MouseEvent } from "react";
 import { useTouchDevice } from "@workspace/react/responsive";
 
 import { useNavigation } from "./NavigationContext";
-import { panel } from "../shell/client";
+import { panel, app } from "../shell/client";
+import { useShellEvent } from "../shell/useShellEvent";
 
 const isMac = process.platform === "darwin";
 
@@ -27,6 +29,79 @@ import type {
 } from "./navigationTypes";
 import type { PanelContextMenuAction } from "../../shared/types";
 import { menu } from "../shell/client";
+
+type ConnectionInfo = {
+  status: "connected" | "connecting" | "disconnected";
+  isRemote: boolean;
+  remoteHost?: string;
+};
+
+function ConnectionIndicator() {
+  const [info, setInfo] = useState<ConnectionInfo | null>(null);
+
+  // Fetch initial state on mount
+  useEffect(() => {
+    app.getInfo().then((appInfo) => {
+      if (appInfo.connectionMode === "remote") {
+        setInfo({
+          status: appInfo.connectionStatus,
+          isRemote: true,
+          remoteHost: appInfo.remoteHost,
+        });
+      }
+    }).catch(() => {});
+  }, []);
+
+  // Listen for connection status changes
+  const handleConnectionChanged = useCallback((data: ConnectionInfo) => {
+    setInfo(data);
+  }, []);
+  useShellEvent("server-connection-changed", handleConnectionChanged);
+
+  // Only show indicator in remote mode
+  if (!info?.isRemote) return null;
+
+  const statusColor =
+    info.status === "connected" ? "var(--green-9)" :
+    info.status === "connecting" ? "var(--yellow-9)" :
+    "var(--red-9)";
+
+  const statusText =
+    info.status === "connected" ? info.remoteHost ?? "Remote" :
+    info.status === "connecting" ? "Reconnecting..." :
+    "Disconnected";
+
+  return (
+    <Tooltip content={`Remote server: ${info.remoteHost ?? "unknown"} (${info.status})`}>
+      <Flex
+        align="center"
+        gap="1"
+        style={{
+          appRegion: "no-drag",
+          WebkitAppRegion: "no-drag",
+          padding: "2px 6px",
+          borderRadius: "3px",
+          cursor: "default",
+          flexShrink: 0,
+        } as CSSProperties}
+      >
+        <GlobeIcon style={{ color: statusColor, width: 12, height: 12 }} />
+        <Box
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: "50%",
+            backgroundColor: statusColor,
+            flexShrink: 0,
+          }}
+        />
+        <Text size="1" color="gray" style={{ whiteSpace: "nowrap" }}>
+          {statusText}
+        </Text>
+      </Flex>
+    </Tooltip>
+  );
+}
 
 interface TitleBarProps {
   title: string;
@@ -133,6 +208,9 @@ export function TitleBar({ title, onNavigateToId, onPanelAction, onArchive }: Ti
             onArchive={onArchive}
           />
         </Box>
+
+        {/* Connection status indicator (visible in remote mode only) */}
+        <ConnectionIndicator />
 
         {/* Right side: spacer for native window controls (titleBarOverlay) - Windows/Linux only */}
         {!isMac && <Box style={{ width: "138px" }} />}
