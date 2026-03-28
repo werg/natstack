@@ -14,6 +14,15 @@ export class HeadlessRunner {
     this.contextId = contextId;
   }
 
+  /**
+   * Spawn a headless session with full panel capabilities.
+   *
+   * Since HeadlessRunner runs inside a panel, the test agent's eval
+   * executes in the panel context with full access to @workspace/runtime,
+   * panel APIs, browser panels, etc. We use `useDefaultPrompt: true`
+   * so the agent gets the standard NatStack chat prompt with all tools
+   * available — not the restrictive headless prompt.
+   */
   async spawn(opts?: {
     systemPrompt?: string;
     timeout?: number;
@@ -33,6 +42,9 @@ export class HeadlessRunner {
       className: opts?.className ?? "AiChatWorker",
       contextId: this.contextId,
       systemPrompt: opts?.systemPrompt,
+      // Use the default NatStack chat prompt with all tools — don't restrict
+      // to eval+set_title since we're running in a panel context with full capabilities.
+      useDefaultPrompt: true,
     });
   }
 }

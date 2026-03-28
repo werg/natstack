@@ -86,6 +86,13 @@ export interface HeadlessWithAgentConfig extends HeadlessSessionConfig {
   methods?: Record<string, MethodDefinition>;
   /** Additional subscription config */
   extraConfig?: Record<string, unknown>;
+  /**
+   * When true, skip the restrictive headless prompt and tool allowlist.
+   * The agent gets the default NatStack chat prompt with all tools.
+   * Use when the session runs in a panel context where all capabilities
+   * (inline_ui, browser panels, feedback, etc.) are actually available.
+   */
+  useDefaultPrompt?: boolean;
 }
 
 // =============================================================================
@@ -159,6 +166,7 @@ export class HeadlessSession {
       contextId: config.contextId,
       systemPrompt: config.systemPrompt,
       hasEval,
+      useDefaultPrompt: config.useDefaultPrompt,
       extraConfig: config.extraConfig,
     });
 

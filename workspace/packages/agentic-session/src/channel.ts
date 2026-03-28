@@ -57,6 +57,14 @@ export interface SubscribeHeadlessAgentOptions {
   systemPrompt?: string;
   /** Whether eval is available (sandbox configured). Default: true. */
   hasEval?: boolean;
+  /**
+   * When true, skip the restrictive headless system prompt and tool allowlist.
+   * The agent gets the default NatStack chat prompt with all tools available.
+   * Only full-auto approval is applied. Use this when the headless session
+   * runs in a panel context where all capabilities (inline_ui, browser panels,
+   * feedback, etc.) are actually available.
+   */
+  useDefaultPrompt?: boolean;
   /** Additional subscription config */
   extraConfig?: Record<string, unknown>;
 }
@@ -64,17 +72,27 @@ export interface SubscribeHeadlessAgentOptions {
 /**
  * Subscribe a DO agent to a channel with headless defaults.
  *
- * Sets: full-auto approval, headless system prompt, tool allowlist.
+ * Sets: full-auto approval, and optionally headless system prompt + tool allowlist.
  */
 export async function subscribeHeadlessAgent(opts: SubscribeHeadlessAgentOptions): Promise<{ ok: boolean; participantId?: string }> {
-  const harnessConfig = getRecommendedHarnessConfig({ systemPrompt: opts.systemPrompt, hasEval: opts.hasEval });
   const channelConfig = getRecommendedChannelConfig();
 
-  const subscriptionConfig: Record<string, unknown> = {
-    ...harnessConfig,
-    ...channelConfig,
-    ...opts.extraConfig,
-  };
+  let subscriptionConfig: Record<string, unknown>;
+  if (opts.useDefaultPrompt) {
+    // Panel-hosted headless sessions: only set approval, keep default prompt + all tools
+    subscriptionConfig = {
+      ...channelConfig,
+      ...opts.extraConfig,
+    };
+  } else {
+    // Genuinely headless: restrictive prompt + limited tool allowlist
+    const harnessConfig = getRecommendedHarnessConfig({ systemPrompt: opts.systemPrompt, hasEval: opts.hasEval });
+    subscriptionConfig = {
+      ...harnessConfig,
+      ...channelConfig,
+      ...opts.extraConfig,
+    };
+  }
 
   return opts.rpcCall(
     "main",
