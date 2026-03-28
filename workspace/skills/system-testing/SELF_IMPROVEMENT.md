@@ -2,6 +2,19 @@
 
 When system tests reveal bugs in NatStack, follow this workflow to fix them.
 
+## Priority: Fix Infrastructure First
+
+**Never work around broken infrastructure in skills or prompts.** If an RPC method returns unintuitive results, has a confusing signature, swallows errors, or doesn't exist when it should — fix the service, not the caller. The goal is a platform where agents can discover how to use APIs naturally from skill documentation, without needing implementation tricks.
+
+Concretely:
+- **RPC method doesn't work as expected** → fix the service in `src/server/services/`, not the eval code calling it
+- **API requires unintuitive parameters** → fix the API signature, add sensible defaults, improve error messages
+- **Error is swallowed or unclear** → surface it properly with a descriptive message
+- **Capability missing** → add it to the service layer, don't hack a workaround in eval
+- **Skill docs are misleading** → fix the docs AFTER fixing the underlying API
+
+Only after the infrastructure is solid should you adjust skills or test prompts. The test agent should be able to accomplish any task with minimal hints — if it can't, the platform has a bug.
+
 ## Phase 1: Run Tests
 
 ```typescript
@@ -40,35 +53,51 @@ for (const r of scope.results.results.filter(r => !r.result.passed)) {
 }
 ```
 
-Key things to look for:
-- **Agent didn't attempt the task** → system prompt issue, tool availability
-- **Eval errored** → runtime API bug, missing service, incorrect RPC method
-- **Agent succeeded but validation failed** → test case validation too strict, or response format changed
-- **Timeout** → agent stuck in a loop, harness crash, PubSub issue
-- **Agent disconnected** → harness spawn failure, DO crash
+## Phase 3: Classify the Root Cause
 
-## Phase 3: Identify the Bug
+For each failure, determine the root cause category and act accordingly:
 
-Read the relevant source files to understand the root cause. Common locations:
+### Infrastructure bugs (fix the platform)
+- **RPC method returns wrong data** → fix the service handler
+- **RPC method missing** → add it to the service definition
+- **Error swallowed silently** → add proper error propagation
+- **API signature unintuitive** → redesign the API, add defaults, improve types
+- **Missing capability** → implement it in the service layer
+- **Service not registered** → add to ServiceContainer + SERVER_SERVICE_NAMES
+
+### Documentation bugs (fix the docs)
+- **Skill docs describe a different API** → update the skill docs to match reality
+- **Skill docs missing a capability** → add documentation for the undocumented feature
+- **System prompt misleads the agent** → fix the headless system prompt
+
+### Test bugs (fix the test — last resort)
+- **Validation too strict** → loosen the validator, but only after confirming the agent's response is correct
+- **Prompt ambiguous** → clarify the prompt, but only if the underlying API works correctly
+- **Timeout too short** → increase, but investigate why it's slow first
+
+**Default assumption: the infrastructure is wrong, not the test.** Only classify as a test bug after reading the service code and confirming the API works correctly.
+
+## Phase 4: Identify Files to Change
 
 | Symptom | Likely files |
 |---------|-------------|
-| fs operation failed | `workspace/packages/runtime/src/panel/fs.ts`, `src/server/services/fsService.ts` |
-| db operation failed | `workspace/packages/runtime/src/shared/database.ts`, `src/server/services/dbService.ts` |
+| fs operation failed | `src/server/services/fsService.ts`, `workspace/packages/runtime/src/panel/fs.ts` |
+| db operation failed | `src/server/services/dbService.ts`, `workspace/packages/runtime/src/shared/database.ts` |
 | git operation failed | `packages/git/src/client.ts`, `src/server/services/gitService.ts` |
 | Build failed | `src/server/buildV2/`, `build.mjs` |
-| Worker/DO issue | `workspace/packages/runtime/src/worker/`, `src/server/services/workerService.ts` |
-| Panel lifecycle | `src/main/panelOrchestrator.ts` |
-| OAuth error | `workspace/packages/runtime/src/shared/oauth.ts`, `src/server/services/oauthService.ts` |
+| Worker/DO issue | `src/server/services/workerService.ts`, `workspace/packages/runtime/src/worker/` |
+| Panel lifecycle | `src/main/panelOrchestrator.ts`, `src/server/services/bridgeService.ts` |
+| OAuth error | `src/server/services/oauthService.ts`, `workspace/packages/runtime/src/shared/oauth.ts` |
 | Harness crash | `packages/harness/src/entry.ts`, `src/server/harnessManager.ts` |
 | PubSub issue | `workspace/packages/pubsub/src/`, `workspace/workers/pubsub-channel/` |
 | Skill import | `src/server/buildV2/`, package.json exports |
 | Agent behavior | `workspace/workers/agent-worker/ai-chat-worker.ts`, harness config |
+| RPC routing | `src/shared/serviceDispatcher.ts`, `packages/rpc/src/` |
+| Error swallowed | Search for `.catch(` and empty catch blocks near the failure site |
 
-## Phase 4: Fix
+## Phase 5: Fix
 
 ```typescript
-// Create a fix branch
 import { GitClient } from "@natstack/git";
 
 const git = new GitClient(fs);
@@ -77,18 +106,23 @@ await git.createBranch(".", branchName);
 await git.checkout(".", branchName);
 ```
 
-Then use your normal file editing tools (Read, Edit, Write) to fix the bug.
+Then use your file editing tools (Read, Edit, Write) to fix the bug.
 
-## Phase 5: Verify
+**Fix checklist:**
+- [ ] Service method has clear parameter types and returns useful data
+- [ ] Errors are propagated with descriptive messages (no empty catch blocks)
+- [ ] The fix is in the service/infrastructure layer, not a workaround in caller code
+- [ ] Skill documentation matches the actual API after the fix
+- [ ] The headless system prompt doesn't need to mention implementation details
+
+## Phase 6: Verify
 
 ```typescript
 // Rebuild
 const buildResult = await chat.rpc.call("main", "build.recompute");
 console.log("Build recomputed:", buildResult);
 
-// Run the existing vitest suite
-// (via shell eval — vitest runs in Node.js, not eval sandbox)
-// The agent should use eval to check for type errors:
+// Check types
 const typecheck = await chat.rpc.call("main", "typecheck.check");
 console.log("Type errors:", typecheck);
 
@@ -99,7 +133,7 @@ const retest = await tester.runOne(failedTest);
 console.log(`Re-test: ${retest.result.passed ? "PASS" : "FAIL"}`);
 ```
 
-## Phase 6: Commit and Push
+## Phase 7: Commit and Push
 
 ```typescript
 if (retest.result.passed) {
@@ -109,7 +143,7 @@ if (retest.result.passed) {
   console.log(`Pushed fix to branch: ${branchName}`);
 } else {
   console.log("Fix didn't work. Iterating...");
-  // Go back to Phase 3
+  // Go back to Phase 4
 }
 ```
 
@@ -119,4 +153,6 @@ if (retest.result.passed) {
 - **One fix per branch.** Don't bundle unrelated fixes.
 - **Check type errors before committing.** Use `chat.rpc.call("main", "typecheck.check")`.
 - **Re-run the full smoke suite after fixing.** Your fix might break something else.
-- **If a test case is too strict**, consider whether the test needs updating rather than the code.
+- **If an API is confusing, fix the API.** Don't add comments explaining the confusion.
+- **If an error message is unhelpful, fix the error message.** Don't add try/catch wrappers that translate it.
+- **If a service is missing a method, add the method.** Don't chain multiple calls to work around it.
