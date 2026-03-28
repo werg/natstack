@@ -1,0 +1,7 @@
+source 'https://rubygems.org'
+
+# Required for CocoaPods (iOS dependency management)
+gem 'cocoapods', '~> 1.15'
+
+# Fastlane for build automation (optional)
+# gem 'fastlane', '~> 2.225'

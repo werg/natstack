@@ -269,9 +269,10 @@ export class PanelView implements PanelViewLike {
       path: "/", httpOnly: true, sameSite: "strict",
     });
     // Single credential set: panels connect only to the server
+    // Include rpcHost so remote clients can construct correct WS URLs.
     await electronSession.defaultSession.cookies.set({
       url: `${origin}/`, name: `_ns_boot_${bk}`,
-      value: encodeURIComponent(JSON.stringify({ pid: panelId, rpcPort: this.serverInfo.rpcPort, rpcToken: serverRpcToken })),
+      value: encodeURIComponent(JSON.stringify({ pid: panelId, rpcPort: this.serverInfo.rpcPort, rpcToken: serverRpcToken, rpcHost: this.externalHost })),
       path: "/", httpOnly: false, sameSite: "strict",
       expirationDate: Math.floor(Date.now() / 1000) + 60,
     });

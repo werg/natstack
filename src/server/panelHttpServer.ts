@@ -486,7 +486,7 @@ export class PanelHttpServer {
         if (!isAuthed || forceFresh) {
           const isNavigation = parsed.resource === "/" || parsed.resource === "/index.html";
           if (isNavigation) {
-            await this.bootstrapBrowserTab(res, parsed.source, subdomain, url);
+            await this.bootstrapBrowserTab(res, parsed.source, subdomain, url, req.headers.host);
             return;
           }
           if (!isAuthed) {
@@ -546,6 +546,7 @@ export class PanelHttpServer {
     source: string,
     subdomain: string,
     originalUrl: URL,
+    hostHeader?: string,
   ): Promise<void> {
     // Find registry entry for this subdomain
     const registryEntry = this.sourceRegistry.get(subdomain);
@@ -560,8 +561,14 @@ export class PanelHttpServer {
       const result = await this.callbacks.onDemandCreate(effectiveSource, subdomain);
       const bk = randomBytes(8).toString("hex");
       const sid = this.ensureSubdomainSession(subdomain);
+      // Derive rpcHost from request Host header so remote clients connect to the right host.
+      // Strip subdomain prefix and port to get the base host for RPC connections.
+      const rpcHost = hostHeader
+        ? hostHeader.replace(/:\d+$/, "").replace(new RegExp(`^[^.]+\\.`), "")
+        : this.externalHost;
       const bootData: Record<string, unknown> = {
         pid: result.panelId, rpcPort: result.rpcPort, rpcToken: result.rpcToken,
+        rpcHost,
       };
 
       // Preserve user query params (stateArgs, etc.) through the redirect.

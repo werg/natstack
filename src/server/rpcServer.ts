@@ -245,8 +245,15 @@ export class RpcServer {
         ws.close(4006, "Invalid token");
         return;
       }
-      callerId = entry.callerId;
       callerKind = entry.callerKind;
+      // Shell callers get unique per-connection IDs (like admin/server callers)
+      // so multiple mobile devices can connect simultaneously without
+      // disconnecting each other.
+      if (callerKind === "shell") {
+        callerId = `${entry.callerId}:${randomUUID().slice(0, 8)}`;
+      } else {
+        callerId = entry.callerId;
+      }
     }
 
     // Single-active-connection enforcement for non-admin callers

@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { PanelRegistry } from "./panelRegistry.js";
 import type { Panel } from "./types.js";
-import type { EventService } from "./eventsService.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -23,20 +22,9 @@ function makePanel(id: string, overrides?: Partial<Panel>): Panel {
   };
 }
 
-function makeEventService(): EventService {
-  return {
-    emit: vi.fn(),
-    subscribe: vi.fn(),
-    unsubscribe: vi.fn(),
-    unsubscribeAll: vi.fn(),
-    getSubscriberCount: vi.fn().mockReturnValue(0),
-    getOrCreateSubscriber: vi.fn(),
-  } as unknown as EventService;
-}
-
-function makeRegistry(eventService?: EventService) {
+function makeRegistry(onTreeUpdated?: (tree: Panel[]) => void) {
   return new PanelRegistry({
-    eventService: eventService ?? makeEventService(),
+    onTreeUpdated: onTreeUpdated ?? vi.fn(),
   });
 }
 
@@ -46,11 +34,11 @@ function makeRegistry(eventService?: EventService) {
 
 describe("PanelRegistry", () => {
   let registry: PanelRegistry;
-  let events: EventService;
+  let onTreeUpdated: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    events = makeEventService();
-    registry = makeRegistry(events);
+    onTreeUpdated = vi.fn();
+    registry = makeRegistry(onTreeUpdated);
   });
 
   // -------------------------------------------------------------------------

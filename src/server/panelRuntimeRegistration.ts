@@ -30,6 +30,8 @@ export interface CommonDeps {
   hostConfig: HostConfig;
   /** True when running as Electron's child process (IPC mode). */
   isIpcMode: boolean;
+  /** EventService for emitting events (optional, used in standalone mode). */
+  eventService?: import("../shared/eventsService.js").EventService;
 }
 
 /**
@@ -60,14 +62,15 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
         const searchIndex = createPanelSearchIndex(persistence);
         const wkrdPort = resolve<import("./workerdManager.js").WorkerdManager>("workerdManager")?.getPort() ?? 0;
 
-        // Panel-facing URLs: start with direct ports, then updated via
-        // setGatewayPort() after the gateway binds in standalone mode.
-        const { protocol, externalHost, internalHost } = hostConfig;
+        // Panel-facing URLs: start with externalHost, then updated via
+        // finalizeForGateway() after the gateway binds in standalone mode.
+        // Use externalHost (not internalHost) so remote clients get correct URLs.
+        const { protocol, externalHost } = hostConfig;
         const wsProto = protocol === "https" ? "wss" : "ws";
         const urlConfig = new (await import("./services/panelService.js")).PanelUrlConfig({
           protocol,
           externalHost,
-          gitBaseUrl: `${protocol}://${internalHost}:${gitServer.getPort()}`,
+          gitBaseUrl: `${protocol}://${externalHost}:${gitServer.getPort()}`,
           pubsubBaseUrl: wkrdPort ? `${wsProto}://default.${externalHost}:${wkrdPort}` : "",
           gatewayPort: 0,
         });
@@ -474,6 +477,9 @@ export async function registerStandalonePanelRuntime(deps: CommonDeps & {
           protocol: deps.hostConfig.protocol,
           externalHost: deps.hostConfig.externalHost,
           get gatewayPort() { return rpcSrv.getPort() ?? 0; },
+          emitEvent: deps.eventService
+            ? (event, payload) => deps.eventService!.emit(event as import("../shared/events.js").EventName, payload as any)
+            : undefined,
         };
         standalonePm = createStandalonePanelManager(bridgeDeps);
       },

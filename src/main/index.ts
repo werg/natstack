@@ -350,7 +350,9 @@ app.on("ready", async () => {
     log.info(`[CDP] Server started on port ${cdpPort}`);
 
     // Create PanelRegistry (pure in-memory — server owns persistence)
-    panelRegistry = new PanelRegistry({ eventService });
+    panelRegistry = new PanelRegistry({
+      onTreeUpdated: (tree) => eventService.emit("panel-tree-updated", tree),
+    });
 
     // PanelHttpServer is created by serverSession (RPC-backed proxy)
     const conn = serverSession!;

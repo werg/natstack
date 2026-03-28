@@ -805,7 +805,7 @@ async function main() {
   });
 
   const { registerPanelServices } = await import("./panelRuntimeRegistration.js");
-  const commonDeps = { container, dispatcher, tokenManager, workspace, workspacePath, workspaceConfig, gitServer, adminToken, centralData: centralData ?? null, args, hostConfig, isIpcMode: !!ipcChannel };
+  const commonDeps = { container, dispatcher, tokenManager, workspace, workspacePath, workspaceConfig, gitServer, adminToken, centralData: centralData ?? null, args, hostConfig, isIpcMode: !!ipcChannel, eventService };
   await registerPanelServices(commonDeps);
 
   // ===========================================================================
@@ -816,6 +816,15 @@ async function main() {
     const { registerStandalonePanelRuntime } = await import("./panelRuntimeRegistration.js");
     const standaloneSessions = new Map<string, import("./standaloneBridge.js").StandaloneSession>();
     await registerStandalonePanelRuntime({ ...commonDeps, standaloneSessions });
+
+    // Settings service (standalone mode — shell callers manage API keys / model roles)
+    const { createSettingsServiceStandalone } = await import("./services/settingsServiceStandalone.js");
+    const { rpcService: rpcSvc } = await import("../shared/managedService.js");
+    container.register(rpcSvc(createSettingsServiceStandalone({ dispatcher })));
+
+    // Push notification service (standalone mode — mobile device registration)
+    const { createPushService } = await import("./services/pushService.js");
+    container.register(rpcSvc(createPushService()));
   }
   // IPC mode: no additional registration needed — panelHttpWiring handles
   // isIpcMode directly (onDemandCreate throws, listPanels returns []).
@@ -874,8 +883,9 @@ async function main() {
   {
     const { SERVER_SERVICE_NAMES } = await import("@natstack/rpc");
     const sharedSet = new Set<string>(SERVER_SERVICE_NAMES);
-    // Services that live on both Electron and server, or are internal lifecycle only
-    const localOnly = new Set(["events", "browser"]);
+    // Services that live on both Electron and server, are internal lifecycle only,
+    // or are standalone-mode-only (not present in IPC/Electron mode)
+    const localOnly = new Set(["events", "browser", "settings", "push"]);
     for (const name of dispatcher.getServices()) {
       if (!sharedSet.has(name) && !localOnly.has(name)) {
         console.warn(
@@ -977,6 +987,11 @@ async function main() {
     }
     console.log(`  Admin token: ${adminToken}`);
     console.log(`  Token file:  ${tokenFilePath}`);
+    // Mint a shell token for mobile/remote shell clients.
+    // Shell tokens give callerKind "shell" (not "server"), which is the correct
+    // privilege level for browser chrome operations.
+    const shellToken = tokenManager.ensureToken("remote-shell", "shell");
+    console.log(`  Shell token: ${shellToken}`);
 
     if (args.printToken) {
       // Machine-readable token output on its own line for scripting

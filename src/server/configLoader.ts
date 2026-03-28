@@ -30,6 +30,7 @@ export const CONFIG_LOADER_JS = `(async () => {
   let pid = null;
   let rpcPort = null;
   let rpcToken = null;
+  let rpcHost = null;
 
   // Extract current source from URL pathname (first two segments: "panels/my-app")
   const sourceMatch = url.pathname.match(/^\\/([^/]+\\/[^/]+)/);
@@ -45,6 +46,7 @@ export const CONFIG_LOADER_JS = `(async () => {
     pid = urlPid;
     if (url.searchParams.has("rpcPort")) rpcPort = Number(url.searchParams.get("rpcPort"));
     if (url.searchParams.has("rpcToken")) rpcToken = url.searchParams.get("rpcToken");
+    if (url.searchParams.has("rpcHost")) rpcHost = url.searchParams.get("rpcHost");
   }
 
   // Browser path: credentials in nonce-keyed boot cookie
@@ -73,12 +75,14 @@ export const CONFIG_LOADER_JS = `(async () => {
     sessionStorage.setItem("__natstackPanelId", pid);
     if (rpcPort) sessionStorage.setItem("__natstackRpcPort", String(rpcPort));
     if (rpcToken) sessionStorage.setItem("__natstackRpcToken", rpcToken);
+    if (rpcHost) sessionStorage.setItem("__natstackRpcHost", rpcHost);
     sessionStorage.setItem("__natstackSource", currentSource);
     // Clean all bootstrap params from URL
     url.searchParams.delete("_bk");
     url.searchParams.delete("pid");
     url.searchParams.delete("rpcPort");
     url.searchParams.delete("rpcToken");
+    url.searchParams.delete("rpcHost");
     history.replaceState(null, "", url.pathname + (url.search || ""));
   }
 
@@ -90,6 +94,7 @@ export const CONFIG_LOADER_JS = `(async () => {
       sessionStorage.removeItem("__natstackPanelId");
       sessionStorage.removeItem("__natstackRpcPort");
       sessionStorage.removeItem("__natstackRpcToken");
+      sessionStorage.removeItem("__natstackRpcHost");
       sessionStorage.removeItem("__natstackSource");
       location.href = url.pathname + "?_fresh";
       return;
@@ -97,6 +102,7 @@ export const CONFIG_LOADER_JS = `(async () => {
     pid = sessionStorage.getItem("__natstackPanelId");
     rpcPort = Number(sessionStorage.getItem("__natstackRpcPort")) || null;
     rpcToken = sessionStorage.getItem("__natstackRpcToken");
+    rpcHost = sessionStorage.getItem("__natstackRpcHost");
   }
 
   // ── 4. No bootstrap data — force re-bootstrap ──
@@ -111,10 +117,15 @@ export const CONFIG_LOADER_JS = `(async () => {
   }
 
   // ── 5. Set transport globals ──
+  // These globals are read synchronously by /__transport.js (browserTransportEntry),
+  // which is loaded dynamically below (step 6). Timing is safe because this script
+  // (configLoader) runs as a blocking classic <script> and completes these
+  // assignments before the transport script is fetched and executed.
   globalThis.__natstackId = pid;
   globalThis.__natstackRpcPort = rpcPort;
   globalThis.__natstackRpcToken = rpcToken;
   globalThis.__natstackKind = "panel";
+  if (rpcHost) globalThis.__natstackRpcHost = rpcHost;
 
   // ── 6. Load transport ──
   await new Promise((resolve, reject) => {
@@ -172,6 +183,7 @@ export const CONFIG_LOADER_JS = `(async () => {
         sessionStorage.removeItem("__natstackPanelId");
         sessionStorage.removeItem("__natstackRpcPort");
         sessionStorage.removeItem("__natstackRpcToken");
+        sessionStorage.removeItem("__natstackRpcHost");
         sessionStorage.removeItem("__natstackSource");
         location.href = url.pathname + "?_fresh";
         return;

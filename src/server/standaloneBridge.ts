@@ -42,6 +42,8 @@ export interface StandaloneBridgeDeps {
   protocol: "http" | "https";
   externalHost: string;
   gatewayPort: number;
+  /** Emit a shell event (e.g., navigate-to-panel, open-external-requested). */
+  emitEvent?: (event: string, payload: unknown) => void;
 }
 
 /**
@@ -56,7 +58,7 @@ export function createStandalonePanelManager(deps: StandaloneBridgeDeps): Bridge
       if (!session) return;
       tokenManager.revokeToken(panelId);
       fsService.unregisterPanelContext(panelId);
-      fsService.closeHandlesForPanel(panelId);
+      fsService.closeHandlesForCaller(panelId);
       sessions.delete(panelId);
     },
 
@@ -81,8 +83,8 @@ export function createStandalonePanelManager(deps: StandaloneBridgeDeps): Bridge
       return session.stateArgs;
     },
 
-    focusPanel(_panelId: string): void {
-      // No-op in standalone mode
+    focusPanel(panelId: string): void {
+      deps.emitEvent?.("navigate-to-panel", { panelId });
     },
 
     async getBootstrapConfig(callerId: string) {
@@ -196,10 +198,14 @@ export async function handleStandaloneBridgeCall(
     }
 
     case "openExternal": {
-      if (!deps.cdpBridge) throw new Error("Browser automation requires --serve-panels");
       const [url] = args as [string];
       if (!/^https?:\/\//i.test(url)) throw new Error("openExternal only supports http/https URLs");
-      await deps.cdpBridge.openExternalTab(url);
+      // Emit event for shell clients (mobile, etc.) to handle
+      deps.emitEvent?.("open-external-requested", { url });
+      // Also open via CDP if available (browser mode)
+      if (deps.cdpBridge) {
+        await deps.cdpBridge.openExternalTab(url);
+      }
       return;
     }
 

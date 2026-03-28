@@ -132,7 +132,11 @@ export class IpcDispatcher {
 
       try {
         let result: unknown;
-        if (SERVER_SERVICES.has(service)) {
+        // Forward server-owned services to the server process, EXCEPT "panel"
+        // which is handled locally by panelShellService for shell callers.
+        // (Panel-originated panel.* calls reach the server via WebSocket, not IPC.)
+        const forwardToServer = SERVER_SERVICES.has(service) && service !== "panel";
+        if (forwardToServer) {
           // Forward to server process via serverClient
           result = await this.deps.serverClient.call(service, method, req.args);
         } else {

@@ -132,6 +132,39 @@ export class PanelOrchestrator implements BridgePanelManager {
     }
   }
 
+  /**
+   * Create a root panel from an arbitrary source path.
+   * Unlike createAboutPanel (which prefixes with "about/"), this method
+   * uses the source string as-is, making it suitable for mobile shells
+   * that need to create panels from any source.
+   */
+  async createRootPanel(
+    source: string,
+    options?: { name?: string; isRoot?: boolean },
+  ): Promise<{ id: string; title: string }> {
+    const name = options?.name ?? `${source.replace(/\//g, "-")}~${Date.now().toString(36)}`;
+
+    const result = await this.serverClient.call("panel", "create", [
+      source,
+      { name, isRoot: options?.isRoot ?? true, addAsRoot: true },
+    ]) as PanelCreateResult;
+
+    const panel = buildPanelFromResult(result, null);
+    this.registry.addPanel(panel, null, { addAsRoot: true });
+    this.tokenManager.createToken(result.panelId, "panel");
+
+    this.focusPanel(panel.id);
+
+    const panelUrl = this.getPanelUrlForId(result.panelId);
+    const view = this.getPanelView();
+    if (panelUrl && view) {
+      await view.createViewForPanel(result.panelId, panelUrl, result.contextId);
+    }
+
+    this.registry.notifyPanelTreeUpdate();
+    return { id: result.panelId, title: result.title };
+  }
+
   async createAboutPanel(page: string): Promise<{ id: string; title: string }> {
     const source = `about/${page}`;
     const name = `${page}~${Date.now().toString(36)}`;

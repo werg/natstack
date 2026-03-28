@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Network security configuration for NatStack Android development.
+
+  Allows cleartext (HTTP) traffic to localhost and common local development
+  addresses. In production builds, remove the <domain-config> entries or
+  switch to a release-only config that enforces HTTPS for all domains.
+
+  Reference: https://developer.android.com/training/articles/security-config
+-->
+<network-security-config>
+    <!-- Allow cleartext for local development servers -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">10.0.2.2</domain>
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">10.0.0.0</domain>
+        <domain includeSubdomains="true">192.168.0.0</domain>
+        <!-- nip.io wildcard DNS used for panel subdomain routing in dev -->
+        <domain includeSubdomains="true">nip.io</domain>
+    </domain-config>
+</network-security-config>

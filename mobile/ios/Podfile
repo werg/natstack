@@ -1,0 +1,44 @@
+# NatStack iOS CocoaPods configuration
+# Requires CocoaPods 1.15+ and Xcode 16+
+
+platform :ios, '15.0'
+
+# Prepare React Native pods helper
+require_relative '../node_modules/react-native/scripts/react_native_pods'
+require_relative '../node_modules/@react-native-community/cli-platform-ios/native_modules'
+
+target 'NatStack' do
+  config = use_native_modules!
+
+  use_react_native!(
+    :path => config[:reactNativePath],
+    # Hermes is the default JS engine for React Native 0.79+
+    :hermes_enabled => true,
+    # Fabric / New Architecture (opt-in per project)
+    :fabric_enabled => false,
+    # App path for autolinking
+    :app_path => "#{Pod::Config.instance.installation_root}/.."
+  )
+
+  target 'NatStackTests' do
+    inherit! :complete
+    # Pods for testing
+  end
+
+  # Post-install hook for Hermes and build settings
+  post_install do |installer|
+    # https://github.com/facebook/react-native/blob/main/packages/react-native/scripts/react_native_pods.rb
+    react_native_post_install(
+      installer,
+      config[:reactNativePath],
+      :mac_catalyst_enabled => false
+    )
+
+    installer.pods_project.targets.each do |target|
+      target.build_configurations.each do |config|
+        # Minimum deployment target
+        config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+      end
+    end
+  end
+end

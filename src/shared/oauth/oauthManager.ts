@@ -204,7 +204,7 @@ export class OAuthManager {
 
   async getAuthUrl(providerKey: string, connectionId: string): Promise<string> {
     this.assertConfigured();
-    return `${this.nangoUrl}/auth/${encodeURIComponent(providerKey)}?connection_id=${encodeURIComponent(connectionId)}`;
+    return `${this.nangoUrl}/auth/${encodeURIComponent(providerKey)}?connection_id=${encodeURIComponent(connectionId)}&provider_key=${encodeURIComponent(providerKey)}`;
   }
 
   async listConnections(): Promise<OAuthConnection[]> {

@@ -4,10 +4,16 @@
  * This reuses the same createWsTransport() from src/preload/wsTransport.ts,
  * eliminating duplication between the Electron preload and browser-served panels.
  *
- * Expects these globals to be set before this script runs:
+ * Expects these globals to be set before this script runs (by configLoader):
  * - globalThis.__natstackId (string) — panel ID (viewId)
  * - globalThis.__natstackRpcPort (number) — server RPC port
  * - globalThis.__natstackRpcToken (string) — auth token for ws:auth
+ * - globalThis.__natstackRpcHost (string, optional) — explicit WebSocket host
+ *   for remote connections (e.g., mobile shell). Falls back to location.hostname.
+ *
+ * Timing: configLoader runs as a blocking <script> and sets all globals
+ * synchronously before dynamically loading this script, so the globals are
+ * always available when this code executes.
  *
  * Sets:
  * - globalThis.__natstackTransport — the TransportBridge instance (single server WS)
@@ -21,9 +27,11 @@ const viewId: string = globalThis.__natstackId;
 const rpcPort: number = globalThis.__natstackRpcPort;
 const authToken: string = globalThis.__natstackRpcToken;
 
-// Derive WebSocket URL from page context (supports both ws:// and wss://)
+// Derive WebSocket URL from page context (supports both ws:// and wss://).
+// __natstackRpcHost overrides location.hostname for remote connections
+// (e.g., mobile shell connecting to a server on a different host).
 const wsScheme = location.protocol === "https:" ? "wss" : "ws";
-const wsHost: string = location.hostname || "127.0.0.1";
+const wsHost: string = globalThis.__natstackRpcHost || location.hostname || "127.0.0.1";
 const wsUrl = `${wsScheme}://${wsHost}:${rpcPort}`;
 
 globalThis.__natstackTransport = createWsTransport({

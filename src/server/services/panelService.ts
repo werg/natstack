@@ -72,13 +72,15 @@ export interface PanelServiceDeps {
   workerdPort: number;
   /** Mutable URL config — reads are late-bound so gateway port updates propagate. */
   urlConfig: PanelUrlConfig;
+  /** Optional callback for theme change events (wired to EventService when available). */
+  onThemeChanged?: (theme: unknown) => void;
 }
 
 export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
   const {
     persistence, searchIndex, tokenManager, fsService,
     gitServer, workspacePath, getRpcPort, workerdPort,
-    urlConfig,
+    urlConfig, onThemeChanged,
   } = deps;
 
   // Internal helpers
@@ -195,9 +197,21 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
       setCollapsedBatch: { args: z.tuple([z.array(z.string()), z.boolean()]) },
       getCollapsedIds: { args: z.tuple([]) },
       updateSelectedPath: { args: z.tuple([z.string()]) },
-      movePanel: { args: z.tuple([z.string(), z.string().nullable(), z.number()]) },
+      movePanel: {
+        args: z.union([
+          z.tuple([z.string(), z.string().nullable(), z.number()]),
+          z.tuple([z.object({ panelId: z.string(), newParentId: z.string().nullable(), targetPosition: z.number() })]),
+        ]),
+      },
       loadTree: { args: z.tuple([]) },
       shutdownCleanup: { args: z.tuple([z.array(z.string())]) },
+      // Shell compatibility methods — aliases and no-ops for mobile/standalone clients
+      archive: { args: z.tuple([z.string()]) },
+      notifyFocused: { args: z.tuple([z.string()]) },
+      createAboutPanel: { args: z.tuple([z.string()]) },
+      unload: { args: z.tuple([z.string()]) },
+      updateTheme: { args: z.tuple([z.unknown()]) },
+      expandIds: { args: z.tuple([z.array(z.string())]) },
     },
     handler: async (_ctx, method, args) => {
       const a = args as unknown[];
@@ -480,7 +494,18 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
         }
 
         case "movePanel": {
-          const [panelId, targetParentId, position] = a as [string, string | null, number];
+          // Accept both positional args [panelId, parentId, pos] and object form [{ panelId, newParentId, targetPosition }]
+          let panelId: string;
+          let targetParentId: string | null;
+          let position: number;
+          if (typeof a[0] === "object" && a[0] !== null && "panelId" in (a[0] as Record<string, unknown>)) {
+            const req = a[0] as { panelId: string; newParentId: string | null; targetPosition: number };
+            panelId = req.panelId;
+            targetParentId = req.newParentId;
+            position = req.targetPosition;
+          } else {
+            [panelId, targetParentId, position] = a as [string, string | null, number];
+          }
           persistence.movePanel(panelId, targetParentId, position);
           return;
         }
@@ -514,6 +539,102 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
             }
           };
           archiveIfDead(tree);
+          return;
+        }
+
+        // =================================================================
+        // Shell compatibility methods
+        // =================================================================
+
+        case "archive": {
+          // Alias for close — archive panel + descendants
+          const [panelId] = a as [string];
+          const closedIds = collectSubtree(panelId);
+
+          for (const id of closedIds) {
+            tokenManager.revokeToken(id);
+            gitServer.revokeTokenForPanel(id);
+            fsService.unregisterPanelContext(id);
+            fsService.closeHandlesForCaller(id);
+            persistence.archivePanel(id);
+          }
+
+          return { closedIds };
+        }
+
+        case "notifyFocused": {
+          // Alias for updateSelectedPath
+          const [panelId] = a as [string];
+          persistence.updateSelectedPath(panelId);
+          if (searchIndex) {
+            try { searchIndex.incrementAccessCount(panelId); }
+            catch (e) { console.warn(`[PanelService] Search index incrementAccessCount failed for ${panelId}:`, e); }
+          }
+          return;
+        }
+
+        case "createAboutPanel": {
+          const [page] = a as [string];
+          const source = `about/${page}`;
+          const name = `${page}~${Date.now().toString(36)}`;
+
+          const { relativePath, absolutePath } = resolveSource(source, workspacePath);
+          const manifest = resolveManifest(absolutePath, relativePath, true);
+
+          const aboutPanelId = computePanelId({
+            relativePath,
+            parent: null,
+            requestedId: name,
+            isRoot: true,
+          });
+
+          const contextId = generateContextId(aboutPanelId);
+
+          tokenManager.createToken(aboutPanelId, "panel");
+          const rpcToken = tokenManager.getToken(aboutPanelId)!;
+          const gitToken = gitServer.getTokenForPanel(aboutPanelId);
+
+          fsService.registerPanelContext(aboutPanelId, contextId);
+
+          const gitBaseUrl = urlConfig.gitBaseUrl;
+          const env = buildPanelEnv({
+            panelId: aboutPanelId,
+            gitBaseUrl,
+            gitToken,
+            serverRpcToken: rpcToken,
+            workerdPort,
+            contextId,
+            sourceRepo: relativePath,
+            externalHost: urlConfig.externalHost,
+            protocol: urlConfig.protocol,
+            gatewayPort: urlConfig.gatewayPort,
+          });
+
+          const snapshot = createSnapshot(relativePath, contextId, { env });
+          persistAndIndex(aboutPanelId, manifest.title, null, snapshot);
+
+          return { id: aboutPanelId, title: manifest.title };
+        }
+
+        case "unload": {
+          // No-op — server doesn't manage views. Mobile clients call this
+          // when WebViews are LRU-evicted; nothing to do server-side.
+          return;
+        }
+
+        case "updateTheme": {
+          // Emit theme change event if callback is wired, otherwise no-op
+          if (onThemeChanged) {
+            const [theme] = a;
+            onThemeChanged(theme);
+          }
+          return;
+        }
+
+        case "expandIds": {
+          // Alias for setCollapsedBatch(panelIds, false)
+          const [panelIds] = a as [string[]];
+          persistence.setCollapsedBatch(panelIds, false);
           return;
         }
 

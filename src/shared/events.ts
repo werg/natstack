@@ -16,6 +16,7 @@ export type EventName =
   | "panel-initialization-error"
   | "navigate-about"
   | "navigate-to-panel"
+  | "open-external-requested"
   | "browser-import-progress"
   | "browser-import-complete"
   | "browser-data-changed"
@@ -77,6 +78,7 @@ export interface EventPayloads {
   "panel-initialization-error": { path: string; error: string };
   "navigate-about": { page: string };
   "navigate-to-panel": { panelId: string };
+  "open-external-requested": { url: string };
   "browser-import-progress": {
     requestId: string;
     dataType: string;
@@ -119,6 +121,7 @@ export const VALID_EVENT_NAMES: EventName[] = [
   "panel-initialization-error",
   "navigate-about",
   "navigate-to-panel",
+  "open-external-requested",
   "browser-import-progress",
   "browser-import-complete",
   "browser-data-changed",

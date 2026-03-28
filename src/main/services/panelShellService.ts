@@ -20,6 +20,7 @@ export function createPanelShellService(deps: {
     description: "Panel tree management, reload, close",
     policy: { allowed: ["shell"] },
     methods: {
+      loadTree: { args: z.tuple([]) },
       getTree: { args: z.tuple([]) },
       notifyFocused: { args: z.tuple([z.string()]) },
       updateTheme: { args: z.tuple([z.unknown()]) },
@@ -31,6 +32,7 @@ export function createPanelShellService(deps: {
       initGitRepo: { args: z.tuple([z.string()]) },
       updatePanelState: { args: z.tuple([z.string(), z.record(z.unknown())]) },
       createAboutPanel: { args: z.tuple([z.unknown()]) },
+      create: { args: z.tuple([z.string(), z.object({ name: z.string().optional(), isRoot: z.boolean().optional() }).optional()]) },
       movePanel: { args: z.tuple([z.object({ panelId: z.string(), newParentId: z.string().nullable(), targetPosition: z.number() })]) },
       getChildrenPaginated: { args: z.tuple([z.object({ parentId: z.string(), offset: z.number(), limit: z.number() })]) },
       getRootPanelsPaginated: { args: z.tuple([z.object({ offset: z.number(), limit: z.number() })]) },
@@ -45,6 +47,12 @@ export function createPanelShellService(deps: {
       const vm = deps.getViewManager();
 
       switch (method) {
+        case "loadTree":
+          return {
+            rootPanels: registry.getSerializablePanelTree(),
+            collapsedIds: await lifecycle.getCollapsedIds(),
+          };
+
         case "getTree":
           return registry.getSerializablePanelTree();
 
@@ -132,6 +140,12 @@ export function createPanelShellService(deps: {
         case "createAboutPanel": {
           const page = args[0] as string;
           return lifecycle.createAboutPanel(page);
+        }
+
+        case "create": {
+          const source = args[0] as string;
+          const opts = args[1] as { name?: string; isRoot?: boolean } | undefined;
+          return lifecycle.createRootPanel(source, opts);
         }
 
         case "movePanel": {

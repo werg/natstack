@@ -4,7 +4,7 @@
  * Owns:
  * - The in-memory panel map and root panel list
  * - Tree relationships (parent/child, selectedChildId)
- * - Debounced tree-update notifications via EventService
+ * - Debounced tree-update notifications via onTreeUpdated callback
  *
  * Does NOT own:
  * - Persistence (server panel service owns SQLite via PanelPersistence)
@@ -16,7 +16,6 @@ import { createDevLogger } from "@natstack/dev-log";
 import type { Panel, PanelArtifacts, PanelInfo, PanelSummary } from "./types.js";
 import { getPanelSource, getPanelContextId } from "./panel/accessors.js";
 import { contextIdToSubdomain } from "./panelIdUtils.js";
-import type { EventService } from "./eventsService.js";
 import type { PanelRelationshipProvider } from "./panelInterfaces.js";
 
 const log = createDevLogger("PanelRegistry");
@@ -35,7 +34,7 @@ export interface PanelListItem {
 }
 
 export interface PanelRegistryOptions {
-  eventService: EventService;
+  onTreeUpdated?: (tree: Panel[]) => void;
 }
 
 // ============================================================================
@@ -55,10 +54,10 @@ export class PanelRegistry implements PanelRelationshipProvider {
   private treeUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly TREE_UPDATE_DEBOUNCE_MS = 16; // ~1 frame at 60fps
 
-  private readonly eventService: EventService;
+  private readonly onTreeUpdated?: (tree: Panel[]) => void;
 
   constructor(opts: PanelRegistryOptions) {
-    this.eventService = opts.eventService;
+    this.onTreeUpdated = opts.onTreeUpdated;
   }
 
   // ==========================================================================
@@ -436,7 +435,7 @@ export class PanelRegistry implements PanelRelationshipProvider {
       if (this.treeUpdatePending) {
         this.treeUpdatePending = false;
         const tree = this.getSerializablePanelTree();
-        this.eventService.emit("panel-tree-updated", tree);
+        this.onTreeUpdated?.(tree);
       }
     }, this.TREE_UPDATE_DEBOUNCE_MS);
   }
@@ -465,6 +464,34 @@ export class PanelRegistry implements PanelRelationshipProvider {
     if (collapsedPanelIds) {
       this.collapsedIds = new Set(collapsedPanelIds);
     }
+  }
+
+  /**
+   * Re-populate the registry from fresh server data, handling empty arrays
+   * (clears existing state). Used for cache refresh after mutations.
+   */
+  repopulate(rootPanels: Panel[], collapsedPanelIds?: string[]): void {
+    this.panels.clear();
+    this.rootPanels = rootPanels;
+
+    if (rootPanels.length > 0) {
+      log.verbose(` Repopulating ${rootPanels.length} root panel(s) from server`);
+      const buildMap = (panels: Panel[]) => {
+        for (const panel of panels) {
+          this.panels.set(panel.id, panel);
+          if (panel.children.length > 0) {
+            buildMap(panel.children);
+          }
+        }
+      };
+      buildMap(rootPanels);
+    }
+
+    if (collapsedPanelIds) {
+      this.collapsedIds = new Set(collapsedPanelIds);
+    }
+
+    this.notifyPanelTreeUpdate();
   }
 
   // Collapsed state accessors

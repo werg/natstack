@@ -92,7 +92,18 @@ export function createOAuthService(deps: {
       },
       startAuth: {
         args: z.tuple([z.string(), z.string()]),
-        policy: { allowed: ["panel"] as CallerKind[] },
+        policy: { allowed: ["panel", "shell"] as CallerKind[] },
+      },
+      callback: {
+        args: z.tuple([
+          z.object({
+            providerKey: z.string(),
+            connectionId: z.string().optional(),
+            code: z.string().optional(),
+            state: z.string().optional(),
+          }),
+        ]),
+        policy: { allowed: ["shell", "panel"] as CallerKind[] },
       },
       disconnect: {
         args: z.tuple([z.string(), z.string()]),
@@ -205,6 +216,26 @@ export function createOAuthService(deps: {
 
         case "listConsents": {
           return oauthManager.listConsents(callerId);
+        }
+
+        case "callback": {
+          // Mobile OAuth callback: the mobile app opens the OAuth URL in a
+          // system browser, the browser completes the flow with Nango, and
+          // then the mobile app calls oauth.callback to confirm completion.
+          // With Nango, the callback is handled by Nango's redirect URL,
+          // so this method simply verifies the connection is now active.
+          const [params] = args as [{
+            providerKey: string;
+            connectionId?: string;
+            code?: string;
+            state?: string;
+          }];
+          const connId = params.connectionId ?? `default-${params.providerKey}`;
+          const connection = await oauthManager.getConnection(params.providerKey, connId);
+          return {
+            success: connection.connected,
+            connection,
+          };
         }
 
         default:
