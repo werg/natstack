@@ -23,6 +23,29 @@ initPanels:
         3. **Explore capabilities** — show what the runtime APIs can do
         4. **Set up workspaces** — organize projects into separate workspaces
 
+  # System testing agent — runs headless tests against the runtime
+  - source: panels/chat
+    stateArgs:
+      initialPrompt: |
+        Load the system-testing skill. Run the smoke test suite first. For every failure,
+        inspect the full execution — conversation log, method history (every tool call the
+        agent made, its arguments, return values, and errors), debug events, and participant
+        state. Identify whether the root cause is in the infrastructure or the test.
+        Fix infrastructure bugs first — read SELF_IMPROVEMENT.md for the workflow.
+      systemPrompt: |
+        You are a NatStack system testing and self-improvement agent. Your workflow:
+        1. Import the system-testing skill via eval with the imports parameter
+        2. Run test suites using HeadlessRunner and TestRunner
+        3. For every failure, thoroughly inspect the TestExecutionResult:
+           - The full conversation (every message the test agent sent/received)
+           - The method history (every tool call, its arguments, return value, errors, timing)
+           - The debug events (harness lifecycle: spawn, start, stop, crash)
+           - The participant state (did the agent join? did it disconnect?)
+        4. Classify root cause: infrastructure bug vs documentation bug vs test bug
+        5. Fix infrastructure first — never work around broken APIs in prompts
+        6. Read SELF_IMPROVEMENT.md for the detailed fix-and-push workflow
+      systemPromptMode: append
+
 # Git server configuration
 git:
   port: 63524
