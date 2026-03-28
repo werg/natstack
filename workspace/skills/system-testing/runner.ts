@@ -1,7 +1,7 @@
 import { HeadlessSession } from "@workspace/agentic-session";
 import { createPanelSandboxConfig } from "@workspace/agentic-core";
 import type { ConnectionConfig } from "@workspace/agentic-core";
-import { rpc, db } from "@workspace/runtime";
+import { rpc, db, id as panelId } from "@workspace/runtime";
 
 // The panel's rpc has the full interface (call, onEvent, selfId) that
 // ConnectionConfig.rpc needs. Cast through the specific interface type.
@@ -25,7 +25,6 @@ export class HeadlessRunner {
    */
   async spawn(opts?: {
     systemPrompt?: string;
-    timeout?: number;
     source?: string;
     className?: string;
   }): Promise<HeadlessSession> {
@@ -33,7 +32,9 @@ export class HeadlessRunner {
       config: {
         serverUrl: "",
         token: "",
-        clientId: `test-${crypto.randomUUID().slice(0, 8)}`,
+        // Use the panel's bare ID (not rpc.selfId which has "panel:" prefix).
+        // PubSub events are routed by the RPC bridge using this ID.
+        clientId: panelId,
         rpc: rpcConfig,
       },
       sandbox: createPanelSandboxConfig(rpcConfig, db),

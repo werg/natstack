@@ -12,7 +12,7 @@ const session = await HeadlessSession.createWithAgent({
   config: { serverUrl: pubsubUrl, token, clientId: "my-harness" },
   sandbox: createNodeSandboxConfig(rpcClient),
   rpcCall: (t, m, ...a) => rpcClient.call(t, m, ...a),
-  source: "agent-worker",
+  source: "workers/agent-worker",
   className: "AiChatWorker",
   contextId: myContextId,
 });
@@ -50,7 +50,7 @@ const session = HeadlessSession.create({
 // Subscribe agent separately
 await subscribeHeadlessAgent({
   rpcCall: (t, m, ...a) => rpcClient.call(t, m, ...a),
-  source: "agent-worker",
+  source: "workers/agent-worker",
   className: "AiChatWorker",
   objectKey: "my-specific-do",
   channelId: "my-channel",
@@ -94,7 +94,7 @@ const session = await HeadlessSession.createWithAgent({
   config: { serverUrl: pubsubUrl, token, clientId: "messaging-only" },
   // No sandbox → no eval, toolAllowlist is ["set_title"] only
   rpcCall: (t, m, ...a) => rpcClient.call(t, m, ...a),
-  source: "agent-worker",
+  source: "workers/agent-worker",
   className: "AiChatWorker",
   contextId: myContextId,
 });
@@ -116,7 +116,7 @@ const session = await HeadlessSession.createWithAgent({
   config: { serverUrl: pubsubUrl, token, clientId: `worker-${objectKey}` },
   sandbox,
   rpcCall: (t, m, ...a) => rpc.call(t, m, ...a),
-  source: "agent-worker",
+  source: "workers/agent-worker",
   className: "AiChatWorker",
   contextId,
 });

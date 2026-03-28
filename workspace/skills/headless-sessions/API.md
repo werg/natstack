@@ -129,7 +129,7 @@ Extends `HeadlessSessionConfig` with:
 ```typescript
 interface HeadlessWithAgentConfig extends HeadlessSessionConfig {
   rpcCall: (target: string, method: string, ...args: unknown[]) => Promise<unknown>;
-  source: string;           // worker source (e.g., "agent-worker")
+  source: string;           // worker source (e.g., "workers/agent-worker")
   className: string;        // DO class (e.g., "AiChatWorker")
   objectKey?: string;       // auto-generated if omitted
   contextId: string;

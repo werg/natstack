@@ -43,7 +43,7 @@ export function getRecommendedHarnessConfig(opts?: {
 export interface SubscribeHeadlessAgentOptions {
   /** RPC call function for reaching the platform */
   rpcCall: (target: string, method: string, ...args: unknown[]) => Promise<unknown>;
-  /** Worker source (e.g., "agent-worker") */
+  /** Worker source (e.g., "workers/agent-worker") */
   source: string;
   /** DO class name (e.g., "AiChatWorker") */
   className: string;
