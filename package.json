@@ -9,7 +9,7 @@
     "natstack-server": "dist/server.mjs"
   },
   "scripts": {
-    "postinstall": "electron-rebuild -f",
+    "postinstall": "node -e \"try{require('electron');require('child_process').execSync('electron-rebuild -f',{stdio:'inherit'})}catch{}\"",
     "prebuild": "node scripts/generate-channels.mjs && node scripts/generate-injected.mjs",
     "build": "NODE_ENV=production node build.mjs",
     "build:dist": "pnpm build",

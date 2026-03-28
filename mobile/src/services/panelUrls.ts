@@ -15,6 +15,7 @@
  */
 
 import { isManagedHost, parsePanelUrl } from "@shared/shell/urlParsing";
+import { contextIdToSubdomain } from "@shared/contextIdToSubdomain";
 
 export { isManagedHost, parsePanelUrl };
 
@@ -41,28 +42,14 @@ export interface HostConfig {
  * @param serverUrl - Full server URL, e.g. "https://natstack.example.com:3000"
  */
 export function parseHostConfig(serverUrl: string): HostConfig {
-  const url = new URL(serverUrl);
+  // Manual parsing instead of `new URL()` — Hermes doesn't fully implement URL API
+  const match = serverUrl.match(/^(https?):\/\/([^:/]+)(?::(\d+))?/);
+  if (!match) throw new Error(`Invalid server URL: ${serverUrl}`);
   return {
-    protocol: url.protocol.replace(":", ""),
-    host: url.hostname,
-    port: url.port,
+    protocol: match[1],
+    host: match[2],
+    port: match[3] || "",
   };
-}
-
-/**
- * Convert a contextId to a valid DNS subdomain label.
- *
- * Mirrors contextIdToSubdomain from src/shared/panelIdUtils.ts but
- * avoids importing that module (which uses Node.js crypto).
- */
-function contextIdToSubdomain(contextId: string): string {
-  const label = contextId
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 63);
-  return label || "default";
 }
 
 /**

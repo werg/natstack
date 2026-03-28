@@ -1,5 +1,5 @@
 pluginManagement {
-    includeBuild("../node_modules/@react-native/gradle-plugin")
+    includeBuild(new File(rootDir, "../../node_modules/@react-native/gradle-plugin").canonicalPath)
 }
 plugins {
     id("com.facebook.react.settings")
@@ -8,6 +8,10 @@ plugins {
 extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
     ex.autolinkLibrariesFromCommand()
 }
+
+// Also include as a regular composite build for classpath dependency substitution
+// (pluginManagement.includeBuild only registers plugins, not buildscript dependencies)
+includeBuild(new File(rootDir, "../../node_modules/@react-native/gradle-plugin").canonicalPath)
 
 rootProject.name = 'NatStack'
 include ':app'

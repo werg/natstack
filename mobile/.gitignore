@@ -1,0 +1,24 @@
+# React Native
+node_modules/
+
+# Android
+android/.gradle/
+android/app/build/
+android/build/
+android/gradle/
+android/gradlew
+android/gradlew.bat
+android/app/src/main/assets/index.android.bundle
+android/app/src/main/res/drawable-*
+android/app/src/main/res/raw/
+
+# iOS
+ios/Pods/
+ios/build/
+
+# Metro
+.metro-health-check*
+
+# Bundle output
+*.jsbundle
+*.bundle

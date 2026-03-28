@@ -15,7 +15,7 @@
 import { createDevLogger } from "@natstack/dev-log";
 import type { Panel, PanelArtifacts, PanelInfo, PanelSummary } from "./types.js";
 import { getPanelSource, getPanelContextId } from "./panel/accessors.js";
-import { contextIdToSubdomain } from "./panelIdUtils.js";
+import { contextIdToSubdomain } from "./contextIdToSubdomain.js";
 import type { PanelRelationshipProvider } from "./panelInterfaces.js";
 
 const log = createDevLogger("PanelRegistry");

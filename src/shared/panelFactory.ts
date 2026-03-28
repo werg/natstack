@@ -8,7 +8,7 @@
 import * as path from "path";
 import type { Panel, PanelArtifacts } from "./types.js";
 import { createSnapshot } from "./panel/accessors.js";
-import { contextIdToSubdomain } from "./panelIdUtils.js";
+import { contextIdToSubdomain } from "./contextIdToSubdomain.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
 
 // =============================================================================

@@ -378,10 +378,11 @@ export class MobileTransport implements RpcBridge {
  *      "http://192.168.1.5:3000" -> "ws://192.168.1.5:3000/rpc"
  */
 function buildWsUrl(serverUrl: string): string {
-  const url = new URL(serverUrl);
-  const protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  // Use /rpc path for remote connections (matching serverClient.ts pattern)
-  return `${protocol}//${url.host}/rpc`;
+  // Manual parsing instead of `new URL()` — Hermes doesn't fully implement URL API
+  const match = serverUrl.match(/^(https?):\/\/(.+?)(?:\/|$)/);
+  if (!match) throw new Error(`Invalid server URL: ${serverUrl}`);
+  const protocol = match[1] === "https" ? "wss:" : "ws:";
+  return `${protocol}//${match[2]}/rpc`;
 }
 
 /**
