@@ -55,8 +55,13 @@ On-demand imports (use \`imports\` parameter):
 Pre-injected variables (do NOT import): chat, scope, scopes
 Import contextId from @workspace/runtime.
 
-scope is a live in-memory object shared across eval calls.
-Use scope to store data between calls (scope.myVar = value).`,
+Use \`return\` to send a value back to the agent. console.log() streams output in real-time.
+scope is a live in-memory object shared across eval calls (scope.myVar = value).
+
+Quick patterns:
+- \`const rows = await db.open("name").then(h => h.query("SELECT..."))\` — db requires .open() first
+- \`return await fs.readFile("path", "utf-8")\` — use return for results
+- \`await h.run("INSERT...", [params])\` — use run() for writes, query() for reads`,
     parameters: z.object({
       code: z.string().describe("The TypeScript/JavaScript code to execute"),
       syntax: z.enum(["typescript", "jsx", "tsx"]).default("tsx").describe("Target syntax"),

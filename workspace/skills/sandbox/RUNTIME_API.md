@@ -70,13 +70,15 @@ const rows = await conn.query("SELECT * FROM items");
 await conn.close();
 ```
 
-| Method | Returns |
-|--------|---------|
-| `exec(sql)` | `void` — DDL, multi-statement |
-| `run(sql, params?)` | `{ changes, lastInsertRowid }` |
-| `get<T>(sql, params?)` | `T \| null` — single row |
-| `query<T>(sql, params?)` | `T[]` — all rows |
-| `close()` | `void` |
+| Method | Use for | Returns |
+|--------|---------|---------|
+| `exec(sql)` | DDL, multi-statement (`CREATE TABLE`, schema) | `void` |
+| `run(sql, params?)` | Writes (`INSERT`, `UPDATE`, `DELETE`) | `{ changes, lastInsertRowid }` |
+| `get<T>(sql, params?)` | Read single row (`SELECT ... LIMIT 1`) | `T \| null` |
+| `query<T>(sql, params?)` | Read multiple rows (`SELECT`) | `T[]` |
+| `close()` | Release connection | `void` |
+
+**Important:** `query()` is for SELECT only. Use `run()` for INSERT/UPDATE/DELETE, `exec()` for CREATE/DROP.
 
 ## Workers (`workers`)
 
