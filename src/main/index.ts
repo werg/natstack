@@ -700,18 +700,6 @@ app.on("will-quit", (event) => {
     return;
   }
 
-  // Run panel cleanup via server (archive childless shell panels)
-  if (panelRegistry && serverSession?.serverClient) {
-    try {
-      const livePanelIds = panelRegistry.listPanels().map(p => p.panelId);
-      // Fire-and-forget — shutdown shouldn't block on this
-      void serverSession.serverClient.call("panel", "shutdownCleanup", [livePanelIds]).catch((e: unknown) =>
-        console.error("[App] Failed to run shutdown cleanup:", e));
-    } catch (e) {
-      console.error("[App] Failed to run shutdown cleanup:", e);
-    }
-  }
-
   // Cleanup helper for ephemeral dev workspaces (called sync, after servers stop)
   const isEphemeral = startupMode.kind === "local" && startupMode.isEphemeral;
   const cleanupDevWorkspace = () => {
@@ -737,18 +725,32 @@ app.on("will-quit", (event) => {
 
     // Server client (WS admin connection) + server process
     if (serverSession) {
-      stopPromises.push(
-        serverSession.serverClient.close().catch((e) => console.error("[App] Server client close error:", e))
-      );
-      if (serverSession.serverProcessManager) {
+      // Run panel cleanup via server (archive childless shell panels),
+      // then close the connection and stop the server process.
+      const session = serverSession;
+      serverSession = null;
+
+      const cleanupThenClose = (async () => {
+        if (panelRegistry) {
+          const livePanelIds = panelRegistry.listPanels().map(p => p.panelId);
+          await session.serverClient.call("panel", "shutdownCleanup", [livePanelIds])
+            .catch((e: unknown) => console.error("[App] Failed to run shutdown cleanup:", e));
+        }
+        await session.serverClient.close()
+          .catch((e) => console.error("[App] Server client close error:", e));
+      })();
+      stopPromises.push(cleanupThenClose);
+
+      if (session.serverProcessManager) {
         stopPromises.push(
-          serverSession.serverProcessManager
-            .shutdown()
-            .then(() => console.log("[App] Server process stopped"))
-            .catch((e) => console.error("[App] Server process shutdown error:", e))
+          cleanupThenClose.then(() =>
+            session.serverProcessManager!
+              .shutdown()
+              .then(() => console.log("[App] Server process stopped"))
+              .catch((e) => console.error("[App] Server process shutdown error:", e))
+          )
         );
       }
-      serverSession = null;
     }
 
     if (cdpServer) {
