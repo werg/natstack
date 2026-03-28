@@ -32,6 +32,17 @@ import {
   type SubscribeHeadlessAgentOptions,
 } from "./channel.js";
 
+function methodEntrySignature(entry: MethodHistoryEntry): string {
+  return JSON.stringify({
+    status: entry.status,
+    progress: entry.progress,
+    completedAt: entry.completedAt,
+    result: entry.result,
+    error: entry.error,
+    consoleOutput: entry.consoleOutput,
+  });
+}
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -518,6 +529,9 @@ export class HeadlessSession {
       !msg.pending &&
       msg.contentType !== "thinking";
 
+    const isMethodMessage = (msg: ChatMessage): boolean =>
+      msg.kind === "method" && !!msg.method;
+
     // Collect non-panel agent handles we know about
     const knownAgentHandles = new Set<string>();
     for (const p of Object.values(this._manager.allParticipants)) {
@@ -529,6 +543,9 @@ export class HeadlessSession {
     const existing = this._manager.messages;
     const alreadyPresent = [...existing].reverse().find(isAgentMessage);
     const baselineCount = existing.length;
+    const knownMethodStates = new Map(
+      [...this._manager.methodHistory.entries()].map(([callId, entry]) => [callId, methodEntrySignature(entry)])
+    );
 
     return new Promise<ChatMessage>((resolve, reject) => {
       let lastMatch: ChatMessage | undefined;
@@ -549,10 +566,32 @@ export class HeadlessSession {
       const cleanup = () => {
         if (overallTimer) clearTimeout(overallTimer);
         if (debounceTimer !== undefined) clearTimeout(debounceTimer);
-        unsub();
+        unsubMessages();
+        unsubMethodHistory();
       };
 
-      const unsub = this._manager.on("messagesChanged", (messages) => {
+      const hasPendingMethods = (): boolean => {
+        for (const entry of this._manager.methodHistory.values()) {
+          if (entry.status === "pending") return true;
+        }
+        return false;
+      };
+
+      const scheduleResolve = () => {
+        if (!lastMatch) return;
+        if (debounceTimer !== undefined) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          // Don't resolve while methods are still pending — the agent is still working
+          if (hasPendingMethods()) {
+            scheduleResolve(); // Re-schedule
+            return;
+          }
+          cleanup();
+          resolve(lastMatch!);
+        }, debounceMs);
+      };
+
+      const unsubMessages = this._manager.on("messagesChanged", (messages) => {
         if (messages.length <= baselineCount) return;
         for (let i = messages.length - 1; i >= baselineCount; i--) {
           const msg = messages[i]!;
@@ -579,14 +618,34 @@ export class HeadlessSession {
 
           if (isAgentMessage(msg) && msg !== alreadyPresent) {
             lastMatch = msg;
-            // Reset debounce timer on each new matching message
-            if (debounceTimer !== undefined) clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(() => {
-              cleanup();
-              resolve(lastMatch!);
-            }, debounceMs);
+            scheduleResolve();
             return; // Only need the latest match
           }
+        }
+      });
+
+      const unsubMethodHistory = this._manager.on("methodHistoryChanged", (entries) => {
+        let latestChangedCallId: string | null = null;
+        let latestChangedStartedAt = -1;
+
+        for (const [callId, entry] of entries.entries()) {
+          const signature = methodEntrySignature(entry);
+          if (knownMethodStates.get(callId) === signature) continue;
+          knownMethodStates.set(callId, signature);
+          if (entry.startedAt >= latestChangedStartedAt) {
+            latestChangedStartedAt = entry.startedAt;
+            latestChangedCallId = callId;
+          }
+        }
+
+        if (!latestChangedCallId) return;
+
+        const methodMsg = [...this._manager.messages]
+          .reverse()
+          .find((msg) => isMethodMessage(msg) && msg.method?.callId === latestChangedCallId);
+        if (methodMsg) {
+          lastMatch = methodMsg;
+          scheduleResolve();
         }
       });
     });

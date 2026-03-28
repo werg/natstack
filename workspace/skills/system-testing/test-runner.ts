@@ -16,6 +16,9 @@ export class TestRunner {
     }
   }
 
+  /** Alias for runSuite */
+  run = this.runSuite.bind(this);
+
   async runSuite(tests: TestCase[], filter?: { category?: string; name?: string }): Promise<TestSuiteResult> {
     const filtered = tests.filter(t => {
       if (filter?.category && t.category !== filter.category) return false;
