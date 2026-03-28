@@ -31,17 +31,17 @@ import { getAsyncTracking } from "./asyncTracking.js";
 // Timeout Constants
 // =============================================================================
 
-/** Default timeout for async operations if not specified by caller */
-export const SANDBOX_DEFAULT_TIMEOUT_MS = 10_000;
+/** Default timeout for async operations: 0 = no timeout */
+export const SANDBOX_DEFAULT_TIMEOUT_MS = 0;
 
-/** Maximum timeout a caller can request — values above this are clamped */
-export const SANDBOX_MAX_TIMEOUT_MS = 90_000;
+/** @deprecated No longer enforced — kept for backward compatibility */
+export const SANDBOX_MAX_TIMEOUT_MS = 0;
 
 /** Buffer added to tracking context cleanup */
 const TRACKING_CLEANUP_BUFFER_MS = 5_000;
 
-/** Framework-level timeout (safety net, slightly above max) */
-export const SANDBOX_FRAMEWORK_TIMEOUT_MS = SANDBOX_MAX_TIMEOUT_MS + TRACKING_CLEANUP_BUFFER_MS;
+/** @deprecated No longer enforced — kept for backward compatibility */
+export const SANDBOX_FRAMEWORK_TIMEOUT_MS = 0;
 
 // =============================================================================
 // Types
@@ -242,9 +242,9 @@ export async function executeSandbox(
 ): Promise<SandboxResult> {
   const { syntax = "tsx", bindings = {} } = options;
 
-  // Clamp timeout
+  // 0 or undefined = use default; negative = no timeout
   const requestedTimeout = options.timeout ?? SANDBOX_DEFAULT_TIMEOUT_MS;
-  const timeout = Math.max(0, Math.min(requestedTimeout, SANDBOX_MAX_TIMEOUT_MS));
+  const timeout = requestedTimeout <= 0 ? 0 : Math.max(0, requestedTimeout);
 
   const tracking = getAsyncTracking();
   const trackingContext = tracking?.start({

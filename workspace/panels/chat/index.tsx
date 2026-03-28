@@ -13,7 +13,6 @@ import { Flex, Spinner, Text, Theme } from "@radix-ui/themes";
 import { AgenticChat, ErrorBoundary } from "@workspace/agentic-chat";
 import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDeps } from "@workspace/agentic-chat";
 import { createPanelSandboxConfig } from "@workspace/agentic-core";
-import { SANDBOX_DEFAULT_TIMEOUT_MS, SANDBOX_MAX_TIMEOUT_MS, SANDBOX_FRAMEWORK_TIMEOUT_MS } from "@workspace/eval";
 import { z } from "zod";
 import type { MethodDefinition } from "@natstack/pubsub";
 import { resolveChatContextId } from "./bootstrap.js";
@@ -294,18 +293,15 @@ IMPORTANT: Use static import syntax, NOT dynamic await import().`,
       parameters: z.object({
         code: z.string().describe("The TypeScript/JavaScript code to execute"),
         syntax: z.enum(["typescript", "jsx", "tsx"]).default("tsx").describe("Target syntax"),
-        timeout: z.number().default(SANDBOX_DEFAULT_TIMEOUT_MS).describe(`Timeout in ms (default: ${SANDBOX_DEFAULT_TIMEOUT_MS}, max: ${SANDBOX_MAX_TIMEOUT_MS}).`),
         imports: z.record(z.string(), z.string()).optional()
           .describe("Packages to build on-demand. For workspace packages, values are \"latest\" (current HEAD) or a git ref. For npm packages, use \"npm:<version>\" (e.g. \"npm:^4.17.21\") or \"npm:latest\". Examples: { \"@workspace-skills/paneldev\": \"latest\", \"lodash\": \"npm:^4.17.21\", \"d3\": \"npm:7\" }"),
       }),
       streaming: true,
-      timeout: SANDBOX_FRAMEWORK_TIMEOUT_MS,
       execute: async (args, ctx) => {
-        const typedArgs = args as { code: string; syntax?: "typescript" | "jsx" | "tsx"; timeout?: number; imports?: Record<string, string> };
+        const typedArgs = args as { code: string; syntax?: "typescript" | "jsx" | "tsx"; imports?: Record<string, string> };
 
         const result = await deps.executeSandbox(typedArgs.code, {
           syntax: typedArgs.syntax,
-          timeout: typedArgs.timeout,
           imports: typedArgs.imports,
           bindings: { chat: deps.chat },
           onConsole: (formatted: string) => {

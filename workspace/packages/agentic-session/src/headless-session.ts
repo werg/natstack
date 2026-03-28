@@ -244,18 +244,16 @@ export class HeadlessSession {
         parameters: z.object({
           code: z.string().describe("The code to execute"),
           syntax: z.enum(["tsx", "jsx", "typescript"]).optional().describe("Source syntax"),
-          timeout: z.number().optional().describe("Execution timeout in ms"),
           imports: z.record(z.string()).optional().describe("Dynamic imports: { specifier: version }. E.g. { \"lodash\": \"npm:4\" }"),
         }),
         execute: async (args: unknown) => {
-          const { code, syntax, timeout, imports: dynamicImports } = args as { code: string; syntax?: string; timeout?: number; imports?: Record<string, string> };
+          const { code, syntax, imports: dynamicImports } = args as { code: string; syntax?: string; imports?: Record<string, string> };
           if (!code) return { ok: false, error: "Missing code" };
 
           scopeManager?.enterEval();
           try {
             const result: SandboxResult = await executeSandbox(code, {
               syntax: syntax as SandboxOptions["syntax"],
-              timeout,
               imports: dynamicImports,
               loadImport: sandbox.loadImport,
               bindings: {
