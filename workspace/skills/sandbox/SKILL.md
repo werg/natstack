@@ -32,10 +32,13 @@ All code runs in the same sandbox (Sucrase transform + CJS execution in the pane
 
 ## Pre-injected Variables
 
-All sandbox code has these available without importing:
+These are available in eval code without importing:
 
-- **`contextId`** — the panel's context ID (string)
-- **`chat`** — the ChatSandboxValue object (eval only; components receive it as a prop)
+- **`chat`** — the ChatSandboxValue object (publish, callMethod, channelId, rpc)
+- **`scope`** — persistent REPL scope (shared across eval calls)
+- **`scopes`** — scope management API (push, get, list, save)
+
+For `contextId`, import it: `import { contextId } from "@workspace/runtime"`
 
 ## Available Imports
 
@@ -59,7 +62,7 @@ See [INTERACTION_PATTERNS.md](INTERACTION_PATTERNS.md) for when to use inline UI
 ## Critical Rules
 
 1. **Static imports only** — `import { rpc } from "@workspace/runtime"` (NOT `await import(...)`)
-2. **`contextId` is pre-injected** — use it directly, do NOT import it from `@workspace/runtime`
+2. **`@natstack/*` packages are importable** — `import { GitClient } from "@natstack/git"` works via the `imports` parameter
 3. **Components must `export default`** — named exports alone won't work for inline_ui/feedback_custom
 4. **Inline UI components receive `{ props, chat }`** — not raw props
 5. **Feedback components receive `{ onSubmit, onCancel, onError, chat }`**

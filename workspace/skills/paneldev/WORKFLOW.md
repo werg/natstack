@@ -4,7 +4,7 @@
 
 Your working directory is the **context folder** — an isolated copy of the workspace. All paths are relative to this root. **Never use absolute paths or Bash for file/git operations.**
 
-Runtime operations (project creation, git, typecheck, tests, launching) are done via **eval** with `@workspace/runtime`. Use **static imports** and note that `contextId` is **pre-injected** (do NOT import it).
+Runtime operations (project creation, git, typecheck, tests, launching) are done via **eval** with `@workspace/runtime`. Use **static imports**.
 
 ---
 
@@ -113,8 +113,7 @@ eval({ code: `
 2. **Use filesystem tools for file edits** — Read, Edit, Write (not eval)
 3. **Use eval only for runtime operations** — git, typecheck, tests, launching
 4. **Use static imports in eval** — `import { rpc } from "@workspace/runtime"`, NOT `await import(...)`
-5. **contextId is pre-injected** — Use it directly, do NOT import it from the runtime
-6. **Relative paths only** — All paths are relative to your working directory
+5. **Relative paths only** — All paths are relative to your working directory
 7. **Check types early** — Catch errors before launching
 8. **Read build errors** — If launch fails, the error tells you what to fix
 9. **Use openPanel for launching** — `openPanel(source)` handles both workspace panels and URLs

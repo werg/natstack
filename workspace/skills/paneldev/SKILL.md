@@ -31,7 +31,6 @@ See the sandbox skill's [INTERACTION_PATTERNS.md](../sandbox/INTERACTION_PATTERN
 3. **Use filesystem tools for file edits** — Read, Edit, Write (not eval)
 4. **Use eval only for runtime operations** — project creation, git, typecheck, tests, launching panels
 5. **Static imports only in eval** — `import { rpc, openPanel } from "@workspace/runtime"` (NOT `await import(...)`)
-6. **`contextId` is pre-injected** — use it directly in eval, do NOT import it from `@workspace/runtime`
 
 ## Quick Start Workflow
 

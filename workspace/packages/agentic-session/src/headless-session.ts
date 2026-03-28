@@ -259,7 +259,6 @@ export class HeadlessSession {
               imports: dynamicImports,
               loadImport: sandbox.loadImport,
               bindings: {
-                contextId: this._manager.contextId ?? "",
                 chat: this._manager.buildChatSandboxValue(),
                 scope: scopeManager?.current ?? {},
                 scopes: scopeManager?.api ?? {},

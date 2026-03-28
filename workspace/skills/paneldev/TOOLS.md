@@ -7,7 +7,6 @@ Your working directory is the **context folder** — an isolated copy of the wor
 - **NEVER** use absolute paths (e.g., `/home/.../workspace/panels/...`)
 - **NEVER** use `Bash` for git operations, file listing, or file creation — use the structured tools
 - In eval, use **static imports** (`import { rpc } from "@workspace/runtime"`), NOT dynamic `await import(...)`
-- `contextId` is **pre-injected** — use it directly, do NOT import it from `@workspace/runtime`
 
 ---
 
@@ -91,7 +90,6 @@ Execute TypeScript/JavaScript code in the panel runtime. Runtime APIs are availa
 
 **IMPORTANT:**
 - Use static `import` syntax, NOT dynamic `await import(...)`.
-- `contextId` is **pre-injected** — use it directly, do NOT import it from the runtime.
 
 **Parameters:**
 | Name | Type | Required | Description |

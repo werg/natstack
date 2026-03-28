@@ -275,7 +275,8 @@ export default function ChatPanel() {
 - import { notifications } from "@workspace/runtime" — push notifications to shell chrome
 - import { openPanel, createBrowserPanel, focusPanel } from "@workspace/runtime" — panel navigation
 
-**Pre-injected variables (do NOT import these):** contextId, chat, scope, scopes
+**Pre-injected variables:** chat, scope, scopes
+- \`contextId\` — import from \`@workspace/runtime\` like any other export
 
 **REPL scope** — \`scope\` is a live in-memory object shared across eval calls. Store anything — handles, pages, functions, data. It all works between calls within the same session.
   Example: \`scope.page = await handle.page()\` in call 1, then \`await scope.page.click("button")\` in call 2.
@@ -289,8 +290,7 @@ export default function ChatPanel() {
 - **What serialization keeps vs drops:** Primitives, plain objects, arrays, Date, Map, Set survive. Functions, class instances, and Playwright pages are dropped. This only matters on panel reload or \`scopes.get()\` — within a session, \`scope\` holds everything as-is.
 - On panel reload: \`scope.browser.id\` (string) survives even though \`scope.browser.page\` (function) is lost. Reconnect via \`getBrowserHandle(scope.browser.id)\`.
 
-IMPORTANT: Use static import syntax, NOT dynamic await import().
-The variable \`contextId\` is pre-injected — use it directly, do NOT import it from @workspace/runtime.`,
+IMPORTANT: Use static import syntax, NOT dynamic await import().`,
       parameters: z.object({
         code: z.string().describe("The TypeScript/JavaScript code to execute"),
         syntax: z.enum(["typescript", "jsx", "tsx"]).default("tsx").describe("Target syntax"),
@@ -307,7 +307,7 @@ The variable \`contextId\` is pre-injected — use it directly, do NOT import it
           syntax: typedArgs.syntax,
           timeout: typedArgs.timeout,
           imports: typedArgs.imports,
-          bindings: { contextId: deps.contextId, chat: deps.chat },
+          bindings: { chat: deps.chat },
           onConsole: (formatted: string) => {
             void ctx.stream({ type: "console", content: formatted }).catch(err => console.warn("[Chat] Console stream failed:", err));
           },
