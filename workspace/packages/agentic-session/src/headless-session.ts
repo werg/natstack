@@ -9,6 +9,7 @@
 
 import {
   SessionManager,
+  buildEvalTool,
   type SessionManagerConfig,
   type ConnectOptions,
   type SendOptions,
@@ -23,10 +24,6 @@ import { z } from "zod";
 import {
   ScopeManager,
   DbScopePersistence,
-  executeSandbox,
-  type SandboxOptions,
-  type SandboxResult,
-  type ScopesApi,
 } from "@workspace/eval";
 import {
   getRecommendedHarnessConfig,
@@ -214,7 +211,7 @@ export class HeadlessSession {
 
   /**
    * Build eval + set_title method definitions for headless sessions.
-   * These are the methods the agent calls via PubSub.
+   * Uses the shared buildEvalTool from agentic-core for consistent behavior.
    */
   private buildDefaultMethods(): Record<string, MethodDefinition> {
     const methods: Record<string, MethodDefinition> = {};
@@ -236,44 +233,12 @@ export class HeadlessSession {
 
     // eval — only available when sandbox is configured
     if (this._sandbox) {
-      const sandbox = this._sandbox;
-      const scopeManager = this._scopeManager;
-
-      methods["eval"] = {
-        description: "Execute TypeScript/JavaScript code in the headless sandbox.",
-        parameters: z.object({
-          code: z.string().describe("The code to execute"),
-          syntax: z.enum(["tsx", "jsx", "typescript"]).optional().describe("Source syntax"),
-          imports: z.record(z.string()).optional().describe("Dynamic imports: { specifier: version }. E.g. { \"lodash\": \"npm:4\" }"),
-        }),
-        execute: async (args: unknown) => {
-          const { code, syntax, imports: dynamicImports } = args as { code: string; syntax?: string; imports?: Record<string, string> };
-          if (!code) return { ok: false, error: "Missing code" };
-
-          scopeManager?.enterEval();
-          try {
-            const result: SandboxResult = await executeSandbox(code, {
-              syntax: syntax as SandboxOptions["syntax"],
-              imports: dynamicImports,
-              loadImport: sandbox.loadImport,
-              bindings: {
-                chat: this._manager.buildChatSandboxValue(),
-                scope: scopeManager?.current ?? {},
-                scopes: scopeManager?.api ?? {},
-              },
-            });
-
-            return {
-              ok: !result.error,
-              result: result.returnValue,
-              consoleOutput: result.consoleOutput,
-              error: result.error,
-            };
-          } finally {
-            await scopeManager?.exitEval();
-          }
-        },
-      };
+      methods["eval"] = buildEvalTool({
+        sandbox: this._sandbox,
+        scopeManager: this._scopeManager,
+        getChatSandboxValue: () => this._manager.buildChatSandboxValue(),
+        getScope: () => this._scopeManager?.current ?? {},
+      });
     }
 
     return methods;

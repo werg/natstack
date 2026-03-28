@@ -12,9 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Flex, Spinner, Text, Theme } from "@radix-ui/themes";
 import { AgenticChat, ErrorBoundary } from "@workspace/agentic-chat";
 import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDeps } from "@workspace/agentic-chat";
-import { createPanelSandboxConfig } from "@workspace/agentic-core";
-import { z } from "zod";
-import type { MethodDefinition } from "@natstack/pubsub";
+import { createPanelSandboxConfig, buildEvalTool } from "@workspace/agentic-core";
 import { resolveChatContextId } from "./bootstrap.js";
 
 /** Stable metadata object — avoids creating a new object every render */
@@ -250,100 +248,16 @@ export default function ChatPanel() {
 
   // Tool provider: only eval tool — all other operations use eval + runtime APIs
   const toolProvider: ToolProvider = useCallback((deps: ToolProviderDeps) => {
-    const evalMethodDef: MethodDefinition = {
-      description: `Execute TypeScript/JavaScript code in the panel sandbox.
-
-**Capabilities:**
-- Top-level await supported (async operations, fetch, timers)
-- Console output streams to the agent in real-time
-- Dynamic imports: build workspace packages on-demand from any git ref
-- npm packages: install and bundle third-party npm packages on-demand
-
-**Available modules** (via import/require):
-- @workspace/runtime — rpc, fs, db, workers, workspace, oauth, notifications APIs
-- @workspace/panel-browser — browserData API for detecting/importing browser data
-- react, @radix-ui/themes, @radix-ui/react-icons — for component rendering
-- Any module in the panel's exposeModules list
-
-**Key imports from @workspace/runtime:**
-- import { rpc } from "@workspace/runtime" — raw RPC calls to any service
-- import { oauth } from "@workspace/runtime" — OAuth token management (getToken, connect, listProviders, etc.)
-- import { fs } from "@workspace/runtime" — filesystem read/write
-- import { db } from "@workspace/runtime" — SQLite database access
-- import { workers } from "@workspace/runtime" — worker lifecycle management
-- import { notifications } from "@workspace/runtime" — push notifications to shell chrome
-- import { openPanel, createBrowserPanel, focusPanel } from "@workspace/runtime" — panel navigation
-
-**Pre-injected variables:** chat, scope, scopes
-- \`contextId\` — import from \`@workspace/runtime\` like any other export
-
-**REPL scope** — \`scope\` is a live in-memory object shared across eval calls. Store anything — handles, pages, functions, data. It all works between calls within the same session.
-  Example: \`scope.page = await handle.page()\` in call 1, then \`await scope.page.click("button")\` in call 2.
-- \`scopes\` — scope management API:
-  - \`scopes.currentId\` — current scope's durable UUID
-  - \`scopes.push()\` — archive current scope, start new one (inherits serializable values only)
-  - \`scopes.get(id)\` — retrieve archived scope by ID (serialized snapshot — data only, no functions)
-  - \`scopes.list()\` — list all scope entries for this channel
-  - \`scopes.save()\` — force-persist scope to DB now
-- Scope is automatically serialized to DB after every eval call. Non-eval scope writes (inline_ui handlers, async callbacks) require explicit \`scopes.save()\`.
-- **What serialization keeps vs drops:** Primitives, plain objects, arrays, Date, Map, Set survive. Functions, class instances, and Playwright pages are dropped. This only matters on panel reload or \`scopes.get()\` — within a session, \`scope\` holds everything as-is.
-- On panel reload: \`scope.browser.id\` (string) survives even though \`scope.browser.page\` (function) is lost. Reconnect via \`getBrowserHandle(scope.browser.id)\`.
-
-IMPORTANT: Use static import syntax, NOT dynamic await import().`,
-      parameters: z.object({
-        code: z.string().describe("The TypeScript/JavaScript code to execute"),
-        syntax: z.enum(["typescript", "jsx", "tsx"]).default("tsx").describe("Target syntax"),
-        imports: z.record(z.string(), z.string()).optional()
-          .describe("Packages to build on-demand. For workspace packages, values are \"latest\" (current HEAD) or a git ref. For npm packages, use \"npm:<version>\" (e.g. \"npm:^4.17.21\") or \"npm:latest\". Examples: { \"@workspace-skills/paneldev\": \"latest\", \"lodash\": \"npm:^4.17.21\", \"d3\": \"npm:7\" }"),
+    return {
+      eval: buildEvalTool({
+        sandbox: sandboxConfig,
+        // Panel's useAgenticChat provides boundExecuteSandbox which handles
+        // scope enter/exit lifecycle, so we pass it as the override.
+        executeSandbox: deps.executeSandbox,
+        getChatSandboxValue: () => deps.chat,
+        getScope: () => deps.scope,
       }),
-      streaming: true,
-      execute: async (args, ctx) => {
-        const typedArgs = args as { code: string; syntax?: "typescript" | "jsx" | "tsx"; imports?: Record<string, string> };
-
-        const result = await deps.executeSandbox(typedArgs.code, {
-          syntax: typedArgs.syntax,
-          imports: typedArgs.imports,
-          bindings: { chat: deps.chat },
-          onConsole: (formatted: string) => {
-            void ctx.stream({ type: "console", content: formatted }).catch(err => console.warn("[Chat] Console stream failed:", err));
-          },
-        });
-
-        const scopeKeys = Object.keys(deps.scope);
-        const scopeLine = scopeKeys.length > 0
-          ? `[scope] keys: ${scopeKeys.join(", ")} (${scopeKeys.length} total)`
-          : "[scope] (empty)";
-
-        if (!result.success) {
-          throw new Error(`${result.error || "Eval failed"}\n${scopeLine}`);
-        }
-
-        // Format as a pre-structured ToolExecutionResult so the AI sees
-        // clean, readable text instead of double-escaped JSON.
-        const parts: Array<{ type: "text"; text: string }> = [];
-        if (result.consoleOutput) {
-          parts.push({ type: "text", text: `[eval] Console:\n${result.consoleOutput}` });
-        }
-        if (result.returnValue !== undefined && result.returnValue !== null) {
-          let formatted: string;
-          try {
-            formatted = typeof result.returnValue === "string"
-              ? result.returnValue
-              : JSON.stringify(result.returnValue, null, 2);
-          } catch {
-            formatted = String(result.returnValue);
-          }
-          parts.push({ type: "text", text: `[eval] Return value:\n${formatted}` });
-        }
-        if (parts.length === 0) {
-          parts.push({ type: "text", text: "[eval] (no output)" });
-        }
-        parts.push({ type: "text", text: scopeLine });
-        return { content: parts };
-      },
     };
-
-    return { eval: evalMethodDef };
   }, []);
 
   // Resolve channel name: from stateArgs (existing chat) or bootstrap (new chat)

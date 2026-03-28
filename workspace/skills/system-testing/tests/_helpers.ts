@@ -17,6 +17,8 @@ export function findLastAgentMessage(result: TestExecutionResult): string {
       m.kind === "message" &&
       m.complete &&
       m.contentType !== "thinking" &&
+      m.contentType !== "typing" &&
+      m.contentType !== "action" &&
       !m.pending
     ) {
       return m.content ?? "";
@@ -32,7 +34,9 @@ export function hasAgentResponse(result: TestExecutionResult): boolean {
     m.senderId !== selfSenderId &&
     m.kind === "message" &&
     m.complete &&
-    m.contentType !== "thinking"
+    m.contentType !== "thinking" &&
+    m.contentType !== "typing" &&
+    m.contentType !== "action"
   );
 }
 

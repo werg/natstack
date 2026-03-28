@@ -57,6 +57,10 @@ export { MessageState } from "./message-state.js";
 export { SessionManager } from "./session-manager.js";
 export type { SessionManagerConfig, SessionManagerEvents, ConnectOptions, SendOptions } from "./session-manager.js";
 
+// --- Eval Tool ---
+export { buildEvalTool } from "./eval-tool.js";
+export type { BuildEvalToolOptions } from "./eval-tool.js";
+
 // --- SandboxConfig Factories ---
 export {
   createPanelSandboxConfig,

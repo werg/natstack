@@ -14,7 +14,7 @@ Spin up headless agentic sessions to systematically test every NatStack capabili
 | runner.ts | `HeadlessRunner` — spawn headless sessions from eval with one line |
 | test-runner.ts | `TestRunner` — orchestrate test suites, collect full diagnostics |
 | types.ts | `TestCase`, `TestResult`, `TestSuiteResult`, `TestExecutionResult` |
-| tests/ | 71 pre-built test cases across 15 categories |
+| tests/ | 70 pre-built test cases across 15 categories |
 | [SELF_IMPROVEMENT.md](SELF_IMPROVEMENT.md) | Workflow for analyzing failures and pushing fixes |
 
 ## Quick Start
@@ -108,7 +108,7 @@ if (fail.execution.snapshot) {
 
 | Suite | Tests | What it covers |
 |-------|-------|---------------|
-| `smokeTests` | 5 | Basic sanity: eval, scope, fs, db, package import |
+| `smokeTests` | 4 | Basic sanity: eval, fs, db, package import |
 | `filesystemTests` | 9 | All fs operations: read/write, dirs, stats, symlinks, handles |
 | `databaseTests` | 6 | SQLite: CRUD, params, multiple DBs, migration, persistence |
 | `gitTests` | 6 | init, branch, diff, log, stash, push |
