@@ -18,6 +18,8 @@ export class TestRunner {
 
   /** Alias for runSuite */
   run = this.runSuite.bind(this);
+  /** Alias for runSuite */
+  runTests = this.runSuite.bind(this);
 
   async runSuite(tests: TestCase[], filter?: { category?: string; name?: string }): Promise<TestSuiteResult> {
     const filtered = tests.filter(t => {

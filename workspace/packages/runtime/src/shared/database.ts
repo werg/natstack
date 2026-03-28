@@ -49,10 +49,14 @@ function createDatabaseProxy(rpc: RpcCaller, handle: string): DatabaseInterface 
  * Create a database client that uses RPC to access databases in the main process.
  */
 export function createDbClient(rpc: RpcCaller): DbClient {
-  return {
+  const client = {
     async open(name: string, readOnly = false): Promise<DatabaseInterface> {
       const handle = await rpc.call<string>("main", "db.open", name, readOnly);
       return createDatabaseProxy(rpc, handle);
     },
+    // Make the API discoverable when agents inspect with console.log
+    toString() { return "DbClient { open(name: string, readOnly?: boolean): Promise<DatabaseInterface> }"; },
+    toJSON() { return { type: "DbClient", methods: ["open(name, readOnly?) → { exec, run, get, query, close }"] }; },
   };
+  return client as DbClient;
 }
