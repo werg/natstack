@@ -10,7 +10,11 @@ export class TestRunner {
       onTestStart?: (test: TestCase) => void;
       onTestEnd?: (test: TestCase, result: TestResult, execution: TestExecutionResult) => void;
     }
-  ) {}
+  ) {
+    if (!runner) {
+      throw new Error("TestRunner requires a HeadlessRunner instance. Usage: new TestRunner(new HeadlessRunner(contextId))");
+    }
+  }
 
   async runSuite(tests: TestCase[], filter?: { category?: string; name?: string }): Promise<TestSuiteResult> {
     const filtered = tests.filter(t => {
