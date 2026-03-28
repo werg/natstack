@@ -38,7 +38,7 @@ export class HeadlessRunner {
       },
       sandbox: createPanelSandboxConfig(rpcConfig, db),
       rpcCall: (t: string, m: string, ...a: unknown[]) => rpcConfig.call(t, m, ...a),
-      source: opts?.source ?? "agent-worker",
+      source: opts?.source ?? "workers/agent-worker",
       className: opts?.className ?? "AiChatWorker",
       contextId: this.contextId,
       systemPrompt: opts?.systemPrompt,
