@@ -6,7 +6,7 @@ export const edgeCaseTests: TestCase[] = [
     name: "eval-timeout",
     description: "Handle eval timeout for long-running code",
     category: "edge-cases",
-    prompt: "Run eval code that sleeps for 30 seconds with a 2-second timeout. Tell me how the timeout was handled.",
+    prompt: "Run code that sleeps for 30 seconds with a 2-second timeout. Tell me how the timeout was handled.",
     timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
@@ -23,7 +23,7 @@ export const edgeCaseTests: TestCase[] = [
     name: "invalid-import",
     description: "Graceful error for importing a nonexistent package",
     category: "edge-cases",
-    prompt: "Try to import a package called 'nonexistent-package-xyz' in eval. Tell me what error you got.",
+    prompt: "Try to import a package called 'nonexistent-package-xyz'. Tell me what error you got.",
     timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);

@@ -55,7 +55,7 @@ export const buildTests: TestCase[] = [
     name: "import-built-package",
     description: "Import and list exports of a built workspace package",
     category: "build",
-    prompt: "Import the @workspace/eval package in eval and list its exports.",
+    prompt: "Import the @workspace/eval package and list its exports.",
     timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);

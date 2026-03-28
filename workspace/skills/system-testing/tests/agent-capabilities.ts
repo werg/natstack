@@ -22,7 +22,7 @@ export const agentCapabilityTests: TestCase[] = [
     name: "error-recovery",
     description: "Agent recovers from a thrown error and retries successfully",
     category: "agent-capabilities",
-    prompt: "Run eval code that throws an error: throw new Error('test crash'). Then explain what happened and try again with code that works.",
+    prompt: "Run code that throws: throw new Error('test crash'). Then explain what happened and try again with code that works.",
     timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
@@ -39,7 +39,7 @@ export const agentCapabilityTests: TestCase[] = [
     name: "large-output",
     description: "Agent generates a large array and reports the count",
     category: "agent-capabilities",
-    prompt: "Generate an array of 100 objects with sequential IDs in eval and return it. Tell me the count.",
+    prompt: "Generate an array of 100 objects with sequential IDs and return it. Tell me the count.",
     timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
@@ -54,7 +54,7 @@ export const agentCapabilityTests: TestCase[] = [
     name: "dynamic-import",
     description: "Dynamically import zod and validate an email",
     category: "agent-capabilities",
-    prompt: "Import the 'zod' package dynamically in eval and create a schema that validates email addresses. Test it with 'test@example.com'.",
+    prompt: "Import the 'zod' package and create a schema that validates email addresses. Test it with 'test@example.com' and tell me the result.",
     timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
@@ -69,9 +69,9 @@ export const agentCapabilityTests: TestCase[] = [
   },
   {
     name: "console-streaming",
-    description: "Console output from eval is captured and reported",
+    description: "Console output is captured and reported",
     category: "agent-capabilities",
-    prompt: "Run eval that console.logs 5 lines. Tell me what the console output was.",
+    prompt: "Write code that console.logs 5 numbered lines. Tell me what the console output was.",
     timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
@@ -87,7 +87,7 @@ export const agentCapabilityTests: TestCase[] = [
     name: "concurrent-scope",
     description: "Multiple scope assignments persist independently",
     category: "agent-capabilities",
-    prompt: "In three separate eval calls: set scope.a=1, scope.b=2, scope.c=3. Then read all three and confirm they're all set.",
+    prompt: "In three separate code executions: set scope.a=1, scope.b=2, scope.c=3. Then read all three and confirm they're all set.",
     timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);

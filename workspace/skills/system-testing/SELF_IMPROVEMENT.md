@@ -23,7 +23,7 @@ import { HeadlessRunner, TestRunner, allTests } from "@workspace-skills/system-t
 const runner = new HeadlessRunner(contextId);
 const tester = new TestRunner(runner, {
   onTestStart: (t) => console.log(`  Running: ${t.name}...`),
-  onTestEnd: (t, r) => console.log(`  ${r.passed ? "PASS" : "FAIL"}: ${t.name}`),
+  onTestEnd: (t, r, ex) => console.log(`  ${r.passed ? "PASS" : "FAIL"}: ${t.name} (${ex.duration}ms)`),
 });
 
 const results = await tester.runSuite(allTests());
@@ -33,22 +33,52 @@ return { total: results.total, passed: results.passed, failed: results.failed };
 
 ## Phase 2: Analyze Failures
 
-For each failed test, inspect the full execution:
+For each failed test, inspect **everything** — the conversation, every tool call and its result, harness lifecycle, and participant state:
 
 ```typescript
 for (const r of scope.results.results.filter(r => !r.result.passed)) {
-  console.log(`\n=== FAIL: ${r.test.name} ===`);
-  console.log(`Category: ${r.test.category}`);
-  console.log(`Description: ${r.test.description}`);
+  console.log(`\n${"=".repeat(60)}`);
+  console.log(`FAIL: ${r.test.name} (${r.test.category})`);
+  console.log(`Prompt: ${r.test.prompt}`);
   console.log(`Validation: ${r.result.reason}`);
   console.log(`Duration: ${r.execution.duration}ms`);
-  if (r.execution.error) console.log(`Error: ${r.execution.error}`);
+  if (r.execution.error) console.log(`Session error: ${r.execution.error}`);
 
-  console.log(`\nConversation (${r.execution.messages.length} messages):`);
+  // 1. Full conversation — every message exchanged
+  console.log(`\n--- Conversation (${r.execution.messages.length} messages) ---`);
+  const selfId = r.execution.messages[0]?.senderId;
   for (const m of r.execution.messages) {
-    const prefix = m.kind === "system" ? "[SYS]" : m.kind === "method" ? "[METHOD]" : `[${m.senderId?.slice(0, 8)}]`;
-    const content = m.content?.slice(0, 200) ?? "(empty)";
-    console.log(`  ${prefix} ${m.contentType ?? ""}: ${content}`);
+    const who = m.senderId === selfId ? "USER" : "AGENT";
+    const type = m.contentType ?? m.kind ?? "text";
+    console.log(`  [${who}] (${type}) ${m.content?.slice(0, 500) ?? "(empty)"}`);
+    if (m.error) console.log(`    ERROR: ${m.error}`);
+  }
+
+  // 2. Method history — every tool call, args, return value, errors
+  const snap = r.execution.snapshot;
+  if (snap?.methodHistory.length) {
+    console.log(`\n--- Method History (${snap.methodHistory.length} calls) ---`);
+    for (const mh of snap.methodHistory) {
+      const dur = mh.duration ? `${mh.duration}ms` : "pending";
+      console.log(`  [${mh.status}] ${mh.method} (${dur})`);
+      if (mh.error) console.log(`    Error: ${mh.error}`);
+    }
+  }
+
+  // 3. Debug events — harness lifecycle (spawn, start, stop, crash)
+  if (snap?.debugEvents.length) {
+    console.log(`\n--- Debug Events (${snap.debugEvents.length}) ---`);
+    for (const ev of snap.debugEvents) {
+      console.log(`  ${JSON.stringify(ev).slice(0, 300)}`);
+    }
+  }
+
+  // 4. Participants — who joined, who disconnected
+  if (snap?.participants) {
+    console.log(`\n--- Participants ---`);
+    for (const [id, p] of Object.entries(snap.participants)) {
+      console.log(`  ${p.name} (${p.type}/${p.handle}): ${p.connected ? "connected" : "DISCONNECTED"}`);
+    }
   }
 }
 ```

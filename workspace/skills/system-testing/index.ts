@@ -1,6 +1,7 @@
 export { HeadlessRunner } from "./runner.js";
 export { TestRunner } from "./test-runner.js";
 export type { TestCase, TestResult, TestSuiteResult, TestExecutionResult } from "./types.js";
+export type { SessionSnapshot } from "@workspace/agentic-session";
 
 // Test suite exports
 export { smokeTests } from "./tests/smoke.js";
