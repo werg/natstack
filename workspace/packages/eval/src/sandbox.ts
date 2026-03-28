@@ -345,7 +345,13 @@ export async function executeSandbox(
         exports: result.exports,
       };
     } else {
-      const safeReturnValue = safeSerialize(result.exports["default"]);
+      // No timeout: still await the return value (most eval code uses top-level await)
+      let returnValue = result.returnValue;
+      if (isPromise(returnValue)) {
+        returnValue = await returnValue;
+      }
+
+      const safeReturnValue = safeSerialize(returnValue ?? result.exports["default"]);
       return {
         success: true,
         consoleOutput: formatConsoleOutput(capture.getEntries()),
