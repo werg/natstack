@@ -1,5 +1,5 @@
 import type { TestCase } from "../types.js";
-import { findLastAgentMessage, responseContains, responseSucceeds } from "./_helpers.js";
+import { findLastAgentMessage } from "./_helpers.js";
 
 export const oauthTests: TestCase[] = [
   {
@@ -12,8 +12,8 @@ export const oauthTests: TestCase[] = [
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
       const lower = msg.toLowerCase();
-      const hasProviders = lower.includes("provider") || lower.includes("oauth") || lower.includes("github") ||
-        lower.includes("google") || lower.includes("none") || lower.includes("empty") || lower.includes("[]");
+      const hasProviders = lower.includes("provider") || lower.includes("oauth") ||
+        lower.includes("none") || lower.includes("available") || lower.includes("configured");
       return {
         passed: hasProviders,
         reason: hasProviders ? undefined : `Expected OAuth provider listing, got: ${msg.slice(0, 200)}`,
@@ -22,16 +22,16 @@ export const oauthTests: TestCase[] = [
   },
   {
     name: "list-connections",
-    description: "List active OAuth connections",
+    description: "Check for active OAuth connections",
     category: "oauth",
-    prompt: "List active OAuth connections. Tell me what accounts are connected, or if none are.",
+    prompt: "Check for active OAuth connections. Tell me what accounts are connected, or if there are none.",
     timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
       const lower = msg.toLowerCase();
       const hasConnections = lower.includes("connection") || lower.includes("account") || lower.includes("connected") ||
-        lower.includes("none") || lower.includes("no ") || lower.includes("empty") || lower.includes("oauth");
+        lower.includes("none") || lower.includes("no ") || lower.includes("oauth");
       return {
         passed: hasConnections,
         reason: hasConnections ? undefined : `Expected connections listing, got: ${msg.slice(0, 200)}`,
@@ -50,7 +50,7 @@ export const oauthTests: TestCase[] = [
       const lower = msg.toLowerCase();
       const hasError = lower.includes("error") || lower.includes("no connection") || lower.includes("not connected") ||
         lower.includes("not found") || lower.includes("fail") || lower.includes("no token") ||
-        lower.includes("null") || lower.includes("undefined") || lower.includes("authorize");
+        lower.includes("null") || lower.includes("authorize");
       return {
         passed: hasError,
         reason: hasError ? undefined : `Expected error about missing connection, got: ${msg.slice(0, 200)}`,

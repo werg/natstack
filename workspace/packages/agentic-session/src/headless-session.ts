@@ -41,7 +41,18 @@ import {
 
 export interface SessionSnapshot {
   messages: readonly ChatMessage[];
-  methodHistory: Array<{ callId: string; method: string; status: string; duration?: number; error?: string }>;
+  methodHistory: Array<{
+    callId: string;
+    method: string;
+    status: string;
+    args?: unknown;
+    result?: unknown;
+    consoleOutput?: string;
+    error?: string;
+    duration?: number;
+    providerId?: string;
+    callerId?: string;
+  }>;
   debugEvents: readonly (AgentDebugPayload & { ts: number })[];
   participants: Record<string, { name: string; type: string; handle: string; connected: boolean }>;
   connected: boolean;
@@ -415,8 +426,13 @@ export class HeadlessSession {
       callId: e.callId,
       method: e.methodName,
       status: e.status,
-      duration: e.completedAt ? e.completedAt - e.startedAt : undefined,
+      args: e.args,
+      result: e.result,
+      consoleOutput: e.consoleOutput,
       error: e.error,
+      duration: e.completedAt ? e.completedAt - e.startedAt : undefined,
+      providerId: e.providerId,
+      callerId: e.callerId,
     }));
     return {
       messages: this._manager.messages,

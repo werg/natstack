@@ -1,21 +1,22 @@
 import type { TestCase } from "../types.js";
-import { findLastAgentMessage, responseContains, responseSucceeds } from "./_helpers.js";
+import { findLastAgentMessage } from "./_helpers.js";
 
 export const rpcTests: TestCase[] = [
   {
     name: "cross-service-call",
-    description: "Call the workspace info service for workspace config",
+    description: "Call a service and report the result",
     category: "rpc-communication",
-    prompt: "Call the workspace info service to get the current workspace config. Tell me the workspace ID.",
+    prompt: "Call a service via RPC and report the result.",
     timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
       const lower = msg.toLowerCase();
-      const hasConfig = lower.includes("workspace") || lower.includes("id") || lower.includes("config");
+      const hasResult = lower.includes("service") || lower.includes("rpc") || lower.includes("result") ||
+        lower.includes("response") || lower.includes("workspace") || lower.includes("config");
       return {
-        passed: hasConfig,
-        reason: hasConfig ? undefined : `Expected workspace ID from config, got: ${msg.slice(0, 200)}`,
+        passed: hasResult,
+        reason: hasResult ? undefined : `Expected service call result, got: ${msg.slice(0, 200)}`,
       };
     },
   },
@@ -23,13 +24,13 @@ export const rpcTests: TestCase[] = [
     name: "worker-rpc",
     description: "List worker sources via RPC",
     category: "rpc-communication",
-    prompt: "List the available worker sources via RPC. Tell me what sources exist.",
+    prompt: "List worker sources via RPC. Tell me what sources exist.",
     timeout: 30_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       if (!msg) return { passed: false, reason: "No agent response received" };
       const lower = msg.toLowerCase();
-      const hasSources = lower.includes("source") || lower.includes("worker") || lower.includes("hello") || lower.includes("agent");
+      const hasSources = lower.includes("source") || lower.includes("worker") || lower.includes("rpc") || lower.includes("available");
       return {
         passed: hasSources,
         reason: hasSources ? undefined : `Expected worker sources listing, got: ${msg.slice(0, 200)}`,

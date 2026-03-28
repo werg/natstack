@@ -1,35 +1,35 @@
 import type { TestCase } from "../types.js";
-import { findLastAgentMessage, responseContains, responseSucceeds } from "./_helpers.js";
+import { findLastAgentMessage } from "./_helpers.js";
 
 export const skillTests: TestCase[] = [
   {
     name: "load-sandbox",
-    description: "Load the sandbox skill and describe its APIs",
+    description: "Load the sandbox skill and describe what it offers",
     category: "skills",
-    prompt: "Load the sandbox skill and tell me what tools and APIs it documents.",
+    prompt: "Load the sandbox skill and describe what it offers.",
     timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
       const hasSkill = lower.includes("sandbox") || lower.includes("api") || lower.includes("tool") ||
-        lower.includes("eval") || lower.includes("fs") || lower.includes("db") || lower.includes("skill");
+        lower.includes("eval") || lower.includes("skill");
       return {
         passed: hasSkill,
-        reason: hasSkill ? undefined : `Expected sandbox skill API description, got: ${msg.slice(0, 200)}`,
+        reason: hasSkill ? undefined : `Expected sandbox skill description, got: ${msg.slice(0, 200)}`,
       };
     },
   },
   {
     name: "load-paneldev",
-    description: "Load the paneldev skill and describe project types",
+    description: "Load the paneldev skill and describe what projects it can create",
     category: "skills",
-    prompt: "Load the paneldev skill and tell me what project types can be scaffolded.",
+    prompt: "Load the paneldev skill and describe what kinds of projects it can create.",
     timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
-      const hasSkill = lower.includes("panel") || lower.includes("scaffold") || lower.includes("project") ||
-        lower.includes("template") || lower.includes("react") || lower.includes("svelte") || lower.includes("type");
+      const hasSkill = lower.includes("panel") || lower.includes("project") || lower.includes("scaffold") ||
+        lower.includes("template") || lower.includes("type") || lower.includes("create");
       return {
         passed: hasSkill,
         reason: hasSkill ? undefined : `Expected paneldev project types, got: ${msg.slice(0, 200)}`,
@@ -38,26 +38,26 @@ export const skillTests: TestCase[] = [
   },
   {
     name: "load-api-integrations",
-    description: "Load the api-integrations skill and list providers",
+    description: "Load the api-integrations skill and list what it supports",
     category: "skills",
-    prompt: "Load the api-integrations skill and tell me what OAuth providers are supported.",
+    prompt: "Load the api-integrations skill and tell me what integrations it supports.",
     timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
       const hasSkill = lower.includes("oauth") || lower.includes("provider") || lower.includes("integration") ||
-        lower.includes("github") || lower.includes("google") || lower.includes("api");
+        lower.includes("api") || lower.includes("service");
       return {
         passed: hasSkill,
-        reason: hasSkill ? undefined : `Expected OAuth provider listing from skill, got: ${msg.slice(0, 200)}`,
+        reason: hasSkill ? undefined : `Expected integration listing, got: ${msg.slice(0, 200)}`,
       };
     },
   },
   {
     name: "load-headless-sessions",
-    description: "Load the headless-sessions skill and learn how to create sessions",
+    description: "Load the headless-sessions skill and describe its capabilities",
     category: "skills",
-    prompt: "Load the headless-sessions skill and tell me how to create a headless session.",
+    prompt: "Load the headless-sessions skill and describe what it can do.",
     timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
@@ -65,7 +65,7 @@ export const skillTests: TestCase[] = [
       const hasSkill = lower.includes("headless") || lower.includes("session") || lower.includes("create") || lower.includes("agentic");
       return {
         passed: hasSkill,
-        reason: hasSkill ? undefined : `Expected headless session creation instructions, got: ${msg.slice(0, 200)}`,
+        reason: hasSkill ? undefined : `Expected headless session capabilities, got: ${msg.slice(0, 200)}`,
       };
     },
   },

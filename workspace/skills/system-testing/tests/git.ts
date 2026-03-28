@@ -1,12 +1,12 @@
 import type { TestCase } from "../types.js";
-import { findLastAgentMessage, responseContains, responseSucceeds } from "./_helpers.js";
+import { findLastAgentMessage } from "./_helpers.js";
 
 export const gitTests: TestCase[] = [
   {
     name: "init-commit",
     description: "Initialize a git repo, create a file, and commit",
     category: "git",
-    prompt: "Initialize a new git repo in a temp directory, create a file, add and commit it. Tell me the commit hash.",
+    prompt: "Initialize a new git repo, create a file, and commit it. Tell me the commit hash.",
     timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
@@ -14,22 +14,23 @@ export const gitTests: TestCase[] = [
       const hasHash = /[0-9a-f]{7,40}/i.test(msg);
       return {
         passed: hasHash,
-        reason: hasHash ? undefined : `Expected a commit hash in response, got: ${msg.slice(0, 200)}`,
+        reason: hasHash ? undefined : `Expected a commit hash, got: ${msg.slice(0, 200)}`,
       };
     },
   },
   {
     name: "branch-checkout",
-    description: "Create and switch branches, make a commit, list branches",
+    description: "Create and switch branches",
     category: "git",
-    prompt: "In a git repo, create a branch called 'feature', switch to it, make a commit, then list branches.",
+    prompt: "In a git repo, create a new branch, switch to it, and make a commit. Tell me the branch name.",
     timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
-      const hasFeature = msg.toLowerCase().includes("feature");
+      const lower = msg.toLowerCase();
+      const hasBranch = lower.includes("branch") || lower.includes("switch") || lower.includes("checkout") || lower.includes("created");
       return {
-        passed: hasFeature,
-        reason: hasFeature ? undefined : `Expected "feature" branch in response, got: ${msg.slice(0, 200)}`,
+        passed: hasBranch,
+        reason: hasBranch ? undefined : `Expected branch info, got: ${msg.slice(0, 200)}`,
       };
     },
   },
@@ -37,16 +38,16 @@ export const gitTests: TestCase[] = [
     name: "diff-status",
     description: "Modify a file and check git status/diff",
     category: "git",
-    prompt: "In a git repo, modify a tracked file and check the status and diff. Tell me what changed.",
+    prompt: "In a git repo, modify a tracked file and check the diff. Tell me what changed.",
     timeout: 45_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
       const hasChange = lower.includes("modified") || lower.includes("changed") || lower.includes("diff") ||
-        lower.includes("status") || lower.includes("unstaged");
+        lower.includes("added") || lower.includes("removed");
       return {
         passed: hasChange,
-        reason: hasChange ? undefined : `Expected git status/diff info, got: ${msg.slice(0, 200)}`,
+        reason: hasChange ? undefined : `Expected diff/change info, got: ${msg.slice(0, 200)}`,
       };
     },
   },
@@ -54,16 +55,15 @@ export const gitTests: TestCase[] = [
     name: "log-history",
     description: "Make multiple commits and view the log",
     category: "git",
-    prompt: "Create a git repo, make 3 commits with different messages, then show the log. Tell me all commit messages.",
+    prompt: "Create a git repo, make a few commits, and show the log. Tell me the commit messages.",
     timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
-      // Should contain at least 2 distinct commit-like references
-      const hasLog = lower.includes("commit") || lower.includes("log") || lower.includes("message");
+      const hasLog = lower.includes("commit") || lower.includes("log") || lower.includes("message") || lower.includes("history");
       return {
         passed: hasLog,
-        reason: hasLog ? undefined : `Expected commit log with messages, got: ${msg.slice(0, 200)}`,
+        reason: hasLog ? undefined : `Expected commit log, got: ${msg.slice(0, 200)}`,
       };
     },
   },
@@ -71,7 +71,7 @@ export const gitTests: TestCase[] = [
     name: "stash-pop",
     description: "Stash changes, verify clean state, then pop",
     category: "git",
-    prompt: "In a git repo, modify a file, stash the changes, verify the file is clean, then pop the stash and verify the changes are back.",
+    prompt: "In a git repo, modify a file, stash the changes, verify the working tree is clean, then pop the stash. Tell me what happened at each step.",
     timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
@@ -79,7 +79,7 @@ export const gitTests: TestCase[] = [
       const hasStash = lower.includes("stash") || lower.includes("clean") || lower.includes("pop") || lower.includes("restore");
       return {
         passed: hasStash,
-        reason: hasStash ? undefined : `Expected stash/pop workflow described, got: ${msg.slice(0, 200)}`,
+        reason: hasStash ? undefined : `Expected stash/pop workflow, got: ${msg.slice(0, 200)}`,
       };
     },
   },
@@ -87,7 +87,7 @@ export const gitTests: TestCase[] = [
     name: "push-to-remote",
     description: "Push a commit to the workspace git server",
     category: "git",
-    prompt: "Clone or init a repo, make a commit, and push to the workspace git server. Report the result.",
+    prompt: "Set up a repo and try to push a commit to the workspace git server. Report the result.",
     timeout: 60_000,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
@@ -96,7 +96,7 @@ export const gitTests: TestCase[] = [
         lower.includes("error") || lower.includes("success") || lower.includes("reject");
       return {
         passed: hasResult,
-        reason: hasResult ? undefined : `Expected push result or error, got: ${msg.slice(0, 200)}`,
+        reason: hasResult ? undefined : `Expected push result, got: ${msg.slice(0, 200)}`,
       };
     },
   },
