@@ -15,6 +15,14 @@ class TestAgent extends AgentWorkerBase {
   protected override async onPostClone(): Promise<void> {
     this.postCloneCalled = true;
   }
+
+  startActiveTurnForTest(harnessId: string, channelId: string, replyToId: string): void {
+    this.setActiveTurn(harnessId, channelId, replyToId);
+  }
+
+  adoptBootstrapTypingForTest(harnessId: string, channelId: string): void {
+    this.adoptBootstrapTyping(harnessId, channelId);
+  }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -281,5 +289,31 @@ describe("AgentWorkerBase fork support", () => {
 
       vi.unstubAllGlobals();
     });
+  });
+});
+
+describe("AgentWorkerBase typing state", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("adopts bootstrap typing into the active turn stream state", async () => {
+    const { instance, sql } = await createAgent();
+
+    instance.startActiveTurnForTest("h-1", "ch-1", "msg-1");
+    sql.exec(`INSERT OR REPLACE INTO state (key, value) VALUES ('bootstrap_typing:ch-1', 'typing-1')`);
+
+    instance.adoptBootstrapTypingForTest("h-1", "ch-1");
+
+    const turnRow = sql.exec(`SELECT stream_state FROM active_turns WHERE harness_id = 'h-1'`).toArray();
+    expect(turnRow).toHaveLength(1);
+    expect(JSON.parse(turnRow[0]!["stream_state"] as string)).toMatchObject({
+      typingMessageId: "typing-1",
+    });
+
+    const bootstrapRow = sql.exec(`SELECT value FROM state WHERE key = 'bootstrap_typing:ch-1'`).toArray();
+    expect(bootstrapRow).toHaveLength(0);
+
+    vi.unstubAllGlobals();
   });
 });

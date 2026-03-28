@@ -339,6 +339,19 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.turns.persistStreamState(harnessId, writer.getState());
   }
 
+  protected adoptBootstrapTyping(harnessId: string, channelId: string): void {
+    const bootstrapKey = `bootstrap_typing:${channelId}`;
+    const bootstrapRow = this.getStateValue(bootstrapKey);
+    if (!bootstrapRow) return;
+
+    this.deleteStateValue(bootstrapKey);
+    const turn = this.getActiveTurn(harnessId);
+    if (!turn) return;
+
+    const state = { ...turn.streamState, typingMessageId: bootstrapRow };
+    this.turns.persistStreamState(harnessId, state);
+  }
+
   // --- Harness registration ---
 
   registerHarness(harnessId: string, type: string): void {
@@ -358,17 +371,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     });
     this.setActiveTurn(harnessId, channelId, triggerMessageId, undefined, senderParticipantId, typingContent);
 
-    // Adopt any bootstrap typing message
-    const bootstrapKey = `bootstrap_typing:${channelId}`;
-    const bootstrapRow = this.getStateValue(bootstrapKey);
-    if (bootstrapRow) {
-      this.deleteStateValue(bootstrapKey);
-      const turn = this.getActiveTurn(harnessId);
-      if (turn) {
-        const state = { ...turn.streamState, typingMessageId: bootstrapRow };
-        this.turns.persistStreamState(harnessId, state);
-      }
-    }
+    this.adoptBootstrapTyping(harnessId, channelId);
 
     this.setInFlightTurn(channelId, harnessId, triggerMessageId, triggerPubsubId, input);
     this.advanceCheckpoint(channelId, harnessId, triggerPubsubId);

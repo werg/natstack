@@ -289,6 +289,17 @@ export class SessionManager extends TypedEmitter<SessionManagerEvents> {
     }
     try {
       await client.callMethod(targetId, "pause", { reason: "User interrupted execution" }).result;
+      this.messageState.setMessages((msgs) => {
+        let changed = false;
+        const next = msgs.map((msg) => {
+          if (msg.contentType === "typing" && !msg.complete && msg.senderId === targetId) {
+            changed = true;
+            return { ...msg, complete: true };
+          }
+          return msg;
+        });
+        return changed ? next : msgs;
+      });
     } catch (error) {
       console.error("Failed to interrupt agent:", error);
     }

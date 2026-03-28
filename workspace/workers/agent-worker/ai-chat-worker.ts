@@ -129,9 +129,10 @@ export class AiChatWorker extends AgentWorkerBase {
         const channel = this.createChannelClient(channelId);
         await channel.send(participantId, bootstrapTypingId, typingContent, {
           contentType: "typing",
-          persist: false,
+          persist: true,
           replyTo: event.messageId,
         });
+        this.adoptBootstrapTyping(harnessId, channelId);
       }
 
       // Spawn harness via server API
@@ -194,6 +195,9 @@ export class AiChatWorker extends AgentWorkerBase {
 
     // Create a StreamWriter for events that produce channel output
     const writer = turn ? this.createWriter(channelId, turn) : null;
+    if (writer && event.type !== "turn-complete" && event.type !== "error") {
+      await writer.startTyping();
+    }
 
     switch (event.type) {
       // --- Thinking lifecycle ---
@@ -229,7 +233,6 @@ export class AiChatWorker extends AgentWorkerBase {
 
       case "action-end":
         await writer?.endAction();
-        await writer?.startTyping();
         break;
 
       // --- Inline UI ---
@@ -250,6 +253,7 @@ export class AiChatWorker extends AgentWorkerBase {
           await writer.completeText();
           this.persistStreamState(harnessId, writer);
         }
+        await this.cleanupBootstrapTyping(channelId);
 
         const activeTurn = this.getActiveTurn(harnessId);
         if (activeTurn?.turnMessageId) {
@@ -314,9 +318,6 @@ export class AiChatWorker extends AgentWorkerBase {
 
       // --- Approval (async via PubSub callMethod + continuation) ---
       case "approval-needed": {
-        await writer?.stopTyping();
-        if (writer) this.persistStreamState(harnessId, writer);
-
         // Check if channel's approval level allows auto-approval
         if (this.shouldAutoApprove(channelId, event.toolName)) {
           await this.rpc.call("main", "harness.sendCommand", harnessId, {
@@ -326,10 +327,6 @@ export class AiChatWorker extends AgentWorkerBase {
           });
           // Clear continuation flag — harness will resume immediately
           this.turns.setPendingContinuation(harnessId, false);
-          if (writer) {
-            await writer.startTyping();
-            this.persistStreamState(harnessId, writer);
-          }
           break;
         }
 
@@ -373,9 +370,6 @@ export class AiChatWorker extends AgentWorkerBase {
 
       // --- Tool call from harness (async tool execution) ---
       case "tool-call": {
-        await writer?.stopTyping();
-        if (writer) this.persistStreamState(harnessId, writer);
-
         this.pendingCall(event.callId, channelId, 'tool-call', {
           harnessId,
           callId: event.callId,
@@ -454,6 +448,15 @@ export class AiChatWorker extends AgentWorkerBase {
     switch (methodName) {
       case "pause":
         if (activeId) {
+          const activeTurn = this.getActiveTurn(activeId);
+          if (activeTurn?.channelId) {
+            if (this.getParticipantId(activeTurn.channelId)) {
+              const activeWriter = this.createWriter(activeTurn.channelId, activeTurn);
+              await activeWriter.stopTyping();
+              this.persistStreamState(activeId, activeWriter);
+            }
+            await this.cleanupBootstrapTyping(activeTurn.channelId);
+          }
           await this.rpc.call("main", "harness.sendCommand", activeId, { type: "interrupt" });
           return { result: { paused: true } };
         }
@@ -545,8 +548,9 @@ export class AiChatWorker extends AgentWorkerBase {
     const channel = this.createChannelClient(channelId);
     await channel.send(participantId, bootstrapTypingId, typingContent, {
       contentType: "typing",
-      persist: false,
+      persist: true,
     });
+    this.adoptBootstrapTyping(harnessId, channelId);
 
     await this.rpc.call("main", "harness.spawn", {
       doRef: this.doRef,

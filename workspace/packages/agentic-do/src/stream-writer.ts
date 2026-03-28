@@ -52,7 +52,8 @@ export class StreamWriter {
     this.state.typingMessageId = messageId;
     await this.send(messageId, this.typingContent, {
       contentType: "typing",
-      persist: false,
+      // Persist busy-state typing so reconnect/replay can recover it.
+      persist: true,
       ...(this.replyToId && { replyTo: this.replyToId }),
     });
   }
@@ -64,7 +65,6 @@ export class StreamWriter {
   }
 
   async startThinking(): Promise<void> {
-    await this.stopTyping();
     if (this.state.thinkingMessageId) {
       await this.endThinking();
     }
@@ -89,7 +89,6 @@ export class StreamWriter {
   }
 
   async startText(metadata?: unknown): Promise<void> {
-    await this.stopTyping();
     if (this.state.responseMessageId) return;
     const messageId = crypto.randomUUID();
     const options: SendMessageOptions = { persist: true, ...(this.replyToId && { replyTo: this.replyToId }) };
@@ -110,7 +109,6 @@ export class StreamWriter {
   }
 
   async startAction(tool: string, description: string, toolUseId?: string): Promise<void> {
-    await this.stopTyping();
     if (this.state.actionMessageId) {
       await this.endAction();
     }

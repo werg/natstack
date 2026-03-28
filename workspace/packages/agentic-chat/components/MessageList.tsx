@@ -18,13 +18,25 @@ type GroupedItem =
 
 // --- Grouping helper functions (module-level for reuse by fast paths) ---
 
-type InlineItemType = "thinking" | "action" | "method" | "typing";
+type InlineItemType = "thinking" | "action" | "method";
+
+const METHOD_BACKED_ACTIONS = new Set([
+  "eval",
+  "inline_ui",
+  "feedback_form",
+  "feedback_custom",
+  "set_title",
+  "request_tool_approval",
+]);
+
+function canonicalToolKey(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
 
 function getInlineItemType(msg: ChatMessage): InlineItemType | null {
   if (msg.kind === "method" && msg.method) return "method";
   if (msg.contentType === "thinking") return "thinking";
   if (msg.contentType === "action") return "action";
-  if (msg.contentType === "typing" && !msg.complete) return "typing";
   return null;
 }
 
@@ -55,15 +67,6 @@ function buildInlineItems(
         complete: msg.complete ?? false,
       };
     }
-    if (msg.contentType === "typing") {
-      const data = parseTypingData(msg.content);
-      return {
-        type: "typing" as const,
-        id: msg.id,
-        data,
-        senderId: msg.senderId,
-      };
-    }
     return {
       type: "thinking" as const,
       id: msg.id,
@@ -73,9 +76,16 @@ function buildInlineItems(
   });
 
   const lastActionIndexByToolUseId = new Map<string, number>();
+  const methodBackedKeys = new Set<string>();
   inlineItems.forEach((item, i) => {
     if (item.type === "action" && item.data.toolUseId) {
       lastActionIndexByToolUseId.set(item.data.toolUseId, i);
+    }
+    if (item.type === "method") {
+      const methodName = item.entry.methodName;
+      if (METHOD_BACKED_ACTIONS.has(methodName)) {
+        methodBackedKeys.add(canonicalToolKey(methodName));
+      }
     }
   });
 
@@ -83,6 +93,10 @@ function buildInlineItems(
     if (item.type === "action" && item.data.toolUseId) {
       const lastIndex = lastActionIndexByToolUseId.get(item.data.toolUseId);
       if (lastIndex !== undefined && i !== lastIndex) return false;
+    }
+    if (item.type === "action") {
+      const toolKey = canonicalToolKey(item.data.type);
+      if (methodBackedKeys.has(toolKey)) return false;
     }
     return true;
   });
@@ -93,35 +107,12 @@ function fullGroupComputation(
   messages: ChatMessage[],
   methodEntries?: Map<string, MethodHistoryEntry>,
 ): GroupedItem[] {
-  const lastTypingIndexBySender = new Map<string, number>();
-  const lastNonTypingIndexBySender = new Map<string, number>();
-  messages.forEach((msg, index) => {
-    if (msg.contentType === "typing" && !msg.complete) {
-      lastTypingIndexBySender.set(msg.senderId, index);
-    } else if (msg.contentType !== "typing") {
-      lastNonTypingIndexBySender.set(msg.senderId, index);
-    }
-  });
-  const isSupersededTyping = (msg: ChatMessage, index: number): boolean => {
-    if (msg.contentType !== "typing" || msg.complete) return false;
-    // Superseded by a later typing indicator from the same sender
-    const lastTypingIdx = lastTypingIndexBySender.get(msg.senderId);
-    if (lastTypingIdx !== undefined && index !== lastTypingIdx) return true;
-    // Auto-dismiss: a non-typing message from the same sender appeared after this typing
-    const lastNonTypingIdx = lastNonTypingIndexBySender.get(msg.senderId);
-    if (lastNonTypingIdx !== undefined && lastNonTypingIdx > index) return true;
-    return false;
-  };
-
   const result: GroupedItem[] = [];
   let currentInlineGroup: Array<{ msg: ChatMessage; index: number }> = [];
 
   messages.forEach((msg, index) => {
-    if (isSupersededTyping(msg, index)) return;
-    // Skip completed typing indicators — they're ephemeral and render as
-    // null in MessageCard.  Excluding them avoids phantom height for
-    // invisible items.
-    if (msg.contentType === "typing" && msg.complete) return;
+    // Typing is rendered as bottom-of-chat busy state, not transcript history.
+    if (msg.contentType === "typing") return;
 
     const inlineType = getInlineItemType(msg);
 
@@ -151,6 +142,24 @@ function fullGroupComputation(
   }
 
   return result;
+}
+
+function buildActiveTypingItems(messages: ChatMessage[]): InlineItem[] {
+  const latestTypingBySender = new Map<string, { msg: ChatMessage; index: number }>();
+
+  messages.forEach((msg, index) => {
+    if (msg.contentType !== "typing" || msg.complete) return;
+    latestTypingBySender.set(msg.senderId, { msg, index });
+  });
+
+  return Array.from(latestTypingBySender.values())
+    .sort((a, b) => a.index - b.index)
+    .map(({ msg }) => ({
+      type: "typing" as const,
+      id: msg.id,
+      data: parseTypingData(msg.content),
+      senderId: msg.senderId,
+    }));
 }
 
 /** Sender info returned by getSenderInfo */
@@ -506,29 +515,9 @@ export const MessageList = React.memo(function MessageList({
           result.pop();
         }
 
-        // Recompute typing dedup for new messages only (approximate — full dedup
-        // is only needed for the typing subset which is typically small)
-        const lastTypingBySender = new Map<string, number>();
-        const lastNonTypingBySender = new Map<string, number>();
-        messages.forEach((msg, index) => {
-          if (msg.contentType === "typing" && !msg.complete) {
-            lastTypingBySender.set(msg.senderId, index);
-          } else if (msg.contentType !== "typing") {
-            lastNonTypingBySender.set(msg.senderId, index);
-          }
-        });
-
         for (let i = cache.messages.length; i < messages.length; i++) {
           const msg = messages[i]!;
-          // Skip completed typing indicators (same filter as fullGroupComputation)
-          if (msg.contentType === "typing" && msg.complete) continue;
-          // Skip superseded typing (by later typing or by non-typing content)
-          if (msg.contentType === "typing" && !msg.complete) {
-            const last = lastTypingBySender.get(msg.senderId);
-            if (last !== undefined && i !== last) continue;
-            const lastNonTyping = lastNonTypingBySender.get(msg.senderId);
-            if (lastNonTyping !== undefined && lastNonTyping > i) continue;
-          }
+          if (msg.contentType === "typing") continue;
 
           const inlineType = getInlineItemType(msg);
           if (inlineType !== null) {
@@ -567,6 +556,8 @@ export const MessageList = React.memo(function MessageList({
     prevGroupCacheRef.current = { messages, methodEntries, result };
     return result;
   }, [messages, methodEntries]);
+
+  const activeTypingItems = useMemo(() => buildActiveTypingItems(messages), [messages]);
 
   // Refs for stable renderItem callback — avoids recreating the closure on every
   // groupedItems / copiedMessageId change, which would force every visible
@@ -639,7 +630,7 @@ export const MessageList = React.memo(function MessageList({
               </Button>
             </Flex>
           )}
-          {messages.length === 0 ? (
+          {groupedItems.length === 0 && activeTypingItems.length === 0 ? (
             <Text color="gray" size="2">
               Send a message to start chatting
             </Text>
@@ -656,6 +647,21 @@ export const MessageList = React.memo(function MessageList({
                   {renderItem(index)}
                 </div>
               ))}
+              {activeTypingItems.length > 0 && (
+                <div
+                  key="active-typing"
+                  style={{
+                    contentVisibility: "auto",
+                    containIntrinsicSize: "auto 36px",
+                  } as React.CSSProperties}
+                >
+                  <Flex direction="column">
+                    {customRenderInlineGroup
+                      ? customRenderInlineGroup(activeTypingItems)
+                      : <InlineGroup items={activeTypingItems} onInterrupt={handleTypingInterrupt} />}
+                  </Flex>
+                </div>
+              )}
             </Flex>
           )}
         </div>
