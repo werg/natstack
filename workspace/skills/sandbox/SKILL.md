@@ -42,18 +42,47 @@ For `contextId`, import it: `import { contextId } from "@workspace/runtime"`
 
 ## Available Imports
 
-These modules are available via `import` / `require()` in sandbox code:
+### Static imports (always available, no `imports` parameter needed)
+
+These are pre-bundled with the panel and work as bare `import` statements:
 
 | Module | What it provides |
 |--------|-----------------|
-| `@workspace/runtime` | rpc, fs, db, workers, ai, workspace, git, panel navigation |
+| `@workspace/runtime` | rpc, fs, db, workers, ai, workspace, contextId, panel navigation |
 | `@workspace/panel-browser` | Browser data import/export (cookies, passwords, bookmarks, history) |
-| `@workspace/playwright-client` | Playwright browser automation (advanced — prefer `handle.page()` from `@workspace/runtime`) |
-| `react` | React hooks and component APIs |
-| `@radix-ui/themes` | UI components (Button, Flex, Card, Table, TextField, etc.) |
+| `@workspace/playwright-client` | Playwright browser automation |
+| `react`, `react/jsx-runtime` | React hooks and component APIs |
+| `@radix-ui/themes` | UI components (Button, Flex, Card, Table, etc.) |
 | `@radix-ui/react-icons` | Icon components |
 | `isomorphic-git` | Git operations (clone, fetch, checkout, etc.) |
-| **Any npm package** | Use the `imports` parameter with `"npm:<version>"` in eval — see [EVAL.md](EVAL.md). Not available in inline_ui/feedback_custom (use eval to preload first) |
+
+### On-demand imports (require `imports` parameter)
+
+These are built on first use. Pass them in the eval `imports` parameter:
+
+| Module | `imports` value | What it provides |
+|--------|----------------|-----------------|
+| `@workspace-skills/*` | `"latest"` | Skill code (e.g., `"@workspace-skills/paneldev": "latest"`) |
+| `@workspace/*` packages | `"latest"` | Workspace packages not pre-bundled above |
+| `@natstack/*` packages | `"latest"` | Platform packages (e.g., `"@natstack/git": "latest"`) |
+| npm packages | `"npm:<version>"` | Any npm package (e.g., `"lodash": "npm:4"`, `"d3": "npm:7"`) |
+
+Example:
+```
+eval({
+  code: `
+    import { GitClient } from "@natstack/git";
+    import { createProject } from "@workspace-skills/paneldev";
+    // ...
+  `,
+  imports: {
+    "@natstack/git": "latest",
+    "@workspace-skills/paneldev": "latest",
+  }
+})
+```
+
+See [EVAL.md](EVAL.md) for details. On-demand imports are not available in inline_ui/feedback_custom (use eval to preload first).
 
 ## Interaction Patterns
 

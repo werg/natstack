@@ -19,17 +19,23 @@ Spin up headless agentic sessions to systematically test every NatStack capabili
 
 ## Quick Start
 
-```typescript
-import { HeadlessRunner, TestRunner, smokeTests } from "@workspace-skills/system-testing";
+```
+eval({
+  code: `
+    import { HeadlessRunner, TestRunner, smokeTests } from "@workspace-skills/system-testing";
+    import { contextId } from "@workspace/runtime";
 
-const runner = new HeadlessRunner(contextId);
-const tester = new TestRunner(runner, {
-  onTestStart: (t) => console.log(`Running: ${t.name}...`),
-  onTestEnd: (t, r) => console.log(`  ${r.passed ? "PASS" : "FAIL"}: ${t.name}`),
-});
-const results = await tester.runSuite(smokeTests);
-scope.results = results;
-return { total: results.total, passed: results.passed, failed: results.failed };
+    const runner = new HeadlessRunner(contextId);
+    const tester = new TestRunner(runner, {
+      onTestStart: (t) => console.log("Running: " + t.name + "..."),
+      onTestEnd: (t, r) => console.log((r.passed ? "PASS" : "FAIL") + ": " + t.name),
+    });
+    const results = await tester.runSuite(smokeTests);
+    scope.results = results;
+    return { total: results.total, passed: results.passed, failed: results.failed };
+  `,
+  imports: { "@workspace-skills/system-testing": "latest" },
+})
 ```
 
 ## Inspecting Results

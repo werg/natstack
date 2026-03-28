@@ -17,18 +17,24 @@ Only after the infrastructure is solid should you adjust skills or test prompts.
 
 ## Phase 1: Run Tests
 
-```typescript
-import { HeadlessRunner, TestRunner, allTests } from "@workspace-skills/system-testing";
+```
+eval({
+  code: `
+    import { HeadlessRunner, TestRunner, allTests } from "@workspace-skills/system-testing";
+    import { contextId } from "@workspace/runtime";
 
-const runner = new HeadlessRunner(contextId);
-const tester = new TestRunner(runner, {
-  onTestStart: (t) => console.log(`  Running: ${t.name}...`),
-  onTestEnd: (t, r, ex) => console.log(`  ${r.passed ? "PASS" : "FAIL"}: ${t.name} (${ex.duration}ms)`),
-});
+    const runner = new HeadlessRunner(contextId);
+    const tester = new TestRunner(runner, {
+      onTestStart: (t) => console.log("  Running: " + t.name + "..."),
+      onTestEnd: (t, r, ex) => console.log("  " + (r.passed ? "PASS" : "FAIL") + ": " + t.name + " (" + ex.duration + "ms)"),
+    });
 
-const results = await tester.runSuite(allTests());
-scope.results = results;
-return { total: results.total, passed: results.passed, failed: results.failed };
+    const results = await tester.runSuite(allTests());
+    scope.results = results;
+    return { total: results.total, passed: results.passed, failed: results.failed };
+  `,
+  imports: { "@workspace-skills/system-testing": "latest" },
+})
 ```
 
 ## Phase 2: Analyze Failures
@@ -129,13 +135,18 @@ For each failure, determine the root cause category and act accordingly:
 
 Before you can fix anything, clone the source repo:
 
-```typescript
-import { fs, gitConfig } from "@workspace/runtime";
-import { GitClient } from "@natstack/git";
+```
+eval({
+  code: `
+    import { fs, gitConfig } from "@workspace/runtime";
+    import { GitClient } from "@natstack/git";
 
-const git = new GitClient(fs, { serverUrl: gitConfig.serverUrl, token: gitConfig.token });
-await git.clone({ url: `${gitConfig.serverUrl}/github.com/werg/natstack.git`, dir: "natstack" });
-scope.git = git;  // Keep it in scope for later
+    const git = new GitClient(fs, { serverUrl: gitConfig.serverUrl, token: gitConfig.token });
+    await git.clone({ url: gitConfig.serverUrl + "/github.com/werg/natstack.git", dir: "natstack" });
+    scope.git = git;
+  `,
+  imports: { "@natstack/git": "latest" },
+})
 ```
 
 **Important:** Pushes to `main` and `master` are rejected on GitHub repos. Always create a branch. Branches are auto-pushed to the upstream GitHub remote.
