@@ -316,13 +316,38 @@ See [BROWSER_AUTOMATION.md](BROWSER_AUTOMATION.md) for full API reference and ex
 import { rpc } from "@workspace/runtime";
 ```
 
+### Build
+
 | RPC Call | Description |
 |----------|-------------|
 | `rpc.call("main", "build.getBuild", source, ref?, opts?)` | Build a panel/worker/agent |
 | `rpc.call("main", "build.getBuildNpm", specifier, version, externals?)` | Install + bundle an npm package as CJS for sandbox use |
 | `rpc.call("main", "build.getEffectiveVersion", name)` | Get effective version |
 | `rpc.call("main", "build.hasUnit", name)` | Check if build unit exists |
-| `rpc.call("main", "typecheck.check", source, filePath?, tsconfig?)` | Type-check a panel (source = panel path, e.g. `"panels/chat"`) |
+
+### Typecheck
+
+**Recommended: `typecheck.checkPanel`** — simple, agent-friendly type checking.
+
+```typescript
+// Type-check a specific panel
+const result = await rpc.call("main", "typecheck.checkPanel", "panels/my-app");
+
+// Type-check the current panel (auto-detected from caller context)
+const result = await rpc.call("main", "typecheck.checkPanel");
+```
+
+Returns `{ diagnostics: Array<{ file, line, column, message, severity, code }>, errorCount, warningCount }`.
+
+**Advanced methods** (positional args, for editor integrations):
+
+| RPC Call | Description |
+|----------|-------------|
+| `rpc.call("main", "typecheck.check", panelPath, filePath?, fileContent?, contextId?)` | Type-check a panel or specific file |
+| `rpc.call("main", "typecheck.getTypeInfo", panelPath, filePath, line, column, fileContent?, contextId?)` | Get type info at a position |
+| `rpc.call("main", "typecheck.getCompletions", panelPath, filePath, line, column, fileContent?, contextId?)` | Get completions at a position |
+| `rpc.call("main", "typecheck.getPackageTypes", panelPath, packageName)` | Get type definitions for a package |
+| `rpc.call("main", "typecheck.getPackageTypesBatch", panelPath, packageNames[])` | Get type definitions for multiple packages |
 
 ## Tests
 

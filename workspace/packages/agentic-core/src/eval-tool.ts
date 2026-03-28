@@ -61,7 +61,9 @@ scope is a live in-memory object shared across eval calls (scope.myVar = value).
 Quick patterns:
 - \`const rows = await db.open("name").then(h => h.query("SELECT..."))\` — db requires .open() first
 - \`return await fs.readFile("path", "utf-8")\` — use return for results
-- \`await h.run("INSERT...", [params])\` — use run() for writes, query() for reads`,
+- \`await h.run("INSERT...", [params])\` — use run() for writes, query() for reads
+- \`return await rpc.call("main", "typecheck.checkPanel", "panels/my-app")\` — typecheck a panel
+- \`return await rpc.call("main", "typecheck.checkPanel")\` — typecheck the current panel`,
     parameters: z.object({
       code: z.string().describe("The TypeScript/JavaScript code to execute"),
       syntax: z.enum(["typescript", "jsx", "tsx"]).default("tsx").describe("Target syntax"),

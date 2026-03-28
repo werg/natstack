@@ -3,21 +3,91 @@ import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
 import type { ContextFolderManager } from "../../shared/contextFolderManager.js";
 import { resolveContextScope } from "../../shared/contextMiddleware.js";
 
+/**
+ * Extract a panel source path from a caller ID.
+ *
+ * Caller IDs follow the scheme produced by computePanelId:
+ *   - Root panels: `tree/{escapedPath}/{nonce}`
+ *   - Named children: `tree/{escapedPath}/{nonce}/{childName}`
+ *
+ * The escaped path uses `~` in place of `/`, e.g. `panels/chat` → `panels~chat`.
+ * We extract the first escaped-path segment after `tree/` and un-escape it.
+ *
+ * Returns undefined if the callerId doesn't match the expected pattern.
+ */
+function extractPanelSourceFromCallerId(callerId: string): string | undefined {
+  // Expected: "tree/panels~something/nonce..." or "tree/panels~some~deeper/nonce..."
+  if (!callerId.startsWith("tree/")) return undefined;
+  const afterTree = callerId.slice("tree/".length); // "panels~chat/lk2f8g-3a1b9c4e"
+  // The first segment is the escaped path (may contain ~)
+  const slashIdx = afterTree.indexOf("/");
+  const segment = slashIdx >= 0 ? afterTree.slice(0, slashIdx) : afterTree;
+  if (!segment) return undefined;
+  // Un-escape: ~ → /
+  const sourcePath = segment.replace(/~/g, "/");
+  // Sanity: should start with "panels/" or "packages/" or similar workspace path
+  return sourcePath;
+}
+
 export function createTypecheckService(deps: {
   contextFolderManager: ContextFolderManager;
 }): ServiceDefinition {
   return {
     name: "typecheck",
-    description: "Type definition fetching for panels",
+    description: "TypeScript type checking for panels and packages",
     policy: { allowed: ["panel", "server", "worker"] },
     methods: {
-      getPackageTypes: { args: z.tuple([z.string(), z.string()]) },
-      getPackageTypesBatch: { args: z.tuple([z.string(), z.array(z.string())]) },
-      check: { args: z.tuple([z.string()]).rest(z.unknown()) },
-      getTypeInfo: { args: z.tuple([z.string()]).rest(z.unknown()) },
-      getCompletions: { args: z.tuple([z.string()]).rest(z.unknown()) },
+      // ── New simplified method for agents ──────────────────────────────
+      checkPanel: {
+        description:
+          "Type-check a panel. Pass the panel source path (e.g. \"panels/chat\"), " +
+          "or omit it to auto-detect from the caller's context.",
+        args: z.tuple([]).or(z.tuple([z.string().describe("Panel source path, e.g. \"panels/my-app\"")])),
+      },
+
+      // ── Existing methods with explicit schemas ───────────────────────
+      getPackageTypes: {
+        args: z.tuple([
+          z.string().describe("Panel source path"),
+          z.string().describe("Package name"),
+        ]),
+      },
+      getPackageTypesBatch: {
+        args: z.tuple([
+          z.string().describe("Panel source path"),
+          z.array(z.string()).describe("Package names"),
+        ]),
+      },
+      check: {
+        args: z.tuple([
+          z.string().describe("Panel source path"),
+          z.string().optional().describe("File path (relative to panel) to check, or omit for whole panel"),
+          z.string().optional().describe("File content override (skip disk read)"),
+          z.string().optional().describe("Context ID for path resolution"),
+        ]),
+      },
+      getTypeInfo: {
+        args: z.tuple([
+          z.string().describe("Panel source path"),
+          z.string().describe("File path (relative to panel)"),
+          z.number().describe("Line number (1-based)"),
+          z.number().describe("Column number (1-based)"),
+          z.string().optional().describe("File content override"),
+          z.string().optional().describe("Context ID for path resolution"),
+        ]),
+      },
+      getCompletions: {
+        args: z.tuple([
+          z.string().describe("Panel source path"),
+          z.string().describe("File path (relative to panel)"),
+          z.number().describe("Line number (1-based)"),
+          z.number().describe("Column number (1-based)"),
+          z.string().optional().describe("File content override"),
+          z.string().optional().describe("Context ID for path resolution"),
+        ]),
+      },
     },
-    handler: async (_ctx, method, args) => {
+    handler: async (ctx, method, args) => {
       const { typeCheckRpcMethods } = await import("../../shared/typecheck/service.js");
 
       const resolvePanelPath = async (
@@ -44,6 +114,36 @@ export function createTypecheckService(deps: {
       };
 
       switch (method) {
+        // ── New simplified method ──────────────────────────────────────
+        case "checkPanel": {
+          // Determine panel source path
+          let panelPath = args[0] as string | undefined;
+          if (!panelPath) {
+            panelPath = extractPanelSourceFromCallerId(ctx.callerId);
+            if (!panelPath) {
+              throw new Error(
+                "Could not auto-detect panel path from caller ID. " +
+                "Please pass the panel source path explicitly, e.g. typecheck.checkPanel(\"panels/my-app\")",
+              );
+            }
+          }
+
+          // Auto-resolve using caller's context if available
+          const resolvedPath = await resolvePanelPath(panelPath, undefined);
+
+          const result = await typeCheckRpcMethods["typecheck.check"](resolvedPath, undefined, undefined);
+
+          const errorCount = result.diagnostics.filter((d: { severity: string }) => d.severity === "error").length;
+          const warningCount = result.diagnostics.filter((d: { severity: string }) => d.severity === "warning").length;
+
+          return {
+            diagnostics: result.diagnostics,
+            errorCount,
+            warningCount,
+          };
+        }
+
+        // ── Existing methods (backward-compatible) ─────────────────────
         case "getPackageTypes":
           return typeCheckRpcMethods["typecheck.getPackageTypes"](
             args[0] as string,

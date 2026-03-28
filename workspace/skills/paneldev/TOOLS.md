@@ -188,9 +188,31 @@ eval({ code: `
 `, timeout: 30000 })
 ```
 
-#### typecheck.check
+#### typecheck.checkPanel (recommended)
 
-Run TypeScript type checking on a panel/package.
+Type-check a panel. Pass the panel source path, or omit it to auto-detect from the caller's context.
+
+Returns `{ diagnostics, errorCount, warningCount }` where each diagnostic has `{ file, line, column, message, severity, code }`.
+
+```
+eval({ code: `
+  import { rpc } from "@workspace/runtime";
+  // Type-check a specific panel
+  const result = await rpc.call("main", "typecheck.checkPanel", "panels/my-app");
+  if (result.errorCount > 0) {
+    console.log(result.errorCount + " errors:");
+    for (const d of result.diagnostics) {
+      if (d.severity === "error") console.log(d.file + ":" + d.line + " " + d.message);
+    }
+  } else {
+    console.log("No type errors");
+  }
+`, timeout: 30000 })
+```
+
+#### typecheck.check (advanced)
+
+Lower-level type checking with positional args. Prefer `typecheck.checkPanel` for simple whole-panel checks.
 
 ```
 eval({ code: `
