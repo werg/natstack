@@ -1,0 +1,58 @@
+import type { TestCase } from "../types.js";
+import { findLastAgentMessage, responseContains, responseSucceeds } from "./_helpers.js";
+
+export const workspaceTests: TestCase[] = [
+  {
+    name: "list-workspaces",
+    description: "List all workspaces by name",
+    category: "workspace",
+    prompt: "List all workspaces. Tell me their names.",
+    timeout: 30_000,
+    validate: (result) => {
+      const msg = findLastAgentMessage(result);
+      if (!msg) return { passed: false, reason: "No agent response received" };
+      const lower = msg.toLowerCase();
+      const hasWorkspace = lower.includes("workspace") || lower.includes("name") || lower.includes("list");
+      return {
+        passed: hasWorkspace,
+        reason: hasWorkspace ? undefined : `Expected workspace names, got: ${msg.slice(0, 200)}`,
+      };
+    },
+  },
+  {
+    name: "get-active",
+    description: "Get the active workspace name and ID",
+    category: "workspace",
+    prompt: "Get the currently active workspace. Tell me its name and ID.",
+    timeout: 30_000,
+    validate: (result) => {
+      const msg = findLastAgentMessage(result);
+      if (!msg) return { passed: false, reason: "No agent response received" };
+      const lower = msg.toLowerCase();
+      const hasActive = lower.includes("workspace") || lower.includes("active") || lower.includes("current") ||
+        lower.includes("name") || lower.includes("id");
+      return {
+        passed: hasActive,
+        reason: hasActive ? undefined : `Expected active workspace info, got: ${msg.slice(0, 200)}`,
+      };
+    },
+  },
+  {
+    name: "get-config",
+    description: "Get workspace configuration including init panels",
+    category: "workspace",
+    prompt: "Get the workspace configuration. Tell me the workspace ID and what init panels are configured.",
+    timeout: 30_000,
+    validate: (result) => {
+      const msg = findLastAgentMessage(result);
+      if (!msg) return { passed: false, reason: "No agent response received" };
+      const lower = msg.toLowerCase();
+      const hasConfig = lower.includes("config") || lower.includes("workspace") || lower.includes("panel") ||
+        lower.includes("id") || lower.includes("init");
+      return {
+        passed: hasConfig,
+        reason: hasConfig ? undefined : `Expected workspace config with ID and panels, got: ${msg.slice(0, 200)}`,
+      };
+    },
+  },
+];

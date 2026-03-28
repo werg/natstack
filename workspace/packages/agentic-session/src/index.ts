@@ -3,8 +3,8 @@
 // =============================================================================
 
 // --- HeadlessSession ---
-export { HeadlessSession } from "./headless-session.js";
-export type { HeadlessSessionConfig, HeadlessWithAgentConfig } from "./headless-session.js";
+export { HeadlessSession, HeadlessTimeoutError } from "./headless-session.js";
+export type { HeadlessSessionConfig, HeadlessWithAgentConfig, SessionSnapshot } from "./headless-session.js";
 
 // --- Prompts ---
 export { HEADLESS_SYSTEM_PROMPT, HEADLESS_NO_EVAL_PROMPT } from "./prompts.js";

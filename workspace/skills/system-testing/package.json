@@ -1,0 +1,15 @@
+{
+  "name": "@workspace-skills/system-testing",
+  "version": "0.1.0",
+  "description": "Automated system testing via headless agentic sessions",
+  "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./tests/*": "./tests/*.ts"
+  },
+  "dependencies": {
+    "@workspace/agentic-session": "workspace:*",
+    "@workspace/agentic-core": "workspace:*",
+    "@workspace/runtime": "workspace:*"
+  }
+}
