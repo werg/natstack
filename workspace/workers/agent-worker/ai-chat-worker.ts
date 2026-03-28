@@ -23,7 +23,7 @@ const CHAT_SYSTEM_PROMPT = `You are an AI assistant in a NatStack workspace — 
 
 ## Workspace skills
 
-**Before using eval, load the sandbox skill.** It has the complete API reference for every runtime service (fs, db, workers, git, ai, oauth, panels, browser automation). Don't guess at APIs — the skill has working code examples for every operation.
+Skills are documentation bundles with API references and code examples. **Use the Skill tool to load them** (NOT eval import). Before using eval, load the **sandbox** skill — it has the complete API reference.
 
 - **sandbox** — **load this first** — eval patterns, complete runtime API reference, inline_ui, feedback forms, browser automation
 - **paneldev** — building panels, workers, Durable Objects, RPC contracts, development workflow
