@@ -20,19 +20,6 @@ type GroupedItem =
 
 type InlineItemType = "thinking" | "action" | "method";
 
-const METHOD_BACKED_ACTIONS = new Set([
-  "eval",
-  "inline_ui",
-  "feedback_form",
-  "feedback_custom",
-  "set_title",
-  "request_tool_approval",
-]);
-
-function canonicalToolKey(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, "");
-}
-
 function getInlineItemType(msg: ChatMessage): InlineItemType | null {
   if (msg.kind === "method" && msg.method) return "method";
   if (msg.contentType === "thinking") return "thinking";
@@ -45,7 +32,7 @@ function buildInlineItems(
   items: Array<{ msg: ChatMessage; index: number }>,
   methodEntries?: Map<string, MethodHistoryEntry>,
 ): InlineItem[] {
-  const inlineItems: InlineItem[] = items.map(({ msg }) => {
+  return items.map(({ msg }) => {
     if (msg.kind === "method" && msg.method) {
       const liveEntry = methodEntries?.get(msg.method.callId);
       return { type: "method" as const, entry: liveEntry ?? msg.method };
@@ -73,32 +60,6 @@ function buildInlineItems(
       content: msg.content || "Unknown",
       complete: msg.complete ?? false,
     };
-  });
-
-  const lastActionIndexByToolUseId = new Map<string, number>();
-  const methodBackedKeys = new Set<string>();
-  inlineItems.forEach((item, i) => {
-    if (item.type === "action" && item.data.toolUseId) {
-      lastActionIndexByToolUseId.set(item.data.toolUseId, i);
-    }
-    if (item.type === "method") {
-      const methodName = item.entry.methodName;
-      if (METHOD_BACKED_ACTIONS.has(methodName)) {
-        methodBackedKeys.add(canonicalToolKey(methodName));
-      }
-    }
-  });
-
-  return inlineItems.filter((item, i) => {
-    if (item.type === "action" && item.data.toolUseId) {
-      const lastIndex = lastActionIndexByToolUseId.get(item.data.toolUseId);
-      if (lastIndex !== undefined && i !== lastIndex) return false;
-    }
-    if (item.type === "action") {
-      const toolKey = canonicalToolKey(item.data.type);
-      if (methodBackedKeys.has(toolKey)) return false;
-    }
-    return true;
   });
 }
 
