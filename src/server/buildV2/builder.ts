@@ -1336,6 +1336,101 @@ async function doNpmBuild(
 }
 
 // ---------------------------------------------------------------------------
+// Platform Library Build (@natstack/* packages)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a @natstack/* platform package as a CJS library bundle for eval.
+ *
+ * These packages live in the app's node_modules (installed via pnpm workspace
+ * protocol), not in the workspace build graph. We bundle them the same way
+ * as npm packages — esbuild with a virtual entry file.
+ */
+export async function buildPlatformLibrary(
+  specifier: string,
+  externals: string[],
+): Promise<string> {
+  if (!_appNodeModules) {
+    throw new Error("App node_modules not configured — cannot build @natstack/* packages");
+  }
+
+  const buildKey = `platform:${specifier}:${externals.sort().join(",")}`;
+
+  // Check cache
+  const cached = buildStore.get(buildKey);
+  if (cached) return cached.bundle;
+
+  // Check in-flight
+  const inFlight = inFlightBuilds.get(buildKey);
+  if (inFlight) return (await inFlight).bundle;
+
+  const buildPromise = doPlatformBuild(specifier, externals, buildKey);
+  inFlightBuilds.set(buildKey, buildPromise);
+
+  try {
+    return (await buildPromise).bundle;
+  } finally {
+    inFlightBuilds.delete(buildKey);
+  }
+}
+
+async function doPlatformBuild(
+  specifier: string,
+  externals: string[],
+  buildKey: string,
+): Promise<BuildResult> {
+  await acquireSemaphore();
+
+  try {
+    const outdir = path.join(
+      require("os").tmpdir(),
+      "natstack-builds",
+      `platform-${specifier.replace(/[/@]/g, "_")}-${Date.now()}`,
+    );
+    fs.mkdirSync(outdir, { recursive: true });
+
+    const nodePaths = [_appNodeModules!];
+
+    // Virtual entry file
+    const entryFile = path.join(outdir, "_entry.js");
+    fs.writeFileSync(entryFile, `module.exports = require(${JSON.stringify(specifier)});\n`);
+
+    try {
+      await esbuild.build({
+        entryPoints: [entryFile],
+        bundle: true,
+        format: "cjs",
+        platform: "browser",
+        outfile: path.join(outdir, "bundle.js"),
+        write: true,
+        external: externals,
+        nodePaths,
+        logLevel: "warning",
+        tsconfigRaw: { compilerOptions: {} },
+      });
+
+      const bundleContent = fs.readFileSync(path.join(outdir, "bundle.js"), "utf-8");
+
+      const artifacts: BuildArtifacts = { bundle: bundleContent };
+      const metadata: BuildMetadata = {
+        kind: "package",
+        name: specifier,
+        ev: buildKey,
+        sourcemap: false,
+        builtAt: new Date().toISOString(),
+      };
+      buildStore.put(buildKey, artifacts, metadata);
+
+      return { bundle: bundleContent, manifest: null } as unknown as BuildResult;
+    } finally {
+      try { fs.rmSync(outdir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  } finally {
+    releaseSemaphore();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

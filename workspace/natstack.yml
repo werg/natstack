@@ -36,10 +36,14 @@ initPanels:
         You are a NatStack system testing and self-improvement agent.
 
         ## Setup
-        First, clone the NatStack source repo so you can fix bugs. Use the paneldev
-        skill's git helpers — load the paneldev skill to learn how to use GitClient.
-        The git server URL and token are available via `gitConfig` from @workspace/runtime.
-        The git server auto-clones from GitHub: use URL `${gitConfig.serverUrl}/github.com/werg/natstack.git`.
+        First, clone the NatStack source repo so you can fix bugs:
+        ```
+        import { fs, gitConfig } from "@workspace/runtime";
+        import { GitClient } from "@natstack/git";
+        const git = new GitClient(fs, { serverUrl: gitConfig.serverUrl, token: gitConfig.token });
+        await git.clone({ url: `${gitConfig.serverUrl}/github.com/werg/natstack.git`, dir: "natstack" });
+        ```
+        The git server auto-clones from GitHub on first access.
         Pushes to main/master are rejected — always create a branch. Branches are auto-pushed to GitHub.
 
         ## Testing workflow

@@ -35,7 +35,7 @@ import {
 } from "./effectiveVersion.js";
 import * as buildStore from "./buildStore.js";
 import type { BuildResult } from "./buildStore.js";
-import { buildUnit, buildNpmLibrary, initBuilder, type BuildUnitOptions } from "./builder.js";
+import { buildUnit, buildNpmLibrary, buildPlatformLibrary, initBuilder, type BuildUnitOptions } from "./builder.js";
 import { PushTrigger } from "./pushTrigger.js";
 import type { GitServer } from "@natstack/git-server";
 
@@ -211,6 +211,13 @@ export async function initBuildSystemV2(
 
         node = resolveUnit(currentGraph, unitPath, workspaceRoot);
         if (!node) {
+          // @natstack/* packages aren't in the workspace graph — they're compiled
+          // platform packages in node_modules. Build them as library bundles
+          // so eval can import them.
+          if (unitPath.startsWith("@natstack/") && options?.library) {
+            const bundle = await buildPlatformLibrary(unitPath, options.externals ?? []);
+            return { bundle, manifest: null } as unknown as BuildResult;
+          }
           throw new Error(`Unknown build unit: ${unitPath}`);
         }
       }

@@ -127,15 +127,24 @@ For each failure, determine the root cause category and act accordingly:
 
 ## Phase 5: Clone the NatStack Repo
 
-Before you can fix anything, clone the source repo. Load the **paneldev** skill to learn how to use GitClient for git operations (clone, branch, commit, push).
+Before you can fix anything, clone the source repo:
 
-Key facts:
-- The git server auto-clones from GitHub: use URL `${gitConfig.serverUrl}/github.com/werg/natstack.git`
-- `gitConfig` (serverUrl, token) is available from `@workspace/runtime`
-- Pushes to `main` and `master` are **rejected** — always create a branch
-- Branches pushed to GitHub repos are **auto-pushed to the upstream GitHub remote**
+```typescript
+import { fs, gitConfig } from "@workspace/runtime";
+import { GitClient } from "@natstack/git";
 
-Load the paneldev skill, clone the repo, create a fix branch, then proceed to editing.
+const git = new GitClient(fs, { serverUrl: gitConfig.serverUrl, token: gitConfig.token });
+await git.clone({ url: `${gitConfig.serverUrl}/github.com/werg/natstack.git`, dir: "natstack" });
+scope.git = git;  // Keep it in scope for later
+```
+
+**Important:** Pushes to `main` and `master` are rejected on GitHub repos. Always create a branch. Branches are auto-pushed to the upstream GitHub remote.
+
+```typescript
+const branchName = `fix/system-test-${failedTestName}`;
+await scope.git.createBranch("natstack", branchName);
+await scope.git.checkout("natstack", branchName);
+```
 
 ## Phase 6: Edit and Fix
 
