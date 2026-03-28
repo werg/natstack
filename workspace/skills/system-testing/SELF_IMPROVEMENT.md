@@ -125,27 +125,44 @@ For each failure, determine the root cause category and act accordingly:
 | RPC routing | `src/shared/serviceDispatcher.ts`, `packages/rpc/src/` |
 | Error swallowed | Search for `.catch(` and empty catch blocks near the failure site |
 
-## Phase 5: Fix
+## Phase 5: Clone the NatStack Repo
+
+Before you can fix anything, clone the source repo. The git server auto-clones from GitHub on first access:
 
 ```typescript
+import { fs, gitConfig } from "@workspace/runtime";
 import { GitClient } from "@natstack/git";
 
-const git = new GitClient(fs);
-const branchName = `fix/system-test-${failedTestName}`;
-await git.createBranch(".", branchName);
-await git.checkout(".", branchName);
+const git = new GitClient(fs, { serverUrl: gitConfig.serverUrl, token: gitConfig.token });
+await git.clone({ url: `${gitConfig.serverUrl}/github.com/werg/natstack.git`, dir: "natstack" });
+scope.git = git;  // Keep it in scope for later
 ```
 
-Then use your file editing tools (Read, Edit, Write) to fix the bug.
+**Important:** Pushes to `main` and `master` are rejected on GitHub repos. Always create a branch:
+
+```typescript
+const branchName = `fix/system-test-${failedTestName}`;
+await scope.git.createBranch("natstack", branchName);
+await scope.git.checkout("natstack", branchName);
+```
+
+## Phase 6: Edit and Fix
+
+Edit source files in the `natstack/` clone using fs operations. All paths are relative to `natstack/`:
+
+```typescript
+const content = await fs.readFile("natstack/src/server/services/fsService.ts", "utf-8");
+// ... modify content ...
+await fs.writeFile("natstack/src/server/services/fsService.ts", fixedContent);
+```
 
 **Fix checklist:**
 - [ ] Service method has clear parameter types and returns useful data
 - [ ] Errors are propagated with descriptive messages (no empty catch blocks)
 - [ ] The fix is in the service/infrastructure layer, not a workaround in caller code
 - [ ] Skill documentation matches the actual API after the fix
-- [ ] The headless system prompt doesn't need to mention implementation details
 
-## Phase 6: Verify
+## Phase 7: Verify
 
 ```typescript
 // Rebuild
@@ -163,17 +180,19 @@ const retest = await tester.runOne(failedTest);
 console.log(`Re-test: ${retest.result.passed ? "PASS" : "FAIL"}`);
 ```
 
-## Phase 7: Commit and Push
+## Phase 8: Commit and Push
+
+The git server automatically pushes branches to the upstream GitHub repo:
 
 ```typescript
 if (retest.result.passed) {
-  await git.addAll(".");
-  await git.commit(".", `fix: ${failedTest.name} — ${failedTest.description}`);
-  await git.push(".", { remote: "origin", ref: branchName });
-  console.log(`Pushed fix to branch: ${branchName}`);
+  await scope.git.addAll("natstack");
+  await scope.git.commit("natstack", `fix: ${failedTest.name} — ${failedTest.description}`);
+  await scope.git.push("natstack", { remote: "origin", ref: branchName });
+  console.log(`Pushed fix to branch: ${branchName} (auto-pushed to GitHub)`);
 } else {
   console.log("Fix didn't work. Iterating...");
-  // Go back to Phase 4
+  // Go back to Phase 6
 }
 ```
 
@@ -181,6 +200,7 @@ if (retest.result.passed) {
 
 - **Start with smoke tests.** They're fast and catch the most common issues.
 - **One fix per branch.** Don't bundle unrelated fixes.
+- **Always create a branch** — pushes to main/master are rejected on GitHub repos.
 - **Check type errors before committing.** Use `chat.rpc.call("main", "typecheck.check")`.
 - **Re-run the full smoke suite after fixing.** Your fix might break something else.
 - **If an API is confusing, fix the API.** Don't add comments explaining the confusion.

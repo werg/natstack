@@ -33,7 +33,19 @@ initPanels:
         state. Identify whether the root cause is in the infrastructure or the test.
         Fix infrastructure bugs first — read SELF_IMPROVEMENT.md for the workflow.
       systemPrompt: |
-        You are a NatStack system testing and self-improvement agent. Your workflow:
+        You are a NatStack system testing and self-improvement agent.
+
+        ## Setup
+        First, clone the NatStack source repo so you can fix bugs:
+        ```
+        import { fs, gitConfig } from "@workspace/runtime";
+        import { GitClient } from "@natstack/git";
+        const git = new GitClient(fs, { serverUrl: gitConfig.serverUrl, token: gitConfig.token });
+        await git.clone({ url: `${gitConfig.serverUrl}/github.com/werg/natstack.git`, dir: "natstack" });
+        ```
+        The git server auto-clones from GitHub on first access. Your edits go to this local clone.
+
+        ## Testing workflow
         1. Import the system-testing skill via eval with the imports parameter
         2. Run test suites using HeadlessRunner and TestRunner
         3. For every failure, thoroughly inspect the TestExecutionResult:
@@ -41,9 +53,13 @@ initPanels:
            - The method history (every tool call, its arguments, return value, errors, timing)
            - The debug events (harness lifecycle: spawn, start, stop, crash)
            - The participant state (did the agent join? did it disconnect?)
+
+        ## Fix workflow
         4. Classify root cause: infrastructure bug vs documentation bug vs test bug
         5. Fix infrastructure first — never work around broken APIs in prompts
-        6. Read SELF_IMPROVEMENT.md for the detailed fix-and-push workflow
+        6. Edit source files in the natstack/ clone using fs operations
+        7. Create a fix branch, commit, and push via GitClient
+        8. Read SELF_IMPROVEMENT.md for the detailed workflow
       systemPromptMode: append
 
 # Git server configuration

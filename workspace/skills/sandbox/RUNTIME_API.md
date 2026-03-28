@@ -191,6 +191,24 @@ await git.clone({
 
 Once cloned via the git server, the repo appears in the workspace tree and can be referenced by other workspace operations. Private repos require a GitHub token configured in the workspace's `natstack.yml` or `.secrets.yml`.
 
+### Pushing to GitHub
+
+Pushes to `main`/`master` are **rejected** on GitHub repos — always create a branch. The git server automatically pushes branches to the upstream GitHub remote when a GitHub token is configured.
+
+```typescript
+import { GitClient } from "@natstack/git";
+import { fs, gitConfig } from "@workspace/runtime";
+
+const git = new GitClient(fs, { serverUrl: gitConfig.serverUrl, token: gitConfig.token });
+await git.createBranch("/my-lib", "fix/my-change");
+await git.checkout("/my-lib", "fix/my-change");
+// ... make changes ...
+await git.addAll("/my-lib");
+await git.commit("/my-lib", "fix: describe the change");
+await git.push("/my-lib", { remote: "origin", ref: "fix/my-change" });
+// Branch is auto-pushed to GitHub
+```
+
 ## Browser Data (`@workspace/panel-browser`)
 
 ```typescript

@@ -184,9 +184,18 @@ export class GitServer {
 
     // Handle push events
     this.git.on("push", (push) => {
+      const pushRepo = push.repo.replace(/^\/+/, "").replace(/\.git(\/.*)?$/, "").replace(/\/+$/, "");
+      const pushBranch = push.branch.replace(/^refs\/heads\//, "");
+
+      // Reject pushes to main/master on GitHub repos — force agents to create branches
+      if (isGitHubPath(pushRepo) && (pushBranch === "main" || pushBranch === "master")) {
+        log.verbose(` Rejected push to ${pushRepo}/${pushBranch} — create a branch instead`);
+        push.reject(403, `Pushes to ${pushBranch} are not allowed on GitHub repos. Create a branch instead.`);
+        return;
+      }
+
       // Ensure repo allows pushes to checked-out branches (may be auto-created
       // by node-git-server, which doesn't set this config)
-      const pushRepo = push.repo.replace(/^\/+/, "").replace(/\.git(\/.*)?$/, "").replace(/\/+$/, "");
       const pushRepoDir = path.join(reposPath, pushRepo);
       spawnSync("git", ["config", "receive.denyCurrentBranch", "ignore"], {
         cwd: pushRepoDir,
@@ -221,6 +230,11 @@ export class GitServer {
             // Mirror working tree to dev target directory (if configured)
             if (this.devTargetDir && !isGitHubPath(repo)) {
               this.syncToDevTarget(repo, repoDir);
+            }
+
+            // Push to upstream GitHub remote (if this is a GitHub-cloned repo)
+            if (isGitHubPath(repo) && this.githubConfig.token) {
+              this.pushToUpstream(repoDir, branch);
             }
 
             // Emit push event after checkout so listeners see the updated working tree
@@ -481,6 +495,34 @@ export class GitServer {
         }
       }
     );
+  }
+
+  /**
+   * Push a branch to the upstream GitHub remote.
+   * Uses the same credential helper pattern as clone.
+   * Runs async — errors are logged but don't block.
+   */
+  private pushToUpstream(repoDir: string, branch: string): void {
+    const token = this.githubConfig.token;
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    if (token) {
+      env["GIT_USERNAME"] = token;
+      env["GIT_PASSWORD"] = "x-oauth-basic";
+    }
+
+    // Push the branch to origin (the GitHub remote set during clone)
+    const args = [
+      "-c", "credential.helper=!f() { echo username=$GIT_USERNAME; echo password=$GIT_PASSWORD; }; f",
+      "push", "origin", `refs/heads/${branch}`,
+    ];
+
+    execFile("git", args, { cwd: repoDir, env }, (err) => {
+      if (err) {
+        log.verbose(` Upstream push failed for ${branch}: ${err.message}`);
+      } else {
+        log.verbose(` Pushed ${branch} to upstream GitHub`);
+      }
+    });
   }
 
   // ===========================================================================
