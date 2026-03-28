@@ -322,7 +322,7 @@ import { rpc } from "@workspace/runtime";
 | `rpc.call("main", "build.getBuildNpm", specifier, version, externals?)` | Install + bundle an npm package as CJS for sandbox use |
 | `rpc.call("main", "build.getEffectiveVersion", name)` | Get effective version |
 | `rpc.call("main", "build.hasUnit", name)` | Check if build unit exists |
-| `rpc.call("main", "typecheck.check", source)` | Type-check a panel |
+| `rpc.call("main", "typecheck.check", source, filePath?, tsconfig?)` | Type-check a panel (source = panel path, e.g. `"panels/chat"`) |
 
 ## Tests
 

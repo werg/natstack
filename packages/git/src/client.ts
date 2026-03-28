@@ -1119,15 +1119,18 @@ export class GitClient {
       };
     });
 
-    const dirty = files.some(
+    // Only include files with actual changes — unmodified files are noise
+    // (a large repo can have thousands of unmodified files)
+    const changedFiles = files.filter(
       (f) => f.status !== "unmodified" && f.status !== "ignored"
     );
+    const dirty = changedFiles.length > 0;
 
     return {
       branch,
       commit,
       dirty,
-      files,
+      files: changedFiles,
     };
   }
 
@@ -1260,9 +1263,13 @@ export class GitClient {
   }
 
   /**
-   * Create a branch
+   * Create a branch.
+   * Accepts either positional args (dir, name) or an options object.
    */
-  async createBranch(options: CreateBranchOptions): Promise<void> {
+  async createBranch(dirOrOptions: string | CreateBranchOptions, name?: string): Promise<void> {
+    const options: CreateBranchOptions = typeof dirOrOptions === "string"
+      ? { dir: dirOrOptions, name: name! }
+      : dirOrOptions;
     await git.branch({
       fs: this.fs,
       dir: options.dir,

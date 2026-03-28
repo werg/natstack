@@ -153,7 +153,7 @@ eval({
 
 ```typescript
 const branchName = `fix/system-test-${failedTestName}`;
-await scope.git.createBranch("natstack", branchName);
+await scope.git.createBranch("natstack", branchName);  // positional: (dir, name)
 await scope.git.checkout("natstack", branchName);
 ```
 
