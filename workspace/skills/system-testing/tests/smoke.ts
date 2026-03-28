@@ -6,7 +6,7 @@ export const smokeTests: TestCase[] = [
     name: "eval-return-value",
     description: "Agent computes a value and reports it",
     category: "smoke",
-    prompt: "Compute something and tell me the result.",
+    prompt: "Compute the factorial of 5 and tell me the result.",
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();

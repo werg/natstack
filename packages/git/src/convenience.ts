@@ -4,8 +4,16 @@
  * These compose existing GitClient methods into higher-level workflows.
  */
 
-import * as path from "path";
 import type { GitClient, FsPromisesLike } from "./client.js";
+
+// Inline posix path helpers to avoid Node.js `path` dependency (breaks in browser bundles)
+function posixJoin(...segments: string[]): string {
+  return segments.map(s => s.replace(/\/+$/, "")).join("/").replace(/\/+/g, "/");
+}
+function posixDirname(p: string): string {
+  const lastSlash = p.lastIndexOf("/");
+  return lastSlash <= 0 ? "/" : p.slice(0, lastSlash);
+}
 
 export interface InitAndPushOptions {
   /** Directory to initialize the repo in */
@@ -48,8 +56,8 @@ export async function initAndPush(
   // 2. Write initial files if provided (ensure parent directories exist)
   if (initialFiles && Object.keys(initialFiles).length > 0) {
     for (const [filePath, content] of Object.entries(initialFiles)) {
-      const fullPath = path.posix.join(dir, filePath);
-      const parentDir = path.posix.dirname(fullPath);
+      const fullPath = posixJoin(dir, filePath);
+      const parentDir = posixDirname(fullPath);
       if (parentDir && parentDir !== dir) {
         await fs.mkdir(parentDir, { recursive: true });
       }
