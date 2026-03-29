@@ -77,6 +77,50 @@ export class AiChatWorker extends AgentWorkerBase {
       methods: [
         { name: "pause", description: "Pause the current AI turn" },
         { name: "resume", description: "Resume after pause" },
+        {
+          name: "remember",
+          description: "Store a fact in persistent memory",
+          parameters: {
+            type: "object",
+            properties: {
+              key: { type: "string" },
+              value: { type: "string" },
+              category: { type: "string" },
+            },
+            required: ["key", "value"],
+          },
+        },
+        {
+          name: "recall",
+          description: "Retrieve a fact from memory",
+          parameters: {
+            type: "object",
+            properties: { key: { type: "string" } },
+            required: ["key"],
+          },
+        },
+        {
+          name: "search_memory",
+          description: "Search persistent memory",
+          parameters: {
+            type: "object",
+            properties: {
+              query: { type: "string" },
+              category: { type: "string" },
+              limit: { type: "number" },
+            },
+            required: ["query"],
+          },
+        },
+        {
+          name: "forget",
+          description: "Delete a memory entry",
+          parameters: {
+            type: "object",
+            properties: { key: { type: "string" } },
+            required: ["key"],
+          },
+        },
       ],
     };
   }
@@ -466,6 +510,25 @@ export class AiChatWorker extends AgentWorkerBase {
       case "resume":
         return { result: { resumed: true } };
 
+      // --- Memory methods ---
+      case "remember": {
+        const a = _args as Record<string, unknown>;
+        this.memory.remember(a["key"] as string, a["value"] as string, a["category"] as string | undefined);
+        return { result: { stored: true } };
+      }
+      case "recall": {
+        const a = _args as Record<string, unknown>;
+        return { result: this.memory.recall(a["key"] as string) };
+      }
+      case "search_memory": {
+        const a = _args as Record<string, unknown>;
+        return { result: this.memory.search(a["query"] as string, a["category"] as string | undefined, a["limit"] as number | undefined) };
+      }
+      case "forget": {
+        const a = _args as Record<string, unknown>;
+        return { result: { deleted: this.memory.forget(a["key"] as string) } };
+      }
+
       default:
         return { result: { error: `unknown method: ${methodName}` }, isError: true };
     }
@@ -565,7 +628,7 @@ export class AiChatWorker extends AgentWorkerBase {
 
   // --- Private helpers ---
 
-  private async cleanupBootstrapTyping(channelId: string): Promise<void> {
+  protected async cleanupBootstrapTyping(channelId: string): Promise<void> {
     const key = `bootstrap_typing:${channelId}`;
     const row = this.sql.exec(`SELECT value FROM state WHERE key = ?`, key).toArray();
     if (row.length > 0) {
@@ -577,55 +640,6 @@ export class AiChatWorker extends AgentWorkerBase {
       }
       this.sql.exec(`DELETE FROM state WHERE key = ?`, key);
     }
-  }
-
-  private buildHarnessConfig(channelId: string): HarnessConfig {
-    const base = this.getHarnessConfig();
-    const sub = this.getSubscriptionConfig(channelId);
-    if (!sub) return base;
-
-    // systemPromptMode controls how the subscription prompt interacts with the
-    // base CHAT_SYSTEM_PROMPT and SDK defaults:
-    //   "append" (default) — subscription prompt layers on top of the base
-    //   "replace-natstack" — subscription prompt replaces NatStack base, still appended to SDK defaults
-    //   "replace" — subscription prompt replaces both NatStack base AND SDK defaults
-    const subPrompt = sub["systemPrompt"] as string | undefined;
-    const subMode = (sub["systemPromptMode"] as HarnessConfig["systemPromptMode"] | undefined);
-    const mergedPrompt = subMode === "replace" || subMode === "replace-natstack"
-      ? (subPrompt ?? base.systemPrompt)
-      : subPrompt && base.systemPrompt
-        ? `${base.systemPrompt}\n\n${subPrompt}`
-        : subPrompt ?? base.systemPrompt;
-    // "replace-natstack" swaps out the NatStack prompt but still appends to SDK defaults,
-    // so it maps to "append" for the harness-level mode.
-    const harnessMode = subMode === "replace-natstack" ? "append" : subMode;
-
-    // toolAllowlist merge: subscription can only restrict (intersection), not expand.
-    // This prevents a subscription from granting tools the worker class didn't intend.
-    const subAllowlist = sub["toolAllowlist"] as string[] | undefined;
-    let mergedAllowlist: string[] | undefined;
-    if (subAllowlist && base.toolAllowlist) {
-      const baseSet = new Set(base.toolAllowlist);
-      mergedAllowlist = subAllowlist.filter(t => baseSet.has(t));
-    } else if (subAllowlist) {
-      mergedAllowlist = subAllowlist;
-    } else {
-      mergedAllowlist = base.toolAllowlist;
-    }
-
-    return {
-      ...base,
-      ...(mergedPrompt ? { systemPrompt: mergedPrompt } : {}),
-      ...(harnessMode ? { systemPromptMode: harnessMode } : {}),
-      ...(sub["model"] ? { model: sub["model"] as string } : {}),
-      ...(sub["temperature"] != null
-        ? { temperature: sub["temperature"] as number }
-        : {}),
-      ...(sub["maxTokens"] != null
-        ? { maxTokens: sub["maxTokens"] as number }
-        : {}),
-      ...(mergedAllowlist ? { toolAllowlist: mergedAllowlist } : {}),
-    };
   }
 
   private async handleHarnessCrash(

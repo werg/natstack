@@ -19,6 +19,7 @@ import { TurnManager, type ActiveTurn, type InFlightTurn, type QueuedTurn } from
 import { ContinuationStore } from "./continuation-store.js";
 import { StreamWriter, type PersistedStreamState } from "./stream-writer.js";
 import { ChannelClient } from "./channel-client.js";
+import { MemoryManager } from "./memory-manager.js";
 
 export abstract class AgentWorkerBase extends DurableObjectBase {
   protected identity: DOIdentity;
@@ -26,6 +27,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   protected harnesses: HarnessManager;
   protected turns: TurnManager;
   protected continuations: ContinuationStore;
+  protected memory: MemoryManager;
 
   /** Phase 0D: Transient poison message tracker (event id → attempt count). Resets on hibernation. */
   private failedEvents = new Map<number, number>();
@@ -53,6 +55,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.harnesses = new HarnessManager(this.sql, lazyRpc);
     this.turns = new TurnManager(this.sql);
     this.continuations = new ContinuationStore(this.sql);
+    this.memory = new MemoryManager(this.sql);
 
     // Eager schema init — safe because all modules exist.
     this.ensureReady();
@@ -61,7 +64,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.identity.restore();
   }
 
-  static override schemaVersion = 5;
+  static override schemaVersion = 6;
 
   protected createTables(): void {
     this.identity.createTables();
@@ -69,6 +72,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.harnesses.createTables();
     this.turns.createTables();
     this.continuations.createTables();
+    this.memory.createTables();
     // Phase 0A: Delivery cursor for event dedup
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS delivery_cursor (
@@ -162,6 +166,64 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       type: 'agent',
       metadata: {},
       methods: [],
+    };
+  }
+
+  // --- Subscription config merge ---
+
+  /**
+   * Merge base harness config (from getHarnessConfig()) with per-channel
+   * subscription config. Handles systemPrompt layering by mode, toolAllowlist
+   * intersection, and model/temperature/maxTokens overrides.
+   *
+   * Previously lived on AiChatWorker — lifted here so any agent subclass
+   * gets config-driven personality for free.
+   */
+  protected buildHarnessConfig(channelId: string): HarnessConfig {
+    const base = this.getHarnessConfig();
+    const sub = this.getSubscriptionConfig(channelId);
+    if (!sub) return base;
+
+    // systemPromptMode controls how the subscription prompt interacts with the
+    // base prompt and SDK defaults:
+    //   "append" (default) — subscription prompt layers on top of the base
+    //   "replace-natstack" — subscription prompt replaces base, still appended to SDK defaults
+    //   "replace" — subscription prompt replaces both base AND SDK defaults
+    const subPrompt = sub["systemPrompt"] as string | undefined;
+    const subMode = (sub["systemPromptMode"] as HarnessConfig["systemPromptMode"] | undefined);
+    const mergedPrompt = subMode === "replace" || subMode === "replace-natstack"
+      ? (subPrompt ?? base.systemPrompt)
+      : subPrompt && base.systemPrompt
+        ? `${base.systemPrompt}\n\n${subPrompt}`
+        : subPrompt ?? base.systemPrompt;
+    // "replace-natstack" swaps out the base prompt but still appends to SDK defaults,
+    // so it maps to "append" for the harness-level mode.
+    const harnessMode = subMode === "replace-natstack" ? "append" : subMode;
+
+    // toolAllowlist merge: subscription can only restrict (intersection), not expand.
+    const subAllowlist = sub["toolAllowlist"] as string[] | undefined;
+    let mergedAllowlist: string[] | undefined;
+    if (subAllowlist && base.toolAllowlist) {
+      const baseSet = new Set(base.toolAllowlist);
+      mergedAllowlist = subAllowlist.filter(t => baseSet.has(t));
+    } else if (subAllowlist) {
+      mergedAllowlist = subAllowlist;
+    } else {
+      mergedAllowlist = base.toolAllowlist;
+    }
+
+    return {
+      ...base,
+      ...(mergedPrompt ? { systemPrompt: mergedPrompt } : {}),
+      ...(harnessMode ? { systemPromptMode: harnessMode } : {}),
+      ...(sub["model"] ? { model: sub["model"] as string } : {}),
+      ...(sub["temperature"] != null
+        ? { temperature: sub["temperature"] as number }
+        : {}),
+      ...(sub["maxTokens"] != null
+        ? { maxTokens: sub["maxTokens"] as number }
+        : {}),
+      ...(mergedAllowlist ? { toolAllowlist: mergedAllowlist } : {}),
     };
   }
 

@@ -1,0 +1,19 @@
+{
+  "name": "@workspace-workers/personality-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "type": "worker",
+    "entry": "index.ts",
+    "durable": {
+      "classes": [{ "className": "PersonalityAgentWorker" }]
+    }
+  },
+  "dependencies": {
+    "@workspace/runtime": "workspace:*",
+    "@workspace/agentic-do": "workspace:*",
+    "@natstack/harness": "workspace:*",
+    "@workspace-workers/agent-worker": "workspace:*"
+  }
+}

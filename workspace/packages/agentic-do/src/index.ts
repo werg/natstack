@@ -16,3 +16,5 @@ export type { PendingCall } from "./continuation-store.js";
 export { StreamWriter } from "./stream-writer.js";
 export type { PersistedStreamState } from "./stream-writer.js";
 export { ChannelClient } from "./channel-client.js";
+export { MemoryManager } from "./memory-manager.js";
+export type { MemoryEntry } from "./memory-manager.js";

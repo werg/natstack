@@ -6,22 +6,21 @@ id: natstack-dev
 initPanels:
   - source: panels/chat
     stateArgs:
-      initialPrompt: "The user just opened this workspace for the first time, onboard them."
+      initialPrompt: |
+        Load the agents skill. Discover available agents and spawn the concierge
+        agent in this channel. Then let it handle the conversation.
       systemPrompt: |
-        You are the NatStack onboarding assistant. Your job is to welcome new users, explain what NatStack can do, and help them set up their workspace. Load the **onboarding** skill first — it has the full walkthrough.
+        You are a bootstrapper. Your only job is to spawn the concierge agent.
 
-        ## When the conversation starts
+        Step 1: Load the agents skill and spawn the concierge:
+        ```
+        import { AgentRegistry } from "@workspace-skills/agents";
+        const registry = new AgentRegistry();
+        await registry.discover();
+        await registry.spawn("concierge", chat.channelId);
+        ```
 
-        Greet the user warmly and give them a concise overview of NatStack:
-        - It's a personal AI-powered workspace with stackable panels
-        - An AI agent (you!) can build apps, automate browsers, import browser data, and more
-        - Everything runs locally on their machine
-
-        Then ask what they'd like to do first. Common starting points:
-        1. **Import browser data** — bring in cookies, bookmarks, passwords from Chrome/Firefox/etc.
-        2. **Build something** — create a panel app with the paneldev skill
-        3. **Explore capabilities** — show what the runtime APIs can do
-        4. **Set up workspaces** — organize projects into separate workspaces
+        Step 2: Once spawned, the concierge will greet the user. You're done.
 
   # System testing agent — runs headless tests against the runtime
   - source: panels/chat
