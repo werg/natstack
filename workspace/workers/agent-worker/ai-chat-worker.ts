@@ -77,50 +77,6 @@ export class AiChatWorker extends AgentWorkerBase {
       methods: [
         { name: "pause", description: "Pause the current AI turn" },
         { name: "resume", description: "Resume after pause" },
-        {
-          name: "remember",
-          description: "Store a fact in persistent memory",
-          parameters: {
-            type: "object",
-            properties: {
-              key: { type: "string" },
-              value: { type: "string" },
-              category: { type: "string" },
-            },
-            required: ["key", "value"],
-          },
-        },
-        {
-          name: "recall",
-          description: "Retrieve a fact from memory",
-          parameters: {
-            type: "object",
-            properties: { key: { type: "string" } },
-            required: ["key"],
-          },
-        },
-        {
-          name: "search_memory",
-          description: "Search persistent memory",
-          parameters: {
-            type: "object",
-            properties: {
-              query: { type: "string" },
-              category: { type: "string" },
-              limit: { type: "number" },
-            },
-            required: ["query"],
-          },
-        },
-        {
-          name: "forget",
-          description: "Delete a memory entry",
-          parameters: {
-            type: "object",
-            properties: { key: { type: "string" } },
-            required: ["key"],
-          },
-        },
       ],
     };
   }
@@ -415,6 +371,21 @@ export class AiChatWorker extends AgentWorkerBase {
 
       // --- Tool call from harness (async tool execution) ---
       case "tool-call": {
+        // Memory tools are handled locally by the DO, not routed through PubSub
+        if (this.isLocalMemoryCall(event.participantId, event.method, channelId)) {
+          const memResult = this.executeMemoryTool(event.method, event.args);
+          await this.reportMemoryToolUsage(channelId, event.method, event.args, memResult);
+          await this.rpc.call("main", "harness.sendCommand", harnessId, {
+            type: "tool-result",
+            callId: event.callId,
+            result: memResult,
+            isError: false,
+          });
+          // Clear continuation flag — harness resumes immediately
+          this.turns.setPendingContinuation(harnessId, false);
+          break;
+        }
+
         this.pendingCall(event.callId, channelId, 'tool-call', {
           harnessId,
           callId: event.callId,
@@ -434,7 +405,7 @@ export class AiChatWorker extends AgentWorkerBase {
 
       // --- Discover methods request from harness ---
       case "discover-methods": {
-        // Query PubSub roster for methods
+        // Query PubSub roster for methods from other participants
         const discoverChannel = this.createChannelClient(channelId);
         const participants = await discoverChannel.getParticipants();
         const selfId = this.getParticipantId(channelId);
@@ -453,6 +424,11 @@ export class AiChatWorker extends AgentWorkerBase {
               });
             }
           }
+        }
+
+        // Append memory tools — offered by this DO directly to its harness
+        if (selfId) {
+          methods.push(...this.getMemoryToolDescriptors(selfId));
         }
 
         await this.rpc.call("main", "harness.sendCommand", harnessId, {
@@ -509,25 +485,6 @@ export class AiChatWorker extends AgentWorkerBase {
 
       case "resume":
         return { result: { resumed: true } };
-
-      // --- Memory methods ---
-      case "remember": {
-        const a = _args as Record<string, unknown>;
-        this.memory.remember(a["key"] as string, a["value"] as string, a["category"] as string | undefined);
-        return { result: { stored: true } };
-      }
-      case "recall": {
-        const a = _args as Record<string, unknown>;
-        return { result: this.memory.recall(a["key"] as string) };
-      }
-      case "search_memory": {
-        const a = _args as Record<string, unknown>;
-        return { result: this.memory.search(a["query"] as string, a["category"] as string | undefined, a["limit"] as number | undefined) };
-      }
-      case "forget": {
-        const a = _args as Record<string, unknown>;
-        return { result: { deleted: this.memory.forget(a["key"] as string) } };
-      }
 
       default:
         return { result: { error: `unknown method: ${methodName}` }, isError: true };

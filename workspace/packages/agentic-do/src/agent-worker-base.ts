@@ -227,6 +227,110 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     };
   }
 
+  // --- Memory tools (offered directly to harness, not PubSub methods) ---
+
+  private static readonly MEMORY_TOOL_NAMES = new Set(["remember", "recall", "search_memory", "forget"]);
+
+  /**
+   * Memory tool descriptors for discover-methods response.
+   * These are offered by the DO directly to its own harness,
+   * not advertised as PubSub participant methods.
+   */
+  protected getMemoryToolDescriptors(selfParticipantId: string): Array<{ participantId: string; name: string; description: string; parameters?: unknown }> {
+    return [
+      {
+        participantId: selfParticipantId,
+        name: "remember",
+        description: "Store a fact in persistent memory (survives across sessions)",
+        parameters: {
+          type: "object",
+          properties: {
+            key: { type: "string", description: "Unique key for this fact" },
+            value: { type: "string", description: "The fact to remember" },
+            category: { type: "string", description: "Category for organization (e.g., user_profile, preferences)" },
+          },
+          required: ["key", "value"],
+        },
+      },
+      {
+        participantId: selfParticipantId,
+        name: "recall",
+        description: "Retrieve a specific fact from persistent memory by key",
+        parameters: {
+          type: "object",
+          properties: { key: { type: "string", description: "Key of the fact to recall" } },
+          required: ["key"],
+        },
+      },
+      {
+        participantId: selfParticipantId,
+        name: "search_memory",
+        description: "Search persistent memory by substring match on keys and values",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Search term" },
+            category: { type: "string", description: "Filter by category" },
+            limit: { type: "number", description: "Max results (default 20)" },
+          },
+          required: ["query"],
+        },
+      },
+      {
+        participantId: selfParticipantId,
+        name: "forget",
+        description: "Delete a fact from persistent memory",
+        parameters: {
+          type: "object",
+          properties: { key: { type: "string", description: "Key of the fact to delete" } },
+          required: ["key"],
+        },
+      },
+    ];
+  }
+
+  /** Check if a tool-call targets a local memory tool (self-targeted). */
+  protected isLocalMemoryCall(participantId: string, method: string, channelId: string): boolean {
+    return participantId === this.getParticipantId(channelId)
+      && AgentWorkerBase.MEMORY_TOOL_NAMES.has(method);
+  }
+
+  /** Execute a memory tool locally and return the result. */
+  protected executeMemoryTool(method: string, args: unknown): unknown {
+    const a = args as Record<string, unknown>;
+    switch (method) {
+      case "remember":
+        this.memory.remember(a["key"] as string, a["value"] as string, a["category"] as string | undefined);
+        return { stored: true, key: a["key"] };
+      case "recall":
+        return this.memory.recall(a["key"] as string);
+      case "search_memory":
+        return this.memory.search(a["query"] as string, a["category"] as string | undefined, a["limit"] as number | undefined);
+      case "forget":
+        return { deleted: this.memory.forget(a["key"] as string), key: a["key"] };
+      default:
+        return { error: `unknown memory tool: ${method}` };
+    }
+  }
+
+  /** Report a memory tool invocation to the channel for visibility. */
+  protected async reportMemoryToolUsage(
+    channelId: string, method: string, args: unknown, result: unknown,
+  ): Promise<void> {
+    const participantId = this.getParticipantId(channelId);
+    if (!participantId) return;
+    try {
+      const channel = this.createChannelClient(channelId);
+      await channel.send(
+        participantId, crypto.randomUUID(),
+        JSON.stringify({ method, args, result }),
+        { contentType: "memory", persist: true },
+      );
+    } catch (err) {
+      console.warn("[AgentWorkerBase] Failed to report memory usage:", err);
+    }
+  }
+
   // --- StreamWriter factory ---
 
   protected createWriter(
