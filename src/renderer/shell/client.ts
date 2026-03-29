@@ -3,16 +3,9 @@
  *
  * This module provides a typed API for shell to call main process services.
  * Uses a direct @workspace/rpc bridge from the shell transport global.
- *
- * Panel operations are split into:
- * - Lifecycle ops: routed through PanelShell (shared with mobile)
- * - View ops: direct Electron RPC (platform-specific)
- * - Data queries: via RPC to main process PanelRegistry (Electron uses
- *   in-process registry; PanelShell local cache is for mobile)
  */
 
 import { createRpcBridge, type RpcBridge, type RpcTransport, type RpcMessage } from "@natstack/rpc";
-import { PanelShell } from "../../shared/shell/panelShell.js";
 
 // Type for the shell transport bridge injected by the preload script
 type ShellTransportBridge = {
@@ -39,11 +32,6 @@ const rpc: RpcBridge = createRpcBridge({
   callTimeoutMs: 30000,
   aiCallTimeoutMs: 300000,
 });
-
-// PanelShell instance for shared lifecycle operations.
-// Electron renderer does NOT call init() or startPeriodicSync() since the main
-// process PanelRegistry is authoritative and tree updates arrive via events.
-const panelShell = new PanelShell(rpc);
 
 import type {
   AppInfo,
@@ -76,40 +64,34 @@ export const app = {
 // =============================================================================
 
 export const panel = {
-  // --- Data queries (RPC to main process PanelRegistry) ---
-  // In Electron, the main process PanelRegistry is authoritative. The renderer
-  // subscribes to panel-tree-updated events for real-time updates, and uses
-  // getTree() as a fallback for initial load. These stay as direct RPC calls.
   getTree: () => rpc.call<Panel[]>("main", "panel.getTree"),
+  notifyFocused: (panelId: string) => rpc.call<void>("main", "panel.notifyFocused", panelId),
+  updateTheme: (theme: ThemeAppearance) => rpc.call<void>("main", "panel.updateTheme", theme),
+  openDevTools: (panelId: string) => rpc.call<void>("main", "panel.openDevTools", panelId),
+  reload: (panelId: string) => rpc.call<void>("main", "panel.reload", panelId),
+  unload: (panelId: string) => rpc.call<void>("main", "panel.unload", panelId),
+  archive: (panelId: string) => rpc.call<void>("main", "panel.archive", panelId),
+  retryDirtyBuild: (panelId: string) => rpc.call<void>("main", "panel.retryDirtyBuild", panelId),
+  initGitRepo: (panelId: string) => rpc.call<void>("main", "panel.initGitRepo", panelId),
+  updatePanelState: (panelId: string, state: { url?: string; pageTitle?: string; isLoading?: boolean; canGoBack?: boolean; canGoForward?: boolean }) =>
+    rpc.call<void>("main", "panel.updatePanelState", panelId, state),
+  createAboutPanel: (page: string) =>
+    rpc.call<{ id: string; title: string }>("main", "panel.createAboutPanel", page),
+  /** Create a panel from any source path (not prefixed with "about/"). */
+  createPanel: (source: string, options?: { name?: string; isRoot?: boolean }) =>
+    rpc.call<{ id: string; title: string }>("main", "panel.create", source, options),
+  movePanel: (request: MovePanelRequest) =>
+    rpc.call<void>("main", "panel.movePanel", request),
   getChildrenPaginated: (request: GetChildrenPaginatedRequest) =>
     rpc.call<PaginatedChildren>("main", "panel.getChildrenPaginated", request),
   getRootPanelsPaginated: (offset: number, limit: number) =>
     rpc.call<PaginatedRootPanels>("main", "panel.getRootPanelsPaginated", { offset, limit }),
   getCollapsedIds: () =>
     rpc.call<string[]>("main", "panel.getCollapsedIds"),
-
-  // --- Lifecycle ops (shared via PanelShell) ---
-  notifyFocused: (panelId: string) => panelShell.notifyFocused(panelId),
-  archive: (panelId: string) => panelShell.archive(panelId),
-  createAboutPanel: (page: string) => panelShell.createAboutPanel(page),
-  /** Create a panel from any source path (not prefixed with "about/"). */
-  createPanel: (source: string, options?: { name?: string; isRoot?: boolean }) =>
-    rpc.call<{ id: string; title: string }>("main", "panel.create", source, options),
-  movePanel: (request: MovePanelRequest) =>
-    panelShell.movePanel(request.panelId, request.newParentId, request.targetPosition),
   setCollapsed: (panelId: string, collapsed: boolean) =>
-    panelShell.setCollapsed(panelId, collapsed),
-  expandIds: (panelIds: string[]) => panelShell.expandIds(panelIds),
-
-  // --- Electron-only view management (direct RPC) ---
-  updateTheme: (theme: ThemeAppearance) => rpc.call<void>("main", "panel.updateTheme", theme),
-  openDevTools: (panelId: string) => rpc.call<void>("main", "panel.openDevTools", panelId),
-  reload: (panelId: string) => rpc.call<void>("main", "panel.reload", panelId),
-  unload: (panelId: string) => rpc.call<void>("main", "panel.unload", panelId),
-  retryDirtyBuild: (panelId: string) => rpc.call<void>("main", "panel.retryDirtyBuild", panelId),
-  initGitRepo: (panelId: string) => rpc.call<void>("main", "panel.initGitRepo", panelId),
-  updatePanelState: (panelId: string, state: { url?: string; pageTitle?: string; isLoading?: boolean; canGoBack?: boolean; canGoForward?: boolean }) =>
-    rpc.call<void>("main", "panel.updatePanelState", panelId, state),
+    rpc.call<void>("main", "panel.setCollapsed", panelId, collapsed),
+  expandIds: (panelIds: string[]) =>
+    rpc.call<void>("main", "panel.expandIds", panelIds),
 };
 
 // =============================================================================
