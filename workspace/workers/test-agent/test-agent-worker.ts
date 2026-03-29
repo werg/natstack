@@ -13,7 +13,7 @@ import type {
  * distinctive system prompt. All side effects via RPC calls.
  */
 export class TestAgentWorker extends AgentWorkerBase {
-  static override schemaVersion = 3;
+  static override schemaVersion = 6;
 
   protected override getHarnessConfig(): HarnessConfig {
     return {

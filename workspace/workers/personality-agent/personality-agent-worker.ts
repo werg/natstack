@@ -12,7 +12,7 @@ import type { HarnessConfig, ParticipantDescriptor } from "@natstack/harness/typ
  * Used by the agents skill to spawn personality agents from YAML manifests.
  */
 export class PersonalityAgentWorker extends AiChatWorker {
-  static override schemaVersion = 3;
+  static override schemaVersion = 6;
 
   // Minimal base — personality comes entirely from subscription config
   protected override getHarnessConfig(): HarnessConfig {

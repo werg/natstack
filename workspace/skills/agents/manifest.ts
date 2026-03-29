@@ -89,12 +89,16 @@ export async function discoverManifests(): Promise<Map<string, AgentManifest>> {
 // ---------------------------------------------------------------------------
 // Minimal YAML parser for agent manifests.
 // Handles the subset of YAML used in agent.yml files: scalars, lists, maps,
-// multi-line strings (| block scalar), and nested objects.
+// multi-line strings (| and > block scalars), flow sequences [a, b],
+// flow mappings {key: value}, and nested objects.
+// Does NOT support anchors/aliases, multi-document (---), or merge keys (<<).
 // For full YAML support, import the "yaml" npm package instead.
 // ---------------------------------------------------------------------------
 
 function parseSimpleYaml(text: string): unknown {
-  const lines = text.split("\n");
+  // Strip document separators
+  const cleaned = text.replace(/^---\s*$/gm, "").replace(/^\.\.\.\s*$/gm, "");
+  const lines = cleaned.split("\n");
   return parseYamlLines(lines, 0, 0).value;
 }
 
@@ -125,22 +129,28 @@ function parseYamlLines(
       return parseYamlArray(lines, start, baseIndent);
     }
 
-    // Key-value pair
-    const colonIdx = trimmed.indexOf(":");
+    // Key-value pair — find the first colon that's not inside quotes
+    const colonIdx = findKeyColon(trimmed);
     if (colonIdx === -1) { i++; continue; }
 
     const key = trimmed.slice(0, colonIdx).trim();
     const rest = trimmed.slice(colonIdx + 1).trim();
 
-    if (rest === "" || rest === "|") {
+    if (rest === "" || rest === "|" || rest === ">") {
       // Block scalar or nested object
-      const isBlock = rest === "|";
+      const isBlock = rest === "|" || rest === ">";
+      const isFolded = rest === ">";
       const nextLine = i + 1;
-      if (nextLine < lines.length) {
-        const nextIndent = lines[nextLine]!.length - lines[nextLine]!.trimStart().length;
+      // Find next non-empty line to determine indent
+      let nextContentLine = nextLine;
+      while (nextContentLine < lines.length && lines[nextContentLine]!.trim() === "") {
+        nextContentLine++;
+      }
+      if (nextContentLine < lines.length) {
+        const nextIndent = lines[nextContentLine]!.length - lines[nextContentLine]!.trimStart().length;
         if (nextIndent > indent) {
           if (isBlock) {
-            // Multi-line string
+            // Multi-line string (literal | or folded >)
             const blockLines: string[] = [];
             let j = nextLine;
             while (j < lines.length) {
@@ -155,17 +165,22 @@ function parseYamlLines(
             while (blockLines.length > 0 && blockLines[blockLines.length - 1] === "") {
               blockLines.pop();
             }
-            result[key] = blockLines.join("\n") + "\n";
+            if (isFolded) {
+              // Folded: join lines with spaces, preserve double newlines as paragraph breaks
+              result[key] = blockLines.join("\n").replace(/([^\n])\n([^\n])/g, "$1 $2") + "\n";
+            } else {
+              result[key] = blockLines.join("\n") + "\n";
+            }
             i = j;
           } else {
             // Check if it's an array or nested object
-            const nextTrimmed = lines[nextLine]!.trimStart();
+            const nextTrimmed = lines[nextContentLine]!.trimStart();
             if (nextTrimmed.startsWith("- ")) {
-              const sub = parseYamlArray(lines, nextLine, nextIndent);
+              const sub = parseYamlArray(lines, nextContentLine, nextIndent);
               result[key] = sub.value;
               i = sub.nextLine;
             } else {
-              const sub = parseYamlLines(lines, nextLine, nextIndent);
+              const sub = parseYamlLines(lines, nextContentLine, nextIndent);
               result[key] = sub.value;
               i = sub.nextLine;
             }
@@ -209,7 +224,7 @@ function parseYamlArray(
     const itemContent = trimmed.slice(2);
 
     // Check if item has nested content (next line is indented further)
-    if (itemContent.includes(":")) {
+    if (itemContent.includes(":") && !itemContent.startsWith("{")) {
       // Inline map item: "- key: value\n    key2: value2"
       const itemIndent = indent + 2;
       // Reconstruct as if the "- " wasn't there
@@ -227,7 +242,7 @@ function parseYamlArray(
       items.push(sub.value);
       i = j;
     } else {
-      // Simple scalar item
+      // Simple scalar item or flow value
       items.push(parseYamlValue(itemContent));
       i++;
     }
@@ -236,23 +251,110 @@ function parseYamlArray(
   return { value: items, nextLine: i };
 }
 
+/** Find the colon that separates key from value, skipping colons inside quotes. */
+function findKeyColon(s: string): number {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    else if (ch === ":" && !inSingle && !inDouble) {
+      // Must be followed by space, end-of-string, or newline to be a key separator
+      if (i + 1 >= s.length || s[i + 1] === " " || s[i + 1] === "\n") {
+        return i;
+      }
+    }
+  }
+  return -1;
+}
+
 function parseYamlValue(raw: string): unknown {
-  // Inline flow sequence: [a, b, c]
-  if (raw.startsWith("[") && raw.endsWith("]")) {
-    return raw.slice(1, -1).split(",").map(s => parseYamlValue(s.trim()));
+  // Strip inline comments: "value # comment" → "value"
+  const stripped = stripInlineComment(raw);
+
+  // Flow mapping: {key: value, key2: value2}
+  if (stripped.startsWith("{") && stripped.endsWith("}")) {
+    return parseFlowMapping(stripped);
+  }
+  // Flow sequence: [a, b, c]
+  if (stripped.startsWith("[") && stripped.endsWith("]")) {
+    return parseFlowSequence(stripped);
   }
   // Quoted string
-  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'"))) {
-    return raw.slice(1, -1);
+  if ((stripped.startsWith('"') && stripped.endsWith('"')) || (stripped.startsWith("'") && stripped.endsWith("'"))) {
+    return stripped.slice(1, -1);
   }
   // Boolean
-  if (raw === "true") return true;
-  if (raw === "false") return false;
+  if (stripped === "true" || stripped === "True" || stripped === "TRUE") return true;
+  if (stripped === "false" || stripped === "False" || stripped === "FALSE") return false;
   // Null
-  if (raw === "null" || raw === "~") return null;
+  if (stripped === "null" || stripped === "~" || stripped === "Null" || stripped === "NULL") return null;
   // Number
-  const num = Number(raw);
-  if (!isNaN(num) && raw !== "") return num;
+  const num = Number(stripped);
+  if (!isNaN(num) && stripped !== "") return num;
   // Plain string
+  return stripped;
+}
+
+/** Strip inline comment from a value: `hello # world` → `hello` */
+function stripInlineComment(raw: string): string {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    else if (ch === "#" && !inSingle && !inDouble && i > 0 && raw[i - 1] === " ") {
+      return raw.slice(0, i - 1).trimEnd();
+    }
+  }
   return raw;
+}
+
+/** Parse flow sequence: [a, b, c] → ["a", "b", "c"] */
+function parseFlowSequence(raw: string): unknown[] {
+  const inner = raw.slice(1, -1).trim();
+  if (inner === "") return [];
+  return splitFlowItems(inner).map(s => parseYamlValue(s.trim()));
+}
+
+/** Parse flow mapping: {key: val, key2: val2} → {key: "val", key2: "val2"} */
+function parseFlowMapping(raw: string): Record<string, unknown> {
+  const inner = raw.slice(1, -1).trim();
+  if (inner === "") return {};
+  const result: Record<string, unknown> = {};
+  const items = splitFlowItems(inner);
+  for (const item of items) {
+    const colonIdx = item.indexOf(":");
+    if (colonIdx === -1) continue;
+    const key = item.slice(0, colonIdx).trim();
+    const val = item.slice(colonIdx + 1).trim();
+    result[key] = parseYamlValue(val);
+  }
+  return result;
+}
+
+/** Split flow items by comma, respecting nested [] and {} and quotes. */
+function splitFlowItems(s: string): string[] {
+  const items: string[] = [];
+  let depth = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let start = 0;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === "'" && !inDouble) inSingle = !inSingle;
+    else if (ch === '"' && !inSingle) inDouble = !inDouble;
+    else if (!inSingle && !inDouble) {
+      if (ch === "[" || ch === "{") depth++;
+      else if (ch === "]" || ch === "}") depth--;
+      else if (ch === "," && depth === 0) {
+        items.push(s.slice(start, i));
+        start = i + 1;
+      }
+    }
+  }
+  if (start < s.length) items.push(s.slice(start));
+  return items;
 }

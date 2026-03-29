@@ -53,7 +53,7 @@ Show, don't tell — use eval to demonstrate. Use inline_ui for rich results. Us
  * All methods return void — side effects are RPC calls, not action arrays.
  */
 export class AiChatWorker extends AgentWorkerBase {
-  static override schemaVersion = 3;
+  static override schemaVersion = 6;
 
   // --- Hook overrides ---
 
