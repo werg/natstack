@@ -9,44 +9,31 @@ Manage personality-driven agents defined in `workspace/agents/`.
 
 ## Agent Definition
 
-Two ways to define agents:
-
-### Simple: Registry file (`workspace/agents/agents.yml`)
-
-Best for agents that are just a personality + config. All agents in one file:
-
-```yaml
-agents:
-  - name: "Aria"
-    handle: "aria"
-    personality: |
-      You are Aria, a warm and empathetic assistant.
-    model: smart
-    temperature: 0.7
-    tools: [eval, set_title]
-    greeting: "Hi! I'm Aria. How can I help?"
-
-  - name: "Rex"
-    handle: "rex"
-    personality: |
-      You are Rex, a terse systems engineer. No fluff.
-    model: smart
-    temperature: 0.3
-    tools: [eval, set_title]
-```
-
-### Complex: Per-directory (`workspace/agents/{name}/agent.yml`)
-
-For agents that need supplementary files (extended SOUL docs, knowledge bases, custom assets):
+Each agent is a directory under `workspace/agents/` containing an `agent.yml` manifest:
 
 ```
 workspace/agents/aria/
-  agent.yml          # Manifest
-  SOUL.md            # Extended personality (referenced from personality field)
-  knowledge/         # Domain files the agent can reference
+  agent.yml          # Required — personality manifest
+  SOUL.md            # Optional — extended personality docs
+  knowledge/         # Optional — domain-specific context files
 ```
 
-Per-directory manifests override registry entries with the same handle.
+Example `agent.yml`:
+
+```yaml
+name: "Aria"
+handle: "aria"
+personality: |
+  You are Aria, a warm and empathetic assistant.
+  You speak in a friendly but professional tone.
+model: smart
+temperature: 0.7
+tools: [eval, set_title]
+greeting: "Hi! I'm Aria. How can I help?"
+memory:
+  enabled: true
+  categories: [preferences, facts]
+```
 
 ## Quick Start
 

@@ -63,41 +63,18 @@ export function manifestToSubscriptionConfig(m: AgentManifest): Record<string, u
 
 /**
  * Discover all agent manifests from workspace/agents/.
- * Scans both the registry file and per-directory manifests.
+ * Each agent is a directory containing an agent.yml manifest.
  */
 export async function discoverManifests(): Promise<Map<string, AgentManifest>> {
   const agents = new Map<string, AgentManifest>();
 
-  // 1. Registry file: workspace/agents/agents.yml → array of inline manifests
-  try {
-    const registryContent = await fs.readFile("agents/agents.yml", "utf-8");
-    const parsed = parseSimpleYaml(registryContent);
-    const list = Array.isArray(parsed)
-      ? parsed
-      : (parsed as Record<string, unknown>)?.["agents"];
-    if (Array.isArray(list)) {
-      for (const entry of list) {
-        try {
-          const manifest = loadAgentManifest(entry);
-          agents.set(manifest.handle, manifest);
-        } catch (err) {
-          console.warn(`[agents] Skipping invalid registry entry:`, err);
-        }
-      }
-    }
-  } catch {
-    // No registry file — that's fine
-  }
-
-  // 2. Per-directory: workspace/agents/*/agent.yml → individual complex agents
   try {
     const entries = await fs.readdir("agents");
     for (const entry of entries) {
-      if (entry === "agents.yml") continue;
       try {
         const content = await fs.readFile(`agents/${entry}/agent.yml`, "utf-8");
         const manifest = loadAgentManifest(content);
-        agents.set(manifest.handle, manifest); // per-directory overrides registry
+        agents.set(manifest.handle, manifest);
       } catch {
         // Not an agent directory — skip
       }
