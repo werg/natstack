@@ -42,7 +42,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-mobile-${{ hashFiles('package.json', 'apps/mobile/package.json') }}
+          key: ${{ runner.os }}-pnpm-mobile-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: ${{ runner.os }}-pnpm-mobile-
 
       - name: Cache Gradle
@@ -59,21 +59,20 @@ jobs:
 
       - name: Link node_modules for Gradle
         run: |
-          # pnpm hoisted puts deps in root node_modules/, but Gradle resolves
-          # from two paths relative to apps/mobile/android/:
-          #   1. settings.gradle: ../../node_modules = apps/node_modules/
-          #   2. RN gradle plugin: ../node_modules = apps/mobile/node_modules/
-          # pnpm may create apps/mobile/node_modules/ with only workspace deps
-          # (e.g. @natstack/rpc), so we must replace it with a symlink to root
-          # to ensure react-native and all other deps are accessible.
-          if [ ! -L apps/node_modules ]; then
-            rm -rf apps/node_modules
-            ln -s ../node_modules apps/node_modules
-          fi
+          # Gradle resolves node_modules from apps/mobile/android/ via
+          # settings.gradle path: ../node_modules = apps/mobile/node_modules/
+          # pnpm hoisted may not put all deps there, so symlink to root.
           if [ ! -L apps/mobile/node_modules ]; then
             rm -rf apps/mobile/node_modules
             ln -s ../../node_modules apps/mobile/node_modules
           fi
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: |
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006" "cmake;3.22.1"
 
       - name: Set up release signing
         if: github.event_name != 'pull_request'
@@ -87,6 +86,9 @@ jobs:
       - name: Build release APK
         working-directory: apps/mobile/android
         run: ./gradlew assembleRelease --no-daemon
+        env:
+          # Ensure Gradle finds the SDK
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

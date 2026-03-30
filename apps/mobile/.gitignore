@@ -5,6 +5,7 @@ node_modules/
 android/.gradle/
 android/app/build/
 android/build/
+android/local.properties
 # Keep gradle wrapper (gradlew, gradle/wrapper/) for CI builds
 android/app/src/main/assets/index.android.bundle
 android/app/src/main/res/drawable-*
