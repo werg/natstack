@@ -39,7 +39,25 @@ const config = {
         return context.resolveRequest(context, localPath, platform);
       }
 
-      // 0b. Resolve react-native-screens via pre-built lib/ output.
+      // 0b. Resolve @natstack/* packages to their TypeScript source.
+      //     These packages export "main": "./dist/index.js" for Node/esbuild,
+      //     but dist/ may not exist (it's built by the desktop build pipeline).
+      //     Metro can bundle .ts directly, so point to src/index.ts instead.
+      if (moduleName.startsWith("@natstack/") && !moduleName.startsWith("@natstack/shared/")) {
+        const pkgName = moduleName.split("/").slice(0, 2).join("/");
+        const subpath = moduleName.slice(pkgName.length);
+        const pkgDir = path.resolve(monorepoRoot, "packages", pkgName.replace("@natstack/", ""));
+        if (subpath) {
+          // Subpath import like @natstack/rpc/types
+          const resolved = path.resolve(pkgDir, "src", subpath.slice(1));
+          return context.resolveRequest(context, resolved, platform);
+        }
+        // Bare import like @natstack/rpc -> packages/rpc/src/index.ts
+        const srcEntry = path.resolve(pkgDir, "src", "index.ts");
+        return { type: "sourceFile", filePath: srcEntry };
+      }
+
+      // 0c. Resolve react-native-screens via pre-built lib/ output.
       //     Metro's default "react-native" field points to src/ which contains
       //     Fabric NativeComponent specs using CodegenTypes -- a pattern the
       //     @react-native/babel-plugin-codegen in RN 0.79 cannot parse.
