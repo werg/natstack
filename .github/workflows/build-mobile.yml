@@ -59,14 +59,19 @@ jobs:
 
       - name: Link node_modules for Gradle
         run: |
-          # pnpm hoisted puts everything in root node_modules/, but Gradle
-          # resolves node_modules from two different paths:
-          #   1. settings.gradle: ../../node_modules from apps/mobile/android/ = apps/node_modules/
-          #   2. RN gradle plugin: ../node_modules from apps/mobile/android/ = apps/mobile/node_modules/
-          if [ ! -d apps/node_modules ]; then
+          # pnpm hoisted puts deps in root node_modules/, but Gradle resolves
+          # from two paths relative to apps/mobile/android/:
+          #   1. settings.gradle: ../../node_modules = apps/node_modules/
+          #   2. RN gradle plugin: ../node_modules = apps/mobile/node_modules/
+          # pnpm may create apps/mobile/node_modules/ with only workspace deps
+          # (e.g. @natstack/rpc), so we must replace it with a symlink to root
+          # to ensure react-native and all other deps are accessible.
+          if [ ! -L apps/node_modules ]; then
+            rm -rf apps/node_modules
             ln -s ../node_modules apps/node_modules
           fi
-          if [ ! -d apps/mobile/node_modules ]; then
+          if [ ! -L apps/mobile/node_modules ]; then
+            rm -rf apps/mobile/node_modules
             ln -s ../../node_modules apps/mobile/node_modules
           fi
 
