@@ -14,8 +14,8 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import type { TokenManager } from "../shared/tokenManager.js";
-import type { FsService } from "../shared/fsService.js";
+import type { TokenManager } from "@natstack/shared/tokenManager";
+import type { FsService } from "@natstack/shared/fsService";
 import type { BuildResult } from "./buildV2/buildStore.js";
 import { createDevLogger } from "@natstack/dev-log";
 

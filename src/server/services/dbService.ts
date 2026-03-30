@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { DatabaseManager } from "../../shared/db/databaseManager.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import type { DatabaseManager } from "@natstack/shared/db/databaseManager";
 
 export function createDbService(deps: {
   databaseManager: DatabaseManager;

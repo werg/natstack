@@ -8,11 +8,11 @@
 
 import { randomUUID } from "crypto";
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { CallerKind } from "../../shared/serviceDispatcher.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import type { CallerKind } from "@natstack/shared/serviceDispatcher";
 import type { DODispatch, DORef } from "../doDispatch.js";
 import type { HarnessManager } from "../harnessManager.js";
-import type { ContextFolderManager } from "../../shared/contextFolderManager.js";
+import type { ContextFolderManager } from "@natstack/shared/contextFolderManager";
 import type { HarnessOutput } from "@natstack/harness";
 import { createDevLogger } from "@natstack/dev-log";
 

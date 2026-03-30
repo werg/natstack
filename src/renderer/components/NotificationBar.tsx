@@ -23,7 +23,7 @@ import {
 import { useShellEvent } from "../shell/useShellEvent";
 import { view, notification } from "../shell/client";
 import { useNavigation } from "./NavigationContext";
-import type { NotificationPayload } from "../../shared/events";
+import type { NotificationPayload } from "@natstack/shared/events";
 
 /** Default TTLs by notification type (ms). 0 = no auto-dismiss. */
 const DEFAULT_TTLS: Record<NotificationPayload["type"], number> = {

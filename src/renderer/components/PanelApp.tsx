@@ -10,7 +10,7 @@ import { app, notification } from "../shell/client";
 import { PanelStack } from "./PanelStack";
 import { TitleBar } from "./TitleBar";
 import { NotificationBar } from "./NotificationBar";
-import type { PanelContextMenuAction } from "../../shared/types";
+import type { PanelContextMenuAction } from "@natstack/shared/types";
 
 export function PanelApp() {
   return (

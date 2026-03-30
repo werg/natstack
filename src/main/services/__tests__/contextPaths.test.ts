@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveWithinContext, validateFilePathWithinRoot } from "../../../shared/contextPaths";
+import { resolveWithinContext, validateFilePathWithinRoot } from "@natstack/shared/contextPaths";
 
 describe("resolveWithinContext", () => {
   const root = "/workspace/.contexts/abc";

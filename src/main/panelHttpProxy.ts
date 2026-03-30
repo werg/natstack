@@ -5,7 +5,7 @@
  * the server; Electron never hosts its own PanelHttpServer.
  */
 
-import type { PanelHttpServerLike } from "../shared/panelInterfaces.js";
+import type { PanelHttpServerLike } from "@natstack/shared/panelInterfaces";
 import type { ServerClient } from "./serverClient.js";
 
 /**

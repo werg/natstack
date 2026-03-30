@@ -7,8 +7,8 @@
  */
 
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { Workspace, WorkspaceConfig } from "../../shared/workspace/types.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import type { Workspace, WorkspaceConfig } from "@natstack/shared/workspace/types";
 
 export interface CentralDataLike {
   listWorkspaces(): unknown[];

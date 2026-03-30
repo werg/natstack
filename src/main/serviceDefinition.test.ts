@@ -3,8 +3,8 @@
  */
 
 import { z } from "zod";
-import { ServiceDispatcher, type ServiceContext } from "../shared/serviceDispatcher.js";
-import type { ServiceDefinition } from "../shared/serviceDefinition.js";
+import { ServiceDispatcher, type ServiceContext } from "@natstack/shared/serviceDispatcher";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 
 const ctx: ServiceContext = {
   callerId: "test",

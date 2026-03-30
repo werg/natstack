@@ -12,7 +12,7 @@ import type { RpcMessage, RpcResponse } from "@natstack/rpc";
 import type {
   WsClientMessage,
   WsServerMessage,
-} from "../shared/ws/protocol.js";
+} from "@natstack/shared/ws/protocol";
 
 interface PendingCall {
   resolve: (value: unknown) => void;

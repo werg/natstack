@@ -3,9 +3,9 @@ import { mkdir, writeFile } from "fs/promises";
 import { execSync } from "child_process";
 import { resolve, join } from "path";
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { GitServer } from "@natstack/git-server";
-import type { TokenManager } from "../../shared/tokenManager.js";
+import type { TokenManager } from "@natstack/shared/tokenManager";
 
 export function createGitService(deps: {
   gitServer: GitServer;

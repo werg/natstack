@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { ContextFolderManager } from "../../shared/contextFolderManager.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import type { ContextFolderManager } from "@natstack/shared/contextFolderManager";
 
 export function createTestService(deps: {
   contextFolderManager: ContextFolderManager;
@@ -15,7 +15,7 @@ export function createTestService(deps: {
       run: { args: z.tuple([z.string()]).rest(z.unknown()) },
     },
     handler: async (_ctx, method, args) => {
-      const { handleTestCall } = await import("../../shared/services/testRunnerService.js");
+      const { handleTestCall } = await import("@natstack/shared/services/testRunnerService");
       return handleTestCall(
         {
           contextFolderManager: deps.contextFolderManager,

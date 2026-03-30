@@ -1,8 +1,8 @@
 import { app, Menu, MenuItemConstructorOptions, type WebContents } from "electron";
-import type { EventService } from "../shared/eventsService.js";
+import type { EventService } from "@natstack/shared/eventsService";
 import type { ViewManager } from "./viewManager.js";
-import type { BridgePanelManager } from "../shared/panelInterfaces.js";
-import type { PanelRegistry } from "../shared/panelRegistry.js";
+import type { BridgePanelManager } from "@natstack/shared/panelInterfaces";
+import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 
 // Set during initialization — always non-null after startup
 let _menuPanelLifecycle: BridgePanelManager | null = null;

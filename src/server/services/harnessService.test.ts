@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createHarnessService } from "./harnessService.js";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { DODispatch, DORef } from "../doDispatch.js";
 import type { HarnessManager } from "../harnessManager.js";
-import type { ContextFolderManager } from "../../shared/contextFolderManager.js";
-import type { ServiceContext } from "../../shared/serviceDispatcher.js";
+import type { ContextFolderManager } from "@natstack/shared/contextFolderManager";
+import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 

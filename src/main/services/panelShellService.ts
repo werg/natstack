@@ -1,10 +1,10 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { PanelOrchestrator } from "../panelOrchestrator.js";
-import type { PanelRegistry } from "../../shared/panelRegistry.js";
+import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { PanelView } from "../panelView.js";
 import type { ViewManager } from "../viewManager.js";
-import type { ThemeAppearance } from "../../shared/types.js";
+import type { ThemeAppearance } from "@natstack/shared/types";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("PanelShellService");

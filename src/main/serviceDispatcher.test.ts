@@ -7,9 +7,9 @@ import {
   ServiceDispatcher,
   ServiceError,
   parseServiceMethod,
-} from "../shared/serviceDispatcher.js";
-import type { ServiceContext, ServiceHandler } from "../shared/serviceDispatcher.js";
-import type { ServiceDefinition } from "../shared/serviceDefinition.js";
+} from "@natstack/shared/serviceDispatcher";
+import type { ServiceContext, ServiceHandler } from "@natstack/shared/serviceDispatcher";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 
 const ctx: ServiceContext = {
   callerId: "test",

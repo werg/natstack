@@ -44,7 +44,7 @@ vi.mock("electron", () => ({
 }));
 
 import { createBrowserDataService } from "../browserDataService.js";
-import type { EventService } from "../../../shared/eventsService.js";
+import type { EventService } from "@natstack/shared/eventsService";
 
 function createMockStore() {
   return {

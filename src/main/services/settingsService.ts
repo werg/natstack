@@ -1,19 +1,19 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type {
   SettingsData,
   ProviderInfo,
   AvailableProvider,
   ModelRoleConfig,
-} from "../../shared/types.js";
-import type { SupportedProvider } from "../../shared/workspace/types.js";
+} from "@natstack/shared/types";
+import type { SupportedProvider } from "@natstack/shared/workspace/types";
 import type { ServerClient } from "../serverClient.js";
 import {
   loadCentralConfig,
   saveCentralConfig,
   loadSecrets,
   saveSecrets,
-} from "../../shared/workspace/loader.js";
+} from "@natstack/shared/workspace/loader";
 import {
   getSupportedProviders,
   getProviderEnvVars,
@@ -21,8 +21,8 @@ import {
   getDefaultModelsForProvider,
   hasProviderApiKey,
   usesCliAuth,
-} from "../../shared/ai/providerFactory.js";
-import { fetchModelsForProvider, type FetchedModel } from "../../shared/ai/modelFetcher.js";
+} from "@natstack/shared/ai/providerFactory";
+import { fetchModelsForProvider, type FetchedModel } from "@natstack/shared/ai/modelFetcher";
 
 function getApiKeyForProvider(
   providerId: SupportedProvider,

@@ -5,8 +5,8 @@
  * The git methods satisfy GitBridgeLike for bridge handler sharing.
  */
 
-import type { ServerInfoLike } from "../shared/panelInterfaces.js";
-import type { GitBridgeLike } from "../shared/bridgeHandlersCommon.js";
+import type { ServerInfoLike } from "@natstack/shared/panelInterfaces";
+import type { GitBridgeLike } from "@natstack/shared/bridgeHandlersCommon";
 
 export interface ServerInfo extends ServerInfoLike, GitBridgeLike {
   /** Generic RPC call to a server service */

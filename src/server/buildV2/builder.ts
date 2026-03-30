@@ -23,7 +23,7 @@ import type { BuildArtifacts, BuildMetadata, BuildResult } from "./buildStore.js
 import { computeBuildKey } from "./effectiveVersion.js";
 import { collectTransitiveExternalDeps, ensureExternalDeps } from "./externalDeps.js";
 import { extractSourceForBuild } from "./sourceExtractor.js";
-import { PANEL_CSP_META } from "../../shared/constants.js";
+import { PANEL_CSP_META } from "@natstack/shared/constants";
 import { getAdapter } from "./adapters/index.js";
 import type { FrameworkAdapter } from "./adapters/types.js";
 import { resolveTemplate } from "./templateResolver.js";

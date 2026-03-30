@@ -14,8 +14,8 @@ import {
   resolveWorkspaceName,
   resolveOrCreateWorkspace,
   loadCentralConfig,
-} from "../shared/workspace/loader.js";
-import type { CentralDataManager } from "../shared/centralData.js";
+} from "@natstack/shared/workspace/loader";
+import type { CentralDataManager } from "@natstack/shared/centralData";
 
 const log = createDevLogger("StartupMode");
 

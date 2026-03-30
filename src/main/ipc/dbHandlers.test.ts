@@ -3,7 +3,7 @@
  */
 
 import { createDbService } from "../../server/services/dbService.js";
-import type { ServiceContext } from "../../shared/serviceDispatcher.js";
+import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
 
 describe("dbService", () => {
   const dbManager = {

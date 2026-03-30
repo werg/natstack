@@ -15,7 +15,7 @@ import {
   wizardFormDataAtom,
   workspaceErrorAtom,
 } from "../state/appModeAtoms";
-import type { WorkspaceEntry } from "../../shared/types";
+import type { WorkspaceEntry } from "@natstack/shared/types";
 
 function formatRelativeTime(timestamp: number): string {
   const seconds = Math.floor((Date.now() - timestamp) / 1000);

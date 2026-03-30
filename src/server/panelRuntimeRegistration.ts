@@ -8,13 +8,13 @@
  */
 
 import { z } from "zod";
-import type { ServiceContainer } from "../shared/serviceContainer.js";
-import type { ServiceDispatcher } from "../shared/serviceDispatcher.js";
-import type { TokenManager } from "../shared/tokenManager.js";
-import type { Workspace, WorkspaceConfig } from "../shared/workspace/types.js";
+import type { ServiceContainer } from "@natstack/shared/serviceContainer";
+import type { ServiceDispatcher } from "@natstack/shared/serviceDispatcher";
+import type { TokenManager } from "@natstack/shared/tokenManager";
+import type { Workspace, WorkspaceConfig } from "@natstack/shared/workspace/types";
 import type { GitServer } from "@natstack/git-server";
-import type { CentralDataManager } from "../shared/centralData.js";
-import type { HostConfig } from "../shared/hostConfig.js";
+import type { CentralDataManager } from "@natstack/shared/centralData";
+import type { HostConfig } from "@natstack/shared/hostConfig";
 
 export interface CommonDeps {
   container: ServiceContainer;
@@ -31,7 +31,7 @@ export interface CommonDeps {
   /** True when running as Electron's child process (IPC mode). */
   isIpcMode: boolean;
   /** EventService for emitting events (optional, used in standalone mode). */
-  eventService?: import("../shared/eventsService.js").EventService;
+  eventService?: import("@natstack/shared/eventsService").EventService;
 }
 
 /**
@@ -40,7 +40,7 @@ export interface CommonDeps {
 export async function registerPanelServices(deps: CommonDeps): Promise<void> {
   const { container, dispatcher, tokenManager, workspace, workspacePath, workspaceConfig, gitServer, adminToken, centralData, args, hostConfig } = deps;
   const path = await import("path");
-  const { rpcService } = await import("../shared/managedService.js");
+  const { rpcService } = await import("@natstack/shared/managedService");
 
   // ===========================================================================
   // Panel service (always registered — server is the sole persistence writer)
@@ -48,14 +48,14 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
 
   {
     const { createPanelService } = await import("./services/panelService.js");
-    const { createPanelPersistence } = await import("../shared/db/panelPersistence.js");
-    const { createPanelSearchIndex } = await import("../shared/db/panelSearchIndex.js");
+    const { createPanelPersistence } = await import("@natstack/shared/db/panelPersistence");
+    const { createPanelSearchIndex } = await import("@natstack/shared/db/panelSearchIndex");
 
     container.register({
       name: "panelService",
       dependencies: ["fsService", "rpcServer"],
       async start(resolve) {
-        const fsServiceInst = resolve<import("../shared/fsService.js").FsService>("fsService")!;
+        const fsServiceInst = resolve<import("@natstack/shared/fsService").FsService>("fsService")!;
         const { server: rpcSrv } = resolve<{ server: import("./rpcServer.js").RpcServer }>("rpcServer")!;
         const getRpcPort = () => rpcSrv.getPort() ?? 0;
         const persistence = createPanelPersistence({ statePath: workspace.statePath, workspaceId: workspace.config.id });
@@ -93,7 +93,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
         };
       },
       getServiceDefinition() {
-        const inst = container.get<{ definition: import("../shared/serviceDefinition.js").ServiceDefinition }>("panelService");
+        const inst = container.get<{ definition: import("@natstack/shared/serviceDefinition").ServiceDefinition }>("panelService");
         return inst?.definition;
       },
     });
@@ -105,7 +105,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
 
   {
     const { createWorkspaceInfoService } = await import("./services/workspaceInfoService.js");
-    const { createWorkspaceConfigManager, createAndRegisterWorkspace, deleteWorkspaceDir } = await import("../shared/workspace/loader.js");
+    const { createWorkspaceConfigManager, createAndRegisterWorkspace, deleteWorkspaceDir } = await import("@natstack/shared/workspace/loader");
     const wsConfigPath = path.join(workspacePath, "natstack.yml");
     const wsConfigManager = createWorkspaceConfigManager(wsConfigPath, workspaceConfig);
 
@@ -228,7 +228,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
                 const result = await dispatcher.dispatch(
                   serverCtx, "panel", "create",
                   [source, { contextId: subdomain, isRoot: true, addAsRoot: true }],
-                ) as import("../shared/panelFactory.js").PanelCreateResult;
+                ) as import("@natstack/shared/panelFactory").PanelCreateResult;
 
                 return {
                   panelId: result.panelId,
@@ -248,7 +248,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
             type: "ws:event",
             event: "build:complete",
             payload: { source, error },
-          } as import("../shared/ws/protocol.js").WsServerMessage);
+          } as import("@natstack/shared/ws/protocol").WsServerMessage);
         },
       });
 
@@ -270,7 +270,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
   // bridge service with the full standalone implementation.
 
   if (deps.isIpcMode) {
-    const { SERVER_BRIDGE_METHODS } = await import("../shared/bridgeMethodSchemas.js");
+    const { SERVER_BRIDGE_METHODS } = await import("@natstack/shared/bridgeMethodSchemas");
     container.register({
       name: "ipcBridge",
       dependencies: ["panelService", "rpcServer"],
@@ -293,7 +293,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
                 const [childId] = args as [string];
                 // Verify caller is the parent
                 const panelSvcInst = container.get<{
-                  persistence: import("../shared/db/panelPersistence.js").PanelPersistence;
+                  persistence: import("@natstack/shared/db/panelPersistence").PanelPersistence;
                 }>("panelService");
                 const parentId = panelSvcInst?.persistence?.getParentId(childId);
                 if (parentId !== ctx.callerId) {
@@ -304,7 +304,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
               case "getInfo": {
                 // Build panel info from persistence
                 const panelServiceInst = container.get<{
-                  persistence: import("../shared/db/panelPersistence.js").PanelPersistence;
+                  persistence: import("@natstack/shared/db/panelPersistence").PanelPersistence;
                 }>("panelService");
                 const panel = panelServiceInst?.persistence?.getPanel(ctx.callerId);
                 if (!panel) throw new Error(`Panel not found: ${ctx.callerId}`);
@@ -324,7 +324,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
                   type: "ws:event",
                   event: "stateArgs:updated",
                   payload: validated,
-                } as import("../shared/ws/protocol.js").WsServerMessage);
+                } as import("@natstack/shared/ws/protocol").WsServerMessage);
                 return validated;
               }
               case "focusPanel": {
@@ -352,7 +352,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
                 };
                 // Build the full bootstrap config using the panel's persistence data
                 const bsPanelSvc = container.get<{
-                  persistence: import("../shared/db/panelPersistence.js").PanelPersistence;
+                  persistence: import("@natstack/shared/db/panelPersistence").PanelPersistence;
                 }>("panelService");
                 const bsPanel = bsPanelSvc?.persistence?.getPanel(ctx.callerId);
                 if (!bsPanel) throw new Error(`Panel not found: ${ctx.callerId}`);
@@ -405,13 +405,13 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
   // ===========================================================================
 
   {
-    const { handleFsCall } = await import("../shared/fsService.js");
-    let fsServiceInstance: import("../shared/fsService.js").FsService;
+    const { handleFsCall } = await import("@natstack/shared/fsService");
+    let fsServiceInstance: import("@natstack/shared/fsService").FsService;
     container.register({
       name: "fsRpc",
       dependencies: ["fsService"],
       async start(resolve) {
-        fsServiceInstance = resolve<import("../shared/fsService.js").FsService>("fsService")!;
+        fsServiceInstance = resolve<import("@natstack/shared/fsService").FsService>("fsService")!;
       },
       getServiceDefinition() {
         const fsMethodSchema = { args: z.tuple([z.string()]).rest(z.unknown()) };
@@ -443,22 +443,22 @@ export async function registerStandalonePanelRuntime(deps: CommonDeps & {
   standaloneSessions: Map<string, import("./standaloneBridge.js").StandaloneSession>;
 }): Promise<void> {
   const { container, dispatcher, tokenManager, gitServer, adminToken, args } = deps;
-  const { rpcService } = await import("../shared/managedService.js");
+  const { rpcService } = await import("@natstack/shared/managedService");
 
   const standaloneSessions = deps.standaloneSessions;
 
   // Bridge RPC service (standalone mode — uses session map, not PanelLifecycle)
   {
     const { handleStandaloneBridgeCall, createStandalonePanelManager } = await import("./standaloneBridge.js");
-    const { BRIDGE_METHOD_SCHEMAS } = await import("../shared/bridgeMethodSchemas.js");
-    let standalonePm: import("../shared/panelInterfaces.js").BridgePanelManager;
+    const { BRIDGE_METHOD_SCHEMAS } = await import("@natstack/shared/bridgeMethodSchemas");
+    let standalonePm: import("@natstack/shared/panelInterfaces").BridgePanelManager;
     let bridgeDeps: import("./standaloneBridge.js").StandaloneBridgeDeps;
     container.register({
       name: "bridge",
       dependencies: ["fsService", "rpcServer"],
       optionalDependencies: ["panelServing"],
       async start(resolve) {
-        const fsServiceInst = resolve<import("../shared/fsService.js").FsService>("fsService")!;
+        const fsServiceInst = resolve<import("@natstack/shared/fsService").FsService>("fsService")!;
         const { server: rpcSrv } = resolve<{ server: import("./rpcServer.js").RpcServer }>("rpcServer")!;
         const panelServingResult = resolve<{ cdpBridge: import("./cdpBridge.js").CdpBridge }>("panelServing", true);
         const cdpBridge = panelServingResult?.cdpBridge ?? null;
@@ -478,7 +478,7 @@ export async function registerStandalonePanelRuntime(deps: CommonDeps & {
           externalHost: deps.hostConfig.externalHost,
           get gatewayPort() { return rpcSrv.getPort() ?? 0; },
           emitEvent: deps.eventService
-            ? (event, payload) => deps.eventService!.emit(event as import("../shared/events.js").EventName, payload as any)
+            ? (event, payload) => deps.eventService!.emit(event as import("@natstack/shared/events").EventName, payload as any)
             : undefined,
         };
         standalonePm = createStandalonePanelManager(bridgeDeps);
@@ -526,9 +526,9 @@ export async function registerStandalonePanelRuntime(deps: CommonDeps & {
               const result = await dispatcher.dispatch(
                 serverCtx, "panel", "create",
                 [source, { contextId: subdomain, isRoot: true, addAsRoot: true }],
-              ) as import("../shared/panelFactory.js").PanelCreateResult;
+              ) as import("@natstack/shared/panelFactory").PanelCreateResult;
 
-              const { contextIdToSubdomain } = await import("../shared/panelIdUtils.js");
+              const { contextIdToSubdomain } = await import("@natstack/shared/panelIdUtils");
               standaloneSessions.set(result.panelId, {
                 panelId: result.panelId,
                 source,
@@ -631,7 +631,7 @@ export async function registerStandalonePanelRuntime(deps: CommonDeps & {
     optionalDependencies: ["harnessManager"],
     async start(resolve) {
       const { server: rpcServerInst } = resolve<{ server: import("./rpcServer.js").RpcServer }>("rpcServer")!;
-      const fsServiceInst = resolve<import("../shared/fsService.js").FsService>("fsService")!;
+      const fsServiceInst = resolve<import("@natstack/shared/fsService").FsService>("fsService")!;
       const harnessManagerInst = resolve<import("./harnessManager.js").HarnessManager>("harnessManager", true);
 
       rpcServerInst.setOnClientDisconnect((callerId, callerKind) => {

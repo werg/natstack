@@ -21,7 +21,7 @@ vi.mock("vitest/node", () => ({
   startVitest: mockStartVitest,
 }));
 
-import { handleTestCall } from "../../../shared/services/testRunnerService";
+import { handleTestCall } from "@natstack/shared/services/testRunnerService";
 
 describe("handleTestCall", () => {
   const mockContextFolderManager = {

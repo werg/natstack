@@ -8,24 +8,24 @@
 
 import * as path from "path";
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { PanelPersistence } from "../../shared/db/panelPersistence.js";
-import type { PanelSearchIndex } from "../../shared/db/panelSearchIndex.js";
-import type { TokenManager } from "../../shared/tokenManager.js";
-import type { FsService } from "../../shared/fsService.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import type { PanelPersistence } from "@natstack/shared/db/panelPersistence";
+import type { PanelSearchIndex } from "@natstack/shared/db/panelSearchIndex";
+import type { TokenManager } from "@natstack/shared/tokenManager";
+import type { FsService } from "@natstack/shared/fsService";
 import type { GitServer } from "@natstack/git-server";
-import type { PanelManifest } from "../../shared/types.js";
-import { loadPanelManifest } from "../../shared/panelTypes.js";
-import { validateStateArgs } from "../../shared/stateArgsValidator.js";
-import { computePanelId } from "../../shared/panelIdUtils.js";
+import type { PanelManifest } from "@natstack/shared/types";
+import { loadPanelManifest } from "@natstack/shared/panelTypes";
+import { validateStateArgs } from "@natstack/shared/stateArgsValidator";
+import { computePanelId } from "@natstack/shared/panelIdUtils";
 import {
   resolveSource,
   generateContextId,
   browserSourceFromHostname,
   buildPanelEnv,
   type PanelCreateResult,
-} from "../../shared/panelFactory.js";
-import { createSnapshot, getPanelSource, getPanelContextId, getPanelStateArgs } from "../../shared/panel/accessors.js";
+} from "@natstack/shared/panelFactory";
+import { createSnapshot, getPanelSource, getPanelContextId, getPanelStateArgs } from "@natstack/shared/panel/accessors";
 
 /**
  * Mutable URL config for panel-facing endpoints.
@@ -125,7 +125,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
 
   /** Archive childless panels with autoArchiveWhenEmpty (e.g., unused launcher UIs). */
   function cleanupChildlessAutoArchivePanels(
-    panels: import("../../shared/types.js").Panel[],
+    panels: import("@natstack/shared/types").Panel[],
     persist: PanelPersistence,
   ): void {
     for (const panel of panels) {
@@ -528,7 +528,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           const liveSet = new Set(livePanelIds);
           // Archive panels that are no longer live
           const tree = persistence.getFullTree();
-          const archiveIfDead = (panels: import("../../shared/types.js").Panel[]) => {
+          const archiveIfDead = (panels: import("@natstack/shared/types").Panel[]) => {
             for (const panel of panels) {
               if (!liveSet.has(panel.id)) {
                 persistence.archivePanel(panel.id);

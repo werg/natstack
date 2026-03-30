@@ -6,7 +6,7 @@
  */
 
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { WorkerdManager } from "../workerdManager.js";
 import type { BuildSystemV2 } from "../buildV2/index.js";
 

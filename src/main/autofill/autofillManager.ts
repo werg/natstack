@@ -11,8 +11,8 @@
 import { ipcMain } from "electron";
 import { z } from "zod";
 import type { WebContents, WebFrameMain } from "electron";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { EventService } from "../../shared/eventsService.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import type { EventService } from "@natstack/shared/eventsService";
 import type { ViewManager } from "../viewManager.js";
 import type { StoredPassword } from "@natstack/browser-data";
 import {

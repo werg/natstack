@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { EventService } from "../../shared/eventsService.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import type { EventService } from "@natstack/shared/eventsService";
 import type { BrowserDataStore } from "@natstack/browser-data";
 import {
   detectBrowsers,
@@ -25,7 +25,7 @@ import type {
   SameSiteValue,
   SourceScheme,
 } from "@natstack/browser-data";
-import { BROWSER_SESSION_PARTITION } from "../../shared/panelInterfaces.js";
+import { BROWSER_SESSION_PARTITION } from "@natstack/shared/panelInterfaces";
 
 function storedCookieToImported(c: {
   name: string;

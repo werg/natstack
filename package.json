@@ -123,6 +123,7 @@
     "@natstack/process-adapter": "workspace:*",
     "@natstack/pubsub": "workspace:*",
     "@natstack/rpc": "workspace:*",
+    "@natstack/shared": "workspace:*",
     "@natstack/typecheck": "workspace:*",
     "@natstack/types": "workspace:*",
     "@npmcli/arborist": "^7.4.0",

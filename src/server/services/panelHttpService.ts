@@ -6,8 +6,8 @@
  */
 
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { PanelHttpServerLike } from "../../shared/panelInterfaces.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import type { PanelHttpServerLike } from "@natstack/shared/panelInterfaces";
 
 export function createPanelHttpService(deps: {
   panelHttpServer: PanelHttpServerLike;

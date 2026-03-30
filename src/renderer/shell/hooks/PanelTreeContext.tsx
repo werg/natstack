@@ -27,12 +27,12 @@ import type {
   PanelSummary,
   PanelAncestor,
   DescendantSiblingGroup,
-} from "../../../shared/types.js";
+} from "@natstack/shared/types";
 import {
   getPanelContextId,
   getPanelSource,
   getPanelOptions,
-} from "../../../shared/panel/accessors.js";
+} from "@natstack/shared/panel/accessors";
 
 // Re-export types for consumers
 export type { PanelSummary, PanelAncestor, DescendantSiblingGroup };

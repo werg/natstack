@@ -45,7 +45,7 @@ import type {
   GetChildrenPaginatedRequest,
   PaginatedChildren,
   PaginatedRootPanels,
-} from "../../shared/types.js";
+} from "@natstack/shared/types";
 
 // =============================================================================
 // App Service
@@ -190,8 +190,8 @@ export const autofill = {
 // =============================================================================
 
 // Re-export event types from shared module
-export type { EventName, EventPayloads } from "../../shared/events.js";
-import type { EventName } from "../../shared/events.js";
+export type { EventName, EventPayloads } from "@natstack/shared/events";
+import type { EventName } from "@natstack/shared/events";
 
 export const events = {
   subscribe: (event: EventName) => rpc.call<void>("main", "events.subscribe", event),
@@ -203,7 +203,7 @@ export const events = {
 // Notification Service
 // =============================================================================
 
-import type { NotificationPayload } from "../../shared/events.js";
+import type { NotificationPayload } from "@natstack/shared/events";
 
 export const notification = {
   show: (opts: Omit<NotificationPayload, "id"> & { id?: string }) =>

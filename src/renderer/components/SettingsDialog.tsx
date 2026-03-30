@@ -29,7 +29,7 @@ import {
   disableProviderAtom,
 } from "../state/appModeAtoms";
 import { useShellOverlay } from "../shell/useShellOverlay";
-import type { ProviderInfo } from "../../shared/types";
+import type { ProviderInfo } from "@natstack/shared/types";
 
 const MODEL_ROLES = ["smart", "coding", "fast", "cheap"] as const;
 

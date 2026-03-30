@@ -3,7 +3,7 @@
  */
 
 import { createAiService } from "../../server/services/aiService.js";
-import type { ServiceContext } from "../../shared/serviceDispatcher.js";
+import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
 
 describe("aiService", () => {
   const mockAiHandler = {

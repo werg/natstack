@@ -10,7 +10,7 @@
 
 import { fork, type ChildProcess } from "node:child_process";
 import type { RpcBridge } from "@natstack/rpc";
-import type { CallerKind } from "../shared/serviceDispatcher.js";
+import type { CallerKind } from "@natstack/shared/serviceDispatcher";
 
 // ─── Public types ────────────────────────────────────────────────────────────
 

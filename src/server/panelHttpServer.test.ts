@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { contextIdToSubdomain } from "../shared/panelIdUtils.js";
+import { contextIdToSubdomain } from "@natstack/shared/panelIdUtils";
 
 // ---------------------------------------------------------------------------
 // extractSourcePath is module-private, so we test the regex logic directly.

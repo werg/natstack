@@ -9,7 +9,7 @@ import {
 } from "@radix-ui/themes";
 
 import type { LazyTitleNavigationData, LazyStatusNavigationData } from "./navigationTypes";
-import type { PanelContextMenuAction } from "../../shared/types";
+import type { PanelContextMenuAction } from "@natstack/shared/types";
 import {
   useRootPanels,
   useFullPanel,

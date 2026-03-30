@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "declaration": true,
+    "declarationMap": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true,
+    "lib": ["ES2022", "DOM"],
+    "jsx": "react-jsx",
+    "paths": {
+      "@natstack/dev-log": ["../dev-log/src/index.ts"],
+      "@natstack/env-paths": ["../env-paths/src/index.ts"],
+      "@natstack/rpc": ["../rpc/src/index.ts"],
+      "@natstack/typecheck": ["../typecheck/src/index.ts"],
+      "@natstack/types": ["../types/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+}

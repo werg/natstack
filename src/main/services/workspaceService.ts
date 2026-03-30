@@ -1,6 +1,6 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { WorkspaceConfig } from "../../shared/workspace/types.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import type { WorkspaceConfig } from "@natstack/shared/workspace/types";
 
 /**
  * Electron-side workspace service.

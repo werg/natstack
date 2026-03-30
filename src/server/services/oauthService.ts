@@ -12,11 +12,11 @@
  */
 
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { CallerKind } from "../../shared/serviceDispatcher.js";
-import type { OAuthManager } from "../../shared/oauth/oauthManager.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import type { CallerKind } from "@natstack/shared/serviceDispatcher";
+import type { OAuthManager } from "@natstack/shared/oauth/oauthManager";
 import type { NotificationServiceInternal } from "./notificationService.js";
-import type { PanelRegistry } from "../../shared/panelRegistry.js";
+import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import { randomUUID } from "node:crypto";
 
 /**

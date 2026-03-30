@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { ServiceContext } from "../../../shared/serviceDispatcher.js";
-import type { WorkspaceConfig } from "../../../shared/workspace/types.js";
+import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
+import type { WorkspaceConfig } from "@natstack/shared/workspace/types";
 
 import { createWorkspaceService } from "../workspaceService.js";
 

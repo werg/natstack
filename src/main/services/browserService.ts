@@ -1,8 +1,8 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { CdpServer } from "../cdpServer.js";
 import type { ViewManager } from "../viewManager.js";
-import type { PanelRegistry } from "../../shared/panelRegistry.js";
+import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 
 export function getCdpEndpointForCaller(cdpServer: CdpServer, browserId: string, callerId: string): string {
   const endpoint = cdpServer.getCdpEndpoint(browserId, callerId);

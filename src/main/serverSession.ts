@@ -12,9 +12,9 @@ import { getAppRoot } from "./paths.js";
 import { ServerProcessManager, type ServerPorts } from "./serverProcessManager.js";
 import { createServerClient, type ServerClient, type ConnectionStatus } from "./serverClient.js";
 import { createPanelHttpProxy } from "./panelHttpProxy.js";
-import type { PanelHttpServerLike, ServerInfoLike } from "../shared/panelInterfaces.js";
+import type { PanelHttpServerLike, ServerInfoLike } from "@natstack/shared/panelInterfaces";
 import type { ServerInfo } from "./serverInfo.js";
-import type { WorkspaceConfig } from "../shared/workspace/types.js";
+import type { WorkspaceConfig } from "@natstack/shared/workspace/types";
 import type { StartupMode } from "./startupMode.js";
 
 const log = createDevLogger("ServerSession");

@@ -1,11 +1,11 @@
 import { dialog } from "electron";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { PanelOrchestrator } from "../panelOrchestrator.js";
 import type { CdpServer } from "../cdpServer.js";
 import type { ViewManager } from "../viewManager.js";
 import type { ServerInfo } from "../serverInfo.js";
-import { handleCommonBridgeMethod } from "../../shared/bridgeHandlersCommon.js";
-import { BRIDGE_METHOD_SCHEMAS } from "../../shared/bridgeMethodSchemas.js";
+import { handleCommonBridgeMethod } from "@natstack/shared/bridgeHandlersCommon";
+import { BRIDGE_METHOD_SCHEMAS } from "@natstack/shared/bridgeMethodSchemas";
 
 export function createBridgeService(deps: {
   panelOrchestrator: PanelOrchestrator;

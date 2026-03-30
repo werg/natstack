@@ -7,25 +7,25 @@
  */
 
 import { createDevLogger } from "@natstack/dev-log";
-import type { Panel } from "../shared/types.js";
-import type { PanelRegistry } from "../shared/panelRegistry.js";
-import type { TokenManager } from "../shared/tokenManager.js";
-import type { EventService } from "../shared/eventsService.js";
+import type { Panel } from "@natstack/shared/types";
+import type { PanelRegistry } from "@natstack/shared/panelRegistry";
+import type { TokenManager } from "@natstack/shared/tokenManager";
+import type { EventService } from "@natstack/shared/eventsService";
 import type { ServerClient } from "./serverClient.js";
 import type {
   BridgePanelManager,
   PanelViewLike,
   PanelHttpServerLike,
   PanelCreateOptions,
-} from "../shared/panelInterfaces.js";
-import type { WorkspaceConfig } from "../shared/workspace/types.js";
+} from "@natstack/shared/panelInterfaces";
+import type { WorkspaceConfig } from "@natstack/shared/workspace/types";
 import {
   buildBootstrapConfig,
   buildPanelFromResult,
   buildPanelUrl,
   type PanelCreateResult,
-} from "../shared/panelFactory.js";
-import { getPanelSource, getPanelContextId, getPanelStateArgs } from "../shared/panel/accessors.js";
+} from "@natstack/shared/panelFactory";
+import { getPanelSource, getPanelContextId, getPanelStateArgs } from "@natstack/shared/panel/accessors";
 
 const log = createDevLogger("PanelOrchestrator");
 

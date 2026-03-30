@@ -5,14 +5,14 @@
  * no persistence) for standalone/browser-accessed panels.
  */
 
-import type { BridgePanelManager } from "../shared/panelInterfaces.js";
+import type { BridgePanelManager } from "@natstack/shared/panelInterfaces";
 import type { GitServer } from "@natstack/git-server";
-import type { TokenManager } from "../shared/tokenManager.js";
-import type { FsService } from "../shared/fsService.js";
+import type { TokenManager } from "@natstack/shared/tokenManager";
+import type { FsService } from "@natstack/shared/fsService";
 import type { CdpBridge } from "./cdpBridge.js";
-import { handleCommonBridgeMethod } from "../shared/bridgeHandlersCommon.js";
-import { buildBootstrapConfig, generateContextId, browserSourceFromHostname } from "../shared/panelFactory.js";
-import { computePanelId, contextIdToSubdomain } from "../shared/panelIdUtils.js";
+import { handleCommonBridgeMethod } from "@natstack/shared/bridgeHandlersCommon";
+import { buildBootstrapConfig, generateContextId, browserSourceFromHostname } from "@natstack/shared/panelFactory";
+import { computePanelId, contextIdToSubdomain } from "@natstack/shared/panelIdUtils";
 
 // =============================================================================
 // Standalone session map (replaces headless panel tree)

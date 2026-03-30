@@ -1,8 +1,8 @@
 import * as path from "path";
 import { app, nativeTheme } from "electron";
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { ThemeMode } from "../../shared/types.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import type { ThemeMode } from "@natstack/shared/types";
 import type { PanelOrchestrator } from "../panelOrchestrator.js";
 import type { ServerClient } from "../serverClient.js";
 import type { ViewManager } from "../viewManager.js";

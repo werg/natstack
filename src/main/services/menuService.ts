@@ -1,11 +1,11 @@
 import { Menu, type MenuItemConstructorOptions } from "electron";
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { PanelOrchestrator } from "../panelOrchestrator.js";
-import type { PanelRegistry } from "../../shared/panelRegistry.js";
+import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { ViewManager } from "../viewManager.js";
 import type { ServerClient } from "../serverClient.js";
-import type { PanelContextMenuAction } from "../../shared/types.js";
+import type { PanelContextMenuAction } from "@natstack/shared/types";
 import { buildHamburgerMenuTemplate } from "../menu.js";
 
 export function createMenuService(deps: {

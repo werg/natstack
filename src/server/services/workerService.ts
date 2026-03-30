@@ -8,7 +8,7 @@
  */
 
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { DODispatch } from "../doDispatch.js";
 import type { BuildSystemV2 } from "../buildV2/index.js";
 import { createDevLogger } from "@natstack/dev-log";

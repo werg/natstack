@@ -8,7 +8,7 @@ import { isDev } from "./utils.js";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("App");
-import { PanelRegistry } from "../shared/panelRegistry.js";
+import { PanelRegistry } from "@natstack/shared/panelRegistry";
 import { PanelOrchestrator } from "./panelOrchestrator.js";
 import { PanelView } from "./panelView.js";
 import { setupMenu, setMenuPanelLifecycle, setMenuPanelRegistry, setMenuViewManager, setMenuEventService } from "./menu.js";
@@ -16,29 +16,29 @@ import { getAppRoot } from "./paths.js";
 import {
   loadCentralEnv,
   deleteWorkspaceDir,
-} from "../shared/workspace/loader.js";
-import { CentralDataManager } from "../shared/centralData.js";
+} from "@natstack/shared/workspace/loader";
+import { CentralDataManager } from "@natstack/shared/centralData";
 import { resolveStartupMode, getRemoteUserDataDir, type StartupMode } from "./startupMode.js";
 import { establishServerSession, type SessionConnection } from "./serverSession.js";
 import { CdpServer } from "./cdpServer.js";
-import { TokenManager } from "../shared/tokenManager.js";
-import { EventService } from "../shared/eventsService.js";
+import { TokenManager } from "@natstack/shared/tokenManager";
+import { EventService } from "@natstack/shared/eventsService";
 
 const eventService = new EventService();
 import { ViewManager } from "./viewManager.js";
-import { ServiceDispatcher } from "../shared/serviceDispatcher.js";
+import { ServiceDispatcher } from "@natstack/shared/serviceDispatcher";
 // RpcServer type: inline import("...") used intentionally — main/ constructs
 // server objects via dynamic import at runtime; inline types are acceptable
 // in entry points per the boundary rule (no static module-level imports).
 import { z } from "zod";
-import { ServiceContainer } from "../shared/serviceContainer.js";
-import { rpcService } from "../shared/managedService.js";
-import { createEventsServiceDefinition } from "../shared/eventsService.js";
+import { ServiceContainer } from "@natstack/shared/serviceContainer";
+import { rpcService } from "@natstack/shared/managedService";
+import { createEventsServiceDefinition } from "@natstack/shared/eventsService";
 import { setupTestApi } from "./testApi.js";
 import { AdBlockManager } from "./adblock/index.js";
 import { startMemoryMonitor, setMemoryMonitorViewManager } from "./memoryMonitor.js";
 // ServerProcessManager and createServerClient are now used by serverSession.ts
-import { getPanelSource } from "../shared/panelTypes.js";
+import { getPanelSource } from "@natstack/shared/panelTypes";
 
 // =============================================================================
 // Early Diagnostics (enabled via NATSTACK_DEBUG_PATHS=1)
@@ -447,7 +447,7 @@ app.on("ready", async () => {
       activeWorkspaceName: workspaceId,
       serverClient: sc,
       getWorkspaceConfig: () =>
-        sc.call("workspaceInfo", "getConfig", []) as Promise<import("../shared/workspace/types.js").WorkspaceConfig>,
+        sc.call("workspaceInfo", "getConfig", []) as Promise<import("@natstack/shared/workspace/types").WorkspaceConfig>,
       setWorkspaceConfigField: (key, value) => {
         void sc.call("workspaceInfo", "setConfigField", [key, value]).catch((e: unknown) =>
           console.error("[Workspace] Failed to set config field:", e));

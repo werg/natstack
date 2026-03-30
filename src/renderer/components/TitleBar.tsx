@@ -25,7 +25,7 @@ import type {
   PanelAncestor,
   DescendantSiblingGroup,
 } from "./navigationTypes";
-import type { PanelContextMenuAction } from "../../shared/types";
+import type { PanelContextMenuAction } from "@natstack/shared/types";
 import { menu } from "../shell/client";
 
 interface TitleBarProps {

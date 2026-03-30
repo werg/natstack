@@ -8,11 +8,11 @@
 
 import { ipcMain, type WebContents } from "electron";
 import { SERVER_SERVICE_NAMES } from "@natstack/rpc";
-import type { ServiceDispatcher } from "../shared/serviceDispatcher.js";
+import type { ServiceDispatcher } from "@natstack/shared/serviceDispatcher";
 import type { RpcMessage, RpcRequest, RpcResponse } from "@natstack/rpc";
 import type { ServerClient } from "./serverClient.js";
-import type { EventService, Subscriber } from "../shared/eventsService.js";
-import type { CallerKind } from "../shared/serviceDispatcher.js";
+import type { EventService, Subscriber } from "@natstack/shared/eventsService";
+import type { CallerKind } from "@natstack/shared/serviceDispatcher";
 import type { WebSocket } from "ws";
 
 /** Server services that should be forwarded to the server process */

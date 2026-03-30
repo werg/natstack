@@ -1,0 +1,19 @@
+{
+  "name": "@natstack/shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "build": "echo 'source-only package, no build needed'"
+  },
+  "dependencies": {
+    "@natstack/dev-log": "workspace:*",
+    "@natstack/env-paths": "workspace:*",
+    "@natstack/rpc": "workspace:*",
+    "@natstack/typecheck": "workspace:*",
+    "@natstack/types": "workspace:*"
+  }
+}

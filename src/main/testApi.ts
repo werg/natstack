@@ -6,9 +6,9 @@
  */
 
 import type { PanelOrchestrator } from "./panelOrchestrator.js";
-import type { PanelRegistry } from "../shared/panelRegistry.js";
+import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { PanelView } from "./panelView.js";
-import type { Panel } from "../shared/types.js";
+import type { Panel } from "@natstack/shared/types";
 
 export interface TestApi {
   /** Get the full panel tree as a flat array */

@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { execSync } from "child_process";
 import { createRequire } from "module";
-import { collectWorkersFromDependencies, workersToArray } from "./src/shared/collectWorkers.mjs";
+import { collectWorkersFromDependencies, workersToArray } from "./scripts/collectWorkers.mjs";
 
 const isDev = process.env.NODE_ENV === "development";
 

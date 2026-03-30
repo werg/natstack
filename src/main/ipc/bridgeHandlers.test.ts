@@ -2,19 +2,19 @@
  * Tests for bridge service.
  */
 
-import { handleCommonBridgeMethod } from "../../shared/bridgeHandlersCommon.js";
+import { handleCommonBridgeMethod } from "@natstack/shared/bridgeHandlersCommon";
 
 vi.mock("electron", () => ({
   dialog: { showOpenDialog: vi.fn() },
 }));
 vi.mock("../panelManager.js");
 vi.mock("../cdpServer.js");
-vi.mock("../../shared/bridgeHandlersCommon.js", () => ({
+vi.mock("@natstack/shared/bridgeHandlersCommon", () => ({
   handleCommonBridgeMethod: vi.fn(),
 }));
 
 import { createBridgeService } from "../services/bridgeService.js";
-import type { ServiceContext } from "../../shared/serviceDispatcher.js";
+import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
 
 const mockGetViewManager = vi.fn();
 

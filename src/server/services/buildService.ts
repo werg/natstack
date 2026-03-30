@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { BuildSystemV2, BuildUnitOptions } from "../buildV2/index.js";
 
 export function createBuildService(deps: {

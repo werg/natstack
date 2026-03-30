@@ -2,7 +2,7 @@
  * Tests for collectTransitiveExternalDeps from externalDeps.ts.
  */
 
-vi.mock("../../shared/envPaths.js", () => ({
+vi.mock("@natstack/shared/envPaths", () => ({
   getUserDataPath: vi.fn().mockReturnValue("/tmp/test-extdeps"),
 }));
 

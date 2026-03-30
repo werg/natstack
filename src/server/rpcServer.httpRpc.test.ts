@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { RpcServer } from "./rpcServer.js";
-import type { ServiceDispatcher, ServiceContext, CallerKind } from "../shared/serviceDispatcher.js";
-import { TokenManager } from "../shared/tokenManager.js";
+import type { ServiceDispatcher, ServiceContext, CallerKind } from "@natstack/shared/serviceDispatcher";
+import { TokenManager } from "@natstack/shared/tokenManager";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

@@ -6,7 +6,7 @@
  */
 
 import type { RpcMessage, RpcRequest, RpcResponse, RpcEvent } from "@natstack/rpc";
-import type { WsClientMessage, WsServerMessage } from "../shared/ws/protocol.js";
+import type { WsClientMessage, WsServerMessage } from "@natstack/shared/ws/protocol";
 
 type AnyMessageHandler = (fromId: string, message: unknown) => void;
 

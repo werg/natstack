@@ -2,8 +2,8 @@
  * Cache configuration with centralized defaults
  */
 
-import { loadCentralConfig } from "../shared/workspace/loader.js";
-import type { CacheConfig } from "../shared/workspace/types.js";
+import { loadCentralConfig } from "@natstack/shared/workspace/loader";
+import type { CacheConfig } from "@natstack/shared/workspace/types";
 
 /**
  * Default cache configuration values

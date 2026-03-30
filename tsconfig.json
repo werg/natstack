@@ -64,6 +64,9 @@
       "@natstack/rpc": [
         "packages/rpc/src/index.ts"
       ],
+      "@natstack/shared/*": [
+        "packages/shared/src/*"
+      ],
       "@natstack/typecheck": [
         "packages/typecheck/src/index.ts"
       ],

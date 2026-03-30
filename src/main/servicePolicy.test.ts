@@ -2,7 +2,7 @@
  * Tests for service access policy checking.
  */
 
-import { checkServiceAccess, type PolicyRegistry } from "../shared/servicePolicy.js";
+import { checkServiceAccess, type PolicyRegistry } from "@natstack/shared/servicePolicy";
 
 function makeRegistry(policies: Record<string, { allowed: string[] }>): PolicyRegistry {
   return {

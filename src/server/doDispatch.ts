@@ -14,7 +14,7 @@
  *   rest = method path
  */
 
-import type { TokenManager } from "../shared/tokenManager.js";
+import type { TokenManager } from "@natstack/shared/tokenManager";
 
 // ---------------------------------------------------------------------------
 // DORef — source-scoped Durable Object identity

@@ -16,7 +16,7 @@
 import { WebSocket, type WebSocketServer } from "ws";
 import type { IncomingMessage } from "http";
 import type { Duplex } from "stream";
-import type { TokenManager } from "../shared/tokenManager.js";
+import type { TokenManager } from "@natstack/shared/tokenManager";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("CdpBridge");

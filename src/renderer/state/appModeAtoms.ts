@@ -1,5 +1,5 @@
 import { atom } from "jotai";
-import type { WorkspaceEntry, SettingsData } from "../../shared/types.js";
+import type { WorkspaceEntry, SettingsData } from "@natstack/shared/types";
 import { settings, workspace } from "../shell/client.js";
 
 // =============================================================================

@@ -1,4 +1,4 @@
-import { validateStateArgs } from "../shared/stateArgsValidator.js";
+import { validateStateArgs } from "@natstack/shared/stateArgsValidator";
 
 describe("validateStateArgs", () => {
   it("rejects non-JSON-serializable input (function)", () => {

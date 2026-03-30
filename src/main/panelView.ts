@@ -9,13 +9,13 @@
 import { randomBytes } from "crypto";
 import { createDevLogger } from "@natstack/dev-log";
 import type { ViewManager } from "./viewManager.js";
-import type { PanelRegistry } from "../shared/panelRegistry.js";
-import type { TokenManager } from "../shared/tokenManager.js";
-import type { PanelViewLike, PanelHttpServerLike, ServerInfoLike } from "../shared/panelInterfaces.js";
-import { BROWSER_SESSION_PARTITION } from "../shared/panelInterfaces.js";
-import { getCurrentSnapshot, getPanelSource, getPanelContextId } from "../shared/panelTypes.js";
-import { contextIdToSubdomain } from "../shared/panelIdUtils.js";
-import type { Panel } from "../shared/types.js";
+import type { PanelRegistry } from "@natstack/shared/panelRegistry";
+import type { TokenManager } from "@natstack/shared/tokenManager";
+import type { PanelViewLike, PanelHttpServerLike, ServerInfoLike } from "@natstack/shared/panelInterfaces";
+import { BROWSER_SESSION_PARTITION } from "@natstack/shared/panelInterfaces";
+import { getCurrentSnapshot, getPanelSource, getPanelContextId } from "@natstack/shared/panelTypes";
+import { contextIdToSubdomain } from "@natstack/shared/panelIdUtils";
+import type { Panel } from "@natstack/shared/types";
 import { logMemorySnapshot } from "./memoryMonitor.js";
 // Persistence removed — server panel service handles all persistence
 

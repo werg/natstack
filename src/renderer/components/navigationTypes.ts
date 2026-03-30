@@ -1,4 +1,4 @@
-import type { PanelSummary, PanelAncestor, DescendantSiblingGroup } from "../../shared/types.js";
+import type { PanelSummary, PanelAncestor, DescendantSiblingGroup } from "@natstack/shared/types";
 
 export type NavigationMode = "stack" | "tree";
 

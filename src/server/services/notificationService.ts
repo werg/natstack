@@ -8,9 +8,9 @@
 
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { EventService } from "../../shared/eventsService.js";
-import type { NotificationPayload } from "../../shared/events.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import type { EventService } from "@natstack/shared/eventsService";
+import type { NotificationPayload } from "@natstack/shared/events";
 
 /**
  * Internal interface for server-side code to push notifications

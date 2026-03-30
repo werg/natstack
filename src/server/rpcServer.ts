@@ -13,11 +13,12 @@ import { createWsServerTransport, type WsServerTransportInternal } from "./wsSer
 import type {
   WsClientMessage,
   WsServerMessage,
-} from "../shared/ws/protocol.js";
-import type { StreamTextEvent } from "../shared/types.js";
-import type { StreamTarget } from "../shared/ai/aiHandler.js";
-import type { ToolExecutionResult } from "../shared/ai/claudeAgentToolProxy.js";
-import { TOOL_EXECUTION_TIMEOUT_MS } from "../shared/constants.js";
+} from "@natstack/shared/ws/protocol";
+import type { StreamTextEvent } from "@natstack/shared/types";
+import type { StreamTarget } from "@natstack/shared/ai/aiHandler";
+import type { ToolExecutionResult } from "@natstack/shared/ai/claudeAgentToolProxy";
+import { TOOL_EXECUTION_TIMEOUT_MS } from "@natstack/shared/constants";
+import type { WsClientInfo } from "@natstack/shared/serviceDispatcher";
 import { findServicePort } from "@natstack/port-utils";
 import {
   parseServiceMethod,
@@ -25,9 +26,9 @@ import {
   ServiceDispatcher,
   type CallerKind,
   type ServiceContext,
-} from "../shared/serviceDispatcher.js";
-import { checkServiceAccess } from "../shared/servicePolicy.js";
-import type { TokenManager } from "../shared/tokenManager.js";
+} from "@natstack/shared/serviceDispatcher";
+import { checkServiceAccess } from "@natstack/shared/servicePolicy";
+import type { TokenManager } from "@natstack/shared/tokenManager";
 
 /**
  * Parse a "do:source:className:objectKey" target ID.
@@ -50,11 +51,8 @@ function parseDOTarget(targetId: string): { source: string; className: string; o
 }
 
 /** Server-side state for a connected WS client */
-export interface WsClientState {
+export interface WsClientState extends WsClientInfo {
   ws: WebSocket;
-  callerId: string;
-  callerKind: CallerKind;
-  authenticated: boolean;
 }
 
 interface PendingToolCall {
@@ -64,7 +62,7 @@ interface PendingToolCall {
   clientWs: WebSocket;
 }
 
-import type { PanelRelationshipProvider } from "../shared/panelInterfaces.js";
+import type { PanelRelationshipProvider } from "@natstack/shared/panelInterfaces";
 
 type PanelManagerLike = PanelRelationshipProvider;
 

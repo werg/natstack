@@ -1,7 +1,7 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { ContextFolderManager } from "../../shared/contextFolderManager.js";
-import { resolveContextScope } from "../../shared/contextMiddleware.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import type { ContextFolderManager } from "@natstack/shared/contextFolderManager";
+import { resolveContextScope } from "@natstack/shared/contextMiddleware";
 
 /**
  * Extract a panel source path from a caller ID.
@@ -88,7 +88,7 @@ export function createTypecheckService(deps: {
       },
     },
     handler: async (ctx, method, args) => {
-      const { typeCheckRpcMethods } = await import("../../shared/typecheck/service.js");
+      const { typeCheckRpcMethods } = await import("@natstack/shared/typecheck/service");
 
       const resolvePanelPath = async (
         panelPath: string,

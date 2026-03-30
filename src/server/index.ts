@@ -247,19 +247,19 @@ if (!ipcChannel) {
 
 async function main() {
   const { setUserDataPath } = await import("@natstack/env-paths");
-  const { loadCentralEnv, resolveOrCreateWorkspace } = await import("../shared/workspace/loader.js");
-  const { CentralDataManager } = await import("../shared/centralData.js");
+  const { loadCentralEnv, resolveOrCreateWorkspace } = await import("@natstack/shared/workspace/loader");
+  const { CentralDataManager } = await import("@natstack/shared/centralData");
   const { GitServer } = await import("@natstack/git-server");
-  const { TokenManager } = await import("../shared/tokenManager.js");
+  const { TokenManager } = await import("@natstack/shared/tokenManager");
   const { z } = await import("zod");
-  const { ServiceDispatcher } = await import("../shared/serviceDispatcher.js");
-  const { EventService, createEventsServiceDefinition } = await import("../shared/eventsService.js");
+  const { ServiceDispatcher } = await import("@natstack/shared/serviceDispatcher");
+  const { EventService, createEventsServiceDefinition } = await import("@natstack/shared/eventsService");
   const eventService = new EventService();
   const { RpcServer } = await import("./rpcServer.js");
-  const { ServiceContainer } = await import("../shared/serviceContainer.js");
-  const { rpcService } = await import("../shared/managedService.js");
+  const { ServiceContainer } = await import("@natstack/shared/serviceContainer");
+  const { rpcService } = await import("@natstack/shared/managedService");
   const { initBuildSystemV2 } = await import("./buildV2/index.js");
-  const { DatabaseManager } = await import("../shared/db/databaseManager.js");
+  const { DatabaseManager } = await import("@natstack/shared/db/databaseManager");
 
   loadCentralEnv();
 
@@ -280,7 +280,7 @@ async function main() {
   const wsDir = args.workspaceDir ?? process.env["NATSTACK_WORKSPACE_DIR"];
   const wsName = args.workspaceName ?? process.env["NATSTACK_WORKSPACE"];
 
-  function resolveOpts(): import("../shared/workspace/loader.js").ResolveWorkspaceOpts {
+  function resolveOpts(): import("@natstack/shared/workspace/loader").ResolveWorkspaceOpts {
     if (wsDir) return { wsDir, appRoot, init: args.init };
     if (wsName) return { name: wsName, appRoot, init: args.init };
     if (centralData) {
@@ -295,7 +295,7 @@ async function main() {
     process.exit(1);
   }
 
-  let workspace: import("../shared/workspace/types.js").Workspace;
+  let workspace: import("@natstack/shared/workspace/types").Workspace;
   try {
     const resolved = resolveOrCreateWorkspace(resolveOpts());
     workspace = resolved.workspace;
@@ -351,7 +351,7 @@ async function main() {
   });
 
   // Create ContextFolderManager before core services
-  const { ContextFolderManager } = await import("../shared/contextFolderManager.js");
+  const { ContextFolderManager } = await import("@natstack/shared/contextFolderManager");
   const contextFolderManager = new ContextFolderManager({
     sourcePath: workspacePath,
     contextsRoot: path.join(statePath, ".contexts"),
@@ -401,19 +401,19 @@ async function main() {
     name: "gitWatcher",
     dependencies: ["gitServer"],
     async start() {
-      const { createGitWatcher } = await import("../shared/workspace/gitWatcher.js");
+      const { createGitWatcher } = await import("@natstack/shared/workspace/gitWatcher");
       const watcher = createGitWatcher(workspace);
       gitServer.subscribeToGitWatcher(watcher);
       return watcher;
     },
-    async stop(instance: import("../shared/workspace/gitWatcher.js").GitWatcher) { await instance?.close(); },
+    async stop(instance: import("@natstack/shared/workspace/gitWatcher").GitWatcher) { await instance?.close(); },
   });
 
   // AI handler (lifecycle only — RPC registered separately because it needs rpcServer)
   container.register({
     name: "ai",
     async start() {
-      const { AIHandler: AIHandlerClass } = await import("../shared/ai/aiHandler.js");
+      const { AIHandler: AIHandlerClass } = await import("@natstack/shared/ai/aiHandler");
       const aiHandler = new AIHandlerClass(workspacePath);
       await aiHandler.initialize();
       return aiHandler;
@@ -468,7 +468,7 @@ async function main() {
 
   // ── OAuth service (works in both Electron and standalone modes) ──
   {
-    const { OAuthManager } = await import("../shared/oauth/oauthManager.js");
+    const { OAuthManager } = await import("@natstack/shared/oauth/oauthManager");
     const { createOAuthService } = await import("./services/oauthService.js");
     let oauthManager: InstanceType<typeof OAuthManager>;
     container.register({
@@ -488,8 +488,8 @@ async function main() {
         oauthManager?.close();
       },
       getServiceDefinition() {
-        let panelRegistry: import("../shared/panelRegistry.js").PanelRegistry | undefined;
-        try { panelRegistry = container.get<import("../shared/panelRegistry.js").PanelRegistry>("panelRegistry"); } catch { /* not available in Electron mode */ }
+        let panelRegistry: import("@natstack/shared/panelRegistry").PanelRegistry | undefined;
+        try { panelRegistry = container.get<import("@natstack/shared/panelRegistry").PanelRegistry>("panelRegistry"); } catch { /* not available in Electron mode */ }
 
         const syncCookiesToSession = async (domain: string) => {
           try {
@@ -647,7 +647,7 @@ async function main() {
   // ── Harness RPC service ──
 
   {
-    let harnessServiceDef: import("../shared/serviceDefinition.js").ServiceDefinition;
+    let harnessServiceDef: import("@natstack/shared/serviceDefinition").ServiceDefinition;
     container.register({
       name: "harnessRpc",
       dependencies: ["doDispatch", "harnessManager"],
@@ -670,7 +670,7 @@ async function main() {
   // ── Workers RPC service ──
 
   {
-    let workerServiceDef: import("../shared/serviceDefinition.js").ServiceDefinition;
+    let workerServiceDef: import("@natstack/shared/serviceDefinition").ServiceDefinition;
     container.register({
       name: "workersRpc",
       dependencies: ["doDispatch", "buildSystem"],
@@ -692,13 +692,13 @@ async function main() {
 
   const { createAiService } = await import("./services/aiService.js");
   {
-    let aiServiceDef: import("../shared/serviceDefinition.js").ServiceDefinition;
+    let aiServiceDef: import("@natstack/shared/serviceDefinition").ServiceDefinition;
     container.register({
       name: "aiRpc",
       dependencies: ["rpcServer", "ai"],
       async start(resolve) {
         const { server: rpcServer } = resolve<{ server: import("./rpcServer.js").RpcServer; port: number }>("rpcServer")!;
-        const aiHandler = resolve<import("../shared/ai/aiHandler.js").AIHandler>("ai")!;
+        const aiHandler = resolve<import("@natstack/shared/ai/aiHandler").AIHandler>("ai")!;
         aiServiceDef = createAiService({ aiHandler, rpcServer, contextFolderManager });
       },
       getServiceDefinition() {
@@ -714,7 +714,7 @@ async function main() {
   // Filesystem service (used internally by workerdManager; in Electron mode
   // the main process has its OWN FsService for panel-facing FS RPC)
   {
-    const { FsService } = await import("../shared/fsService.js");
+    const { FsService } = await import("@natstack/shared/fsService");
     container.register({
       name: "fsService",
       async start() {
@@ -734,7 +734,7 @@ async function main() {
         const { WorkerdManager } = await import("./workerdManager.js");
         buildSystemForWorkerd = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
         const { server: rpcSrvForWorkerd } = resolve<{ server: import("./rpcServer.js").RpcServer }>("rpcServer")!;
-        const fsServiceInst = resolve<import("../shared/fsService.js").FsService>("fsService")!;
+        const fsServiceInst = resolve<import("@natstack/shared/fsService").FsService>("fsService")!;
 
         workerdManagerInstance = new WorkerdManager({
           tokenManager,
@@ -797,7 +797,7 @@ async function main() {
   // ===========================================================================
 
   // Resolve host configuration from CLI args / env vars
-  const { resolveHostConfig } = await import("../shared/hostConfig.js");
+  const { resolveHostConfig } = await import("@natstack/shared/hostConfig");
   const hostConfig = resolveHostConfig({
     rpcPort: 0, panelHttpPort: 0, gitPort: gitServer.getPort(), workerdPort: 0, // ports filled later
     host: args.host, bindHost: args.bindHost, protocol: args.protocol,
@@ -819,7 +819,7 @@ async function main() {
 
     // Settings service (standalone mode — shell callers manage API keys / model roles)
     const { createSettingsServiceStandalone } = await import("./services/settingsServiceStandalone.js");
-    const { rpcService: rpcSvc } = await import("../shared/managedService.js");
+    const { rpcService: rpcSvc } = await import("@natstack/shared/managedService");
     container.register(rpcSvc(createSettingsServiceStandalone({ dispatcher })));
 
     // Push notification service (standalone mode — mobile device registration)
@@ -849,7 +849,7 @@ async function main() {
   // connect to the server WS in both IPC and standalone modes.
   {
     const panelServiceData = container.get<{
-      persistence: import("../shared/db/panelPersistence.js").PanelPersistence;
+      persistence: import("@natstack/shared/db/panelPersistence").PanelPersistence;
     }>("panelService");
     if (panelServiceData?.persistence) {
       const persistence = panelServiceData.persistence;

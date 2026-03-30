@@ -1,9 +1,9 @@
 import { z } from "zod";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
-import type { AIHandler } from "../../shared/ai/aiHandler.js";
-import type { StreamTextOptions } from "../../shared/types.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import type { AIHandler } from "@natstack/shared/ai/aiHandler";
+import type { StreamTextOptions } from "@natstack/shared/types";
 import type { RpcServer } from "../rpcServer.js";
-import type { ContextFolderManager } from "../../shared/contextFolderManager.js";
+import type { ContextFolderManager } from "@natstack/shared/contextFolderManager";
 
 export function createAiService(deps: {
   aiHandler: AIHandler;
@@ -45,7 +45,7 @@ export function createAiService(deps: {
           }
           const contextFolderPath = await deps.contextFolderManager.ensureContextFolder(options.contextId);
 
-          const target = deps.rpcServer.createWsStreamTarget(ctx.wsClient, streamId);
+          const target = deps.rpcServer.createWsStreamTarget(ctx.wsClient as import("../rpcServer.js").WsClientState, streamId);
           aiHandler.startTargetStream(target, options, streamId, contextFolderPath);
           return;
         }

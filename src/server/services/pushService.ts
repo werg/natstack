@@ -11,7 +11,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { z } from "zod";
 import { getCentralDataPath } from "@natstack/env-paths";
-import type { ServiceDefinition } from "../../shared/serviceDefinition.js";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 
 export interface PushRegistration {
   token: string;
