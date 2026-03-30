@@ -59,11 +59,15 @@ jobs:
 
       - name: Link node_modules for Gradle
         run: |
-          # settings.gradle resolves ../../node_modules from apps/mobile/android/,
-          # which is apps/node_modules/. pnpm hoisted puts everything in root
-          # node_modules/, so symlink apps/node_modules -> ../node_modules.
+          # pnpm hoisted puts everything in root node_modules/, but Gradle
+          # resolves node_modules from two different paths:
+          #   1. settings.gradle: ../../node_modules from apps/mobile/android/ = apps/node_modules/
+          #   2. RN gradle plugin: ../node_modules from apps/mobile/android/ = apps/mobile/node_modules/
           if [ ! -d apps/node_modules ]; then
             ln -s ../node_modules apps/node_modules
+          fi
+          if [ ! -d apps/mobile/node_modules ]; then
+            ln -s ../../node_modules apps/mobile/node_modules
           fi
 
       - name: Set up release signing
