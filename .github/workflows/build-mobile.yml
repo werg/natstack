@@ -94,22 +94,15 @@ jobs:
             echo "RELEASE_KEY_PASSWORD=$KEY_PASSWORD" >> apps/mobile/android/gradle.properties
           fi
 
-      - name: Build APK
+      - name: Build release APK
         working-directory: apps/mobile/android
-        run: |
-          if [ "${{ steps.signing.outputs.has_keystore }}" = "true" ]; then
-            ./gradlew assembleRelease --no-daemon
-          else
-            ./gradlew assembleDebug --no-daemon
-          fi
+        run: ./gradlew assembleRelease --no-daemon
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: natstack-mobile-${{ github.sha }}
-          path: |
-            apps/mobile/android/app/build/outputs/apk/release/*.apk
-            apps/mobile/android/app/build/outputs/apk/debug/*.apk
+          path: apps/mobile/android/app/build/outputs/apk/release/*.apk
           retention-days: 30
 
       - name: Create GitHub Release
