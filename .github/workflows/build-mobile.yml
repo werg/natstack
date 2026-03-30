@@ -76,7 +76,7 @@ jobs:
 
       - name: Set up release signing
         id: signing
-        if: github.event_name != 'pull_request' && secrets.ANDROID_KEYSTORE_BASE64 != ''
+        if: ${{ github.event_name != 'pull_request' && secrets.ANDROID_KEYSTORE_BASE64 != '' }}
         run: |
           echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > apps/mobile/android/app/release.keystore
           echo "RELEASE_STORE_FILE=release.keystore" >> apps/mobile/android/gradle.properties
