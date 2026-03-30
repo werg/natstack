@@ -5,9 +5,7 @@ node_modules/
 android/.gradle/
 android/app/build/
 android/build/
-android/gradle/
-android/gradlew
-android/gradlew.bat
+# Keep gradle wrapper (gradlew, gradle/wrapper/) for CI builds
 android/app/src/main/assets/index.android.bundle
 android/app/src/main/res/drawable-*
 android/app/src/main/res/raw/
