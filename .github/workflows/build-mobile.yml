@@ -76,21 +76,30 @@ jobs:
 
       - name: Set up release signing
         id: signing
-        if: ${{ github.event_name != 'pull_request' && secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > apps/mobile/android/app/release.keystore
-          echo "RELEASE_STORE_FILE=release.keystore" >> apps/mobile/android/gradle.properties
-          echo "RELEASE_STORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" >> apps/mobile/android/gradle.properties
-          echo "RELEASE_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" >> apps/mobile/android/gradle.properties
-          echo "RELEASE_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}" >> apps/mobile/android/gradle.properties
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "has_keystore=false" >> "$GITHUB_OUTPUT"
+            echo "No release keystore configured, will build debug APK"
+          else
+            echo "has_keystore=true" >> "$GITHUB_OUTPUT"
+            echo "$KEYSTORE_BASE64" | base64 -d > apps/mobile/android/app/release.keystore
+            echo "RELEASE_STORE_FILE=release.keystore" >> apps/mobile/android/gradle.properties
+            echo "RELEASE_STORE_PASSWORD=$KEYSTORE_PASSWORD" >> apps/mobile/android/gradle.properties
+            echo "RELEASE_KEY_ALIAS=$KEY_ALIAS" >> apps/mobile/android/gradle.properties
+            echo "RELEASE_KEY_PASSWORD=$KEY_PASSWORD" >> apps/mobile/android/gradle.properties
+          fi
 
       - name: Build APK
         working-directory: apps/mobile/android
         run: |
-          if [ "${{ steps.signing.outcome }}" = "success" ]; then
+          if [ "${{ steps.signing.outputs.has_keystore }}" = "true" ]; then
             ./gradlew assembleRelease --no-daemon
           else
-            echo "No release keystore configured, building debug APK"
             ./gradlew assembleDebug --no-daemon
           fi
 
