@@ -57,6 +57,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      - name: Link node_modules for Gradle
+        run: |
+          # pnpm hoisted installs to root node_modules/, but settings.gradle
+          # expects ../../node_modules relative to apps/mobile/android/
+          # (i.e. apps/mobile/node_modules). Symlink if pnpm didn't create it.
+          if [ ! -d apps/mobile/node_modules ]; then
+            ln -s ../../node_modules apps/mobile/node_modules
+          fi
+
       - name: Set up release signing
         if: github.event_name != 'pull_request'
         run: |
