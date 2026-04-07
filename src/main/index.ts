@@ -413,7 +413,6 @@ app.on("ready", async () => {
     const { createPanelShellService } = await import("./services/panelShellService.js");
     const { createViewService } = await import("./services/viewService.js");
     const { createMenuService } = await import("./services/menuService.js");
-    const { createWorkspaceService } = await import("./services/workspaceService.js");
     const { createSettingsService } = await import("./services/settingsService.js");
     const { createAdblockService } = await import("./services/adblockService.js");
     const { createBridgeService } = await import("./services/bridgeService.js");
@@ -442,34 +441,12 @@ app.on("ready", async () => {
     electronContainer.register(rpcService(createMenuService({
       panelOrchestrator, panelRegistry, getViewManager, serverClient: sc,
     })));
-    // Workspace config via server RPC (server owns the config file)
-    electronContainer.register(rpcService(createWorkspaceService({
-      activeWorkspaceName: workspaceId,
-      serverClient: sc,
-      getWorkspaceConfig: () =>
-        sc.call("workspaceInfo", "getConfig", []) as Promise<import("@natstack/shared/workspace/types").WorkspaceConfig>,
-      setWorkspaceConfigField: (key, value) => {
-        void sc.call("workspaceInfo", "setConfigField", [key, value]).catch((e: unknown) =>
-          console.error("[Workspace] Failed to set config field:", e));
-      },
-      restartWithWorkspace: (name: string) => {
-        // Strip existing --workspace=... or --workspace <value> args, then add the new one
-        const filteredArgs: string[] = [];
-        const rawArgs = process.argv.slice(1);
-        for (let i = 0; i < rawArgs.length; i++) {
-          const a = rawArgs[i]!;
-          if (a.startsWith("--workspace=")) continue;
-          if (a === "--workspace" && i + 1 < rawArgs.length && !rawArgs[i + 1]!.startsWith("--")) {
-            i++; // skip the value too
-            continue;
-          }
-          filteredArgs.push(a);
-        }
-        filteredArgs.push(`--workspace=${name}`);
-        app.relaunch({ args: filteredArgs });
-        app.exit(0);
-      },
-    })));
+    // Workspace operations live entirely on the server now (single source of
+    // truth, accessible to panels/workers/shell). The shell renderer's
+    // `workspace.*` calls reach the server via IpcDispatcher's forwardToServer
+    // path because "workspace" is in SERVER_SERVICE_NAMES. Workspace.select
+    // (relaunch) is signalled from the server back to Electron main via
+    // ServerProcessManager.onRelaunch (wired in serverSession.ts).
     electronContainer.register(rpcService(createSettingsService({ serverClient: sc })));
     electronContainer.register(rpcService(createAdblockService({ adBlockManager })));
 

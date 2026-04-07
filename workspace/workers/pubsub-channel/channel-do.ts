@@ -29,7 +29,7 @@ import {
   cleanupDeliveryChain,
 } from "./broadcast.js";
 import { getMessagesBefore } from "./replay.js";
-import { storeCall, consumeCall, cancelCall as cancelCallDb, getNextExpiry, expireCalls } from "./method-calls.js";
+import { storeCall, consumeCall, cancelCall as cancelCallDb, cancelCallsForTarget } from "./method-calls.js";
 
 /** How long before an RPC participant is considered stale (no heartbeat). */
 const PARTICIPANT_STALE_MS = 5 * 60 * 1000; // 5 minutes
@@ -344,7 +344,34 @@ export class PubSubChannel extends DurableObjectBase {
 
     this.sql.exec(`DELETE FROM participants WHERE id = ?`, participantId);
     cleanupDeliveryChain(participantId);
+    await this.failPendingCallsTargeting(participantId, "graceful");
     this.publishPresenceEvent(participantId, "leave", metadata, "graceful");
+  }
+
+  /**
+   * Cancel any pending tool calls targeting a participant that's leaving the
+   * channel. Each affected caller gets a synthetic "target left" error result
+   * delivered via the normal result path, so the harness's pendingToolResults
+   * map fails with a meaningful error rather than hanging until the harness
+   * stall warning fires.
+   */
+  private async failPendingCallsTargeting(
+    targetId: string,
+    reason: "graceful" | "disconnect",
+  ): Promise<void> {
+    const cancelled = cancelCallsForTarget(this.sql, targetId);
+    if (cancelled.length === 0) return;
+    const errorMessage = reason === "graceful"
+      ? `Target ${targetId} left the channel before the call completed`
+      : `Target ${targetId} disconnected from the channel before the call completed`;
+    for (const { callId, callerId } of cancelled) {
+      try {
+        await this.deliverCallResult(callerId, callId, { error: errorMessage }, true);
+      } catch (err) {
+        console.warn(`[Channel] failPendingCallsTargeting: deliver failed for ${callId}:`, err);
+      }
+    }
+    console.log(`[Channel] Cancelled ${cancelled.length} pending call(s) targeting ${targetId} (${reason})`);
   }
 
   /**
@@ -884,18 +911,16 @@ export class PubSubChannel extends DurableObjectBase {
 
   /**
    * Unified alarm scheduler — computes the minimum next alarm time across all
-   * alarm sources (method call timeout, dedup cleanup, participant cleanup)
-   * to avoid one source overwriting another's sooner alarm.
+   * alarm sources (dedup cleanup, participant cleanup) to avoid one source
+   * overwriting another's sooner alarm.
+   *
+   * Method calls intentionally have no wall-clock timeout — agentic activities
+   * can run for arbitrary lengths and a clock-based kill is poison. Pending
+   * calls are cancelled by roster events instead (see cancelCallsForTarget).
    */
   private scheduleNextAlarm(): void {
     const now = Date.now();
     let nextMs = Infinity;
-
-    // Method call timeout — next expiry
-    const nextExpiry = getNextExpiry(this.sql);
-    if (nextExpiry !== null) {
-      nextMs = Math.min(nextMs, Math.max(nextExpiry - now, 100));
-    }
 
     // Dedup cleanup — absolute deadline stored as timestamp
     const dedupDeadline = this.getStateValue("dedup_cleanup_at");
@@ -923,22 +948,14 @@ export class PubSubChannel extends DurableObjectBase {
     this.scheduleNextAlarm();
   }
 
-  // ── Alarm (method call timeout + stale participant cleanup) ──────────────
+  // ── Alarm (stale participant cleanup + dedup key cleanup) ────────────────
 
   override async alarm(): Promise<void> {
     await super.alarm();
 
-    // Expire pending method calls
-    const expired = expireCalls(this.sql);
-    for (const { callId, callerId, targetId } of expired) {
-      await this.deliverCallResult(callerId, callId, { error: "Method call timed out" }, true);
-      // Phase 1C: Notify the provider to stop executing the timed-out method
-      this.rpc.emit(targetId, "channel:message", {
-        channelId: this.objectKey,
-        message: { kind: "ephemeral", type: "method-cancel", payload: { callId }, senderId: "system", ts: Date.now() },
-      }).catch((err: unknown) => console.warn("[Channel] timeout cancel emit failed:", err));
-    }
-    // Evict stale RPC participants (not DO participants — those are persistent)
+    // Evict stale RPC participants (not DO participants — those are persistent).
+    // Stale eviction itself fails any pending tool calls targeting the evicted
+    // participant via cancelCallsForTarget — see evictStaleParticipants below.
     this.evictStaleParticipants();
 
     // Phase 0B: Clean up expired dedup keys
@@ -956,7 +973,7 @@ export class PubSubChannel extends DurableObjectBase {
     this.scheduleNextAlarm();
   }
 
-  private evictStaleParticipants(): void {
+  private async evictStaleParticipants(): Promise<void> {
     const cutoff = Date.now() - PARTICIPANT_STALE_MS;
     const stale = this.sql.exec(
       `SELECT id, metadata FROM participants WHERE transport = 'rpc' AND connected_at < ?`,
@@ -969,6 +986,7 @@ export class PubSubChannel extends DurableObjectBase {
       try { metadata = JSON.parse(row["metadata"] as string); } catch { /* corrupted metadata, use empty default */ }
       this.sql.exec(`DELETE FROM participants WHERE id = ?`, pid);
       cleanupDeliveryChain(pid);
+      await this.failPendingCallsTargeting(pid, "disconnect");
       this.publishPresenceEvent(pid, "leave", metadata, "disconnect");
     }
 

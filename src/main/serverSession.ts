@@ -142,6 +142,26 @@ export async function establishServerSession(args: {
         app.relaunch();
         app.exit(1);
       },
+      onRelaunch: (name) => {
+        // workspace.select on the server side asked us to relaunch into a
+        // different workspace. Strip any existing --workspace=<...> args from
+        // process.argv and add the new one, then relaunch + exit cleanly.
+        const filteredArgs: string[] = [];
+        const rawArgs = process.argv.slice(1);
+        for (let i = 0; i < rawArgs.length; i++) {
+          const arg = rawArgs[i];
+          if (arg === "--workspace" && i + 1 < rawArgs.length) {
+            i++; // skip the value
+            continue;
+          }
+          if (arg && arg.startsWith("--workspace=")) continue;
+          if (arg !== undefined) filteredArgs.push(arg);
+        }
+        filteredArgs.push("--workspace", name);
+        log.info(`[App] Relaunching into workspace "${name}"`);
+        app.relaunch({ args: filteredArgs });
+        app.exit(0);
+      },
     });
 
     ports = await serverProcessManager.start();
@@ -161,7 +181,7 @@ export async function establishServerSession(args: {
   const serverInfo = buildServerInfo(ports, externalHost, protocol, getClient);
 
   // Get workspace metadata from server
-  const wsInfo = await serverClient.call("workspaceInfo", "getInfo", []) as {
+  const wsInfo = await serverClient.call("workspace", "getInfo", []) as {
     path: string; statePath: string; contextsPath: string;
     config: WorkspaceConfig;
   };

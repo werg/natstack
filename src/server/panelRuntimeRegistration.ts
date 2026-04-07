@@ -32,6 +32,13 @@ export interface CommonDeps {
   isIpcMode: boolean;
   /** EventService for emitting events (optional, used in standalone mode). */
   eventService?: import("@natstack/shared/eventsService").EventService;
+  /**
+   * Signal the host (Electron main) to relaunch into a different workspace.
+   * In IPC mode this posts a parent-port `workspace-relaunch` message that
+   * `ServerProcessManager` forwards to its `onRelaunch` handler. In standalone
+   * mode it's undefined; `workspace.select` becomes a no-op.
+   */
+  requestRelaunch?: (name: string) => void;
 }
 
 /**
@@ -100,16 +107,17 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
   }
 
   // ===========================================================================
-  // WorkspaceInfo service (always registered)
+  // Workspace service (always registered) — single source of truth for
+  // workspace catalog operations, accessible to panels, workers, shell, server.
   // ===========================================================================
 
   {
-    const { createWorkspaceInfoService } = await import("./services/workspaceInfoService.js");
+    const { createWorkspaceService } = await import("./services/workspaceService.js");
     const { createWorkspaceConfigManager, createAndRegisterWorkspace, deleteWorkspaceDir } = await import("@natstack/shared/workspace/loader");
     const wsConfigPath = path.join(workspacePath, "natstack.yml");
     const wsConfigManager = createWorkspaceConfigManager(wsConfigPath, workspaceConfig);
 
-    container.register(rpcService(createWorkspaceInfoService({
+    container.register(rpcService(createWorkspaceService({
       workspace,
       getConfig: wsConfigManager.get,
       setConfigField: wsConfigManager.set as (key: string, value: unknown) => void,
@@ -119,6 +127,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
         return createAndRegisterWorkspace(name, centralData, opts);
       },
       deleteWorkspaceDir,
+      requestRelaunch: deps.requestRelaunch,
     })));
   }
 

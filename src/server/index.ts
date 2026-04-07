@@ -802,7 +802,14 @@ async function main() {
   });
 
   const { registerPanelServices } = await import("./panelRuntimeRegistration.js");
-  const commonDeps = { container, dispatcher, tokenManager, workspace, workspacePath, workspaceConfig, gitServer, adminToken, centralData: centralData ?? null, args, hostConfig, isIpcMode: !!ipcChannel, eventService };
+  // Workspace relaunch is only meaningful when running under Electron's
+  // utility-process supervisor (IPC mode); in standalone mode there's no
+  // app to relaunch, so workspace.select becomes a no-op (the caller has
+  // to reconnect manually).
+  const requestRelaunch: ((name: string) => void) | undefined = ipcChannel
+    ? (name: string) => ipcChannel.postMessage({ type: "workspace-relaunch", name })
+    : undefined;
+  const commonDeps = { container, dispatcher, tokenManager, workspace, workspacePath, workspaceConfig, gitServer, adminToken, centralData: centralData ?? null, args, hostConfig, isIpcMode: !!ipcChannel, eventService, requestRelaunch };
   await registerPanelServices(commonDeps);
 
   // ===========================================================================

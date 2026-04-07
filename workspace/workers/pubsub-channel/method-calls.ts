@@ -1,16 +1,30 @@
 /**
- * Method call routing + timeout for the PubSub Channel DO.
+ * Method call routing for the PubSub Channel DO.
  *
- * Method calls are stored in pending_calls and delivered to the target
- * participant. Results are routed back to the caller. Timeout via alarm.
+ * Method calls are stored in `pending_calls` and delivered to the target
+ * participant. Results are routed back to the caller. Calls have **no
+ * wall-clock timeout** — agentic activities like long eval, remote builds,
+ * LLM thinking, and user-input pauses can legitimately run for a long time
+ * and a wall-clock kill converts legitimate work into hard failure.
+ *
+ * Pending calls are instead cancelled by **roster events**: when a target
+ * participant leaves the channel (graceful unsubscribe, disconnect, or stale
+ * eviction), `cancelCallsForTarget` is called from the leave handlers and
+ * delivers a synthetic error to each affected caller via the normal result
+ * path. This is the same mechanism the harness side uses to detect orphan
+ * tool calls.
  */
 
 import type { SqlStorage } from "@workspace/runtime/worker";
 
-const CALL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-
 /**
  * Store a pending method call and deliver to the target.
+ *
+ * The `expires_at` column is a vestigial NOT NULL field from when this DO had
+ * a wall-clock timeout on pending calls. The alarm code that read it has been
+ * removed; we insert `0` as a sentinel to keep the schema's NOT NULL
+ * constraint satisfied without migrating existing DOs. Pre-existing rows with
+ * real expires_at values are simply ignored at read time — nothing queries it.
  */
 export function storeCall(
   sql: SqlStorage,
@@ -19,17 +33,12 @@ export function storeCall(
   targetId: string,
   method: string,
   args: unknown,
-): number {
-  const now = Date.now();
-  const expiresAt = now + CALL_TIMEOUT_MS;
-
+): void {
   sql.exec(
     `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, expires_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    callId, callerId, targetId, method, JSON.stringify(args), expiresAt, now,
+     VALUES (?, ?, ?, ?, ?, 0, ?)`,
+    callId, callerId, targetId, method, JSON.stringify(args), Date.now(),
   );
-
-  return expiresAt;
 }
 
 /**
@@ -60,7 +69,7 @@ export function consumeCall(sql: SqlStorage, callId: string): {
 }
 
 /**
- * Cancel a pending call.
+ * Cancel a pending call by ID.
  */
 export function cancelCall(sql: SqlStorage, callId: string): boolean {
   const rows = sql.exec(
@@ -72,31 +81,24 @@ export function cancelCall(sql: SqlStorage, callId: string): boolean {
 }
 
 /**
- * Get the earliest expiry time for scheduling the alarm.
+ * Cancel all pending calls targeting a participant that just left the channel.
+ *
+ * Returns the affected callIds + caller IDs so the channel DO can deliver a
+ * synthetic error result to each caller via its normal result path. This is
+ * the roster-based equivalent of a "target gone" failure — it converts the
+ * orphaned call into a fast, meaningful error rather than hanging forever.
  */
-export function getNextExpiry(sql: SqlStorage): number | null {
-  const row = sql.exec(
-    `SELECT MIN(expires_at) as next FROM pending_calls`,
+export function cancelCallsForTarget(
+  sql: SqlStorage,
+  targetId: string,
+): Array<{ callId: string; callerId: string }> {
+  const rows = sql.exec(
+    `SELECT call_id, caller_id FROM pending_calls WHERE target_id = ?`, targetId,
   ).toArray();
-  if (row.length === 0 || !row[0]!["next"]) return null;
-  return row[0]!["next"] as number;
-}
-
-/**
- * Expire timed-out calls. Returns the expired call IDs and their caller IDs.
- */
-export function expireCalls(sql: SqlStorage): Array<{ callId: string; callerId: string; targetId: string }> {
-  const now = Date.now();
-  const expired = sql.exec(
-    `SELECT call_id, caller_id, target_id FROM pending_calls WHERE expires_at <= ?`, now,
-  ).toArray();
-
-  const results: Array<{ callId: string; callerId: string; targetId: string }> = [];
-  for (const row of expired) {
-    const callId = row["call_id"] as string;
-    sql.exec(`DELETE FROM pending_calls WHERE call_id = ?`, callId);
-    results.push({ callId, callerId: row["caller_id"] as string, targetId: row["target_id"] as string });
-  }
-
-  return results;
+  if (rows.length === 0) return [];
+  sql.exec(`DELETE FROM pending_calls WHERE target_id = ?`, targetId);
+  return rows.map(r => ({
+    callId: r["call_id"] as string,
+    callerId: r["caller_id"] as string,
+  }));
 }

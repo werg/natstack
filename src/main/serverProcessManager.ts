@@ -38,6 +38,12 @@ export class ServerProcessManager {
     logLevel?: string;
     /** Called if the server process exits unexpectedly */
     onCrash: (code: number | null) => void;
+    /**
+     * Called when the server requests an Electron-app-level relaunch into a
+     * different workspace (via `workspace.select`). Typical implementation:
+     * `app.relaunch({ args: ["--workspace", name] }); app.exit(0);`.
+     */
+    onRelaunch?: (name: string) => void;
   }) {}
 
   async start(): Promise<ServerPorts> {
@@ -63,6 +69,15 @@ export class ServerProcessManager {
     proc.on("exit", (code) => {
       if (!this.isShuttingDown) {
         this.config.onCrash(code);
+      }
+    });
+
+    // Listen for post-startup messages from the server. waitForReady() consumes
+    // the one-shot `ready`/`error` messages; this handler picks up everything
+    // afterwards (currently just `workspace-relaunch`).
+    proc.on("message", (msg: any) => {
+      if (msg?.type === "workspace-relaunch" && typeof msg.name === "string") {
+        this.config.onRelaunch?.(msg.name);
       }
     });
 

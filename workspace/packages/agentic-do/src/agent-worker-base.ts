@@ -575,23 +575,43 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     // Default: no-op
   }
 
-  // --- Phase 1B: Turn watchdog ---
+  // --- Crashed-harness detection (activity-based) ---
+  //
+  // This is NOT a wall-clock timeout on agentic activities. It's a crash
+  // detector: the watchdog only fires for turns where (a) the harness has
+  // produced **zero** events for the entire idle window, and (b) the turn is
+  // NOT waiting on a pending tool-call or approval continuation. Both signals
+  // are tracked elsewhere:
+  //
+  //   - `turns.touchActive(harnessId)` is called on every harness event in
+  //     fetch() handler, so a streaming text response or any tool/action
+  //     event resets the timer continuously.
+  //   - `turns.setPendingContinuation(harnessId, true)` is set when the
+  //     harness emits `tool-call` or `approval-needed`, and getStaleActiveTurns
+  //     filters out any turn with that flag set (a turn waiting for an
+  //     external result is NOT "stalled" — it's legitimately blocked).
+  //
+  // Net effect: a long-running tool call (eval, build, LLM thinking) never
+  // trips this. A genuinely crashed harness — one whose process has died and
+  // is producing no events at all — gets cleaned up after the idle window.
+  // The threshold can be generous because the false-positive rate is zero
+  // for any harness that's making progress.
 
-  private static readonly WATCHDOG_INTERVAL_MS = 2 * 60 * 1000;   // Check every 2 min
-  private static readonly WATCHDOG_IDLE_MS = 10 * 60 * 1000;      // 10 min idle = stale
+  private static readonly CRASH_CHECK_INTERVAL_MS = 2 * 60 * 1000;   // Check every 2 min
+  private static readonly CRASH_IDLE_THRESHOLD_MS = 10 * 60 * 1000;  // 10 min of zero activity = crashed
 
-  /** Schedule watchdog alarm to check for stale turns. */
+  /** Schedule the crashed-harness check via DO alarm. */
   protected scheduleWatchdog(): void {
     if (this.getStateValue("watchdog_scheduled")) return;
     this.setStateValue("watchdog_scheduled", "1");
-    this.setAlarm(AgentWorkerBase.WATCHDOG_INTERVAL_MS);
+    this.setAlarm(AgentWorkerBase.CRASH_CHECK_INTERVAL_MS);
   }
 
-  /** Check for and recover stale turns. Called from alarm handler. */
+  /** Detect and recover from crashed harnesses. Called from the alarm handler. */
   private async checkStaleTurns(): Promise<void> {
-    const staleTurns = this.turns.getStaleActiveTurns(AgentWorkerBase.WATCHDOG_IDLE_MS);
-    for (const stale of staleTurns) {
-      console.error(`[AgentWorkerBase] Watchdog: stale turn detected for harness=${stale.harnessId} on channel=${stale.channelId}`);
+    const crashedTurns = this.turns.getStaleActiveTurns(AgentWorkerBase.CRASH_IDLE_THRESHOLD_MS);
+    for (const stale of crashedTurns) {
+      console.error(`[AgentWorkerBase] Crash detection: harness=${stale.harnessId} on channel=${stale.channelId} produced no activity for ${AgentWorkerBase.CRASH_IDLE_THRESHOLD_MS / 60000} minutes and has no pending continuation — assuming crashed`);
       try {
         // Publish error to channel BEFORE clearing active turn
         const participantId = this.subscriptions.getParticipantId(stale.channelId);
@@ -599,11 +619,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           const channel = this.createChannelClient(stale.channelId);
           const writer = new StreamWriter(channel, participantId, stale.channelId, stale.replyToId, stale.typingContent, stale.streamState);
           await writer.startText();
-          await writer.updateText("[Turn timed out — the AI process may have crashed or become unresponsive.]");
+          await writer.updateText("[The AI process appears to have crashed — no activity detected for an extended period. The next message will spawn a fresh process.]");
           await writer.completeText();
         }
       } catch (err) {
-        console.error("[AgentWorkerBase] Watchdog: failed to publish error:", err);
+        console.error("[AgentWorkerBase] Crash recovery: failed to publish error:", err);
       }
       // Clear the stale turn and harness
       this.turns.clearActive(stale.harnessId);

@@ -42,10 +42,24 @@ export function buildEvalTool(opts: BuildEvalToolOptions): MethodDefinition {
   return {
     description: `Execute TypeScript/JavaScript code in the sandbox.
 
+PRE-INJECTED GLOBALS (and ONLY these — never use bare \`db\`, \`fs\`, etc.):
+- \`chat\` — ChatSandboxValue: publish, callMethod, channelId, rpc
+- \`scope\` — persistent REPL scope, shared across eval calls
+- \`scopes\` — scope history + persistence API
+
+EVERYTHING ELSE must be imported. Common mistake: writing bare \`db.open(...)\`
+or \`fs.readFile(...)\` — these throw \`ReferenceError: db is not defined\`. Start
+every eval that needs runtime APIs with the explicit import:
+
+  import { db, fs, rpc, ai, workers, workspace, contextId } from "@workspace/runtime";
+
+Use static \`import\` only — never \`await import(...)\`. Sucrase erases unused
+imports, so importing more than you use is free.
+
 Ambient imports (static — no \`imports\` parameter needed):
-- \`@workspace/runtime\` — rpc, fs, db, workers, ai, contextId. Resolves to the
-  panel variant (with panel navigation, browser APIs) inside chat panels and to
-  the worker variant (DO base, workspace/oauth/notifications clients) inside
+- \`@workspace/runtime\` — rpc, fs, db, workers, ai, contextId, workspace.
+  Resolves to the panel variant (with panel navigation, browser APIs) inside
+  chat panels and to the worker variant (DO base, oauth, notifications) inside
   worker contexts. Same canonical import in both.
 - In chat-panel contexts only: \`react\`, \`@radix-ui/themes\`, \`@radix-ui/react-icons\`
   for inline_ui/feedback_custom components, plus \`isomorphic-git\` for git ops.
@@ -61,9 +75,6 @@ On-demand imports (use \`imports\` parameter):
 - \`@workspace-skills/*\` — skill packages (value: "latest")
 - \`@natstack/*\` — platform packages (value: "latest")
 - npm packages (value: "npm:<version>")
-
-Pre-injected variables (do NOT import): chat, scope, scopes
-Import contextId from @workspace/runtime.
 
 Use \`return\` to send a value back to the agent. console.log() streams output in real-time.
 scope is a live in-memory object shared across eval calls (scope.myVar = value).
