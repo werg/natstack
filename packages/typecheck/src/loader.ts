@@ -3,7 +3,7 @@
  *
  * This module loads .d.ts files from node_modules directories, resolving
  * package entry points via package.json "types" fields and following imports.
- * Used by the main process TypeDefinitionService to provide types to panels.
+ * Used by the main-process typecheck service to feed types into the language service.
  */
 
 import * as fs from "fs/promises";

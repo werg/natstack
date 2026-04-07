@@ -63,6 +63,16 @@ const LIBS = [
   "lib.es2022.object.d.ts",
   "lib.es2022.regexp.d.ts",
   "lib.es2022.string.d.ts",
+  // ES2023 — adds Array.findLast/findLastIndex, immutable Array methods,
+  // WeakMap.set chaining, etc.
+  "lib.es2023.array.d.ts",
+  "lib.es2023.collection.d.ts",
+  "lib.es2023.intl.d.ts",
+  // ESNext — bundle the bits we actually need so `using`/`await using`,
+  // iterator helpers, and Promise.withResolvers type-check correctly.
+  "lib.esnext.disposable.d.ts",
+  "lib.esnext.iterator.d.ts",
+  "lib.esnext.promise.d.ts",
   "lib.dom.d.ts",
   "lib.dom.iterable.d.ts",
   "lib.dom.asynciterable.d.ts",

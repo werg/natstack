@@ -342,8 +342,6 @@ Returns `{ diagnostics: Array<{ file, line, column, message, severity, code }>, 
 | `rpc.call("main", "typecheck.check", panelPath, filePath?, fileContent?, contextId?)` | Type-check a panel or specific file |
 | `rpc.call("main", "typecheck.getTypeInfo", panelPath, filePath, line, column, fileContent?, contextId?)` | Get type info at a position |
 | `rpc.call("main", "typecheck.getCompletions", panelPath, filePath, line, column, fileContent?, contextId?)` | Get completions at a position |
-| `rpc.call("main", "typecheck.getPackageTypes", panelPath, packageName)` | Get type definitions for a package |
-| `rpc.call("main", "typecheck.getPackageTypesBatch", panelPath, packageNames[])` | Get type definitions for multiple packages |
 
 ## Tests
 

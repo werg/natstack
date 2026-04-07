@@ -1,21 +1,24 @@
 /**
- * @workspace/typecheck - TypeScript type checking for panels and workers.
+ * @natstack/typecheck — TypeScript type checking for NatStack projects.
  *
- * This module provides type checking with module resolution that matches
- * the panel build system, ensuring developers get accurate feedback.
+ * Server-side type checking for panels, workspace packages, and workers.
+ * The TypeCheckService runs TypeScript's language service against on-disk
+ * source files, with workspace-package discovery via `pnpm-workspace.yaml`
+ * and tsconfig.json honoring.
  *
  * @example
  * ```typescript
- * import { createTypeCheckService } from "@workspace/typecheck";
+ * import { TypeCheckService, createDiskFileSource, loadSourceFiles } from "@natstack/typecheck";
  *
- * const service = createTypeCheckService({
- *   panelPath: "/workspace/panels/my-panel",
+ * const service = new TypeCheckService({
+ *   panelPath: "/abs/path/to/workspace/packages/my-pkg",
  * });
  *
- * // Add panel files
- * service.updateFile("/workspace/panels/my-panel/index.tsx", sourceCode);
+ * const fileSource = createDiskFileSource("/abs/path/to/workspace/packages/my-pkg");
+ * for (const [rel, content] of await loadSourceFiles(fileSource, ".")) {
+ *   service.updateFile(rel, content);
+ * }
  *
- * // Run type checking
  * const result = service.check();
  * console.log(result.diagnostics);
  * ```
@@ -30,53 +33,41 @@ export {
   type BaseDiagnostic,
   type TypeCheckDiagnostic,
   type QuickInfo,
-  type ExternalTypesResult,
 } from "./service.js";
 
-// Resolution
+// Workspace package discovery — used by TypeCheckService to map package
+// names to source directories. Also exports the shared `parseWorkspaceImport`
+// and `resolveExportSubpath` helpers that the esbuild panel builder consumes
+// so there's one source of truth for workspace import parsing.
 export {
-  resolveModule,
-  isFsModule,
-  isFsPromisesModule,
-  isPathModule,
-  generatePathShimCode,
-  isNatstackModule,
-  getNatstackPackageName,
-  packageToRegex,
-  matchesDedupePattern,
-  generateFsShimCode,
-  isBareSpecifier,
+  discoverWorkspaceContext,
+  findMonorepoRoot,
+  clearWorkspaceContextCache,
   parseWorkspaceImport,
   resolveExportSubpath,
-  BUNDLE_CONDITIONS,
-  TYPES_CONDITIONS,
   WORKSPACE_CONDITIONS,
-  DEFAULT_DEDUPE_PACKAGES,
-  type NatstackImportParts,
-  FS_ASYNC_METHODS,
-  FS_SYNC_METHODS,
-  FS_CONSTANTS,
-  type ModuleResolutionConfig,
-  type ResolutionResult,
-} from "./resolution.js";
-
-// Virtual type definitions (for fs/path shims and globals - NOT @workspace/runtime which uses real types)
-export { FS_TYPE_DEFINITIONS, PATH_TYPE_DEFINITIONS, GLOBAL_TYPE_DEFINITIONS, NODE_BUILTIN_TYPE_STUBS } from "./lib/index.js";
-
-// Dynamic natstack package type loading
-export {
-  loadNatstackPackageTypes,
-  loadSinglePackageTypes,
-  findPackagesDir,
-  clearNatstackTypesCache,
-  preloadNatstackTypesAsync,
-  type NatstackPackageTypes,
+  type WorkspaceContext,
+  type WorkspacePackageInfo,
+  type WorkspaceImportParts,
 } from "./lib/index.js";
 
-// Bundled TypeScript lib files
+// Virtual type definitions — used by Monaco editor in panels (git-ui) to
+// configure its in-browser TypeScript service. Not used by the server-side
+// TypeCheckService.
+export {
+  FS_TYPE_DEFINITIONS,
+  PATH_TYPE_DEFINITIONS,
+  GLOBAL_TYPE_DEFINITIONS,
+} from "./lib/index.js";
+
+// Bundled TypeScript lib files — Monaco editor and TypeCheckService both
+// use these to provide ES2022+ / DOM / esnext.disposable types without
+// reading from typescript/lib/ at runtime.
 export { TS_LIB_FILES } from "./lib/typescript-libs.js";
 
-// Type definition loader (for main process)
+// Type definition loader — walks node_modules and reads `.d.ts` files for
+// a named package. Used by the server-side `getPackageTypes` RPC and the
+// eval-imports install flow.
 export {
   TypeDefinitionLoader,
   createTypeDefinitionLoader,
@@ -85,39 +76,11 @@ export {
   type LoadedTypeDefinitions,
 } from "./loader.js";
 
-// File source abstraction
+// File source abstraction — `createDiskFileSource` + `loadSourceFiles` are
+// the canonical way to feed source files into a TypeCheckService.
 export {
   createDiskFileSource,
-  createOpfsFileSource,
-  createVirtualFileSource,
-  findTypeScriptFiles,
   loadSourceFiles,
   type FileSource,
   type FileSourceStats,
-  type ReadableFs,
 } from "./sources.js";
-
-// Watch mode
-export {
-  TypeCheckWatcher,
-  createTypeCheckWatcher,
-  TYPECHECK_EVENTS,
-  type TypeCheckWatcherOptions,
-  type TypeCheckDiagnosticsEvent,
-  type TypeCheckFileUpdatedEvent,
-} from "./watch.js";
-
-// RPC client (for panels to fetch types from main process)
-export {
-  TypeDefinitionClient,
-  createTypeDefinitionClient,
-  type TypeDefinitionClientConfig,
-  type PackageTypesResult,
-  type PackageTypesResultRecord,
-} from "./rpc-client.js";
-
-// Factory for easy service creation
-export {
-  createPanelTypeCheckService,
-  type PanelTypeCheckServiceConfig,
-} from "./factory.js";

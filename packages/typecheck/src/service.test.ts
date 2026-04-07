@@ -3,13 +3,17 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { TypeCheckService } from "./service.js";
+import { clearWorkspaceContextCache } from "./lib/workspace-packages.js";
 
 const tempDirs: string[] = [];
 
 function createTempDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
+  // Symlinks on macOS resolve to /private/var/... — use realpath so the
+  // service's internal path comparisons match.
+  const real = fs.realpathSync(dir);
+  tempDirs.push(real);
+  return real;
 }
 
 function writeFile(filePath: string, content: string): void {
@@ -21,59 +25,98 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+  clearWorkspaceContextCache();
 });
 
 describe("TypeCheckService workspace resolution", () => {
-  it("resolves @workspace/* from userWorkspacePath when natstack cache has no package", () => {
+  it("resolves a workspace package from its source via the workspace context map", () => {
+    // Build a minimal pnpm-workspace-style monorepo:
+    //   <root>/pnpm-workspace.yaml           (packages: ["packages/*"])
+    //   <root>/packages/runtime/package.json (name: "@workspace/runtime", exports: ./src/index.ts)
+    //   <root>/packages/runtime/src/index.ts (exports RuntimeThing)
+    //   <root>/packages/consumer/package.json
+    //   <root>/packages/consumer/index.ts    (imports @workspace/runtime)
     const root = createTempDir("typecheck-service-workspace-");
-    const panelPath = path.join(root, "panel");
-    const workspaceRoot = path.join(root, "typecheck-root");
-    const userWorkspacePath = path.join(root, "user-workspace");
-    const panelFile = path.join(panelPath, "index.ts");
 
-    fs.mkdirSync(panelPath, { recursive: true });
-    fs.mkdirSync(workspaceRoot, { recursive: true });
-
-    const runtimePackageDir = path.join(userWorkspacePath, "packages", "runtime");
     writeFile(
-      path.join(runtimePackageDir, "package.json"),
+      path.join(root, "pnpm-workspace.yaml"),
+      "packages:\n  - 'packages/*'\n",
+    );
+
+    // The producer package
+    writeFile(
+      path.join(root, "packages", "runtime", "package.json"),
       JSON.stringify(
         {
           name: "@workspace/runtime",
-          exports: {
-            ".": {
-              types: "./dist/index.d.ts",
-              default: "./dist/index.js",
-            },
-          },
+          type: "module",
+          exports: { ".": "./src/index.ts" },
         },
         null,
-        2
-      )
+        2,
+      ),
     );
     writeFile(
-      path.join(runtimePackageDir, "dist", "index.d.ts"),
-      "export interface RuntimeThing { ok: boolean }\n"
+      path.join(root, "packages", "runtime", "src", "index.ts"),
+      "export interface RuntimeThing { ok: boolean }\n",
     );
 
-    const service = new TypeCheckService({
-      panelPath,
-      workspaceRoot,
-      userWorkspacePath,
-      skipSuggestions: true,
-    });
-
-    service.updateFile(
-      panelFile,
+    // The consumer package (this is what we type-check)
+    writeFile(
+      path.join(root, "packages", "consumer", "package.json"),
+      JSON.stringify({ name: "@workspace/consumer", type: "module" }, null, 2),
+    );
+    const consumerFile = path.join(root, "packages", "consumer", "index.ts");
+    writeFile(
+      consumerFile,
       [
         'import type { RuntimeThing } from "@workspace/runtime";',
         "const value: RuntimeThing = { ok: true };",
         "void value;",
-      ].join("\n")
+      ].join("\n"),
     );
 
-    const result = service.check(panelFile);
+    const service = new TypeCheckService({
+      panelPath: path.join(root, "packages", "consumer"),
+      skipSuggestions: true,
+      disableTsconfigDiscovery: true,
+    });
+
+    service.updateFile(consumerFile, fs.readFileSync(consumerFile, "utf-8"));
+
+    const result = service.check(consumerFile);
     const unresolvedModules = result.diagnostics.filter((d) => d.code === 2307);
     expect(unresolvedModules).toHaveLength(0);
+    const errors = result.diagnostics.filter((d) => d.severity === "error");
+    expect(errors).toHaveLength(0);
+  });
+
+  it("returns a Cannot-find-module error for an import that doesn't resolve", () => {
+    const root = createTempDir("typecheck-service-workspace-");
+    writeFile(
+      path.join(root, "pnpm-workspace.yaml"),
+      "packages:\n  - 'packages/*'\n",
+    );
+    const consumerDir = path.join(root, "packages", "consumer");
+    writeFile(
+      path.join(consumerDir, "package.json"),
+      JSON.stringify({ name: "@workspace/consumer", type: "module" }, null, 2),
+    );
+    const consumerFile = path.join(consumerDir, "index.ts");
+    writeFile(
+      consumerFile,
+      'import { nope } from "@workspace/nonexistent";\nvoid nope;\n',
+    );
+
+    const service = new TypeCheckService({
+      panelPath: consumerDir,
+      skipSuggestions: true,
+      disableTsconfigDiscovery: true,
+    });
+    service.updateFile(consumerFile, fs.readFileSync(consumerFile, "utf-8"));
+
+    const result = service.check(consumerFile);
+    const unresolvedModules = result.diagnostics.filter((d) => d.code === 2307);
+    expect(unresolvedModules).toHaveLength(1);
   });
 });

@@ -9,7 +9,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, writeFile, rm, mkdir } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
-import { typeCheckRpcMethods, shutdownTypeDefinitionService } from "./service.js";
+import { typeCheckRpcMethods, clearTypeCheckCache } from "./service.js";
 
 let panelDir: string;
 
@@ -18,7 +18,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  shutdownTypeDefinitionService();
+  clearTypeCheckCache();
   await rm(panelDir, { recursive: true, force: true });
 });
 

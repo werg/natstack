@@ -27,6 +27,7 @@ import { PANEL_CSP_META } from "@natstack/shared/constants";
 import { getAdapter } from "./adapters/index.js";
 import type { FrameworkAdapter } from "./adapters/types.js";
 import { resolveTemplate } from "./templateResolver.js";
+import { parseWorkspaceImport, resolveExportSubpath } from "@natstack/typecheck";
 
 // ---------------------------------------------------------------------------
 // Module Initialization
@@ -281,79 +282,6 @@ function createTsExtensionPlugin(sourceRoot: string): esbuild.Plugin {
       });
     },
   };
-}
-
-/**
- * Parse a workspace import like "@workspace/core" or "@workspace/runtime/config".
- */
-function parseWorkspaceImport(
-  importPath: string,
-): { packageName: string; subpath: string } | null {
-  // Match @workspace/name, @workspace-panels/name, @workspace-about/name, @workspace-workers/name
-  const match = importPath.match(/^(@workspace(?:-\w+)?)\/([^/]+)(\/.*)?$/);
-  if (!match) return null;
-
-  const scope = match[1];
-  const name = match[2]!;
-  const rest = match[3] ?? "";
-  const packageName = `${scope}/${name}`;
-  const subpath = rest ? `.${rest}` : ".";
-
-  return { packageName, subpath };
-}
-
-/**
- * Resolve a subpath from package.json exports.
- * Handles nested condition objects recursively.
- */
-function resolveExportSubpath(
-  exports: Record<string, unknown>,
-  subpath: string,
-  conditions: readonly string[],
-): string | null {
-  const entry = exports[subpath];
-  if (!entry) return null;
-
-  if (typeof entry === "string") return entry;
-
-  if (typeof entry === "object" && entry !== null) {
-    // Condition object — try each condition in order
-    const condObj = entry as Record<string, unknown>;
-    for (const cond of conditions) {
-      if (cond in condObj) {
-        const val = condObj[cond];
-        if (typeof val === "string") return val;
-        if (typeof val === "object" && val !== null) {
-          // Nested conditions — recurse
-          return resolveFromConditionObject(
-            val as Record<string, unknown>,
-            conditions,
-          );
-        }
-      }
-    }
-  }
-
-  return null;
-}
-
-function resolveFromConditionObject(
-  obj: Record<string, unknown>,
-  conditions: readonly string[],
-): string | null {
-  for (const cond of conditions) {
-    if (cond in obj) {
-      const val = obj[cond];
-      if (typeof val === "string") return val;
-      if (typeof val === "object" && val !== null) {
-        return resolveFromConditionObject(
-          val as Record<string, unknown>,
-          conditions,
-        );
-      }
-    }
-  }
-  return null;
 }
 
 function isBareSpecifier(spec: string): boolean {

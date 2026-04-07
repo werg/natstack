@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { ContextFolderManager } from "@natstack/shared/contextFolderManager";
 import { resolveContextScope } from "@natstack/shared/contextMiddleware";
+import { typeCheckRpcMethods } from "@natstack/shared/typecheck/service";
 
 /**
  * Extract a panel source path from a caller ID.
@@ -16,17 +17,12 @@ import { resolveContextScope } from "@natstack/shared/contextMiddleware";
  * Returns undefined if the callerId doesn't match the expected pattern.
  */
 function extractPanelSourceFromCallerId(callerId: string): string | undefined {
-  // Expected: "tree/panels~something/nonce..." or "tree/panels~some~deeper/nonce..."
   if (!callerId.startsWith("tree/")) return undefined;
-  const afterTree = callerId.slice("tree/".length); // "panels~chat/lk2f8g-3a1b9c4e"
-  // The first segment is the escaped path (may contain ~)
+  const afterTree = callerId.slice("tree/".length);
   const slashIdx = afterTree.indexOf("/");
   const segment = slashIdx >= 0 ? afterTree.slice(0, slashIdx) : afterTree;
   if (!segment) return undefined;
-  // Un-escape: ~ → /
-  const sourcePath = segment.replace(/~/g, "/");
-  // Sanity: should start with "panels/" or "packages/" or similar workspace path
-  return sourcePath;
+  return segment.replace(/~/g, "/");
 }
 
 export function createTypecheckService(deps: {
@@ -37,30 +33,19 @@ export function createTypecheckService(deps: {
     description: "TypeScript type checking for panels and packages",
     policy: { allowed: ["panel", "server", "worker"] },
     methods: {
-      // ── New simplified method for agents ──────────────────────────────
       checkPanel: {
         description:
           "Type-check a panel. Pass the panel source path (e.g. \"panels/chat\"), " +
           "or omit it to auto-detect from the caller's context.",
         args: z.tuple([]).or(z.tuple([z.string().describe("Panel source path, e.g. \"panels/my-app\"")])),
       },
-
-      // ── Existing methods with explicit schemas ───────────────────────
-      getPackageTypes: {
-        args: z.tuple([
-          z.string().describe("Panel source path"),
-          z.string().describe("Package name"),
-        ]),
-      },
-      getPackageTypesBatch: {
-        args: z.tuple([
-          z.string().describe("Panel source path"),
-          z.array(z.string()).describe("Package names"),
-        ]),
-      },
       check: {
+        description:
+          "Type-check a panel or a single file. Pass the panel source path " +
+          "(e.g. \"panels/chat\") as the first argument, or call with no args " +
+          "to auto-detect from the caller's context.",
         args: z.tuple([
-          z.string().describe("Panel source path"),
+          z.string().optional().describe("Panel source path (auto-detected from caller if omitted)"),
           z.string().optional().describe("File path (relative to panel) to check, or omit for whole panel"),
           z.string().optional().describe("File content override (skip disk read)"),
           z.string().optional().describe("Context ID for path resolution"),
@@ -88,8 +73,6 @@ export function createTypecheckService(deps: {
       },
     },
     handler: async (ctx, method, args) => {
-      const { typeCheckRpcMethods } = await import("@natstack/shared/typecheck/service");
-
       const resolvePanelPath = async (
         panelPath: string,
         ctxId: string | undefined,
@@ -102,7 +85,7 @@ export function createTypecheckService(deps: {
       };
 
       const validateFilePath = async (
-        resolvedPanelPath: string,
+        _resolvedPanelPath: string,
         filePath: string | undefined,
         ctxId: string | undefined,
       ): Promise<void> => {
@@ -114,9 +97,7 @@ export function createTypecheckService(deps: {
       };
 
       switch (method) {
-        // ── New simplified method ──────────────────────────────────────
         case "checkPanel": {
-          // Determine panel source path
           let panelPath = args[0] as string | undefined;
           if (!panelPath) {
             panelPath = extractPanelSourceFromCallerId(ctx.callerId);
@@ -128,13 +109,11 @@ export function createTypecheckService(deps: {
             }
           }
 
-          // Auto-resolve using caller's context if available
           const resolvedPath = await resolvePanelPath(panelPath, undefined);
-
           const result = await typeCheckRpcMethods["typecheck.check"](resolvedPath, undefined, undefined);
 
-          const errorCount = result.diagnostics.filter((d: { severity: string }) => d.severity === "error").length;
-          const warningCount = result.diagnostics.filter((d: { severity: string }) => d.severity === "warning").length;
+          const errorCount = result.diagnostics.filter((d) => d.severity === "error").length;
+          const warningCount = result.diagnostics.filter((d) => d.severity === "warning").length;
 
           return {
             diagnostics: result.diagnostics,
@@ -143,19 +122,18 @@ export function createTypecheckService(deps: {
           };
         }
 
-        // ── Existing methods (backward-compatible) ─────────────────────
-        case "getPackageTypes":
-          return typeCheckRpcMethods["typecheck.getPackageTypes"](
-            args[0] as string,
-            args[1] as string,
-          );
-        case "getPackageTypesBatch":
-          return typeCheckRpcMethods["typecheck.getPackageTypesBatch"](
-            args[0] as string,
-            args[1] as string[],
-          );
         case "check": {
-          const panelPath = await resolvePanelPath(args[0] as string, args[3] as string | undefined);
+          let rawPanelPath = args[0] as string | undefined;
+          if (!rawPanelPath) {
+            rawPanelPath = extractPanelSourceFromCallerId(ctx.callerId);
+            if (!rawPanelPath) {
+              throw new Error(
+                "typecheck.check: panel path is required and could not be auto-detected from caller. " +
+                "Pass the panel source path explicitly, e.g. typecheck.check(\"panels/my-app\")",
+              );
+            }
+          }
+          const panelPath = await resolvePanelPath(rawPanelPath, args[3] as string | undefined);
           await validateFilePath(panelPath, args[1] as string | undefined, args[3] as string | undefined);
           return typeCheckRpcMethods["typecheck.check"](panelPath, args[1] as string | undefined, args[2] as string | undefined);
         }
