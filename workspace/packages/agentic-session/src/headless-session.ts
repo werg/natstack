@@ -541,13 +541,21 @@ export class HeadlessSession {
     );
 
     return new Promise<ChatMessage>((resolve, reject) => {
-      let lastMatch: ChatMessage | undefined;
+      // Track text and method matches separately. waitForIdle prefers a text
+      // response (validators usually inspect text content), but falls back to
+      // the latest method message if the agent never produces a text reply —
+      // otherwise we'd block until overall timeout.
+      let lastTextMatch: ChatMessage | undefined;
+      let lastMethodMatch: ChatMessage | undefined;
       let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+
+      const pickResolved = (): ChatMessage | undefined => lastTextMatch ?? lastMethodMatch;
 
       const overallTimer = timeout > 0 ? setTimeout(() => {
         cleanup();
-        if (lastMatch) {
-          resolve(lastMatch);
+        const resolved = pickResolved();
+        if (resolved) {
+          resolve(resolved);
         } else {
           reject(new HeadlessTimeoutError(
             `Timed out waiting for idle after ${timeout}ms`,
@@ -571,7 +579,7 @@ export class HeadlessSession {
       };
 
       const scheduleResolve = () => {
-        if (!lastMatch) return;
+        if (!pickResolved()) return;
         if (debounceTimer !== undefined) clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
           // Don't resolve while methods are still pending — the agent is still working
@@ -580,7 +588,9 @@ export class HeadlessSession {
             return;
           }
           cleanup();
-          resolve(lastMatch!);
+          // Prefer text response; fall back to method message only if the
+          // agent never spoke (already guaranteed non-undefined here).
+          resolve(pickResolved()!);
         }, debounceMs);
       };
 
@@ -596,8 +606,9 @@ export class HeadlessSession {
               knownAgentHandles.delete(handle);
               if (knownAgentHandles.size === 0) {
                 cleanup();
-                if (lastMatch) {
-                  resolve(lastMatch);
+                const resolved = pickResolved();
+                if (resolved) {
+                  resolve(resolved);
                 } else {
                   reject(new HeadlessTimeoutError(
                     `Agent disconnected: ${msg.disconnectedAgent!.name}`,
@@ -610,7 +621,7 @@ export class HeadlessSession {
           }
 
           if (isAgentMessage(msg) && msg !== alreadyPresent) {
-            lastMatch = msg;
+            lastTextMatch = msg;
             scheduleResolve();
             return; // Only need the latest match
           }
@@ -637,7 +648,7 @@ export class HeadlessSession {
           .reverse()
           .find((msg) => isMethodMessage(msg) && msg.method?.callId === latestChangedCallId);
         if (methodMsg) {
-          lastMatch = methodMsg;
+          lastMethodMatch = methodMsg;
           scheduleResolve();
         }
       });

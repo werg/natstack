@@ -922,9 +922,20 @@ export class GitClient {
   }
 
   /**
-   * Push changes to remote
+   * Push changes to remote.
+   * Accepts either positional args (dir, options?) or a full options object.
    */
-  async push(options: PushOptions): Promise<void> {
+  async push(
+    dirOrOptions: string | PushOptions,
+    extraOptions?: Omit<PushOptions, "dir">,
+  ): Promise<void> {
+    const options: PushOptions = typeof dirOrOptions === "string"
+      ? { dir: dirOrOptions, ...(extraOptions ?? {}) }
+      : dirOrOptions;
+    if (!options.dir) {
+      throw new Error("git.push: 'dir' is required");
+    }
+
     const onProgress = options.onProgress
       ? (progress: { phase?: string; loaded?: number; total?: number }) => {
           options.onProgress?.({
@@ -1008,16 +1019,29 @@ export class GitClient {
   }
 
   /**
-   * Create a commit
+   * Create a commit.
+   * Accepts either positional args (dir, message, author?) or an options object.
    */
-  async commit(options: CommitOptions): Promise<string> {
-    const author = options.author ?? this.author;
+  async commit(
+    dirOrOptions: string | CommitOptions,
+    message?: string,
+    author?: CommitOptions["author"],
+  ): Promise<string> {
+    const options: CommitOptions = typeof dirOrOptions === "string"
+      ? { dir: dirOrOptions, message: message!, author }
+      : dirOrOptions;
+    if (!options.dir) {
+      throw new Error("git.commit: 'dir' is required");
+    }
+    if (!options.message) {
+      throw new Error("git.commit: 'message' is required");
+    }
 
     const sha = await git.commit({
       fs: this.fs,
       dir: options.dir,
       message: options.message,
-      author,
+      author: options.author ?? this.author,
     });
 
     return sha;
