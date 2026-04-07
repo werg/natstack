@@ -303,6 +303,13 @@ async function main(): Promise<void> {
           reject: (e) => { clearTimeout(warnTimer); clearTimeout(hardTimer); reject(e); },
         });
       });
+      // Synchronously mark the promise as having a handler so Node doesn't fire
+      // an `unhandledRejection` if the result arrives during the `await pushEvent`
+      // below (e.g., a fast "target not found" failure). The real consumer's
+      // `await callMethod(...)` still observes the rejection — additional handlers
+      // stack on the same promise. Without this, fast-path rejections produce a
+      // spurious `PromiseRejectionHandledWarning` for every failed tool call.
+      resultPromise.catch(() => undefined);
       await pushEvent({
         type: 'tool-call',
         callId,
@@ -335,6 +342,10 @@ async function main(): Promise<void> {
           reject: rejectFn,
         });
       });
+      // See the matching comment in `callMethod` above — synchronously attach a
+      // no-op handler so a fast-path rejection during the `await pushEvent`
+      // below doesn't trigger an `unhandledRejection` warning.
+      resultPromise.catch(() => undefined);
       await pushEvent({ type: 'discover-methods' });
       return resultPromise;
     },

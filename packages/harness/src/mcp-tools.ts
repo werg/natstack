@@ -62,6 +62,20 @@ export function buildMcpToolDefinitions(
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         log?.error(`MCP tool error: ${method.name} — ${errorMsg}`);
+
+        // Detect "target not found" — happens when the participant providing
+        // this tool has disconnected (panel reload, tab close, etc.) since the
+        // tool table was discovered. Give the model a clearer signal so it
+        // stops retrying the same dead participant in a loop.
+        if (errorMsg.includes("not found") && errorMsg.includes(method.participantId)) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `Tool ${method.name} is no longer available — the participant providing it (${method.participantId}) has disconnected from the channel. Do not retry this tool; the panel or client may have reloaded. If you need this capability again, the participant must reconnect.`,
+            }],
+          };
+        }
+
         return { content: [{ type: 'text' as const, text: `Error executing ${method.name}: ${errorMsg}` }] };
       }
     },
