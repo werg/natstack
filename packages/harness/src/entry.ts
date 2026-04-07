@@ -284,23 +284,37 @@ async function main(): Promise<void> {
       // Async tool execution: emit tool-call event, wait for tool-result.
       // Register the pending entry BEFORE emitting — the result may arrive
       // during the pushEvent await (synchronous dispatch through DO back to harness).
+      //
+      // No hard timeout here. Tool calls are agentic activities — a long-running
+      // eval, a remote build, an LLM call, a user pause for feedback — and a
+      // wall-clock timeout that kills them is poison: it converts legitimate
+      // long work into a hard failure with no recovery path. Stall handling
+      // belongs upstream: the channel DO knows when a target participant
+      // leaves the roster and should fail any pending call methods targeting
+      // that participant (delivering a `tool-result` with isError=true through
+      // the normal path). When that's wired up, this promise either resolves
+      // (success) or rejects with a meaningful error (target gone, participant
+      // returned an error, etc.) — never on a clock.
+      //
+      // We keep a periodic stall *warning* (info-level log only) so that if
+      // something gets genuinely stuck mid-call, operators see it in the logs
+      // and can intervene rather than the call silently hanging in the dark.
       const callId = randomUUID();
       log.info(`callMethod (async): ${method} -> ${participantId} (callId=${callId})`);
-      const CALL_STALL_WARN_MS = 60_000;   // 60s: warn
-      const CALL_HARD_TIMEOUT_MS = 360_000; // 6min: reject (above channel's 5min)
+      const CALL_STALL_WARN_MS = 60_000;   // 60s: warn (no rejection)
       const resultPromise = new Promise<unknown>((resolve, reject) => {
-        const warnTimer = setTimeout(() => {
-          log.error(`callMethod STALLED: ${method} -> ${participantId} (callId=${callId}) — waiting >60s for tool-result. Promise is still pending.`);
-        }, CALL_STALL_WARN_MS);
-        const hardTimer = setTimeout(() => {
-          clearTimeout(warnTimer);
-          pendingToolResults.delete(callId);
-          log.error(`callMethod HARD TIMEOUT: ${method} -> ${participantId} (callId=${callId}) — rejecting after 6 minutes`);
-          reject(new Error(`callMethod hard timeout: ${method} -> ${participantId} after 6 minutes`));
-        }, CALL_HARD_TIMEOUT_MS);
+        let stallTimer: ReturnType<typeof setTimeout> | null = null;
+        const armStallWarn = () => {
+          stallTimer = setTimeout(() => {
+            log.error(`callMethod STALLED: ${method} -> ${participantId} (callId=${callId}) — waiting >60s for tool-result. Promise is still pending. (No timeout — waiting indefinitely until result arrives or target leaves the channel.)`);
+            armStallWarn(); // re-arm so we keep getting periodic visibility
+          }, CALL_STALL_WARN_MS);
+        };
+        armStallWarn();
+        const clearStall = () => { if (stallTimer) clearTimeout(stallTimer); stallTimer = null; };
         pendingToolResults.set(callId, {
-          resolve: (v) => { clearTimeout(warnTimer); clearTimeout(hardTimer); resolve(v); },
-          reject: (e) => { clearTimeout(warnTimer); clearTimeout(hardTimer); reject(e); },
+          resolve: (v) => { clearStall(); resolve(v); },
+          reject: (e) => { clearStall(); reject(e); },
         });
       });
       // Synchronously mark the promise as having a handler so Node doesn't fire
