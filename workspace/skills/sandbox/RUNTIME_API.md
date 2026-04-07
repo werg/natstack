@@ -4,15 +4,7 @@ All APIs available to sandbox code via `import`, `chat.rpc.call()`, or pre-injec
 
 ## Pre-injected globals
 
-These three are the **only** globals — every other API on this page must be
-imported from `@workspace/runtime` (or `@workspace/panel-browser` etc.).
-
-```typescript
-// Pre-injected — do NOT import
-chat     // ChatSandboxValue — publish messages, callMethod, channelId, rpc
-scope    // Record<string, unknown> — current active scope, read+write, persists across eval calls
-scopes   // ScopesApi — scope history + persistence management
-```
+`chat`, `scope`, `scopes` only. Every other API on this page must be imported.
 
 | Property/Method | Description |
 |----------------|-------------|

@@ -42,49 +42,13 @@ export function buildEvalTool(opts: BuildEvalToolOptions): MethodDefinition {
   return {
     description: `Execute TypeScript/JavaScript code in the sandbox.
 
-PRE-INJECTED GLOBALS (and ONLY these — never use bare \`db\`, \`fs\`, etc.):
-- \`chat\` — ChatSandboxValue: publish, callMethod, channelId, rpc
-- \`scope\` — persistent REPL scope, shared across eval calls
-- \`scopes\` — scope history + persistence API
+Globals (only these): \`chat\`, \`scope\`, \`scopes\`. Everything else must be imported, e.g. \`import { db, fs, rpc, ai, workers, workspace, contextId } from "@workspace/runtime"\`. Use static \`import\`, not \`await import(...)\`.
 
-EVERYTHING ELSE must be imported. Common mistake: writing bare \`db.open(...)\`
-or \`fs.readFile(...)\` — these throw \`ReferenceError: db is not defined\`. Start
-every eval that needs runtime APIs with the explicit import:
+Ambient packages (no \`imports\` arg): \`@workspace/runtime\` (panel or worker variant); panels also get \`react\`, \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`isomorphic-git\`; workers also get \`@natstack/pubsub\`, \`zod\`. For anything else, pass it in \`imports\` — \`"latest"\` for workspace packages, \`"npm:<version>"\` for npm.
 
-  import { db, fs, rpc, ai, workers, workspace, contextId } from "@workspace/runtime";
+\`return\` sends a value back to the agent. \`console.log\` streams in real-time. \`scope\` persists across eval calls.
 
-Use static \`import\` only — never \`await import(...)\`. Sucrase erases unused
-imports, so importing more than you use is free.
-
-Ambient imports (static — no \`imports\` parameter needed):
-- \`@workspace/runtime\` — rpc, fs, db, workers, ai, contextId, workspace.
-  Resolves to the panel variant (with panel navigation, browser APIs) inside
-  chat panels and to the worker variant (DO base, oauth, notifications) inside
-  worker contexts. Same canonical import in both.
-- In chat-panel contexts only: \`react\`, \`@radix-ui/themes\`, \`@radix-ui/react-icons\`
-  for inline_ui/feedback_custom components, plus \`isomorphic-git\` for git ops.
-- In worker contexts only: \`@natstack/pubsub\` and \`zod\` for channel/schema
-  work alongside the runtime APIs. (\`@natstack/harness\` types are usable via
-  \`import type\` only — its runtime contains Node-only deps that aren't bundled
-  for workerd.)
-
-The exact ambient set depends on the host's \`exposeModules\` manifest. If a
-specific package isn't ambient, request it via \`imports\`.
-
-On-demand imports (use \`imports\` parameter):
-- \`@workspace-skills/*\` — skill packages (value: "latest")
-- \`@natstack/*\` — platform packages (value: "latest")
-- npm packages (value: "npm:<version>")
-
-Use \`return\` to send a value back to the agent. console.log() streams output in real-time.
-scope is a live in-memory object shared across eval calls (scope.myVar = value).
-
-Quick patterns:
-- \`const rows = await db.open("name").then(h => h.query("SELECT..."))\` — db requires .open() first
-- \`return await fs.readFile("path", "utf-8")\` — use return for results
-- \`await h.run("INSERT...", [params])\` — use run() for writes, query() for reads
-- \`return await rpc.call("main", "typecheck.checkPanel", "panels/my-app")\` — typecheck a panel
-- \`return await rpc.call("main", "typecheck.checkPanel")\` — typecheck the current panel`,
+Patterns: \`const h = await db.open("name"); await h.query("SELECT...")\` (db needs .open() first); \`h.run("INSERT...", [params])\` for writes, \`h.query()\` for reads.`,
     parameters: z.object({
       code: z.string().describe("The TypeScript/JavaScript code to execute"),
       syntax: z.enum(["typescript", "jsx", "tsx"]).default("tsx").describe("Target syntax"),

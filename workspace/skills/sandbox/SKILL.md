@@ -32,23 +32,9 @@ All code runs in the same sandbox (Sucrase transform + CJS execution in the pane
 
 ## Pre-injected Variables
 
-These three — and **only** these three — are available in eval code without
-importing:
-
-- **`chat`** — the ChatSandboxValue object (publish, callMethod, channelId, rpc)
-- **`scope`** — persistent REPL scope (shared across eval calls)
-- **`scopes`** — scope management API (push, get, list, save)
-
-**Everything else must be imported** from `@workspace/runtime`, including
-`db`, `fs`, `rpc`, `ai`, `workers`, `workspace`, `contextId`. A bare `db.open(...)`
-will throw `ReferenceError: db is not defined`. Always start with the import:
-
-```ts
-import { db, fs, rpc, ai, workers, workspace, contextId } from "@workspace/runtime";
-```
-
-Imports in eval code use static syntax (`import { x } from "..."`), never dynamic
-`await import(...)`.
+Only `chat`, `scope`, `scopes` are pre-injected. Everything else (`db`, `fs`,
+`rpc`, `ai`, `workers`, `workspace`, `contextId`) must be imported from
+`@workspace/runtime` using static `import` syntax (no `await import(...)`).
 
 ## Available Imports
 

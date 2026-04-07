@@ -113,22 +113,9 @@ eval({
 
 ## Pre-injected Variables
 
-These three — and **only** these three — are pre-injected as globals in eval'd
-code. Everything else (`db`, `fs`, `rpc`, `ai`, `workers`, `workspace`,
-`contextId`, etc.) **must be imported** from `@workspace/runtime`.
-
-- **`chat`** (ChatSandboxValue) — publish messages, call methods, access RPC
-- **`scope`** (Record<string, unknown>) — REPL scope, persists across eval calls
-- **`scopes`** (ScopesApi) — scope history and persistence management
-
-```ts
-// CORRECT — db is not pre-injected
-import { db } from "@workspace/runtime";
-const conn = await db.open("my-data");
-
-// WRONG — `db` is not in scope without an import
-const conn = await db.open("my-data");  // ReferenceError: db is not defined
-```
+Only `chat`, `scope`, `scopes` are pre-injected. Everything else
+(`db`, `fs`, `rpc`, `ai`, `workers`, `workspace`, `contextId`) must be
+imported from `@workspace/runtime` — bare references throw `ReferenceError`.
 
 ## REPL Scope
 
