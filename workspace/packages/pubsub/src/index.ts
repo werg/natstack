@@ -81,6 +81,7 @@ export * from "./protocol-wire.js";
 
 // Protocol types (agentic messaging types, events, aggregation)
 export * from "./protocol-types.js";
+export * from "./internal-constants.js";
 
 // Event stream types (re-exports from protocol-types for discoverability)
 export * from "./event-types.js";

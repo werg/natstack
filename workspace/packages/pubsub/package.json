@@ -4,7 +4,8 @@
   "description": "WebSocket pub/sub client for NatStack",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./internal-constants": "./src/internal-constants.ts"
   },
   "scripts": {
     "test": "vitest run"

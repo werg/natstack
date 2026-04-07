@@ -11,6 +11,7 @@
 /// <reference path="../workerd.d.ts" />
 import { DurableObjectBase, type DurableObjectContext } from "@workspace/runtime/worker";
 import type { ChannelEvent } from "@natstack/harness/types";
+import { PARTICIPANT_SESSION_METADATA_KEY } from "../../packages/pubsub/src/internal-constants.js";
 import type {
   SendOpts,
   SubscribeResult,
@@ -60,7 +61,7 @@ const PENDING_CALL_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
 const PENDING_CALL_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 export class PubSubChannel extends DurableObjectBase {
-  static override schemaVersion = 2;
+  static override schemaVersion = 3;
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
@@ -90,6 +91,7 @@ export class PubSubChannel extends DurableObjectBase {
         metadata TEXT NOT NULL,
         transport TEXT NOT NULL,
         connected_at INTEGER NOT NULL,
+        session_id TEXT,
         do_source TEXT,
         do_class TEXT,
         do_key TEXT
@@ -113,6 +115,7 @@ export class PubSubChannel extends DurableObjectBase {
         created_at INTEGER NOT NULL
       )
     `);
+    try { this.sql.exec(`ALTER TABLE participants ADD COLUMN session_id TEXT`); } catch { /* already exists */ }
   }
 
   // ── Broadcast deps ──────────────────────────────────────────────────────
@@ -161,7 +164,7 @@ export class PubSubChannel extends DurableObjectBase {
     senderId: string,
     action: "join" | "leave" | "update",
     metadata: Record<string, unknown>,
-    leaveReason?: "graceful" | "disconnect",
+    leaveReason?: "graceful" | "disconnect" | "replaced",
     senderRef?: number,
   ): void {
     const ts = Date.now();
@@ -204,6 +207,9 @@ export class PubSubChannel extends DurableObjectBase {
     const doClass = metadata["doClass"] as string | undefined;
     const doKey = metadata["doKey"] as string | undefined;
     const transport = metadata["transport"] as string ?? "rpc";
+    const participantSessionId = typeof metadata[PARTICIPANT_SESSION_METADATA_KEY] === "string"
+      ? metadata[PARTICIPANT_SESSION_METADATA_KEY] as string
+      : null;
 
     // Extract contextId from metadata
     const contextId = metadata["contextId"] as string | undefined;
@@ -214,14 +220,30 @@ export class PubSubChannel extends DurableObjectBase {
       this.initChannel(contextId, channelConfigRaw);
     }
 
-    // Idempotent: remove old entry, publish leave, then re-register
+    // Re-subscribe with the same participant ID: replace the roster entry, but
+    // only fail in-flight calls if the underlying client session changed.
     const existing = this.sql.exec(
-      `SELECT id FROM participants WHERE id = ?`, participantId,
+      `SELECT session_id FROM participants WHERE id = ?`, participantId,
     ).toArray();
     if (existing.length > 0) {
+      const previousSessionId = existing[0]!["session_id"] as string | null;
       const oldMetadata = this.getSenderMetadata(participantId) ?? {};
-      this.publishPresenceEvent(participantId, "leave", oldMetadata, "graceful");
+      const replaced =
+        previousSessionId == null ||
+        participantSessionId == null ||
+        previousSessionId !== participantSessionId;
+      this.publishPresenceEvent(participantId, "leave", oldMetadata, replaced ? "replaced" : "graceful");
       this.sql.exec(`DELETE FROM participants WHERE id = ?`, participantId);
+      cleanupDeliveryChain(participantId);
+      if (replaced) {
+        const pendingCountRow = this.sql.exec(
+          `SELECT COUNT(*) as cnt FROM pending_calls WHERE target_id = ?`,
+          participantId,
+        ).toArray();
+        const pendingCount = (pendingCountRow[0]?.["cnt"] as number) ?? 0;
+        console.log(`[Channel] Participant session replaced: target=${participantId} previousSession=${previousSessionId ?? "unknown"} newSession=${participantSessionId ?? "unknown"} pendingCalls=${pendingCount}`);
+        await this.failPendingCallsTargeting(participantId, "replaced");
+      }
     }
 
     // Extract replay options before cleaning metadata
@@ -240,14 +262,16 @@ export class PubSubChannel extends DurableObjectBase {
     delete storedMetadata["sinceId"];
     delete storedMetadata["replayMessageLimit"];
     delete storedMetadata["transport"];
+    delete storedMetadata[PARTICIPANT_SESSION_METADATA_KEY];
 
     this.sql.exec(
-      `INSERT INTO participants (id, metadata, transport, connected_at, do_source, do_class, do_key)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO participants (id, metadata, transport, connected_at, session_id, do_source, do_class, do_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       participantId,
       JSON.stringify(storedMetadata),
       transport === "do" ? "do" : "rpc",
       Date.now(),
+      participantSessionId,
       doSource ?? null,
       doClass ?? null,
       doKey ?? null,
@@ -378,13 +402,15 @@ export class PubSubChannel extends DurableObjectBase {
    */
   private async failPendingCallsTargeting(
     targetId: string,
-    reason: "graceful" | "disconnect",
+    reason: "graceful" | "disconnect" | "replaced",
   ): Promise<void> {
     const cancelled = cancelCallsForTarget(this.sql, targetId);
     if (cancelled.length === 0) return;
     const errorMessage = reason === "graceful"
       ? `Target ${targetId} left the channel before the call completed`
-      : `Target ${targetId} disconnected from the channel before the call completed`;
+      : reason === "disconnect"
+        ? `Target ${targetId} disconnected from the channel before the call completed`
+        : `Target ${targetId} was replaced by a new session before the call completed`;
     for (const { callId, callerId } of cancelled) {
       try {
         await this.deliverCallResult(callerId, callId, { error: errorMessage }, true);
@@ -502,7 +528,7 @@ export class PubSubChannel extends DurableObjectBase {
           `SELECT call_id FROM pending_calls WHERE call_id = ?`, callId,
         ).toArray();
         if (pending.length > 0) {
-          this.handleMethodResult(callId, p["content"], !!p["isError"]);
+          await this.handleMethodResult(callId, p["content"], !!p["isError"]);
           return { id: undefined };
         }
         // No pending call — fall through to normal broadcast

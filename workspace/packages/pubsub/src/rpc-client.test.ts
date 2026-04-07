@@ -114,7 +114,10 @@ describe("connectViaRpc", () => {
         DO_TARGET,
         "subscribe",
         SELF_ID,
-        expect.objectContaining({ transport: "rpc" }),
+        expect.objectContaining({
+          transport: "rpc",
+          __participantSessionId: expect.any(String),
+        }),
       );
 
       client.close();

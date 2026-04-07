@@ -170,6 +170,101 @@ describe("PubSubChannel", () => {
       // Actual metadata should remain
       expect(metadata["name"]).toBe("Alice");
     });
+
+    it("fails pending calls when a participant is replaced by a new session", async () => {
+      const { instance, sql } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+
+      const mockRpc = {
+        emit: vi.fn().mockResolvedValue(undefined),
+        call: vi.fn().mockResolvedValue(undefined),
+      };
+      (instance as any)._rpc = mockRpc;
+
+      sql.exec(
+        `INSERT INTO participants (id, metadata, transport, connected_at, session_id, do_source, do_class, do_key)
+         VALUES (?, '{}', 'do', ?, 'caller-session', 'workers/agent-worker', 'AiChatWorker', 'agent-1')`,
+        "do:workers/agent-worker:AiChatWorker:agent-1", Date.now(),
+      );
+      sql.exec(
+        `INSERT INTO participants (id, metadata, transport, connected_at, session_id)
+         VALUES (?, ?, 'rpc', ?, ?)`,
+        "panel-1", '{"name":"old"}', Date.now(), "session-old",
+      );
+      sql.exec(
+        `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        "11111111-1111-4111-8111-111111111111",
+        "do:workers/agent-worker:AiChatWorker:agent-1",
+        "panel-1",
+        "eval",
+        "{}",
+        0,
+        Date.now(),
+      );
+
+      await instance.subscribe("panel-1", {
+        contextId: "ctx-1",
+        transport: "rpc",
+        name: "new",
+        __participantSessionId: "session-new",
+      });
+
+      expect(sql.exec(`SELECT * FROM pending_calls`).toArray()).toHaveLength(0);
+      expect(mockRpc.call).toHaveBeenCalledWith(
+        "do:workers/agent-worker:AiChatWorker:agent-1",
+        "onCallResult",
+        "11111111-1111-4111-8111-111111111111",
+        { error: "Target panel-1 was replaced by a new session before the call completed" },
+        true,
+      );
+      const leaveMessages = sql.exec(
+        `SELECT content FROM messages WHERE type = 'presence' ORDER BY id ASC`,
+      ).toArray().map(row => JSON.parse(row["content"] as string));
+      expect(leaveMessages.some(msg => msg.action === "leave" && msg.leaveReason === "replaced")).toBe(true);
+    });
+
+    it("does not fail pending calls when the same participant session resubscribes", async () => {
+      const { instance, sql } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+
+      const mockRpc = {
+        emit: vi.fn().mockResolvedValue(undefined),
+        call: vi.fn().mockResolvedValue(undefined),
+      };
+      (instance as any)._rpc = mockRpc;
+
+      sql.exec(
+        `INSERT INTO participants (id, metadata, transport, connected_at, session_id)
+         VALUES (?, ?, 'rpc', ?, ?)`,
+        "panel-1", '{"name":"old"}', Date.now(), "session-same",
+      );
+      sql.exec(
+        `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        "22222222-2222-4222-8222-222222222222",
+        "caller-1",
+        "panel-1",
+        "eval",
+        "{}",
+        0,
+        Date.now(),
+      );
+
+      await instance.subscribe("panel-1", {
+        contextId: "ctx-1",
+        transport: "rpc",
+        name: "same",
+        __participantSessionId: "session-same",
+      });
+
+      expect(sql.exec(`SELECT call_id FROM pending_calls`).toArray()).toEqual([
+        { call_id: "22222222-2222-4222-8222-222222222222" },
+      ]);
+      expect(mockRpc.call).not.toHaveBeenCalled();
+    });
   });
 
   describe("cancelMethodCall()", () => {
@@ -194,6 +289,113 @@ describe("PubSubChannel", () => {
   });
 
   describe("method result delivery", () => {
+    it("fails an in-flight rpc tool call when the target reconnects with a new session", async () => {
+      const { instance, sql } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+
+      const mockRpc = {
+        emit: vi.fn().mockResolvedValue(undefined),
+        call: vi.fn().mockResolvedValue(undefined),
+      };
+      (instance as any)._rpc = mockRpc;
+
+      sql.exec(
+        `INSERT INTO participants (id, metadata, transport, connected_at, session_id, do_source, do_class, do_key)
+         VALUES (?, '{}', 'do', ?, 'caller-session', 'workers/agent-worker', 'AiChatWorker', 'agent-1')`,
+        "do:workers/agent-worker:AiChatWorker:agent-1", Date.now(),
+      );
+      await instance.subscribe("panel-1", {
+        contextId: "ctx-1",
+        transport: "rpc",
+        name: "old-panel",
+        __participantSessionId: "session-old",
+      });
+
+      await instance.callMethod(
+        "do:workers/agent-worker:AiChatWorker:agent-1",
+        "panel-1",
+        "44444444-4444-4444-8444-444444444444",
+        "eval",
+        { code: "await new Promise(() => {})" },
+      );
+
+      expect(sql.exec(`SELECT call_id FROM pending_calls`).toArray()).toEqual([
+        { call_id: "44444444-4444-4444-8444-444444444444" },
+      ]);
+
+      await instance.subscribe("panel-1", {
+        contextId: "ctx-1",
+        transport: "rpc",
+        name: "new-panel",
+        __participantSessionId: "session-new",
+      });
+
+      expect(sql.exec(`SELECT call_id FROM pending_calls`).toArray()).toHaveLength(0);
+      expect(mockRpc.call).toHaveBeenCalledWith(
+        "do:workers/agent-worker:AiChatWorker:agent-1",
+        "onCallResult",
+        "44444444-4444-4444-8444-444444444444",
+        { error: "Target panel-1 was replaced by a new session before the call completed" },
+        true,
+      );
+    });
+
+    it("awaits intercepted method-result forwarding before publish resolves", async () => {
+      const { instance, sql } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+
+      let resolveCall: (() => void) | null = null;
+      const callPromise = new Promise<void>((resolve) => {
+        resolveCall = resolve;
+      });
+      const mockRpc = {
+        emit: vi.fn().mockResolvedValue(undefined),
+        call: vi.fn().mockImplementation(() => callPromise),
+      };
+      (instance as any)._rpc = mockRpc;
+
+      sql.exec(
+        `INSERT INTO participants (id, metadata, transport, connected_at, do_source, do_class, do_key)
+         VALUES (?, '{}', 'do', ?, 'workers/agent-worker', 'AiChatWorker', 'agent-1')`,
+        "do:workers/agent-worker:AiChatWorker:agent-1", Date.now(),
+      );
+      sql.exec(
+        `INSERT INTO participants (id, metadata, transport, connected_at)
+         VALUES (?, '{}', 'rpc', ?)`,
+        "panel-1", Date.now(),
+      );
+      sql.exec(
+        `INSERT INTO pending_calls (call_id, caller_id, target_id, method, args, expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        "33333333-3333-4333-8333-333333333333",
+        "do:workers/agent-worker:AiChatWorker:agent-1",
+        "panel-1",
+        "eval",
+        "{}",
+        0,
+        Date.now(),
+      );
+
+      let resolved = false;
+      const publishPromise = instance.publish("panel-1", "method-result", {
+        callId: "33333333-3333-4333-8333-333333333333",
+        content: { ok: true },
+        complete: true,
+        isError: false,
+      }, { persist: true }).then(() => {
+        resolved = true;
+      });
+
+      await Promise.resolve();
+      expect(resolved).toBe(false);
+
+      resolveCall?.();
+      await publishPromise;
+      expect(resolved).toBe(true);
+    });
+
     it("broadcasts a persisted method-result even when the caller is a DO", async () => {
       const { instance, sql } = await createTestDO(PubSubChannel, {
         __objectKey: "test-channel",

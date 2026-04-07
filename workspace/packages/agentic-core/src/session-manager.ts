@@ -715,20 +715,21 @@ export class SessionManager extends TypedEmitter<SessionManagerEvents> {
     const disconnectedIds: string[] = [];
 
     if (!this.suppressDisconnect) {
-      const changeIsGraceful =
-        roster.change?.type === "leave" && roster.change.leaveReason === "graceful";
+      const changeIsExpectedLeave =
+        roster.change?.type === "leave" &&
+        (roster.change.leaveReason === "graceful" || roster.change.leaveReason === "replaced");
 
       for (const prevId of prevIds) {
         if (!newIds.has(prevId)) {
           disconnectedIds.push(prevId);
-          if (changeIsGraceful && roster.change?.participantId === prevId) {
+          if (changeIsExpectedLeave && roster.change?.participantId === prevId) {
             continue;
           }
           const disconnected = prev[prevId];
           const meta = disconnected?.metadata;
           if (meta && meta.type !== "panel") {
             const isExpectedStop =
-              this.expectedStops.has(meta.handle) || changeIsGraceful;
+              this.expectedStops.has(meta.handle) || changeIsExpectedLeave;
             this.expectedStops.delete(meta.handle);
 
             if (!isExpectedStop) {

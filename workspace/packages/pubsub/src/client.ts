@@ -18,6 +18,7 @@ import type {
   Participant,
   Attachment,
   ChannelConfig,
+  LeaveReason,
 } from "./types.js";
 import type {
   IncomingEvent,
@@ -75,7 +76,7 @@ interface PresencePayload {
   action?: PresenceAction;
   metadata?: Record<string, unknown>;
   /** Reason for leave (only present when action === "leave") */
-  leaveReason?: "graceful" | "disconnect";
+  leaveReason?: LeaveReason;
 }
 
 /**

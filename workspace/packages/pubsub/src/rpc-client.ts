@@ -17,6 +17,7 @@ import type {
   UpdateMetadataOptions,
   Message,
   PubSubMessage,
+  LeaveReason,
 } from "./types.js";
 import { PubSubError } from "./types.js";
 import type {
@@ -51,6 +52,7 @@ import {
 } from "./protocol.js";
 import { aggregateReplayEvents } from "./aggregation.js";
 import { createFanout } from "./async-queue.js";
+import { PARTICIPANT_SESSION_METADATA_KEY } from "./internal-constants.js";
 import { base64ToUint8Array } from "./image-utils.js";
 import { zodToJsonSchema as convertZodToJsonSchema } from "zod-to-json-schema";
 import { z } from "zod";
@@ -58,7 +60,6 @@ import type { PubSubClient } from "./client.js";
 
 const CHANNEL_SOURCE = "workers/pubsub-channel";
 const CHANNEL_CLASS = "PubSubChannel";
-
 /** Wire attachment shape — base64 data string, not Uint8Array. */
 interface WireAttachment {
   id: string;
@@ -124,7 +125,7 @@ type PresenceAction = "join" | "leave" | "update";
 interface PresencePayload {
   action?: PresenceAction;
   metadata?: Record<string, unknown>;
-  leaveReason?: "graceful" | "disconnect";
+  leaveReason?: LeaveReason;
 }
 
 export interface RpcConnectOptions<T extends ParticipantMetadata = ParticipantMetadata> {
@@ -252,6 +253,10 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
     });
   }
+
+  // Stable for the lifetime of this client instance. Re-subscribe attempts
+  // reuse it; a panel reload creates a new one.
+  const participantSessionId = randomId();
 
   function handleError(error: PubSubError): void {
     for (const handler of errorHandlers) handler(error);
@@ -770,6 +775,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     type: opts.type,
     handle: opts.handle,
     transport: "rpc",
+    [PARTICIPANT_SESSION_METADATA_KEY]: participantSessionId,
     contextId: opts.contextId,
     channelConfig: opts.channelConfig ? opts.channelConfig : undefined,
     replayMessageLimit: opts.replayMessageLimit ?? 200,

@@ -7,6 +7,7 @@
 
 import type { SqlStorage } from "@workspace/runtime/worker";
 import type { ChannelEvent, ParticipantDescriptor } from "@natstack/harness/types";
+import { PARTICIPANT_SESSION_METADATA_KEY } from "../../pubsub/src/internal-constants.js";
 import type { DOIdentity } from "./identity.js";
 import type { ChannelClient } from "./channel-client.js";
 
@@ -62,6 +63,9 @@ export class SubscriptionManager {
       contextId: opts.contextId,
       ...opts.descriptor.metadata,
     };
+    if (this.identity.sessionId) {
+      metadata[PARTICIPANT_SESSION_METADATA_KEY] = this.identity.sessionId;
+    }
     if (opts.config && typeof opts.config === "object") {
       metadata["channelConfig"] = opts.config;
     }

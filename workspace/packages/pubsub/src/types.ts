@@ -140,8 +140,9 @@ export interface Participant<T extends ParticipantMetadata = ParticipantMetadata
  * Reason a participant left the channel.
  * - "graceful": Clean shutdown (e.g., idle timeout, explicit stop)
  * - "disconnect": Unexpected disconnection (crash, network loss)
+ * - "replaced": Same participant ID was rebound to a new client session
  */
-export type LeaveReason = "graceful" | "disconnect";
+export type LeaveReason = "graceful" | "disconnect" | "replaced";
 
 /**
  * Describes what triggered a roster update.
@@ -171,7 +172,7 @@ export interface RosterUpdate<T extends ParticipantMetadata = ParticipantMetadat
   /** What triggered this update (absent during initial catch-up emit on handler registration) */
   change?: RosterChange;
   /** Participants that left in this update, with reason (only present on leave events) */
-  leaves?: Record<string, { leaveReason?: "graceful" | "disconnect" }>;
+  leaves?: Record<string, { leaveReason?: LeaveReason }>;
 }
 
 /**
@@ -256,4 +257,3 @@ export interface FullConnectOptions<T extends ParticipantMetadata = ParticipantM
   /** Authentication token */
   token: string;
 }
-

@@ -45,7 +45,7 @@ export interface ChannelConfig {
 export interface PresencePayload {
   action: "join" | "leave" | "update";
   metadata: Record<string, unknown>;
-  leaveReason?: "graceful" | "disconnect";
+  leaveReason?: "graceful" | "disconnect" | "replaced";
 }
 
 /** Metadata passed alongside a ChannelEvent to broadcast(). */
