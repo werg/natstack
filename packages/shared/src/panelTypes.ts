@@ -5,17 +5,28 @@ import * as path from "path";
 export type {
   Panel,
   PanelSnapshot,
-  PanelManifest,
+  PackageManifest,
   ChildSpec,
 } from "./types.js";
 
-import type { PanelManifest } from "./types.js";
+import type { PackageManifest } from "./types.js";
+
+/**
+ * A panel manifest after `loadPanelManifest` validation: `title` is guaranteed
+ * to be a non-empty string. Use this return type when callers need a title
+ * without re-asserting.
+ */
+export type LoadedPanelManifest = PackageManifest & { title: string };
 
 /**
  * Load and validate a panel manifest from package.json.
- * Reads the natstack field and merges top-level dependencies.
+ *
+ * The TypeScript type (`PackageManifest`) is shared with workers, so all fields
+ * are optional. This loader enforces panel-specific runtime requirements: a
+ * `natstack` block must exist and `title` must be set. It also merges top-level
+ * `dependencies` into the manifest for the panel runtime's downstream use.
  */
-export function loadPanelManifest(panelPath: string): PanelManifest {
+export function loadPanelManifest(panelPath: string): LoadedPanelManifest {
   if (!path.isAbsolute(panelPath)) {
     throw new Error(`loadPanelManifest requires absolute path, got relative: ${panelPath}`);
   }
@@ -32,7 +43,7 @@ export function loadPanelManifest(panelPath: string): PanelManifest {
     throw new Error(`package.json in ${panelPath} must include a 'natstack' field`);
   }
 
-  const manifest = packageJson["natstack"] as PanelManifest;
+  const manifest = packageJson["natstack"] as PackageManifest;
 
   if (!manifest.title) {
     throw new Error("natstack.title must be specified in package.json");
@@ -47,7 +58,8 @@ export function loadPanelManifest(panelPath: string): PanelManifest {
     };
   }
 
-  return manifest;
+  // Title is guaranteed by the check above; the cast narrows the type.
+  return manifest as LoadedPanelManifest;
 }
 
 export interface PanelBuildResult {

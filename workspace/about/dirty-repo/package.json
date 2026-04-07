@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "private": true,
   "natstack": {
-    "type": "app",
     "title": "Uncommitted Changes",
     "shell": true,
     "hiddenInLauncher": true

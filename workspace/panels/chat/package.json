@@ -4,7 +4,6 @@
   "private": true,
   "type": "module",
   "natstack": {
-    "type": "app",
     "title": "Agentic Chat",
     "entry": "index.tsx",
     "stateArgs": {

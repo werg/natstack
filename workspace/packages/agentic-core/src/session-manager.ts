@@ -24,7 +24,7 @@ import type {
   AgentDebugPayload,
   TypingData,
 } from "@natstack/pubsub";
-import { CONTENT_TYPE_TYPING } from "@natstack/pubsub";
+import { CONTENT_TYPE_TYPING, isAgentParticipantType } from "@natstack/pubsub";
 import type { ScopeManager, ScopesApi } from "@workspace/eval";
 
 import { TypedEmitter } from "./emitter.js";
@@ -279,7 +279,7 @@ export class SessionManager extends TypedEmitter<SessionManagerEvents> {
     let targetId = agentId;
     if (!roster[agentId]) {
       const byHandle = Object.values(roster).find(
-        (p) => p.metadata.handle === agentId && p.metadata.type !== "panel"
+        (p) => p.metadata.handle === agentId && isAgentParticipantType(p.metadata.type)
       );
       if (byHandle) targetId = byHandle.id;
       else {
@@ -816,7 +816,7 @@ export class SessionManager extends TypedEmitter<SessionManagerEvents> {
     // Remove stale disconnect messages when an agent with the same handle reconnects
     const agentHandles = new Set(
       Object.values(newParticipants)
-        .filter((p) => p.metadata.type !== "panel")
+        .filter((p) => isAgentParticipantType(p.metadata.type))
         .map((p) => p.metadata.handle),
     );
     this.messageState.setMessages((msgs) => {

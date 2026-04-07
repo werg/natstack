@@ -33,30 +33,23 @@ export type {
 export type JsonSchema = Record<string, unknown>;
 
 /**
- * Standard participant type constants.
- * Use these instead of magic strings for participant type checks.
- */
-export const PARTICIPANT_TYPES = {
-  PANEL: "panel",
-  WORKER: "worker",
-  CLAUDE_AGENT: "claude-agent",
-  PI: "pi",
-  AI_RESPONDER: "ai-responder",
-} as const;
-
-export type ParticipantType = typeof PARTICIPANT_TYPES[keyof typeof PARTICIPANT_TYPES];
-
-/**
  * Participant metadata for agentic messaging.
  * Extends base pubsub metadata with name, type, handle, and optional method advertisements.
+ *
+ * Use the role-based predicates `isAgentParticipantType` /
+ * `isClientParticipantType` from `tracker-types.ts` to classify participants.
  */
 export interface AgenticParticipantMetadata extends ParticipantMetadata {
   /** Display name for this participant */
   name: string;
-  /** Participant type (e.g., "panel", "worker", "agent") */
+  /**
+   * Participant type. Canonical values are `"panel"`, `"headless"`, `"agent"`
+   * (see `ChatParticipantMetadata.type`); kept as `string` here for transport
+   * flexibility.
+   */
   type: string;
   /**
-   * Unique handle for @-mentions (e.g., "claude", "pi", "user").
+   * Unique handle for @-mentions (e.g., "user", "claude", "headless").
    * Must be unique within the channel. Conflicts cause connection errors.
    */
   handle: string;

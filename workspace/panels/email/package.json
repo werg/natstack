@@ -4,7 +4,6 @@
   "private": true,
   "type": "module",
   "natstack": {
-    "type": "app",
     "title": "Email",
     "entry": "index.tsx",
     "stateArgs": {

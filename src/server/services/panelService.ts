@@ -14,8 +14,7 @@ import type { PanelSearchIndex } from "@natstack/shared/db/panelSearchIndex";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { FsService } from "@natstack/shared/fsService";
 import type { GitServer } from "@natstack/git-server";
-import type { PanelManifest } from "@natstack/shared/types";
-import { loadPanelManifest } from "@natstack/shared/panelTypes";
+import { loadPanelManifest, type LoadedPanelManifest } from "@natstack/shared/panelTypes";
 import { validateStateArgs } from "@natstack/shared/stateArgsValidator";
 import { computePanelId } from "@natstack/shared/panelIdUtils";
 import {
@@ -89,7 +88,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
     absolutePath: string,
     relativePath: string,
     allowMissing: boolean,
-  ): PanelManifest {
+  ): LoadedPanelManifest {
     try {
       return loadPanelManifest(absolutePath);
     } catch (error) {

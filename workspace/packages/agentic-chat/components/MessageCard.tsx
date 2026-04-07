@@ -1,7 +1,7 @@
 import React, { useCallback } from "react";
 import { Box, Card, Flex, IconButton, Text } from "@radix-ui/themes";
 import { CopyIcon, CheckIcon } from "@radix-ui/react-icons";
-import { CONTENT_TYPE_INLINE_UI } from "@natstack/pubsub";
+import { CONTENT_TYPE_INLINE_UI, isClientParticipantType } from "@natstack/pubsub";
 import { TypingIndicator } from "./TypingIndicator";
 import { MessageContent } from "./MessageContent";
 import { ImageGallery } from "./ImageGallery";
@@ -93,7 +93,9 @@ export const MessageCard = React.memo(function MessageCard({
     );
   }
 
-  const isPanel = senderType === "panel";
+  // Client messages (panel, headless) render right-aligned in the user-side
+  // styling. Agent messages render left-aligned in the agent styling.
+  const isClient = isClientParticipantType(senderType);
   const hasError = Boolean(msg.error);
   const hasContent = msg.content.length > 0;
   const hasAttachments = msg.attachments && msg.attachments.length > 0;
@@ -102,14 +104,14 @@ export const MessageCard = React.memo(function MessageCard({
     <Box
       style={{
         maxWidth: "96%",
-        alignSelf: isPanel ? "flex-end" : "flex-start",
+        alignSelf: isClient ? "flex-end" : "flex-start",
       }}
     >
       <Card
         className="message-card"
         style={{
           position: "relative",
-          backgroundColor: isPanel
+          backgroundColor: isClient
             ? "var(--gray-5)"
             : msg.error
               ? "var(--red-3)"
@@ -119,7 +121,7 @@ export const MessageCard = React.memo(function MessageCard({
       >
         <Flex direction="column" gap="2">
           {hasContent && (
-            <Box style={{ color: isPanel ? "white" : "inherit" }}>
+            <Box style={{ color: isClient ? "white" : "inherit" }}>
               <MessageContent content={msg.content} isStreaming={isStreaming} />
             </Box>
           )}

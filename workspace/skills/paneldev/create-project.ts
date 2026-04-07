@@ -274,9 +274,12 @@ export class ${className} extends AgentWorkerBase {
 
   // --- Hook: Event filter ---
   // Override to control which channel events trigger an AI turn.
-  // Default: only panel-sent messages.
+  // Default: messages from client participants (panels + headless clients),
+  // classified via isClientParticipantType from @natstack/pubsub.
   // protected override shouldProcess(event: ChannelEvent): boolean {
-  //   return event.senderType === 'panel' && event.type === 'message';
+  //   if (event.type !== 'message') return false;
+  //   const senderType = event.senderMetadata?.["type"] as string | undefined;
+  //   return isClientParticipantType(senderType);
   // }
 
   // --- Hook: Turn input builder ---

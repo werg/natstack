@@ -32,11 +32,20 @@ Run agentic sessions (connection, messaging, eval, scope) without the chat panel
 
 ## Environment Compatibility
 
+Headless sessions use the same agent worker, system prompt, and tool surface as
+panel-hosted sessions. The only difference is the runtime environment: with no
+chat panel connected, UI-only tools simply aren't advertised on the channel and
+naturally drop out of the agent's tool list.
+
 | Capability | Panel | Headless |
 |------------|-------|----------|
 | eval | Yes | Yes (requires SandboxConfig) |
 | set_title | Yes | Yes |
 | scope persistence | Yes | Yes (auto-created when SandboxConfig provided) |
-| inline_ui | Yes | No (requires React + browser) |
-| feedback_form / feedback_custom | Yes | No (requires tool-ui) |
-| Tool approval UI | Yes | No (headless uses full-auto) |
+| inline_ui | Yes | No — no panel to render the component |
+| feedback_form / feedback_custom | Yes | No — no panel to render the form |
+| Tool approval UI | Yes | No — headless uses full-auto approval |
+
+The agent's prompt notes that these UI tools are runtime-dependent, so it
+automatically falls back to plain message replies for the same content when
+running headless.

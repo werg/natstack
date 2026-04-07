@@ -11,7 +11,7 @@
 
 import type { RuntimeFs } from "../types.js";
 import type { RpcBridge } from "@natstack/rpc";
-import { createRpcFs } from "./rpcFs.js";
+import { createRpcFs } from "../shared/rpcFs.js";
 
 let _fs: RuntimeFs | null = null;
 let _resolve: (() => void) | null = null;

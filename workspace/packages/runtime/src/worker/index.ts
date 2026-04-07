@@ -95,14 +95,9 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     return cachedRuntime;
   }
 
-  // Determine server URL: prefer explicit SERVER_URL, fall back to deriving from RPC_WS_URL
-  let serverUrl = env.SERVER_URL as string | undefined;
-  if (!serverUrl && env.RPC_WS_URL) {
-    // Derive HTTP URL from WebSocket URL (ws://host:port → http://host:port)
-    serverUrl = (env.RPC_WS_URL as string).replace(/^ws:\/\//, "http://").replace(/^wss:\/\//, "https://");
-  }
+  const serverUrl = env.SERVER_URL;
   if (!serverUrl) {
-    throw new Error("Worker env must provide SERVER_URL or RPC_WS_URL");
+    throw new Error("Worker env must provide SERVER_URL");
   }
 
   const selfId = `worker:${workerId}`;

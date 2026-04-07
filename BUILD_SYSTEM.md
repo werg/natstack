@@ -232,7 +232,6 @@ Unit metadata lives in `package.json` under the `natstack` key:
 {
   "name": "@workspace-about/model-provider-config",
   "natstack": {
-    "type": "app",
     "title": "Model Provider Config",
     "shell": true,
     "hiddenInLauncher": false,
@@ -247,7 +246,6 @@ Unit metadata lives in `package.json` under the `natstack` key:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `type` | — | Unit type (`"app"` for panels/about) |
 | `title` | package name | Display title (used in HTML `<title>` and launcher) |
 | `shell` | `false` | Grants shell service access (about pages) |
 | `hiddenInLauncher` | `false` | Hide from launcher UI |

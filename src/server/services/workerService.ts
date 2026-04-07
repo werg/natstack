@@ -50,26 +50,17 @@ export function createWorkerService(deps: {
           const graph = buildSystem.getGraph();
           return graph
             .allNodes()
-            .filter((n) => {
-              const manifest = n.manifest as Record<string, unknown>;
-              const durable = manifest["durable"] as { classes?: unknown[] } | undefined;
-              return (
-                n.kind === "worker" &&
-                durable &&
-                Array.isArray(durable.classes) &&
-                durable.classes.length > 0
-              );
-            })
-            .map((n) => {
-              const manifest = n.manifest as Record<string, unknown>;
-              const durable = manifest["durable"] as { classes: unknown[] };
-              return {
-                name: n.name,
-                source: n.relativePath,
-                title: n.manifest.title,
-                classes: durable.classes,
-              };
-            });
+            .filter((n) =>
+              n.kind === "worker" &&
+              n.manifest.durable &&
+              n.manifest.durable.classes.length > 0
+            )
+            .map((n) => ({
+              name: n.name,
+              source: n.relativePath,
+              title: n.manifest.title,
+              classes: n.manifest.durable!.classes,
+            }));
         }
 
         case "getChannelWorkers": {

@@ -8,8 +8,11 @@ export interface ChatDebugState {
 }
 
 /**
- * @deprecated Debug event and dirty repo warning state has moved to SessionManager
- * (exposed via useChatCore). This hook only manages the UI-specific debugConsoleAgent.
+ * UI-only state for the chat debug console.
+ *
+ * Debug event streams and dirty-repo warnings live on `SessionManager` (exposed
+ * via `useChatCore`). This hook just owns which agent the debug console is
+ * currently focused on — a pure React/UI concern.
  */
 export function useChatDebug(): ChatDebugState {
   const [debugConsoleAgent, setDebugConsoleAgent] = useState<string | null>(null);

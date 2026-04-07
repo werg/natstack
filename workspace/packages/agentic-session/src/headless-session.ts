@@ -1,15 +1,19 @@
 /**
  * HeadlessSession — Thin wrapper over SessionManager with headless defaults.
  *
- * Provides convenience for creating headless agentic sessions where:
- * - No interactive UI is available (no inline_ui, feedback_form, etc.)
- * - Full-auto approval is desired
+ * Provides convenience for creating agentic sessions without a chat panel:
+ * - Full-auto approval is desired (no human in the loop to approve tool calls)
  * - The session creates and owns its own channel
+ *
+ * The agent uses the same harness config and system prompt as panel-hosted
+ * sessions. UI-only tools (inline_ui, feedback_form, etc.) are simply absent
+ * from method discovery because no panel is connected to advertise them.
  */
 
 import {
   SessionManager,
   buildEvalTool,
+  isAgentParticipantType,
   type SessionManagerConfig,
   type ConnectOptions,
   type SendOptions,
@@ -26,7 +30,6 @@ import {
   DbScopePersistence,
 } from "@workspace/eval";
 import {
-  getRecommendedHarnessConfig,
   getRecommendedChannelConfig,
   subscribeHeadlessAgent,
   type SubscribeHeadlessAgentOptions,
@@ -82,8 +85,6 @@ export interface HeadlessSessionConfig {
   sandbox?: SandboxConfig;
   /** Optional pre-built ScopeManager (overrides automatic creation) */
   scopeManager?: ScopeManager;
-  /** Override the headless system prompt */
-  systemPrompt?: string;
 }
 
 export interface HeadlessWithAgentConfig extends HeadlessSessionConfig {
@@ -103,15 +104,14 @@ export interface HeadlessWithAgentConfig extends HeadlessSessionConfig {
   channelConfig?: ChannelConfig;
   /** Additional methods to register on the client (merged with default eval/set_title) */
   methods?: Record<string, MethodDefinition>;
-  /** Additional subscription config */
-  extraConfig?: Record<string, unknown>;
   /**
-   * When true, skip the restrictive headless prompt and tool allowlist.
-   * The agent gets the default NatStack chat prompt with all tools.
-   * Use when the session runs in a panel context where all capabilities
-   * (inline_ui, browser panels, feedback, etc.) are actually available.
+   * Optional system prompt to layer on top of the worker's default prompt.
+   * Appends by default — pass `systemPromptMode: "replace-natstack"` (or
+   * `"replace"`) via `extraConfig` to replace it instead.
    */
-  useDefaultPrompt?: boolean;
+  systemPrompt?: string;
+  /** Additional subscription config (e.g., model, temperature, systemPromptMode) */
+  extraConfig?: Record<string, unknown>;
 }
 
 // =============================================================================
@@ -120,14 +120,12 @@ export interface HeadlessWithAgentConfig extends HeadlessSessionConfig {
 
 export class HeadlessSession {
   private _manager: SessionManager;
-  private _systemPrompt: string | undefined;
   private _sandbox: SandboxConfig | null;
   private _scopeManager: ScopeManager | null;
   private _clientId: string;
   private _createdAt = Date.now();
 
   private constructor(config: HeadlessSessionConfig, channelId?: string) {
-    this._systemPrompt = config.systemPrompt;
     this._sandbox = config.sandbox ?? null;
     this._clientId = config.config.clientId;
 
@@ -148,7 +146,7 @@ export class HeadlessSession {
       config: config.config,
       metadata: config.metadata ?? {
         name: "Headless Client",
-        type: "panel",
+        type: "headless",
         handle: "headless",
       },
       sandbox: config.sandbox,
@@ -175,7 +173,6 @@ export class HeadlessSession {
     const session = new HeadlessSession(config, channelId);
 
     // Subscribe the DO agent to the channel with headless defaults
-    const hasEval = !!config.sandbox;
     await subscribeHeadlessAgent({
       rpcCall: config.rpcCall,
       source: config.source,
@@ -184,8 +181,6 @@ export class HeadlessSession {
       channelId,
       contextId: config.contextId,
       systemPrompt: config.systemPrompt,
-      hasEval,
-      useDefaultPrompt: config.useDefaultPrompt,
       extraConfig: config.extraConfig,
     });
 
@@ -421,10 +416,6 @@ export class HeadlessSession {
   // Headless-specific
   // ===========================================================================
 
-  getRecommendedHarnessConfig() {
-    return getRecommendedHarnessConfig({ systemPrompt: this._systemPrompt, hasEval: !!this._sandbox });
-  }
-
   getRecommendedChannelConfig() {
     return getRecommendedChannelConfig();
   }
@@ -452,10 +443,11 @@ export class HeadlessSession {
       !msg.pending &&
       msg.contentType !== "thinking";
 
-    // Collect non-panel agent handles we know about
+    // Collect agent handles we know about (positive match — only true agents,
+    // never another panel/headless client that happens to be on the channel).
     const knownAgentHandles = new Set<string>();
     for (const p of Object.values(this._manager.allParticipants)) {
-      if (p.metadata.type !== "panel") {
+      if (isAgentParticipantType(p.metadata.type)) {
         knownAgentHandles.add(p.metadata.handle);
       }
     }
@@ -491,7 +483,7 @@ export class HeadlessSession {
             const handle = msg.disconnectedAgent.handle;
             if (knownAgentHandles.has(handle)) {
               knownAgentHandles.delete(handle);
-              // If no non-panel agents remain, reject
+              // If no agents remain, reject
               if (knownAgentHandles.size === 0) {
                 cleanup(() => reject(new HeadlessTimeoutError(
                   `Agent disconnected: ${msg.disconnectedAgent!.name}`,
@@ -532,10 +524,11 @@ export class HeadlessSession {
     const isMethodMessage = (msg: ChatMessage): boolean =>
       msg.kind === "method" && !!msg.method;
 
-    // Collect non-panel agent handles we know about
+    // Collect agent handles we know about (positive match — only true agents,
+    // never another panel/headless client that happens to be on the channel).
     const knownAgentHandles = new Set<string>();
     for (const p of Object.values(this._manager.allParticipants)) {
-      if (p.metadata.type !== "panel") {
+      if (isAgentParticipantType(p.metadata.type)) {
         knownAgentHandles.add(p.metadata.handle);
       }
     }

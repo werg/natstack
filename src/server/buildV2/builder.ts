@@ -679,14 +679,29 @@ function generatePanelHtml(
 // Entry point wrappers
 // ---------------------------------------------------------------------------
 
-function generateModuleMapBootstrap(): string {
-  return `globalThis.__natstackModuleMap__ = globalThis.__natstackModuleMap__ || {};
-globalThis.__natstackModuleLoadingPromises__ = globalThis.__natstackModuleLoadingPromises__ || {};
+/**
+ * Bootstrap target. Determines which globals are emitted:
+ * - `"panel"` — full bootstrap including `__natstackRequireAsync__`, which uses
+ *   browser-native `import(id)` to lazily load unbundled modules. Used by
+ *   `compileComponent` (inline_ui / feedback_custom).
+ * - `"worker"` — bootstrap without `__natstackRequireAsync__`. workerd does not
+ *   support dynamic `import(id)` of arbitrary specifiers, and no worker code
+ *   path consumes the async fallback (compileComponent is panel-only).
+ */
+export type BootstrapTarget = "panel" | "worker";
+
+export function generateModuleMapBootstrap(target: BootstrapTarget = "panel"): string {
+  const base = `globalThis.__natstackModuleMap__ = globalThis.__natstackModuleMap__ || {};
 globalThis.__natstackRequire__ = function(id) {
   const mod = globalThis.__natstackModuleMap__[id];
   if (mod) return mod;
   throw new Error('Module "' + id + '" not available via __natstackRequire__');
-};
+};`;
+
+  if (target === "worker") return base;
+
+  return `${base}
+globalThis.__natstackModuleLoadingPromises__ = globalThis.__natstackModuleLoadingPromises__ || {};
 globalThis.__natstackRequireAsync__ = async function(id) {
   if (globalThis.__natstackModuleMap__[id]) return globalThis.__natstackModuleMap__[id];
   if (globalThis.__natstackModuleLoadingPromises__[id]) return globalThis.__natstackModuleLoadingPromises__[id];
@@ -701,7 +716,10 @@ globalThis.__natstackRequireAsync__ = async function(id) {
 };`;
 }
 
-function generateExposeModuleCode(exposeModules: string[]): string {
+export function generateExposeModuleCode(
+  exposeModules: string[],
+  target: BootstrapTarget = "panel",
+): string {
   const importLines = exposeModules.map(
     (dep, index) => `import * as __mod${index}__ from ${JSON.stringify(dep)};`,
   );
@@ -710,7 +728,7 @@ function generateExposeModuleCode(exposeModules: string[]): string {
       `globalThis.__natstackModuleMap__[${JSON.stringify(dep)}] = __mod${index}__;`,
   );
 
-  return `${generateModuleMapBootstrap()}
+  return `${generateModuleMapBootstrap(target)}
 ${importLines.join("\n")}
 ${registerLines.join("\n")}
 `;
@@ -726,6 +744,26 @@ function generatePanelEntry(
   adapter: FrameworkAdapter,
 ): string {
   return adapter.generateEntry(exposeEntryFile, entryFile);
+}
+
+/**
+ * Generate a worker entry wrapper.
+ *
+ * Workers run in workerd as ES modules: workerd reads `default` for the fetch
+ * handler and named exports for Durable Object classes. The wrapper imports
+ * the expose file (so __natstackRequire__/__natstackModuleMap__ are populated
+ * before any user code runs) and then re-exports everything from the user
+ * entry to preserve the workerd module shape.
+ *
+ * `export *` covers named exports (including DO classes); `export { default }`
+ * covers the default fetch handler. Together they reproduce the original
+ * module's public surface for workerd, with the bootstrap as a side effect.
+ */
+export function generateWorkerEntry(exposeEntryFile: string, entryFile: string): string {
+  return `import ${JSON.stringify(exposeEntryFile)};
+export * from ${JSON.stringify(entryFile)};
+export { default } from ${JSON.stringify(entryFile)};
+`;
 }
 
 // ---------------------------------------------------------------------------
@@ -943,7 +981,7 @@ async function buildPanel(
 
   // Generate expose/wrapper entries.
   const exposePath = path.join(outdir, "_expose.js");
-  fs.writeFileSync(exposePath, generateExposeModuleCode(exposeModules));
+  fs.writeFileSync(exposePath, generateExposeModuleCode(exposeModules, "panel"));
 
   const wrapperCode = generatePanelEntry(exposePath, entryFile, adapter);
   const wrapperPath = path.join(outdir, "_entry.js");
@@ -1117,7 +1155,27 @@ async function buildWorker(
   // manifest.externals is intentionally ignored (unlike panels which can use
   // import maps, workers have no way to resolve external imports).
 
-  const dedupePackages = normalizeManifestSpecList(node.manifest.dedupeModules);
+  // Read extracted manifest (matches the panel build's source-of-truth pattern).
+  // Reading from extracted source rather than `node.manifest` ensures ref-pinned
+  // builds use the manifest from the requested git ref, not the working tree.
+  const workerSourcePath = path.join(sourceRoot, node.relativePath);
+  const extractedPkgPath = path.join(workerSourcePath, "package.json");
+  const extractedPkg = JSON.parse(fs.readFileSync(extractedPkgPath, "utf-8"));
+  const extractedManifest = extractedPkg.natstack ?? {};
+  const exposeModules = normalizeManifestSpecList(extractedManifest.exposeModules);
+  const dedupePackages = normalizeManifestSpecList(extractedManifest.dedupeModules);
+
+  // Generate the expose entry (always — even with empty exposeModules, this
+  // sets up __natstackRequire__/__natstackModuleMap__ so eval has a working
+  // require() in the worker context). Then wrap the user entry so the
+  // bootstrap runs before user code, and re-export the user module's surface
+  // (default fetch handler + named DO classes) for workerd.
+  const exposePath = path.join(outdir, "_expose.js");
+  fs.writeFileSync(exposePath, generateExposeModuleCode(exposeModules, "worker"));
+
+  const wrapperCode = generateWorkerEntry(exposePath, entryFile);
+  const wrapperPath = path.join(outdir, "_entry.js");
+  fs.writeFileSync(wrapperPath, wrapperCode);
 
   const plugins: esbuild.Plugin[] = [
     createWorkspaceResolvePlugin(graph, workspaceRoot, sourceRoot, WORKER_CONDITIONS),
@@ -1130,7 +1188,7 @@ async function buildWorker(
 
   try {
     await esbuild.build({
-      entryPoints: [entryFile],
+      entryPoints: [wrapperPath],
       bundle: true,
       platform: "neutral",
       target: "es2022",

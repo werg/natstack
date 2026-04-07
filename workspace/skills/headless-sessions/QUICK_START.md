@@ -5,12 +5,11 @@
 The simplest way to run a headless agentic session with eval support:
 
 ```typescript
-import { HeadlessSession } from "@workspace/agentic-session";
-import { createNodeSandboxConfig } from "@workspace/agentic-session";
+import { HeadlessSession, createRpcSandboxConfig } from "@workspace/agentic-session";
 
 const session = await HeadlessSession.createWithAgent({
   config: { serverUrl: pubsubUrl, token, clientId: "my-harness" },
-  sandbox: createNodeSandboxConfig(rpcClient),
+  sandbox: createRpcSandboxConfig(rpcClient),
   rpcCall: (t, m, ...a) => rpcClient.call(t, m, ...a),
   source: "workers/agent-worker",
   className: "AiChatWorker",
@@ -28,10 +27,12 @@ await session.close();
 
 This automatically:
 - Creates a unique channel and subscribes the DO agent
-- Configures full-auto approval (no UI needed)
+- Configures full-auto approval (no human in the loop)
 - Registers eval and set_title methods on the client
 - Creates a ScopeManager for persistent scope across eval calls
-- Uses a headless system prompt (no inline_ui/feedback references)
+- Uses the worker's normal NatStack prompt and tool surface — UI tools like
+  inline_ui and feedback_form simply aren't advertised, so the agent naturally
+  falls back to plain message replies
 
 ## 2. Two-step: Create then Connect
 
@@ -44,7 +45,7 @@ import { subscribeHeadlessAgent } from "@workspace/agentic-session";
 // Create session
 const session = HeadlessSession.create({
   config: { serverUrl: pubsubUrl, token, clientId: "my-harness" },
-  sandbox: createNodeSandboxConfig(rpcClient),
+  sandbox: createRpcSandboxConfig(rpcClient),
 });
 
 // Subscribe agent separately
@@ -92,7 +93,8 @@ When you don't need eval/scope — just messaging:
 ```typescript
 const session = await HeadlessSession.createWithAgent({
   config: { serverUrl: pubsubUrl, token, clientId: "messaging-only" },
-  // No sandbox → no eval, toolAllowlist is ["set_title"] only
+  // No sandbox → eval method is not registered on the client, so the agent
+  // only sees set_title in its discovered tools.
   rpcCall: (t, m, ...a) => rpcClient.call(t, m, ...a),
   source: "workers/agent-worker",
   className: "AiChatWorker",
@@ -100,17 +102,19 @@ const session = await HeadlessSession.createWithAgent({
 });
 ```
 
-The headless prompt automatically adjusts — it won't mention eval, and the harness config restricts the agent to set_title only.
+Without a sandbox, the headless client only advertises `set_title`. The agent's
+prompt is unchanged, but its discovered tool list naturally narrows to what's
+available.
 
 ## 5. Worker/DO Context
 
 From inside a Durable Object or worker:
 
 ```typescript
-import { createWorkerSandboxConfig } from "@workspace/agentic-session";
+import { createRpcSandboxConfig } from "@workspace/agentic-session";
 
 // rpc is available in the worker runtime
-const sandbox = createWorkerSandboxConfig(rpc);
+const sandbox = createRpcSandboxConfig(rpc);
 
 const session = await HeadlessSession.createWithAgent({
   config: { serverUrl: pubsubUrl, token, clientId: `worker-${objectKey}` },
@@ -127,7 +131,6 @@ const session = await HeadlessSession.createWithAgent({
 | Factory | Context | db.open behavior |
 |---------|---------|-----------------|
 | `createPanelSandboxConfig(rpc, db)` | Panel (browser) | Direct DB handle from panel runtime |
-| `createWorkerSandboxConfig(rpc)` | Worker/DO | RPC handle → DbHandle proxy (exec/run/get/query/close via RPC) |
-| `createNodeSandboxConfig(rpcClient)` | Node.js server | RPC handle → DbHandle proxy (same as worker) |
+| `createRpcSandboxConfig(rpc)` | Worker/DO or Node server | RPC handle → DbHandle proxy (exec/run/get/query/close via RPC) |
 
-All three route `loadImport` through `build.getBuild` / `build.getBuildNpm` RPC calls.
+Both route `loadImport` through `build.getBuild` / `build.getBuildNpm` RPC calls.

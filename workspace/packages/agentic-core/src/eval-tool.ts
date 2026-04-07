@@ -42,10 +42,20 @@ export function buildEvalTool(opts: BuildEvalToolOptions): MethodDefinition {
   return {
     description: `Execute TypeScript/JavaScript code in the sandbox.
 
-Available imports (static — no \`imports\` parameter needed):
-- \`@workspace/runtime\` — rpc, fs, db, workers, ai, contextId, panel navigation
-- \`react\`, \`@radix-ui/themes\`, \`@radix-ui/react-icons\` — UI components
-- \`isomorphic-git\` — git operations
+Ambient imports (static — no \`imports\` parameter needed):
+- \`@workspace/runtime\` — rpc, fs, db, workers, ai, contextId. Resolves to the
+  panel variant (with panel navigation, browser APIs) inside chat panels and to
+  the worker variant (DO base, workspace/oauth/notifications clients) inside
+  worker contexts. Same canonical import in both.
+- In chat-panel contexts only: \`react\`, \`@radix-ui/themes\`, \`@radix-ui/react-icons\`
+  for inline_ui/feedback_custom components, plus \`isomorphic-git\` for git ops.
+- In worker contexts only: \`@natstack/pubsub\` and \`zod\` for channel/schema
+  work alongside the runtime APIs. (\`@natstack/harness\` types are usable via
+  \`import type\` only — its runtime contains Node-only deps that aren't bundled
+  for workerd.)
+
+The exact ambient set depends on the host's \`exposeModules\` manifest. If a
+specific package isn't ambient, request it via \`imports\`.
 
 On-demand imports (use \`imports\` parameter):
 - \`@workspace-skills/*\` — skill packages (value: "latest")

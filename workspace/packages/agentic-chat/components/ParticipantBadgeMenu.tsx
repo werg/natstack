@@ -2,6 +2,7 @@ import { useState, useCallback, useMemo } from "react";
 import { Badge, DropdownMenu, Text } from "@radix-ui/themes";
 import { DotFilledIcon, TriangleDownIcon } from "@radix-ui/react-icons";
 import type { Participant, MethodAdvertisement, ContextWindowUsage } from "@natstack/pubsub";
+import { isAgentParticipantType } from "@workspace/agentic-core";
 import type { ChatParticipantMetadata } from "../types";
 import { MethodArgumentsModal } from "./MethodArgumentsModal";
 import { schemaHasRequiredParams } from "./JsonSchemaForm";
@@ -24,14 +25,10 @@ function getParticipantColor(type: string) {
   switch (type) {
     case "panel":
       return "blue";
-    case "ai-responder":
-      return "purple";
-    case "claude-agent":
-      return "orange";
-    case "pi":
+    case "headless":
       return "teal";
-    case "subagent":
-      return "cyan";
+    case "agent":
+      return "purple";
     default:
       return "gray";
   }
@@ -83,7 +80,7 @@ export function ParticipantBadgeMenu({
 
   const color = getParticipantColor(participant.metadata.type);
   const hasMenuItems = menuMethods.length > 0;
-  const isAgent = participant.metadata.type !== "panel";
+  const isAgent = isAgentParticipantType(participant.metadata.type);
   const isPlanMode = participant.metadata.executionMode === "plan";
   const activeModel = participant.metadata.activeModel;
 

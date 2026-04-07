@@ -19,6 +19,12 @@ export type {
   ToolProvider,
 } from "./types.js";
 
+// Re-exported from @natstack/pubsub for convenience — canonical role-based
+// predicates for distinguishing agent participants from client participants.
+// They live in pubsub so lower-level packages (agentic-do) can use them
+// without depending on agentic-core.
+export { isAgentParticipantType, isClientParticipantType } from "@natstack/pubsub";
+
 // --- Message Reducer ---
 export {
   messageWindowReducer,

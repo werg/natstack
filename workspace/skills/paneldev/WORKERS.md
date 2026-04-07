@@ -29,7 +29,7 @@ export default {
   "name": "@workspace-workers/hello",
   "private": true,
   "type": "module",
-  "natstack": { "type": "worker", "entry": "index.ts", "title": "Hello Worker" },
+  "natstack": { "entry": "index.ts", "title": "Hello Worker" },
   "dependencies": {
     "@workspace/runtime": "workspace:*"
   }
@@ -49,7 +49,6 @@ export default { fetch(_req: Request) { return new Response("my-agent DO service
 {
   "name": "@workspace-workers/my-agent",
   "natstack": {
-    "type": "worker",
     "entry": "index.ts",
     "durable": {
       "classes": [{ "className": "MyAgentWorker" }]
@@ -374,18 +373,18 @@ if (config?.model) {
 }
 ```
 
-The built-in `AiChatWorker` merges subscription config with `getHarnessConfig()` automatically -- per-channel overrides for `systemPrompt`, `model`, `temperature`, `maxTokens`, and `toolAllowlist` take precedence. The `toolAllowlist` merge uses intersection semantics — a subscription can only restrict, not expand.
+The built-in `AiChatWorker` merges subscription config with `getHarnessConfig()` automatically -- per-channel overrides for `systemPrompt`, `model`, `temperature`, and `maxTokens` take precedence. `toolAllowlist` is sourced exclusively from the worker class (`getHarnessConfig`) — subscriptions cannot override it. The worker defines the upper bound of tools it's willing to expose, and natural method discovery handles the lower bound (a tool only appears if some participant actually advertises it).
 
 ## Headless Agentic Sessions
 
 To run an agentic session without a chat panel (from a worker, test harness, or server), use `@workspace/agentic-session`. See the **headless-sessions** skill for full documentation.
 
 ```typescript
-import { HeadlessSession, createWorkerSandboxConfig } from "@workspace/agentic-session";
+import { HeadlessSession, createRpcSandboxConfig } from "@workspace/agentic-session";
 
 const session = await HeadlessSession.createWithAgent({
   config: { serverUrl: pubsubUrl, token, clientId: `worker-${objectKey}` },
-  sandbox: createWorkerSandboxConfig(rpc),
+  sandbox: createRpcSandboxConfig(rpc),
   rpcCall: (t, m, ...a) => rpc.call(t, m, ...a),
   source: "agent-worker",
   className: "AiChatWorker",
@@ -427,7 +426,7 @@ workerd injects these bindings automatically:
 
 | Binding | Type | Description |
 |---------|------|-------------|
-| `RPC_WS_URL` | string | WebSocket endpoint for RPC |
+| `SERVER_URL` | string | HTTP base URL for the RPC server |
 | `RPC_AUTH_TOKEN` | string | Auth token for handshake |
 | `WORKER_ID` | string | Instance name (e.g., `"hello"`) |
 | `CONTEXT_ID` | string | Context ID for storage partition |

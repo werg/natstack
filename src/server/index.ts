@@ -765,12 +765,9 @@ async function main() {
           const doClasses: Array<{ source: string; className: string }> = [];
           for (const node of graph.allNodes()) {
             if (node.kind !== "worker") continue;
-            const manifest = node.manifest as Record<string, unknown>;
-            const durable = manifest["durable"] as { classes?: Array<{ className: string }> } | undefined;
-            if (durable?.classes) {
-              for (const cls of durable.classes) {
-                doClasses.push({ source: node.relativePath, className: cls.className });
-              }
+            if (!node.manifest.durable) continue;
+            for (const cls of node.manifest.durable.classes) {
+              doClasses.push({ source: node.relativePath, className: cls.className });
             }
           }
           if (doClasses.length > 0) {

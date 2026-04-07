@@ -8,13 +8,17 @@
 
 import type {
   MethodAdvertisement,
-  ContextWindowUsage,
   AgentBuildError,
   Attachment,
   MethodDefinition,
 } from "@natstack/pubsub";
 import type { ScopesApi, DbHandle } from "@workspace/eval";
 import type { SandboxOptions, SandboxResult } from "@workspace/eval";
+
+// The canonical participant metadata shape lives in @natstack/pubsub so that
+// lower-level packages (like @workspace/agentic-do, which can't depend on
+// agentic-core) and higher-level chat consumers see exactly the same type.
+export type { ChatParticipantMetadata } from "@natstack/pubsub";
 
 // ===========================================================================
 // Method History Types (moved from MethodHistoryItem.tsx)
@@ -52,27 +56,6 @@ export interface PendingAgent {
   agentId: string;
   status: PendingAgentStatus;
   error?: AgentBuildError;
-}
-
-/** Metadata for participants in this channel */
-export interface ChatParticipantMetadata {
-  name: string;
-  type: "panel" | "ai-responder" | "claude-agent" | "pi" | "subagent";
-  handle: string;
-  /** Methods this participant provides (for menu display) */
-  methods?: MethodAdvertisement[];
-  /** Runtime panel/worker ID - allows linking participant to child panel for focus/reload */
-  panelId?: string;
-  /** Agent type ID for identification (e.g., "claude-agent-responder") */
-  agentTypeId?: string;
-  /** Context window usage tracking (updated by AI responders) */
-  contextUsage?: ContextWindowUsage;
-  /** Execution mode - "plan" for planning only, "edit" for full execution */
-  executionMode?: "plan" | "edit";
-  /** Display name of the model currently in use (e.g., "Claude Opus 4.6") */
-  activeModel?: string;
-  /** Index signature to satisfy ParticipantMetadata constraint */
-  [key: string]: unknown;
 }
 
 /** Info about a disconnected agent for notification display */

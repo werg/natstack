@@ -10,7 +10,7 @@
 
 import { DurableObjectBase, type DurableObjectContext, type DORef } from "@workspace/runtime/worker";
 import type { ChannelEvent, HarnessConfig, HarnessOutput, TurnInput, ParticipantDescriptor, UnsubscribeResult, Attachment } from "@natstack/harness/types";
-import { needsApprovalForTool } from "@natstack/pubsub";
+import { needsApprovalForTool, isClientParticipantType } from "@natstack/pubsub";
 
 import { DOIdentity } from "./identity.js";
 import { SubscriptionManager } from "./subscription-manager.js";
@@ -81,7 +81,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   // --- Identity bootstrap ---
   // Self-bootstraps from env bindings (WORKER_SOURCE, WORKER_CLASS_NAME, WORKERD_SESSION_ID)
   // and objectKey (parsed from request URL by DurableObjectBase.fetch()).
-  // Also callable externally for backward compatibility.
 
   private _bootstrapped = false;
 
@@ -115,17 +114,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
   }
 
-  async bootstrap(doRef: DORef, sessionId: string): Promise<void> {
-    const { isRestart } = this.identity.bootstrap(doRef, sessionId);
-    if (isRestart) {
-      this.harnesses.markCrashedOnRestart();
-      this.turns.clearAllActive();
-      this.turns.clearAllInFlight();
-      this.continuations.deleteAll();
-    }
-    this._bootstrapped = true;
-  }
-
   // --- Convenience accessors (delegate to identity) ---
 
   protected get doRef(): DORef {
@@ -144,8 +132,14 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   protected getHarnessConfig(): HarnessConfig { return {}; }
 
   protected shouldProcess(event: ChannelEvent): boolean {
-    if ((event.senderMetadata?.["type"] as string | undefined) !== 'panel' || event.type !== 'message') return false;
+    if (event.type !== 'message') return false;
     if (event.contentType) return false;
+    // Positive whitelist: only process messages from known client participant
+    // types (panels, headless clients). This prevents agent-to-agent loops AND
+    // prevents unlabeled participants from accidentally driving the worker.
+    // To accept a new client kind, add it to isClientParticipantType.
+    const senderType = event.senderMetadata?.["type"] as string | undefined;
+    if (!isClientParticipantType(senderType)) return false;
     return true;
   }
 
@@ -232,7 +226,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     return { harnessIds };
   }
 
-  // --- Delegated helpers (backward-compatible API for subclasses) ---
+  // --- Delegated helpers (subclass API) ---
 
   protected getActiveHarness(): string | null {
     return this.harnesses.getActive();

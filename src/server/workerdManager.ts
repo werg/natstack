@@ -318,7 +318,6 @@ export class WorkerdManager {
       const serviceToken = this.deps.tokenManager.ensureToken(serviceCallerId, "worker");
 
       const bindings: object[] = [
-        { name: "RPC_WS_URL", text: `ws://127.0.0.1:${this.deps.getRpcPort()}` },
         { name: "RPC_AUTH_TOKEN", text: serviceToken },
         // Source-scoped class identity
         { name: "WORKER_SOURCE", text: doService.source },
@@ -373,7 +372,6 @@ export class WorkerdManager {
 
       // Build bindings array
       const bindings: object[] = [
-        { name: "RPC_WS_URL", text: `ws://127.0.0.1:${this.deps.getRpcPort()}` },
         { name: "RPC_AUTH_TOKEN", text: instance.token },
         { name: "WORKER_ID", text: instance.name },
         { name: "CONTEXT_ID", text: instance.contextId },
@@ -794,7 +792,9 @@ ${doBlock}${cases.join("\n")}
   /**
    * Ensure a Durable Object class is registered and workerd is running.
    * DOs self-bootstrap from env bindings on first request — no external bootstrap call needed.
-   * Kept for backward compatibility with DODispatch retry path.
+   * Used by the DODispatch retry path: when a dispatch fails with a retryable error
+   * (DO class not registered, workerd restarted, ECONNREFUSED), DODispatch calls
+   * this to (re-)register the class and restart workerd, then retries once.
    */
   async ensureDO(source: string, className: string, _objectKey: string): Promise<void> {
     await this.ensureDOClass(source, className);

@@ -83,8 +83,6 @@ export class HarnessManager {
     ).toArray();
     if (row.length === 0) return false;
     const stored = row[0]!["workerd_session_id"] as string | null;
-    // If no session stored (legacy harness), allow it
-    if (!stored) return true;
     return stored === currentSessionId;
   }
 

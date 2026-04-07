@@ -21,6 +21,7 @@ import type {
 import type { MethodDefinition } from "@natstack/pubsub";
 import {
   SessionManager,
+  isAgentParticipantType,
   type SessionManagerConfig,
   type MessageWindowState,
   type MessageWindowAction,
@@ -406,7 +407,7 @@ export function useChatCore({
       const roster = participantsRef.current;
       let resolvedId = agentId;
       if (!roster[agentId] && agentHandle) {
-        const byHandle = Object.values(roster).find(p => p.metadata.handle === agentHandle && p.metadata.type !== "panel");
+        const byHandle = Object.values(roster).find(p => p.metadata.handle === agentHandle && isAgentParticipantType(p.metadata.type));
         if (byHandle) { resolvedId = byHandle.id; } else { console.warn(`Cannot interrupt: agent ${agentHandle} not in roster`); return; }
       }
       await manager.interrupt(resolvedId);

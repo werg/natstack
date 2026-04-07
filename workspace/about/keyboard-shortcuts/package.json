@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "private": true,
   "natstack": {
-    "type": "app",
     "title": "Keyboard Shortcuts",
     "description": "View and customize keyboard shortcuts",
     "shell": true,

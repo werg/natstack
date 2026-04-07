@@ -126,7 +126,7 @@ function buildActiveTypingItems(messages: ChatMessage[]): InlineItem[] {
 /** Sender info returned by getSenderInfo */
 export interface SenderInfo {
   name: string;
-  type: "panel" | "ai-responder" | "claude-agent" | "pi" | "subagent" | "unknown";
+  type: "panel" | "headless" | "agent" | "unknown";
   handle: string;
 }
 

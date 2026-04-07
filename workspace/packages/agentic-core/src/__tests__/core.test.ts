@@ -740,7 +740,7 @@ describe("dispatchAgenticEvent", () => {
       id: "provider-1",
       metadata: {
         name: "AI Agent",
-        type: "ai-responder",
+        type: "agent",
         handle: "claude",
         methods: [{ name: "doStuff", description: "Does stuff", parameters: {} }],
       },
@@ -819,7 +819,7 @@ describe("dispatchAgenticEvent", () => {
         id: "msg-1",
         senderId: "agent-1",
         kind: "persisted",
-        senderMetadata: { type: "ai-responder", name: "Agent", handle: "claude" },
+        senderMetadata: { type: "agent", name: "Agent", handle: "claude" },
       });
       dispatchAgenticEvent(event, handlers, selfId, participants);
       expect(getMessages()[0]!.complete).toBe(false);
@@ -849,12 +849,12 @@ describe("dispatchAgenticEvent", () => {
       const event = makeIncomingMessage({
         id: "msg-1",
         senderId: "agent-1",
-        senderMetadata: { name: "Claude", type: "ai-responder", handle: "claude" },
+        senderMetadata: { name: "Claude", type: "agent", handle: "claude" },
       });
       dispatchAgenticEvent(event, handlers, selfId, participants);
       expect(getMessages()[0]!.senderMetadata).toEqual({
         name: "Claude",
-        type: "ai-responder",
+        type: "agent",
         handle: "claude",
       });
     });
@@ -1113,7 +1113,7 @@ describe("aggregatedToChatMessage", () => {
       pubsubId: 42,
       senderId: "agent-1",
       senderName: "Claude",
-      senderType: "ai-responder",
+      senderType: "agent",
       senderHandle: "claude",
       ts: 12345,
       id: "msg-1",
@@ -1527,72 +1527,3 @@ describe("SessionManager", () => {
   });
 });
 
-// ============================================================================
-// toolAllowlist intersection logic
-// ============================================================================
-
-describe("toolAllowlist intersection logic", () => {
-  /**
-   * Port of the merging logic from ai-chat-worker.ts buildHarnessConfig:
-   * subscription toolAllowlist is intersected with the base (channel-level)
-   * allowlist so a subscription can never expand beyond what the channel allows.
-   */
-  function mergeToolAllowlist(
-    base: string[] | undefined,
-    sub: string[] | undefined,
-  ): string[] | undefined {
-    if (sub && base) {
-      const baseSet = new Set(base);
-      return sub.filter((t) => baseSet.has(t));
-    } else if (sub) {
-      return sub;
-    }
-    return base;
-  }
-
-  it("intersects when both present", () => {
-    expect(
-      mergeToolAllowlist(["eval", "set_title", "inline_ui"], ["eval", "set_title"]),
-    ).toEqual(["eval", "set_title"]);
-  });
-
-  it("subscription cannot expand beyond base", () => {
-    expect(mergeToolAllowlist(["eval"], ["eval", "inline_ui"])).toEqual(["eval"]);
-  });
-
-  it("uses subscription when no base", () => {
-    expect(mergeToolAllowlist(undefined, ["eval", "set_title"])).toEqual([
-      "eval",
-      "set_title",
-    ]);
-  });
-
-  it("uses base when no subscription", () => {
-    expect(mergeToolAllowlist(["eval", "set_title"], undefined)).toEqual([
-      "eval",
-      "set_title",
-    ]);
-  });
-
-  it("returns undefined when neither present", () => {
-    expect(mergeToolAllowlist(undefined, undefined)).toBeUndefined();
-  });
-
-  it("returns empty when intersection is empty", () => {
-    expect(mergeToolAllowlist(["eval"], ["inline_ui"])).toEqual([]);
-  });
-
-  it("handles empty base with non-empty subscription", () => {
-    expect(mergeToolAllowlist([], ["eval"])).toEqual([]);
-  });
-
-  it("handles non-empty base with empty subscription", () => {
-    expect(mergeToolAllowlist(["eval"], [])).toEqual([]);
-  });
-
-  it("preserves order from subscription", () => {
-    expect(
-      mergeToolAllowlist(["c", "b", "a"], ["a", "b", "c"]),
-    ).toEqual(["a", "b", "c"]);
-  });
-});

@@ -8,10 +8,13 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import type { PackageManifest } from "@natstack/shared/types";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+export type { PackageManifest };
 
 export interface GraphNode {
   /** Absolute path to the unit directory */
@@ -43,24 +46,6 @@ export interface InternalDepRef {
   ref?: string;
   /** Commit SHA (when mode === "commit") */
   commit?: string;
-}
-
-export interface PackageManifest {
-  type?: "app";
-  title?: string;
-  description?: string;
-  entry?: string;
-  shell?: boolean;
-  hiddenInLauncher?: boolean;
-  autoArchiveWhenEmpty?: boolean;
-  sourcemap?: boolean;
-  externals?: Record<string, string>;
-  exposeModules?: string[];
-  dedupeModules?: string[];
-  /** Name of a workspace template (e.g., "default", "svelte") */
-  template?: string;
-  /** Resolved framework ID — set at graph time from template, or at build time from extracted source */
-  framework?: string;
 }
 
 export class PackageGraph {

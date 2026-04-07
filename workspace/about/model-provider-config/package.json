@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "private": true,
   "natstack": {
-    "type": "app",
     "title": "Model Provider Config",
     "description": "Configure AI model providers and API keys",
     "shell": true,

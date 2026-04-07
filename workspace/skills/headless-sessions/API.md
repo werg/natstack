@@ -13,7 +13,7 @@ new SessionManager(config: SessionManagerConfig)
 ```typescript
 interface SessionManagerConfig {
   config: ConnectionConfig;           // serverUrl, token, clientId, optional rpc
-  metadata?: ChatParticipantMetadata; // defaults to { name: "Headless Client", type: "panel", handle: "headless" }
+  metadata?: ChatParticipantMetadata; // defaults to { name: "Headless Client", type: "headless", handle: "headless" }
   eventMiddleware?: EventMiddleware[]; // middleware pipeline for incoming events
   scopeManager?: ScopeManager;        // optional, for eval-backed scope persistence
   sandbox?: SandboxConfig;            // optional, for eval support
@@ -115,12 +115,14 @@ HeadlessSession.createWithAgent(config: HeadlessWithAgentConfig): Promise<Headle
 ```typescript
 interface HeadlessSessionConfig {
   config: ConnectionConfig;
-  metadata?: ChatParticipantMetadata;
-  sandbox?: SandboxConfig;        // enables eval + auto scope persistence
-  scopeManager?: ScopeManager;    // override auto-created scope manager
-  systemPrompt?: string;          // override default headless prompt
+  metadata?: ChatParticipantMetadata;  // defaults to type:"headless"
+  sandbox?: SandboxConfig;              // enables eval + auto scope persistence
+  scopeManager?: ScopeManager;          // override auto-created scope manager
 }
 ```
+
+To customize the agent's system prompt, use `HeadlessWithAgentConfig.systemPrompt`
+(only meaningful when subscribing an agent via `createWithAgent`).
 
 ### HeadlessWithAgentConfig
 
@@ -136,16 +138,23 @@ interface HeadlessWithAgentConfig extends HeadlessSessionConfig {
   channelId?: string;       // auto-generated if omitted
   channelConfig?: ChannelConfig;
   methods?: Record<string, MethodDefinition>;  // merged with default eval/set_title
+  /** Optional prompt appended to the worker's default. Use extraConfig.systemPromptMode to replace instead. */
+  systemPrompt?: string;
   extraConfig?: Record<string, unknown>;
 }
 ```
+
+`methods` lets you register additional client-side method definitions that the
+agent will discover and can call. There is no longer any worker-side allowlist
+filtering them out — channel membership is the trust boundary.
 
 ### Headless-Specific Methods
 
 | Method | Description |
 |--------|-------------|
 | `waitForAgentMessage(opts?)` | Wait for a complete agent message. Options: `timeout` (default 60s) |
-| `getRecommendedHarnessConfig()` | Returns `{ toolAllowlist, systemPrompt, systemPromptMode }` |
+| `waitForIdle(opts?)` | Wait for the conversation to settle. Options: `timeout`, `debounce` |
+| `sendAndWait(text, opts?)` | Send a message and wait for the agent to finish responding |
 | `getRecommendedChannelConfig()` | Returns `{ approvalLevel: 2 }` (full-auto) |
 | `manager` | Access the underlying SessionManager |
 
@@ -156,23 +165,26 @@ All SessionManager methods (send, interrupt, connect, close, etc.) are also avai
 ## Channel Helpers (from `@workspace/agentic-session`)
 
 ```typescript
-// Get recommended harness config (conditional on eval availability)
-getRecommendedHarnessConfig(opts?: { systemPrompt?: string; hasEval?: boolean })
-
 // Get recommended channel config (full-auto approval)
 getRecommendedChannelConfig(): Partial<ChannelConfig>
 
-// Subscribe a DO agent with headless defaults
+// Subscribe a DO agent to a channel with full-auto approval.
+// The agent uses the same harness config and system prompt as panel sessions —
+// no extra restrictions are applied.
 subscribeHeadlessAgent(opts: SubscribeHeadlessAgentOptions): Promise<{ ok: boolean; participantId?: string }>
 ```
 
----
-
-## Headless System Prompts
-
-| Constant | When Used |
-|----------|-----------|
-| `HEADLESS_SYSTEM_PROMPT` | Sandbox available — references eval + set_title |
-| `HEADLESS_NO_EVAL_PROMPT` | No sandbox — references only set_title |
-
-The `systemPromptMode` is always `"replace-natstack"` — replaces the NatStack panel prompt but still appends to SDK defaults.
+```typescript
+interface SubscribeHeadlessAgentOptions {
+  rpcCall: (target: string, method: string, ...args: unknown[]) => Promise<unknown>;
+  source: string;        // e.g., "workers/agent-worker"
+  className: string;     // e.g., "AiChatWorker"
+  objectKey: string;
+  channelId: string;
+  contextId: string;
+  /** Appended to the worker's default prompt by default. */
+  systemPrompt?: string;
+  /** Pass `systemPromptMode`, `model`, `temperature`, etc. through to the worker. */
+  extraConfig?: Record<string, unknown>;
+}
+```

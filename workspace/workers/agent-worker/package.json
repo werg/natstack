@@ -4,15 +4,21 @@
   "private": true,
   "type": "module",
   "natstack": {
-    "type": "worker",
     "entry": "index.ts",
     "durable": {
       "classes": [{ "className": "AiChatWorker" }]
-    }
+    },
+    "exposeModules": [
+      "@workspace/runtime",
+      "@natstack/pubsub",
+      "zod"
+    ]
   },
   "dependencies": {
     "@workspace/runtime": "workspace:*",
     "@workspace/agentic-do": "workspace:*",
-    "@natstack/harness": "workspace:*"
+    "@natstack/pubsub": "workspace:*",
+    "@natstack/harness": "workspace:*",
+    "zod": "^3.24.0"
   }
 }

@@ -16,6 +16,7 @@ const CHAT_SYSTEM_PROMPT = `You are an AI assistant in a NatStack workspace — 
 - Quick patterns: \`fs.readFile(path)\` / \`fs.writeFile(path, data)\` for files. \`const h = await db.open("name"); await h.query("SELECT...")\` for databases (db is a client — call \`.open()\` first). Load the **sandbox** skill for the full API reference.
 - Use **inline_ui** for interactive results (tables, dashboards, action buttons). Use **feedback_form** when you need a user choice before continuing.
 - Call **set_title** after the first substantive exchange.
+- **Tool availability is runtime-dependent.** \`inline_ui\`, \`feedback_form\`, and \`feedback_custom\` are advertised by chat panels and only appear when a panel is connected. In headless contexts (workers, automated harnesses, tests) they will be absent — return data via eval results and ask follow-up questions through normal conversation messages instead. Do not assume a tool exists; rely on what's actually exposed to you.
 
 ## Scope
 
@@ -33,7 +34,7 @@ Skills are documentation bundles with API references and code examples. **Use th
 
 ## Style
 
-Show, don't tell — use eval to demonstrate. Use inline_ui for rich results. Use feedback_form for choices, not text questions.
+Show, don't tell — use eval to demonstrate. When a chat panel is connected, prefer \`inline_ui\` for rich results and \`feedback_form\` for choices over text questions. When running headless, fall back to plain message replies for the same content.
 `;
 
 /**
@@ -59,8 +60,12 @@ export class AiChatWorker extends AgentWorkerBase {
 
   protected override getHarnessConfig(): HarnessConfig {
     return {
-      toolAllowlist: ["eval", "feedback_form", "feedback_custom", "set_title", "inline_ui"],
       systemPrompt: CHAT_SYSTEM_PROMPT,
+      // No toolAllowlist: any method advertised by participants on this channel
+      // is exposed to the agent. The set of available tools is defined by who's
+      // connected (panel registers inline_ui/feedback_form, headless registers
+      // eval/set_title, custom test rigs can register whatever they need).
+      // Channel membership is the trust boundary, not a hardcoded list.
     };
   }
 
@@ -600,19 +605,10 @@ export class AiChatWorker extends AgentWorkerBase {
     // so it maps to "append" for the harness-level mode.
     const harnessMode = subMode === "replace-natstack" ? "append" : subMode;
 
-    // toolAllowlist merge: subscription can only restrict (intersection), not expand.
-    // This prevents a subscription from granting tools the worker class didn't intend.
-    const subAllowlist = sub["toolAllowlist"] as string[] | undefined;
-    let mergedAllowlist: string[] | undefined;
-    if (subAllowlist && base.toolAllowlist) {
-      const baseSet = new Set(base.toolAllowlist);
-      mergedAllowlist = subAllowlist.filter(t => baseSet.has(t));
-    } else if (subAllowlist) {
-      mergedAllowlist = subAllowlist;
-    } else {
-      mergedAllowlist = base.toolAllowlist;
-    }
-
+    // Note: toolAllowlist comes exclusively from the worker class (`getHarnessConfig`).
+    // Subscriptions cannot override it — the worker defines the upper bound of tools
+    // it's willing to expose, and natural method discovery handles the lower bound
+    // (a tool only appears if some participant actually advertises it).
     return {
       ...base,
       ...(mergedPrompt ? { systemPrompt: mergedPrompt } : {}),
@@ -624,7 +620,6 @@ export class AiChatWorker extends AgentWorkerBase {
       ...(sub["maxTokens"] != null
         ? { maxTokens: sub["maxTokens"] as number }
         : {}),
-      ...(mergedAllowlist ? { toolAllowlist: mergedAllowlist } : {}),
     };
   }
 

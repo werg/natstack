@@ -6,6 +6,8 @@
   "exports": {
     ".": {
       "natstack-panel": "./src/panel/index.ts",
+      "worker": "./src/worker/index.ts",
+      "workerd": "./src/worker/index.ts",
       "default": "./src/panel/index.ts"
     },
     "./worker": {

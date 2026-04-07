@@ -20,7 +20,6 @@ workspace/workers/my-agent/
 {
   "name": "@workspace-workers/my-agent",
   "natstack": {
-    "type": "worker",
     "entry": "index.ts",
     "durable": {
       "classes": [{ "className": "MyAgentWorker" }]
@@ -83,12 +82,17 @@ protected getHarnessConfig(): HarnessConfig {
 
 ### shouldProcess(event: ChannelEvent): boolean
 
-Filter which channel events trigger an AI turn. Default: only `panel`-sent `message` events.
+Filter which channel events trigger an AI turn. Default: `message` events from
+client participants (panels and headless clients), as classified by
+`isClientParticipantType` from `@natstack/pubsub`.
 
 ```typescript
+import { isClientParticipantType } from '@natstack/pubsub';
+
 protected shouldProcess(event: ChannelEvent): boolean {
-  // Process messages from panels and also handle @mentions
-  return event.senderType === 'panel' && event.type === 'message';
+  if (event.type !== 'message') return false;
+  const senderType = event.senderMetadata?.["type"] as string | undefined;
+  return isClientParticipantType(senderType);
 }
 ```
 
@@ -474,7 +478,9 @@ export class CodeReviewWorker extends AgentWorkerBase {
   }
 
   protected override shouldProcess(event: ChannelEvent): boolean {
-    if (event.senderType !== 'panel' || event.type !== 'message') return false;
+    if (event.type !== 'message') return false;
+    const senderType = event.senderMetadata?.["type"] as string | undefined;
+    if (!isClientParticipantType(senderType)) return false;
     const content = (event.payload as { content?: string })?.content ?? '';
     return content.includes('```') || content.includes('diff --git');
   }

@@ -4,7 +4,6 @@
   "private": true,
   "type": "module",
   "natstack": {
-    "type": "worker",
     "entry": "index.ts",
     "title": "Hello Worker",
     "sourcemap": true

@@ -9,18 +9,52 @@ import type { AgenticParticipantMetadata } from "./protocol-types.js";
 import type { ContextWindowUsage } from "./context-tracker.js";
 
 /**
+ * Two participant roles exist on a channel:
+ * - **clients** ("panel", "headless") — sources of user input
+ * - **agents** ("agent") — AI workers responding to user input
+ *
+ * The helpers below are positive-match predicates: any new participant type
+ * defaults to neither role until it's added explicitly. This is intentional.
+ * Negative checks like `type !== "panel"` are forbidden because they
+ * accidentally classify new client types as agents (or vice versa).
+ */
+export function isAgentParticipantType(type: string | undefined): boolean {
+  return type === "agent";
+}
+
+export function isClientParticipantType(type: string | undefined): boolean {
+  return type === "panel" || type === "headless";
+}
+
+/**
  * Standard participant metadata for chat-style channels.
- * Used by responder workers and panels to identify participant types.
+ *
+ * The canonical participant-metadata shape for both panel-side React adapters
+ * and headless workers. `@workspace/agentic-core` re-exports this directly —
+ * there is exactly one definition.
  */
 export interface ChatParticipantMetadata extends AgenticParticipantMetadata {
   name: string;
-  type: "panel" | "ai-responder" | "claude-agent" | "pi" | "subagent";
-  /** Runtime panel/worker ID - allows chat panel to link participant to child panel for focus/reload */
+  /**
+   * Participant role on the channel:
+   * - `"panel"` — interactive UI client (chat panel) running in a browser/renderer
+   * - `"headless"` — programmatic client without a UI (worker, test harness, server)
+   * - `"agent"` — AI agent worker responding to user input
+   *
+   * Adding a new value? Update `isAgentParticipantType` / `isClientParticipantType`
+   * in this file so the role-based filters classify it correctly.
+   */
+  type: "panel" | "headless" | "agent";
+  /** Runtime panel/worker ID — allows chat panel to link participant to child panel for focus/reload */
   panelId?: string;
-  /** Agent type ID for identification/recovery (e.g., "claude-agent-responder") */
+  /** Worker source identifier for agent identification/recovery (e.g., "workers/agent-worker"). */
   agentTypeId?: string;
   /** Context window usage tracking (updated by AI responders) */
   contextUsage?: ContextWindowUsage;
+  /** Execution mode — `"plan"` for planning only, `"edit"` for full execution */
+  executionMode?: "plan" | "edit";
+  /** Display name of the model currently in use (e.g., `"Claude Opus 4.6"`) */
+  activeModel?: string;
 }
 
 /**
@@ -71,7 +105,7 @@ export interface TypingData {
   senderId: string;
   /** Display name of who is typing */
   senderName?: string;
-  /** Participant type (e.g., "panel", "claude-agent", "pi") */
+  /** Participant type (e.g., "panel", "headless", "agent") */
   senderType?: string;
   /** Optional context (e.g., "preparing response", "searching files") */
   context?: string;

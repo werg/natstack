@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "private": true,
   "natstack": {
-    "type": "app",
     "title": "Ad Blocking",
     "description": "Configure ad and tracker blocking",
     "shell": true,

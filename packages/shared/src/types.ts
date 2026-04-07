@@ -17,26 +17,59 @@ export type {
 };
 
 // =============================================================================
-// Panel Manifest Types
+// Package Manifest
 // =============================================================================
 
 /**
- * Panel manifest from package.json natstack section.
+ * The `natstack` block of a workspace package's package.json.
+ *
+ * One canonical shape for panels, about pages, and workers. The build pipeline
+ * (`src/server/buildV2`) and the runtime panel loader (`panelTypes.ts`) both
+ * read from this same type. Each consumer uses the fields it cares about and
+ * ignores the rest — workers ignore `dependencies` / `stateArgs`; panels ignore
+ * `durable` / `framework`. `loadPanelManifest` enforces panel-specific
+ * requirements (e.g., a non-empty `title`) at runtime, so all fields stay
+ * optional in the type.
  */
-export interface PanelManifest {
-  title: string;
+export interface PackageManifest {
+  /** Display title (required at runtime for panels; workers don't need it). */
+  title?: string;
+  /** Optional description shown in the launcher and used as documentation. */
+  description?: string;
+  /** Entry file relative to the package root (e.g., `"index.tsx"`, `"index.ts"`). */
   entry?: string;
+  // ----- Panel-only fields -----
+  /** Top-level package.json dependencies merged in by `loadPanelManifest`. */
   dependencies?: Record<string, string>;
-  /** JSON Schema for validating panel state arguments */
+  /** JSON Schema for validating panel state arguments. */
   stateArgs?: StateArgsSchema;
-  externals?: Record<string, string>;
-  exposeModules?: string[];
-  dedupeModules?: string[];
+  /** Inject the host theme CSS variables into the panel iframe. */
   injectHostThemeVariables?: boolean;
-  /** Name of a workspace template directory in workspace/templates/ */
-  template?: string;
-  /** If true, panel is auto-archived when it has no children at startup */
+  /** True for system "shell" panels (about pages); grants shell service access. */
+  shell?: boolean;
+  /** Hide this panel from the launcher UI. */
+  hiddenInLauncher?: boolean;
+  /** Auto-archive a panel when it has no children at startup. */
   autoArchiveWhenEmpty?: boolean;
+  // ----- Build-pipeline fields -----
+  /** Whether to include inline source maps in the build. */
+  sourcemap?: boolean;
+  /** Import-map externals (panels: produces `<script type="importmap">`). */
+  externals?: Record<string, string>;
+  /**
+   * Modules registered on `globalThis.__natstackModuleMap__` so eval'd code
+   * can `require()` them by canonical specifier without an explicit import.
+   */
+  exposeModules?: string[];
+  /** Additional packages to deduplicate beyond the framework defaults. */
+  dedupeModules?: string[];
+  /** Name of a workspace template directory in `workspace/templates/`. */
+  template?: string;
+  /** Resolved framework ID — set at graph time from template, or at build time from extracted source. */
+  framework?: string;
+  // ----- Worker-only fields -----
+  /** Durable Object classes exported by this worker (workers only). */
+  durable?: { classes: Array<{ className: string }> };
 }
 
 export type ThemeMode = "light" | "dark" | "system";

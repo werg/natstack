@@ -29,7 +29,10 @@ class TestAgent extends AgentWorkerBase {
 
 function mockFetch() {
   return vi.fn(async (url: string) => {
-    // RPC calls go to /rpc and expect { result: ... } envelope
+    // The agent under test makes two kinds of fetches:
+    // 1. RPC bridge calls to `/rpc` with a `{ result: ... }` envelope
+    // 2. Direct DO dispatches to `/_w/<source>/<class>/<key>/<method>` with a
+    //    bare result body (no envelope)
     if (typeof url === "string" && url.includes("/rpc")) {
       const rpcResult = { result: { ok: true, participantId: "p-new", channelConfig: null } };
       return {
@@ -40,14 +43,14 @@ function mockFetch() {
         text: async () => JSON.stringify(rpcResult),
       };
     }
-    // Legacy postToDO calls
-    const legacyResult = { ok: true, participantId: "p-new", channelConfig: null };
+    // Direct DO dispatch (/_w/...)
+    const doResult = { ok: true, participantId: "p-new", channelConfig: null };
     return {
       ok: true,
       status: 200,
       headers: { get: (h: string) => h === "content-type" ? "application/json" : null },
-      json: async () => legacyResult,
-      text: async () => JSON.stringify(legacyResult),
+      json: async () => doResult,
+      text: async () => JSON.stringify(doResult),
     };
   });
 }

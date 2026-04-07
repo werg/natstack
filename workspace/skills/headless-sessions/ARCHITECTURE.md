@@ -25,12 +25,13 @@
 
 @workspace/agentic-session       ← thin headless convenience
   HeadlessSession = SessionManager + headless defaults
-  - headless system prompt (no UI tool references)
   - full-auto channel config (approval level 2)
   - automatic ScopeManager creation when sandbox provided
-  - default eval + set_title method registration
+  - default eval + set_title method registration on the client
   - convenience: createWithAgent() does subscribe + connect in one call
-  - SandboxConfig factories: createWorkerSandboxConfig, createNodeSandboxConfig
+  - SandboxConfig factory: createRpcSandboxConfig (workers + Node servers)
+  - Uses the same agent worker prompt and tool surface as panel sessions;
+    UI tools naturally drop out because no panel is advertising them.
 ```
 
 ## What Lives Where
@@ -48,10 +49,9 @@
 
 **agentic-session** (no React, no browser APIs):
 - `HeadlessSession` — SessionManager + headless defaults
-- `HEADLESS_SYSTEM_PROMPT` / `HEADLESS_NO_EVAL_PROMPT` — eval-focused prompts
-- `getRecommendedHarnessConfig()` / `getRecommendedChannelConfig()` — headless config helpers
-- `subscribeHeadlessAgent()` — subscribe a DO agent with headless defaults
-- `createWorkerSandboxConfig(rpc)` / `createNodeSandboxConfig(rpcClient)` — sandbox factories
+- `getRecommendedChannelConfig()` — full-auto approval channel config
+- `subscribeHeadlessAgent()` — subscribe a DO agent to a channel with full-auto approval
+- `createRpcSandboxConfig(rpc)` — sandbox factory for any non-panel context with an RPC bridge
 
 **agentic-chat** (React adapter):
 - `useChatCore()` — creates SessionManager, subscribes to events, returns React state

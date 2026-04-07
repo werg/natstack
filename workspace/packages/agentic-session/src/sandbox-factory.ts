@@ -1,8 +1,19 @@
 /**
- * SandboxConfig factories for non-panel contexts (workers, Node.js headless).
+ * SandboxConfig factory for non-panel contexts (workers, Node.js servers).
  *
- * These wrap the raw RPC handle returned by db.open into a proper DbHandle
- * proxy, matching the pattern used by the panel runtime's createDbClient().
+ * Given any RPC bridge that can reach the main process's `build.*` and `db.*`
+ * services, produce a SandboxConfig that satisfies the eval substrate.
+ *
+ * The other half of the eval substrate — `__natstackRequire__` and the
+ * ambient module map — is set up at worker bundle boot by the build system
+ * (see `src/server/buildV2/builder.ts buildWorker` + the worker's
+ * `natstack.exposeModules` manifest entry). This factory therefore only needs
+ * to provide the I/O surfaces (`rpc`, `db`, `loadImport`); the require side
+ * is already in place by the time eval runs.
+ *
+ * Worker DOs use their workerd RPC bridge here; standalone Node servers use
+ * a direct RPC client. Both implement the same `RpcLike` shape and produce
+ * the same SandboxConfig — there is no per-context branching.
  */
 
 import type { DbHandle } from "@workspace/eval";
@@ -48,13 +59,14 @@ function createRpcDbProxy(rpc: RpcLike, handle: string): DbHandle {
 }
 
 /**
- * Create a SandboxConfig for worker/DO contexts.
+ * Create a SandboxConfig for non-panel contexts.
  *
- * Uses the worker's RPC bridge for all three capabilities.
- * db.open returns a raw handle string from the main process, which
- * is wrapped into a DbHandle proxy.
+ * Routes `loadImport` to `main`'s build service, wraps `db.open` results in a
+ * DbHandle proxy that delegates back through RPC, and exposes the same RPC
+ * bridge for direct calls. Same shape regardless of whether the caller is a
+ * workerd DO or a Node server.
  */
-export function createWorkerSandboxConfig(rpc: RpcLike): SandboxConfig {
+export function createRpcSandboxConfig(rpc: RpcLike): SandboxConfig {
   return {
     rpc: { call: (t: string, m: string, ...a: unknown[]) => rpc.call(t, m, ...a) },
     loadImport: async (specifier: string, ref: string | undefined, externals: string[]) => {
@@ -70,32 +82,6 @@ export function createWorkerSandboxConfig(rpc: RpcLike): SandboxConfig {
       async open(name: string): Promise<DbHandle> {
         const handle = await rpc.call("main", "db.open", name) as string;
         return createRpcDbProxy(rpc, handle);
-      },
-    },
-  };
-}
-
-/**
- * Create a SandboxConfig for Node.js headless server contexts.
- *
- * Uses a direct RPC client connection. Same loadImport and db wrapping logic.
- */
-export function createNodeSandboxConfig(rpcClient: RpcLike): SandboxConfig {
-  return {
-    rpc: { call: (t: string, m: string, ...a: unknown[]) => rpcClient.call(t, m, ...a) },
-    loadImport: async (specifier: string, ref: string | undefined, externals: string[]) => {
-      if (ref?.startsWith("npm:")) {
-        const version = ref.slice(4) || "latest";
-        const result = await rpcClient.call("main", "build.getBuildNpm", specifier, version, externals) as { bundle: string };
-        return result.bundle;
-      }
-      const result = await rpcClient.call("main", "build.getBuild", specifier, ref, { library: true, externals }) as { bundle: string };
-      return result.bundle;
-    },
-    db: {
-      async open(name: string): Promise<DbHandle> {
-        const handle = await rpcClient.call("main", "db.open", name) as string;
-        return createRpcDbProxy(rpcClient, handle);
       },
     },
   };

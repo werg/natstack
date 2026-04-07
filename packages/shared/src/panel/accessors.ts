@@ -6,7 +6,7 @@
  */
 
 import type { CreateChildOptions } from "@natstack/types";
-import type { Panel, PanelSnapshot, PanelManifest, StateArgsValue } from "../types.js";
+import type { Panel, PanelSnapshot, PackageManifest, StateArgsValue } from "../types.js";
 
 /**
  * Get the current snapshot for a panel.
@@ -46,7 +46,7 @@ export function getPanelContextId(panel: Panel): string {
 /**
  * Get whether a panel should inject host theme variables.
  */
-export function getInjectHostThemeVariables(panel: Panel, manifest?: PanelManifest): boolean {
+export function getInjectHostThemeVariables(panel: Panel, manifest?: PackageManifest): boolean {
   return manifest?.injectHostThemeVariables !== false;
 }
 
