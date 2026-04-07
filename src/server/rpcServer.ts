@@ -62,10 +62,6 @@ interface PendingToolCall {
   clientWs: WebSocket;
 }
 
-import type { PanelRelationshipProvider } from "@natstack/shared/panelInterfaces";
-
-type PanelManagerLike = PanelRelationshipProvider;
-
 export class RpcServer {
   private wss: WebSocketServer | null = null;
   private httpServer: HttpServer | null = null;
@@ -90,7 +86,6 @@ export class RpcServer {
     private deps: {
       tokenManager: TokenManager;
       dispatcher: ServiceDispatcher;
-      panelManager?: PanelManagerLike;
       /** Called when an authenticated client disconnects (e.g., for fs handle cleanup) */
       onClientDisconnect?: (callerId: string, callerKind: CallerKind) => void;
       /** Called when a client successfully authenticates */
@@ -98,11 +93,6 @@ export class RpcServer {
     }
   ) {
     this.dispatcher = deps.dispatcher;
-  }
-
-  /** Set the panel manager for panel-to-panel RPC authorization (can be wired after construction). */
-  setPanelManager(pm: PanelManagerLike): void {
-    this.deps.panelManager = pm;
   }
 
   /** Register a callback for client disconnect events. */
@@ -415,38 +405,13 @@ export class RpcServer {
   }
 
   /**
-   * Route a message from one caller to another. Authorization depends on
-   * caller types:
-   *   - panel → panel: requires ancestor/descendant relationship
-   *   - worker/server: can route to any connected caller
+   * Route a message from one caller to another.
+   *
+   * Shell-owned panel trees are no longer persisted on the server, so the
+   * server acts purely as a relay for non-service target IDs.
    */
   private handleRoute(client: WsClientState, targetId: string, message: RpcMessage): void {
-    // Panel-to-panel: enforce tree relationship.
-    // Panel-to-worker/server: allowed (workers are server-managed, trusted targets).
-    if (client.callerKind === "panel") {
-      const targetState = this.callerToClient.get(targetId);
-      const targetIsPanel = targetState?.callerKind === "panel";
-
-      if (targetIsPanel) {
-        if (!this.deps.panelManager) return;
-
-        const pm = this.deps.panelManager;
-        const parentId = pm.findParentId(targetId);
-        const isParentOfTarget = parentId === client.callerId;
-        const isChildOfTarget = pm.findParentId(client.callerId) === targetId;
-
-        if (!isParentOfTarget && !isChildOfTarget) {
-          if (!pm.isDescendantOf(targetId, client.callerId) &&
-              !pm.isDescendantOf(client.callerId, targetId)) {
-            return; // Silently drop unauthorized panel-to-panel messages
-          }
-        }
-      }
-      // Non-panel targets (workers, server) are reachable from any panel.
-    }
-
-    // Workers and server callers can route to any connected caller.
-    // Shell callers are not expected to route, but there's no harm in allowing it.
+    this.checkRelayAuth(client.callerId, client.callerKind, targetId);
 
     const targetClient = this.callerToClient.get(targetId);
     if (!targetClient || targetClient.ws.readyState !== WebSocket.OPEN) {
@@ -583,10 +548,11 @@ export class RpcServer {
     return this.callerToClient.get(callerId);
   }
 
-  /** Broadcast a message to all admin/server-kind clients */
-  broadcastToAdmins(msg: WsServerMessage): void {
+  /** Broadcast a message to control-plane clients (server and shell callers). */
+  broadcastToControlPlane(msg: WsServerMessage): void {
     for (const client of this.callerToClient.values()) {
-      if (client.callerKind === "server" && client.ws.readyState === WebSocket.OPEN) {
+      if ((client.callerKind === "server" || client.callerKind === "shell") &&
+          client.ws.readyState === WebSocket.OPEN) {
         this.sendToWs(client.ws, msg);
       }
     }
@@ -764,23 +730,27 @@ export class RpcServer {
 
   /**
    * Enforce authorization for relay calls/events.
-   * Mirrors the logic in handleRoute() for WS clients:
-   * - Panels can only reach other panels if they share an ancestor/descendant relationship
-   * - Workers/server/shell can relay to any target
+   *
+   * Shell-owned panel trees are not mirrored on the server anymore, so
+   * relay authorization is now based only on caller authentication.
    */
   private checkRelayAuth(callerId: string, callerKind: CallerKind, targetId: string): void {
-    if (callerKind !== "panel") return; // Workers, server, shell can relay to anything
-
-    // Panel-to-DO/worker: allowed (workers are server-managed, trusted targets)
+    if (callerKind !== "panel") return;
+    if (targetId === callerId) return;
     if (targetId.startsWith("do:") || targetId.startsWith("worker:")) return;
 
-    // Panel-to-panel: enforce tree relationship
-    if (this.deps.panelManager) {
-      const pm = this.deps.panelManager;
-      const isRelated = pm.isDescendantOf(targetId, callerId) || pm.isDescendantOf(callerId, targetId);
-      if (!isRelated) {
-        throw new Error(`Panel ${callerId} cannot relay to unrelated panel ${targetId}`);
-      }
+    const parentId = this.deps.tokenManager.getPanelParent(callerId);
+    const targetParentId = this.deps.tokenManager.getPanelParent(targetId);
+    const isDirectParent = parentId === targetId;
+    const isDirectChild = targetParentId === callerId;
+    const isRelated =
+      isDirectParent ||
+      isDirectChild ||
+      this.deps.tokenManager.isPanelDescendantOf(callerId, targetId) ||
+      this.deps.tokenManager.isPanelDescendantOf(targetId, callerId);
+
+    if (!isRelated) {
+      throw new Error(`Panel ${callerId} cannot relay to unrelated panel ${targetId}`);
     }
   }
 

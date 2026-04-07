@@ -16,6 +16,8 @@ export class TokenManager {
   >();
   // callerId -> token
   private callerIdToToken = new Map<string, string>();
+  // panelId -> parent panel id (null for roots)
+  private panelParentIds = new Map<string, string | null>();
   // revocation listeners
   private revokeListeners: ((callerId: string) => void)[] = [];
   // admin token for privileged operations
@@ -85,6 +87,7 @@ export class TokenManager {
 
     this.callerIdToToken.delete(callerId);
     this.tokenToEntry.delete(token);
+    this.panelParentIds.delete(callerId);
 
     for (const listener of this.revokeListeners) {
       listener(callerId);
@@ -107,6 +110,7 @@ export class TokenManager {
     const callerIds = [...this.callerIdToToken.keys()];
     this.tokenToEntry.clear();
     this.callerIdToToken.clear();
+    this.panelParentIds.clear();
 
     for (const callerId of callerIds) {
       for (const listener of this.revokeListeners) {
@@ -127,6 +131,26 @@ export class TokenManager {
    */
   validateAdminToken(token: string): boolean {
     return this.adminToken !== null && token === this.adminToken;
+  }
+
+  setPanelParent(panelId: string, parentId: string | null): void {
+    this.panelParentIds.set(panelId, parentId);
+  }
+
+  getPanelParent(panelId: string): string | null | undefined {
+    return this.panelParentIds.get(panelId);
+  }
+
+  isPanelDescendantOf(panelId: string, ancestorId: string): boolean {
+    let current = this.panelParentIds.get(panelId);
+    const visited = new Set<string>();
+    while (current) {
+      if (current === ancestorId) return true;
+      if (visited.has(current)) return false;
+      visited.add(current);
+      current = this.panelParentIds.get(current) ?? null;
+    }
+    return false;
   }
 
 }
@@ -229,4 +253,3 @@ export class GitAuthManager {
     return { valid: true };
   }
 }
-

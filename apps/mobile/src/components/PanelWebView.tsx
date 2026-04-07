@@ -1,18 +1,3 @@
-/**
- * PanelWebView -- WebView wrapper for displaying a NatStack panel.
- *
- * Wraps react-native-webview with NatStack-specific behavior:
- * - Cookie isolation: sharedCookiesEnabled=false, thirdPartyCookiesEnabled=false
- *   to prevent cross-panel cookie leakage (auth is via query params)
- * - Show/hide via display style (keeps WebView alive when hidden)
- * - Navigation interception: panel URLs -> switch panel, external -> system browser
- * - window.open() interception via onOpenWindow
- * - Theme injection via imperative injectTheme() method
- * - Cleanup notification via onUnmount callback
- * - User agent identification for the NatStack mobile client
- * - Error handling with retry button on load failure
- */
-
 import React, {
   useRef,
   useState,
@@ -35,39 +20,35 @@ import { WebView } from "react-native-webview";
 import type {
   WebViewNavigation,
   ShouldStartLoadRequest,
+  WebViewMessageEvent,
 } from "react-native-webview/lib/WebViewTypes";
 import { isManagedHost, parsePanelUrl } from "../services/panelUrls";
 
-/** Navigation event emitted when the WebView tries to navigate to another panel */
 export interface PanelNavigationEvent {
   type: "panel-switch";
-  /** The parsed panel URL info */
+  panelId: string;
   source: string;
   contextId?: string;
+  options: { name?: string; contextId?: string; focus?: boolean };
+  stateArgs?: Record<string, unknown>;
 }
 
-/** Methods exposed via ref to parent components */
 export interface PanelWebViewHandle {
-  /** Inject a theme change notification into the WebView */
   injectTheme: (mode: "light" | "dark") => void;
+  dispatchHostEvent: (event: string, payload: unknown) => void;
 }
 
 export interface PanelWebViewProps {
-  /** Unique panel ID */
   panelId: string;
-  /** Full URL to load in the WebView */
   url: string;
-  /** Whether this WebView is the active (visible) panel */
   visible: boolean;
-  /** The external host for detecting managed URLs (e.g. "natstack.example.com") */
+  managed: boolean;
+  panelInit?: unknown;
   externalHost: string;
-  /** Called when navigation state changes (loading, title, url, etc.) */
   onNavigationStateChange?: (navState: WebViewNavigation) => void;
-  /** Called when the WebView attempts to navigate to another panel */
   onPanelNavigate?: (event: PanelNavigationEvent) => void;
-  /** Called when the WebView component unmounts (for cleanup/metrics) */
+  onBridgeCall?: (panelId: string, method: string, args: unknown[]) => Promise<unknown>;
   onUnmount?: (panelId: string) => void;
-  /** Optional color overrides for theming */
   colors?: {
     background?: string;
     text?: string;
@@ -77,9 +58,92 @@ export interface PanelWebViewProps {
 }
 
 const NATSTACK_USER_AGENT = `NatStack-Mobile/1.0 (${Platform.OS}; ${Platform.Version})`;
-
-/** Injected into every WebView to set a strict referrer policy, preventing rpcToken leakage via Referer headers. */
 const REFERRER_POLICY_SCRIPT = `try{var m=document.createElement('meta');m.name='referrer';m.content='no-referrer';document.head.appendChild(m);}catch(e){}true;`;
+
+function serializeForInjection(value: unknown): string {
+  return JSON.stringify(value ?? null);
+}
+
+function buildBridgeBootstrapScript(panelInit: unknown): string {
+  return `
+    (function () {
+      const panelInit = ${serializeForInjection(panelInit)};
+      const pending = new Map();
+      const listeners = new Map();
+      let nextListenerId = 1;
+
+      function resolvePending(id, ok, payload) {
+        const entry = pending.get(id);
+        if (!entry) return;
+        pending.delete(id);
+        if (ok) entry.resolve(payload);
+        else entry.reject(new Error(typeof payload === "string" ? payload : "Bridge call failed"));
+      }
+
+      function dispatchEventToListeners(event, payload) {
+        for (const listener of listeners.values()) {
+          try { listener(event, payload); } catch (_) {}
+        }
+      }
+
+      function callHost(method, args) {
+        return new Promise(function(resolve, reject) {
+          const id = "bridge-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+          pending.set(id, { resolve, reject });
+          window.ReactNativeWebView.postMessage(JSON.stringify({
+            __natstackBridge: true,
+            id,
+            method,
+            args: Array.isArray(args) ? args : [],
+          }));
+        });
+      }
+
+      try {
+        globalThis.__natstackPanelInit = panelInit;
+        if (panelInit !== null) {
+          sessionStorage.setItem("__natstackPanelInit", JSON.stringify(panelInit));
+        }
+      } catch (_) {}
+
+      const shell = {
+        getPanelInit: () => Promise.resolve(panelInit),
+        getBootstrapConfig: () => Promise.resolve(panelInit),
+        getInfo: () => callHost("getInfo", []),
+        setStateArgs: (updates) => callHost("setStateArgs", [updates]),
+        closeSelf: () => callHost("closeSelf", []),
+        closeChild: (childId) => callHost("closeChild", [childId]),
+        focusPanel: (panelId) => callHost("focusPanel", [panelId]),
+        createBrowserPanel: (url, opts) => callHost("createBrowserPanel", [url, opts]),
+        openDevtools: () => callHost("openDevtools", []),
+        openFolderDialog: (opts) => callHost("openFolderDialog", [opts]),
+        openExternal: (url) => callHost("openExternal", [url]),
+        getCdpEndpoint: (id) => callHost("getCdpEndpoint", [id]),
+        navigate: (id, url) => callHost("navigate", [id, url]),
+        goBack: (id) => callHost("goBack", [id]),
+        goForward: (id) => callHost("goForward", [id]),
+        reload: (id) => callHost("reload", [id]),
+        stop: (id) => callHost("stop", [id]),
+        addEventListener: (handler) => {
+          const id = nextListenerId++;
+          listeners.set(id, handler);
+          return id;
+        },
+        removeEventListener: (id) => {
+          listeners.delete(id);
+        },
+      };
+
+      globalThis.__natstackMobileHost = {
+        resolvePending,
+        dispatchEventToListeners,
+      };
+      globalThis.__natstackShell = shell;
+      globalThis.__natstackElectron = shell;
+    })();
+    true;
+  `;
+}
 
 export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
   function PanelWebView(
@@ -87,216 +151,212 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
       panelId,
       url,
       visible,
+      managed,
+      panelInit,
       externalHost,
       onNavigationStateChange,
       onPanelNavigate,
+      onBridgeCall,
       onUnmount,
       colors,
     },
     ref,
   ) {
-  const webViewRef = useRef<WebView>(null);
-  const [hasError, setHasError] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-  const [errorMessage, setErrorMessage] = useState("");
+    const webViewRef = useRef<WebView>(null);
+    const [hasError, setHasError] = useState(false);
+    const [isLoading, setIsLoading] = useState(true);
+    const [errorMessage, setErrorMessage] = useState("");
 
-  // Expose imperative methods to parent via ref
-  useImperativeHandle(ref, () => ({
-    injectTheme: (mode: "light" | "dark") => {
+    const dispatchHostEvent = useCallback((event: string, payload: unknown) => {
+      if (!managed) return;
       webViewRef.current?.injectJavaScript(
-        `window.postMessage(${JSON.stringify(JSON.stringify({ type: "theme-changed", theme: { mode } }))}, '*'); true;`,
+        `window.__natstackMobileHost&&window.__natstackMobileHost.dispatchEventToListeners(${JSON.stringify(event)}, ${serializeForInjection(payload)}); true;`,
       );
-    },
-  }), []);
+    }, [managed]);
 
-  // Notify parent when this WebView unmounts (eviction or screen teardown)
-  useEffect(() => {
-    return () => {
-      onUnmount?.(panelId);
-    };
-  }, [panelId, onUnmount]);
+    useImperativeHandle(ref, () => ({
+      injectTheme: (mode: "light" | "dark") => {
+        dispatchHostEvent("runtime:theme", { theme: mode });
+      },
+      dispatchHostEvent,
+    }), [dispatchHostEvent]);
 
-  // Memoize the container style to avoid re-renders
-  const containerStyle = useMemo(
-    () => [styles.container, !visible && styles.hidden],
-    [visible],
-  );
+    useEffect(() => {
+      return () => {
+        onUnmount?.(panelId);
+      };
+    }, [panelId, onUnmount]);
 
-  /**
-   * Intercept navigation requests to handle:
-   * 1. Panel-to-panel navigation (detected via parsePanelUrl)
-   * 2. External URLs (open in system browser)
-   * 3. Same-origin navigation (allow normally)
-   */
-  const handleShouldStartLoad = useCallback(
-    (request: ShouldStartLoadRequest): boolean => {
-      const { url: requestUrl, isTopFrame } = request;
+    const containerStyle = useMemo(
+      () => [styles.container, !visible && styles.hidden],
+      [visible],
+    );
 
-      // Only intercept top-frame navigations, not iframes/resources
-      if (!isTopFrame) return true;
+    const emitManagedNavigation = useCallback((requestUrl: string): boolean => {
+      if (!isManagedHost(requestUrl, externalHost)) return false;
+      const parsed = parsePanelUrl(requestUrl, externalHost);
+      if (!parsed) return false;
+      onPanelNavigate?.({
+        type: "panel-switch",
+        panelId,
+        source: parsed.source,
+        contextId: parsed.contextId,
+        options: parsed.options,
+        stateArgs: parsed.stateArgs,
+      });
+      return true;
+    }, [externalHost, onPanelNavigate, panelId]);
 
-      // Always allow the initial URL load
-      if (requestUrl === url) return true;
+    const handleShouldStartLoad = useCallback(
+      (request: ShouldStartLoadRequest): boolean => {
+        const { url: requestUrl, isTopFrame } = request;
+        if (!isTopFrame) return true;
+        if (requestUrl === url) return true;
 
-      // Check if it's a managed host URL (panel URL)
-      if (isManagedHost(requestUrl, externalHost)) {
-        // Try to parse as a panel URL (clean panel link, not a bootstrapped URL)
-        const parsed = parsePanelUrl(requestUrl, externalHost);
-        if (parsed) {
-          // This is a panel-to-panel navigation -- emit event instead of navigating
-          onPanelNavigate?.({
-            type: "panel-switch",
-            source: parsed.source,
-            contextId: parsed.contextId,
-          });
+        if (emitManagedNavigation(requestUrl)) {
           return false;
         }
-        // It's a managed URL but already bootstrapped (has _bk/pid params)
-        // or is a non-panel resource -- allow normal navigation
+
+        if (managed && /^https?:\/\//i.test(requestUrl)) {
+          void onBridgeCall?.(panelId, "createBrowserPanel", [requestUrl, { focus: true }]);
+          return false;
+        }
+
         return true;
+      },
+      [emitManagedNavigation, managed, url],
+    );
+
+    const handleNavigationStateChange = useCallback(
+      (navState: WebViewNavigation) => {
+        setIsLoading(navState.loading ?? false);
+        onNavigationStateChange?.(navState);
+      },
+      [onNavigationStateChange],
+    );
+
+    const handleMessage = useCallback(async (event: WebViewMessageEvent) => {
+      if (!managed || !onBridgeCall) return;
+
+      try {
+        const message = JSON.parse(event.nativeEvent.data) as {
+          __natstackBridge?: boolean;
+          id?: string;
+          method?: string;
+          args?: unknown[];
+        };
+        if (!message.__natstackBridge || !message.id || !message.method) return;
+
+        try {
+          const result = await onBridgeCall(panelId, message.method, message.args ?? []);
+          webViewRef.current?.injectJavaScript(
+            `window.__natstackMobileHost&&window.__natstackMobileHost.resolvePending(${JSON.stringify(message.id)}, true, ${serializeForInjection(result)}); true;`,
+          );
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          webViewRef.current?.injectJavaScript(
+            `window.__natstackMobileHost&&window.__natstackMobileHost.resolvePending(${JSON.stringify(message.id)}, false, ${serializeForInjection(errorMessage)}); true;`,
+          );
+        }
+      } catch {
+        // Ignore non-bridge messages.
       }
+    }, [managed, onBridgeCall, panelId]);
 
-      // External URL -- open in system browser
-      if (/^https?:\/\//i.test(requestUrl)) {
-        void Linking.openURL(requestUrl);
-        return false;
-      }
-
-      // Allow other schemes (about:, blob:, data:, etc.)
-      return true;
-    },
-    [url, externalHost, onPanelNavigate],
-  );
-
-  const handleNavigationStateChange = useCallback(
-    (navState: WebViewNavigation) => {
-      setIsLoading(navState.loading ?? false);
-      onNavigationStateChange?.(navState);
-    },
-    [onNavigationStateChange],
-  );
-
-  const handleError = useCallback(
-    (syntheticEvent: { nativeEvent: { description?: string; code?: number; url?: string } }) => {
-      const { nativeEvent } = syntheticEvent;
-      setHasError(true);
-      setIsLoading(false);
-      setErrorMessage(
-        nativeEvent.description || `Failed to load panel (code ${nativeEvent.code ?? "unknown"})`,
-      );
-    },
-    [],
-  );
-
-  const handleHttpError = useCallback(
-    (syntheticEvent: { nativeEvent: { statusCode: number; url: string; description: string } }) => {
-      const { statusCode, description } = syntheticEvent.nativeEvent;
-      // Only show error for significant HTTP errors on the main frame
-      if (statusCode >= 400) {
+    const handleError = useCallback(
+      (syntheticEvent: { nativeEvent: { description?: string; code?: number } }) => {
+        const { nativeEvent } = syntheticEvent;
         setHasError(true);
         setIsLoading(false);
-        setErrorMessage(`HTTP ${statusCode}: ${description || "Server error"}`);
-      }
-    },
-    [],
-  );
+        setErrorMessage(
+          nativeEvent.description || `Failed to load panel (code ${nativeEvent.code ?? "unknown"})`,
+        );
+      },
+      [],
+    );
 
-  const handleRetry = useCallback(() => {
-    setHasError(false);
-    setIsLoading(true);
-    setErrorMessage("");
-    webViewRef.current?.reload();
-  }, []);
+    const handleHttpError = useCallback(
+      (syntheticEvent: { nativeEvent: { statusCode: number; description: string } }) => {
+        const { statusCode, description } = syntheticEvent.nativeEvent;
+        if (statusCode >= 400) {
+          setHasError(true);
+          setIsLoading(false);
+          setErrorMessage(`HTTP ${statusCode}: ${description || "Server error"}`);
+        }
+      },
+      [],
+    );
 
-  const handleLoadEnd = useCallback(() => {
-    setIsLoading(false);
-  }, []);
+    const handleRetry = useCallback(() => {
+      setHasError(false);
+      setIsLoading(true);
+      setErrorMessage("");
+      webViewRef.current?.reload();
+    }, []);
 
-  if (hasError) {
+    const handleLoadEnd = useCallback(() => {
+      setIsLoading(false);
+    }, []);
+
+    if (hasError) {
+      return (
+        <View style={containerStyle}>
+          <View style={[styles.errorContainer, colors?.background != null && { backgroundColor: colors.background }]}>
+            <Text style={[styles.errorTitle, colors?.text != null && { color: colors.text }]}>Failed to load panel</Text>
+            <Text style={[styles.errorMessage, colors?.textSecondary != null && { color: colors.textSecondary }]}>{errorMessage}</Text>
+            <Pressable style={[styles.retryButton, colors?.primary != null && { backgroundColor: colors.primary }]} onPress={handleRetry}>
+              <Text style={[styles.retryText, colors?.text != null && { color: colors.text }]}>Retry</Text>
+            </Pressable>
+          </View>
+        </View>
+      );
+    }
+
     return (
       <View style={containerStyle}>
-        <View style={[styles.errorContainer, colors?.background != null && { backgroundColor: colors.background }]}>
-          <Text style={[styles.errorTitle, colors?.text != null && { color: colors.text }]}>Failed to load panel</Text>
-          <Text style={[styles.errorMessage, colors?.textSecondary != null && { color: colors.textSecondary }]}>{errorMessage}</Text>
-          <Pressable style={[styles.retryButton, colors?.primary != null && { backgroundColor: colors.primary }]} onPress={handleRetry}>
-            <Text style={[styles.retryText, colors?.text != null && { color: colors.text }]}>Retry</Text>
-          </Pressable>
-        </View>
-      </View>
-    );
-  }
-
-  return (
-    <View style={containerStyle}>
-      {isLoading && (
-        <View style={[styles.loadingOverlay, colors?.background != null && { backgroundColor: colors.background + "E6" }]}>
-          <ActivityIndicator size="large" color={colors?.primary ?? "#1a73e8"} />
-          <Text style={[styles.loadingText, colors?.textSecondary != null && { color: colors.textSecondary }]}>Loading panel...</Text>
-        </View>
-      )}
-      <WebView
-        ref={webViewRef}
-        key={panelId}
-        source={{ uri: url }}
-        style={styles.webView}
-        userAgent={NATSTACK_USER_AGENT}
-        onShouldStartLoadWithRequest={handleShouldStartLoad}
-        onNavigationStateChange={handleNavigationStateChange}
-        onError={handleError}
-        onHttpError={handleHttpError}
-        onLoadEnd={handleLoadEnd}
-        injectedJavaScript={REFERRER_POLICY_SCRIPT}
-        // === Cookie isolation (Sub-task 1) ===
-        // Auth is passed via query params (pid, rpcPort, rpcToken, rpcHost),
-        // so we don't rely on cookies. Disable cookie sharing to prevent
-        // panel A's cookies from leaking to panel B.
-        // iOS: sharedCookiesEnabled=false gives each WebView its own WKDataStore
-        sharedCookiesEnabled={false}
-        // Android: thirdPartyCookiesEnabled=false prevents cross-WebView cookie access
-        thirdPartyCookiesEnabled={false}
-        // === window.open() interception ===
-        // Android requires setSupportMultipleWindows for onOpenWindow to fire.
-        // Without it, window.open() navigates the current WebView instead.
-        // Setting it on iOS is harmless (iOS uses a different mechanism).
-        setSupportMultipleWindows
-        // Panels may call window.open() to create child panels. Intercept
-        // and route panel URLs to the panel tree, external URLs to system browser.
-        onOpenWindow={(syntheticEvent) => {
-          const { nativeEvent } = syntheticEvent;
-          const { targetUrl } = nativeEvent;
-
-          // Check if it's a managed panel URL
-          if (isManagedHost(targetUrl, externalHost)) {
-            const parsed = parsePanelUrl(targetUrl, externalHost);
-            if (parsed) {
-              onPanelNavigate?.({
-                type: "panel-switch",
-                source: parsed.source,
-                contextId: parsed.contextId,
-              });
+        {isLoading && (
+          <View style={[styles.loadingOverlay, colors?.background != null && { backgroundColor: colors.background + "E6" }]}>
+            <ActivityIndicator size="large" color={colors?.primary ?? "#1a73e8"} />
+            <Text style={[styles.loadingText, colors?.textSecondary != null && { color: colors.textSecondary }]}>Loading panel...</Text>
+          </View>
+        )}
+        <WebView
+          ref={webViewRef}
+          key={panelId}
+          source={{ uri: url }}
+          style={styles.webView}
+          userAgent={NATSTACK_USER_AGENT}
+          onShouldStartLoadWithRequest={handleShouldStartLoad}
+          onNavigationStateChange={handleNavigationStateChange}
+          onMessage={handleMessage}
+          onError={handleError}
+          onHttpError={handleHttpError}
+          onLoadEnd={handleLoadEnd}
+          injectedJavaScriptBeforeContentLoaded={managed ? buildBridgeBootstrapScript(panelInit) : undefined}
+          injectedJavaScript={REFERRER_POLICY_SCRIPT}
+          sharedCookiesEnabled={false}
+          thirdPartyCookiesEnabled={false}
+          setSupportMultipleWindows
+          onOpenWindow={(syntheticEvent) => {
+            const { targetUrl } = syntheticEvent.nativeEvent;
+            if (emitManagedNavigation(targetUrl)) return;
+            if (managed && /^https?:\/\//i.test(targetUrl)) {
+              void onBridgeCall?.(panelId, "createBrowserPanel", [targetUrl, { focus: true }]);
               return;
             }
-          }
-
-          // External URL -- open in system browser
-          if (/^https?:\/\//i.test(targetUrl)) {
-            void Linking.openURL(targetUrl);
-          }
-        }}
-        // Allow JavaScript and DOM storage for panels
-        javaScriptEnabled
-        domStorageEnabled
-        // Allow mixed content in dev (HTTP resources on HTTPS pages)
-        mixedContentMode="compatibility"
-        // Allow inline media playback on iOS
-        allowsInlineMediaPlayback
-        // Enable file access for panels that need it
-        allowFileAccess
-        // Pull-to-refresh is not appropriate for panels
-        pullToRefreshEnabled={false}
-      />
-    </View>
-  );
+            if (/^https?:\/\//i.test(targetUrl)) {
+              void Linking.openURL(targetUrl);
+            }
+          }}
+          javaScriptEnabled
+          domStorageEnabled
+          mixedContentMode="compatibility"
+          allowsInlineMediaPlayback
+          allowFileAccess
+          pullToRefreshEnabled={false}
+        />
+      </View>
+    );
   },
 );
 
@@ -305,8 +365,6 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
   },
   hidden: {
-    // Keep the WebView mounted but invisible at full size so it renders
-    // correctly when brought back. pointerEvents prevents touch passthrough.
     opacity: 0,
     pointerEvents: "none",
   } as const,

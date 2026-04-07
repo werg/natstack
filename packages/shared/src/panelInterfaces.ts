@@ -2,7 +2,7 @@
  * Shared cross-boundary interfaces.
  *
  * BridgePanelManager: minimal surface used by bridge handlers (implemented by
- * PanelOrchestrator on Electron, standaloneBridge on server).
+ * PanelOrchestrator on Electron and other shell-owned implementations).
  *
  * PanelRelationshipProvider: panel tree relationship queries used by RpcServer
  * for panel-to-panel authorization (implemented by PanelRegistry).
@@ -53,6 +53,8 @@ export interface ServerInfoLike {
   /** Protocol for panel-facing URLs */
   protocol: "http" | "https";
   rpcPort: number;
+  rpcWsUrl: string;
+  pubsubUrl: string;
   gitBaseUrl: string;
   workerdPort: number;
   /** External hostname for panel URLs (e.g., "localhost" or "my-server.example.com") */

@@ -34,9 +34,10 @@ export interface RuntimeDeps {
 
 export function createRuntime(deps: RuntimeDeps) {
   const base = createBaseRuntime(deps);
+  const shell = (globalThis as any).__natstackShell ?? (globalThis as any).__natstackElectron;
 
   // Initialize the stateArgs bridge for setStateArgs() function
-  _initStateArgsBridge((updates) => base.callMain<Record<string, unknown>>("bridge.setStateArgs", updates));
+  _initStateArgsBridge((updates) => shell.setStateArgs(updates));
 
   const parentHandleOrNull = deps.parentId ? createParentHandle({ rpc: base.rpc, parentId: deps.parentId }) : null;
   const parent: ParentHandle = parentHandleOrNull ?? noopParent;
@@ -53,8 +54,6 @@ export function createRuntime(deps: RuntimeDeps) {
     return createParentHandleFromContract(getParent(), contract);
   };
 
-  const electron = (globalThis as any).__natstackElectron;
-
   return {
     id: base.id,
     parentId: deps.parentId,
@@ -70,15 +69,9 @@ export function createRuntime(deps: RuntimeDeps) {
 
     onConnectionError: base.onConnectionError,
 
-    getInfo: () => base.callMain<EndpointInfo>("bridge.getInfo"),
-    closeSelf: () => {
-      if (electron) return electron.closeSelf();
-      return base.callMain<void>("bridge.closeSelf");
-    },
-    focusPanel: (panelId: string) => {
-      if (electron) return electron.focusPanel(panelId);
-      return base.callMain<void>("bridge.focusPanel", panelId);
-    },
+    getInfo: () => shell.getInfo() as Promise<EndpointInfo>,
+    closeSelf: () => shell.closeSelf(),
+    focusPanel: (panelId: string) => shell.focusPanel(panelId),
     getWorkspaceTree: base.getWorkspaceTree,
     listBranches: base.listBranches,
     listCommits: base.listCommits,

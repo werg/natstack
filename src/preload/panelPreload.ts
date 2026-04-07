@@ -1,10 +1,8 @@
 /**
- * Panel preload — exposes __natstackElectron via contextBridge.
+ * Panel preload — exposes the host-local shell bridge.
  *
  * App panels only get this preload. Browser panels (external URLs) do NOT —
- * they get browserPreload.ts with autofill only (no __natstackElectron).
- * This is a trust boundary: app panels are workspace code we control;
- * browser panels are arbitrary websites.
+ * they get browserPreload.ts with autofill only.
  */
 
 import { contextBridge, ipcRenderer } from "electron";
@@ -13,19 +11,22 @@ import { contextBridge, ipcRenderer } from "electron";
 let nextListenerId = 1;
 const activeListeners = new Map<number, (...args: any[]) => void>();
 
-contextBridge.exposeInMainWorld("__natstackElectron", {
+const natstackShell = {
   // Panel lifecycle (Electron-owned UI mutations)
-  closeSelf: () => ipcRenderer.invoke("natstack:closeSelf"),
-  closeChild: (childId: string) => ipcRenderer.invoke("natstack:closeChild", childId),
-  focusPanel: (panelId: string) => ipcRenderer.invoke("natstack:focusPanel", panelId),
+  getPanelInit: () => ipcRenderer.invoke("natstack:getPanelInit"),
+  getBootstrapConfig: () => ipcRenderer.invoke("natstack:getPanelInit"),
+  getInfo: () => ipcRenderer.invoke("natstack:bridge.getInfo"),
+  setStateArgs: (updates: Record<string, unknown>) => ipcRenderer.invoke("natstack:bridge.setStateArgs", updates),
+  closeSelf: () => ipcRenderer.invoke("natstack:bridge.closeSelf"),
+  closeChild: (childId: string) => ipcRenderer.invoke("natstack:bridge.closeChild", childId),
+  focusPanel: (panelId: string) => ipcRenderer.invoke("natstack:bridge.focusPanel", panelId),
   createBrowserPanel: (url: string, opts?: unknown) =>
-    ipcRenderer.invoke("natstack:createBrowserPanel", url, opts),
-  getBootstrapConfig: () => ipcRenderer.invoke("natstack:getBootstrapConfig"),
+    ipcRenderer.invoke("natstack:bridge.createBrowserPanel", url, opts),
 
   // Electron-native
-  openDevtools: () => ipcRenderer.invoke("natstack:openDevtools"),
-  openFolderDialog: (opts?: unknown) => ipcRenderer.invoke("natstack:openFolderDialog", opts),
-  openExternal: (url: string) => ipcRenderer.invoke("natstack:openExternal", url),
+  openDevtools: () => ipcRenderer.invoke("natstack:bridge.openDevtools"),
+  openFolderDialog: (opts?: unknown) => ipcRenderer.invoke("natstack:bridge.openFolderDialog", opts),
+  openExternal: (url: string) => ipcRenderer.invoke("natstack:bridge.openExternal", url),
 
   // Browser automation (CdpServer)
   getCdpEndpoint: (id: string) => ipcRenderer.invoke("natstack:getCdpEndpoint", id),
@@ -51,4 +52,7 @@ contextBridge.exposeInMainWorld("__natstackElectron", {
       activeListeners.delete(id);
     }
   },
-});
+};
+
+contextBridge.exposeInMainWorld("__natstackShell", natstackShell);
+contextBridge.exposeInMainWorld("__natstackElectron", natstackShell);

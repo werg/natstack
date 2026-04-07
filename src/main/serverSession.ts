@@ -1,8 +1,8 @@
 /**
  * ServerSession — server connection establishment.
  *
- * Subsumes local spawn vs remote connect, workspace info fetch,
- * and PanelHttpProxy creation. Returns a single SessionConnection
+ * Subsumes local spawn vs remote connect and workspace info fetch.
+ * Returns a single SessionConnection
  * with everything needed to continue startup.
  */
 
@@ -11,7 +11,6 @@ import { createDevLogger } from "@natstack/dev-log";
 import { getAppRoot } from "./paths.js";
 import { ServerProcessManager, type ServerPorts } from "./serverProcessManager.js";
 import { createServerClient, type ServerClient, type ConnectionStatus } from "./serverClient.js";
-import { createPanelHttpProxy } from "./panelHttpProxy.js";
 import type { PanelHttpServerLike, ServerInfoLike } from "@natstack/shared/panelInterfaces";
 import type { ServerInfo } from "./serverInfo.js";
 import type { WorkspaceConfig } from "@natstack/shared/workspace/types";
@@ -21,11 +20,16 @@ const log = createDevLogger("ServerSession");
 
 export interface SessionConnection {
   protocol: "http" | "https";
+  rpcPort: number;
   gatewayPort: number;
   externalHost: string;
+  rpcWsUrl: string;
+  pubsubUrl: string;
   gitBaseUrl: string;
   workerdPort: number;
   workspaceId: string;
+  workspacePath: string;
+  statePath: string;
   workspaceConfig: WorkspaceConfig;
   serverClient: ServerClient;
   serverProcessManager: ServerProcessManager | null;
@@ -40,12 +44,16 @@ function buildServerInfo(
   ports: ServerPorts,
   externalHost: string,
   protocol: "http" | "https",
+  rpcWsUrl: string,
+  pubsubUrl: string,
+  gitBaseUrl: string,
   getClient: () => ServerClient,
 ): ServerInfo {
-  const host = externalHost === "localhost" ? "127.0.0.1" : externalHost;
   return {
     rpcPort: ports.rpcPort,
-    gitBaseUrl: `${protocol}://${host}:${ports.gitPort}`,
+    rpcWsUrl,
+    pubsubUrl,
+    gitBaseUrl,
     workerdPort: ports.workerdPort ?? 0,
     externalHost,
     gatewayPort: ports.gatewayPort ?? ports.panelHttpPort ?? ports.rpcPort,
@@ -90,6 +98,9 @@ export async function establishServerSession(args: {
   let ports: ServerPorts;
   let protocol: "http" | "https";
   let externalHost: string;
+  let rpcWsUrl: string;
+  let pubsubUrl: string;
+  let gitBaseUrl: string;
 
   if (mode.kind === "remote") {
     // Remote mode: connect to existing server with automatic reconnection
@@ -97,9 +108,12 @@ export async function establishServerSession(args: {
     externalHost = remoteUrl.hostname;
     protocol = remoteUrl.protocol === "https:" ? "https" : "http";
     const remotePort = parseInt(remoteUrl.port) || (protocol === "https" ? 443 : 80);
+    rpcWsUrl = `${protocol === "https" ? "wss" : "ws"}://${externalHost}:${remotePort}/rpc`;
+    pubsubUrl = `${protocol === "https" ? "wss" : "ws"}://${externalHost}:${remotePort}/_w/workers/pubsub-channel/PubSubChannel`;
+    gitBaseUrl = `${protocol}://${externalHost}:${remotePort}/_git`;
 
     serverClient = await createServerClient(remotePort, adminToken, {
-      wsUrl: `${protocol === "https" ? "wss" : "ws"}://${externalHost}:${remotePort}/rpc`,
+      wsUrl: rpcWsUrl,
       reconnect: true,
       maxReconnectAttempts: 10,
       onConnectionStatusChanged: (status) => {
@@ -166,6 +180,11 @@ export async function establishServerSession(args: {
 
     ports = await serverProcessManager.start();
     log.info(`[Server] Child process started (RPC: ${ports.rpcPort}, Git: ${ports.gitPort})`);
+    rpcWsUrl = `ws://127.0.0.1:${ports.rpcPort}`;
+    pubsubUrl = ports.workerdPort
+      ? `ws://127.0.0.1:${ports.workerdPort}/_w/workers/pubsub-channel/PubSubChannel`
+      : "";
+    gitBaseUrl = `http://127.0.0.1:${ports.gitPort}`;
 
     serverClient = await createServerClient(ports.rpcPort, ports.adminToken, {
       onDisconnect: () => {
@@ -178,7 +197,15 @@ export async function establishServerSession(args: {
   log.info("[Server] Admin client connected");
 
   const getClient = () => serverClient;
-  const serverInfo = buildServerInfo(ports, externalHost, protocol, getClient);
+  const serverInfo = buildServerInfo(
+    ports,
+    externalHost,
+    protocol,
+    rpcWsUrl,
+    pubsubUrl,
+    gitBaseUrl,
+    getClient,
+  );
 
   // Get workspace metadata from server
   const wsInfo = await serverClient.call("workspace", "getInfo", []) as {
@@ -187,17 +214,27 @@ export async function establishServerSession(args: {
   };
   log.info(`[Workspace] Server workspace: ${wsInfo.config.id}`);
 
-  // Create RPC-backed PanelHttpServerLike
   const gatewayPort = ports.gatewayPort ?? ports.panelHttpPort ?? 0;
-  const panelHttpServer = createPanelHttpProxy(serverClient, gatewayPort);
+  const panelHttpServer: PanelHttpServerLike = {
+    ensureSubdomainSession: () => "",
+    clearSubdomainSessions: () => {},
+    hasBuild: () => false,
+    invalidateBuild: () => {},
+    getPort: () => gatewayPort,
+  };
 
   return {
     protocol,
+    rpcPort: ports.rpcPort,
     gatewayPort,
     externalHost,
-    gitBaseUrl: serverInfo.gitBaseUrl,
+    rpcWsUrl,
+    pubsubUrl,
+    gitBaseUrl,
     workerdPort: ports.workerdPort ?? 0,
     workspaceId: wsInfo.config.id,
+    workspacePath: wsInfo.path,
+    statePath: wsInfo.statePath,
     workspaceConfig: wsInfo.config,
     serverClient,
     serverProcessManager,

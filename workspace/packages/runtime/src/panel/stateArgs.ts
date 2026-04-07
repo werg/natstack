@@ -54,14 +54,14 @@ export function useStateArgs<T = Record<string, unknown>>(): T {
  * 1. Merges with current stateArgs
  * 2. Validates against manifest schema
  * 3. Updates the current snapshot
- * 4. Persists to SQLite
- * 5. Broadcasts back via IPC, triggering useStateArgs re-render
+ * 4. Persists to the shell-owned panel store
+ * 5. Updates the local runtime snapshot and triggers useStateArgs re-render
  */
 export async function setStateArgs(updates: Record<string, unknown>): Promise<void> {
   if (!_setStateArgsBridge) {
     throw new Error("setStateArgs called before runtime initialization");
   }
-  // RPC to main process - this validates and persists
-  await _setStateArgsBridge(updates);
-  // Main broadcasts back, which triggers the event listener in useStateArgs
+  const nextStateArgs = await _setStateArgsBridge(updates);
+  window.__natstackStateArgs = nextStateArgs;
+  window.dispatchEvent(new CustomEvent("natstack:stateArgsChanged", { detail: nextStateArgs }));
 }

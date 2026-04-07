@@ -1,16 +1,15 @@
 /**
- * Tests for PanelHttpServer routing, session management, and callback-based flow.
+ * Tests for PanelHttpServer routing, build cache, and callback-based flow.
  *
  * These are unit tests for the zero per-panel state server:
  * - extractSourcePath (URL parsing)
  * - contextIdToSubdomain (subdomain derivation)
- * - ensureSubdomainSession / clearSubdomainSessions (session lifecycle)
  * - storeBuild / invalidateBuild (serving cache)
- * - Callback-based flow (onDemandCreate, listPanels)
+ * - Callback-based flow (listPanels)
  */
 
 import { describe, it, expect } from "vitest";
-import { contextIdToSubdomain } from "@natstack/shared/panelIdUtils";
+import { contextIdToSubdomain } from "../../packages/shared/src/panelIdUtils.js";
 
 // ---------------------------------------------------------------------------
 // extractSourcePath is module-private, so we test the regex logic directly.
@@ -127,45 +126,6 @@ vi.mock("ws", () => ({
 // Must import after mocks
 const { PanelHttpServer } = await import("./panelHttpServer.js");
 
-describe("PanelHttpServer subdomain sessions", () => {
-  it("ensureSubdomainSession creates and reuses a session", () => {
-    const server = new PanelHttpServer();
-    const sid1 = server.ensureSubdomainSession("ctx-1");
-    const sid2 = server.ensureSubdomainSession("ctx-1");
-    expect(sid1).toBe(sid2); // reuses same session
-
-    const sid3 = server.ensureSubdomainSession("ctx-2");
-    expect(sid3).not.toBe(sid1); // different subdomain
-  });
-
-  it("clearSubdomainSessions removes sessions for a subdomain", () => {
-    const server = new PanelHttpServer();
-    const sid = server.ensureSubdomainSession("ctx-1");
-    expect(sid).toBeTruthy();
-
-    server.clearSubdomainSessions("ctx-1");
-    // Creating a new session should produce a new ID (old one was cleared)
-    const sid2 = server.ensureSubdomainSession("ctx-1");
-    expect(sid2).not.toBe(sid);
-  });
-
-  it("clearSubdomainSessions only affects the target subdomain", () => {
-    const server = new PanelHttpServer();
-    const sid1 = server.ensureSubdomainSession("ctx-1");
-    const sid2 = server.ensureSubdomainSession("ctx-2");
-
-    server.clearSubdomainSessions("ctx-1");
-
-    // ctx-2 session should survive
-    const sid2After = server.ensureSubdomainSession("ctx-2");
-    expect(sid2After).toBe(sid2);
-
-    // ctx-1 session should be new
-    const sid1After = server.ensureSubdomainSession("ctx-1");
-    expect(sid1After).not.toBe(sid1);
-  });
-});
-
 describe("PanelHttpServer build cache", () => {
   const buildResult = {
     dir: "/tmp/build",
@@ -204,7 +164,6 @@ describe("PanelHttpServer build cache", () => {
     const server = new PanelHttpServer();
     const onBuildComplete = vi.fn();
     server.setCallbacks({
-      onDemandCreate: vi.fn(),
       listPanels: vi.fn().mockReturnValue([]),
       onBuildComplete,
       getBuild: vi.fn(),

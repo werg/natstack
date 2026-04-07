@@ -453,7 +453,22 @@ async function main() {
       },
     });
   }
-  container.register(rpcService(createTokensService({ tokenManager }), ["tokenManager"]));
+  {
+    let tokensDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null = null;
+    container.register({
+      name: "tokens",
+      dependencies: ["tokenManager", "fsService", "gitServer"],
+      async start(resolve) {
+        const fsService = resolve<import("@natstack/shared/fsService").FsService>("fsService")!;
+        const liveGitServer = resolve<import("@natstack/git-server").GitServer>("gitServer")!;
+        tokensDefinition = createTokensService({ tokenManager, fsService, gitServer: liveGitServer });
+      },
+      getServiceDefinition() {
+        if (!tokensDefinition) throw new Error("tokens service not initialized");
+        return tokensDefinition;
+      },
+    });
+  }
   container.register(rpcService(createGitService({ gitServer, tokenManager, workspacePath }), ["gitServer"]));
   container.register(rpcService(createTestService({ contextFolderManager, workspacePath, panelTestSetupPath })));
   container.register(rpcService(createDbService({ databaseManager }), ["databaseManager"]));
@@ -812,26 +827,16 @@ async function main() {
   const commonDeps = { container, dispatcher, tokenManager, workspace, workspacePath, workspaceConfig, gitServer, adminToken, centralData: centralData ?? null, args, hostConfig, isIpcMode: !!ipcChannel, eventService, requestRelaunch };
   await registerPanelServices(commonDeps);
 
-  // ===========================================================================
-  // Standalone-mode services (conditionally registered)
-  // ===========================================================================
-
   if (!ipcChannel) {
-    const { registerStandalonePanelRuntime } = await import("./panelRuntimeRegistration.js");
-    const standaloneSessions = new Map<string, import("./standaloneBridge.js").StandaloneSession>();
-    await registerStandalonePanelRuntime({ ...commonDeps, standaloneSessions });
-
-    // Settings service (standalone mode — shell callers manage API keys / model roles)
+    // Settings service for remote/mobile shells.
     const { createSettingsServiceStandalone } = await import("./services/settingsServiceStandalone.js");
     const { rpcService: rpcSvc } = await import("@natstack/shared/managedService");
     container.register(rpcSvc(createSettingsServiceStandalone({ dispatcher })));
 
-    // Push notification service (standalone mode — mobile device registration)
+    // Push notification service for mobile device registration.
     const { createPushService } = await import("./services/pushService.js");
     container.register(rpcSvc(createPushService()));
   }
-  // IPC mode: no additional registration needed — panelHttpWiring handles
-  // isIpcMode directly (onDemandCreate throws, listPanels returns []).
 
   // ── Start all services in dependency order ──
   await container.startAll();
@@ -849,36 +854,6 @@ async function main() {
     rpcServerInstance.setWorkerdUrl(`http://127.0.0.1:${workerdPort}`);
   }
 
-  // Wire panel-to-panel auth (PersistenceRelationshipProvider) — panels now
-  // connect to the server WS in both IPC and standalone modes.
-  {
-    const panelServiceData = container.get<{
-      persistence: import("@natstack/shared/db/panelPersistence").PanelPersistence;
-    }>("panelService");
-    if (panelServiceData?.persistence) {
-      const persistence = panelServiceData.persistence;
-      rpcServerInstance.setPanelManager({
-        getPanel(panelId: string) { return persistence.getPanel(panelId); },
-        findParentId(panelId: string) {
-          return persistence.getParentId(panelId);
-        },
-        isDescendantOf(panelId: string, ancestorId: string): boolean {
-          let current = panelId;
-          const visited = new Set<string>();
-          while (current) {
-            if (visited.has(current)) return false;
-            visited.add(current);
-            const parentId = persistence.getParentId(current);
-            if (!parentId) return false;
-            if (parentId === ancestorId) return true;
-            current = parentId;
-          }
-          return false;
-        },
-      });
-    }
-  }
-
   dispatcher.markInitialized();
 
   // Validate that SERVER_SERVICE_NAMES covers all server-side services.
@@ -889,7 +864,7 @@ async function main() {
     const sharedSet = new Set<string>(SERVER_SERVICE_NAMES);
     // Services that live on both Electron and server, are internal lifecycle only,
     // or are standalone-mode-only (not present in IPC/Electron mode)
-    const localOnly = new Set(["events", "browser", "settings", "push"]);
+    const localOnly = new Set(["events", "browser", "panel", "settings", "push"]);
     for (const name of dispatcher.getServices()) {
       if (!sharedSet.has(name) && !localOnly.has(name)) {
         console.warn(

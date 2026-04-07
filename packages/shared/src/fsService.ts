@@ -149,6 +149,10 @@ export class FsService {
     this.callerContextMap.delete(callerId);
   }
 
+  updateCallerContext(callerId: string, contextId: string): void {
+    this.callerContextMap.set(callerId, contextId);
+  }
+
   /** @deprecated Use registerCallerContext */
   registerPanelContext(panelId: string, contextId: string): void {
     this.registerCallerContext(panelId, contextId);

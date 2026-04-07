@@ -7,6 +7,7 @@
  * Expects these globals to be set before this script runs (by configLoader):
  * - globalThis.__natstackId (string) — panel ID (viewId)
  * - globalThis.__natstackRpcPort (number) — server RPC port
+ * - globalThis.__natstackRpcWsUrl (string, optional) — fully resolved RPC WS URL
  * - globalThis.__natstackRpcToken (string) — auth token for ws:auth
  * - globalThis.__natstackRpcHost (string, optional) — explicit WebSocket host
  *   for remote connections (e.g., mobile shell). Falls back to location.hostname.
@@ -27,12 +28,13 @@ const viewId: string = globalThis.__natstackId;
 const rpcPort: number = globalThis.__natstackRpcPort;
 const authToken: string = globalThis.__natstackRpcToken;
 
-// Derive WebSocket URL from page context (supports both ws:// and wss://).
-// __natstackRpcHost overrides location.hostname for remote connections
-// (e.g., mobile shell connecting to a server on a different host).
-const wsScheme = location.protocol === "https:" ? "wss" : "ws";
-const wsHost: string = globalThis.__natstackRpcHost || location.hostname || "127.0.0.1";
-const wsUrl = `${wsScheme}://${wsHost}:${rpcPort}`;
+// Prefer an explicit resolved transport URL from bootstrap config.
+// Legacy fallback composes from host/port if older init payloads are still present.
+const wsUrl = globalThis.__natstackRpcWsUrl || (() => {
+  const wsScheme = location.protocol === "https:" ? "wss" : "ws";
+  const wsHost: string = globalThis.__natstackRpcHost || location.hostname || "127.0.0.1";
+  return `${wsScheme}://${wsHost}:${rpcPort}`;
+})();
 
 globalThis.__natstackTransport = createWsTransport({
   viewId,

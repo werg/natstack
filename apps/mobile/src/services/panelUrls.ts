@@ -1,17 +1,8 @@
 /**
  * Panel URL construction for React Native.
  *
- * Builds the URL that a WebView should load for a given panel.
- * Mirrors the URL pattern from PanelView.setAuthCookiesAndBuildUrl()
- * in src/main/panelView.ts, but passes auth info via query params
- * instead of Electron session cookies (react-native-webview doesn't
- * support pre-setting cookies reliably across all platforms).
- *
- * URL pattern:
- *   {protocol}://{subdomain}.{host}:{port}/{source}/?pid={panelId}&rpcToken={token}
- *
- * The configLoader.js bootstrap on the server reads pid and rpcToken
- * from the URL query string as a fallback when cookies aren't available.
+ * Panel identity is injected into the WebView by native code before content
+ * loads, so the URL only needs to point at the static panel bundle.
  */
 
 import { isManagedHost, parsePanelUrl } from "@natstack/shared/shell/urlParsing";
@@ -55,34 +46,21 @@ export function parseHostConfig(serverUrl: string): HostConfig {
 /**
  * Build the full URL to load a panel in a WebView.
  *
- * @param panelId - The panel's unique ID
  * @param source - Panel source path (e.g. "panels/chat")
  * @param contextId - Context ID for subdomain isolation
- * @param panelToken - Per-panel RPC token (from panel.getCredentials)
- * @param rpcPort - The RPC port for the panel's WebSocket connection
  * @param hostConfig - Parsed server host configuration
  *
  * @returns The URL string to load in the WebView
  */
 export function buildPanelUrl(
-  panelId: string,
   source: string,
   contextId: string,
-  panelToken: string,
-  rpcPort: number,
   hostConfig: HostConfig,
 ): string {
   const subdomain = contextIdToSubdomain(contextId);
   const portSuffix = hostConfig.port ? `:${hostConfig.port}` : "";
   const origin = `${hostConfig.protocol}://${subdomain}.${hostConfig.host}${portSuffix}`;
-
-  const params = new URLSearchParams();
-  params.set("pid", panelId);
-  params.set("rpcPort", String(rpcPort));
-  params.set("rpcToken", panelToken);
-  params.set("rpcHost", hostConfig.host);
-
-  return `${origin}/${source}/?${params.toString()}`;
+  return `${origin}/${source}/`;
 }
 
 /**

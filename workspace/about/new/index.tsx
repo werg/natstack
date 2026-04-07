@@ -61,10 +61,9 @@ function NewPanelPage() {
   const handleNewChat = useCallback(() => {
     const prompt = promptInput.trim();
     if (!prompt) return;
-    const url = buildPanelLink("panels/chat", {
+    window.location.href = buildPanelLink("panels/chat", {
       stateArgs: { initialPrompt: prompt },
     });
-    window.location.href = url + (url.includes("?") ? "&" : "?") + "_fresh";
   }, [promptInput]);
 
   if (loading) {

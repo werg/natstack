@@ -35,16 +35,14 @@ export interface BuildBootstrapConfigOpts {
   source: string;
   parentId: string | null;
   theme: "light" | "dark";
-  /** Single RPC port (server WS) — panels have one connection now */
-  rpcPort: number;
+  /** Fully resolved RPC WebSocket URL */
+  rpcWsUrl: string;
   /** Single RPC token (server-issued) */
   rpcToken: string;
   gitToken: string;
   gitBaseUrl: string;
-  workerdPort: number;
-  externalHost: string;
-  protocol: "http" | "https";
-  gatewayPort: number;
+  /** Fully resolved PubSub WebSocket URL */
+  pubsubUrl: string;
   env?: Record<string, string>;
   stateArgs?: Record<string, unknown>;
 }
@@ -89,10 +87,11 @@ export function resolveSource(
  * Assemble the full bootstrap config delivered to panels via RPC.
  */
 export function buildBootstrapConfig(opts: BuildBootstrapConfigOpts): unknown {
-  const subdomain = contextIdToSubdomain(opts.contextId);
-  const host = opts.externalHost;
-  const wsProtocol = opts.protocol === "https" ? "wss" : "ws";
-  const port = opts.gatewayPort;
+  const rpcUrl = new URL(opts.rpcWsUrl);
+  const rpcHost = rpcUrl.hostname;
+  const rpcPort = rpcUrl.port
+    ? Number(rpcUrl.port)
+    : rpcUrl.protocol === "wss:" ? 443 : 80;
 
   const gitConfig = {
     serverUrl: opts.gitBaseUrl,
@@ -100,7 +99,7 @@ export function buildBootstrapConfig(opts: BuildBootstrapConfigOpts): unknown {
     sourceRepo: opts.source,
   };
   const pubsubConfig = {
-    serverUrl: `${wsProtocol}://${subdomain}.${host}:${port}/_w/workers/pubsub-channel/PubSubChannel`,
+    serverUrl: opts.pubsubUrl,
     token: opts.rpcToken,
   };
 
@@ -109,7 +108,9 @@ export function buildBootstrapConfig(opts: BuildBootstrapConfigOpts): unknown {
     contextId: opts.contextId,
     parentId: opts.parentId,
     theme: opts.theme,
-    rpcPort: opts.rpcPort,
+    rpcHost,
+    rpcPort,
+    rpcWsUrl: opts.rpcWsUrl,
     rpcToken: opts.rpcToken,
     gitConfig,
     pubsubConfig,
@@ -148,13 +149,12 @@ export function buildPanelEnv(opts: BuildPanelEnvOpts): Record<string, string> {
     sourceRepo: opts.sourceRepo,
   });
 
-  const panelSubdomain = contextIdToSubdomain(opts.contextId);
   const envHost = opts.externalHost;
   const wsProtocol = opts.protocol === "https" ? "wss" : "ws";
   const wsPort = opts.gatewayPort;
   const pubsubConfig = wsPort
     ? JSON.stringify({
-        serverUrl: `${wsProtocol}://${panelSubdomain}.${envHost}:${wsPort}/_w/workers/pubsub-channel/PubSubChannel`,
+        serverUrl: `${wsProtocol}://${envHost}:${wsPort}/_w/workers/pubsub-channel/PubSubChannel`,
         token: opts.serverRpcToken,
       })
     : "";

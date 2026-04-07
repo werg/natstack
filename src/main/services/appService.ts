@@ -53,7 +53,7 @@ export function createAppService(deps: {
         }
 
         case "getPanelPreloadPath":
-          return path.join(__dirname, "..", "panelPreload.cjs");
+          return path.join(__dirname, "panelPreload.cjs");
 
         case "clearBuildCache": {
           if (deps.serverClient) {

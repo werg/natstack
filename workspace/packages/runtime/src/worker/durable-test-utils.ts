@@ -1,4 +1,6 @@
-import initSqlJs, { type BindParams, type Database, type SqlJsStatic } from "sql.js";
+import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
+
+type BindParams = Parameters<Database["run"]>[1];
 
 interface SqlResult {
   toArray(): Record<string, unknown>[];

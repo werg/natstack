@@ -88,6 +88,25 @@ describe("TokenManager", () => {
     expect(tm.validateAdminToken("secret")).toBe(true);
     expect(tm.validateAdminToken("wrong")).toBe(false);
   });
+
+  it("tracks panel parent relationships for relay auth", () => {
+    tm.setPanelParent("root", null);
+    tm.setPanelParent("child", "root");
+    tm.setPanelParent("grandchild", "child");
+
+    expect(tm.getPanelParent("child")).toBe("root");
+    expect(tm.isPanelDescendantOf("grandchild", "root")).toBe(true);
+    expect(tm.isPanelDescendantOf("root", "grandchild")).toBe(false);
+  });
+
+  it("clears panel parent relationships when tokens are revoked", () => {
+    tm.createToken("panel-1", "panel");
+    tm.setPanelParent("panel-1", "parent");
+
+    tm.revokeToken("panel-1");
+
+    expect(tm.getPanelParent("panel-1")).toBeUndefined();
+  });
 });
 
 describe("GitAuthManager", () => {

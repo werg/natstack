@@ -152,11 +152,8 @@ export default function ChatPanel() {
     rpc,
   };
 
-  // New Conversation: force re-bootstrap to get a fresh panel with no stateArgs.
-  // ?_fresh clears sessionStorage identity and triggers server-side on-demand creation.
   const handleNewConversation = useCallback(() => {
-    sessionStorage.clear();
-    window.location.href = buildPanelLink("panels/chat") + "?_fresh";
+    window.location.href = buildPanelLink("panels/chat");
   }, []);
 
   const handleFocusPanel = useCallback((panelId: string) => {

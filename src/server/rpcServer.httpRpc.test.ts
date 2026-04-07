@@ -11,6 +11,12 @@ function createTestSetup() {
   tokenManager.setAdminToken(adminToken);
   const workerToken = tokenManager.ensureToken("do:test:Worker:obj1", "worker");
   const panelToken = tokenManager.ensureToken("panel-abc", "panel");
+  const parentPanelToken = tokenManager.ensureToken("panel-parent", "panel");
+  tokenManager.setPanelParent("panel-parent", null);
+  const childPanelToken = tokenManager.ensureToken("panel-child", "panel");
+  tokenManager.setPanelParent("panel-child", "panel-parent");
+  const unrelatedPanelToken = tokenManager.ensureToken("panel-unrelated", "panel");
+  tokenManager.setPanelParent("panel-unrelated", null);
 
   const dispatchResults = new Map<string, unknown>();
   const dispatched: Array<{ ctx: ServiceContext; service: string; method: string; args: unknown[] }> = [];
@@ -34,7 +40,19 @@ function createTestSetup() {
 
   const server = new RpcServer({ tokenManager, dispatcher });
 
-  return { server, tokenManager, adminToken, workerToken, panelToken, dispatcher, dispatched, dispatchResults };
+  return {
+    server,
+    tokenManager,
+    adminToken,
+    workerToken,
+    panelToken,
+    parentPanelToken,
+    childPanelToken,
+    unrelatedPanelToken,
+    dispatcher,
+    dispatched,
+    dispatchResults,
+  };
 }
 
 async function postRpc(port: number, token: string, body: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
@@ -239,6 +257,41 @@ describe("RpcServer HTTP POST /rpc", () => {
       });
 
       expect(setup.dispatched).toHaveLength(1);
+    });
+
+    it("rejects panel relay to an unrelated panel", async () => {
+      const { body } = await postRpc(port, setup.childPanelToken, {
+        type: "call",
+        targetId: "panel-unrelated",
+        method: "foo.bar",
+        args: [],
+      });
+
+      expect(body["error"]).toContain("cannot relay to unrelated panel");
+    });
+
+    it("allows panel relay to an ancestor panel", async () => {
+      const { body } = await postRpc(port, setup.childPanelToken, {
+        type: "call",
+        targetId: "panel-parent",
+        method: "foo.bar",
+        args: [],
+      });
+
+      expect(body["error"]).toContain("Target not reachable");
+      expect(body["error"]).not.toContain("cannot relay to unrelated panel");
+    });
+
+    it("allows panel relay to itself", async () => {
+      const { body } = await postRpc(port, setup.parentPanelToken, {
+        type: "call",
+        targetId: "panel-parent",
+        method: "foo.bar",
+        args: [],
+      });
+
+      expect(body["error"]).toContain("Target not reachable");
+      expect(body["error"]).not.toContain("cannot relay to unrelated panel");
     });
   });
 });

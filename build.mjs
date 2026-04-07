@@ -181,6 +181,32 @@ const preloadConfig = {
   logOverride,
 };
 
+const panelPreloadConfig = {
+  entryPoints: ["src/preload/panelPreload.ts"],
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "cjs",
+  outfile: "dist/panelPreload.cjs",
+  external: ["electron"],
+  sourcemap: isDev,
+  minify: !isDev,
+  logOverride,
+};
+
+const browserPreloadConfig = {
+  entryPoints: ["src/preload/browserPreload.ts"],
+  bundle: true,
+  platform: "node",
+  target: "node20",
+  format: "cjs",
+  outfile: "dist/browserPreload.cjs",
+  external: ["electron"],
+  sourcemap: isDev,
+  minify: !isDev,
+  logOverride,
+};
+
 const autofillPreloadConfig = {
   entryPoints: ["src/preload/autofillPreload.ts"],
   bundle: true,
@@ -461,6 +487,8 @@ async function build() {
     // Required by: None (final outputs)
     await esbuild.build(mainConfig);
     await esbuild.build(preloadConfig);
+    await esbuild.build(panelPreloadConfig);
+    await esbuild.build(browserPreloadConfig);
     await esbuild.build(autofillPreloadConfig);
     await esbuild.build(autofillOverlayPreloadConfig);
     await esbuild.build(browserTransportConfig);

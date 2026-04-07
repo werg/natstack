@@ -6,15 +6,14 @@
  * PanelOrchestrator can drive view creation without Electron imports.
  */
 
-import { randomBytes } from "crypto";
 import { createDevLogger } from "@natstack/dev-log";
 import type { ViewManager } from "./viewManager.js";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
-import type { TokenManager } from "@natstack/shared/tokenManager";
-import type { PanelViewLike, PanelHttpServerLike, ServerInfoLike } from "@natstack/shared/panelInterfaces";
+import type { PanelViewLike, ServerInfoLike } from "@natstack/shared/panelInterfaces";
 import { BROWSER_SESSION_PARTITION } from "@natstack/shared/panelInterfaces";
 import { getCurrentSnapshot, getPanelSource, getPanelContextId } from "@natstack/shared/panelTypes";
 import { contextIdToSubdomain } from "@natstack/shared/panelIdUtils";
+import { buildPanelUrl } from "@natstack/shared/panelFactory";
 import type { Panel } from "@natstack/shared/types";
 import { logMemorySnapshot } from "./memoryMonitor.js";
 // Persistence removed — server panel service handles all persistence
@@ -41,8 +40,7 @@ interface PanelOrchestratorLike {
     options?: { name?: string; focus?: boolean },
   ): Promise<{ id: string; title: string }>;
   updatePanelContext(panelId: string, contextId: string, source?: string, stateArgs?: Record<string, unknown>): Promise<void>;
-  /** Generic server RPC call */
-  callServer(service: string, method: string, args: unknown[]): Promise<unknown>;
+  updatePanelTitle(panelId: string, title: string): Promise<void>;
 }
 
 interface AutofillManagerLike {
@@ -60,8 +58,6 @@ type ParsedPanelUrl = {
 export class PanelView implements PanelViewLike {
   private viewManager: ViewManager;
   private readonly panelRegistry: PanelRegistry;
-  private readonly tokenManager: TokenManager;
-  private readonly panelHttpServer: PanelHttpServerLike;
   private readonly serverInfo: ServerInfoLike;
   private readonly cdpServer: CdpServerLike;
   private readonly panelOrchestrator: PanelOrchestratorLike;
@@ -85,8 +81,6 @@ export class PanelView implements PanelViewLike {
   constructor(deps: {
     viewManager: ViewManager;
     panelRegistry: PanelRegistry;
-    tokenManager: TokenManager;
-    panelHttpServer: PanelHttpServerLike;
     serverInfo: ServerInfoLike;
     cdpServer: CdpServerLike;
     panelOrchestrator: PanelOrchestratorLike;
@@ -98,8 +92,6 @@ export class PanelView implements PanelViewLike {
   }) {
     this.viewManager = deps.viewManager;
     this.panelRegistry = deps.panelRegistry;
-    this.tokenManager = deps.tokenManager;
-    this.panelHttpServer = deps.panelHttpServer;
     this.serverInfo = deps.serverInfo;
     this.cdpServer = deps.cdpServer;
     this.panelOrchestrator = deps.panelOrchestrator;
@@ -120,18 +112,11 @@ export class PanelView implements PanelViewLike {
       return;
     }
 
-    const panel = this.panelRegistry.getPanel(panelId);
     const parentId = this.panelRegistry.findParentId(panelId);
-
-    // Set auth cookies before creating the view
-    let viewUrl = url;
-    if (panel) {
-      viewUrl = await this.setAuthCookiesAndBuildUrl(panelId, panel, contextId ? { contextId } : undefined);
-    }
 
     const view = this.viewManager.createView({
       id: panelId, type: "panel", preload: this.panelPreloadPath ?? null,
-      url: viewUrl, parentId: parentId ?? undefined,
+      url, parentId: parentId ?? undefined,
       injectHostThemeVariables: true,
     });
 
@@ -245,41 +230,6 @@ export class PanelView implements PanelViewLike {
     }
   }
 
-  // ==== Auth cookie helper ==================================================
-
-  /**
-   * Set subdomain auth + boot cookies and return the authenticated URL.
-   * Accepts optional overrides for cross-context navigation.
-   */
-  private async setAuthCookiesAndBuildUrl(
-    panelId: string, panel: Panel, opts?: { contextId?: string; source?: string },
-  ): Promise<string> {
-    const ctxId = opts?.contextId ?? getPanelContextId(panel);
-    const subdomain = contextIdToSubdomain(ctxId);
-    const source = opts?.source ?? getPanelSource(panel);
-    const serverRpcToken = await this.serverInfo.ensurePanelToken(panelId, "panel");
-    const protocol = this.serverInfo.protocol;
-    const origin = `${protocol}://${subdomain}.${this.externalHost}:${this.panelHttpPort}`;
-    const bk = randomBytes(8).toString("hex");
-
-    const sid = await this.panelHttpServer.ensureSubdomainSession(subdomain);
-    const { session: electronSession } = await import("electron");
-    await electronSession.defaultSession.cookies.set({
-      url: `${origin}/`, name: "_ns_session", value: sid,
-      path: "/", httpOnly: true, sameSite: "strict",
-    });
-    // Single credential set: panels connect only to the server
-    // Include rpcHost so remote clients can construct correct WS URLs.
-    await electronSession.defaultSession.cookies.set({
-      url: `${origin}/`, name: `_ns_boot_${bk}`,
-      value: encodeURIComponent(JSON.stringify({ pid: panelId, rpcPort: this.serverInfo.rpcPort, rpcToken: serverRpcToken, rpcHost: this.externalHost })),
-      path: "/", httpOnly: false, sameSite: "strict",
-      expirationDate: Math.floor(Date.now() / 1000) + 60,
-    });
-
-    return `${origin}/${source}/?pid=${encodeURIComponent(panelId)}&_bk=${bk}&rpcPort=${this.serverInfo.rpcPort}&rpcToken=${encodeURIComponent(serverRpcToken)}`;
-  }
-
   // ==== Browser state tracking ==============================================
 
   private setupBrowserStateTracking(panelId: string, contents: Electron.WebContents): void {
@@ -312,8 +262,7 @@ export class PanelView implements PanelViewLike {
           const panel = this.panelRegistry.getPanel(panelId);
           if (panel && pathSource && getPanelSource(panel) !== pathSource) {
             panel.snapshot.source = pathSource;
-            // Persist source change to server (handles autoArchiveWhenEmpty sync)
-            void this.panelOrchestrator.callServer("panel", "updateContext", [panelId, { source: pathSource }]).catch(() => {});
+            void this.panelOrchestrator.updatePanelContext(panelId, panel.snapshot.contextId, pathSource).catch(() => {});
           }
         } catch { /* non-URL navigation */ }
       },
@@ -394,8 +343,7 @@ export class PanelView implements PanelViewLike {
 
     if (state.pageTitle !== undefined) {
       panel.title = state.pageTitle;
-      // Persist title to server (fire-and-forget)
-      void this.panelOrchestrator.callServer("panel", "updateTitle", [panelId, state.pageTitle]).catch(() => {});
+      void this.panelOrchestrator.updatePanelTitle(panelId, state.pageTitle).catch(() => {});
     }
     this.panelRegistry.notifyPanelTreeUpdate();
   }
@@ -473,8 +421,6 @@ export class PanelView implements PanelViewLike {
       if (!match) return null;
       const source = match[1]!;
       if ((match[2] || "/") !== "/") return null;
-      if (u.searchParams.has("_bk") || u.searchParams.has("pid") || u.searchParams.has("_fresh")) return null;
-
       return {
         source,
         contextId: u.searchParams.get("contextId") ?? undefined,
@@ -505,14 +451,12 @@ export class PanelView implements PanelViewLike {
   // ==== Cross-context navigation ============================================
 
   /**
-   * Handle cross-subdomain navigation: navigate first, then persist on success.
-   * Uses shared setAuthCookiesAndBuildUrl (no duplicated cookie logic).
+   * Handle cross-subdomain navigation by updating the panel identity in the
+   * shell first, then navigating the existing WebContents to the new origin.
    */
   private async handleCrossContextNavigation(
     panelId: string, panel: Panel, targetUrl: URL, targetSubdomain: string,
   ): Promise<void> {
-    // panelHttpServer and panelHttpPort (from serverInfo.gatewayPort) are always available
-
     const pathMatch = targetUrl.pathname.match(/^\/([^/]+\/[^/]+)(\/.*)?$/);
     if (!pathMatch) { log.warn(`[CrossCtx] Cannot parse source from URL: ${targetUrl.href}`); return; }
     const source = pathMatch[1]!;
@@ -525,14 +469,14 @@ export class PanelView implements PanelViewLike {
     const newContextId = targetUrl.searchParams.get("contextId") ?? targetSubdomain;
     log.info(`[CrossCtx] Panel ${panelId}: context switch ${contextIdToSubdomain(getPanelContextId(panel))} -> ${targetSubdomain} (source: ${source})`);
 
-    // Step 1: Build auth URL using shared cookie helper (no duplicated logic)
-    const authUrl = await this.setAuthCookiesAndBuildUrl(panelId, panel, {
-      contextId: newContextId,
+    const nextUrl = buildPanelUrl({
       source,
+      contextId: newContextId,
+      panelHttpPort: this.panelHttpPort,
+      externalHost: this.externalHost,
+      protocol: this.serverInfo.protocol,
     });
 
-    // Step 2: Set source locally BEFORE navigation so the didNavigate handler
-    // doesn't see a diff and fire a spurious updateContext call.
     const oldSource = panel.snapshot.source;
     const oldContextId = panel.snapshot.contextId;
     const oldStateArgs = panel.snapshot.stateArgs;
@@ -540,31 +484,15 @@ export class PanelView implements PanelViewLike {
     panel.snapshot.contextId = newContextId;
     if (stateArgs !== undefined) panel.snapshot.stateArgs = stateArgs;
 
-    // Step 3: Navigate — if this fails, rollback local state
     try {
-      await this.viewManager.navigateView(panelId, authUrl);
+      await this.panelOrchestrator.updatePanelContext(panelId, newContextId, source, stateArgs);
+      await this.viewManager.navigateView(panelId, nextUrl);
     } catch (err) {
       panel.snapshot.source = oldSource;
       panel.snapshot.contextId = oldContextId;
       panel.snapshot.stateArgs = oldStateArgs;
+      await this.panelOrchestrator.updatePanelContext(panelId, oldContextId, oldSource, oldStateArgs).catch(() => {});
       throw err;
-    }
-
-    // Step 4: Navigation succeeded — persist to server + update fs context.
-    // If server persist fails, rollback local state so view and server stay consistent.
-    try {
-      await this.panelOrchestrator.updatePanelContext(panelId, newContextId, source, stateArgs);
-    } catch (persistErr) {
-      log.warn(`[CrossCtx] Server persist failed for ${panelId}, rolling back:`, persistErr);
-      panel.snapshot.source = oldSource;
-      panel.snapshot.contextId = oldContextId;
-      panel.snapshot.stateArgs = oldStateArgs;
-      // Navigate back to original URL
-      try {
-        const rollbackUrl = await this.setAuthCookiesAndBuildUrl(panelId, panel);
-        await this.viewManager.navigateView(panelId, rollbackUrl);
-      } catch { /* best-effort rollback */ }
-      throw persistErr;
     }
     this.panelRegistry.notifyPanelTreeUpdate();
   }

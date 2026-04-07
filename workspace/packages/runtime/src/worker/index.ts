@@ -133,10 +133,10 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     pubsubConfig: null,
 
     callMain,
-    getWorkspaceTree: () => callMain<unknown>("bridge.getWorkspaceTree"),
-    listBranches: (repoPath: string) => callMain<unknown[]>("bridge.listBranches", repoPath),
+    getWorkspaceTree: () => callMain<unknown>("git.getWorkspaceTree"),
+    listBranches: (repoPath: string) => callMain<unknown[]>("git.listBranches", repoPath),
     listCommits: (repoPath: string, ref?: string, limit?: number) =>
-      callMain<unknown[]>("bridge.listCommits", repoPath, ref, limit),
+      callMain<unknown[]>("git.listCommits", repoPath, ref, limit),
     exposeMethod: rpc.exposeMethod.bind(rpc),
     getParent: () => createParentHandle({ rpc, parentId }),
     handleRpcPost: (body: unknown) => rpc.handleIncomingPost(body),

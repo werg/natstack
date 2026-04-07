@@ -158,7 +158,6 @@ export interface RpcBridgeInternal extends RpcBridge {
  */
 export const SERVER_SERVICE_NAMES = [
   "ai",
-  "bridge",
   "build",
   "db",
   "fs",
@@ -166,8 +165,6 @@ export const SERVER_SERVICE_NAMES = [
   "harness",
   "notification",
   "oauth",
-  "panel",
-  "panelHttp",
   "test",
   "tokens",
   "typecheck",

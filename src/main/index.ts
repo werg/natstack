@@ -100,6 +100,7 @@ let cdpServer: CdpServer | null = null;
 let panelRegistry: PanelRegistry | null = null;
 let panelOrchestrator: PanelOrchestrator | null = null;
 let panelView: PanelView | null = null;
+let shellCore: ReturnType<typeof import("./shellCore/createElectronShellCore.js").createElectronShellCore> | null = null;
 let ipcDispatcher: import("./ipcDispatcher.js").IpcDispatcher | null = null;
 let serverSession: SessionConnection | null = null;
 let mainWindow: BaseWindow | null = null;
@@ -155,8 +156,6 @@ function createWindow(): void {
     panelView = new PanelView({
       viewManager,
       panelRegistry,
-      tokenManager,
-      panelHttpServer: serverSession.panelHttpServer,
       serverInfo: serverSession.serverInfo,
       cdpServer,
       panelOrchestrator,
@@ -354,6 +353,24 @@ app.on("ready", async () => {
       onTreeUpdated: (tree) => eventService.emit("panel-tree-updated", tree),
     });
 
+    const { createElectronShellCore } = await import("./shellCore/createElectronShellCore.js");
+    shellCore = createElectronShellCore({
+      statePath: serverSession.statePath,
+      workspaceId: serverSession.workspaceId,
+      workspacePath: serverSession.workspacePath,
+      registry: panelRegistry,
+      serverClient: serverSession.serverClient,
+      protocol: serverSession.protocol,
+      externalHost: serverSession.externalHost,
+      gatewayPort: serverSession.gatewayPort,
+      rpcPort: serverSession.rpcPort,
+      workerdPort: serverSession.workerdPort,
+      gitBaseUrl: serverSession.gitBaseUrl,
+      rpcWsUrl: serverSession.rpcWsUrl,
+      pubsubUrl: serverSession.pubsubUrl,
+      workspaceConfig: serverSession.workspaceConfig,
+    });
+
     // PanelHttpServer is created by serverSession (RPC-backed proxy)
     const conn = serverSession!;
 
@@ -375,6 +392,7 @@ app.on("ready", async () => {
       tokenManager,
       eventService,
       serverClient: conn.serverClient,
+      shellCore: shellCore.panelManager,
       cdpServer,
       getPanelView: () => panelView,
       panelHttpServer: conn.panelHttpServer,
@@ -415,7 +433,6 @@ app.on("ready", async () => {
     const { createMenuService } = await import("./services/menuService.js");
     const { createSettingsService } = await import("./services/settingsService.js");
     const { createAdblockService } = await import("./services/adblockService.js");
-    const { createBridgeService } = await import("./services/bridgeService.js");
     const { createBrowserService } = await import("./services/browserService.js");
     // FS and git-local services removed — server owns these via panel service
     const { createBrowserDataService } = await import("./services/browserDataService.js");
@@ -451,9 +468,6 @@ app.on("ready", async () => {
     electronContainer.register(rpcService(createAdblockService({ adBlockManager })));
 
     // Locally-hosted services
-    electronContainer.register(rpcService(createBridgeService({
-      panelOrchestrator, cdpServer, getViewManager, serverInfo: conn.serverInfo,
-    })));
     electronContainer.register(rpcService(createBrowserService({
       cdpServer, getViewManager, panelRegistry,
     })));
@@ -530,32 +544,72 @@ app.on("ready", async () => {
       return viewId;
     };
 
+    ipcMain.handle("natstack:getPanelInit", async (event) => {
+      const callerId = resolveCallerId(event);
+      return shellCore?.panelManager.getPanelInit(callerId);
+    });
+
     // Panel lifecycle
+    ipcMain.handle("natstack:bridge.closeSelf", async (event) => {
+      const callerId = resolveCallerId(event);
+      return panelOrchestrator!.closePanel(callerId);
+    });
     ipcMain.handle("natstack:closeSelf", async (event) => {
       const callerId = resolveCallerId(event);
       return panelOrchestrator!.closePanel(callerId);
+    });
+    ipcMain.handle("natstack:bridge.closeChild", async (event, childId: string) => {
+      const callerId = resolveCallerId(event);
+      return panelOrchestrator!.closeChild(callerId, childId);
     });
     ipcMain.handle("natstack:closeChild", async (event, childId: string) => {
       const callerId = resolveCallerId(event);
       return panelOrchestrator!.closeChild(callerId, childId);
     });
-    ipcMain.handle("natstack:focusPanel", async (event, panelId: string) => {
+    ipcMain.handle("natstack:bridge.focusPanel", async (_event, panelId: string) => {
       panelOrchestrator!.focusPanel(panelId);
+    });
+    ipcMain.handle("natstack:focusPanel", async (_event, panelId: string) => {
+      panelOrchestrator!.focusPanel(panelId);
+    });
+    ipcMain.handle("natstack:bridge.createBrowserPanel", async (event, url: string, opts?: { name?: string; focus?: boolean }) => {
+      const callerId = resolveCallerId(event);
+      return panelOrchestrator!.createBrowserPanel(callerId, url, opts);
     });
     ipcMain.handle("natstack:createBrowserPanel", async (event, url: string, opts?: { name?: string; focus?: boolean }) => {
       const callerId = resolveCallerId(event);
       return panelOrchestrator!.createBrowserPanel(callerId, url, opts);
     });
+    ipcMain.handle("natstack:bridge.getInfo", async (event) => {
+      const callerId = resolveCallerId(event);
+      return shellCore?.panelManager.getInfo(callerId);
+    });
+    ipcMain.handle("natstack:bridge.setStateArgs", async (event, updates: Record<string, unknown>) => {
+      const callerId = resolveCallerId(event);
+      return shellCore?.panelManager.updateStateArgs(callerId, updates);
+    });
     ipcMain.handle("natstack:getBootstrapConfig", async (event) => {
       const callerId = resolveCallerId(event);
-      return panelOrchestrator!.getBootstrapConfig(callerId);
+      return shellCore?.panelManager.getPanelInit(callerId);
     });
 
     // Electron-native
+    ipcMain.handle("natstack:bridge.openDevtools", async (event) => {
+      const callerId = resolveCallerId(event);
+      if (!viewManager) throw new Error("ViewManager not initialized");
+      viewManager.openDevTools(callerId);
+    });
     ipcMain.handle("natstack:openDevtools", async (event) => {
       const callerId = resolveCallerId(event);
       if (!viewManager) throw new Error("ViewManager not initialized");
       viewManager.openDevTools(callerId);
+    });
+    ipcMain.handle("natstack:bridge.openFolderDialog", async (_event, opts?: { title?: string }) => {
+      const result = await dialog.showOpenDialog({
+        properties: ["openDirectory", "createDirectory"],
+        title: opts?.title ?? "Select Folder",
+      });
+      return result.canceled ? null : result.filePaths[0] ?? null;
     });
     ipcMain.handle("natstack:openFolderDialog", async (_event, opts?: { title?: string }) => {
       const result = await dialog.showOpenDialog({
@@ -563,6 +617,13 @@ app.on("ready", async () => {
         title: opts?.title ?? "Select Folder",
       });
       return result.canceled ? null : result.filePaths[0] ?? null;
+    });
+    ipcMain.handle("natstack:bridge.openExternal", async (_event, url: string) => {
+      if (!/^https?:\/\//i.test(url)) {
+        throw new Error("openExternal only supports http/https URLs");
+      }
+      const { shell } = await import("electron");
+      await shell.openExternal(url);
     });
     ipcMain.handle("natstack:openExternal", async (_event, url: string) => {
       if (!/^https?:\/\//i.test(url)) {
@@ -710,9 +771,9 @@ app.on("will-quit", (event) => {
       serverSession = null;
 
       const cleanupThenClose = (async () => {
-        if (panelRegistry) {
+        if (panelRegistry && shellCore) {
           const livePanelIds = panelRegistry.listPanels().map(p => p.panelId);
-          await session.serverClient.call("panel", "shutdownCleanup", [livePanelIds])
+          await shellCore.panelManager.shutdownCleanup(livePanelIds)
             .catch((e: unknown) => console.error("[App] Failed to run shutdown cleanup:", e));
         }
         await session.serverClient.close()
@@ -748,6 +809,8 @@ app.on("will-quit", (event) => {
     }, 5000);
 
     Promise.all(stopPromises).finally(() => {
+      shellCore?.shutdown?.();
+      shellCore = null;
       clearTimeout(shutdownTimeout);
       cleanupDevWorkspace();
       console.log("[App] Shutdown complete");

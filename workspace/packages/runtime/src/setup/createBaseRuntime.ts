@@ -92,7 +92,7 @@ export function createBaseRuntime(deps: BaseRuntimeDeps) {
   };
 
   // Wire __natstackElectron events if available (Electron mode)
-  const electron = (globalThis as any).__natstackElectron;
+  const electron = (globalThis as any).__natstackShell ?? (globalThis as any).__natstackElectron;
   let electronListenerId: number | undefined;
   if (electron?.addEventListener) {
     electronListenerId = electron.addEventListener((event: string, payload: unknown) => {
@@ -142,10 +142,10 @@ export function createBaseRuntime(deps: BaseRuntimeDeps) {
 
     onConnectionError,
 
-    getWorkspaceTree: () => callMain<WorkspaceTree>("bridge.getWorkspaceTree"),
-    listBranches: (repoPath: string) => callMain<BranchInfo[]>("bridge.listBranches", repoPath),
+    getWorkspaceTree: () => callMain<WorkspaceTree>("git.getWorkspaceTree"),
+    listBranches: (repoPath: string) => callMain<BranchInfo[]>("git.listBranches", repoPath),
     listCommits: (repoPath: string, ref?: string, limit?: number) =>
-      callMain<CommitInfo[]>("bridge.listCommits", repoPath, ref, limit),
+      callMain<CommitInfo[]>("git.listCommits", repoPath, ref, limit),
 
     getTheme: () => currentTheme,
     onThemeChange: (callback: (theme: ThemeAppearance) => void) => {
