@@ -27,7 +27,14 @@ export type WorkerBindingDef =
   | { type: "text"; value: string }
   | { type: "json"; value: unknown };
 
-/** Resource limits enforced by workerd per request. */
+/**
+ * Resource limits hint for a worker instance.
+ *
+ * **Not currently enforced.** workerd's open-source build has no per-Worker
+ * CPU/subrequest limits in its config schema (those live in Cloudflare's
+ * hosted runtime). Passing this is forward-looking metadata only — it does
+ * not change runtime behavior in this build.
+ */
 export interface WorkerLimits {
   /** CPU time limit per request in milliseconds. */
   cpuMs: number;
@@ -40,8 +47,8 @@ export interface WorkerCreateOptions {
   source: string;
   /** Context ID for storage partition */
   contextId: string;
-  /** Resource limits enforced by workerd per request. */
-  limits: WorkerLimits;
+  /** Resource limits hint. Optional — see {@link WorkerLimits}. */
+  limits?: WorkerLimits;
   /** Instance name (defaults to last segment of source) */
   name?: string;
   /** Extra text bindings injected as env vars */
@@ -99,7 +106,7 @@ export interface DORefParam {
 }
 
 export interface WorkerdClient {
-  /** Create a new worker instance. Limits are mandatory. */
+  /** Create a new worker instance. */
   create(options: WorkerCreateOptions): Promise<WorkerInstanceInfo>;
   /** Destroy a worker instance by name. */
   destroy(name: string): Promise<void>;

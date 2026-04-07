@@ -10,6 +10,10 @@ import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { WorkerdManager } from "../workerdManager.js";
 import type { BuildSystemV2 } from "../buildV2/index.js";
 
+// `limits` is purely metadata in the OSS workerd build — see
+// `workerdManager.ts:WorkerLimits` for the rationale. We accept it for
+// forward-compatibility but do not require it (and do not write it to the
+// generated capnp config — workerd's Worker struct has no such field).
 const limitsSchema = z.object({
   cpuMs: z.number().int().positive(),
   subrequests: z.number().int().nonnegative().optional(),
@@ -18,7 +22,7 @@ const limitsSchema = z.object({
 const createOptionsSchema = z.object({
   source: z.string(),
   contextId: z.string(),
-  limits: limitsSchema,
+  limits: limitsSchema.optional(),
   name: z.string().optional(),
   env: z.record(z.string()).optional(),
   bindings: z.record(z.unknown()).optional(),

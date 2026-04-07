@@ -71,7 +71,7 @@ export { normalizePath, getFileName, resolvePath } from "../shared/pathUtils.js"
 export { getStateArgs, useStateArgs, setStateArgs } from "./stateArgs.js";
 
 // Browser panel API (external URL panels with CDP access)
-import { _initBrowserBridge } from "./browser.js";
+import { _initBrowserBridge, openPanel as _openPanel } from "./browser.js";
 _initBrowserBridge(rpc);
 export { createBrowserPanel, openExternal, onChildCreated, getBrowserHandle, openPanel } from "./browser.js";
 export type { BrowserHandle } from "./browser.js";
@@ -81,10 +81,19 @@ import { createAdBlockApi } from "./adblock.js";
 export type { AdBlockStats, AdBlockApi } from "./adblock.js";
 export const adblock = createAdBlockApi(rpc);
 
-// Workspace management
-import { createWorkspaceClient } from "../shared/workspace.js";
+// Workspace management.
+//
+// The panel variant of `workspace` extends the shared WorkspaceClient with
+// `openPanel`, which is a panel-only operation (workers have no concept of
+// opening a UI panel). Exposing it under `workspace.openPanel` matches the
+// natural mental model — "opening a panel is a workspace operation" — and
+// is the form most agentic eval code reaches for. Top-level `openPanel` is
+// still exported separately for callers that prefer the flat form.
+import { createWorkspaceClient, type WorkspaceClient } from "../shared/workspace.js";
 export type { WorkspaceClient, WorkspaceEntry, WorkspaceConfig } from "../shared/workspace.js";
-const workspaceClient = createWorkspaceClient(rpc);
+const workspaceClientBase = createWorkspaceClient(rpc);
+const workspaceClient: WorkspaceClient & { openPanel: typeof _openPanel } =
+  Object.assign(workspaceClientBase, { openPanel: _openPanel });
 export { workspaceClient as workspace };
 
 // OAuth token management

@@ -54,6 +54,20 @@ export interface WorkspaceServiceDeps {
 export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefinition {
   const { workspace } = deps;
 
+  // Catalog-dependent methods are conditionally registered based on whether
+  // we have a workspace catalog (`centralData`) at all. In remote-server /
+  // mobile-client mode there's no catalog here, so creation/deletion can't
+  // be fulfilled — and advertising them only to fail with "Workspace creation
+  // not available" AFTER schema validation is confusing for callers (they
+  // see two completely different errors depending on whether their args
+  // happen to be schema-valid). Omit the methods entirely instead: callers
+  // get a single, consistent "Unknown workspace method: create" that makes
+  // it obvious the API isn't available in this mode.
+  const catalogMethods: ServiceDefinition["methods"] = deps.centralData ? {
+    create: { args: z.tuple([z.string(), z.object({ forkFrom: z.string().optional() }).optional()]) },
+    delete: { args: z.tuple([z.string()]) },
+  } : {};
+
   return {
     name: "workspace",
     description: "Workspace catalog, configuration, and lifecycle (list, create, switch, etc.)",
@@ -65,9 +79,9 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
       getActive: { args: z.tuple([]) },
       getActiveEntry: { args: z.tuple([]) },
       getConfig: { args: z.tuple([]) },
-      // Write methods
-      create: { args: z.tuple([z.string(), z.object({ forkFrom: z.string().optional() }).optional()]) },
-      delete: { args: z.tuple([z.string()]) },
+      // Catalog-dependent write methods (conditionally registered above).
+      ...catalogMethods,
+      // Always-available write methods.
       select: { args: z.tuple([z.string()]) },
       setInitPanels: { args: z.tuple([z.array(z.object({
         source: z.string(),

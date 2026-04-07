@@ -142,9 +142,12 @@ import { workspace } from "@workspace/runtime";
 | `getActive()` | Get active workspace name |
 | `getActiveEntry()` | Get active workspace details |
 | `getConfig()` | Get workspace config |
-| `create(name, opts?)` | Create a new workspace |
+| `create(name, opts?)` | Create a new workspace (only available when the host owns the workspace catalog — throws "Unknown workspace method: create" otherwise) |
 | `setInitPanels(entries)` | Set panels launched on workspace open |
 | `switchTo(name)` | Switch workspace (triggers app relaunch) |
+| `openPanel(source, opts?)` | Open a panel (alias for the top-level `openPanel` — see [Panel Navigation](#panel-navigation)) |
+
+`workspace.create("name")` requires a string `name` as its first argument. Passing `null` or no name fails with a Zod validation error. Workspace creation is only available in the host process that owns the workspace catalog (Electron main / standalone bridge); in remote-server / mobile-client modes the method is not registered at all and the call returns "Unknown workspace method: create".
 
 ## Git
 

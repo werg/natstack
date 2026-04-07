@@ -29,7 +29,15 @@ import {
   cleanupDeliveryChain,
 } from "./broadcast.js";
 import { getMessagesBefore } from "./replay.js";
-import { storeCall, consumeCall, cancelCall as cancelCallDb, cancelCallsForTarget } from "./method-calls.js";
+import {
+  storeCall,
+  consumeCall,
+  cancelCall as cancelCallDb,
+  cancelCallsForTarget,
+  findAgedPendingCalls,
+  deleteCallsByIds,
+  hasPendingCalls,
+} from "./method-calls.js";
 
 /** How long before an RPC participant is considered stale (no heartbeat). */
 const PARTICIPANT_STALE_MS = 5 * 60 * 1000; // 5 minutes
@@ -37,6 +45,19 @@ const PARTICIPANT_STALE_MS = 5 * 60 * 1000; // 5 minutes
 const PARTICIPANT_CLEANUP_INTERVAL_MS = 60 * 1000; // 1 minute
 /** Maximum replay events returned to DO subscribers. */
 const REPLAY_LIMIT = 50;
+/**
+ * Maximum age for a pending method call before the orphan-call sweep fails it.
+ *
+ * This is NOT a wall-clock timeout on agentic activity — the cutoff is set
+ * deliberately wider than any plausible legitimate eval/build/LLM/user-pause
+ * call. It's a safety net for the pathological case where a call has been
+ * forgotten by the dispatch chain (target processed it but never sent a
+ * result, reconnect race left the call addressed to a stale participant,
+ * etc.) and would otherwise hang forever. See `failAgedPendingCalls`.
+ */
+const PENDING_CALL_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
+/** How often to run the orphan-call sweep when pending calls exist. */
+const PENDING_CALL_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 export class PubSubChannel extends DurableObjectBase {
   static override schemaVersion = 2;
@@ -911,12 +932,14 @@ export class PubSubChannel extends DurableObjectBase {
 
   /**
    * Unified alarm scheduler — computes the minimum next alarm time across all
-   * alarm sources (dedup cleanup, participant cleanup) to avoid one source
-   * overwriting another's sooner alarm.
+   * alarm sources (dedup cleanup, participant cleanup, orphan-call sweep) to
+   * avoid one source overwriting another's sooner alarm.
    *
-   * Method calls intentionally have no wall-clock timeout — agentic activities
-   * can run for arbitrary lengths and a clock-based kill is poison. Pending
-   * calls are cancelled by roster events instead (see cancelCallsForTarget).
+   * Method calls intentionally have no per-call wall-clock timeout — agentic
+   * activities can run for arbitrary lengths. Pending calls are normally
+   * cancelled by roster events (see cancelCallsForTarget) when a target
+   * leaves; the orphan-call sweep is a safety net for the rare case where
+   * the dispatch chain forgets a call (see PENDING_CALL_MAX_AGE_MS).
    */
   private scheduleNextAlarm(): void {
     const now = Date.now();
@@ -937,8 +960,48 @@ export class PubSubChannel extends DurableObjectBase {
       nextMs = Math.min(nextMs, PARTICIPANT_CLEANUP_INTERVAL_MS);
     }
 
+    // Orphan-call sweep — fire periodically while pending calls exist.
+    if (hasPendingCalls(this.sql)) {
+      nextMs = Math.min(nextMs, PENDING_CALL_SWEEP_INTERVAL_MS);
+    }
+
     if (nextMs < Infinity) {
       this.setAlarm(nextMs);
+    }
+  }
+
+  /**
+   * Orphan-call sweep — fail any pending call older than
+   * PENDING_CALL_MAX_AGE_MS via the normal result path. Each affected caller
+   * gets a synthetic error result so the harness's pendingToolResults map
+   * fails with a meaningful error instead of hanging until heat death.
+   *
+   * This sweep is the LAST line of defense. Healthy calls complete normally,
+   * roster-event cancellation handles "target left", and only forgotten calls
+   * (target processed but never returned, reconnect race left a stale entry,
+   * etc.) reach this codepath. Logged at error level so they're visible.
+   */
+  private async failAgedPendingCalls(): Promise<void> {
+    const cutoff = Date.now() - PENDING_CALL_MAX_AGE_MS;
+    const aged = findAgedPendingCalls(this.sql, cutoff);
+    if (aged.length === 0) return;
+
+    deleteCallsByIds(this.sql, aged.map(c => c.callId));
+
+    for (const call of aged) {
+      const ageMins = Math.round(call.ageMs / 60000);
+      const errorMessage =
+        `Method call \"${call.method}\" to ${call.targetId} timed out after ` +
+        `~${ageMins} min with no result — orphaned by the dispatch chain.`;
+      console.error(
+        `[Channel] Orphan-call sweep: failing callId=${call.callId} ` +
+        `caller=${call.callerId} target=${call.targetId} method=${call.method} ageMs=${call.ageMs}`,
+      );
+      try {
+        await this.deliverCallResult(call.callerId, call.callId, { error: errorMessage }, true);
+      } catch (err) {
+        console.warn(`[Channel] Orphan-call sweep: deliver failed for ${call.callId}:`, err);
+      }
     }
   }
 
@@ -948,7 +1011,7 @@ export class PubSubChannel extends DurableObjectBase {
     this.scheduleNextAlarm();
   }
 
-  // ── Alarm (stale participant cleanup + dedup key cleanup) ────────────────
+  // ── Alarm (stale participant cleanup + dedup key cleanup + orphan-call sweep) ─
 
   override async alarm(): Promise<void> {
     await super.alarm();
@@ -956,7 +1019,12 @@ export class PubSubChannel extends DurableObjectBase {
     // Evict stale RPC participants (not DO participants — those are persistent).
     // Stale eviction itself fails any pending tool calls targeting the evicted
     // participant via cancelCallsForTarget — see evictStaleParticipants below.
-    this.evictStaleParticipants();
+    await this.evictStaleParticipants();
+
+    // Orphan-call sweep — fail any pending call older than the safety cutoff.
+    // This is the last line of defense; roster-event cancellation should
+    // normally have already cleaned up calls to gone targets.
+    await this.failAgedPendingCalls();
 
     // Phase 0B: Clean up expired dedup keys
     const dedupCutoff = Date.now() - 5 * 60 * 1000;

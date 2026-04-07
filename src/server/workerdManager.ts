@@ -56,7 +56,19 @@ export type WorkerBinding =
   | { type: "text"; value: string }
   | { type: "json"; value: unknown };
 
-/** workerd resource limits (passed directly to worker config). */
+/**
+ * Resource limits hint for a worker instance.
+ *
+ * **Not currently enforced.** workerd's open-source config schema (see
+ * `node_modules/workerd/workerd.capnp` — the `Worker` struct) has no
+ * per-Worker `limits` field; CPU/subrequest enforcement lives in Cloudflare's
+ * hosted runtime, not in workerd itself. Writing this into the capnp config
+ * produces a parse error and crashes workerd at startup.
+ *
+ * The shape is preserved as forward-looking metadata so dispatcher-layer
+ * enforcement (request wrappers, AbortSignal-based timeouts, etc.) can read
+ * it without changing the API contract once we add it.
+ */
 export interface WorkerLimits {
   /** CPU time limit per request in milliseconds. */
   cpuMs: number;
@@ -67,8 +79,11 @@ export interface WorkerLimits {
 export interface WorkerCreateOptions {
   source: string;
   contextId: string;
-  /** Resource limits enforced by workerd per request. Required. */
-  limits: WorkerLimits;
+  /**
+   * Resource limits hint. Optional — workerd OSS does not enforce them,
+   * so passing them is purely metadata for the future. See {@link WorkerLimits}.
+   */
+  limits?: WorkerLimits;
   name?: string;
   env?: Record<string, string>;
   bindings?: Record<string, WorkerBinding>;
@@ -196,7 +211,7 @@ export class WorkerdManager {
       env: options.env ?? {},
       bindings: options.bindings ?? {},
       stateArgs: options.stateArgs,
-      limits: options.limits,  // mandatory — always present
+      limits: options.limits,  // optional metadata only — not enforced by workerd OSS
       ref: options.ref,
       parentId: options.parentId,
       status: "building",
@@ -411,28 +426,27 @@ export class WorkerdManager {
       // Network service for outbound fetch (API calls, RPC).
       const networkServiceName = `${name}_network`;
 
-      // Build workerd service config
+      // Build workerd service config.
+      //
+      // NOTE: We deliberately do not emit a `limits` field on the Worker.
+      // workerd's open-source config schema (workerd.capnp `Worker` struct)
+      // does not have such a field — that's a Cloudflare-platform concept.
+      // Adding it crashes workerd at startup with:
+      //   "Struct has no field named 'limits'."
+      // If we ever want per-request CPU/subrequest enforcement, it has to
+      // happen in a wrapper around dispatch (e.g. AbortSignal.timeout()),
+      // not via the worker config.
       const workerDef: {
         modules: object[];
         bindings: object[];
         compatibilityDate: string;
         globalOutbound?: string;
-        limits?: { cpuMs?: number; subrequests?: number };
       } = {
         modules: [{ name: "worker.js", esModule: bundleContent }],
         bindings,
         compatibilityDate: "2024-01-01",
         globalOutbound: networkServiceName,
       };
-
-      // Apply resource limits
-      if (instance.limits) {
-        const { cpuMs, subrequests } = instance.limits;
-        const limitsObj: { cpuMs?: number; subrequests?: number } = {};
-        if (cpuMs != null) limitsObj.cpuMs = cpuMs;
-        if (subrequests != null) limitsObj.subrequests = subrequests;
-        if (Object.keys(limitsObj).length > 0) workerDef.limits = limitsObj;
-      }
 
       services.push({ name, worker: workerDef });
       services.push({ name: networkServiceName, network: { allow: ["public", "local"], deny: [] } });

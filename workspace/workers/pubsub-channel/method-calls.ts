@@ -102,3 +102,47 @@ export function cancelCallsForTarget(
     callerId: r["caller_id"] as string,
   }));
 }
+
+/**
+ * Find pending calls older than `cutoffMs` (their `created_at` timestamp is
+ * before `cutoffMs`). Used by the alarm-driven orphan sweep — see channel-do
+ * `alarm()` and `failAgedPendingCalls`.
+ *
+ * This is a safety net, NOT a wall-clock timeout on agentic activity. The
+ * cutoff is intentionally far beyond any plausible legitimate eval/build/LLM
+ * call (the channel DO uses 30 minutes), so this only fires for calls that
+ * have genuinely been forgotten by the dispatch chain — usually because the
+ * target processed the call but never sent a result back, or because a
+ * reconnect race left the call addressed to a stale participant entry.
+ */
+export function findAgedPendingCalls(
+  sql: SqlStorage,
+  cutoffMs: number,
+): Array<{ callId: string; callerId: string; targetId: string; method: string; ageMs: number }> {
+  const now = Date.now();
+  const rows = sql.exec(
+    `SELECT call_id, caller_id, target_id, method, created_at FROM pending_calls WHERE created_at < ?`,
+    cutoffMs,
+  ).toArray();
+  if (rows.length === 0) return [];
+  return rows.map(r => ({
+    callId: r["call_id"] as string,
+    callerId: r["caller_id"] as string,
+    targetId: r["target_id"] as string,
+    method: r["method"] as string,
+    ageMs: now - (r["created_at"] as number),
+  }));
+}
+
+/** Bulk-delete pending calls by callId. */
+export function deleteCallsByIds(sql: SqlStorage, callIds: string[]): void {
+  if (callIds.length === 0) return;
+  const placeholders = callIds.map(() => "?").join(",");
+  sql.exec(`DELETE FROM pending_calls WHERE call_id IN (${placeholders})`, ...callIds);
+}
+
+/** Whether any pending calls exist. Used by the alarm scheduler. */
+export function hasPendingCalls(sql: SqlStorage): boolean {
+  const row = sql.exec(`SELECT 1 FROM pending_calls LIMIT 1`).toArray();
+  return row.length > 0;
+}
