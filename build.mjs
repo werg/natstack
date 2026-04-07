@@ -285,6 +285,15 @@ const rendererConfig = {
   define: {
     "process.env.NODE_ENV": isDev ? '"development"' : '"production"',
   },
+  // Force react/react-dom to a single absolute path. Required because pnpm
+  // (node-linker=hoisted) leaves the root node_modules/react as a real directory
+  // while workspace packages keep symlinks into .pnpm/react@.../... — esbuild then
+  // bundles two physically distinct copies, breaking the React dispatcher
+  // (e.g. `useSyncExternalStore` returns null inside @workspace/react/responsive).
+  alias: {
+    react: path.resolve("node_modules/react"),
+    "react-dom": path.resolve("node_modules/react-dom"),
+  },
   plugins: [rendererExternalsPlugin],
 };
 
