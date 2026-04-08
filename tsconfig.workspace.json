@@ -64,6 +64,9 @@
       "@natstack/pubsub": [
         "workspace/packages/pubsub/src/index.ts"
       ],
+      "@natstack/pubsub/internal-constants": [
+        "workspace/packages/pubsub/src/internal-constants.ts"
+      ],
       "@natstack/rpc": [
         "packages/rpc/src/index.ts"
       ],
@@ -110,10 +113,10 @@
         "workspace/panels/email/contract.ts"
       ],
       "@workspace-skills/paneldev": [
-        "workspace/skills/paneldev/index.ts"
+        "workspace/.pi/skills/paneldev/index.ts"
       ],
       "@workspace-skills/system-testing": [
-        "workspace/skills/system-testing/index.ts"
+        "workspace/.pi/skills/system-testing/index.ts"
       ],
       "@workspace-workers/agent-worker": [
         "workspace/workers/agent-worker/index.ts"

@@ -143,6 +143,47 @@ describe("PubSubChannel", () => {
       expect(result.replayTruncated).toBeFalsy();
     });
 
+    it("rejects a second participant claiming the same handle", async () => {
+      const { instance } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+
+      await instance.subscribe("panel-1", {
+        contextId: "ctx-1",
+        transport: "rpc",
+        handle: "ai-chat",
+      });
+
+      await expect(
+        instance.subscribe("panel-2", {
+          contextId: "ctx-1",
+          transport: "rpc",
+          handle: "ai-chat",
+        }),
+      ).rejects.toThrow(/handle "ai-chat" is already in use/);
+    });
+
+    it("allows the same participant to re-subscribe with the same handle", async () => {
+      const { instance, sql } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+
+      await instance.subscribe("panel-1", {
+        contextId: "ctx-1",
+        transport: "rpc",
+        handle: "ai-chat",
+      });
+      await instance.subscribe("panel-1", {
+        contextId: "ctx-1",
+        transport: "rpc",
+        handle: "ai-chat",
+      });
+
+      const rows = sql.exec(`SELECT id, handle FROM participants WHERE handle = 'ai-chat'`).toArray();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!["id"]).toBe("panel-1");
+    });
+
     it("cleans subscribe-time metadata from stored participant", async () => {
       const { instance, sql } = await createTestDO(PubSubChannel, {
         __objectKey: "test-channel",

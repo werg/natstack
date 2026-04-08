@@ -116,6 +116,7 @@ export class PubSubChannel extends DurableObjectBase {
       )
     `);
     try { this.sql.exec(`ALTER TABLE participants ADD COLUMN session_id TEXT`); } catch { /* already exists */ }
+    try { this.sql.exec(`ALTER TABLE participants ADD COLUMN handle TEXT`); } catch { /* already exists */ }
   }
 
   // ── Broadcast deps ──────────────────────────────────────────────────────
@@ -220,6 +221,25 @@ export class PubSubChannel extends DurableObjectBase {
       this.initChannel(contextId, channelConfigRaw);
     }
 
+    // Enforce participant handle uniqueness within the channel.
+    // Channel-tools extension uses bare method names keyed by handle, so two
+    // participants advertising the same handle would collide. Reject the new
+    // subscribe if another live participant already owns this handle.
+    const handle = typeof metadata["handle"] === "string" ? metadata["handle"] as string : null;
+    if (handle) {
+      const conflict = this.sql.exec(
+        `SELECT id FROM participants WHERE handle = ? AND id != ?`,
+        handle, participantId,
+      ).toArray();
+      if (conflict.length > 0) {
+        const otherId = conflict[0]!["id"] as string;
+        throw new Error(
+          `Participant handle "${handle}" is already in use by another participant ` +
+          `(${otherId}) in this channel. Handles must be unique.`,
+        );
+      }
+    }
+
     // Re-subscribe with the same participant ID: replace the roster entry, but
     // only fail in-flight calls if the underlying client session changed.
     const existing = this.sql.exec(
@@ -265,8 +285,8 @@ export class PubSubChannel extends DurableObjectBase {
     delete storedMetadata[PARTICIPANT_SESSION_METADATA_KEY];
 
     this.sql.exec(
-      `INSERT INTO participants (id, metadata, transport, connected_at, session_id, do_source, do_class, do_key)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO participants (id, metadata, transport, connected_at, session_id, do_source, do_class, do_key, handle)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       participantId,
       JSON.stringify(storedMetadata),
       transport === "do" ? "do" : "rpc",
@@ -275,6 +295,7 @@ export class PubSubChannel extends DurableObjectBase {
       doSource ?? null,
       doClass ?? null,
       doKey ?? null,
+      handle,
     );
 
     // Publish join presence

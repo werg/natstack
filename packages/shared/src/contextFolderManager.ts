@@ -148,20 +148,6 @@ export class ContextFolderManager {
           }
         }
 
-        // Generate Claude Agent plugin manifest so skills/ is discovered as a plugin.
-        // The CLI expects .claude-plugin/plugin.json at the plugin root, with skills
-        // in a skills/ subdirectory (each containing SKILL.md).
-        const pluginDir = path.join(contextPath, ".claude-plugin");
-        await fs.mkdir(pluginDir, { recursive: true });
-        await fs.writeFile(
-          path.join(pluginDir, "plugin.json"),
-          JSON.stringify({
-            name: "natstack-workspace",
-            description: "NatStack workspace skills",
-            version: "0.1.0",
-          }, null, 2),
-        );
-
         log.info(`Context folder ready: ${contextId} (${repos.length} repo(s) copied)`);
         return contextPath;
       } finally {

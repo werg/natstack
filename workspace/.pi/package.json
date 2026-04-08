@@ -1,0 +1,9 @@
+{
+  "name": "natstack-workspace",
+  "version": "0.1.0",
+  "description": "NatStack workspace as a Pi package",
+  "keywords": ["pi-package"],
+  "pi": {
+    "skills": ["./skills"]
+  }
+}
