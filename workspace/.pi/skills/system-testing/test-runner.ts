@@ -61,9 +61,7 @@ export class TestRunner {
     const startTime = Date.now();
     let session;
     try {
-      session = await this.runner.spawn({
-        systemPrompt: test.systemPrompt,
-      });
+      session = await this.runner.spawn();
 
       await session.sendAndWait(test.prompt, { timeout: test.timeout });
 

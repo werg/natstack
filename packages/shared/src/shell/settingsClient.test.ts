@@ -85,32 +85,4 @@ describe("SettingsClient", () => {
       );
     });
   });
-
-  describe("enableProvider()", () => {
-    it("calls settings.enableProvider RPC with provider ID", async () => {
-      rpc.call.mockResolvedValueOnce(undefined);
-
-      await client.enableProvider("anthropic");
-
-      expect(rpc.call).toHaveBeenCalledWith(
-        "main",
-        "settings.enableProvider",
-        "anthropic"
-      );
-    });
-  });
-
-  describe("disableProvider()", () => {
-    it("calls settings.disableProvider RPC with provider ID", async () => {
-      rpc.call.mockResolvedValueOnce(undefined);
-
-      await client.disableProvider("anthropic");
-
-      expect(rpc.call).toHaveBeenCalledWith(
-        "main",
-        "settings.disableProvider",
-        "anthropic"
-      );
-    });
-  });
 });

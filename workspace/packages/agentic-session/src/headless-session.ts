@@ -32,7 +32,6 @@ import {
 import {
   getRecommendedChannelConfig,
   subscribeHeadlessAgent,
-  type SubscribeHeadlessAgentOptions,
 } from "./channel.js";
 
 function methodEntrySignature(entry: MethodHistoryEntry): string {
@@ -105,12 +104,10 @@ export interface HeadlessWithAgentConfig extends HeadlessSessionConfig {
   /** Additional methods to register on the client (merged with default eval/set_title) */
   methods?: Record<string, MethodDefinition>;
   /**
-   * Optional system prompt to layer on top of the worker's default prompt.
-   * Appends by default — pass `systemPromptMode: "replace-natstack"` (or
-   * `"replace"`) via `extraConfig` to replace it instead.
+   * Pi-native pass-through subscription config. Allowed keys are limited to
+   * what Pi understands: `model`, `thinkingLevel`, `approvalLevel`. Per-test
+   * prompt overrides should live in `<contextFolder>/.pi/AGENTS.md`.
    */
-  systemPrompt?: string;
-  /** Additional subscription config (e.g., model, temperature, systemPromptMode) */
   extraConfig?: Record<string, unknown>;
 }
 
@@ -180,7 +177,6 @@ export class HeadlessSession {
       objectKey,
       channelId,
       contextId: config.contextId,
-      systemPrompt: config.systemPrompt,
       extraConfig: config.extraConfig,
     });
 

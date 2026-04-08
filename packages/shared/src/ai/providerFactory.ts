@@ -1,17 +1,14 @@
 /**
- * AI Provider Factory
+ * AI Provider Factory — Pi-native model/provider helpers.
  *
- * Creates AI SDK providers from workspace configuration.
- * Supports multiple providers with OpenAI-compatible fallbacks for some.
+ * The Vercel AI SDK provider machinery and the Claude Agent CLI provider were
+ * removed in Phase 5. Pi (`@mariozechner/pi-ai` + `@mariozechner/pi-coding-agent`)
+ * is now the sole runtime; this module just exposes thin helpers used by the
+ * Settings UI and central-config plumbing.
  */
 
-import { createAnthropic } from "@ai-sdk/anthropic";
-import { createOpenAI } from "@ai-sdk/openai";
-import { createGoogleGenerativeAI } from "@ai-sdk/google";
-import { createMistral } from "@ai-sdk/mistral";
-import { createClaudeCode } from "ai-sdk-provider-claude-code";
 import { execSync } from "child_process";
-import type { AIProviderConfig } from "./aiHandler.js";
+import { getModels as piGetModels, getProviders as piGetProviders } from "@mariozechner/pi-ai";
 import type { SupportedProvider } from "../workspace/types.js";
 
 /**
@@ -33,143 +30,52 @@ export function findExecutable(name: string): string | undefined {
 }
 
 /**
- * Find the path to the Claude Agent CLI executable.
+ * Model information for a provider (Settings UI shape).
  */
-function findClaudeAgentExecutable(): string | undefined {
-  return findExecutable("claude");
-}
-
-/**
- * Model information for a provider
- */
-interface ModelInfo {
+export interface ModelInfo {
   id: string;
   displayName: string;
   description?: string;
 }
 
 /**
- * Default models for each provider.
- * These are commonly available models - the actual availability depends on the user's API access.
+ * Environment variable names for each NatStack provider's API key.
  */
-const DEFAULT_MODELS: Record<SupportedProvider, ModelInfo[]> = {
-  anthropic: [
-    {
-      id: "claude-sonnet-4-20250514",
-      displayName: "Claude Sonnet 4",
-      description: "Most intelligent model, best for complex tasks",
-    },
-    {
-      id: "claude-haiku-4-5-20251001",
-      displayName: "Claude 4.5 Haiku",
-      description: "Fast and efficient for simpler tasks",
-    },
-  ],
-  openai: [
-    {
-      id: "gpt-4o",
-      displayName: "GPT-4o",
-      description: "Most capable OpenAI model",
-    },
-    {
-      id: "gpt-4o-mini",
-      displayName: "GPT-4o Mini",
-      description: "Smaller, faster GPT-4o variant",
-    },
-    {
-      id: "gpt-4-turbo",
-      displayName: "GPT-4 Turbo",
-      description: "Fast GPT-4 with large context",
-    },
-    {
-      id: "o1",
-      displayName: "o1",
-      description: "Advanced reasoning model",
-    },
-    {
-      id: "o1-mini",
-      displayName: "o1 Mini",
-      description: "Smaller reasoning model",
-    },
-  ],
-  google: [
-    {
-      id: "gemini-2.0-flash",
-      displayName: "Gemini 2.0 Flash",
-      description: "Fast multimodal model",
-    },
-    {
-      id: "gemini-1.5-pro",
-      displayName: "Gemini 1.5 Pro",
-      description: "Powerful model with long context",
-    },
-    {
-      id: "gemini-1.5-flash",
-      displayName: "Gemini 1.5 Flash",
-      description: "Fast and efficient",
-    },
-  ],
-  groq: [
-    {
-      id: "llama-3.3-70b-versatile",
-      displayName: "Llama 3.3 70B",
-      description: "Large Llama model on Groq",
-    },
-    {
-      id: "llama-3.1-8b-instant",
-      displayName: "Llama 3.1 8B Instant",
-      description: "Very fast small Llama model",
-    },
-    {
-      id: "mixtral-8x7b-32768",
-      displayName: "Mixtral 8x7B",
-      description: "Mixtral MoE model",
-    },
-  ],
-  openrouter: [
-    {
-      id: "anthropic/claude-sonnet-4",
-      displayName: "Claude Sonnet 4 (OpenRouter)",
-      description: "Claude via OpenRouter",
-    },
-    {
-      id: "openai/gpt-4o",
-      displayName: "GPT-4o (OpenRouter)",
-      description: "GPT-4o via OpenRouter",
-    },
-    {
-      id: "google/gemini-2.0-flash-001",
-      displayName: "Gemini 2.0 Flash (OpenRouter)",
-      description: "Gemini via OpenRouter",
-    },
-    {
-      id: "meta-llama/llama-3.3-70b-instruct",
-      displayName: "Llama 3.3 70B (OpenRouter)",
-      description: "Llama via OpenRouter",
-    },
-  ],
-  mistral: [
-    {
-      id: "mistral-large-latest",
-      displayName: "Mistral Large",
-      description: "Most capable Mistral model",
-    },
-    {
-      id: "mistral-medium-latest",
-      displayName: "Mistral Medium",
-      description: "Balanced performance",
-    },
-    {
-      id: "mistral-small-latest",
-      displayName: "Mistral Small",
-      description: "Fast and efficient",
-    },
-    {
-      id: "codestral-latest",
-      displayName: "Codestral",
-      description: "Optimized for code generation",
-    },
-  ],
+const PROVIDER_ENV_VARS: Record<SupportedProvider, string> = {
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+  google: "GOOGLE_API_KEY",
+  groq: "GROQ_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+  mistral: "MISTRAL_API_KEY",
+  together: "TOGETHER_API_KEY",
+  replicate: "REPLICATE_API_KEY",
+  perplexity: "PERPLEXITY_API_KEY",
+};
+
+/**
+ * Display names for NatStack-recognized providers.
+ */
+const PROVIDER_DISPLAY_NAMES: Record<SupportedProvider, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  google: "Google",
+  groq: "Groq",
+  openrouter: "OpenRouter",
+  mistral: "Mistral",
+  together: "Together AI",
+  replicate: "Replicate",
+  perplexity: "Perplexity",
+};
+
+/**
+ * Static fallback model lists for providers Pi doesn't ship a registry for
+ * (Together, Replicate, Perplexity), or for which we want to surface a curated
+ * subset in the Settings UI.
+ *
+ * For Pi-known providers, the live list comes from `piGetModels()`.
+ */
+const STATIC_FALLBACK_MODELS: Partial<Record<SupportedProvider, ModelInfo[]>> = {
   together: [
     {
       id: "meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo",
@@ -196,235 +102,73 @@ const DEFAULT_MODELS: Record<SupportedProvider, ModelInfo[]> = {
   ],
   perplexity: [
     {
-      id: "llama-3.1-sonar-large-128k-online",
-      displayName: "Sonar Large Online",
-      description: "Web-connected reasoning",
+      id: "sonar",
+      displayName: "Sonar",
+      description: "Lightweight grounded search",
     },
     {
-      id: "llama-3.1-sonar-small-128k-online",
-      displayName: "Sonar Small Online",
-      description: "Fast web-connected model",
-    },
-  ],
-  "claude-agent": [
-    {
-      id: "sonnet",
-      displayName: "Claude Agent (Sonnet)",
-      description: "Claude Agent with Sonnet model - optimized for coding tasks",
-    },
-    {
-      id: "opus",
-      displayName: "Claude Agent (Opus)",
-      description: "Claude Agent with Opus model - most capable for complex coding",
-    },
-    {
-      id: "haiku",
-      displayName: "Claude Agent (Haiku)",
-      description: "Claude Agent with Haiku model - fast and efficient",
+      id: "sonar-pro",
+      displayName: "Sonar Pro",
+      description: "Deeper retrieval with follow-ups",
     },
   ],
 };
 
 /**
- * Base URLs for OpenAI-compatible providers
- */
-const OPENAI_COMPATIBLE_BASE_URLS: Partial<Record<SupportedProvider, string>> = {
-  groq: "https://api.groq.com/openai/v1",
-  openrouter: "https://openrouter.ai/api/v1",
-  together: "https://api.together.xyz/v1",
-  replicate: "https://openai-proxy.replicate.com/v1",
-  perplexity: "https://api.perplexity.ai",
-};
-
-/**
- * Environment variable names for each provider's API key.
- * Note: Claude Agent uses CLI authentication via `claude login`, not an API key.
- * The empty string indicates no API key is needed.
- */
-const PROVIDER_ENV_VARS: Record<SupportedProvider, string> = {
-  anthropic: "ANTHROPIC_API_KEY",
-  openai: "OPENAI_API_KEY",
-  google: "GOOGLE_API_KEY",
-  groq: "GROQ_API_KEY",
-  openrouter: "OPENROUTER_API_KEY",
-  mistral: "MISTRAL_API_KEY",
-  together: "TOGETHER_API_KEY",
-  replicate: "REPLICATE_API_KEY",
-  perplexity: "PERPLEXITY_API_KEY",
-  "claude-agent": "", // Uses CLI auth, not API key
-};
-
-/**
- * Get the API key for a provider from environment variables.
- * API keys come from .secrets.yml (loaded into env) or .env file.
- */
-function getApiKey(providerId: SupportedProvider): string | undefined {
-  const envVar = PROVIDER_ENV_VARS[providerId];
-  return process.env[envVar];
-}
-
-/**
- * Create an AI provider configuration.
- * API keys are read from environment variables (populated from .secrets.yml or .env).
- * Returns null if the provider cannot be created (e.g., missing API key).
- * Note: Claude Agent uses CLI authentication and doesn't require an API key.
- */
-export function createProviderFromConfig(providerId: SupportedProvider, workspacePath?: string): AIProviderConfig | null {
-  const models = DEFAULT_MODELS[providerId] ?? [];
-
-  // Claude Agent uses CLI authentication, not API keys.
-  // NOTE: This provider is for basic text generation WITHOUT tools.
-  // For tool use with Claude Agent, aiHandler.streamToPanel() routes through
-  // streamClaudeAgentWithTools() which sets up proper MCP tool proxying.
-  if (providerId === "claude-agent") {
-    const claudeExecutable = findClaudeAgentExecutable();
-    if (!claudeExecutable) {
-      console.warn("[ProviderFactory] Claude Agent CLI not found in PATH, skipping");
-      return null;
-    }
-
-    return {
-      id: providerId,
-      name: "Claude Agent",
-      createModel: (modelId) =>
-        createClaudeCode()(modelId as "sonnet" | "opus" | "haiku", {
-          allowedTools: [], // No tools for basic provider
-          pathToClaudeCodeExecutable: claudeExecutable,
-          cwd: workspacePath ?? process.cwd(),
-          permissionMode: "default",
-        }),
-      models,
-    };
-  }
-
-  const apiKey = getApiKey(providerId);
-
-  if (!apiKey) {
-    // No log here - caller (aiHandler) batches these for cleaner output
-    return null;
-  }
-
-  switch (providerId) {
-    case "anthropic": {
-      const provider = createAnthropic({ apiKey });
-      return {
-        id: providerId,
-        name: "Anthropic",
-        createModel: (modelId) => provider(modelId),
-        models,
-      };
-    }
-
-    case "openai": {
-      const provider = createOpenAI({ apiKey });
-      return {
-        id: providerId,
-        name: "OpenAI",
-        createModel: (modelId) => provider(modelId),
-        models,
-      };
-    }
-
-    case "google": {
-      const provider = createGoogleGenerativeAI({ apiKey });
-      return {
-        id: providerId,
-        name: "Google",
-        createModel: (modelId) => provider(modelId),
-        models,
-      };
-    }
-
-    case "mistral": {
-      const provider = createMistral({ apiKey });
-      return {
-        id: providerId,
-        name: "Mistral",
-        createModel: (modelId) => provider(modelId),
-        models,
-      };
-    }
-
-    // OpenAI-compatible providers
-    case "groq":
-    case "openrouter":
-    case "together":
-    case "replicate":
-    case "perplexity": {
-      const provider = createOpenAI({
-        apiKey,
-        baseURL: OPENAI_COMPATIBLE_BASE_URLS[providerId],
-      });
-      const displayNames: Record<string, string> = {
-        groq: "Groq",
-        openrouter: "OpenRouter",
-        together: "Together AI",
-        replicate: "Replicate",
-        perplexity: "Perplexity",
-      };
-      return {
-        id: providerId,
-        name: displayNames[providerId] ?? providerId,
-        createModel: (modelId) => provider(modelId),
-        models,
-      };
-    }
-
-    default:
-      console.warn(`[ProviderFactory] Unknown provider: ${providerId}`);
-      return null;
-  }
-}
-
-/**
- * Get the default models for a provider
+ * Get the default models for a provider.
+ *
+ * Pulls from Pi's built-in model registry where possible; falls back to a
+ * static curated list for providers Pi doesn't ship metadata for.
  */
 export function getDefaultModelsForProvider(providerId: SupportedProvider): ModelInfo[] {
-  return DEFAULT_MODELS[providerId] ?? [];
+  // Try Pi's built-in registry first.
+  try {
+    // pi-ai's KnownProvider type is narrower than NatStack's SupportedProvider,
+    // but the runtime accepts any string and returns [] for unknown providers.
+    const piModels = piGetModels(providerId as never) as Array<{ id: string; name: string }>;
+    if (piModels && piModels.length > 0) {
+      return piModels.map((m) => ({
+        id: m.id,
+        displayName: m.name ?? m.id,
+      }));
+    }
+  } catch {
+    // Pi rejected the provider id — fall through to static list.
+  }
+
+  return STATIC_FALLBACK_MODELS[providerId] ?? [];
 }
 
 /**
- * Check if a provider ID is supported
+ * Check if a provider ID is supported (i.e., NatStack knows about it).
  */
 export function isSupportedProvider(providerId: string): providerId is SupportedProvider {
-  return providerId in DEFAULT_MODELS;
+  return providerId in PROVIDER_ENV_VARS;
 }
 
 /**
- * Get all supported provider IDs
+ * Get all supported provider IDs.
  */
 export function getSupportedProviders(): SupportedProvider[] {
-  return Object.keys(DEFAULT_MODELS) as SupportedProvider[];
+  return Object.keys(PROVIDER_ENV_VARS) as SupportedProvider[];
 }
 
 /**
- * Get provider env var mapping
+ * Get provider env-var mapping.
  */
 export function getProviderEnvVars(): Record<SupportedProvider, string> {
   return PROVIDER_ENV_VARS;
 }
 
 /**
- * Get provider display name
+ * Get a provider's display name.
  */
 export function getProviderDisplayName(providerId: SupportedProvider): string {
-  const displayNames: Record<SupportedProvider, string> = {
-    anthropic: "Anthropic",
-    openai: "OpenAI",
-    google: "Google",
-    groq: "Groq",
-    openrouter: "OpenRouter",
-    mistral: "Mistral",
-    together: "Together AI",
-    replicate: "Replicate",
-    perplexity: "Perplexity",
-    "claude-agent": "Claude Agent",
-  };
-  return displayNames[providerId] ?? providerId;
+  return PROVIDER_DISPLAY_NAMES[providerId] ?? providerId;
 }
 
 /**
- * Check if a provider has an API key configured
+ * Check if a provider has an API key configured in the environment.
  */
 export function hasProviderApiKey(providerId: SupportedProvider): boolean {
   const envVar = PROVIDER_ENV_VARS[providerId];
@@ -432,8 +176,12 @@ export function hasProviderApiKey(providerId: SupportedProvider): boolean {
 }
 
 /**
- * Check if a provider uses CLI authentication instead of API keys
+ * Get the list of providers Pi knows about natively (for diagnostics / Settings).
  */
-export function usesCliAuth(providerId: SupportedProvider): boolean {
-  return providerId === "claude-agent";
+export function getPiKnownProviders(): string[] {
+  try {
+    return piGetProviders() as string[];
+  } catch {
+    return [];
+  }
 }

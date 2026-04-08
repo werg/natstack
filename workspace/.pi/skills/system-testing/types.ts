@@ -7,8 +7,6 @@ export interface TestCase {
   category: string;
   /** Natural language task prompt sent to the test agent */
   prompt: string;
-  /** Override the test agent's system prompt */
-  systemPrompt?: string;
   /** Timeout in ms (default: no timeout — waits until agent disconnects or goes idle) */
   timeout?: number;
   /** Validate the test execution result */

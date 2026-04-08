@@ -173,36 +173,6 @@ export const setModelRoleAtom = atom(
   }
 );
 
-/**
- * Enable a CLI-auth provider (like claude-agent)
- */
-export const enableProviderAtom = atom(null, async (_get, set, providerId: string) => {
-  try {
-    await settings.enableProvider(providerId);
-    // Reload settings to reflect change
-    const data = await settings.getData();
-    set(settingsDataAtom, data);
-  } catch (error) {
-    console.error("Failed to enable provider:", error);
-    throw error;
-  }
-});
-
-/**
- * Disable a CLI-auth provider
- */
-export const disableProviderAtom = atom(null, async (_get, set, providerId: string) => {
-  try {
-    await settings.disableProvider(providerId);
-    // Reload settings to reflect change
-    const data = await settings.getData();
-    set(settingsDataAtom, data);
-  } catch (error) {
-    console.error("Failed to disable provider:", error);
-    throw error;
-  }
-});
-
 // =============================================================================
 // Workspace Chooser State (for switch workspace dialog)
 // =============================================================================

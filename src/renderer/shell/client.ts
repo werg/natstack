@@ -170,10 +170,6 @@ export const settings = {
     rpc.call<void>("main", "settings.removeApiKey", providerId),
   setModelRole: (role: string, modelSpec: string) =>
     rpc.call<void>("main", "settings.setModelRole", role, modelSpec),
-  enableProvider: (providerId: string) =>
-    rpc.call<void>("main", "settings.enableProvider", providerId),
-  disableProvider: (providerId: string) =>
-    rpc.call<void>("main", "settings.disableProvider", providerId),
 };
 
 // =============================================================================

@@ -18,7 +18,6 @@ import {
   TextField,
   Select,
   Box,
-  Separator,
   Badge,
   Spinner,
 } from "@radix-ui/themes";
@@ -154,8 +153,6 @@ function ProviderRow({ provider, providerInfo, onUpdate }: ProviderRowProps) {
   const [isSaving, setIsSaving] = useState(false);
 
   const hasKey = providerInfo?.hasApiKey ?? false;
-  const usesCliAuth = provider.usesCliAuth ?? false;
-  const isEnabled = providerInfo?.isEnabled ?? false;
 
   const handleSave = async () => {
     if (!apiKey.trim()) return;
@@ -184,30 +181,6 @@ function ProviderRow({ provider, providerInfo, onUpdate }: ProviderRowProps) {
     }
   };
 
-  const handleEnable = async () => {
-    setIsSaving(true);
-    try {
-      await rpc.call<void>("main", "settings.enableProvider", provider.id);
-      onUpdate();
-    } catch (error) {
-      console.error("Failed to enable provider:", error);
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const handleDisable = async () => {
-    setIsSaving(true);
-    try {
-      await rpc.call<void>("main", "settings.disableProvider", provider.id);
-      onUpdate();
-    } catch (error) {
-      console.error("Failed to disable provider:", error);
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
   const handleCancel = () => {
     setApiKey("");
     setIsEditing(false);
@@ -220,53 +193,6 @@ function ProviderRow({ provider, providerInfo, onUpdate }: ProviderRowProps) {
       handleCancel();
     }
   };
-
-  // For CLI-auth providers (like Claude Agent), show enable/disable instead of API key
-  if (usesCliAuth) {
-    return (
-      <Card variant="surface">
-        <Flex justify="between" align="center">
-          <Flex align="center" gap="3">
-            <Text size="2" weight="medium" style={{ minWidth: "100px" }}>
-              {provider.name}
-            </Text>
-            {isEnabled ? (
-              <Badge color="green" size="1">Enabled</Badge>
-            ) : (
-              <Badge color="gray" size="1">Disabled</Badge>
-            )}
-          </Flex>
-
-          <Flex gap="2" align="center">
-            {isEnabled ? (
-              <Button
-                variant="soft"
-                color="red"
-                size="1"
-                onClick={handleDisable}
-                disabled={isSaving}
-              >
-                {isSaving ? <Spinner /> : "Disable"}
-              </Button>
-            ) : (
-              <Button variant="soft" size="1" onClick={handleEnable} disabled={isSaving}>
-                {isSaving ? <Spinner /> : "Enable"}
-              </Button>
-            )}
-          </Flex>
-        </Flex>
-        {!isEnabled && (
-          <Box mt="2">
-            <Text size="1" color="gray">
-              {provider.id === "claude-agent"
-                ? "Requires CLI installation. Run: npm install -g @anthropic-ai/claude-code && claude login"
-                : "Requires CLI authentication. Please install and log in to the CLI tool."}
-            </Text>
-          </Box>
-        )}
-      </Card>
-    );
-  }
 
   return (
     <Card variant="surface">
@@ -340,9 +266,8 @@ interface ModelRoleRowProps {
 function ModelRoleRow({ role, currentValue, providers, onRoleChange }: ModelRoleRowProps) {
   const [isSaving, setIsSaving] = useState(false);
 
-  // Check if a provider is available (has API key or is enabled CLI-auth provider)
-  const isProviderAvailable = (provider: ProviderInfo) =>
-    provider.hasApiKey || (provider.usesCliAuth && provider.isEnabled);
+  // A provider is available iff its API key is configured.
+  const isProviderAvailable = (provider: ProviderInfo) => provider.hasApiKey;
 
   // Get available providers with models
   const availableProviders = providers.filter(isProviderAvailable);

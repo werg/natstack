@@ -121,8 +121,10 @@ interface HeadlessSessionConfig {
 }
 ```
 
-To customize the agent's system prompt, use `HeadlessWithAgentConfig.systemPrompt`
-(only meaningful when subscribing an agent via `createWithAgent`).
+To customize the agent's system prompt, edit the workspace's
+`<contextFolder>/.pi/AGENTS.md` file *before* spawning the session. The
+`systemPrompt`/`systemPromptMode`/`temperature` fields were removed in
+Phase 5 — Pi handles the prompt and runtime tuning itself.
 
 ### HeadlessWithAgentConfig
 
@@ -138,8 +140,10 @@ interface HeadlessWithAgentConfig extends HeadlessSessionConfig {
   channelId?: string;       // auto-generated if omitted
   channelConfig?: ChannelConfig;
   methods?: Record<string, MethodDefinition>;  // merged with default eval/set_title
-  /** Optional prompt appended to the worker's default. Use extraConfig.systemPromptMode to replace instead. */
-  systemPrompt?: string;
+  /**
+   * Pi-native pass-through subscription config. Allowed keys: model,
+   * thinkingLevel, approvalLevel.
+   */
   extraConfig?: Record<string, unknown>;
 }
 ```
@@ -182,9 +186,10 @@ interface SubscribeHeadlessAgentOptions {
   objectKey: string;
   channelId: string;
   contextId: string;
-  /** Appended to the worker's default prompt by default. */
-  systemPrompt?: string;
-  /** Pass `systemPromptMode`, `model`, `temperature`, etc. through to the worker. */
+  /**
+   * Pi-native pass-through subscription config. Allowed keys: model,
+   * thinkingLevel, approvalLevel.
+   */
   extraConfig?: Record<string, unknown>;
 }
 ```

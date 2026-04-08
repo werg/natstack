@@ -12,18 +12,12 @@ export interface ProviderInfo {
   name: string;
   hasApiKey: boolean;
   models: string[];
-  /** True if provider uses CLI authentication instead of API key */
-  usesCliAuth?: boolean;
-  /** True if provider is enabled (for CLI auth providers) */
-  isEnabled?: boolean;
 }
 
 export interface AvailableProvider {
   id: string;
   name: string;
   envVar: string;
-  /** True if provider uses CLI authentication instead of API key */
-  usesCliAuth?: boolean;
 }
 
 /**

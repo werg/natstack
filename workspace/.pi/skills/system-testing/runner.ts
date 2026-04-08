@@ -21,9 +21,11 @@ export class HeadlessRunner {
    * @workspace/runtime, panel APIs, browser panels, etc. The agent uses the
    * standard NatStack chat prompt and tool surface — UI tools like inline_ui
    * and feedback_form will be available because the panel is connected.
+   *
+   * Per-test prompt overrides should be written into
+   * `<contextFolder>/.pi/AGENTS.md` *before* calling spawn().
    */
   async spawn(opts?: {
-    systemPrompt?: string;
     source?: string;
     className?: string;
   }): Promise<HeadlessSession> {
@@ -41,7 +43,6 @@ export class HeadlessRunner {
       source: opts?.source ?? "workers/agent-worker",
       className: opts?.className ?? "AiChatWorker",
       contextId: this.contextId,
-      systemPrompt: opts?.systemPrompt,
     });
   }
 }

@@ -31,13 +31,10 @@ export interface SubscribeHeadlessAgentOptions {
   /** Context ID for authorization */
   contextId: string;
   /**
-   * Optional system prompt to layer on top of the worker's default prompt.
-   * By default this APPENDS to the worker's NatStack prompt — to replace it
-   * entirely, also pass `systemPromptMode: "replace-natstack"` (or "replace")
-   * via `extraConfig`.
+   * Pi-native pass-through config. Allowed keys are limited to what Pi
+   * understands: `model`, `thinkingLevel`, `approvalLevel`. Per-test prompt
+   * overrides should be written into `<contextFolder>/.pi/AGENTS.md` instead.
    */
-  systemPrompt?: string;
-  /** Additional subscription config (e.g., model, temperature, systemPromptMode) */
   extraConfig?: Record<string, unknown>;
 }
 
@@ -54,7 +51,6 @@ export async function subscribeHeadlessAgent(opts: SubscribeHeadlessAgentOptions
 
   const subscriptionConfig: Record<string, unknown> = {
     ...channelConfig,
-    ...(opts.systemPrompt ? { systemPrompt: opts.systemPrompt } : {}),
     ...opts.extraConfig,
   };
 

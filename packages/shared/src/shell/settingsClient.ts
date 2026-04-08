@@ -30,12 +30,4 @@ export class SettingsClient {
   setModelRole(role: string, modelSpec: string): Promise<void> {
     return this.rpc.call<void>("main", "settings.setModelRole", role, modelSpec);
   }
-
-  enableProvider(providerId: string): Promise<void> {
-    return this.rpc.call<void>("main", "settings.enableProvider", providerId);
-  }
-
-  disableProvider(providerId: string): Promise<void> {
-    return this.rpc.call<void>("main", "settings.disableProvider", providerId);
-  }
 }

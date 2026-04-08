@@ -9,7 +9,6 @@ import {
   getProviderEnvVars,
   getProviderDisplayName,
   hasProviderApiKey,
-  usesCliAuth,
   getDefaultModelsForProvider,
 } from "./providerFactory.js";
 import type { SupportedProvider } from "../workspace/types.js";
@@ -35,7 +34,6 @@ describe("providerFactory", () => {
       expect(isSupportedProvider("openai")).toBe(true);
       expect(isSupportedProvider("google")).toBe(true);
       expect(isSupportedProvider("groq")).toBe(true);
-      expect(isSupportedProvider("claude-agent")).toBe(true);
     });
 
     it("returns false for unknown provider ids", () => {
@@ -43,6 +41,8 @@ describe("providerFactory", () => {
       expect(isSupportedProvider("")).toBe(false);
       expect(isSupportedProvider("ANTHROPIC")).toBe(false);
       expect(isSupportedProvider("codex-cli")).toBe(false);
+      // claude-agent has been removed in Phase 5
+      expect(isSupportedProvider("claude-agent")).toBe(false);
     });
   });
 
@@ -62,8 +62,9 @@ describe("providerFactory", () => {
       expect(providers).toContain("together");
       expect(providers).toContain("replicate");
       expect(providers).toContain("perplexity");
-      expect(providers).toContain("claude-agent");
-      expect(providers).not.toContain("codex-cli");
+      // claude-agent has been removed in Phase 5
+      expect(providers).not.toContain("claude-agent" as SupportedProvider);
+      expect(providers).not.toContain("codex-cli" as SupportedProvider);
     });
   });
 
@@ -81,7 +82,6 @@ describe("providerFactory", () => {
       expect(getProviderDisplayName("together")).toBe("Together AI");
       expect(getProviderDisplayName("replicate")).toBe("Replicate");
       expect(getProviderDisplayName("perplexity")).toBe("Perplexity");
-      expect(getProviderDisplayName("claude-agent")).toBe("Claude Agent");
     });
   });
 
@@ -90,7 +90,6 @@ describe("providerFactory", () => {
   // -------------------------------------------------------------------------
   describe("hasProviderApiKey", () => {
     afterEach(() => {
-      // Restore env
       delete process.env["ANTHROPIC_API_KEY"];
       delete process.env["OPENAI_API_KEY"];
     });
@@ -104,27 +103,6 @@ describe("providerFactory", () => {
       delete process.env["ANTHROPIC_API_KEY"];
       expect(hasProviderApiKey("anthropic")).toBe(false);
     });
-
-    it("returns false for CLI-auth providers (empty env var name)", () => {
-      // claude-agent has empty string env var,
-      // so process.env[""] is always undefined
-      expect(hasProviderApiKey("claude-agent")).toBe(false);
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // usesCliAuth
-  // -------------------------------------------------------------------------
-  describe("usesCliAuth", () => {
-    it("returns true for claude-agent", () => {
-      expect(usesCliAuth("claude-agent")).toBe(true);
-    });
-
-    it("returns false for API-key providers", () => {
-      expect(usesCliAuth("anthropic")).toBe(false);
-      expect(usesCliAuth("openai")).toBe(false);
-      expect(usesCliAuth("google")).toBe(false);
-    });
   });
 
   // -------------------------------------------------------------------------
@@ -134,12 +112,11 @@ describe("providerFactory", () => {
     it("returns non-empty model arrays for known providers", () => {
       const knownProviders: SupportedProvider[] = [
         "anthropic", "openai", "google", "groq", "openrouter",
-        "mistral", "together", "replicate", "perplexity", "claude-agent",
+        "mistral", "together", "replicate", "perplexity",
       ];
       for (const id of knownProviders) {
         const models = getDefaultModelsForProvider(id);
         expect(models.length).toBeGreaterThan(0);
-        // Every model should have an id and displayName
         for (const m of models) {
           expect(typeof m.id).toBe("string");
           expect(typeof m.displayName).toBe("string");
@@ -148,7 +125,6 @@ describe("providerFactory", () => {
     });
 
     it("returns empty array for unknown provider", () => {
-      // Cast to bypass type check — we want runtime behavior for unknown id
       const models = getDefaultModelsForProvider("nonexistent" as SupportedProvider);
       expect(models).toEqual([]);
     });
@@ -169,8 +145,6 @@ describe("providerFactory", () => {
       expect(envVars.together).toBe("TOGETHER_API_KEY");
       expect(envVars.replicate).toBe("REPLICATE_API_KEY");
       expect(envVars.perplexity).toBe("PERPLEXITY_API_KEY");
-      // CLI-auth providers have empty string env var
-      expect(envVars["claude-agent"]).toBe("");
     });
   });
 
@@ -179,19 +153,19 @@ describe("providerFactory", () => {
   // -------------------------------------------------------------------------
   describe("findExecutable", () => {
     it("returns the trimmed path when the command succeeds", () => {
-      vi.mocked(execSync).mockReturnValue("/usr/bin/claude\n");
-      const result = findExecutable("claude");
-      expect(result).toBe("/usr/bin/claude");
+      vi.mocked(execSync).mockReturnValue("/usr/bin/something\n");
+      const result = findExecutable("something");
+      expect(result).toBe("/usr/bin/something");
       expect(execSync).toHaveBeenCalledWith(
-        expect.stringContaining("claude"),
+        expect.stringContaining("something"),
         expect.objectContaining({ encoding: "utf-8" }),
       );
     });
 
     it("returns the first line when multiple paths are returned (Windows where)", () => {
-      vi.mocked(execSync).mockReturnValue("C:\\Program Files\\claude.exe\r\nC:\\Users\\bin\\claude.exe\r\n");
-      const result = findExecutable("claude");
-      expect(result).toBe("C:\\Program Files\\claude.exe");
+      vi.mocked(execSync).mockReturnValue("C:\\Program Files\\thing.exe\r\nC:\\Users\\bin\\thing.exe\r\n");
+      const result = findExecutable("thing");
+      expect(result).toBe("C:\\Program Files\\thing.exe");
     });
 
     it("returns undefined when the command throws (not found)", () => {

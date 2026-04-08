@@ -2,11 +2,11 @@
  * Regression tests for the unified headless subscription contract.
  *
  * The point of these tests is to lock in the *unified* state: a headless
- * subscription must NOT carry a tool restriction, replacement system prompt,
- * or any other lockdown shape that would diverge from the panel-hosted path.
- * They exist because a previous refactor silently introduced exactly such a
- * lockdown without anyone asking for it; if it ever happens again, this file
- * fails loudly.
+ * subscription must NOT carry a tool restriction or any other lockdown shape
+ * that would diverge from the panel-hosted path. Phase 5 also dropped the
+ * `systemPrompt`/`systemPromptMode`/`temperature` fields from the public
+ * helper API; per-test prompt overrides go into `<contextFolder>/.pi/AGENTS.md`
+ * and `extraConfig` is now restricted to Pi-native pass-through values.
  */
 
 import { describe, it, expect, vi } from "vitest";
@@ -37,21 +37,7 @@ describe("subscribeHeadlessAgent — unified contract", () => {
     expect(captured.config!["toolAllowlist"]).toBeUndefined();
   });
 
-  it("does not set systemPromptMode to a replacement mode by default", async () => {
-    const captured: { config?: Record<string, unknown> } = {};
-    await subscribeHeadlessAgent({
-      rpcCall: makeRpcCall(captured),
-      source: "workers/agent-worker",
-      className: "AiChatWorker",
-      objectKey: "obj-1",
-      channelId: "ch-1",
-      contextId: "ctx-1",
-    });
-
-    expect(captured.config!["systemPromptMode"]).toBeUndefined();
-  });
-
-  it("does not pass any systemPrompt when none was provided", async () => {
+  it("does not pass a systemPrompt (Phase 5 dropped this from the public API)", async () => {
     const captured: { config?: Record<string, unknown> } = {};
     await subscribeHeadlessAgent({
       rpcCall: makeRpcCall(captured),
@@ -63,6 +49,7 @@ describe("subscribeHeadlessAgent — unified contract", () => {
     });
 
     expect(captured.config!["systemPrompt"]).toBeUndefined();
+    expect(captured.config!["systemPromptMode"]).toBeUndefined();
   });
 
   it("sets full-auto approval (the only headless-specific channel config)", async () => {
@@ -79,7 +66,7 @@ describe("subscribeHeadlessAgent — unified contract", () => {
     expect(captured.config!["approvalLevel"]).toBe(2);
   });
 
-  it("forwards a caller-provided systemPrompt verbatim (append semantics)", async () => {
+  it("forwards extraConfig pass-through values without smuggling in a toolAllowlist", async () => {
     const captured: { config?: Record<string, unknown> } = {};
     await subscribeHeadlessAgent({
       rpcCall: makeRpcCall(captured),
@@ -88,28 +75,11 @@ describe("subscribeHeadlessAgent — unified contract", () => {
       objectKey: "obj-1",
       channelId: "ch-1",
       contextId: "ctx-1",
-      systemPrompt: "extra instructions",
+      extraConfig: { model: "anthropic:claude-opus-4-5", thinkingLevel: "high" },
     });
 
-    expect(captured.config!["systemPrompt"]).toBe("extra instructions");
-    // No replace-mode unless the caller explicitly opts in via extraConfig
-    expect(captured.config!["systemPromptMode"]).toBeUndefined();
-  });
-
-  it("respects extraConfig overrides without smuggling in a toolAllowlist", async () => {
-    const captured: { config?: Record<string, unknown> } = {};
-    await subscribeHeadlessAgent({
-      rpcCall: makeRpcCall(captured),
-      source: "workers/agent-worker",
-      className: "AiChatWorker",
-      objectKey: "obj-1",
-      channelId: "ch-1",
-      contextId: "ctx-1",
-      extraConfig: { systemPromptMode: "replace-natstack", model: "claude-opus-4-6" },
-    });
-
-    expect(captured.config!["systemPromptMode"]).toBe("replace-natstack");
-    expect(captured.config!["model"]).toBe("claude-opus-4-6");
+    expect(captured.config!["model"]).toBe("anthropic:claude-opus-4-5");
+    expect(captured.config!["thinkingLevel"]).toBe("high");
     expect(captured.config!["toolAllowlist"]).toBeUndefined();
   });
 });

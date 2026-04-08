@@ -207,28 +207,12 @@ const PERPLEXITY_MODELS: FetchedModel[] = [
 ];
 
 /**
- * Hardcoded models for CLI-based providers
- */
-const CLI_PROVIDER_MODELS: Record<string, FetchedModel[]> = {
-  "claude-agent": [
-    { id: "opus", displayName: "Claude Agent (Opus)", description: "Most capable for complex coding" },
-    { id: "sonnet", displayName: "Claude Agent (Sonnet)", description: "Balanced coding performance" },
-    { id: "haiku", displayName: "Claude Agent (Haiku)", description: "Fast and efficient" },
-  ],
-};
-
-/**
  * Fetch models from a provider's API
  */
 export async function fetchModelsForProvider(
   providerId: SupportedProvider,
   apiKey: string
 ): Promise<FetchedModel[] | null> {
-  // Handle CLI-based providers
-  if (providerId === "claude-agent") {
-    return CLI_PROVIDER_MODELS[providerId] ?? null;
-  }
-
   // Handle Perplexity (no list endpoint)
   if (providerId === "perplexity") {
     return PERPLEXITY_MODELS;
@@ -288,24 +272,14 @@ export async function fetchModelsForProvider(
  * Fetch models for all configured providers
  */
 export async function fetchAllProviderModels(
-  providers: Array<{ id: SupportedProvider; apiKey?: string; isEnabled?: boolean }>
+  providers: Array<{ id: SupportedProvider; apiKey?: string }>
 ): Promise<Map<SupportedProvider, FetchedModel[]>> {
   const results = new Map<SupportedProvider, FetchedModel[]>();
 
   // Fetch in parallel with individual error handling
   const fetchPromises = providers.map(async (provider) => {
-    // Skip providers without API keys (except CLI-based ones)
-    const isCli = provider.id === "claude-agent";
-    if (!isCli && !provider.apiKey) {
-      return;
-    }
-
-    // For CLI providers, only fetch if enabled
-    if (isCli && !provider.isEnabled) {
-      return;
-    }
-
-    const models = await fetchModelsForProvider(provider.id, provider.apiKey ?? "");
+    if (!provider.apiKey) return;
+    const models = await fetchModelsForProvider(provider.id, provider.apiKey);
     if (models && models.length > 0) {
       results.set(provider.id, models);
     }

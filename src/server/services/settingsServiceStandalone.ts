@@ -29,7 +29,6 @@ import {
   getProviderDisplayName,
   getDefaultModelsForProvider,
   hasProviderApiKey,
-  usesCliAuth,
 } from "@natstack/shared/ai/providerFactory";
 import { fetchModelsForProvider, type FetchedModel } from "@natstack/shared/ai/modelFetcher";
 
@@ -43,12 +42,7 @@ function getApiKeyForProvider(
 }
 
 function hasConfiguredProviders(): boolean {
-  const providers = getSupportedProviders();
-  const secrets = loadSecrets();
-  return providers.some((providerId) => {
-    if (usesCliAuth(providerId)) return secrets[providerId] === "enabled";
-    return hasProviderApiKey(providerId);
-  });
+  return getSupportedProviders().some((providerId) => hasProviderApiKey(providerId));
 }
 
 export function createSettingsServiceStandalone(deps: {
@@ -76,8 +70,6 @@ export function createSettingsServiceStandalone(deps: {
       setApiKey: { args: z.tuple([z.string(), z.string()]) },
       removeApiKey: { args: z.tuple([z.string()]) },
       setModelRole: { args: z.tuple([z.string(), z.string()]) },
-      enableProvider: { args: z.tuple([z.string()]) },
-      disableProvider: { args: z.tuple([z.string()]) },
     },
     handler: async (_ctx, method, args) => {
       switch (method) {
@@ -89,22 +81,16 @@ export function createSettingsServiceStandalone(deps: {
 
           const fetchedModels = new Map<SupportedProvider, FetchedModel[]>();
           const fetchPromises = supportedProviders.map(async (providerId) => {
-            const cliAuth = usesCliAuth(providerId);
-            const hasKey = hasProviderApiKey(providerId);
-            const isEnabled = cliAuth ? secrets[providerId] === "enabled" : false;
-
-            if (hasKey || (cliAuth && isEnabled)) {
-              const apiKey = getApiKeyForProvider(providerId, envVars, secrets);
-              if (apiKey || cliAuth) {
-                try {
-                  const models = await fetchModelsForProvider(providerId, apiKey ?? "");
-                  if (models && models.length > 0) {
-                    fetchedModels.set(providerId, models);
-                  }
-                } catch (error) {
-                  console.warn(`[Settings] Failed to fetch models for ${providerId}:`, error);
-                }
+            if (!hasProviderApiKey(providerId)) return;
+            const apiKey = getApiKeyForProvider(providerId, envVars, secrets);
+            if (!apiKey) return;
+            try {
+              const models = await fetchModelsForProvider(providerId, apiKey);
+              if (models && models.length > 0) {
+                fetchedModels.set(providerId, models);
               }
+            } catch (error) {
+              console.warn(`[Settings] Failed to fetch models for ${providerId}:`, error);
             }
           });
 
@@ -114,7 +100,6 @@ export function createSettingsServiceStandalone(deps: {
           ]);
 
           const providers: ProviderInfo[] = supportedProviders.map((providerId) => {
-            const cliAuth = usesCliAuth(providerId);
             const fetched = fetchedModels.get(providerId);
             const models = fetched
               ? fetched.map((m) => m.id)
@@ -125,8 +110,6 @@ export function createSettingsServiceStandalone(deps: {
               name: getProviderDisplayName(providerId),
               hasApiKey: hasProviderApiKey(providerId),
               models,
-              usesCliAuth: cliAuth,
-              isEnabled: cliAuth ? secrets[providerId] === "enabled" : undefined,
             };
           });
 
@@ -134,7 +117,6 @@ export function createSettingsServiceStandalone(deps: {
             id: providerId,
             name: getProviderDisplayName(providerId),
             envVar: envVars[providerId],
-            usesCliAuth: usesCliAuth(providerId),
           }));
 
           const modelRoles: ModelRoleConfig = {};
@@ -190,34 +172,6 @@ export function createSettingsServiceStandalone(deps: {
           if (!config.models) config.models = {};
           config.models[role] = modelSpec;
           saveCentralConfig(config);
-
-          await refreshAiProviders();
-          return;
-        }
-
-        case "enableProvider": {
-          const providerId = args[0] as string;
-          if (!usesCliAuth(providerId as SupportedProvider)) {
-            console.warn(`[Settings] Cannot enable provider ${providerId} - not a CLI-auth provider`);
-            return;
-          }
-          const secrets = loadSecrets();
-          secrets[providerId] = "enabled";
-          saveSecrets(secrets);
-
-          await refreshAiProviders();
-          return;
-        }
-
-        case "disableProvider": {
-          const providerId = args[0] as string;
-          if (!usesCliAuth(providerId as SupportedProvider)) {
-            console.warn(`[Settings] Cannot disable provider ${providerId} - not a CLI-auth provider`);
-            return;
-          }
-          const secrets = loadSecrets();
-          delete secrets[providerId];
-          saveSecrets(secrets);
 
           await refreshAiProviders();
           return;

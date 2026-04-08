@@ -56,6 +56,51 @@ export function getCentralConfigPaths(): CentralConfigPaths {
 }
 
 /**
+ * Map old `claude-agent:*` model role values to their Pi-compatible
+ * `anthropic:*` equivalents. Pi handles all provider routing now, so the
+ * Claude Agent CLI provider was deleted in Phase 5; older user configs are
+ * silently upgraded on first load and persisted back to disk.
+ *
+ * Returns the migrated value or null if the input was not a claude-agent ref.
+ */
+function migrateClaudeAgentModelValue(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = value.match(/^claude-agent:(.+)$/);
+  if (!match) return null;
+  const suffix = match[1]!;
+  switch (suffix) {
+    case "opus":
+      return "anthropic:claude-opus-4-5";
+    case "sonnet":
+      return "anthropic:claude-sonnet-4-20250514";
+    case "haiku":
+      return "anthropic:claude-haiku-4-5-20251001";
+    default:
+      return `anthropic:${suffix}`;
+  }
+}
+
+/**
+ * Walk parsed.models.* and migrate any claude-agent:* values to anthropic:*.
+ * Mutates the input object. Returns true if any value was changed.
+ */
+function migrateClaudeAgentModelsConfig(parsed: CentralConfig): boolean {
+  if (!parsed.models || typeof parsed.models !== "object") return false;
+  let mutated = false;
+  for (const [role, value] of Object.entries(parsed.models)) {
+    const migrated = migrateClaudeAgentModelValue(value);
+    if (migrated !== null) {
+      console.warn(
+        `[NatStack] Migrated old model role 'claude-agent:${(value as string).slice("claude-agent:".length)}' → '${migrated}' in models.${role}`,
+      );
+      (parsed.models as Record<string, unknown>)[role] = migrated;
+      mutated = true;
+    }
+  }
+  return mutated;
+}
+
+/**
  * Load central config from ~/.config/natstack/config.yml
  */
 export function loadCentralConfig(): CentralConfig {
@@ -67,7 +112,23 @@ export function loadCentralConfig(): CentralConfig {
 
   try {
     const content = fs.readFileSync(paths.configPath, "utf-8");
-    return (YAML.parse(content) as CentralConfig) ?? {};
+    const parsed = (YAML.parse(content) as CentralConfig) ?? {};
+
+    // One-time silent migration: rewrite claude-agent:* values to anthropic:*
+    // and persist the result so the warning doesn't repeat on every load.
+    const mutated = migrateClaudeAgentModelsConfig(parsed);
+    if (mutated) {
+      try {
+        fs.writeFileSync(paths.configPath, YAML.stringify(parsed), "utf-8");
+      } catch (writeErr) {
+        console.warn(
+          `[Config] Failed to persist migrated config back to ${paths.configPath}:`,
+          writeErr,
+        );
+      }
+    }
+
+    return parsed;
   } catch (error) {
     console.warn(`[Config] Failed to load ${paths.configPath}:`, error);
     return {};

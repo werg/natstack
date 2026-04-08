@@ -36,7 +36,6 @@ export interface PanelOrchestratorDeps {
 
   getPanelView?: () => PanelViewLike | null;
   cdpServer: { revokeTokenForPanel(panelId: string): void; unregisterBrowser?(panelId: string): void };
-  ccConversationManager?: { endPanelConversations(panelId: string): void };
   panelHttpServer: PanelHttpServerLike;
   externalHost: string;
   protocol: "http" | "https";
@@ -68,7 +67,6 @@ export class PanelOrchestrator implements BridgePanelManager {
   private getPanelView() { return this.deps.getPanelView?.() ?? null; }
   private get panelHttpServer() { return this.deps.panelHttpServer; }
   private get cdpServer() { return this.deps.cdpServer; }
-  private get ccConversationManager() { return this.deps.ccConversationManager; }
   private get workspaceConfig() { return this.deps.workspaceConfig; }
 
   // =========================================================================
@@ -601,9 +599,6 @@ export class PanelOrchestrator implements BridgePanelManager {
 
     // CDP cleanup
     this.cdpServer?.revokeTokenForPanel(panelId);
-
-    // Claude Agent conversation cleanup
-    this.ccConversationManager?.endPanelConversations(panelId);
 
     // Destroy view
     const view = this.getPanelView();

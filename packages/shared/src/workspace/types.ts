@@ -25,8 +25,7 @@ export type SupportedProvider =
   | "mistral"
   | "together"
   | "replicate"
-  | "perplexity"
-  | "claude-agent";
+  | "perplexity";
 
 /**
  * Standard model roles with fallback behavior

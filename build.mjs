@@ -52,8 +52,7 @@ const serverElectronConfig = {
              "node-git-server", "vitest", "vitest/node", "vite",
              // Agent SDKs: must stay external — they use import.meta.url at module scope
              // to locate config files, which breaks when bundled into CJS.
-             "@mariozechner/pi-coding-agent", "@mariozechner/pi-ai",
-             "@anthropic-ai/claude-agent-sdk"],
+             "@mariozechner/pi-coding-agent", "@mariozechner/pi-ai"],
   sourcemap: isDev,
   minify: !isDev,
   logOverride,
@@ -129,8 +128,7 @@ const serverConfig = {
              "node-git-server", "vitest", "vitest/node", "vite",
              // Agent SDKs: must stay external — they use import.meta.url at module scope
              // to locate config files relative to their install path.
-             "@mariozechner/pi-coding-agent", "@mariozechner/pi-ai",
-             "@anthropic-ai/claude-agent-sdk"],
+             "@mariozechner/pi-coding-agent", "@mariozechner/pi-ai"],
   plugins: [serverNativePlugin, electronStubPlugin],
   sourcemap: isDev,
   minify: !isDev,

@@ -25,8 +25,6 @@ import {
   setApiKeyAtom,
   removeApiKeyAtom,
   setModelRoleAtom,
-  enableProviderAtom,
-  disableProviderAtom,
 } from "../state/appModeAtoms";
 import { useShellOverlay } from "../shell/useShellOverlay";
 import type { ProviderInfo } from "@natstack/shared/types";
@@ -183,7 +181,7 @@ export function SettingsDialog({ isSetupMode = false }: SettingsDialogProps) {
 }
 
 interface ProviderRowProps {
-  provider: { id: string; name: string; envVar: string; usesCliAuth?: boolean };
+  provider: { id: string; name: string; envVar: string };
   providerInfo?: ProviderInfo;
 }
 
@@ -195,12 +193,8 @@ function ProviderRow({ provider, providerInfo }: ProviderRowProps) {
 
   const setApiKeyAction = useSetAtom(setApiKeyAtom);
   const removeApiKeyAction = useSetAtom(removeApiKeyAtom);
-  const enableProviderAction = useSetAtom(enableProviderAtom);
-  const disableProviderAction = useSetAtom(disableProviderAtom);
 
   const hasKey = providerInfo?.hasApiKey ?? false;
-  const usesCliAuth = provider.usesCliAuth ?? false;
-  const isEnabled = providerInfo?.isEnabled ?? false;
 
   const handleSave = async () => {
     if (!apiKey.trim()) return;
@@ -227,28 +221,6 @@ function ProviderRow({ provider, providerInfo }: ProviderRowProps) {
     }
   };
 
-  const handleEnable = async () => {
-    setIsSaving(true);
-    try {
-      await enableProviderAction(provider.id);
-    } catch (error) {
-      console.error("Failed to enable provider:", error);
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const handleDisable = async () => {
-    setIsSaving(true);
-    try {
-      await disableProviderAction(provider.id);
-    } catch (error) {
-      console.error("Failed to disable provider:", error);
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
   const handleCancel = () => {
     setApiKey("");
     setIsEditing(false);
@@ -261,56 +233,6 @@ function ProviderRow({ provider, providerInfo }: ProviderRowProps) {
       handleCancel();
     }
   };
-
-  // For CLI-auth providers (like Claude Agent), show enable/disable instead of API key
-  if (usesCliAuth) {
-    return (
-      <Card>
-        <Flex justify="between" align="center" p="2">
-          <Flex align="center" gap="3">
-            <Text size="2" weight="medium" style={{ minWidth: "100px" }}>
-              {provider.name}
-            </Text>
-            {isEnabled ? (
-              <Badge color="green" size="1">
-                Enabled
-              </Badge>
-            ) : (
-              <Badge color="gray" size="1">
-                Disabled
-              </Badge>
-            )}
-          </Flex>
-
-          <Flex gap="2" align="center">
-            {isEnabled ? (
-              <Button
-                variant="soft"
-                color="red"
-                size="1"
-                onClick={handleDisable}
-                disabled={isSaving}
-              >
-                {isSaving ? <Spinner /> : "Disable"}
-              </Button>
-            ) : (
-              <Button variant="soft" size="1" onClick={handleEnable} disabled={isSaving}>
-                {isSaving ? <Spinner /> : "Enable"}
-              </Button>
-            )}
-          </Flex>
-        </Flex>
-        {!isEnabled && (
-          <Box px="2" pb="2">
-            <Text size="1" color="gray">
-              Requires Claude Agent CLI. Run: npm install -g @anthropic-ai/claude-code && claude
-              login
-            </Text>
-          </Box>
-        )}
-      </Card>
-    );
-  }
 
   return (
     <Card>
@@ -391,9 +313,8 @@ function ModelRoleRow({ role, currentValue, providers }: ModelRoleRowProps) {
   const [isSaving, setIsSaving] = useState(false);
   const setModelRole = useSetAtom(setModelRoleAtom);
 
-  // Check if a provider is available (has API key or is enabled CLI-auth provider)
-  const isProviderAvailable = (provider: ProviderInfo) =>
-    provider.hasApiKey || (provider.usesCliAuth && provider.isEnabled);
+  // A provider is available iff its API key is configured.
+  const isProviderAvailable = (provider: ProviderInfo) => provider.hasApiKey;
 
   // Build list of available models from configured providers
   const availableModels: { value: string; label: string; provider: string }[] = [];
