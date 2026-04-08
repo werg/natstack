@@ -37,6 +37,16 @@ export class ChannelClient {
     await this.rpc.call(this.doTarget, "sendEphemeral", participantId, content, contentType);
   }
 
+  /**
+   * Typed wrapper for ephemeral messages with structured (JSON) payloads.
+   * The payload is JSON-serialized and routed through the same string-based
+   * sendEphemeral path. Receivers decode via
+   * `parseEphemeralEvent` from `@workspace/agentic-core`.
+   */
+  async sendEphemeralEvent<T>(participantId: string, contentType: string, payload: T): Promise<void> {
+    await this.sendEphemeral(participantId, JSON.stringify(payload), contentType);
+  }
+
   async updateMetadata(participantId: string, metadata: Record<string, unknown>): Promise<void> {
     await this.rpc.call(this.doTarget, "updateMetadata", participantId, metadata);
   }

@@ -71,3 +71,12 @@ export type { BuildEvalToolOptions } from "./eval-tool.js";
 export {
   createPanelSandboxConfig,
 } from "./sandbox-factory.js";
+
+// --- Ephemeral Event Envelope (typed structured channel payloads) ---
+export {
+  parseEphemeralEvent,
+} from "./ephemeral-event-envelope.js";
+export type {
+  EphemeralEventEnvelope,
+  EphemeralMessageLike,
+} from "./ephemeral-event-envelope.js";
