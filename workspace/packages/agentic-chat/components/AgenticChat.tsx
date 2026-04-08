@@ -5,7 +5,6 @@ import { ChatLayout } from "./ChatLayout";
 import { ChatProvider } from "../context/ChatProvider";
 import { useAgenticChat } from "../hooks/useAgenticChat";
 import type { ChatParticipantMetadata, ConnectionConfig, AgenticChatActions, ToolProvider, SandboxConfig } from "../types";
-import type { EventMiddleware } from "@workspace/agentic-core";
 
 export interface AgenticChatProps {
   /** Connection configuration (server URL, token, client ID) */
@@ -26,8 +25,6 @@ export interface AgenticChatProps {
   theme?: "light" | "dark";
   /** Agents being spawned */
   pendingAgents?: Array<{ agentId: string; handle: string }>;
-  /** Optional event middleware */
-  eventMiddleware?: EventMiddleware[];
   /** If set, automatically sent as the first user message once connected */
   initialPrompt?: string;
   /** Sandbox config — provides RPC and import loading */
@@ -51,7 +48,6 @@ export function AgenticChat({
   actions,
   theme,
   pendingAgents: pendingAgentInfos,
-  eventMiddleware,
   initialPrompt,
   sandbox,
 }: AgenticChatProps) {
@@ -65,7 +61,6 @@ export function AgenticChat({
     actions,
     theme,
     pendingAgentInfos,
-    eventMiddleware,
     initialPrompt,
     sandbox,
   });

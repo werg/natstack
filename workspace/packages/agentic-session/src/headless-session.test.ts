@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { HeadlessSession } from "./headless-session.js";
 
-describe("HeadlessSession waitForIdle", () => {
-  it("resolves on completed method history even without an assistant text message", async () => {
+describe("HeadlessSession", () => {
+  it("constructs without connecting", () => {
     const session = HeadlessSession.create({
       config: {
         serverUrl: "http://test.invalid",
@@ -11,60 +11,40 @@ describe("HeadlessSession waitForIdle", () => {
       },
     });
 
-    const tracker = (session.manager as unknown as {
-      _methodHistory: {
-        addEntry: (entry: {
-          callId: string;
-          methodName: string;
-          args: unknown;
-          status: "pending" | "success" | "error";
-          startedAt: number;
-        }) => void;
-        handleMethodResult: (result: {
-          kind: "ephemeral";
-          senderId: string;
-          ts: number;
-          callId: string;
-          content: unknown;
-          complete: boolean;
-          isError: boolean;
-        }) => void;
-      };
-    })._methodHistory;
+    expect(session.connected).toBe(false);
+    expect(session.channelId).toBe(null);
+    expect(session.messages).toEqual([]);
+    expect(session.methodEntries.size).toBe(0);
+  });
 
-    const waitPromise = session.waitForIdle({ timeout: 200, debounce: 10 });
+  it("snapshot returns initial state for an unconnected session", () => {
+    const session = HeadlessSession.create({
+      config: {
+        serverUrl: "http://test.invalid",
+        token: "test-token",
+        clientId: "headless-test",
+      },
+    });
 
-    setTimeout(() => {
-      tracker.addEntry({
-        callId: "call-1",
-        methodName: "eval",
-        args: { code: "1 + 1" },
-        status: "pending",
-        startedAt: 1,
-      });
-      tracker.handleMethodResult({
-        kind: "ephemeral",
-        senderId: "agent-1",
-        ts: 2,
-        callId: "call-1",
-        content: { ok: true, value: 2 },
-        complete: true,
-        isError: false,
-      });
-    }, 0);
+    const snap = session.snapshot();
+    expect(snap.connected).toBe(false);
+    expect(snap.messages).toEqual([]);
+    expect(snap.methodHistory).toEqual([]);
+    expect(snap.participants).toEqual({});
+  });
 
-    const result = await waitPromise;
-    expect(result.kind).toBe("method");
-    expect(result.method?.callId).toBe("call-1");
-    expect(session.snapshot().methodHistory).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          callId: "call-1",
-          method: "eval",
-          status: "success",
-          result: { ok: true, value: 2 },
-        }),
-      ])
-    );
+  it("dispose is idempotent", () => {
+    const session = HeadlessSession.create({
+      config: {
+        serverUrl: "http://test.invalid",
+        token: "test-token",
+        clientId: "headless-test",
+      },
+    });
+
+    expect(() => {
+      session.dispose();
+      session.dispose();
+    }).not.toThrow();
   });
 });

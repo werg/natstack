@@ -4,7 +4,11 @@
 
 // --- HeadlessSession ---
 export { HeadlessSession, HeadlessTimeoutError } from "./headless-session.js";
-export type { HeadlessSessionConfig, HeadlessWithAgentConfig, SessionSnapshot } from "./headless-session.js";
+export type {
+  HeadlessSessionConfig,
+  HeadlessWithAgentConfig,
+  SessionSnapshot,
+} from "./headless-session.js";
 
 // --- Channel Helpers ---
 export {
@@ -16,16 +20,13 @@ export type { SubscribeHeadlessAgentOptions } from "./channel.js";
 // --- SandboxConfig Factory (RPC-based, for non-panel contexts) ---
 export { createRpcSandboxConfig } from "./sandbox-factory.js";
 
-// --- Re-export core values + types for convenience ---
-export { SessionManager } from "@workspace/agentic-core";
+// --- Re-export Pi-native types from agentic-core for convenience ---
 export type {
-  SessionManagerConfig,
-  ConnectOptions,
-  SendOptions,
   ChatMessage,
   ChatParticipantMetadata,
   ConnectionConfig,
   SandboxConfig,
   MethodHistoryEntry,
   MethodCallStatus,
+  AgentMessage,
 } from "@workspace/agentic-core";

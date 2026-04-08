@@ -1,14 +1,8 @@
 // ===========================================================================
-// Re-export all core types for backward compatibility
+// Re-export headless types from agentic-core
 // ===========================================================================
 export type {
-  MethodCallStatus,
-  MethodHistoryEntry,
-  PendingAgentStatus,
-  PendingAgent,
   ChatParticipantMetadata,
-  DisconnectedAgentInfo,
-  ChatMessage,
   ConnectionConfig,
   AgenticChatActions,
   ChatSandboxValue,
@@ -17,21 +11,39 @@ export type {
   ToolProvider,
 } from "@workspace/agentic-core";
 
+// Pi message/event types — re-exported via agentic-core
+export type { AgentMessage, AgentSessionEvent } from "@workspace/agentic-core";
+
 // ===========================================================================
-// UI-only types (depend on React, tool-ui, or browser APIs)
+// Re-export derived UI types from agentic-core (ChatMessage, MethodHistoryEntry, …)
+// ===========================================================================
+export type {
+  ChatMessage,
+  MethodHistoryEntry,
+  MethodCallStatus,
+  PendingAgent,
+  PendingAgentStatus,
+  DisconnectedAgentInfo,
+  DirtyRepoDetails,
+} from "@workspace/agentic-core";
+
+// ===========================================================================
+// UI-only types
 // ===========================================================================
 import type { AgentDebugPayload, Participant, AttachmentInput } from "@natstack/pubsub";
 import type { ActiveFeedback, ToolApprovalProps } from "@workspace/tool-ui";
 import type { PendingImage } from "./utils/imageUtils";
-import type { DirtyRepoDetails } from "@workspace/agentic-core";
 import type { ComponentType } from "react";
 import type { ScopeManager, ScopesApi } from "@workspace/eval";
 import type {
-  ChatMessage,
   ChatParticipantMetadata,
   ChatSandboxValue,
+} from "@workspace/agentic-core";
+import type {
+  ChatMessage,
   PendingAgent,
   MethodHistoryEntry,
+  DirtyRepoDetails,
 } from "@workspace/agentic-core";
 
 // ===========================================================================
@@ -45,10 +57,9 @@ export interface InlineUiComponentEntry {
 }
 
 // ===========================================================================
-// ChatInputContext Value (keystroke-frequency updates, consumed only by ChatInput)
+// ChatInputContext Value
 // ===========================================================================
 
-/** Value provided by ChatInputContext — changes on every keystroke */
 export interface ChatInputContextValue {
   input: string;
   pendingImages: PendingImage[];
@@ -61,7 +72,6 @@ export interface ChatInputContextValue {
 // ChatContext Value
 // ===========================================================================
 
-/** Full value provided by ChatContext — changes on messages, connection, etc. */
 export interface ChatContextValue {
   // Connection
   connected: boolean;
@@ -69,13 +79,13 @@ export interface ChatContextValue {
   channelId: string | null;
   sessionEnabled?: boolean;
 
-  /** Chat API for sandboxed code — publish messages, call methods, access runtime */
+  /** Chat API for sandboxed code */
   chat: ChatSandboxValue;
 
   /** Current REPL scope (Proxy) */
   scope: Record<string, unknown>;
 
-  /** Scopes API — history + persistence (pre-injected as `scopes` binding) */
+  /** Scopes API — history + persistence */
   scopes: ScopesApi;
 
   /** Scope manager for reactivity subscriptions */

@@ -1,41 +1,42 @@
 /**
- * useChatCore — Minimum viable chat hook.
+ * useChatCore — Pi-native chat hook.
  *
- * Delegates connection, messages, method history, event dispatch, typing,
- * pagination, roster tracking, pending agents, debug events, and dirty repo
- * warnings to SessionManager from @workspace/agentic-core.
+ * Pi (`@mariozechner/pi-coding-agent`) is the source of truth. This hook:
+ * - Owns the PubSubClient connection lifecycle
+ * - Subscribes to the channel's `natstack-state-snapshot` ephemeral stream
+ * - Derives a flat `ChatMessage[]` from the latest Pi snapshot
+ * - Tracks method history from channel method-call/result events
+ * - Tracks participants from roster events
  *
- * Retains in the React layer: input state, image cleanup, channel title,
- * initial prompt auto-send, inputContextValue memoization.
+ * NO event-replay state machine. NO message reducer. The hook just renders
+ * what Pi has published.
  */
 
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
 import type {
   PubSubClient,
-  IncomingMethodResult,
   ChannelConfig,
   AttachmentInput,
-  AgentDebugPayload,
   Participant,
+  AgentDebugPayload,
+  IncomingMethodResult,
+  MethodDefinition,
 } from "@natstack/pubsub";
-import type { MethodDefinition } from "@natstack/pubsub";
 import {
-  SessionManager,
-  isAgentParticipantType,
-  type SessionManagerConfig,
-  type MessageWindowState,
-  type MessageWindowAction,
+  ConnectionManager,
+  derivePiSnapshot,
+  type ConnectionConfig,
+  type ChatParticipantMetadata,
+  type ChatMessage,
+  type MethodHistoryEntry,
+  type PendingAgent,
+  type DirtyRepoDetails,
 } from "@workspace/agentic-core";
-import type { EventMiddleware, DirtyRepoDetails } from "@workspace/agentic-core";
 import { cleanupPendingImages, type PendingImage } from "../../utils/imageUtils";
-import type { MethodHistoryEntry } from "@workspace/agentic-core";
-import type {
-  ChatMessage,
-  ChatParticipantMetadata,
-  ConnectionConfig,
-  PendingAgent,
-} from "@workspace/agentic-core";
 import type { ChatInputContextValue } from "../../types";
+import { useChannelEphemeralMessages } from "../useChannelEphemeralMessages.js";
+import { usePiSessionSnapshot } from "../usePiSessionSnapshot.js";
+import { usePiTextDeltas } from "../usePiTextDeltas.js";
 
 // =============================================================================
 // Types
@@ -48,17 +49,12 @@ export interface UseChatCoreOptions {
   contextId?: string;
   metadata?: ChatParticipantMetadata;
   theme?: "light" | "dark";
-  eventMiddleware?: EventMiddleware[];
   /** If set, automatically sent as the first user message once connected */
   initialPrompt?: string;
 }
 
 export interface ChatCoreState {
-  // Message state
   messages: ChatMessage[];
-  setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
-  dispatch: React.Dispatch<MessageWindowAction>;
-  messageWindow: MessageWindowState;
 
   // Connection
   connected: boolean;
@@ -67,11 +63,9 @@ export interface ChatCoreState {
   connectToChannel: (options: { channelId: string; methods: Record<string, MethodDefinition>; channelConfig?: ChannelConfig; contextId?: string }) => Promise<PubSubClient<ChatParticipantMetadata>>;
   hasConnectedRef: React.MutableRefObject<boolean>;
 
-  // Participants (current roster only)
+  // Participants
   participants: Record<string, Participant<ChatParticipantMetadata>>;
   participantsRef: React.MutableRefObject<Record<string, Participant<ChatParticipantMetadata>>>;
-
-  // All participants (current + historical, from SessionManager)
   allParticipants: Record<string, Participant<ChatParticipantMetadata>>;
 
   // Input
@@ -80,7 +74,8 @@ export interface ChatCoreState {
   handleInputChange: (value: string) => void;
   setPendingImages: React.Dispatch<React.SetStateAction<PendingImage[]>>;
 
-  // Pagination
+  // Pagination (Pi-native chats are simpler — no pagination of past turns
+  // since the snapshot includes all turns by construction)
   hasMoreHistory: boolean;
   loadingMore: boolean;
   loadEarlierMessages: () => Promise<void>;
@@ -98,23 +93,20 @@ export interface ChatCoreState {
   handleCallMethod: (providerId: string, methodName: string, args: unknown) => void;
   stopTyping: () => Promise<void>;
 
-  // Agent state (from SessionManager)
+  // Agent state
   debugEvents: Array<AgentDebugPayload & { ts: number }>;
   dirtyRepoWarnings: Map<string, DirtyRepoDetails>;
   pendingAgents: Map<string, PendingAgent>;
   addPendingAgent: (handle: string, agentId: string) => void;
   onDismissDirtyWarning: (agentName: string) => void;
 
-  // Refs
   selfIdRef: React.MutableRefObject<string | null>;
 
-  // Session
   sessionEnabled: boolean | undefined;
   channelName: string;
   theme: "light" | "dark";
   config: ConnectionConfig;
 
-  // Input context value (convenience)
   inputContextValue: ChatInputContextValue;
 }
 
@@ -131,7 +123,6 @@ export function useChatCore({
   contextId: _contextId,
   metadata = DEFAULT_METADATA,
   theme = "dark",
-  eventMiddleware,
   initialPrompt,
 }: UseChatCoreOptions): ChatCoreState {
   // --- Stable refs ---
@@ -140,33 +131,34 @@ export function useChatCore({
   const participantsRef = useRef<Record<string, Participant<ChatParticipantMetadata>>>({});
   const inputRef = useRef("");
 
-  // --- SessionManager (created once) ---
-  const managerRef = useRef<SessionManager | null>(null);
-  if (!managerRef.current) {
-    const managerConfig: SessionManagerConfig = {
+  // --- Connection manager (PubSubClient lifecycle) ---
+  const connectionRef = useRef<ConnectionManager | null>(null);
+  if (!connectionRef.current) {
+    connectionRef.current = new ConnectionManager({
       config,
       metadata,
-      eventMiddleware,
-    };
-    managerRef.current = new SessionManager(managerConfig);
+      callbacks: {
+        onStatusChange: (s) => {
+          setStatus(s);
+          setConnected(s === "connected");
+        },
+      },
+    });
   }
-  const manager = managerRef.current;
+  const connection = connectionRef.current;
 
-  // --- React state driven by SessionManager events ---
-  const [messages, setMessagesState] = useState<ChatMessage[]>([]);
+  // --- React state ---
+  const [client, setClient] = useState<PubSubClient<ChatParticipantMetadata> | null>(null);
   const [connected, setConnected] = useState(false);
   const [status, setStatus] = useState("Connecting...");
   const [participants, setParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
-  const [allParticipants, setAllParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
   const [methodEntries, setMethodEntries] = useState<Map<string, MethodHistoryEntry>>(new Map());
-  const [hasMoreHistory, setHasMoreHistory] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [debugEvents, setDebugEvents] = useState<Array<AgentDebugPayload & { ts: number }>>([]);
+  const [debugEvents, _setDebugEvents] = useState<Array<AgentDebugPayload & { ts: number }>>([]);
   const [dirtyRepoWarnings, setDirtyRepoWarnings] = useState<Map<string, DirtyRepoDetails>>(new Map());
   const [pendingAgents, setPendingAgents] = useState<Map<string, PendingAgent>>(new Map());
 
-  // --- Client ref (synced with manager.client) ---
   const clientRef = useRef<PubSubClient<ChatParticipantMetadata> | null>(null);
+  clientRef.current = client;
 
   // --- Input state ---
   const [input, setInput] = useState("");
@@ -179,176 +171,130 @@ export function useChatCore({
     return () => { cleanupPendingImages(pendingImagesRef.current); };
   }, []);
 
-  // --- Subscribe to SessionManager events ---
-  useEffect(() => {
-    const unsubs: Array<() => void> = [];
+  // --- Pi snapshot subscription ---
+  const snapshotEphemerals = useChannelEphemeralMessages(client, "natstack-state-snapshot");
+  const { snapshot, latestTs } = usePiSessionSnapshot(snapshotEphemerals);
 
-    unsubs.push(manager.on("messagesChanged", (msgs) => {
-      setMessagesState([...msgs] as ChatMessage[]);
-      // Sync pagination state for correct React re-renders
-      setOldestLoadedId(manager.oldestLoadedId);
-      setPaginationExhausted(manager.paginationExhausted);
-      setHasMoreHistory(manager.hasMoreHistory);
-    }));
+  // --- Pi text-delta subscription (for typing-indicator overlay) ---
+  const deltaEphemerals = useChannelEphemeralMessages(client, "natstack-text-delta");
+  const textDelta = usePiTextDeltas(deltaEphemerals, latestTs);
 
-    unsubs.push(manager.on("connectionChanged", (isConnected, connectionStatus) => {
-      setConnected(isConnected);
-      setStatus(connectionStatus);
-      // Sync clientRef
-      clientRef.current = manager.client;
-      // Sync selfId
-      if (isConnected && manager.client) {
-        selfIdRef.current = manager.client.clientId ?? config.clientId;
-      }
-      // Update hasMoreHistory on connection change
-      setHasMoreHistory(manager.hasMoreHistory);
-    }));
-
-    unsubs.push(manager.on("participantsChanged", (parts) => {
-      setParticipants({ ...parts });
-    }));
-
-    unsubs.push(manager.on("allParticipantsChanged", (allParts) => {
-      const mutableAllParts = { ...allParts };
-      setAllParticipants(mutableAllParts);
-      participantsRef.current = mutableAllParts;
-    }));
-
-    unsubs.push(manager.on("methodHistoryChanged", (entries) => {
-      setMethodEntries(new Map(entries));
-    }));
-
-    unsubs.push(manager.on("pendingAgentsChanged", (agents) => {
-      setPendingAgents(new Map(agents));
-    }));
-
-    unsubs.push(manager.on("debugEvent", (event) => {
-      setDebugEvents((prev) => [...prev, event]);
-    }));
-
-    unsubs.push(manager.on("dirtyRepoWarning", (handle, details) => {
-      setDirtyRepoWarnings((prev) => {
-        const next = new Map(prev);
-        next.set(handle, details);
-        return next;
+  // --- Derive ChatMessage[] from Pi snapshot ---
+  const messages = useMemo<ChatMessage[]>(() => {
+    const derived = derivePiSnapshot(snapshot.messages, selfIdRef.current);
+    if (textDelta && snapshot.isStreaming) {
+      // Overlay an in-progress assistant message with the live delta text.
+      derived.push({
+        id: `delta-${textDelta.messageId}`,
+        senderId: "assistant",
+        content: textDelta.text,
+        kind: "message",
+        complete: false,
       });
-    }));
+    }
+    return derived;
+  }, [snapshot, textDelta]);
 
-    unsubs.push(manager.on("error", (error) => {
-      console.error("[Chat] Connection error:", error);
-      setStatus(`Error: ${error.message}`);
-    }));
-
-    return () => {
-      for (const unsub of unsubs) unsub();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [manager, config.clientId]);
-
-  // --- Dispose manager on unmount ---
-  useEffect(() => {
-    return () => {
-      manager.dispose();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [manager]);
-
-  // --- Connect (delegates to manager) ---
+  // --- Connect ---
   const connectToChannel = useCallback(
     async (options: { channelId: string; methods: Record<string, MethodDefinition>; channelConfig?: ChannelConfig; contextId?: string }): Promise<PubSubClient<ChatParticipantMetadata>> => {
-      await manager.connect(options.channelId, {
+      setStatus("Connecting...");
+      const newClient = await connection.connect({
+        channelId: options.channelId,
         methods: options.methods,
         channelConfig: options.channelConfig,
         contextId: options.contextId,
       });
-      // The client is now available
-      const client = manager.client!;
-      clientRef.current = client;
-      selfIdRef.current = client.clientId ?? config.clientId;
+      setClient(newClient);
+      setConnected(true);
+      setStatus("Connected");
+      selfIdRef.current = newClient.clientId ?? config.clientId;
+      hasConnectedRef.current = true;
 
-      // Channel title subscription — cleaned up when client is closed by manager
-      const initialTitle = client.channelConfig?.title;
+      // Channel title from config
+      const initialTitle = newClient.channelConfig?.title;
       if (initialTitle) document.title = initialTitle;
-      client.onConfigChange((cfg: ChannelConfig) => {
+      newClient.onConfigChange((cfg: ChannelConfig) => {
         if (cfg.title) document.title = cfg.title;
       });
 
-      return client;
+      // Roster subscription — RosterUpdate.participants is a Record, not an array.
+      newClient.onRoster?.((update) => {
+        const next = { ...update.participants };
+        participantsRef.current = next;
+        setParticipants(next);
+      });
+
+      return newClient;
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [manager, config.clientId]
+    [connection, config.clientId],
   );
 
-  // --- Pagination state (tracked separately for React re-renders) ---
-  const [oldestLoadedId, setOldestLoadedId] = useState<number | null>(null);
-  const [paginationExhausted, setPaginationExhausted] = useState(false);
+  // --- Dispose connection on unmount ---
+  useEffect(() => {
+    return () => {
+      try {
+        connection.disconnect();
+      } catch {
+        // best-effort cleanup
+      }
+    };
+  }, [connection]);
 
-  // --- setMessages (delegates to manager's public API) ---
-  const setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>> = useCallback(
-    (action: React.SetStateAction<ChatMessage[]>) => {
-      const updater = typeof action === "function" ? action : () => action;
-      manager.updateMessages(updater);
-    },
-    [manager]
-  );
+  // --- Method history ---
+  const addMethodHistoryEntry = useCallback((entry: MethodHistoryEntry) => {
+    setMethodEntries((prev) => {
+      const next = new Map(prev);
+      next.set(entry.callId, entry);
+      return next;
+    });
+  }, []);
 
-  // --- dispatch (delegates to manager's public API) ---
-  const dispatch: React.Dispatch<MessageWindowAction> = useCallback(
-    (action: MessageWindowAction) => {
-      manager.dispatchMessageAction(action);
-    },
-    [manager]
-  );
+  const updateMethodHistoryEntry = useCallback((callId: string, updates: Partial<MethodHistoryEntry>) => {
+    setMethodEntries((prev) => {
+      const next = new Map(prev);
+      const existing = next.get(callId);
+      if (existing) next.set(callId, { ...existing, ...updates });
+      return next;
+    });
+  }, []);
 
-  // --- messageWindow (driven by React state for correct re-renders) ---
-  const messageWindow: MessageWindowState = useMemo(() => ({
-    messages,
-    oldestLoadedId,
-    paginationExhausted,
-  }), [messages, oldestLoadedId, paginationExhausted]);
-
-  // --- Method history wrappers (delegate to manager's public API) ---
-  const addMethodHistoryEntry = useCallback(
-    (entry: MethodHistoryEntry) => {
-      manager.addMethodHistoryEntry(entry);
-    },
-    [manager]
-  );
-
-  const updateMethodHistoryEntry = useCallback(
-    (callId: string, updates: Partial<MethodHistoryEntry>) => {
-      manager.updateMethodHistoryEntry(callId, updates);
-    },
-    [manager]
-  );
-
-  const handleMethodResult = useCallback(
-    (result: IncomingMethodResult) => {
-      manager.handleMethodResult(result);
-    },
-    [manager]
-  );
+  const handleMethodResult = useCallback((result: IncomingMethodResult) => {
+    setMethodEntries((prev) => {
+      const next = new Map(prev);
+      const existing = next.get(result.callId);
+      if (existing) {
+        next.set(result.callId, {
+          ...existing,
+          status: result.isError ? "error" : "success",
+          result: result.content,
+          error: result.isError ? String(result.content ?? "") : undefined,
+          completedAt: Date.now(),
+        });
+      }
+      return next;
+    });
+  }, []);
 
   const clearMethodHistory = useCallback(() => {
-    manager.clearMethodHistory();
-  }, [manager]);
+    setMethodEntries(new Map());
+  }, []);
 
-  // --- Typing ---
+  // --- Typing (no-op in Pi-native mode; the worker controls typing via snapshots) ---
   const stopTyping = useCallback(async () => {
-    await manager.stopTyping();
-  }, [manager]);
-
+    /* no-op */
+  }, []);
   const startTyping = useCallback(async () => {
-    await manager.startTyping();
-  }, [manager]);
+    /* no-op */
+  }, []);
 
   const handleInputChange = useCallback((value: string) => {
     setInput(value);
     inputRef.current = value;
     if (value.trim()) {
-      void startTyping().catch((err) => console.error("[Chat] Start typing error:", err));
+      void startTyping().catch(() => {});
     } else {
-      void stopTyping().catch((err) => console.error("[Chat] Stop typing error:", err));
+      void stopTyping().catch(() => {});
     }
   }, [startTyping, stopTyping]);
 
@@ -357,89 +303,79 @@ export function useChatCore({
     const currentInput = inputRef.current;
     const hasText = currentInput.trim().length > 0;
     const hasAttachments = attachments && attachments.length > 0;
-    if ((!hasText && !hasAttachments) || !manager.client?.connected) return;
+    if ((!hasText && !hasAttachments) || !client) return;
     const text = currentInput.trim();
-    // Optimistically clear input
     setInput("");
     inputRef.current = "";
     try {
-      await manager.send(text || "", {
+      await client.send(text || "", {
         attachments: hasAttachments ? attachments : undefined,
       });
     } catch (err) {
-      // Restore draft so user can retry — rethrow so caller (ChatInput) keeps attachments
       setInput(text);
       inputRef.current = text;
       console.error("[Chat] Send failed, draft restored:", err);
       throw err;
     }
-  }, [manager]);
+  }, [client]);
 
   // --- Auto-send initial prompt once connected ---
   const initialPromptCaptured = useRef(initialPrompt);
   const initialPromptSentRef = useRef(false);
   useEffect(() => {
     const prompt = initialPromptCaptured.current;
-    if (!prompt || !connected || !manager.client || initialPromptSentRef.current) return;
+    if (!prompt || !connected || !client || initialPromptSentRef.current) return;
     initialPromptSentRef.current = true;
     inputRef.current = prompt;
     sendMessage().catch((err) => console.warn("[Chat] Failed to send initial prompt:", err));
-  }, [connected, sendMessage, manager]);
+  }, [connected, client, sendMessage]);
 
-  // --- Load earlier messages ---
+  // --- Load earlier messages (no-op in Pi snapshot model) ---
   const loadEarlierMessages = useCallback(async () => {
-    if (loadingMore || !hasMoreHistory) return;
-    setLoadingMore(true);
-    try {
-      await manager.loadEarlierMessages();
-      setHasMoreHistory(manager.hasMoreHistory);
-    } catch (err) {
-      console.error("[Chat] Failed to load earlier messages:", err);
-    } finally {
-      setLoadingMore(false);
-    }
-  }, [manager, loadingMore, hasMoreHistory]);
+    /* no-op: Pi snapshots include the entire conversation tree */
+  }, []);
 
   // --- Interrupt / call method ---
   const handleInterruptAgent = useCallback(
-    async (agentId: string, _messageId?: string, agentHandle?: string) => {
-      if (!manager.client) return;
-      const roster = participantsRef.current;
-      let resolvedId = agentId;
-      if (!roster[agentId] && agentHandle) {
-        const byHandle = Object.values(roster).find(p => p.metadata.handle === agentHandle && isAgentParticipantType(p.metadata.type));
-        if (byHandle) { resolvedId = byHandle.id; } else { console.warn(`Cannot interrupt: agent ${agentHandle} not in roster`); return; }
+    async (agentId: string, _messageId?: string, _agentHandle?: string) => {
+      if (!client) return;
+      try {
+        await client.callMethod(agentId, "pause", {});
+      } catch (err) {
+        console.warn("[Chat] Interrupt failed:", err);
       }
-      await manager.interrupt(resolvedId);
     },
-    [manager]
+    [client],
   );
 
   const handleCallMethod = useCallback(
     (providerId: string, methodName: string, args: unknown) => {
-      void manager.callMethod(providerId, methodName, args).catch((error: unknown) => {
+      if (!client) return;
+      const handle = client.callMethod(providerId, methodName, args);
+      // MethodCallHandle has a result Promise
+      void (handle as { result?: Promise<unknown> }).result?.catch((error: unknown) => {
         console.error(`Failed to call method ${methodName} on ${providerId}:`, error);
       });
     },
-    [manager]
+    [client],
   );
 
-  // --- addPendingAgent (delegates to manager) ---
   const addPendingAgent = useCallback((handle: string, agentId: string) => {
-    manager.addPendingAgent(handle, agentId);
-  }, [manager]);
+    setPendingAgents((prev) => {
+      const next = new Map(prev);
+      next.set(handle, { agentId, status: "starting" });
+      return next;
+    });
+  }, []);
 
-  // --- Dismiss dirty repo warning ---
   const onDismissDirtyWarning = useCallback((agentName: string) => {
-    manager.dismissDirtyRepoWarning(agentName);
-    setDirtyRepoWarnings(prev => {
+    setDirtyRepoWarnings((prev) => {
       const next = new Map(prev);
       next.delete(agentName);
       return next;
     });
-  }, [manager]);
+  }, []);
 
-  // --- Input context value ---
   const inputContextValue: ChatInputContextValue = useMemo(() => ({
     input,
     pendingImages,
@@ -450,9 +386,6 @@ export function useChatCore({
 
   return {
     messages,
-    setMessages,
-    dispatch,
-    messageWindow,
     connected,
     status,
     clientRef,
@@ -460,13 +393,13 @@ export function useChatCore({
     hasConnectedRef,
     participants,
     participantsRef,
-    allParticipants,
+    allParticipants: participants,
     input,
     pendingImages,
     handleInputChange,
     setPendingImages,
-    hasMoreHistory,
-    loadingMore,
+    hasMoreHistory: false,
+    loadingMore: false,
     loadEarlierMessages,
     methodEntries,
     addMethodHistoryEntry,

@@ -21,7 +21,6 @@ import { useChatFeedback } from "./features/useChatFeedback";
 import { useChatTools } from "./features/useChatTools";
 import { useChatDebug } from "./features/useChatDebug";
 import { useInlineUi } from "./features/useInlineUi";
-import type { EventMiddleware } from "@workspace/agentic-core";
 import type {
   ConnectionConfig,
   AgenticChatActions,
@@ -49,7 +48,6 @@ export interface UseAgenticChatOptions {
   actions?: AgenticChatActions;
   theme?: "light" | "dark";
   pendingAgentInfos?: PendingAgentInfo[];
-  eventMiddleware?: EventMiddleware[];
   /** If set, automatically sent as the first user message once connected */
   initialPrompt?: string;
   /** Sandbox config — provides RPC and import loading (keeps agentic-chat runtime-agnostic) */
@@ -66,7 +64,6 @@ export function useAgenticChat({
   actions,
   theme = "dark",
   pendingAgentInfos,
-  eventMiddleware,
   initialPrompt,
   sandbox,
 }: UseAgenticChatOptions): { contextValue: ChatContextValue; inputContextValue: ChatInputContextValue } {
@@ -102,7 +99,7 @@ export function useAgenticChat({
     };
   }, []);
 
-  // --- Core (now handles roster tracking, pending agents, debug, dirty repo) ---
+  // --- Core (Pi-native: messages from snapshots, no event reducer) ---
   const core = useChatCore({
     config,
     channelName,
@@ -110,7 +107,6 @@ export function useAgenticChat({
     contextId,
     metadata,
     theme,
-    eventMiddleware,
     initialPrompt,
   });
 

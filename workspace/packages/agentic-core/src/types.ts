@@ -4,14 +4,12 @@
  * All types here are free of React, browser, and UI dependencies.
  * The React adapter (@workspace/agentic-chat) re-exports these and adds
  * its own UI-specific types on top.
+ *
+ * Pi (`@mariozechner/pi-coding-agent`) owns the agent message shape now.
+ * `AgentMessage` is re-exported from `index.ts` for downstream consumers.
  */
 
-import type {
-  MethodAdvertisement,
-  AgentBuildError,
-  Attachment,
-  MethodDefinition,
-} from "@natstack/pubsub";
+import type { MethodDefinition } from "@natstack/pubsub";
 import type { ScopesApi, DbHandle } from "@workspace/eval";
 import type { SandboxOptions, SandboxResult } from "@workspace/eval";
 
@@ -19,75 +17,6 @@ import type { SandboxOptions, SandboxResult } from "@workspace/eval";
 // lower-level packages (like @workspace/agentic-do, which can't depend on
 // agentic-core) and higher-level chat consumers see exactly the same type.
 export type { ChatParticipantMetadata } from "@natstack/pubsub";
-
-// ===========================================================================
-// Method History Types (moved from MethodHistoryItem.tsx)
-// ===========================================================================
-
-export type MethodCallStatus = "pending" | "success" | "error";
-
-export interface MethodHistoryEntry {
-  callId: string;
-  methodName: string;
-  /** Human-readable description of the method (from MethodAdvertisement) */
-  description?: string;
-  args: unknown;
-  status: MethodCallStatus;
-  consoleOutput?: string;
-  result?: unknown;
-  error?: string;
-  startedAt: number;
-  completedAt?: number;
-  providerId?: string;
-  callerId?: string;
-  handledLocally?: boolean;
-  progress?: number;
-}
-
-// ===========================================================================
-// Core Chat Types
-// ===========================================================================
-
-/** Status of a pending agent */
-export type PendingAgentStatus = "starting" | "error";
-
-/** A pending agent that is starting or failed to start */
-export interface PendingAgent {
-  agentId: string;
-  status: PendingAgentStatus;
-  error?: AgentBuildError;
-}
-
-/** Info about a disconnected agent for notification display */
-export interface DisconnectedAgentInfo {
-  name: string;
-  handle: string;
-  panelId?: string;
-  agentTypeId?: string;
-  type: string;
-}
-
-/** A chat message in the conversation */
-export interface ChatMessage {
-  id: string;
-  /** PubSub message ID (numeric, for pagination) */
-  pubsubId?: number;
-  senderId: string;
-  content: string;
-  contentType?: string;  // e.g., "thinking", "text/plain", etc.
-  kind?: "message" | "method" | "system";
-  complete?: boolean;
-  replyTo?: string;
-  error?: string;
-  pending?: boolean;
-  method?: MethodHistoryEntry;
-  /** Image attachments on this message */
-  attachments?: Attachment[];
-  /** Sender metadata snapshot for historical messages */
-  senderMetadata?: { name?: string; type?: string; handle?: string };
-  /** For system messages: disconnected agent info */
-  disconnectedAgent?: DisconnectedAgentInfo;
-}
 
 // ===========================================================================
 // Injection Interfaces

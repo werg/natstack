@@ -1,53 +1,53 @@
 /**
- * HeadlessSession — Thin wrapper over SessionManager with headless defaults.
+ * HeadlessSession — Pi-native headless agentic session wrapper.
  *
- * Provides convenience for creating agentic sessions without a chat panel:
- * - Full-auto approval is desired (no human in the loop to approve tool calls)
- * - The session creates and owns its own channel
+ * Provides a programmatic interface for spawning agent chats from skill
+ * code, system tests, etc. Pi runs in-process inside the worker DO; this
+ * wrapper subscribes a PubSubClient to the channel and reads the worker's
+ * `natstack-state-snapshot` ephemeral stream to expose chat state.
  *
- * The agent uses the same harness config and system prompt as panel-hosted
- * sessions. UI-only tools (inline_ui, feedback_form, etc.) are simply absent
- * from method discovery because no panel is connected to advertise them.
+ * Public API mirrors the legacy SessionManager-based wrapper:
+ *   - `HeadlessSession.create()` — wire up a session, no agent yet
+ *   - `HeadlessSession.createWithAgent()` — full setup: subscribe DO + connect
+ *   - `send(text, opts)` — publish a user message
+ *   - `waitForAgentMessage()` / `waitForIdle()` / `sendAndWait()` — test helpers
+ *   - `messages`, `methodEntries`, `participants`, `connected`, `status` — getters
+ *   - `snapshot()` — diagnostic snapshot
+ *   - `dispose()` / `close()` — teardown
  */
 
 import {
-  SessionManager,
+  ConnectionManager,
   buildEvalTool,
   isAgentParticipantType,
-  type SessionManagerConfig,
-  type ConnectOptions,
-  type SendOptions,
-  type ChatMessage,
+  derivePiSnapshot,
+  parseEphemeralEvent,
+  type ConnectionConfig,
   type ChatParticipantMetadata,
+  type ChatMessage,
   type MethodHistoryEntry,
   type SandboxConfig,
-  type ConnectionConfig,
+  type DirtyRepoDetails,
 } from "@workspace/agentic-core";
-import type { Participant, ChannelConfig, MethodDefinition, AgentDebugPayload } from "@natstack/pubsub";
+import type {
+  PubSubClient,
+  Participant,
+  ChannelConfig,
+  MethodDefinition,
+  AttachmentInput,
+  AgentDebugPayload,
+} from "@natstack/pubsub";
 import { z } from "zod";
-import {
-  ScopeManager,
-  DbScopePersistence,
-} from "@workspace/eval";
+import { ScopeManager, DbScopePersistence } from "@workspace/eval";
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import {
   getRecommendedChannelConfig,
   subscribeHeadlessAgent,
 } from "./channel.js";
 
-function methodEntrySignature(entry: MethodHistoryEntry): string {
-  return JSON.stringify({
-    status: entry.status,
-    progress: entry.progress,
-    completedAt: entry.completedAt,
-    result: entry.result,
-    error: entry.error,
-    consoleOutput: entry.consoleOutput,
-  });
-}
-
-// =============================================================================
+// ===========================================================================
 // Types
-// =============================================================================
+// ===========================================================================
 
 export interface SessionSnapshot {
   messages: readonly ChatMessage[];
@@ -79,54 +79,72 @@ export class HeadlessTimeoutError extends Error {
 export interface HeadlessSessionConfig {
   config: ConnectionConfig;
   metadata?: ChatParticipantMetadata;
-  /** Optional sandbox config for eval support. When provided, a ScopeManager
-   *  is created automatically for persistent scope across eval calls. */
+  /** Optional sandbox config for eval support */
   sandbox?: SandboxConfig;
-  /** Optional pre-built ScopeManager (overrides automatic creation) */
+  /** Optional pre-built ScopeManager */
   scopeManager?: ScopeManager;
 }
 
 export interface HeadlessWithAgentConfig extends HeadlessSessionConfig {
-  /** RPC call function for reaching the platform */
   rpcCall: (target: string, method: string, ...args: unknown[]) => Promise<unknown>;
-  /** Worker source (e.g., "workers/agent-worker") */
   source: string;
-  /** DO class name (e.g., "AiChatWorker") */
   className: string;
-  /** DO object key — auto-generated if not provided */
   objectKey?: string;
-  /** Context ID for authorization */
   contextId: string;
-  /** Channel ID — auto-generated if not provided */
   channelId?: string;
-  /** Channel config overrides */
   channelConfig?: ChannelConfig;
-  /** Additional methods to register on the client (merged with default eval/set_title) */
   methods?: Record<string, MethodDefinition>;
   /**
-   * Pi-native pass-through subscription config. Allowed keys are limited to
-   * what Pi understands: `model`, `thinkingLevel`, `approvalLevel`. Per-test
-   * prompt overrides should live in `<contextFolder>/.pi/AGENTS.md`.
+   * Pi-native pass-through subscription config. Allowed keys: `model`,
+   * `thinkingLevel`, `approvalLevel`. Per-test prompt overrides should
+   * live in `<contextFolder>/.pi/AGENTS.md`.
    */
   extraConfig?: Record<string, unknown>;
 }
 
-// =============================================================================
+// ===========================================================================
 // HeadlessSession
-// =============================================================================
+// ===========================================================================
+
+const DEFAULT_METADATA: ChatParticipantMetadata = {
+  name: "Headless Client",
+  type: "headless",
+  handle: "headless",
+};
+
+interface MessageListener {
+  (msg: ChatMessage): void;
+}
 
 export class HeadlessSession {
-  private _manager: SessionManager;
+  private _connection: ConnectionManager;
+  private _client: PubSubClient<ChatParticipantMetadata> | null = null;
+  private _channelId: string | null = null;
   private _sandbox: SandboxConfig | null;
   private _scopeManager: ScopeManager | null;
   private _clientId: string;
   private _createdAt = Date.now();
+  private _config: HeadlessSessionConfig;
+
+  // Snapshot state derived from natstack-state-snapshot ephemerals
+  private _piMessages: AgentMessage[] = [];
+  private _isStreaming = false;
+  private _participants: Record<string, Participant<ChatParticipantMetadata>> = {};
+  private _methodHistory = new Map<string, MethodHistoryEntry>();
+  private _debugEvents: Array<AgentDebugPayload & { ts: number }> = [];
+  private _dirtyRepoWarnings = new Map<string, DirtyRepoDetails>();
+  private _disposed = false;
+  private _consumeAbort: AbortController | null = null;
+
+  // Listeners
+  private _messageListeners = new Set<MessageListener>();
+  private _methodHistoryListeners = new Set<() => void>();
 
   private constructor(config: HeadlessSessionConfig, channelId?: string) {
+    this._config = config;
     this._sandbox = config.sandbox ?? null;
     this._clientId = config.config.clientId;
 
-    // Create ScopeManager if sandbox is provided (for eval-backed scope persistence)
     if (config.scopeManager) {
       this._scopeManager = config.scopeManager;
     } else if (config.sandbox && channelId) {
@@ -139,37 +157,26 @@ export class HeadlessSession {
       this._scopeManager = null;
     }
 
-    const managerConfig: SessionManagerConfig = {
+    this._connection = new ConnectionManager({
       config: config.config,
-      metadata: config.metadata ?? {
-        name: "Headless Client",
-        type: "headless",
-        handle: "headless",
-      },
-      sandbox: config.sandbox,
-      scopeManager: this._scopeManager ?? undefined,
-    };
-
-    this._manager = new SessionManager(managerConfig);
+      metadata: config.metadata ?? DEFAULT_METADATA,
+      callbacks: {},
+    });
   }
 
-  /** Create a HeadlessSession with the given config. */
+  /** Create a HeadlessSession with the given config (no agent yet). */
   static create(config: HeadlessSessionConfig): HeadlessSession {
     return new HeadlessSession(config);
   }
 
   /**
    * Convenience: create a channel, subscribe a DO agent, connect, all in one.
-   *
-   * This is the primary entry point for headless consumers that want a
-   * fully configured session ready to send messages.
    */
   static async createWithAgent(config: HeadlessWithAgentConfig): Promise<HeadlessSession> {
     const channelId = config.channelId ?? `headless-${crypto.randomUUID()}`;
     const objectKey = config.objectKey ?? `headless-${crypto.randomUUID()}`;
     const session = new HeadlessSession(config, channelId);
 
-    // Subscribe the DO agent to the channel with headless defaults
     await subscribeHeadlessAgent({
       rpcCall: config.rpcCall,
       source: config.source,
@@ -180,19 +187,16 @@ export class HeadlessSession {
       extraConfig: config.extraConfig,
     });
 
-    // Hydrate scope if available
     if (session._scopeManager) {
       await session._scopeManager.hydrate();
     }
 
-    // Build default headless methods (eval + set_title) + user-provided methods
     const defaultMethods = session.buildDefaultMethods();
     const methods: Record<string, MethodDefinition> = {
       ...defaultMethods,
-      ...config.methods,  // User methods override defaults
+      ...config.methods,
     };
 
-    // Connect the session to the channel
     const channelConfig: ChannelConfig = {
       ...getRecommendedChannelConfig(),
       ...config.channelConfig,
@@ -208,39 +212,32 @@ export class HeadlessSession {
   }
 
   // ===========================================================================
-  // Default headless method definitions
+  // Default headless methods
   // ===========================================================================
 
-  /**
-   * Build eval + set_title method definitions for headless sessions.
-   * Uses the shared buildEvalTool from agentic-core for consistent behavior.
-   */
   private buildDefaultMethods(): Record<string, MethodDefinition> {
     const methods: Record<string, MethodDefinition> = {};
 
-    // set_title — always available
     methods["set_title"] = {
       description: "Set the conversation title",
       parameters: z.object({ title: z.string().describe("The new title") }),
       execute: async (args: unknown) => {
         const { title } = args as { title: string };
         if (!title) return { ok: false, error: "Missing title" };
-        const client = this._manager.client;
-        if (client) {
-          await client.updateChannelConfig({ title });
+        if (this._client) {
+          await this._client.updateChannelConfig({ title });
         }
         return { ok: true };
       },
     };
 
-    // eval — only available when sandbox is configured
     if (this._sandbox) {
       methods["eval"] = buildEvalTool({
         sandbox: this._sandbox,
         rpc: this._sandbox.rpc,
         runtimeTarget: "workerRuntime",
         scopeManager: this._scopeManager,
-        getChatSandboxValue: () => this._manager.buildChatSandboxValue(),
+        getChatSandboxValue: () => this.buildChatSandboxValue(),
         getScope: () => this._scopeManager?.current ?? {},
       });
     }
@@ -248,69 +245,154 @@ export class HeadlessSession {
     return methods;
   }
 
-  // ===========================================================================
-  // Delegates to SessionManager
-  // ===========================================================================
-
-  get manager(): SessionManager {
-    return this._manager;
+  private buildChatSandboxValue() {
+    return {
+      publish: async (eventType: string, payload: unknown, options?: { persist?: boolean }) => {
+        if (!this._client) throw new Error("Not connected");
+        return this._client.publish(eventType, payload, options);
+      },
+      callMethod: async (participantId: string, method: string, args: unknown) => {
+        if (!this._client) throw new Error("Not connected");
+        const handle = this._client.callMethod(participantId, method, args);
+        const result = await (handle as { result?: Promise<unknown> }).result;
+        return result;
+      },
+      contextId: "",
+      channelId: this._channelId,
+      rpc: this._sandbox?.rpc ?? { call: async () => undefined as unknown },
+    };
   }
 
-  /**
-   * Connect to a channel. When using the two-step API (create + connect),
-   * this automatically builds default methods (eval/set_title) and creates
-   * a ScopeManager if sandbox was provided but no channelId was available
-   * at construction time.
-   */
-  async connect(channelId: string, options?: Omit<ConnectOptions, "channelId">): Promise<void> {
-    // Lazy ScopeManager creation for the two-step path (create() didn't have channelId)
+  // ===========================================================================
+  // Connection lifecycle
+  // ===========================================================================
+
+  async connect(
+    channelId: string,
+    options?: { channelConfig?: ChannelConfig; contextId?: string; methods?: Record<string, MethodDefinition> },
+  ): Promise<void> {
     if (!this._scopeManager && this._sandbox) {
       this._scopeManager = new ScopeManager({
         channelId,
         panelId: this._clientId,
         persistence: new DbScopePersistence(() => this._sandbox!.db.open("repl-scopes")),
       });
-      this._manager.setScopeManager(this._scopeManager);
       await this._scopeManager.hydrate();
     }
 
-    // Build default methods if caller didn't provide any
     const methods = options?.methods ?? this.buildDefaultMethods();
 
-    return this._manager.connect(channelId, { ...options, methods });
+    this._client = await this._connection.connect({
+      channelId,
+      methods,
+      ...(options?.channelConfig ? { channelConfig: options.channelConfig } : {}),
+      ...(options?.contextId ? { contextId: options.contextId } : {}),
+    });
+    this._channelId = channelId;
+
+    // Roster subscription
+    this._client.onRoster?.((update) => {
+      this._participants = { ...update.participants };
+    });
+
+    // Message stream → snapshot derivation
+    this._consumeAbort = new AbortController();
+    void this.consumeChannelMessages(this._consumeAbort.signal);
   }
 
-  async send(text: string, options?: SendOptions): Promise<string> {
-    return this._manager.send(text, options);
+  private async consumeChannelMessages(signal: AbortSignal): Promise<void> {
+    if (!this._client) return;
+    try {
+      for await (const msg of this._client.messages()) {
+        if (signal.aborted) break;
+        const wire = msg as unknown as {
+          kind?: string;
+          contentType?: string;
+          content?: string;
+          payload?: { content?: string; contentType?: string };
+        };
+        if (wire.kind !== "ephemeral") continue;
+        const content = wire.content ?? wire.payload?.content;
+        const contentType = wire.contentType ?? wire.payload?.contentType;
+        if (!content || !contentType) continue;
+        if (contentType === "natstack-state-snapshot") {
+          const parsed = parseEphemeralEvent<{ messages: AgentMessage[]; isStreaming: boolean }>(
+            { content, contentType },
+            "natstack-state-snapshot",
+          );
+          if (parsed) {
+            this._piMessages = parsed.messages;
+            this._isStreaming = parsed.isStreaming;
+            // Notify listeners with each derived ChatMessage
+            const derived = derivePiSnapshot(this._piMessages, this._clientId);
+            for (const m of derived) {
+              for (const listener of this._messageListeners) {
+                try {
+                  listener(m);
+                } catch (err) {
+                  console.error("[HeadlessSession] message listener threw:", err);
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      if (!signal.aborted) console.error("[HeadlessSession] message consumer error:", err);
+    }
+  }
+
+  async send(text: string, options?: { attachments?: AttachmentInput[]; idempotencyKey?: string }): Promise<string> {
+    if (!this._client) throw new Error("Not connected");
+    const result = await this._client.send(text, options);
+    return result.messageId;
   }
 
   async interrupt(agentId: string): Promise<void> {
-    return this._manager.interrupt(agentId);
+    if (!this._client) return;
+    try {
+      this._client.callMethod(agentId, "pause", {});
+    } catch (err) {
+      console.warn("[HeadlessSession] interrupt failed:", err);
+    }
   }
 
   async callMethod(participantId: string, method: string, args: unknown): Promise<unknown> {
-    return this._manager.callMethod(participantId, method, args);
+    if (!this._client) throw new Error("Not connected");
+    const handle = this._client.callMethod(participantId, method, args);
+    return (handle as { result?: Promise<unknown> }).result;
   }
 
   async loadEarlierMessages(): Promise<void> {
-    return this._manager.loadEarlierMessages();
+    /* no-op: Pi snapshots include the entire conversation tree by construction */
   }
 
   disconnect(): void {
-    this._manager.disconnect();
+    if (this._consumeAbort) {
+      this._consumeAbort.abort();
+      this._consumeAbort = null;
+    }
+    try {
+      this._connection.disconnect();
+    } catch {
+      // best-effort
+    }
+    this._client = null;
+    this._channelId = null;
   }
 
-  /** Synchronous best-effort teardown (same as SessionManager.dispose) */
   dispose(): void {
-    this._manager.dispose();
+    if (this._disposed) return;
+    this._disposed = true;
+    this.disconnect();
+    this._messageListeners.clear();
+    this._methodHistoryListeners.clear();
   }
 
-  /** Awaitable teardown — preferred for headless use */
   async close(): Promise<void> {
-    return this._manager.close();
+    this.dispose();
   }
 
-  /** Symbol.asyncDispose for `await using session = ...` */
   async [Symbol.asyncDispose](): Promise<void> {
     await this.close();
   }
@@ -320,35 +402,39 @@ export class HeadlessSession {
   // ===========================================================================
 
   get messages(): readonly ChatMessage[] {
-    return this._manager.messages;
+    return derivePiSnapshot(this._piMessages, this._clientId);
   }
 
   get participants(): Readonly<Record<string, Participant<ChatParticipantMetadata>>> {
-    return this._manager.participants;
+    return this._participants;
   }
 
   get allParticipants(): Readonly<Record<string, Participant<ChatParticipantMetadata>>> {
-    return this._manager.allParticipants;
+    return this._participants;
   }
 
   get methodEntries(): ReadonlyMap<string, MethodHistoryEntry> {
-    return this._manager.methodHistory;
+    return this._methodHistory;
+  }
+
+  get methodHistory(): ReadonlyMap<string, MethodHistoryEntry> {
+    return this._methodHistory;
   }
 
   get connected(): boolean {
-    return this._manager.connected;
+    return this._connection.connected;
   }
 
   get status(): string {
-    return this._manager.status;
+    return this._connection.status;
   }
 
   get channelId(): string | null {
-    return this._manager.channelId;
+    return this._channelId;
   }
 
   get scope(): Record<string, unknown> {
-    return this._manager.scope;
+    return this._scopeManager?.current ?? {};
   }
 
   get scopeManager(): ScopeManager | null {
@@ -356,39 +442,33 @@ export class HeadlessSession {
   }
 
   get debugEvents(): readonly (AgentDebugPayload & { ts: number })[] {
-    return this._manager.debugEvents;
+    return this._debugEvents;
   }
 
-  // ===========================================================================
-  // Event subscription (delegates to SessionManager)
-  // ===========================================================================
+  get isStreaming(): boolean {
+    return this._isStreaming;
+  }
 
-  on: SessionManager["on"] = (...args: Parameters<SessionManager["on"]>) => {
-    return this._manager.on(...args);
-  };
-
-  once: SessionManager["once"] = (...args: Parameters<SessionManager["once"]>) => {
-    return this._manager.once(...args);
-  };
+  get client(): PubSubClient<ChatParticipantMetadata> | null {
+    return this._client;
+  }
 
   // ===========================================================================
   // Snapshot
   // ===========================================================================
 
-  /** Capture a diagnostic snapshot of the current session state. */
   snapshot(): SessionSnapshot {
     const now = Date.now();
     const participants: SessionSnapshot["participants"] = {};
-    const currentParticipants = new Set(Object.keys(this._manager.participants));
-    for (const [id, p] of Object.entries(this._manager.allParticipants)) {
+    for (const [id, p] of Object.entries(this._participants)) {
       participants[id] = {
         name: p.metadata.name,
         type: p.metadata.type,
         handle: p.metadata.handle,
-        connected: currentParticipants.has(id),
+        connected: true,
       };
     }
-    const methodHistory = [...this._manager.methodHistory.values()].map(e => ({
+    const methodHistory = [...this._methodHistory.values()].map((e) => ({
       callId: e.callId,
       method: e.methodName,
       status: e.status,
@@ -401,11 +481,11 @@ export class HeadlessSession {
       callerId: e.callerId,
     }));
     return {
-      messages: this._manager.messages,
+      messages: derivePiSnapshot(this._piMessages, this._clientId),
       methodHistory,
-      debugEvents: this._manager.debugEvents,
+      debugEvents: this._debugEvents,
       participants,
-      connected: this._manager.connected,
+      connected: this._connection.connected,
       duration: now - this._createdAt,
     };
   }
@@ -420,140 +500,84 @@ export class HeadlessSession {
 
   /**
    * Wait for a message from an agent (any non-self participant).
-   *
-   * Useful for headless send-and-wait patterns:
-   * ```ts
-   * await session.send("What is 2+2?");
-   * const response = await session.waitForAgentMessage();
-   * ```
-   *
-   * Rejects immediately with HeadlessTimeoutError if the agent disconnects,
-   * and on timeout provides a full session snapshot for diagnostics.
    */
   waitForAgentMessage(opts?: { timeout?: number }): Promise<ChatMessage> {
-    const timeout = opts?.timeout ?? 0;  // 0 = no timeout (wait indefinitely)
-    const selfId = this._manager.client?.clientId;
+    const timeout = opts?.timeout ?? 0;
 
     const isAgentMessage = (msg: ChatMessage): boolean =>
-      msg.senderId !== selfId &&
+      msg.senderId !== this._clientId &&
       msg.kind === "message" &&
       !!msg.complete &&
       !msg.pending &&
       msg.contentType !== "thinking";
 
-    // Collect agent handles we know about (positive match — only true agents,
-    // never another panel/headless client that happens to be on the channel).
     const knownAgentHandles = new Set<string>();
-    for (const p of Object.values(this._manager.allParticipants)) {
+    for (const p of Object.values(this._participants)) {
       if (isAgentParticipantType(p.metadata.type)) {
         knownAgentHandles.add(p.metadata.handle);
       }
     }
 
-    // Check existing messages first to avoid race with send()
-    const existing = this._manager.messages;
-    const alreadyPresent = [...existing].reverse().find(isAgentMessage);
-    const baselineCount = existing.length;
+    const baselineMessages = this.messages;
+    const alreadyPresent = [...baselineMessages].reverse().find(isAgentMessage);
+    const baselineCount = baselineMessages.length;
 
     return new Promise<ChatMessage>((resolve, reject) => {
       const timer = timeout > 0 ? setTimeout(() => {
-        unsub();
+        cleanup();
         reject(new HeadlessTimeoutError(
           `Timed out waiting for agent message after ${timeout}ms`,
           this.snapshot(),
         ));
       }, timeout) : null;
 
-      const cleanup = (fn: () => void) => {
+      const cleanup = () => {
         if (timer) clearTimeout(timer);
-        unsub();
-        fn();
+        this._messageListeners.delete(listener);
       };
 
-      const unsub = this._manager.on("messagesChanged", (messages) => {
-        // Only consider messages added after we started waiting
-        if (messages.length <= baselineCount) return;
-        for (let i = messages.length - 1; i >= baselineCount; i--) {
-          const msg = messages[i]!;
-
-          // Disconnect detection: system message with disconnectedAgent
-          if (msg.kind === "system" && msg.disconnectedAgent) {
-            const handle = msg.disconnectedAgent.handle;
-            if (knownAgentHandles.has(handle)) {
-              knownAgentHandles.delete(handle);
-              // If no agents remain, reject
-              if (knownAgentHandles.size === 0) {
-                cleanup(() => reject(new HeadlessTimeoutError(
-                  `Agent disconnected: ${msg.disconnectedAgent!.name}`,
-                  this.snapshot(),
-                )));
-                return;
-              }
-            }
-          }
-
+      const listener: MessageListener = () => {
+        const current = this.messages;
+        if (current.length <= baselineCount) return;
+        for (let i = current.length - 1; i >= baselineCount; i--) {
+          const msg = current[i]!;
           if (isAgentMessage(msg) && msg !== alreadyPresent) {
-            cleanup(() => resolve(msg));
+            cleanup();
+            resolve(msg);
             return;
           }
         }
-      });
+      };
+      this._messageListeners.add(listener);
     });
   }
 
   /**
    * Wait for the agent to become idle (no new messages for `debounce` ms).
-   *
-   * Resolves with the last agent message once the conversation settles.
-   * Uses the same disconnect detection as waitForAgentMessage.
    */
   waitForIdle(opts?: { timeout?: number; debounce?: number }): Promise<ChatMessage> {
-    const timeout = opts?.timeout ?? 0;  // 0 = no timeout (wait indefinitely)
+    const timeout = opts?.timeout ?? 0;
     const debounceMs = opts?.debounce ?? 3_000;
-    const selfId = this._manager.client?.clientId;
 
     const isAgentMessage = (msg: ChatMessage): boolean =>
-      msg.senderId !== selfId &&
+      msg.senderId !== this._clientId &&
       msg.kind === "message" &&
       !!msg.complete &&
       !msg.pending &&
       msg.contentType !== "thinking";
 
-    const isMethodMessage = (msg: ChatMessage): boolean =>
-      msg.kind === "method" && !!msg.method;
-
-    // Collect agent handles we know about (positive match — only true agents,
-    // never another panel/headless client that happens to be on the channel).
-    const knownAgentHandles = new Set<string>();
-    for (const p of Object.values(this._manager.allParticipants)) {
-      if (isAgentParticipantType(p.metadata.type)) {
-        knownAgentHandles.add(p.metadata.handle);
-      }
-    }
-
-    const existing = this._manager.messages;
-    const alreadyPresent = [...existing].reverse().find(isAgentMessage);
-    const baselineCount = existing.length;
-    const knownMethodStates = new Map(
-      [...this._manager.methodHistory.entries()].map(([callId, entry]) => [callId, methodEntrySignature(entry)])
-    );
+    const baselineMessages = this.messages;
+    const alreadyPresent = [...baselineMessages].reverse().find(isAgentMessage);
+    const baselineCount = baselineMessages.length;
 
     return new Promise<ChatMessage>((resolve, reject) => {
-      // Track text and method matches separately. waitForIdle prefers a text
-      // response (validators usually inspect text content), but falls back to
-      // the latest method message if the agent never produces a text reply —
-      // otherwise we'd block until overall timeout.
-      let lastTextMatch: ChatMessage | undefined;
-      let lastMethodMatch: ChatMessage | undefined;
+      let lastMatch: ChatMessage | undefined;
       let debounceTimer: ReturnType<typeof setTimeout> | undefined;
-
-      const pickResolved = (): ChatMessage | undefined => lastTextMatch ?? lastMethodMatch;
 
       const overallTimer = timeout > 0 ? setTimeout(() => {
         cleanup();
-        const resolved = pickResolved();
-        if (resolved) {
-          resolve(resolved);
+        if (lastMatch) {
+          resolve(lastMatch);
         } else {
           reject(new HeadlessTimeoutError(
             `Timed out waiting for idle after ${timeout}ms`,
@@ -565,99 +589,39 @@ export class HeadlessSession {
       const cleanup = () => {
         if (overallTimer) clearTimeout(overallTimer);
         if (debounceTimer !== undefined) clearTimeout(debounceTimer);
-        unsubMessages();
-        unsubMethodHistory();
-      };
-
-      const hasPendingMethods = (): boolean => {
-        for (const entry of this._manager.methodHistory.values()) {
-          if (entry.status === "pending") return true;
-        }
-        return false;
+        this._messageListeners.delete(listener);
       };
 
       const scheduleResolve = () => {
-        if (!pickResolved()) return;
+        if (!lastMatch) return;
         if (debounceTimer !== undefined) clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
-          // Don't resolve while methods are still pending — the agent is still working
-          if (hasPendingMethods()) {
-            scheduleResolve(); // Re-schedule
+          // Don't resolve while Pi is still streaming
+          if (this._isStreaming) {
+            scheduleResolve();
             return;
           }
           cleanup();
-          // Prefer text response; fall back to method message only if the
-          // agent never spoke (already guaranteed non-undefined here).
-          resolve(pickResolved()!);
+          resolve(lastMatch!);
         }, debounceMs);
       };
 
-      const unsubMessages = this._manager.on("messagesChanged", (messages) => {
-        if (messages.length <= baselineCount) return;
-        for (let i = messages.length - 1; i >= baselineCount; i--) {
-          const msg = messages[i]!;
-
-          // Disconnect detection
-          if (msg.kind === "system" && msg.disconnectedAgent) {
-            const handle = msg.disconnectedAgent.handle;
-            if (knownAgentHandles.has(handle)) {
-              knownAgentHandles.delete(handle);
-              if (knownAgentHandles.size === 0) {
-                cleanup();
-                const resolved = pickResolved();
-                if (resolved) {
-                  resolve(resolved);
-                } else {
-                  reject(new HeadlessTimeoutError(
-                    `Agent disconnected: ${msg.disconnectedAgent!.name}`,
-                    this.snapshot(),
-                  ));
-                }
-                return;
-              }
-            }
-          }
-
+      const listener: MessageListener = () => {
+        const current = this.messages;
+        if (current.length <= baselineCount) return;
+        for (let i = current.length - 1; i >= baselineCount; i--) {
+          const msg = current[i]!;
           if (isAgentMessage(msg) && msg !== alreadyPresent) {
-            lastTextMatch = msg;
+            lastMatch = msg;
             scheduleResolve();
-            return; // Only need the latest match
+            return;
           }
         }
-      });
-
-      const unsubMethodHistory = this._manager.on("methodHistoryChanged", (entries) => {
-        let latestChangedCallId: string | null = null;
-        let latestChangedStartedAt = -1;
-
-        for (const [callId, entry] of entries.entries()) {
-          const signature = methodEntrySignature(entry);
-          if (knownMethodStates.get(callId) === signature) continue;
-          knownMethodStates.set(callId, signature);
-          if (entry.startedAt >= latestChangedStartedAt) {
-            latestChangedStartedAt = entry.startedAt;
-            latestChangedCallId = callId;
-          }
-        }
-
-        if (!latestChangedCallId) return;
-
-        const methodMsg = [...this._manager.messages]
-          .reverse()
-          .find((msg) => isMethodMessage(msg) && msg.method?.callId === latestChangedCallId);
-        if (methodMsg) {
-          lastMethodMatch = methodMsg;
-          scheduleResolve();
-        }
-      });
+      };
+      this._messageListeners.add(listener);
     });
   }
 
-  /**
-   * Send a message and wait for the agent to finish responding (idle).
-   *
-   * Convenience wrapper over send() + waitForIdle().
-   */
   async sendAndWait(text: string, opts?: { timeout?: number }): Promise<ChatMessage> {
     await this.send(text);
     return this.waitForIdle(opts);
