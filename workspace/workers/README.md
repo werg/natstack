@@ -2,6 +2,11 @@
 
 This guide covers building Durable Object (DO) workers that participate in AI chat channels. Workers run in workerd (Cloudflare's V8 isolate runtime) and use SQLite-backed state that survives across invocations.
 
+NatStack runs Pi (`@mariozechner/pi-coding-agent`) in-process inside each
+agent worker DO — there is no harness child process layer. See
+`docs/pi-architecture.md` for the full architectural picture and
+`docs/agentic-architecture.md` for the higher-level overview.
+
 ## 1. Quick Start
 
 ### Directory Structure
@@ -46,39 +51,57 @@ The entry point must:
 1. Re-export all DO classes by name
 2. Export a default fetch handler (required by workerd)
 
-## 2. The Five Hooks
+## 2. Customization Hooks (Pi-native)
 
-`AgentWorkerBase` provides five hooks you can override to customize behavior:
+`AgentWorkerBase` provides hooks you can override to customize Pi behavior:
 
-### getHarnessType(): string
+### getModel(): string
 
-Returns the harness type identifier. Default: `"claude-sdk"`.
+Returns the model id in `provider:model` format. Default:
+`"anthropic:claude-sonnet-4-20250514"`.
 
 ```typescript
-protected getHarnessType(): string {
-  return 'claude-sdk'; // or 'openai', 'custom', etc.
+protected getModel(): string {
+  return 'anthropic:claude-opus-4-5';
 }
 ```
 
-### getHarnessConfig(): HarnessConfig
+The format is parsed by `resolveModelToPi` in `packages/shared/src/ai/`.
+Pi-AI's built-in providers (anthropic, openai, google, etc.) work
+out-of-the-box; custom providers can be registered via `models.json`.
 
-Returns configuration passed to the harness on spawn. Override to set system prompts, model, temperature, MCP servers, etc.
+### getThinkingLevel(): ThinkingLevel
+
+Returns the Pi thinking level. Default: `"medium"`. Allowed:
+`"off" | "minimal" | "low" | "medium" | "high" | "xhigh"`.
 
 ```typescript
-protected getHarnessConfig(): HarnessConfig {
-  return {
-    systemPrompt: 'You are a helpful coding assistant.',
-    // "append" (default): layers on NatStack base prompt + SDK defaults.
-    // "replace-natstack": replaces NatStack prompt, keeps SDK defaults.
-    // "replace": replaces everything (NatStack base + SDK defaults).
-    systemPromptMode: 'append',
-    model: 'claude-sonnet-4-20250514',
-    temperature: 0.7,
-    maxTokens: 4096,
-    mcpServers: [{ name: 'fs', tools: [...] }],
-  };
+protected getThinkingLevel() {
+  return 'high';
 }
 ```
+
+### getApprovalLevel(channelId: string): 0 | 1 | 2
+
+Returns the tool approval level for a channel. Default: `2` (full auto).
+
+| Level | Meaning |
+|---|---|
+| `0` | Ask all — every tool call gets a UI confirm prompt |
+| `1` | Auto safe — read-only tools auto-approve, others prompt |
+| `2` | Full auto — everything runs without prompts |
+
+The default reads from a per-channel `state` table key
+(`approvalLevel:<channelId>`); subclasses rarely need to override.
+
+### System prompt
+
+The system prompt lives in `<contextFolder>/.pi/AGENTS.md` and is loaded
+automatically by Pi's cwd-walk. To customize it for a specific worker,
+either edit the file or write a per-context AGENTS.md before subscribing.
+
+There is **no** `getHarnessConfig`, no `systemPrompt` field, and no
+`systemPromptMode` — those were harness-era constructs.
 
 ### shouldProcess(event: ChannelEvent): boolean
 

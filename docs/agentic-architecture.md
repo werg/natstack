@@ -1,203 +1,198 @@
-# Agentic Architecture: Channels, Workers, and Harnesses
+# Agentic Architecture: Channels, Workers, and In-Process Pi
 
 ## Overview
 
-NatStack's agentic system is a 3-layer server-side architecture:
+NatStack's agentic system is a 2-layer server-side architecture. Pi
+(`@mariozechner/pi-coding-agent`) runs **in-process** inside each agent
+worker DO — there is no harness child process layer.
 
 ```
-Panel (browser)          Channel DO (workerd)     Worker DO (workerd)          Harness (Node.js)
-     │                        │                        │                          │
-     │── user message ───────►│── callback event ──────►│                          │
-     │                        │                        │── spawnHarness ──────────►│
-     │                        │                        │── startTurn(input) ──────►│
-     │                        │◄── send/update ────────│◄── text-delta ───────────│
-     │◄── channel message ────│                        │                          │
-     │                        │                        │◄── approval-needed ──────│
-     │                        │◄── callMethod ─────────│   (store continuation)   │
-     │── method-result ──────►│── onCallResult ───────►│── approveTool ──────────►│
-     │                        │                        │◄── turn-complete ────────│
+Panel (browser)          Channel DO (workerd)     Worker DO (workerd, embeds Pi)
+     │                        │                        │
+     │── user message ───────►│── onChannelEvent ──────►│
+     │                        │                        │── runner.runTurn(content) ──┐
+     │                        │                        │                              │
+     │                        │                        │  Pi AgentSession streams     │
+     │                        │                        │  events in-process           │
+     │                        │                        │                              │
+     │                        │◄── sendEphemeralEvent ──◄── snapshot/text-delta ◄────┘
+     │◄── ephemeral message ──│   (state snapshots +
+     │                        │    typing-indicator
+     │                        │    deltas)
+     │                        │                        │
+     │── method-result ──────►│── onCallResult ───────►│── resolve continuation Promise
+     │                        │                        │
 ```
 
-- **Channels** — Channel DOs with forkable history and SQLite-backed message storage
-- **Workers** — Durable Objects in workerd with SQLite state, calling Channel DOs directly via `callDO()`
-- **Harnesses** — Node.js child processes running AI SDKs (Claude, Pi), communicating via bidirectional RPC
+- **Channel DO** — `workspace/workers/pubsub-channel/channel-do.ts`. Forkable
+  history, SQLite-backed message storage, participant roster, ephemeral and
+  persisted message routing. Enforces participant handle uniqueness so the
+  channel-tools extension can use bare method names without collision.
+- **Worker DO** — `workspace/packages/agentic-do/src/agent-worker-base.ts`.
+  Owns one `PiRunner` per channel; Pi's `AgentSession` runs in-process.
+  Forwards Pi events to the channel as ephemeral state-snapshot + text-delta
+  streams.
 
-## Key Design Principle: Autonomous DOs with Direct Calls
+## Key design principle: Pi is the source of truth
 
-DOs call Channel DOs (via `callDO()` / `stub.fetch()`) and server APIs directly. All event handlers return `void` — side effects happen inline via `this.createChannelClient(channelId).*` and `this.server.*` methods.
+Pi's `AgentSession.state.messages` is authoritative. The chat UI does NOT
+maintain its own message reducer or event-replay state machine — it just
+renders the latest snapshot the worker pushes. There are no parallel state
+machines, no `MessageState`, no `MethodHistoryTracker`, no `StreamWriter`.
 
-```typescript
-async onChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
-  if (!this.shouldProcess(event)) return;
-  const input = this.buildTurnInput(event);
-  const harnessId = `harness-${crypto.randomUUID()}`;
-  this.registerHarness(harnessId, this.getHarnessType());
-  this.recordTurnStart(harnessId, channelId, input, event.messageId, event.id);
-  await this.server.spawnHarness({
-    doRef: this.doRef, harnessId,
-    type: this.getHarnessType(), contextId,
-    config: this.getHarnessConfig(), initialInput: input,
-  });
-}
-```
+### Two ephemeral channel streams
 
-## Server-Side Components
+The worker forwards Pi events as two ephemeral channel messages:
 
-### HarnessService (`src/server/services/harnessService.ts`)
+| contentType | Payload | When |
+|---|---|---|
+| `natstack-state-snapshot` | `{ messages: AgentMessage[]; isStreaming: boolean }` | After every meaningful Pi state change: `message_end`, `tool_execution_end`, `auto_compaction_end`, `auto_retry_end`, `turn_end` |
+| `natstack-text-delta` | `{ messageId: string; delta: string }` | For every Pi `message_update` text_delta event |
 
-RPC service for harness lifecycle management. DOs call via `this.rpc.call("main", "harness.*", ...)`:
-- `harness.spawn` — spawn a new harness process (returns `{ ok, harnessId }`)
-- `harness.sendCommand` — send a command to a running harness (start-turn, approve-tool, interrupt, etc.)
-- `harness.stop` — stop a harness process
-- `harness.pushEvent` — receive HarnessOutput events from harness processes
-- `harness.getStatus` — get harness status
-
-### DODispatch (`src/server/doDispatch.ts`)
-
-Source-scoped HTTP dispatch to Durable Objects via `/_w/{source}/{className}/{objectKey}/{method}`.
-
-### HarnessManager (`src/server/harnessManager.ts`)
-
-Spawns and tracks Node.js child processes. Each harness:
-1. Gets environment vars (RPC_WS_URL, AUTH_TOKEN, HARNESS_ID, CHANNEL_ID, etc.)
-2. Connects back via WebSocket
-3. Authenticates and creates an RPC bridge
-4. Pushes `HarnessOutput` events to its owning DO via DODispatch
+Snapshots are idempotent — the consumer renders the latest one. Text deltas
+are purely cosmetic typing-indicator fodder; the next snapshot replaces them
+wholesale. The chat UI's `usePiSessionSnapshot` and `usePiTextDeltas` hooks
+read these streams via `parseEphemeralEvent` from `@workspace/agentic-core`.
 
 ## DO Base Classes
 
 **DurableObjectBase** — generic DO foundation (~150 lines).
 Location: `workspace/packages/runtime/src/worker/durable-base.ts`
 
-**AgentWorkerBase** — agent composition shell extending DurableObjectBase.
+**AgentWorkerBase** — Pi-native agent base extending DurableObjectBase.
 Location: `workspace/packages/agentic-do/src/agent-worker-base.ts`
 
-### Five Customization Hooks
+### Customization hooks (Pi-native)
 
 | Hook | Default | Purpose |
 |------|---------|---------|
-| `getHarnessType()` | `'claude-sdk'` | AI provider |
-| `getHarnessConfig()` | `{}` | System prompt, model, toolAllowlist |
-| `shouldProcess(event)` | Panel messages only | Filter events |
+| `getModel()` | `"anthropic:claude-sonnet-4-20250514"` | Model id in `provider:model` format |
+| `getThinkingLevel()` | `"medium"` | Pi thinking level |
+| `getApprovalLevel(channelId)` | `2` (full auto) | 0 = ask all, 1 = auto safe tools, 2 = full auto |
+| `shouldProcess(event)` | Panel messages only | Filter incoming channel events |
 | `buildTurnInput(event)` | Extract content | Transform to TurnInput |
-| `getParticipantInfo()` | Generic agent | Channel identity + methods |
+| `getParticipantInfo()` | Generic agent | Channel identity + advertised methods |
 
-### SQLite Tables (8 total)
+The system prompt lives in `<contextFolder>/.pi/AGENTS.md` (loaded
+automatically by Pi's cwd-walk). Workspace skills live under
+`<contextFolder>/.pi/skills/` and are loaded via `additionalSkillPaths`.
+
+### SQLite tables
 
 | Table | Purpose |
 |-------|---------|
-| `state` | Key-value store |
+| `state` | Key-value store (approval level per channel, fork metadata) |
 | `subscriptions` | Channel subscriptions + participant ID |
-| `harnesses` | Harness lifecycle (status, session ID) |
-| `turn_map` | Completed turns for fork resolution |
-| `checkpoints` | Last-processed event ID |
-| `in_flight_turns` | In-progress turns for crash retry |
-| `active_turns` | Streaming state (replyToId, senderParticipantId, streamState) |
-| `pending_calls` | Async call continuations (survives hibernation) |
+| `pi_sessions` | Per-channel Pi session JSONL file path (for restart resume) |
+| `delivery_cursor` | Last-processed channel event id (dedup + gap detection) |
+| `pending_calls` | Promise continuations for tool callMethod and UI feedback_form awaits |
 
-### Additional Override Hooks
+That's it. Pi tracks turn state, message state, and session branching itself
+inside `AgentSession`. The previous architecture's `harnesses`, `active_turns`,
+`in_flight_turns`, `queued_turns`, `checkpoints`, and `turn_map` tables are
+gone.
 
-| Hook | Purpose |
-|------|---------|
-| `handleCallResult()` | Process method-call results (approval flow) |
-| `onMethodCall()` | Handle incoming method calls |
-| `alarm()` | Handle timer callbacks (inherited from DurableObjectBase) |
+## Hermetic sandbox
 
-## Flows
+The worker constructs `DefaultResourceLoader` with explicit opt-outs so Pi
+never auto-discovers anything from `~/.pi/agent/` or `<cwd>/.pi/extensions/`:
 
-### First User Message
-
-```
-Panel sends message → Channel DO → callback to Worker DO → onChannelEvent()
-  1. shouldProcess() → true
-  2. getActiveHarness() → null (no harness yet)
-  3. registerHarness() + recordTurnStart() locally
-  4. Send bootstrap typing indicator via channel.send()
-  5. Call this.server.spawnHarness() with initialInput
-
-Server handles harness.spawn RPC:
-  1. Ensure context folder
-  2. Fork Node.js process
-  3. Wait for WebSocket authentication
-  4. Notify DO: onHarnessEvent("ready")
-  5. Fire-and-forget: bridge.startTurn(initialInput)
+```typescript
+new DefaultResourceLoader({
+  cwd: contextFolderPath,
+  agentDir: piAgentDir,            // NatStack-managed sandbox dir
+  noExtensions: true,
+  noSkills: true,
+  noPromptTemplates: true,
+  noThemes: true,
+  additionalSkillPaths: [join(contextFolderPath, ".pi/skills")],
+  extensionFactories: [
+    natstackApprovalGateFactory(...),
+    natstackChannelToolsFactory(...),
+    natstackAskUserFactory(...),
+  ],
+})
 ```
 
-### Subsequent Messages
+Pi reads `<contextFolder>/.pi/AGENTS.md` for the system prompt and
+`<contextFolder>/.pi/settings.json` for compaction/retry/thinking-level
+defaults. Both go through Pi's normal cwd resolution, not its skill/extension
+auto-discovery.
+
+API keys are bridged via `AuthStorage.setRuntimeApiKey(provider, key)` —
+priority #1 in Pi's auth resolution chain, ahead of any file-based auth.
+
+## NatStack Pi extensions
+
+Three extension factories supplied inline by the worker (closure-bound, not
+Pi-package-portable). Live in `packages/harness/src/extensions/`:
+
+- **`approval-gate.ts`** — `pi.on("tool_call", ...)` reads the approval level
+  via a closure-bound getter. The worker can mutate the approval level
+  mid-conversation; the extension picks it up on the next tool call.
+- **`channel-tools.ts`** — Registers each channel participant's advertised
+  methods as a Pi tool with the participant's bare method name. Tool names
+  are deduped via the channel's enforced handle uniqueness. Reconciles on
+  `session_start` and `turn_start`.
+- **`ask-user.ts`** — Single `ask_user` tool that routes to a feedback_form
+  on the channel via the worker callback.
+
+The `NatStackExtensionUIContext` class
+(`packages/harness/src/natstack-extension-context.ts`) implements Pi's
+`ExtensionUIContext`. Each UI primitive (`select`, `confirm`, `input`,
+`notify`, `setStatus`, etc.) routes through worker-supplied callbacks that
+turn the request into a channel `feedback_form`, ephemeral notify, or
+metadata-update event.
+
+## Continuation plumbing
+
+Tool callMethod and UI feedback_form awaits use a `pending_calls` SQL table
+plus an in-memory `pendingResolvers` Map. When the worker dispatches a call
+via `channel.callMethod(callerId, targetId, callId, method, args)`, it stores
+a continuation and awaits a Promise. When the channel routes the result via
+`onCallResult(callId, result, isError)`, the worker resolves (or rejects) the
+Promise.
+
+This is the bridge between Pi's synchronous-await tool API and the channel's
+asynchronous fire-and-forget call/result protocol.
+
+## Workspace as a Pi package
+
+`workspace/.pi/` IS the Pi package. The existing `contextFolderManager.ts`
+repo-tree copy replicates the workspace into each contextFolder, so
+`<contextFolder>/.pi/` exists automatically:
 
 ```
-Panel sends message → Channel DO → callback to Worker DO → onChannelEvent()
-  1. getActiveHarness() → harnessId
-  2. Start typing via StreamWriter, call this.server.sendHarnessCommand(start-turn)
-  3. Record active_turn + in_flight_turn
+workspace/.pi/
+├── package.json     # {"keywords": ["pi-package"], "pi": {"skills": ["./skills"]}}
+├── AGENTS.md        # System prompt content
+├── settings.json    # Compaction/retry/thinking-level defaults
+└── skills/          # Workspace skills (eval, sandbox, paneldev, etc.)
+    └── ...
 ```
 
-### Streaming Response
+There is no `workspace/.pi/extensions/` — extensions are NatStack-only and
+live in `packages/harness/src/extensions/` as TypeScript modules supplied
+inline (closure-bound to the worker). Standalone Pi running against the
+workspace gets skills + AGENTS.md + settings.json — no extensions, no chat
+behavior. That's coherent because chat behavior is intrinsically NatStack-bound.
 
-```
-Harness emits events → DODispatch → DO.onHarnessEvent()
-  text-start     → writer.startText()     → channel send (new message)
-  text-delta     → writer.updateText()    → channel update
-  text-end       → writer.completeText()  → channel complete
-  turn-complete  → record turn, clear state
-```
-
-### Tool Approval (Continuation-Based)
-
-```
-Harness: approval-needed(toolUseId, toolName, input)
-  → DO stores pendingCall(callId, "approval", {harnessId, toolUseId})
-  → DO calls channel.callMethod(callId, panelId, "request_tool_approval", args)
-
-Channel DO: routes callMethod to panel
-Panel: request_tool_approval handler
-  → checkToolApproval() for auto-approve
-  → requestApproval() for UI prompt
-  → returns {allow, alwaysAllow}
-
-Channel DO: receives method-result → callDO back to Worker DO → onCallResult(callId, result)
-  → consumePendingCall(callId) → handleCallResult("approval", ...)
-  → DO calls this.server.sendHarnessCommand(approveTool)
-```
-
-### Crash Recovery
-
-```
-Harness process dies → HarnessManager detects exit → DODispatch
-  → DO.onHarnessEvent(harnessId, {type: "error"})
-  → Complete partial stream
-  → Read in-flight turn for retry
-  → reactivateHarness() + recordTurnStart() locally
-  → Call this.server.spawnHarness() with resumeSessionId + initialInput
-```
-
-## RPC Services (Panel-Accessible)
-
-| Service | Method | Purpose |
-|---------|--------|---------|
-| `build` | `getBuild` | Build a workspace package (panel/worker/library) on demand |
-| `build` | `getBuildNpm` | Install + bundle an npm package as CJS for sandbox eval |
-| `workers` | `listSources` | Available worker DO classes |
-| `workers` | `getChannelWorkers` | DOs subscribed to a channel |
-| `workers` | `callDO` | Call a DO method (subscribe/unsubscribe) |
-| `channel` | `fork` | Create a forked channel |
-| `channel` | `callMethod` | Proxy harness→participant calls |
-| `channel` | `discoverMethods` | List available methods |
-| `harness` | `pushEvent` | Receive harness output events |
-
-## Package Map
+## Package map
 
 | Package | Location | Contents |
 |---------|----------|----------|
-| `@natstack/harness` | `packages/harness/` | Types (HarnessOutput, ChannelEvent), SDK adapters |
-| `@natstack/pubsub` | `workspace/packages/pubsub/` | PubSubClient (panel-side), protocol types, approval schemas |
-| `@workspace/runtime` | `workspace/packages/runtime/` | DurableObjectBase, HttpRpcBridge, shared clients (OAuth, DB, FS) |
-| `@workspace/agentic-do` | `workspace/packages/agentic-do/` | AgentWorkerBase, ChannelClient, StreamWriter, composable modules |
-| Workers | `workspace/workers/` | DO implementations (agent-worker, test-agent) |
+| `@natstack/harness` | `packages/harness/` | `PiRunner`, `NatStackExtensionUIContext`, three extension factories, channel boundary types |
+| `@natstack/pubsub` | `workspace/packages/pubsub/` | PubSubClient (panel-side), protocol types |
+| `@workspace/runtime` | `workspace/packages/runtime/` | DurableObjectBase, HttpRpcBridge |
+| `@workspace/agentic-do` | `workspace/packages/agentic-do/` | AgentWorkerBase, ChannelClient, ContinuationStore, SubscriptionManager |
+| `@workspace/agentic-core` | `workspace/packages/agentic-core/` | EphemeralEventEnvelope, derivePiSnapshot, derived UI types, ConnectionManager |
+| `@workspace/agentic-chat` | `workspace/packages/agentic-chat/` | usePiSessionSnapshot, usePiTextDeltas, useChatCore (Pi-native) |
+| `@workspace/agentic-session` | `workspace/packages/agentic-session/` | HeadlessSession (Pi-native programmatic interface) |
+| Workers | `workspace/workers/` | AiChatWorker, TestAgentWorker (both extend AgentWorkerBase) |
 
-## Further Reading
+## Further reading
 
-- **Worker Authoring Guide**: `workspace/workers/README.md` — full annotated walkthrough with examples
-- **Paneldev Skill**: `workspace/skills/paneldev/WORKERS.md` — reference for AI agents building workers
-- **Harness Types**: `packages/harness/README.md` — HarnessOutput, HarnessCommand, WorkerAction type catalog
-- **Channel Forking**: Channel DO handles fork semantics, replay, and schema internally
+- **Pi-architecture deep dive**: `docs/pi-architecture.md`
+- **Pi SDK reference**: `node_modules/@mariozechner/pi-coding-agent/README.md`
+- **Worker authoring**: `workspace/workers/README.md`
+- **Paneldev skill**: `workspace/.pi/skills/paneldev/WORKERS.md`

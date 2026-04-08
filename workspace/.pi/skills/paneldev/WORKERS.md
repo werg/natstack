@@ -3,7 +3,7 @@
 Workers are fetch handlers running in workerd (Cloudflare's V8 isolate runtime). They execute outside Node.js and the browser in a lightweight sandbox. This stack does not expose built-in per-instance CPU or subrequest limits. Workers come in two flavors:
 
 1. **Stateless workers** — simple fetch handlers for HTTP endpoints
-2. **Durable Object (DO) workers** — stateful agents with SQLite-backed state, channel subscriptions, and harness management
+2. **Durable Object (DO) workers** — stateful agents extending `AgentWorkerBase`. NatStack runs Pi (`@mariozechner/pi-coding-agent`) in-process inside each agent worker; there is no harness child process layer. See `docs/pi-architecture.md` for the full picture.
 
 ## 1. Quick Start
 
@@ -98,34 +98,48 @@ The runtime is cached per worker -- multiple `fetch()` calls reuse the same WebS
 
 ## 3. AgentWorkerBase — The DO Base Class
 
-All agentic workers extend `AgentWorkerBase` from `@workspace/agentic-do`:
+All agentic workers extend `AgentWorkerBase` from `@workspace/agentic-do`. The
+base owns one Pi `AgentSession` per channel via `PiRunner`; you typically
+only override identity and (optionally) the model/thinking-level hooks. The
+base's default `onChannelEvent` forwards user messages to the runner; Pi
+streams events back; the base forwards them to the channel as ephemeral
+state-snapshot + text-delta messages.
 
 ```typescript
 import { AgentWorkerBase } from "@workspace/agentic-do";
-import type { ChannelEvent, HarnessOutput } from "@natstack/harness";
+import type { ParticipantDescriptor } from "@natstack/harness";
 
 export class MyWorker extends AgentWorkerBase {
-  static schemaVersion = 1;
+  static override schemaVersion = 1;
 
-  async onChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
-    // Handle event — call this.createChannelClient(channelId).* and this.server.* directly
+  protected override getParticipantInfo(): ParticipantDescriptor {
+    return {
+      handle: "my-worker",
+      name: "My Worker",
+      type: "agent",
+      methods: [],
+    };
   }
 
-  async onHarnessEvent(harnessId: string, event: HarnessOutput): Promise<void> {
-    // Handle harness output — call this.createChannelClient(channelId).* and this.server.* directly
-  }
+  // Optional model override:
+  // protected override getModel() { return "anthropic:claude-opus-4-5"; }
 }
 ```
 
-### The Five Hooks
+### Customization hooks
 
 | Hook | Default | Purpose |
 |------|---------|---------|
-| `getHarnessType()` | `'claude-sdk'` | Which AI provider to use |
-| `getHarnessConfig()` | `{}` | System prompt, model, temperature, MCP servers |
+| `getModel()` | `"anthropic:claude-sonnet-4-20250514"` | Model id in `provider:model` format |
+| `getThinkingLevel()` | `"medium"` | Pi thinking level (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`) |
+| `getApprovalLevel(channelId)` | `2` (full auto) | Tool approval level: 0=ask all, 1=auto safe, 2=full auto |
 | `shouldProcess(event)` | Panel messages only | Filter which events trigger AI turns |
 | `buildTurnInput(event)` | Extracts content/senderId | Transform event to TurnInput |
 | `getParticipantInfo()` | Generic agent identity | Channel handle, name, methods |
+
+The system prompt lives in `<contextFolder>/.pi/AGENTS.md` and is loaded
+automatically by Pi's cwd-walk. To customize per-worker, edit that file or
+write a per-context AGENTS.md before subscribing.
 
 ## 4. Direct Communication APIs
 
@@ -145,65 +159,25 @@ const channel = this.createChannelClient(channelId);
 | `channel.update(participantId, messageId, content)` | Update a streaming message |
 | `channel.complete(participantId, messageId)` | Mark a message as complete |
 | `channel.sendEphemeral(participantId, content, contentType?)` | Send ephemeral event |
+| `channel.sendEphemeralEvent(participantId, contentType, payload)` | Send a typed structured ephemeral (JSON-encoded) |
 | `channel.updateMetadata(participantId, metadata)` | Update channel metadata |
 | `channel.subscribe(participantId, metadata)` | Subscribe to channel |
 | `channel.unsubscribe(participantId)` | Unsubscribe from channel |
 | `channel.callMethod(callerPid, targetPid, callId, method, args)` | Async method call |
 | `channel.getParticipants()` | Get channel roster |
 
-### Server Operations -- `this.server`
+## 5. SQLite Tables (AgentWorkerBase Internals)
 
-| Method | Description |
-|--------|-------------|
-| `.spawnHarness(opts)` | Spawn a new harness process |
-| `.sendHarnessCommand(harnessId, command)` | Send command to harness (start-turn, approve-tool, interrupt, etc.) |
-| `.stopHarness(harnessId)` | Stop a harness process |
-| `.cloneDO(ref, newObjectKey)` | Clone a DO's SQLite storage (for forking) |
-| `.destroyDO(ref)` | Destroy a DO's SQLite storage (for fork rollback) |
-
-### StreamWriter -- `this.createWriter(channelId, turn)`
-
-`StreamWriter` takes a `ChannelClient` + `participantId` directly (no intermediate MessageSink).
-
-```typescript
-const turn = this.getActiveTurn(harnessId);
-if (turn) {
-  const writer = this.createWriter(channelId, turn);
-  await writer.startText();           // sends a new message
-  await writer.updateText("chunk");   // updates content
-  await writer.completeText();        // marks complete
-  this.persistStreamState(harnessId, writer);
-}
-```
-
-## 5. StreamWriter
-
-All StreamWriter methods are async (calls to the Channel DO):
-
-| Method | Description |
-|--------|-------------|
-| `startThinking()` / `updateThinking(content)` / `endThinking()` | Thinking block lifecycle |
-| `startText(metadata?)` / `updateText(content)` / `completeText()` | Text message lifecycle |
-| `startAction(tool, description, toolUseId?)` / `endAction()` | Tool action lifecycle |
-| `sendInlineUi(data)` | Send inline UI component |
-| `startTyping()` / `stopTyping()` | Typing indicator lifecycle |
-
-Call `this.persistStreamState(harnessId, writer)` after using the writer to save message IDs to SQLite.
-
-## 6. SQLite Tables (AgentWorkerBase Internals)
-
-The base class creates 8 tables on initialization:
+Pi tracks turn state, message state, and session branching itself inside
+`AgentSession`. The base class only owns these few tables:
 
 | Table | Purpose |
 |-------|---------|
-| `state` | Key-value store (schema version, custom state) |
-| `subscriptions` | Channel subscriptions with config + participant ID |
-| `harnesses` | Harness instances (id, type, status) |
-| `turn_map` | Completed turn records for fork resolution |
-| `checkpoints` | Last-processed event ID per channel/harness |
-| `in_flight_turns` | Currently executing turns (for crash retry) |
-| `active_turns` | Currently streaming turns (replyToId, turnMessageId, senderParticipantId) |
-| `pending_calls` | Continuation state for async method calls (survives hibernation) |
+| `state` | Key-value store (approval level per channel, fork metadata) |
+| `subscriptions` | Channel subscriptions + participant ID |
+| `pi_sessions` | Per-channel Pi session JSONL file path (for restart resume) |
+| `delivery_cursor` | Last-processed channel event id (dedup + gap detection) |
+| `pending_calls` | Promise continuations for tool callMethod and UI feedback_form awaits |
 
 ### Schema Versioning
 

@@ -243,26 +243,34 @@ export default { fetch(_req: Request) { return new Response("${name} DO service"
 `;
 
         files[`${workerFileName}.ts`] = `import { AgentWorkerBase } from "@workspace/agentic-do";
-import type {
-  ChannelEvent,
-  HarnessConfig,
-  HarnessOutput,
-  ParticipantDescriptor,
-} from "@natstack/harness";
+import type { ParticipantDescriptor } from "@natstack/harness";
 
+/**
+ * ${className} — Pi-native agent DO.
+ *
+ * Pi (\`@mariozechner/pi-coding-agent\`) runs in-process. The base class
+ * handles channel subscriptions, the channel event pipeline, the per-channel
+ * PiRunner lifecycle, and forwards Pi state to the channel as snapshot/text-delta
+ * ephemerals. You only need to override the small set of customization hooks
+ * below.
+ *
+ * The system prompt lives in <contextFolder>/.pi/AGENTS.md. Workspace skills
+ * live in <contextFolder>/.pi/skills/. Both are loaded automatically.
+ */
 export class ${className} extends AgentWorkerBase {
   static override schemaVersion = 1;
 
-  // --- Hook: Harness configuration ---
-  // Override to set system prompt, model, temperature, MCP servers, etc.
-  protected override getHarnessConfig(): HarnessConfig {
-    return {
-      systemPrompt: "You are a helpful AI assistant.",
-    };
-  }
+  // --- Hook: model id (provider:model format) ---
+  // protected override getModel(): string {
+  //   return "anthropic:claude-sonnet-4-20250514";
+  // }
 
-  // --- Hook: Participant identity ---
-  // Override to set the handle, name, type, and callable methods.
+  // --- Hook: thinking level ---
+  // protected override getThinkingLevel() {
+  //   return "medium" as const;
+  // }
+
+  // --- Hook: participant identity ---
   protected override getParticipantInfo(): ParticipantDescriptor {
     return {
       handle: "${name}",
@@ -272,97 +280,8 @@ export class ${className} extends AgentWorkerBase {
     };
   }
 
-  // --- Hook: Event filter ---
-  // Override to control which channel events trigger an AI turn.
-  // Default: messages from client participants (panels + headless clients),
-  // classified via isClientParticipantType from @natstack/pubsub.
-  // protected override shouldProcess(event: ChannelEvent): boolean {
-  //   if (event.type !== 'message') return false;
-  //   const senderType = event.senderMetadata?.["type"] as string | undefined;
-  //   return isClientParticipantType(senderType);
-  // }
-
-  // --- Hook: Turn input builder ---
-  // Override to transform a channel event into AI turn input.
-  // protected override buildTurnInput(event: ChannelEvent): TurnInput {
-  //   const payload = event.payload as { content?: string };
-  //   return { content: payload.content ?? '', senderId: event.senderId };
-  // }
-
-  // --- Hook: Harness type ---
-  // Override to use a different AI provider.
-  // protected override getHarnessType(): string { return 'claude-sdk'; }
-
-  // --- Channel event handler ---
-  async onChannelEvent(
-    channelId: string,
-    event: ChannelEvent,
-  ): Promise<void> {
-    if (!this.shouldProcess(event)) {
-      this.advanceCheckpoint(channelId, null, event.id);
-      return;
-    }
-
-    const input = this.buildTurnInput(event);
-    const activeHarnessId = this.getActiveHarness();
-
-    if (!activeHarnessId) {
-      // No active harness — spawn one with the first turn
-      const contextId = this.getContextId(channelId);
-      const harnessId = \`harness-\${crypto.randomUUID()}\`;
-      this.registerHarness(harnessId, this.getHarnessType());
-      this.recordTurnStart(harnessId, channelId, input, event.messageId, event.id);
-      await this.server.spawnHarness({
-        doRef: this.doRef,
-        harnessId,
-        type: this.getHarnessType(),
-        contextId,
-        config: this.getHarnessConfig() as unknown as Record<string, unknown>,
-        initialInput: input,
-      });
-    } else {
-      // Existing harness — start a new turn
-      this.setActiveTurn(activeHarnessId, channelId, event.messageId);
-      this.setInFlightTurn(channelId, activeHarnessId, event.messageId, event.id, input);
-      this.advanceCheckpoint(channelId, activeHarnessId, event.id);
-      await this.server.sendHarnessCommand(activeHarnessId, { type: "start-turn", input });
-    }
-  }
-
-  // --- Harness event handler ---
-  async onHarnessEvent(
-    harnessId: string,
-    event: HarnessOutput,
-  ): Promise<void> {
-    if (event.type === "ready") {
-      this.sql.exec(\`UPDATE harnesses SET status = 'active' WHERE id = ?\`, harnessId);
-      return;
-    }
-    const turn = this.getActiveTurn(harnessId);
-    const channelId = turn?.channelId;
-    if (!channelId || !turn) return;
-
-    const writer = this.createWriter(channelId, turn);
-
-    switch (event.type) {
-      case "text-start": await writer.startText(); break;
-      case "text-delta": await writer.updateText(event.content); break;
-      case "text-end": await writer.completeText(); break;
-      case "turn-complete": {
-        this.persistStreamState(harnessId, writer);
-        const at = this.getActiveTurn(harnessId);
-        if (at?.turnMessageId) {
-          const inf = this.getInFlightTurn(channelId, harnessId);
-          this.recordTurn(harnessId, at.turnMessageId, inf?.triggerPubsubId ?? 0, event.sessionId);
-        }
-        this.clearActiveTurn(harnessId);
-        this.clearInFlightTurn(channelId, harnessId);
-        break;
-      }
-    }
-
-    this.persistStreamState(harnessId, writer);
-  }
+  // The base class's onChannelEvent handles incoming messages by forwarding
+  // them to the per-channel PiRunner. Override only if you need custom routing.
 }
 `;
 
@@ -378,7 +297,7 @@ function makeEvent(overrides: Partial<ChannelEvent> = {}): ChannelEvent {
     type: "message",
     payload: { content: "Hello" },
     senderId: "user-1",
-    senderType: "panel",
+    senderMetadata: { type: "panel" },
     ts: Date.now(),
     persist: true,
     ...overrides,
@@ -386,16 +305,15 @@ function makeEvent(overrides: Partial<ChannelEvent> = {}): ChannelEvent {
 }
 
 describe("${className}", () => {
-  it("processes user messages", async () => {
+  it("constructs without errors", async () => {
     const { instance } = await createTestDO(${className});
-    // onChannelEvent returns void — side effects happen via direct HTTP calls
-    await instance.onChannelEvent("ch-1", makeEvent({ id: 10 }));
+    expect(instance).toBeTruthy();
   });
 
-  it("filters non-panel events", async () => {
+  it("filters non-panel events via shouldProcess", async () => {
     const { instance } = await createTestDO(${className});
-    // Non-panel events are filtered by shouldProcess() — no side effects
-    await instance.onChannelEvent("ch-1", makeEvent({ senderType: "agent" }));
+    // Non-panel events are filtered by the base class — onChannelEvent is a no-op
+    await instance.onChannelEvent("ch-1", makeEvent({ senderMetadata: { type: "agent" } }));
   });
 });
 `;
