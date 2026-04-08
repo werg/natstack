@@ -7,7 +7,7 @@
 
 import type { SqlStorage } from "@workspace/runtime/worker";
 import type { ChannelEvent, ParticipantDescriptor } from "@natstack/harness/types";
-import { PARTICIPANT_SESSION_METADATA_KEY } from "../../pubsub/src/internal-constants.js";
+import { PARTICIPANT_SESSION_METADATA_KEY } from "@natstack/pubsub/internal-constants";
 import type { DOIdentity } from "./identity.js";
 import type { ChannelClient } from "./channel-client.js";
 

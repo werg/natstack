@@ -13,6 +13,8 @@ import type { SandboxConfig, ChatSandboxValue } from "./types.js";
 
 export interface BuildEvalToolOptions {
   sandbox: SandboxConfig;
+  rpc: SandboxConfig["rpc"];
+  runtimeTarget: "panel" | "workerRuntime";
   /** Scope manager for enter/exit eval lifecycle. If not provided, no scope management. */
   scopeManager?: ScopeManager | null;
   /** Build the ChatSandboxValue at call time (may change between calls) */
@@ -42,13 +44,9 @@ export function buildEvalTool(opts: BuildEvalToolOptions): MethodDefinition {
   return {
     description: `Execute TypeScript/JavaScript code in the sandbox.
 
-Globals (only these): \`chat\`, \`scope\`, \`scopes\`. Everything else must be imported, e.g. \`import { db, fs, rpc, ai, workers, workspace, contextId } from "@workspace/runtime"\`. Use static \`import\`, not \`await import(...)\`.
+Call \`await help()\` first when you need the live service catalog or runtime surface for this context. Only \`chat\`, \`scope\`, \`scopes\`, and \`help\` are pre-injected. Import everything else from \`@workspace/runtime\` using static \`import\`, not \`await import(...)\`.
 
-Ambient packages (no \`imports\` arg): \`@workspace/runtime\` (panel or worker variant); panels also get \`react\`, \`@radix-ui/themes\`, \`@radix-ui/react-icons\`, \`isomorphic-git\`; workers also get \`@natstack/pubsub\`, \`zod\`. For anything else, pass it in \`imports\` — \`"latest"\` for workspace packages, \`"npm:<version>"\` for npm.
-
-\`return\` sends a value back to the agent. \`console.log\` streams in real-time. \`scope\` persists across eval calls.
-
-Patterns: \`const h = await db.open("name"); await h.query("SELECT...")\` (db needs .open() first); \`h.run("INSERT...", [params])\` for writes, \`h.query()\` for reads.`,
+\`return\` sends a value back to the agent. \`console.log\` streams in real time. \`scope\` persists across eval calls.`,
     parameters: z.object({
       code: z.string().describe("The TypeScript/JavaScript code to execute"),
       syntax: z.enum(["typescript", "jsx", "tsx"]).default("tsx").describe("Target syntax"),
@@ -71,9 +69,21 @@ Patterns: \`const h = await db.open("name"); await h.query("SELECT...")\` (db ne
             chat: opts.getChatSandboxValue(),
             scope: scopeManager?.current ?? {},
             scopes: scopeManager?.api ?? {},
+            help: async (serviceName?: string) => {
+              if (serviceName) {
+                return await opts.rpc.call("main", "meta.describeService", serviceName);
+              }
+              const [services, runtime] = await Promise.all([
+                opts.rpc.call("main", "meta.listServices"),
+                opts.rpc.call("main", "meta.getRuntimeSurface", opts.runtimeTarget),
+              ]);
+              return { services, runtime };
+            },
           },
           onConsole: (formatted: string) => {
-            void ctx.stream({ type: "console", content: formatted }).catch(() => {});
+            void ctx.stream({ type: "console", content: formatted }).catch((error) => {
+              console.error("[buildEvalTool] Failed to stream console output:", error);
+            });
           },
         });
 

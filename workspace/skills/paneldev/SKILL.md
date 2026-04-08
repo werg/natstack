@@ -61,7 +61,7 @@ eval({ code: `
 | Create project | `eval` with `imports: { "@workspace-skills/paneldev": "latest" }` — call `createProject({ projectType, name, title })` |
 | Commit & push | `eval` with `imports` — call `commitAndPush("panels/my-app", "message")` |
 | Launch panel | `eval` with `imports` — `commitAndPush(...)` + `openPanel(source)` |
-| Launch worker | `eval` — `workers.create({ source: "workers/my-worker", contextId, limits: { cpuMs: 100 } })` |
+| Launch worker | `eval` — `workers.create({ source: "workers/my-worker", contextId })` |
 | Read a file | `Read({ file_path: "panels/my-app/index.tsx" })` |
 | Edit a file | `Edit({ file_path: "panels/my-app/index.tsx", old_string: "...", new_string: "..." })` |
 | Check types | `eval` — `rpc.call("main", "typecheck.check", "panels/my-app")` |

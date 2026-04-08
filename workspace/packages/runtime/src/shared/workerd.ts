@@ -7,7 +7,6 @@
  * const instance = await workers.create({
  *   source: "workers/hello",
  *   contextId: "ctx-1",
- *   limits: { cpuMs: 100, subrequests: 10 },
  * });
  * const list = await workers.list();
  * await workers.destroy("hello");
@@ -27,28 +26,11 @@ export type WorkerBindingDef =
   | { type: "text"; value: string }
   | { type: "json"; value: unknown };
 
-/**
- * Resource limits hint for a worker instance.
- *
- * **Not currently enforced.** workerd's open-source build has no per-Worker
- * CPU/subrequest limits in its config schema (those live in Cloudflare's
- * hosted runtime). Passing this is forward-looking metadata only — it does
- * not change runtime behavior in this build.
- */
-export interface WorkerLimits {
-  /** CPU time limit per request in milliseconds. */
-  cpuMs: number;
-  /** Maximum subrequests (outbound fetches) per invocation. */
-  subrequests?: number;
-}
-
 export interface WorkerCreateOptions {
   /** Source path relative to workspace root (e.g., "workers/hello") */
   source: string;
   /** Context ID for storage partition */
   contextId: string;
-  /** Resource limits hint. Optional — see {@link WorkerLimits}. */
-  limits?: WorkerLimits;
   /** Instance name (defaults to last segment of source) */
   name?: string;
   /** Extra text bindings injected as env vars */
@@ -68,7 +50,6 @@ export interface WorkerUpdateOptions {
   env?: Record<string, string>;
   bindings?: Record<string, WorkerBindingDef>;
   stateArgs?: Record<string, unknown>;
-  limits?: WorkerLimits;
   /** Change the git ref this instance builds at */
   ref?: string;
 }
@@ -81,7 +62,6 @@ export interface WorkerInstanceInfo {
   env: Record<string, string>;
   bindings: Record<string, WorkerBindingDef>;
   stateArgs?: Record<string, unknown>;
-  limits?: WorkerLimits;
   buildKey?: string;
   /** Git ref this instance is built at. */
   ref?: string;
@@ -116,8 +96,8 @@ export interface WorkerdClient {
   list(): Promise<WorkerInstanceInfo[]>;
   /** Get status of a specific worker instance (null if not found). */
   status(name: string): Promise<WorkerInstanceInfo | null>;
-  /** List available worker sources from the build graph. */
-  listSources(): Promise<WorkerSourceInfo[]>;
+  /** List available worker-instance sources from the build graph. */
+  listInstanceSources(): Promise<WorkerSourceInfo[]>;
   /** Get the workerd HTTP port (null if not running). */
   getPort(): Promise<number | null>;
   /** Restart all worker instances. */
@@ -138,7 +118,7 @@ export function createWorkerdClient(rpc: RpcCaller): WorkerdClient {
     update: (name, updates) => call<WorkerInstanceInfo>("updateInstance", name, updates),
     list: () => call<WorkerInstanceInfo[]>("listInstances"),
     status: (name) => call<WorkerInstanceInfo | null>("getInstanceStatus", name),
-    listSources: () => call<WorkerSourceInfo[]>("listSources"),
+    listInstanceSources: () => call<WorkerSourceInfo[]>("listInstanceSources"),
     getPort: () => call<number | null>("getPort"),
     restartAll: () => call<void>("restartAll"),
     cloneDO: (ref, newObjectKey) => call<DORefParam>("cloneDO", ref, newObjectKey),

@@ -346,7 +346,7 @@ describe("PubSubChannel", () => {
         __objectKey: "test-channel",
       });
 
-      let resolveCall: (() => void) | null = null;
+      let resolveCall!: () => void;
       const callPromise = new Promise<void>((resolve) => {
         resolveCall = resolve;
       });
@@ -391,7 +391,7 @@ describe("PubSubChannel", () => {
       await Promise.resolve();
       expect(resolved).toBe(false);
 
-      resolveCall?.();
+      resolveCall();
       await publishPromise;
       expect(resolved).toBe(true);
     });

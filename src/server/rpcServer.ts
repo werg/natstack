@@ -8,27 +8,30 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { createServer, type Server as HttpServer } from "http";
 import { randomUUID } from "crypto";
-import { createRpcBridge, type RpcBridge, type RpcMessage, type RpcRequest } from "@natstack/rpc";
+import { createRpcBridge, type RpcBridge, type RpcEvent, type RpcMessage, type RpcRequest, type RpcResponse } from "@natstack/rpc";
 import { createWsServerTransport, type WsServerTransportInternal } from "./wsServerTransport.js";
 import type {
   WsClientMessage,
   WsServerMessage,
-} from "@natstack/shared/ws/protocol";
-import type { StreamTextEvent } from "@natstack/shared/types";
-import type { StreamTarget } from "@natstack/shared/ai/aiHandler";
-import type { ToolExecutionResult } from "@natstack/shared/ai/claudeAgentToolProxy";
-import { TOOL_EXECUTION_TIMEOUT_MS } from "@natstack/shared/constants";
-import type { WsClientInfo } from "@natstack/shared/serviceDispatcher";
+} from "../../packages/shared/src/ws/protocol.js";
+import type { StreamTextEvent } from "../../packages/shared/src/types.js";
+import type { StreamTarget } from "../../packages/shared/src/ai/aiHandler.js";
+import type { ToolExecutionResult } from "../../packages/shared/src/ai/claudeAgentToolProxy.js";
+import { TOOL_EXECUTION_TIMEOUT_MS } from "../../packages/shared/src/constants.js";
+import type { WsClientInfo } from "../../packages/shared/src/serviceDispatcher.js";
 import { findServicePort } from "@natstack/port-utils";
+import { createDevLogger } from "@natstack/dev-log";
 import {
   parseServiceMethod,
 
   ServiceDispatcher,
   type CallerKind,
   type ServiceContext,
-} from "@natstack/shared/serviceDispatcher";
-import { checkServiceAccess } from "@natstack/shared/servicePolicy";
-import type { TokenManager } from "@natstack/shared/tokenManager";
+} from "../../packages/shared/src/serviceDispatcher.js";
+import { checkServiceAccess } from "../../packages/shared/src/servicePolicy.js";
+import type { TokenManager } from "../../packages/shared/src/tokenManager.js";
+
+const log = createDevLogger("RpcServer");
 
 /**
  * Parse a "do:source:className:objectKey" target ID.
@@ -62,6 +65,30 @@ interface PendingToolCall {
   clientWs: WebSocket;
 }
 
+type RelayAuthCheck = { ok: true } | { ok: false; reason: string };
+
+type ReconnectOutcome =
+  | { kind: "reconnected"; client: WsClientState }
+  | { kind: "server-shutdown" }
+  | { kind: "grace-expired" }
+  | { kind: "no-waiter" };
+
+type RelayErrorCode =
+  | "RECONNECT_GRACE_EXPIRED"
+  | "SERVER_SHUTTING_DOWN"
+  | "TARGET_NOT_REACHABLE"
+  | "UNKNOWN_TARGET_KIND";
+
+function getErrorCode(error: unknown): string | undefined {
+  return error instanceof Error
+    ? (error as NodeJS.ErrnoException).code
+    : undefined;
+}
+
+function createRelayError(message: string, code: RelayErrorCode): Error {
+  return Object.assign(new Error(message), { code });
+}
+
 export class RpcServer {
   private wss: WebSocketServer | null = null;
   private httpServer: HttpServer | null = null;
@@ -73,6 +100,7 @@ export class RpcServer {
   private callerToClient = new Map<string, WsClientState>();
   private pendingToolCalls = new Map<string, PendingToolCall>();
   private disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private lastDisconnectAt = new Map<string, number>();
   /**
    * Promises that resolve when a caller (currently in the disconnect grace
    * window) reconnects, or reject when the grace timer expires. Lets relays
@@ -89,6 +117,14 @@ export class RpcServer {
   private clientBridges = new Map<string, RpcBridge>();
   private clientTransports = new Map<string, WsServerTransportInternal>();
 
+  // SCAFFOLD: 3-second reconnect grace window. This closes the relay race for
+  // panels/shells that disconnect briefly and then reconnect, but it is not
+  // considered steady-state architecture.
+  //
+  // Removal condition: reconnect instrumentation shows the observed churn is
+  // either expected page-reload/network behavior or the root cause has been
+  // fixed at the client/runtime layer. If reconnects are being caused by a
+  // bug, fix that bug and delete this grace window.
   private static readonly DISCONNECT_GRACE_MS = 3000;
 
   private dispatcher: ServiceDispatcher;
@@ -291,6 +327,15 @@ export class RpcServer {
     this.clients.set(ws, client);
     this.callerToClient.set(callerId, client);
 
+    if (callerKind === "panel") {
+      const previousDisconnectAt = this.lastDisconnectAt.get(callerId);
+      log.info("panel connected", {
+        callerId,
+        sinceLastDisconnectMs:
+          previousDisconnectAt === undefined ? null : Date.now() - previousDisconnectAt,
+      });
+    }
+
     // Create per-client RPC bridge for server→client calls
     const transport = createWsServerTransport({ ws, clientId: callerId });
     const bridge = createRpcBridge({
@@ -314,59 +359,48 @@ export class RpcServer {
 
     // Set up message handling
     ws.on("message", (data) => this.handleMessage(client, data));
-    ws.on("close", () => this.handleClose(client));
+    ws.on("close", (code, reason) => this.handleClose(client, code, reason.toString()));
   }
 
   private handleMessage(client: WsClientState, data: Buffer | ArrayBuffer | Buffer[]): void {
-    // Defense in depth: NO synchronous exception from any handler may escape
-    // back into the `ws.on("message", ...)` listener. EventEmitter does not
-    // catch sync throws from listeners — they become uncaught exceptions and
-    // crash the process. Wrap the whole switch in try/catch as a structural
-    // guarantee independent of individual handler correctness.
+    let msg: WsClientMessage;
     try {
-      let msg: WsClientMessage;
-      try {
-        msg = JSON.parse(data.toString()) as WsClientMessage;
-      } catch {
-        return; // Ignore malformed messages
-      }
+      msg = JSON.parse(data.toString()) as WsClientMessage;
+    } catch (error) {
+      log.warn("malformed ws frame", {
+        callerId: client.callerId,
+        callerKind: client.callerKind,
+        cause: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
 
-      switch (msg.type) {
-        case "ws:rpc":
-          // If the message is a response or event, it may be for a server-initiated
-          // call via the client's RPC bridge. Route it to the bridge transport.
-          if (msg.message.type === "response" || msg.message.type === "event") {
-            const transport = this.clientTransports.get(client.callerId);
-            if (transport) {
-              transport.deliver(client.callerId, msg.message);
-              // For responses, we're done — don't also process as a new request.
-              // For events, deliver to bridge and also fall through would be harmless,
-              // but there's no server-side event handling for client events currently.
-              return;
-            }
+    switch (msg.type) {
+      case "ws:rpc":
+        // If the message is a response or event, it may be for a server-initiated
+        // call via the client's RPC bridge. Route it to the bridge transport.
+        if (msg.message.type === "response" || msg.message.type === "event") {
+          const transport = this.clientTransports.get(client.callerId);
+          if (transport) {
+            transport.deliver(client.callerId, msg.message);
+            // For responses, we're done — don't also process as a new request.
+            // For events, deliver to bridge and also fall through would be harmless,
+            // but there's no server-side event handling for client events currently.
+            return;
           }
-          void this.handleRpc(client, msg.message);
-          break;
-        case "ws:tool-result":
-          this.handleToolResult(msg.callId, msg.result as ToolExecutionResult);
-          break;
-        case "ws:route":
-        case "ws:panel-rpc":
-          this.handleRoute(client, msg.targetId, msg.message);
-          break;
-        case "ws:auth":
-          // Ignore duplicate auth messages
-          break;
-      }
-    } catch (err) {
-      // Last-resort guard. Individual handlers should already convert their
-      // own errors into proper responses (handleRpc does, handleRoute does
-      // for relay-auth failures). Anything that lands here is a bug — log
-      // loudly so we can find it, but never let it crash the server.
-      console.error(
-        `[RpcServer] Unhandled exception in handleMessage for caller=${client.callerId}:`,
-        err,
-      );
+        }
+        void this.handleRpc(client, msg.message);
+        break;
+      case "ws:tool-result":
+        this.handleToolResult(msg.callId, msg.result as ToolExecutionResult);
+        break;
+      case "ws:route":
+      case "ws:panel-rpc":
+        this.handleRoute(client, msg.targetId, msg.message);
+        break;
+      case "ws:auth":
+        // Ignore duplicate auth messages
+        break;
     }
   }
 
@@ -441,24 +475,10 @@ export class RpcServer {
     pending.resolve(result);
   }
 
-  /**
-   * Route a message from one caller to another.
-   *
-   * Shell-owned panel trees are no longer persisted on the server, so the
-   * server acts purely as a relay for non-service target IDs.
-   *
-   * Crash-safety: this method MUST NOT let any synchronous exception escape.
-   * It runs from a `ws.on("message", ...)` listener (via handleMessage), and
-   * EventEmitter doesn't catch sync throws from listeners — uncaught throws
-   * crash the whole server process. Auth failures and other relay errors are
-   * converted into routed error responses to the caller, mirroring how
-   * `handleRpc` handles its own dispatch errors.
-   */
   private handleRoute(client: WsClientState, targetId: string, message: RpcMessage): void {
-    try {
-      this.checkRelayAuth(client.callerId, client.callerKind, targetId);
-    } catch (err) {
-      this.sendRouteError(client, targetId, message, err);
+    const auth = this.checkRelayAuth(client.callerId, client.callerKind, targetId);
+    if (!auth.ok) {
+      this.sendRouteError(client, targetId, message, new Error(auth.reason));
       return;
     }
 
@@ -477,6 +497,7 @@ export class RpcServer {
             });
           },
           (err) => {
+            const errorCode = getErrorCode(err);
             this.sendToWs(client.ws, {
               type: "ws:routed",
               fromId: targetId,
@@ -484,18 +505,20 @@ export class RpcServer {
                 type: "response",
                 requestId,
                 error: err instanceof Error ? err.message : String(err),
+                ...(errorCode ? { errorCode } : {}),
               },
             });
           },
         );
+      } else if (message.type === "response") {
+        void this.relayResponse(client.callerId, targetId, message).catch((err) => {
+          this.sendRouteError(client, targetId, message, err);
+        });
       } else if (message.type === "event") {
         const { fromId: eventFromId, event, payload } = message;
         void this.relayEvent(eventFromId ?? client.callerId, targetId, event, payload).catch(
           (err) => {
-            console.warn(
-              `[RpcServer] relayEvent failed for ${targetId}:`,
-              err instanceof Error ? err.message : err,
-            );
+            this.sendRouteError(client, targetId, message, err);
           },
         );
       }
@@ -514,8 +537,8 @@ export class RpcServer {
    *
    * For request-typed messages, sends a `ws:routed` carrying a response with
    * `requestId` echoed back so the client's RPC bridge can reject the matching
-   * promise. For events, there's no requestId — log and silently drop, since
-   * crashing the server (or sending a malformed response) is worse.
+   * promise. For response and event messages, surface the drop explicitly back
+   * to the sender.
    */
   private sendRouteError(
     client: WsClientState,
@@ -524,6 +547,7 @@ export class RpcServer {
     err: unknown,
   ): void {
     const errorMessage = err instanceof Error ? err.message : String(err);
+    const errorCode = getErrorCode(err);
     if (message.type === "request") {
       this.sendToWs(client.ws, {
         type: "ws:routed",
@@ -532,17 +556,53 @@ export class RpcServer {
           type: "response",
           requestId: message.requestId,
           error: errorMessage,
+          ...(errorCode ? { errorCode } : {}),
         },
       });
-    } else {
-      // Events have no requestId to echo. Log and drop.
-      console.warn(
-        `[RpcServer] Dropping relayed ${message.type} from ${client.callerId} to ${targetId}: ${errorMessage}`,
-      );
+      return;
+    }
+
+    if (message.type === "response") {
+      log.warn("relay response drop", {
+        callerId: client.callerId,
+        callerKind: client.callerKind,
+        targetId,
+        requestId: message.requestId,
+        error: errorMessage,
+        errorCode,
+      });
+      this.sendToWs(client.ws, {
+        type: "ws:routed-response-error",
+        targetId,
+        requestId: message.requestId,
+        error: errorMessage,
+        ...(errorCode ? { errorCode } : {}),
+      });
+      return;
+    }
+
+    {
+      const eventMessage = message as RpcEvent;
+      log.warn("relay event drop", {
+        callerId: client.callerId,
+        callerKind: client.callerKind,
+        targetId,
+        event: eventMessage.event,
+        fromId: eventMessage.fromId,
+        error: errorMessage,
+        errorCode,
+      });
+      this.sendToWs(client.ws, {
+        type: "ws:routed-event-error",
+        targetId,
+        event: eventMessage.event,
+        error: errorMessage,
+        ...(errorCode ? { errorCode } : {}),
+      });
     }
   }
 
-  private handleClose(client: WsClientState): void {
+  private handleClose(client: WsClientState, code?: number, reason?: string): void {
     // Only remove from callerToClient if this client is still the current one
     // (a replacement connection may have already overwritten it — code 4002)
     const current = this.callerToClient.get(client.callerId);
@@ -551,6 +611,20 @@ export class RpcServer {
       this.callerToClient.delete(client.callerId);
     }
     this.clients.delete(client.ws);
+
+    if (client.callerKind === "panel") {
+      this.lastDisconnectAt.set(client.callerId, Date.now());
+      log.info("panel disconnected", {
+        callerId: client.callerId,
+        code: code ?? null,
+        reason: reason || null,
+        initiator:
+          code === 4001 ? "token-revoke"
+            : code === 4002 ? "replaced"
+              : code === 1005 || code === 1006 ? "network-or-reload"
+                : "other",
+      });
+    }
 
     // Reject pending tool calls for this client
     for (const [callId, pending] of this.pendingToolCalls) {
@@ -584,9 +658,21 @@ export class RpcServer {
       let resolveWaiter!: () => void;
       let rejectWaiter!: (err: Error) => void;
       const promise = new Promise<void>((res, rej) => { resolveWaiter = res; rejectWaiter = rej; });
-      // Attach a no-op handler so a fast-path rejection (when no relay is
-      // currently waiting) doesn't trigger an unhandledRejection warning.
-      promise.catch(() => undefined);
+      // Documented concurrent path: handleClose may reject the waiter before
+      // relayCall/relayEvent actually attach their await, because the client
+      // can fully miss the reconnect window with no in-flight relays. Known
+      // grace/shutdown rejections are expected here; anything else is a bug.
+      void promise.catch((error) => {
+        const code = getErrorCode(error);
+        if (code === "RECONNECT_GRACE_EXPIRED" || code === "SERVER_SHUTTING_DOWN") {
+          return;
+        }
+        log.error("unexpected reconnect waiter rejection", {
+          callerId: client.callerId,
+          cause: error instanceof Error ? error.message : String(error),
+          errorCode: code,
+        });
+      });
       this.reconnectWaiters.set(client.callerId, { promise, resolve: resolveWaiter, reject: rejectWaiter });
     }
 
@@ -597,7 +683,10 @@ export class RpcServer {
       const waiter = this.reconnectWaiters.get(client.callerId);
       if (waiter) {
         this.reconnectWaiters.delete(client.callerId);
-        waiter.reject(new Error("Client did not reconnect within grace window"));
+        waiter.reject(createRelayError(
+          "Client did not reconnect within grace window",
+          "RECONNECT_GRACE_EXPIRED",
+        ));
       }
       // Only fire if the caller hasn't reconnected
       if (!this.callerToClient.has(client.callerId)) {
@@ -815,7 +904,8 @@ export class RpcServer {
     // Relay call to another target
     if (type === "call") {
       if (!targetId) throw new Error("Missing targetId for relay call");
-      this.checkRelayAuth(callerId, callerKind, targetId);
+      const auth = this.checkRelayAuth(callerId, callerKind, targetId);
+      if (!auth.ok) throw new Error(auth.reason);
       return await this.relayCall(callerId, targetId, method, args);
     }
 
@@ -825,7 +915,8 @@ export class RpcServer {
       const payload = body["payload"];
       const fromId = (body["fromId"] as string) ?? callerId;
       if (!targetId) throw new Error("Missing targetId for emit");
-      this.checkRelayAuth(callerId, callerKind, targetId);
+      const auth = this.checkRelayAuth(callerId, callerKind, targetId);
+      if (!auth.ok) throw new Error(auth.reason);
       await this.relayEvent(fromId, targetId, event, payload);
       return "ok";
     }
@@ -843,10 +934,10 @@ export class RpcServer {
    * Shell-owned panel trees are not mirrored on the server anymore, so
    * relay authorization is now based only on caller authentication.
    */
-  private checkRelayAuth(callerId: string, callerKind: CallerKind, targetId: string): void {
-    if (callerKind !== "panel") return;
-    if (targetId === callerId) return;
-    if (targetId.startsWith("do:") || targetId.startsWith("worker:")) return;
+  private checkRelayAuth(callerId: string, callerKind: CallerKind, targetId: string): RelayAuthCheck {
+    if (callerKind !== "panel") return { ok: true };
+    if (targetId === callerId) return { ok: true };
+    if (targetId.startsWith("do:") || targetId.startsWith("worker:")) return { ok: true };
 
     const parentId = this.deps.tokenManager.getPanelParent(callerId);
     const targetParentId = this.deps.tokenManager.getPanelParent(targetId);
@@ -859,53 +950,85 @@ export class RpcServer {
       this.deps.tokenManager.isPanelDescendantOf(targetId, callerId);
 
     if (!isRelated) {
-      throw new Error(`Panel ${callerId} cannot relay to unrelated panel ${targetId}`);
+      return { ok: false, reason: `Panel ${callerId} cannot relay to unrelated panel ${targetId}` };
     }
+
+    return { ok: true };
+  }
+
+  private async awaitReconnectIfPending(targetId: string): Promise<ReconnectOutcome> {
+    const waiter = this.reconnectWaiters.get(targetId);
+    if (!waiter) return { kind: "no-waiter" };
+
+    try {
+      await waiter.promise;
+    } catch (error) {
+      const code = getErrorCode(error);
+      if (code === "SERVER_SHUTTING_DOWN") return { kind: "server-shutdown" };
+      if (code === "RECONNECT_GRACE_EXPIRED") return { kind: "grace-expired" };
+      throw error;
+    }
+
+    const client = this.callerToClient.get(targetId);
+    if (client?.ws.readyState === WebSocket.OPEN) {
+      return { kind: "reconnected", client };
+    }
+
+    throw new Error(
+      `Invariant violated: reconnect waiter resolved for ${targetId} but no client found`,
+    );
   }
 
   private async relayCall(callerId: string, targetId: string, method: string, args: unknown[]): Promise<unknown> {
-    // Target is a connected WS client? Send via WebSocket bridge.
-    let wsClient = this.callerToClient.get(targetId);
-    if (wsClient?.ws.readyState === WebSocket.OPEN) {
-      const bridge = this.clientBridges.get(targetId);
-      if (bridge) {
-        return await bridge.call(targetId, method, ...args);
-      }
-    }
-
-    // Target is a DO? Relay via postToDOWithToken.
-    if (targetId.startsWith("do:")) {
-      return await this.relayToDO(callerId, targetId, method, args);
-    }
-
-    // Target is a worker? POST to /{workerName}/__rpc
-    if (targetId.startsWith("worker:")) {
-      return await this.relayToWorker(targetId, method, args);
-    }
-
-    // Target is a panel/shell client that's not currently connected. If it's
-    // mid-reconnect (within DISCONNECT_GRACE_MS) we wait for it to come back
-    // before failing — otherwise rapid reconnect cycles produce intermittent
-    // "Target not reachable" failures even though the client is right there.
-    const waiter = this.reconnectWaiters.get(targetId);
-    if (waiter) {
-      try {
-        await waiter.promise;
-      } catch {
-        // Grace expired without reconnect — fall through to the error below.
-      }
-      // Re-look-up after the wait. If the client reconnected, dispatch via
-      // the bridge. If not, fall through to "Target not reachable".
-      wsClient = this.callerToClient.get(targetId);
+    const isPanelOrShellTarget = !targetId.startsWith("do:") && !targetId.startsWith("worker:");
+    if (isPanelOrShellTarget) {
+      const wsClient = this.callerToClient.get(targetId);
       if (wsClient?.ws.readyState === WebSocket.OPEN) {
         const bridge = this.clientBridges.get(targetId);
         if (bridge) {
           return await bridge.call(targetId, method, ...args);
         }
       }
+
+      const outcome = await this.awaitReconnectIfPending(targetId);
+      switch (outcome.kind) {
+        case "reconnected": {
+          const bridge = this.clientBridges.get(targetId);
+          if (!bridge) {
+            throw new Error(`Target ${targetId} reconnected but bridge missing`);
+          }
+          return await bridge.call(targetId, method, ...args);
+        }
+        case "server-shutdown":
+          throw createRelayError("Server shutting down", "SERVER_SHUTTING_DOWN");
+        case "grace-expired":
+          throw createRelayError(
+            `Target ${targetId} did not reconnect within grace window`,
+            "RECONNECT_GRACE_EXPIRED",
+          );
+        case "no-waiter":
+          throw createRelayError(`Target not reachable: ${targetId}`, "TARGET_NOT_REACHABLE");
+      }
     }
 
-    throw new Error(`Target not reachable: ${targetId}`);
+    if (targetId.startsWith("do:")) {
+      return await this.relayToDO(callerId, targetId, method, args);
+    }
+
+    if (targetId.startsWith("worker:")) {
+      return await this.relayToWorker(targetId, method, args);
+    }
+
+    throw createRelayError(`Unknown target kind: ${targetId}`, "UNKNOWN_TARGET_KIND");
+  }
+
+  private async relayResponse(fromId: string, targetId: string, response: RpcResponse): Promise<void> {
+    const client = await this.resolveWsRelayTarget(targetId);
+    this.sendToWs(client.ws, {
+      type: "ws:routed",
+      fromId,
+      message: response,
+    });
   }
 
   private async relayToDO(callerId: string, targetId: string, method: string, args: unknown[]): Promise<unknown> {
@@ -936,7 +1059,16 @@ export class RpcServer {
     });
 
     if (!res.ok) {
-      const text = await res.text().catch(() => "");
+      let text: string;
+      try {
+        text = await res.text();
+      } catch (error) {
+        throw new Error(
+          `Worker relay to ${targetId} failed (${res.status}) and response body could not be read: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
       throw new Error(`Worker relay to ${targetId} failed (${res.status}): ${text}`);
     }
 
@@ -950,27 +1082,9 @@ export class RpcServer {
   }
 
   private async relayEvent(fromId: string, targetId: string, event: string, payload: unknown): Promise<void> {
-    // WS client?
-    let wsClient = this.callerToClient.get(targetId);
-    if (wsClient?.ws.readyState === WebSocket.OPEN) {
-      this.sendToWs(wsClient.ws, {
-        type: "ws:routed",
-        fromId,
-        message: { type: "event", fromId, event, payload },
-      });
-      return;
-    }
-
-    // If the target is mid-reconnect, wait briefly so we don't drop events
-    // to a panel that's about to come back. Same logic as relayCall.
-    const waiter = this.reconnectWaiters.get(targetId);
-    if (waiter) {
-      try {
-        await waiter.promise;
-      } catch {
-        // Grace expired — fall through to the DO/worker/silent-drop handling.
-      }
-      wsClient = this.callerToClient.get(targetId);
+    const isPanelOrShellTarget = !targetId.startsWith("do:") && !targetId.startsWith("worker:");
+    if (isPanelOrShellTarget) {
+      const wsClient = this.callerToClient.get(targetId);
       if (wsClient?.ws.readyState === WebSocket.OPEN) {
         this.sendToWs(wsClient.ws, {
           type: "ws:routed",
@@ -978,6 +1092,26 @@ export class RpcServer {
           message: { type: "event", fromId, event, payload },
         });
         return;
+      }
+
+      const outcome = await this.awaitReconnectIfPending(targetId);
+      switch (outcome.kind) {
+        case "reconnected":
+          this.sendToWs(outcome.client.ws, {
+            type: "ws:routed",
+            fromId,
+            message: { type: "event", fromId, event, payload },
+          });
+          return;
+        case "server-shutdown":
+          throw createRelayError("Server shutting down", "SERVER_SHUTTING_DOWN");
+        case "grace-expired":
+          throw createRelayError(
+            `Target ${targetId} did not reconnect within grace window`,
+            "RECONNECT_GRACE_EXPIRED",
+          );
+        case "no-waiter":
+          throw createRelayError(`Target not reachable: ${targetId}`, "TARGET_NOT_REACHABLE");
       }
     }
 
@@ -1004,22 +1138,50 @@ export class RpcServer {
       const workerName = targetId.slice(7);
       if (!this.workerdUrl) throw new Error("workerdUrl not configured");
 
-      try {
-        const res = await fetch(`${this.workerdUrl}/${workerName}/__rpc`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ type: "emit", event, payload, fromId }),
-        });
-        if (!res.ok) {
-          console.warn(`Event relay to ${targetId} failed (${res.status})`);
+      const res = await fetch(`${this.workerdUrl}/${workerName}/__rpc`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "emit", event, payload, fromId }),
+      });
+      if (!res.ok) {
+        let text: string;
+        try {
+          text = await res.text();
+        } catch (error) {
+          throw new Error(
+            `Event relay to ${targetId} failed (${res.status}) and response body could not be read: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
         }
-      } catch (err) {
-        console.warn(`Event relay to ${targetId} failed:`, err);
+        throw new Error(`Event relay to ${targetId} failed (${res.status}): ${text}`);
       }
       return;
     }
 
-    // Silent drop for unreachable targets (matches WS routing behavior)
+    throw createRelayError(`Unknown target kind: ${targetId}`, "UNKNOWN_TARGET_KIND");
+  }
+
+  private async resolveWsRelayTarget(targetId: string): Promise<WsClientState> {
+    const wsClient = this.callerToClient.get(targetId);
+    if (wsClient?.ws.readyState === WebSocket.OPEN) {
+      return wsClient;
+    }
+
+    const outcome = await this.awaitReconnectIfPending(targetId);
+    switch (outcome.kind) {
+      case "reconnected":
+        return outcome.client;
+      case "server-shutdown":
+        throw createRelayError("Server shutting down", "SERVER_SHUTTING_DOWN");
+      case "grace-expired":
+        throw createRelayError(
+          `Target ${targetId} did not reconnect within grace window`,
+          "RECONNECT_GRACE_EXPIRED",
+        );
+      case "no-waiter":
+        throw createRelayError(`Target not reachable: ${targetId}`, "TARGET_NOT_REACHABLE");
+    }
   }
 
   // ===========================================================================
@@ -1077,7 +1239,7 @@ export class RpcServer {
 
     // Reject any reconnect waiters so blocked relays unblock during shutdown.
     for (const waiter of this.reconnectWaiters.values()) {
-      waiter.reject(new Error("Server shutting down"));
+      waiter.reject(createRelayError("Server shutting down", "SERVER_SHUTTING_DOWN"));
     }
     this.reconnectWaiters.clear();
 

@@ -155,6 +155,36 @@ export function createHarnessTransport(
           deliver(msg["fromId"] as string, msg["message"] as RpcMessage);
           break;
         }
+
+        case "ws:routed-event-error": {
+          deliver("main", {
+            type: "event",
+            fromId: "main",
+            event: "runtime:routed-event-error",
+            payload: {
+              targetId: msg["targetId"],
+              event: msg["event"],
+              error: msg["error"],
+              errorCode: msg["errorCode"],
+            },
+          } as RpcEvent);
+          break;
+        }
+
+        case "ws:routed-response-error": {
+          deliver("main", {
+            type: "event",
+            fromId: "main",
+            event: "runtime:routed-response-error",
+            payload: {
+              targetId: msg["targetId"],
+              requestId: msg["requestId"],
+              error: msg["error"],
+              errorCode: msg["errorCode"],
+            },
+          } as RpcEvent);
+          break;
+        }
       }
     };
 

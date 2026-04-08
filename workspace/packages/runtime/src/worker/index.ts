@@ -36,6 +36,7 @@ import { createWorkspaceClient, type WorkspaceClient } from "../shared/workspace
 import { createOAuthClient, type OAuthClient } from "../shared/oauth.js";
 import { createNotificationClient, type NotificationClient } from "../shared/notifications.js";
 import { createParentHandle } from "../shared/handles.js";
+import { helpfulNamespace } from "../shared/helpfulNamespace.js";
 import type { ParentHandle } from "../core/index.js";
 import type { WorkerEnv } from "./types.js";
 import type { RuntimeFs } from "../types.js";
@@ -109,10 +110,10 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
 
   const fs = createRpcFs(rpc);
   const db = createDbClient(rpc);
-  const workers = createWorkerdClient(rpc);
-  const workspaceApi = createWorkspaceClient(rpc);
-  const oauth = createOAuthClient(rpc);
-  const notifications = createNotificationClient(rpc);
+  const workers = helpfulNamespace("workers", createWorkerdClient(rpc));
+  const workspaceApi = helpfulNamespace("workspace", createWorkspaceClient(rpc));
+  const oauth = helpfulNamespace("oauth", createOAuthClient(rpc));
+  const notifications = helpfulNamespace("notifications", createNotificationClient(rpc));
 
   const parentId = (env.PARENT_ID as string) || null;
 

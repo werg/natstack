@@ -8,6 +8,7 @@ if (typeof globalThis.Buffer === "undefined") {
 import { createPanelTransport } from "./transport.js";
 import { fs } from "./fs.js"; // RPC-backed fs (server-side per-context folders)
 import { initRuntime } from "../setup/initRuntime.js";
+import { helpfulNamespace } from "../shared/helpfulNamespace.js";
 export type { ThemeAppearance, RuntimeFs, FileStats, MkdirOptions, RmOptions } from "../types.js";
 
 // Initialize runtime with panel-specific providers
@@ -38,7 +39,7 @@ const gitConfig = config.gitConfig;
 const pubsubConfig = config.pubsubConfig;
 const env = config.env;
 
-export const {
+const {
   parentId: runtimeParentId,
   rpc,
   db,
@@ -59,10 +60,30 @@ export const {
   contextId,
 } = runtime;
 
-export { runtimeParentId as parentId };
+export {
+  rpc,
+  db,
+  parent,
+  getParent,
+  getParentWithContract,
+  onConnectionError,
+  getInfo,
+  closeSelf,
+  focusPanel,
+  getWorkspaceTree,
+  listBranches,
+  listCommits,
+  getTheme,
+  onThemeChange,
+  onFocus,
+  exposeMethod,
+  contextId,
+  runtimeParentId as parentId,
+};
 
 const { workers } = runtime;
-export { fs, gitConfig, pubsubConfig, env, workers, aiClient as ai };
+const helpfulWorkers = helpfulNamespace("workers", workers);
+export { fs, gitConfig, pubsubConfig, env, helpfulWorkers as workers, aiClient as ai };
 
 // Path utilities for cross-platform path handling
 export { normalizePath, getFileName, resolvePath } from "../shared/pathUtils.js";
@@ -79,7 +100,7 @@ export type { BrowserHandle } from "./browser.js";
 // Ad blocking programmatic interface
 import { createAdBlockApi } from "./adblock.js";
 export type { AdBlockStats, AdBlockApi } from "./adblock.js";
-export const adblock = createAdBlockApi(rpc);
+export const adblock = helpfulNamespace("adblock", createAdBlockApi(rpc));
 
 // Workspace management.
 //
@@ -94,14 +115,14 @@ export type { WorkspaceClient, WorkspaceEntry, WorkspaceConfig } from "../shared
 const workspaceClientBase = createWorkspaceClient(rpc);
 const workspaceClient: WorkspaceClient & { openPanel: typeof _openPanel } =
   Object.assign(workspaceClientBase, { openPanel: _openPanel });
-export { workspaceClient as workspace };
+export const workspace = helpfulNamespace("workspace", workspaceClient);
 
 // OAuth token management
 import { createOAuthClient } from "./oauth.js";
 export type { OAuthToken, OAuthConnection, OAuthClient, OAuthStartAuthResult, ConsentRecord } from "./oauth.js";
-export const oauth = createOAuthClient(rpc);
+export const oauth = helpfulNamespace("oauth", createOAuthClient(rpc));
 
 // Shell notifications
 import { createNotificationClient } from "./notifications.js";
 export type { NotificationClient } from "./notifications.js";
-export const notifications = createNotificationClient(rpc);
+export const notifications = helpfulNamespace("notifications", createNotificationClient(rpc));

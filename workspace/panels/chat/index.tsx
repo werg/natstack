@@ -248,6 +248,8 @@ export default function ChatPanel() {
     return {
       eval: buildEvalTool({
         sandbox: sandboxConfig,
+        rpc: sandboxConfig.rpc,
+        runtimeTarget: "panel",
         // Panel's useAgenticChat provides boundExecuteSandbox which handles
         // scope enter/exit lifecycle, so we pass it as the override.
         executeSandbox: deps.executeSandbox,

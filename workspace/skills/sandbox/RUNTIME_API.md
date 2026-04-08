@@ -17,6 +17,64 @@ All APIs available to sandbox code via `import`, `chat.rpc.call()`, or pre-injec
 
 Scope is automatically persisted after every eval call. Primitives, plain objects, arrays, Date, Map, Set, RegExp survive serialization. Functions and class instances are dropped but their serializable properties are kept (e.g., `scope.browser.id` survives even though `scope.browser.page` is lost).
 
+## Generated Panel Runtime Surface
+
+<!-- BEGIN GENERATED: panel-runtime-surface -->
+Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the live surface.
+
+| Export | Kind | Members | Description |
+|--------|------|---------|-------------|
+| `Rpc` | value |  | RPC helpers namespace export. |
+| `z` | value |  | Zod export. |
+| `defineContract` | value |  |  |
+| `noopParent` | value |  |  |
+| `buildPanelLink` | value |  |  |
+| `contextIdToSubdomain` | value |  |  |
+| `parseContextId` | value |  |  |
+| `isValidContextId` | value |  |  |
+| `getInstanceId` | value |  |  |
+| `id` | value |  |  |
+| `rpc` | value |  |  |
+| `db` | value |  |  |
+| `parent` | value |  |  |
+| `getParent` | value |  |  |
+| `getParentWithContract` | value |  |  |
+| `onConnectionError` | value |  |  |
+| `getInfo` | value |  |  |
+| `closeSelf` | value |  |  |
+| `focusPanel` | value |  |  |
+| `getWorkspaceTree` | value |  |  |
+| `listBranches` | value |  |  |
+| `listCommits` | value |  |  |
+| `getTheme` | value |  |  |
+| `onThemeChange` | value |  |  |
+| `onFocus` | value |  |  |
+| `exposeMethod` | value |  |  |
+| `contextId` | value |  |  |
+| `parentId` | value |  |  |
+| `fs` | value |  |  |
+| `gitConfig` | value |  |  |
+| `pubsubConfig` | value |  |  |
+| `env` | value |  |  |
+| `workers` | namespace | `create`, `destroy`, `update`, `list`, `status`, `listInstanceSources`, `getPort`, `restartAll`, `cloneDO`, `destroyDO` |  |
+| `ai` | value |  |  |
+| `normalizePath` | value |  |  |
+| `getFileName` | value |  |  |
+| `resolvePath` | value |  |  |
+| `getStateArgs` | value |  |  |
+| `useStateArgs` | value |  |  |
+| `setStateArgs` | value |  |  |
+| `createBrowserPanel` | value |  |  |
+| `openExternal` | value |  |  |
+| `onChildCreated` | value |  |  |
+| `getBrowserHandle` | value |  |  |
+| `openPanel` | value |  |  |
+| `adblock` | namespace | `getStats`, `isActive`, `getStatsForPanel`, `isEnabledForPanel`, `setEnabledForPanel`, `resetStatsForPanel`, `getPanelUrl`, `addToWhitelist`, `removeFromWhitelist` |  |
+| `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo`, `openPanel` |  |
+| `oauth` | namespace | `getToken`, `getConnection`, `listConnections`, `listProviders`, `connect`, `requestConsent`, `startAuth`, `waitForConnection`, `disconnect`, `listConsents` |  |
+| `notifications` | namespace | `show`, `dismiss` |  |
+<!-- END GENERATED: panel-runtime-surface -->
+
 ## Filesystem (`fs`)
 
 ```typescript
@@ -86,12 +144,12 @@ Manage workerd (Cloudflare V8 isolate) instances.
 
 | Method | Description |
 |--------|-------------|
-| `create(options)` | Create a worker instance (requires `cpuMs` resource limit) |
+| `create(options)` | Create a worker instance |
 | `destroy(name)` | Destroy an instance |
 | `update(name, updates)` | Update instance config |
 | `list()` | List all running instances |
 | `status(name)` | Get instance status |
-| `listSources()` | List available worker source packages |
+| `listInstanceSources()` | List available worker source packages |
 | `getPort()` | Get the workerd HTTP port |
 | `restartAll()` | Restart all instances |
 

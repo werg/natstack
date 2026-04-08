@@ -31,7 +31,6 @@ describe("createWorkerdClient", () => {
     const opts: WorkerCreateOptions = {
       source: "workers/hello",
       contextId: "ctx-1",
-      limits: { cpuMs: 100 },
     };
     await client.create(opts);
 
@@ -63,9 +62,9 @@ describe("createWorkerdClient", () => {
     expect(mock.rpc.call).toHaveBeenCalledWith("main", "workerd.getInstanceStatus", "hello");
   });
 
-  it("listSources calls workerd.listSources", async () => {
-    await client.listSources();
-    expect(mock.rpc.call).toHaveBeenCalledWith("main", "workerd.listSources");
+  it("listInstanceSources calls workerd.listInstanceSources", async () => {
+    await client.listInstanceSources();
+    expect(mock.rpc.call).toHaveBeenCalledWith("main", "workerd.listInstanceSources");
   });
 
   it("getPort calls workerd.getPort", async () => {

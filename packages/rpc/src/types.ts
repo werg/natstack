@@ -163,6 +163,7 @@ export const SERVER_SERVICE_NAMES = [
   "fs",
   "git",
   "harness",
+  "meta",
   "notification",
   "oauth",
   "test",

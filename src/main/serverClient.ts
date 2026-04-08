@@ -147,6 +147,20 @@ export async function createServerClient(
           (msg as any).event as string,
           (msg as any).payload,
         );
+      } else if (msg.type === "ws:routed-event-error") {
+        options?.onEvent?.("runtime:routed-event-error", {
+          targetId: msg.targetId,
+          event: msg.event,
+          error: msg.error,
+          errorCode: msg.errorCode,
+        });
+      } else if (msg.type === "ws:routed-response-error") {
+        options?.onEvent?.("runtime:routed-response-error", {
+          targetId: msg.targetId,
+          requestId: msg.requestId,
+          error: msg.error,
+          errorCode: msg.errorCode,
+        });
       }
     });
   }

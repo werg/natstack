@@ -2,7 +2,7 @@
  * workerd RPC service — manages worker instances via WorkerdManager.
  *
  * Methods: createInstance, destroyInstance, updateInstance, listInstances,
- * getInstanceStatus, listSources, getPort, restartAll, cloneDO, destroyDO.
+ * getInstanceStatus, listInstanceSources, getPort, restartAll, cloneDO, destroyDO.
  */
 
 import { z } from "zod";
@@ -10,25 +10,23 @@ import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { WorkerdManager } from "../workerdManager.js";
 import type { BuildSystemV2 } from "../buildV2/index.js";
 
-// `limits` is purely metadata in the OSS workerd build — see
-// `workerdManager.ts:WorkerLimits` for the rationale. We accept it for
-// forward-compatibility but do not require it (and do not write it to the
-// generated capnp config — workerd's Worker struct has no such field).
-const limitsSchema = z.object({
-  cpuMs: z.number().int().positive(),
-  subrequests: z.number().int().nonnegative().optional(),
-});
-
 const createOptionsSchema = z.object({
   source: z.string(),
   contextId: z.string(),
-  limits: limitsSchema.optional(),
   name: z.string().optional(),
   env: z.record(z.string()).optional(),
   bindings: z.record(z.unknown()).optional(),
   stateArgs: z.record(z.unknown()).optional(),
   ref: z.string().optional(),
-});
+  parentId: z.string().optional(),
+}).strict();
+
+const updateOptionsSchema = z.object({
+  env: z.record(z.string()).optional(),
+  bindings: z.record(z.unknown()).optional(),
+  stateArgs: z.record(z.unknown()).optional(),
+  ref: z.string().optional(),
+}).strict();
 
 const doRefSchema = z.object({
   source: z.string(),
@@ -47,10 +45,10 @@ export function createWorkerdService(deps: {
     methods: {
       createInstance: { args: z.tuple([createOptionsSchema]) },
       destroyInstance: { args: z.tuple([z.string()]) },
-      updateInstance: { args: z.tuple([z.string(), z.record(z.unknown())]) },
+      updateInstance: { args: z.tuple([z.string(), updateOptionsSchema]) },
       listInstances: { args: z.tuple([]) },
       getInstanceStatus: { args: z.tuple([z.string()]) },
-      listSources: { args: z.tuple([]) },
+      listInstanceSources: { args: z.tuple([]) },
       getPort: { args: z.tuple([]) },
       restartAll: { args: z.tuple([]) },
       cloneDO: {
@@ -81,7 +79,7 @@ export function createWorkerdService(deps: {
           return wm.listInstances();
         case "getInstanceStatus":
           return wm.getInstanceStatus(args[0] as string);
-        case "listSources": {
+        case "listInstanceSources": {
           const graph = deps.buildSystem.getGraph();
           return graph.allNodes()
             .filter((n) => n.kind === "worker")

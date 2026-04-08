@@ -1,6 +1,6 @@
 # Workers Development Guide
 
-Workers are fetch handlers running in workerd (Cloudflare's V8 isolate runtime). They execute outside Node.js and the browser, in a lightweight sandbox with per-request resource limits. Workers come in two flavors:
+Workers are fetch handlers running in workerd (Cloudflare's V8 isolate runtime). They execute outside Node.js and the browser in a lightweight sandbox. This stack does not expose built-in per-instance CPU or subrequest limits. Workers come in two flavors:
 
 1. **Stateless workers** — simple fetch handlers for HTTP endpoints
 2. **Durable Object (DO) workers** — stateful agents with SQLite-backed state, channel subscriptions, and harness management
@@ -68,19 +68,31 @@ The `durable.classes` array declares which exported classes are DurableObjects. 
 
 `createWorkerRuntime(env)` returns a `WorkerRuntime` with:
 
-| API | Description |
-|-----|-------------|
-| `runtime.rpc` | RPC bridge for calling services and other callers |
-| `runtime.db` | Database client (`runtime.db.open(name)`) |
-| `runtime.fs` | Filesystem access (RPC-backed, scoped to context) |
-| `runtime.workers` | Typed client for managing other worker instances |
-| `runtime.callMain(method, ...args)` | Call a server-side service method |
-| `runtime.getWorkspaceTree()` | Get the workspace file tree |
-| `runtime.listBranches(repoPath)` | List git branches |
-| `runtime.listCommits(repoPath)` | List git commits |
-| `runtime.exposeMethod(name, fn)` | Expose an RPC method callable by panels/workers |
-| `runtime.contextId` | Context ID for storage partition |
-| `runtime.id` | Worker instance name |
+<!-- BEGIN GENERATED: worker-runtime-surface -->
+Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the live surface.
+
+| Export | Kind | Members | Description |
+|--------|------|---------|-------------|
+| `id` | value |  |  |
+| `rpc` | value |  |  |
+| `db` | value |  |  |
+| `fs` | value |  |  |
+| `workers` | namespace | `create`, `destroy`, `update`, `list`, `status`, `listInstanceSources`, `getPort`, `restartAll`, `cloneDO`, `destroyDO` |  |
+| `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo` |  |
+| `oauth` | namespace | `getToken`, `getConnection`, `listConnections`, `listProviders`, `connect`, `requestConsent`, `startAuth`, `waitForConnection`, `disconnect`, `listConsents` |  |
+| `notifications` | namespace | `show`, `dismiss` |  |
+| `contextId` | value |  |  |
+| `gitConfig` | value |  |  |
+| `pubsubConfig` | value |  |  |
+| `callMain` | value |  |  |
+| `getWorkspaceTree` | value |  |  |
+| `listBranches` | value |  |  |
+| `listCommits` | value |  |  |
+| `exposeMethod` | value |  |  |
+| `getParent` | value |  |  |
+| `handleRpcPost` | value |  |  |
+| `destroy` | value |  |  |
+<!-- END GENERATED: worker-runtime-surface -->
 
 The runtime is cached per worker -- multiple `fetch()` calls reuse the same WebSocket connection.
 
@@ -444,23 +456,16 @@ import { createWorkerdClient } from "@workspace/runtime/workerd-client";
 
 | Method | Description |
 |--------|-------------|
-| `workers.create(options)` | Create a new worker instance (limits required) |
+| `workers.create(options)` | Create a new worker instance |
 | `workers.destroy(name)` | Destroy an instance |
-| `workers.update(name, updates)` | Update env/bindings/limits, triggers restart |
+| `workers.update(name, updates)` | Update env/bindings/ref, triggers restart |
 | `workers.list()` | List all instances |
 | `workers.status(name)` | Get instance status (null if not found) |
-| `workers.listSources()` | List available worker sources from build graph |
+| `workers.listInstanceSources()` | List available worker-instance sources from build graph |
 | `workers.getPort()` | Get the workerd HTTP port |
 | `workers.restartAll()` | Restart all instances |
 
-### Resource Limits
-
-Limits are **mandatory** when creating workers:
-
-| Limit | Type | Description |
-|-------|------|-------------|
-| `cpuMs` | number (required) | CPU time limit per request in milliseconds |
-| `subrequests` | number (optional) | Max outbound fetch requests per invocation |
+workerd OSS does not support per-instance CPU or subrequest limits in the generated worker config. If you need request-level execution bounds in this stack, enforce them in application code with wrappers such as `AbortSignal.timeout(...)`.
 
 ## Cross-Caller RPC
 
@@ -501,4 +506,4 @@ Workers are auto-discovered by the package graph and built on push, just like pa
 | Externals | Import maps | None (all inlined) |
 | Lifecycle | Managed by panel system | Managed by WorkerdManager |
 | State | Session storage, stateArgs | Stateless or SQLite (DO) |
-| Resource limits | None | CPU time, subrequests |
+| Resource limits | None | None built in |

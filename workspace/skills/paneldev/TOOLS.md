@@ -131,7 +131,6 @@ eval({ code: `
   const instance = await workers.create({
     source: "workers/my-worker",
     contextId,
-    limits: { cpuMs: 100 },
   });
   console.log("Worker started:", instance.name, "on port", await workers.getPort());
 `, timeout: 30000 })
@@ -150,7 +149,7 @@ eval({ code: `
 `, timeout: 10000 })
 ```
 
-Methods: `create(options)`, `destroy(name)`, `update(name, updates)`, `list()`, `status(name)`, `listSources()`, `getPort()`, `restartAll()`. See [WORKERS.md](WORKERS.md) for full API.
+Methods: `create(options)`, `destroy(name)`, `update(name, updates)`, `list()`, `status(name)`, `listInstanceSources()`, `getPort()`, `restartAll()`. See [WORKERS.md](WORKERS.md) for full API.
 
 #### Git (via `@workspace-skills/paneldev`)
 

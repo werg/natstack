@@ -11,7 +11,7 @@
 /// <reference path="../workerd.d.ts" />
 import { DurableObjectBase, type DurableObjectContext } from "@workspace/runtime/worker";
 import type { ChannelEvent } from "@natstack/harness/types";
-import { PARTICIPANT_SESSION_METADATA_KEY } from "../../packages/pubsub/src/internal-constants.js";
+import { PARTICIPANT_SESSION_METADATA_KEY } from "@natstack/pubsub/internal-constants";
 import type {
   SendOpts,
   SubscribeResult,

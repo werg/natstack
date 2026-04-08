@@ -217,7 +217,7 @@ eval({ code: `
 ```
 eval({ code: `
   import { workers } from "@workspace/runtime";
-  const sources = await workers.listSources();
+  const sources = await workers.listInstanceSources();
   console.log("Available worker sources:", sources);
   const instances = await workers.list();
   console.log("Running instances:", instances);

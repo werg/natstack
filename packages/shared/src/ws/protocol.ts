@@ -100,6 +100,22 @@ export interface WsRoutedMessage {
   message: RpcMessage;
 }
 
+export interface WsRoutedEventErrorMessage {
+  type: "ws:routed-event-error";
+  targetId: string;
+  event: string;
+  error: string;
+  errorCode?: string;
+}
+
+export interface WsRoutedResponseErrorMessage {
+  type: "ws:routed-response-error";
+  targetId: string;
+  requestId: string;
+  error: string;
+  errorCode?: string;
+}
+
 /** @deprecated Use WsRoutedMessage. Kept for backward compatibility. */
 export interface WsPanelRpcDeliveryMessage {
   type: "ws:panel-rpc-delivery";
@@ -115,4 +131,6 @@ export type WsServerMessage =
   | WsToolExecMessage
   | WsEventMessage
   | WsRoutedMessage
+  | WsRoutedEventErrorMessage
+  | WsRoutedResponseErrorMessage
   | WsPanelRpcDeliveryMessage;

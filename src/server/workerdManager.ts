@@ -56,34 +56,9 @@ export type WorkerBinding =
   | { type: "text"; value: string }
   | { type: "json"; value: unknown };
 
-/**
- * Resource limits hint for a worker instance.
- *
- * **Not currently enforced.** workerd's open-source config schema (see
- * `node_modules/workerd/workerd.capnp` — the `Worker` struct) has no
- * per-Worker `limits` field; CPU/subrequest enforcement lives in Cloudflare's
- * hosted runtime, not in workerd itself. Writing this into the capnp config
- * produces a parse error and crashes workerd at startup.
- *
- * The shape is preserved as forward-looking metadata so dispatcher-layer
- * enforcement (request wrappers, AbortSignal-based timeouts, etc.) can read
- * it without changing the API contract once we add it.
- */
-export interface WorkerLimits {
-  /** CPU time limit per request in milliseconds. */
-  cpuMs: number;
-  /** Maximum subrequests (outbound fetches) per invocation. */
-  subrequests?: number;
-}
-
 export interface WorkerCreateOptions {
   source: string;
   contextId: string;
-  /**
-   * Resource limits hint. Optional — workerd OSS does not enforce them,
-   * so passing them is purely metadata for the future. See {@link WorkerLimits}.
-   */
-  limits?: WorkerLimits;
   name?: string;
   env?: Record<string, string>;
   bindings?: Record<string, WorkerBinding>;
@@ -104,7 +79,6 @@ export interface WorkerInstance {
   env: Record<string, string>;
   bindings: Record<string, WorkerBinding>;
   stateArgs?: Record<string, unknown>;
-  limits?: WorkerLimits;
   buildKey?: string;
   /** Git ref this instance is built at (branch, tag, or commit SHA). */
   ref?: string;
@@ -211,7 +185,6 @@ export class WorkerdManager {
       env: options.env ?? {},
       bindings: options.bindings ?? {},
       stateArgs: options.stateArgs,
-      limits: options.limits,  // optional metadata only — not enforced by workerd OSS
       ref: options.ref,
       parentId: options.parentId,
       status: "building",
@@ -276,7 +249,6 @@ export class WorkerdManager {
     if (updates.env) instance.env = updates.env;
     if (updates.bindings) instance.bindings = updates.bindings;
     if (updates.stateArgs !== undefined) instance.stateArgs = updates.stateArgs;
-    if (updates.limits !== undefined) instance.limits = updates.limits;
     if (updates.ref !== undefined) instance.ref = updates.ref || undefined;
 
     // Restart workerd with new config
@@ -428,14 +400,10 @@ export class WorkerdManager {
 
       // Build workerd service config.
       //
-      // NOTE: We deliberately do not emit a `limits` field on the Worker.
-      // workerd's open-source config schema (workerd.capnp `Worker` struct)
-      // does not have such a field — that's a Cloudflare-platform concept.
-      // Adding it crashes workerd at startup with:
-      //   "Struct has no field named 'limits'."
-      // If we ever want per-request CPU/subrequest enforcement, it has to
-      // happen in a wrapper around dispatch (e.g. AbortSignal.timeout()),
-      // not via the worker config.
+      // workerd's open-source config schema has no per-worker resource-limits
+      // field. If we want CPU/subrequest enforcement in this stack, it has to
+      // happen above workerd (for example via AbortSignal-based request guards),
+      // not in the generated worker config.
       const workerDef: {
         modules: object[];
         bindings: object[];

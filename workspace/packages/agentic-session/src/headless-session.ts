@@ -231,7 +231,7 @@ export class HeadlessSession {
         if (!title) return { ok: false, error: "Missing title" };
         const client = this._manager.client;
         if (client) {
-          try { await client.updateChannelConfig({ title }); } catch { /* best-effort */ }
+          await client.updateChannelConfig({ title });
         }
         return { ok: true };
       },
@@ -241,6 +241,8 @@ export class HeadlessSession {
     if (this._sandbox) {
       methods["eval"] = buildEvalTool({
         sandbox: this._sandbox,
+        rpc: this._sandbox.rpc,
+        runtimeTarget: "workerRuntime",
         scopeManager: this._scopeManager,
         getChatSandboxValue: () => this._manager.buildChatSandboxValue(),
         getScope: () => this._scopeManager?.current ?? {},

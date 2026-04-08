@@ -827,6 +827,19 @@ async function main() {
   const commonDeps = { container, dispatcher, tokenManager, workspace, workspacePath, workspaceConfig, gitServer, adminToken, centralData: centralData ?? null, args, hostConfig, isIpcMode: !!ipcChannel, eventService, requestRelaunch };
   await registerPanelServices(commonDeps);
 
+  {
+    const { createMetaService } = await import("./services/metaService.js");
+    const { panelRuntimeSurface } = await import("../../workspace/packages/runtime/src/shared/runtimeSurface.panel.js");
+    const { workerRuntimeSurface } = await import("../../workspace/packages/runtime/src/shared/runtimeSurface.worker.js");
+    container.register(rpcService(createMetaService({
+      dispatcher,
+      runtimeSurfaces: {
+        panel: panelRuntimeSurface,
+        workerRuntime: workerRuntimeSurface,
+      },
+    })));
+  }
+
   if (!ipcChannel) {
     // Settings service for remote/mobile shells.
     const { createSettingsServiceStandalone } = await import("./services/settingsServiceStandalone.js");

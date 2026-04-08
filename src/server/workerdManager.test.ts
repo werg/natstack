@@ -69,7 +69,6 @@ function defaultCreateOptions(overrides: Partial<WorkerCreateOptions> = {}): Wor
   return {
     source: "workers/hello",
     contextId: "ctx-1",
-    limits: { cpuMs: 100 },
     ...overrides,
   };
 }
@@ -90,7 +89,6 @@ describe("WorkerdManager", () => {
       expect(instance.contextId).toBe("ctx-1");
       expect(instance.callerId).toBe("worker:hello");
       expect(instance.token).toBe("mock-token-123");
-      expect(instance.limits).toEqual({ cpuMs: 100 });
       expect(instance.status).toBe("running");
     });
 
@@ -217,18 +215,16 @@ describe("WorkerdManager", () => {
   // updateInstance
   // -------------------------------------------------------------------------
   describe("updateInstance", () => {
-    it("updates env and limits", async () => {
+    it("updates env", async () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
       await mgr.createInstance(defaultCreateOptions());
       const updated = await mgr.updateInstance("hello", {
         env: { FOO: "bar" },
-        limits: { cpuMs: 200, subrequests: 5 },
       });
 
       expect(updated.env).toEqual({ FOO: "bar" });
-      expect(updated.limits).toEqual({ cpuMs: 200, subrequests: 5 });
     });
 
     it("sets ref on update", async () => {
