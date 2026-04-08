@@ -254,11 +254,11 @@ export class ${className} extends AgentWorkerBase {
   static override schemaVersion = 1;
 
   // --- Hook: Harness configuration ---
-  // Override to set system prompt, model, temperature, MCP servers, etc.
+  // Override to set model, temperature, MCP servers, etc.
+  // For claude-sdk workers, keep NatStack guidance in skills and tool
+  // descriptions rather than custom system prompts.
   protected override getHarnessConfig(): HarnessConfig {
-    return {
-      systemPrompt: "You are a helpful AI assistant.",
-    };
+    return {};
   }
 
   // --- Hook: Participant identity ---

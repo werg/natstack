@@ -1,11 +1,13 @@
 ---
 name: sandbox
-description: Execute code in the chat sandbox — eval tool, inline UI components, feedback forms, browser automation, and all runtime APIs (fs, db, git, workers, ai).
+description: Load this first for most NatStack tasks that need runtime actions. Covers the eval tool, scope, inline UI, feedback tools, browser automation, and runtime APIs like fs, db, git, workers, and ai.
 ---
 
 # Sandbox Execution Skill
 
 How to use the chat panel's code execution sandbox — the eval tool, inline UI components, custom feedback forms, and all runtime APIs they can access.
+
+Use this when the task requires actually doing work inside NatStack: reading or writing files, querying databases, calling runtime services, automating browsers, rendering inline UI, or asking the user structured questions.
 
 ## Files
 
@@ -19,6 +21,13 @@ How to use the chat panel's code execution sandbox — the eval tool, inline UI 
 | [BROWSER_AUTOMATION.md](BROWSER_AUTOMATION.md) | Browser automation — Playwright API via CDP |
 | [PATTERNS.md](PATTERNS.md) | Common patterns and recipes |
 | [INTERACTION_PATTERNS.md](INTERACTION_PATTERNS.md) | When to use inline UI for side-effect actions with choices/complexity |
+
+## Agent Guidance
+
+- Load this skill before using `eval` when you need NatStack runtime APIs, patterns, or examples.
+- Use `eval` as the primary action tool for files, databases, services, workers, and browser automation.
+- Call `set_title` after the first substantive exchange once the task is clear.
+- Tool availability is runtime-dependent: `inline_ui`, `feedback_form`, and `feedback_custom` are panel-only. In headless sessions, rely on `eval`, `set_title`, and normal conversation replies instead.
 
 ## Execution Modes
 

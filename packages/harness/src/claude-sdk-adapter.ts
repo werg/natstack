@@ -41,7 +41,6 @@ import type {
   TurnInput,
   TurnUsage,
 } from './types.js';
-import { buildSystemPrompt } from './system-prompt.js';
 import { buildMcpToolDefinitions, type McpToolDefinition } from './mcp-tools.js';
 import { jsonSchemaToZodRawShape } from './json-schema-to-zod.js';
 
@@ -352,16 +351,13 @@ export class ClaudeSdkAdapter {
     try {
       const sdk = await this.ensureSdk();
 
-      // Build system prompt — append to SDK defaults unless explicitly replacing.
-      // When no custom prompt is configured and mode is append, use the preset
-      // as-is so the SDK's built-in instructions (including skill discovery) apply.
-      const promptText = buildSystemPrompt(this.config);
-      const mode = this.config.systemPromptMode ?? 'append';
-      const systemPrompt = mode === 'replace'
-        ? (promptText ?? 'You are a helpful assistant.')
-        : promptText
-          ? { type: 'preset' as const, preset: 'claude_code' as const, append: promptText }
-          : { type: 'preset' as const, preset: 'claude_code' as const };
+      // Intentionally rely on the Claude Code preset prompt only.
+      // NatStack-specific guidance lives in skill docs and tool descriptions,
+      // not in adapter-level system prompt overrides.
+      const systemPrompt = {
+        type: 'preset' as const,
+        preset: 'claude_code' as const,
+      };
 
       // Discover and build MCP tools from channel methods
       const mcpServers = await this.buildMcpServers(sdk);

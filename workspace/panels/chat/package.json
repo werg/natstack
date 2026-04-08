@@ -43,15 +43,6 @@
         "initialPrompt": {
           "type": "string",
           "description": "Initial prompt to auto-send as the first user message"
-        },
-        "systemPrompt": {
-          "type": "string",
-          "description": "System prompt for the agent harness"
-        },
-        "systemPromptMode": {
-          "type": "string",
-          "enum": ["append", "replace-natstack", "replace"],
-          "description": "append (default): layers on NatStack prompt + SDK defaults. replace-natstack: replaces NatStack prompt but keeps SDK defaults. replace: replaces everything."
         }
       }
     },

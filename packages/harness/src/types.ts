@@ -37,14 +37,15 @@ export interface HarnessSettings {
 
 /** Configuration for a harness — passed via spawn-harness action */
 export interface HarnessConfig {
+  /**
+   * Optional adapter-specific system prompt override.
+   * Ignored by the Claude SDK adapter; retained for adapters that still expose
+   * prompt customization.
+   */
   systemPrompt?: string;
   /**
-   * How the systemPrompt interacts with the SDK's built-in system prompt.
-   * - `"append"` (default): Appends to the SDK's default prompt AND the
-   *   base NatStack prompt (tool inventory, skill routing, interaction style).
-   * - `"replace-natstack"`: Replaces the NatStack prompt but still appends
-   *   to the SDK's built-in prompt (tool instructions, coding guidelines).
-   * - `"replace"`: Replaces everything — SDK defaults and NatStack prompt.
+   * Adapter-specific handling for `systemPrompt`.
+   * The Claude SDK adapter ignores this field; other adapters may interpret it.
    */
   systemPromptMode?: "append" | "replace-natstack" | "replace";
   model?: string;
@@ -147,4 +148,3 @@ export interface MethodAdvertisement {
 export interface UnsubscribeResult {
   harnessIds: string[];
 }
-

@@ -62,16 +62,14 @@ protected getHarnessType(): string {
 
 ### getHarnessConfig(): HarnessConfig
 
-Returns configuration passed to the harness on spawn. Override to set system prompts, model, temperature, MCP servers, etc.
+Returns configuration passed to the harness on spawn. Override to set model, temperature, MCP servers, etc.
+
+For the default `claude-sdk` harness, NatStack-specific behavior should live in
+skills and tool descriptions rather than custom system prompts.
 
 ```typescript
 protected getHarnessConfig(): HarnessConfig {
   return {
-    systemPrompt: 'You are a helpful coding assistant.',
-    // "append" (default): layers on NatStack base prompt + SDK defaults.
-    // "replace-natstack": replaces NatStack prompt, keeps SDK defaults.
-    // "replace": replaces everything (NatStack base + SDK defaults).
-    systemPromptMode: 'append',
     model: 'claude-sonnet-4-20250514',
     temperature: 0.7,
     maxTokens: 4096,
@@ -320,7 +318,7 @@ if (config?.model) {
 }
 ```
 
-The `AiChatWorker` merges subscription config with `getHarnessConfig()` automatically — per-channel overrides for `systemPrompt`, `model`, `temperature`, and `maxTokens` take precedence.
+The `AiChatWorker` merges subscription config with `getHarnessConfig()` automatically — per-channel overrides for `model`, `temperature`, and `maxTokens` take precedence.
 
 ## 10. Full Annotated AiChatWorker Walkthrough
 
@@ -458,9 +456,6 @@ export class CodeReviewWorker extends AgentWorkerBase {
 
   protected override getHarnessConfig(): HarnessConfig {
     return {
-      systemPrompt: `You are a code review assistant. When given a diff or code snippet,
-        provide constructive feedback on: correctness, performance, readability, and security.
-        Format your response as a structured review with sections.`,
       model: 'claude-sonnet-4-20250514',
       temperature: 0.3,
     };

@@ -1,11 +1,13 @@
 ---
 name: paneldev
-description: Build and develop NatStack panels — project scaffolding, hooks, RPC contracts, workers, Durable Objects, AI integration, and development workflow.
+description: Use this when building or changing NatStack panels, workers, Durable Objects, RPC contracts, or AI-integrated workspace code. Covers scaffolding, architecture, tools, and development workflow.
 ---
 
 # Panel Development Skill
 
 Documentation for developing NatStack panels.
+
+Use this when the task is codebase development rather than runtime usage: creating panels, editing workers, wiring RPC services, or understanding how workspace packages are built and loaded.
 
 ## Files
 

@@ -70,7 +70,6 @@ function createDeps(overrides?: Partial<ClaudeAdapterDeps>): ClaudeAdapterDeps &
 
 function createConfig(overrides?: Partial<HarnessConfig>): HarnessConfig {
   return {
-    systemPrompt: 'You are a test assistant.',
     model: 'claude-sonnet-4-5-20250929',
     ...overrides,
   };
@@ -644,7 +643,7 @@ describe('ClaudeSdkAdapter', () => {
   });
 
   describe('system prompt', () => {
-    it('should use config systemPrompt by default', async () => {
+    it('should always use the Claude Code preset prompt', async () => {
       const sdkMessages = [
         {
           type: 'result',
@@ -672,15 +671,13 @@ describe('ClaudeSdkAdapter', () => {
         input: { content: 'test', senderId: 'user-1' },
       });
 
-      // In default append mode, systemPrompt is wrapped in a preset object
       expect(capturedOptions?.["systemPrompt"]).toEqual({
         type: 'preset',
         preset: 'claude_code',
-        append: 'Custom system prompt here.',
       });
     });
 
-    it('should use plain string in replace mode', async () => {
+    it('should ignore custom systemPrompt config', async () => {
       const sdkMessages = [
         {
           type: 'result',
@@ -708,7 +705,10 @@ describe('ClaudeSdkAdapter', () => {
         input: { content: 'test', senderId: 'user-1' },
       });
 
-      expect(capturedOptions?.["systemPrompt"]).toBe('Full replacement prompt.');
+      expect(capturedOptions?.["systemPrompt"]).toEqual({
+        type: 'preset',
+        preset: 'claude_code',
+      });
     });
   });
 

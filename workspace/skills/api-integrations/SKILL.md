@@ -1,11 +1,13 @@
 ---
 name: api-integrations
-description: Connect to third-party APIs (Gmail, Notion, Slack, GitHub, Linear) via OAuth — setup, token management, npm SDK patterns, and building reusable integrations.
+description: Use this when connecting NatStack code to third-party APIs through OAuth. Covers provider setup, token management, npm SDK usage, and reusable integrations for Gmail, GitHub, Slack, Notion, Linear, and similar services.
 ---
 
 # API Integrations
 
 How to connect to and use third-party APIs (Gmail, Notion, Slack, GitHub, etc.) from agent eval code.
+
+Use this when the task mentions OAuth, external APIs, account connections, access tokens, or building an integration against a hosted service.
 
 ## Prerequisites: OAuth Setup
 

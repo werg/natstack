@@ -1,11 +1,13 @@
 ---
 name: onboarding
-description: New user onboarding — what NatStack is, first-time setup, workspace configuration, browser data import, and pointers to other skills.
+description: Use this for first-run setup and orientation. Explains what NatStack is, how workspaces and panels fit together, initial configuration, browser import, and which other skills to load next.
 ---
 
 # Onboarding Skill
 
 Guide new users through understanding NatStack and getting their workspace set up.
+
+Use this when the user is new to NatStack, confused about the environment, or needs help deciding which skill or workflow to use first.
 
 ## Files
 

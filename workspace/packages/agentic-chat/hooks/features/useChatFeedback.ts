@@ -141,6 +141,8 @@ export function useChatFeedback({
     const feedbackFormMethodDef: MethodDefinition = {
       description: `Show a form to collect user input.
 
+Panel-only: this tool is advertised only when a chat panel is connected.
+
 **Result:** \`{ type: "submit", value: { fieldKey: userValue, ... } }\` or \`{ type: "cancel" }\`
 
 **Field types:** string, number, boolean, select (needs \`options\`), slider (\`min\`/\`max\`), segmented (\`options\`)
@@ -152,6 +154,8 @@ export function useChatFeedback({
 
     const feedbackCustomMethodDef: MethodDefinition = {
       description: `Show a custom React component that blocks until user submits or cancels.
+
+Panel-only: this tool is advertised only when a chat panel is connected.
 
 **The component receives { onSubmit, onCancel, onError, chat, scope, scopes }:**
 - onSubmit(value) — return data to the agent and close the form

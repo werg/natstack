@@ -1,11 +1,13 @@
 ---
 name: browser-import
-description: Import browser data into the workspace — discover installed browsers, import cookies/passwords/bookmarks/history, manage and sync imported data.
+description: Use this when the task involves cookies, passwords, bookmarks, or browsing-history import. Covers browser discovery, profile selection, import flows, sync, and panel-based management UIs.
 ---
 
 # Browser Data Import Skill
 
 Import and manage browser data (cookies, passwords, bookmarks, history) from installed browsers into the workspace. Includes rich interactive UIs for every step.
+
+Use this when a task depends on browser state from an installed browser, especially cookies for authentication, saved passwords, bookmark migration, or profile discovery.
 
 ## Files
 

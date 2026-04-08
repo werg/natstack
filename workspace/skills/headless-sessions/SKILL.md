@@ -1,11 +1,13 @@
 ---
 name: headless-sessions
-description: Run agentic sessions without a UI — eval harnesses, workers, automated pipelines, tests. Uses SessionManager from @workspace/agentic-core and HeadlessSession from @workspace/agentic-session.
+description: Use this when running agentic sessions without a chat panel. Covers HeadlessSession, SessionManager, eval in workers or tests, auto-approval, and the tool/runtime differences between panel and headless execution.
 ---
 
 # Headless Agentic Sessions
 
 Run agentic sessions (connection, messaging, eval, scope) without the chat panel UI. Useful for eval harnesses, worker-driven pipelines, tests, and any context where React isn't available.
+
+Use this when the task runs from a worker, test harness, automation flow, or any environment where there is no panel UI to render inline components or feedback forms.
 
 ## Files
 
@@ -32,8 +34,9 @@ Run agentic sessions (connection, messaging, eval, scope) without the chat panel
 
 ## Environment Compatibility
 
-Headless sessions use the same agent worker, system prompt, and tool surface as
-panel-hosted sessions. The only difference is the runtime environment: with no
+Headless sessions use the same agent worker and core tool surface as
+panel-hosted sessions. Guidance that used to live in prompt overrides now lives
+in skill docs and tool descriptions. The runtime difference is simple: with no
 chat panel connected, UI-only tools simply aren't advertised on the channel and
 naturally drop out of the agent's tool list.
 
@@ -46,6 +49,5 @@ naturally drop out of the agent's tool list.
 | feedback_form / feedback_custom | Yes | No — no panel to render the form |
 | Tool approval UI | Yes | No — headless uses full-auto approval |
 
-The agent's prompt notes that these UI tools are runtime-dependent, so it
-automatically falls back to plain message replies for the same content when
-running headless.
+When running headless, prefer plain message replies for anything that would
+normally use `inline_ui`, `feedback_form`, or `feedback_custom`.

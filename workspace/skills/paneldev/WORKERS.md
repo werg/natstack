@@ -385,7 +385,7 @@ if (config?.model) {
 }
 ```
 
-The built-in `AiChatWorker` merges subscription config with `getHarnessConfig()` automatically -- per-channel overrides for `systemPrompt`, `model`, `temperature`, and `maxTokens` take precedence. `toolAllowlist` is sourced exclusively from the worker class (`getHarnessConfig`) — subscriptions cannot override it. The worker defines the upper bound of tools it's willing to expose, and natural method discovery handles the lower bound (a tool only appears if some participant actually advertises it).
+The built-in `AiChatWorker` merges subscription config with `getHarnessConfig()` automatically -- per-channel overrides for `model`, `temperature`, and `maxTokens` take precedence. `toolAllowlist` is sourced exclusively from the worker class (`getHarnessConfig`) — subscriptions cannot override it. The worker defines the upper bound of tools it's willing to expose, and natural method discovery handles the lower bound (a tool only appears if some participant actually advertises it).
 
 ## Headless Agentic Sessions
 

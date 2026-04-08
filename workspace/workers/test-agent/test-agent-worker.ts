@@ -1,7 +1,6 @@
 import { AgentWorkerBase } from "@workspace/agentic-do";
 import type {
   ChannelEvent,
-  HarnessConfig,
   HarnessOutput,
   ParticipantDescriptor,
 } from "@natstack/harness/types";
@@ -9,18 +8,10 @@ import type {
 /**
  * TestAgentWorker — Minimal agent DO for testing the harness pipeline.
  *
- * Overrides only getHarnessConfig() and getParticipantInfo() to inject a
- * distinctive system prompt. All side effects via RPC calls.
+ * Overrides only getParticipantInfo(). All side effects via RPC calls.
  */
 export class TestAgentWorker extends AgentWorkerBase {
   static override schemaVersion = 3;
-
-  protected override getHarnessConfig(): HarnessConfig {
-    return {
-      systemPrompt:
-        'You MUST begin every response with exactly "the agent says: " (including the colon and space). Then provide your normal helpful response. Keep responses concise.',
-    };
-  }
 
   protected override getParticipantInfo(): ParticipantDescriptor {
     return {

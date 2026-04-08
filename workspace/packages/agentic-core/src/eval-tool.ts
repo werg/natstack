@@ -44,7 +44,7 @@ export function buildEvalTool(opts: BuildEvalToolOptions): MethodDefinition {
   return {
     description: `Execute TypeScript/JavaScript code in the sandbox.
 
-Call \`await help()\` first when you need the live service catalog or runtime surface for this context. Only \`chat\`, \`scope\`, \`scopes\`, and \`help\` are pre-injected. Import everything else from \`@workspace/runtime\` using static \`import\`, not \`await import(...)\`.
+This is the primary action tool for files, databases, runtime services, and browser automation. Load the \`sandbox\` skill when you need the full API reference or examples. Call \`await help()\` first when you need the live service catalog or runtime surface for this context. Only \`chat\`, \`scope\`, \`scopes\`, and \`help\` are pre-injected. Import everything else from \`@workspace/runtime\` using static \`import\`, not \`await import(...)\`.
 
 \`return\` sends a value back to the agent. \`console.log\` streams in real time. \`scope\` persists across eval calls.`,
     parameters: z.object({

@@ -213,7 +213,7 @@ export function useAgenticChat({
           ...toolMethods,
           ...approvalMethod,
           set_title: {
-            description: "Set the conversation title",
+            description: "Set the conversation title once the task is clear. Call this after the first substantive exchange, not on every turn.",
             parameters: z.object({ title: z.string().describe("The new title") }),
             execute: async (args: unknown) => {
               const { title } = args as { title: string };
@@ -228,6 +228,8 @@ export function useAgenticChat({
           },
           inline_ui: {
             description: `Render a persistent interactive UI component inline in the chat.
+
+Panel-only: this tool is advertised only when a chat panel is connected.
 
 **Contrast with other tools:**
 - \`eval\`: Agent-triggered side-effects. Runs code immediately, returns result.

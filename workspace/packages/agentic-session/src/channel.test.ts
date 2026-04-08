@@ -51,7 +51,7 @@ describe("subscribeHeadlessAgent — unified contract", () => {
     expect(captured.config!["systemPromptMode"]).toBeUndefined();
   });
 
-  it("does not pass any systemPrompt when none was provided", async () => {
+  it("does not pass any systemPrompt", async () => {
     const captured: { config?: Record<string, unknown> } = {};
     await subscribeHeadlessAgent({
       rpcCall: makeRpcCall(captured),
@@ -79,23 +79,6 @@ describe("subscribeHeadlessAgent — unified contract", () => {
     expect(captured.config!["approvalLevel"]).toBe(2);
   });
 
-  it("forwards a caller-provided systemPrompt verbatim (append semantics)", async () => {
-    const captured: { config?: Record<string, unknown> } = {};
-    await subscribeHeadlessAgent({
-      rpcCall: makeRpcCall(captured),
-      source: "workers/agent-worker",
-      className: "AiChatWorker",
-      objectKey: "obj-1",
-      channelId: "ch-1",
-      contextId: "ctx-1",
-      systemPrompt: "extra instructions",
-    });
-
-    expect(captured.config!["systemPrompt"]).toBe("extra instructions");
-    // No replace-mode unless the caller explicitly opts in via extraConfig
-    expect(captured.config!["systemPromptMode"]).toBeUndefined();
-  });
-
   it("respects extraConfig overrides without smuggling in a toolAllowlist", async () => {
     const captured: { config?: Record<string, unknown> } = {};
     await subscribeHeadlessAgent({
@@ -105,10 +88,10 @@ describe("subscribeHeadlessAgent — unified contract", () => {
       objectKey: "obj-1",
       channelId: "ch-1",
       contextId: "ctx-1",
-      extraConfig: { systemPromptMode: "replace-natstack", model: "claude-opus-4-6" },
+      extraConfig: { model: "claude-opus-4-6" },
     });
 
-    expect(captured.config!["systemPromptMode"]).toBe("replace-natstack");
+    expect(captured.config!["systemPromptMode"]).toBeUndefined();
     expect(captured.config!["model"]).toBe("claude-opus-4-6");
     expect(captured.config!["toolAllowlist"]).toBeUndefined();
   });

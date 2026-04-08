@@ -2,42 +2,6 @@ import { AgentWorkerBase } from "@workspace/agentic-do";
 import type { ChannelEvent, HarnessConfig, HarnessOutput, ParticipantDescriptor } from "@natstack/harness/types";
 
 /**
- * Default system prompt appended to the SDK's built-in prompt for all chat panels.
- *
- * This covers NatStack-specific knowledge: available tools, workspace skills,
- * interaction patterns, and runtime APIs. The SDK's built-in prompt already
- * handles general coding behavior, tool usage patterns, and safety guidelines.
- */
-const CHAT_SYSTEM_PROMPT = `You are an AI assistant in a NatStack workspace — a local, AI-powered environment with stackable panels, browser automation, and a code sandbox.
-
-## Tool guidance
-
-- **eval** is your primary tool. Use it for all actions — files, databases, APIs, panels, browsers. Use static imports (not dynamic await import()). \`chat\`, \`scope\`, and \`scopes\` are pre-injected. Import \`contextId\` from \`@workspace/runtime\`. Every eval result includes a \`[scope]\` summary showing current keys.
-- Quick patterns: \`fs.readFile(path)\` / \`fs.writeFile(path, data)\` for files. \`const h = await db.open("name"); await h.query("SELECT...")\` for databases (db is a client — call \`.open()\` first). Load the **sandbox** skill for the full API reference.
-- Use **inline_ui** for interactive results (tables, dashboards, action buttons). Use **feedback_form** when you need a user choice before continuing.
-- Call **set_title** after the first substantive exchange.
-- **Tool availability is runtime-dependent.** \`inline_ui\`, \`feedback_form\`, and \`feedback_custom\` are advertised by chat panels and only appear when a panel is connected. In headless contexts (workers, automated harnesses, tests) they will be absent — return data via eval results and ask follow-up questions through normal conversation messages instead. Do not assume a tool exists; rely on what's actually exposed to you.
-
-## Scope
-
-\`scope\` is a live in-memory object shared across eval calls — store anything (handles, pages, functions, data) and it all works between calls. After every eval, the result includes a \`[scope]\` line listing current keys. Scope is serialized to DB automatically; on panel reload, data survives but functions and class instances are lost. A system message will list what was restored, partially restored, or lost.
-
-## Workspace skills
-
-Skills are documentation bundles with API references and code examples. **Use the Skill tool to load them** (NOT eval import). Before using eval, load the **sandbox** skill — it has the complete API reference.
-
-- **sandbox** — **load this first** — eval patterns, complete runtime API reference, inline_ui, feedback forms, browser automation
-- **paneldev** — building panels, workers, Durable Objects, RPC contracts, development workflow
-- **browser-import** — importing cookies, passwords, bookmarks, history from installed browsers
-- **api-integrations** — connecting to OAuth APIs (Gmail, GitHub, Slack, Notion, Linear)
-- **onboarding** — first-time setup, workspace configuration, NatStack overview
-
-## Style
-
-Show, don't tell — use eval to demonstrate. When a chat panel is connected, prefer \`inline_ui\` for rich results and \`feedback_form\` for choices over text questions. When running headless, fall back to plain message replies for the same content.
-`;
-
-/**
  * AiChatWorker — The default AI chat Durable Object.
  *
  * Manages one-harness-per-channel AI conversations. All per-turn state
@@ -55,19 +19,6 @@ Show, don't tell — use eval to demonstrate. When a chat panel is connected, pr
  */
 export class AiChatWorker extends AgentWorkerBase {
   static override schemaVersion = 3;
-
-  // --- Hook overrides ---
-
-  protected override getHarnessConfig(): HarnessConfig {
-    return {
-      systemPrompt: CHAT_SYSTEM_PROMPT,
-      // No toolAllowlist: any method advertised by participants on this channel
-      // is exposed to the agent. The set of available tools is defined by who's
-      // connected (panel registers inline_ui/feedback_form, headless registers
-      // eval/set_title, custom test rigs can register whatever they need).
-      // Channel membership is the trust boundary, not a hardcoded list.
-    };
-  }
 
   protected override getParticipantInfo(
     _channelId: string,
@@ -589,30 +540,11 @@ export class AiChatWorker extends AgentWorkerBase {
     const sub = this.getSubscriptionConfig(channelId);
     if (!sub) return base;
 
-    // systemPromptMode controls how the subscription prompt interacts with the
-    // base CHAT_SYSTEM_PROMPT and SDK defaults:
-    //   "append" (default) — subscription prompt layers on top of the base
-    //   "replace-natstack" — subscription prompt replaces NatStack base, still appended to SDK defaults
-    //   "replace" — subscription prompt replaces both NatStack base AND SDK defaults
-    const subPrompt = sub["systemPrompt"] as string | undefined;
-    const subMode = (sub["systemPromptMode"] as HarnessConfig["systemPromptMode"] | undefined);
-    const mergedPrompt = subMode === "replace" || subMode === "replace-natstack"
-      ? (subPrompt ?? base.systemPrompt)
-      : subPrompt && base.systemPrompt
-        ? `${base.systemPrompt}\n\n${subPrompt}`
-        : subPrompt ?? base.systemPrompt;
-    // "replace-natstack" swaps out the NatStack prompt but still appends to SDK defaults,
-    // so it maps to "append" for the harness-level mode.
-    const harnessMode = subMode === "replace-natstack" ? "append" : subMode;
-
-    // Note: toolAllowlist comes exclusively from the worker class (`getHarnessConfig`).
-    // Subscriptions cannot override it — the worker defines the upper bound of tools
-    // it's willing to expose, and natural method discovery handles the lower bound
-    // (a tool only appears if some participant actually advertises it).
+    // Claude SDK sessions intentionally do not accept subscription-level
+    // system prompt overrides. NatStack guidance is carried by skills and
+    // tool descriptions instead.
     return {
       ...base,
-      ...(mergedPrompt ? { systemPrompt: mergedPrompt } : {}),
-      ...(harnessMode ? { systemPromptMode: harnessMode } : {}),
       ...(sub["model"] ? { model: sub["model"] as string } : {}),
       ...(sub["temperature"] != null
         ? { temperature: sub["temperature"] as number }

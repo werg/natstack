@@ -1,11 +1,13 @@
 ---
 name: system-testing
-description: Automated system testing via headless agentic sessions. Spawns test agents to exercise NatStack services, skills, and runtime, then validates results programmatically. Includes a self-improvement workflow for fixing discovered bugs.
+description: Use this when systematically testing NatStack behavior or debugging failures through reproducible agent-driven tests. Covers HeadlessRunner, TestRunner, built-in test cases, diagnostics, and the self-improvement workflow.
 ---
 
 # System Testing Skill
 
 Spin up headless agentic sessions to systematically test every NatStack capability — filesystem, database, git, workers, panels, browser panels, build system, OAuth, AI, skills, and more. Collect structured pass/fail results with full diagnostic data for every turn.
+
+Use this when you need repeatable coverage across services or when a bug should be reproduced and analyzed through an automated agent session instead of ad hoc manual testing.
 
 ## Files
 
@@ -160,19 +162,6 @@ initPanels:
         agent made and its result), debug events, and participant state. Identify whether
         the root cause is in the infrastructure (services, RPC methods, error handling) or
         the test. Fix infrastructure bugs first — read SELF_IMPROVEMENT.md for the workflow.
-      systemPrompt: |
-        You are a NatStack system testing and self-improvement agent. Your workflow:
-        1. Import the system-testing skill via eval with imports parameter
-        2. Run test suites using HeadlessRunner and TestRunner
-        3. For every failure, thoroughly inspect the TestExecutionResult:
-           - The full conversation (every message the test agent sent/received)
-           - The method history (every eval/tool call, its arguments, return value, errors)
-           - The debug events (harness lifecycle: spawn, start, stop, crash)
-           - The participant state (did the agent join? did it disconnect?)
-        4. Classify root cause: infrastructure bug vs documentation bug vs test bug
-        5. Fix infrastructure first — never work around broken APIs in prompts
-        6. Read SELF_IMPROVEMENT.md for the detailed fix workflow
-      systemPromptMode: append
 ```
 
 ## Environment Compatibility

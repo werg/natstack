@@ -19,11 +19,10 @@ export class HeadlessRunner {
    *
    * The test agent's eval executes in the panel context with full access to
    * @workspace/runtime, panel APIs, browser panels, etc. The agent uses the
-   * standard NatStack chat prompt and tool surface — UI tools like inline_ui
-   * and feedback_form will be available because the panel is connected.
+   * standard NatStack chat tool surface — UI tools like inline_ui and
+   * feedback_form will be available because the panel is connected.
    */
   async spawn(opts?: {
-    systemPrompt?: string;
     source?: string;
     className?: string;
   }): Promise<HeadlessSession> {
@@ -41,7 +40,6 @@ export class HeadlessRunner {
       source: opts?.source ?? "workers/agent-worker",
       className: opts?.className ?? "AiChatWorker",
       contextId: this.contextId,
-      systemPrompt: opts?.systemPrompt,
     });
   }
 }

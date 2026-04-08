@@ -41,10 +41,6 @@ interface ChatStateArgs {
   agentClass?: string;
   /** If set, automatically sent as the first user message once connected */
   initialPrompt?: string;
-  /** System prompt for the agent harness */
-  systemPrompt?: string;
-  /** How systemPrompt interacts with base NatStack prompt and SDK defaults */
-  systemPromptMode?: "append" | "replace-natstack" | "replace";
 }
 
 /**
@@ -115,8 +111,6 @@ export default function ChatPanel() {
     void setStateArgs({ channelName, contextId: resolvedContextId, pendingAgents: pending });
 
     const subscribeConfig: Record<string, unknown> = { handle: baseHandle };
-    if (stateArgs.systemPrompt) subscribeConfig["systemPrompt"] = stateArgs.systemPrompt;
-    if (stateArgs.systemPromptMode) subscribeConfig["systemPromptMode"] = stateArgs.systemPromptMode;
     subscribeDOToChannel(workerSource, className, objectKey, channelName, resolvedContextId, subscribeConfig, true).catch((err: unknown) => {
       console.warn(`[ChatPanel] Failed to subscribe agent DO:`, err);
     });
@@ -128,8 +122,6 @@ export default function ChatPanel() {
     stateArgs.agentClass,
     stateArgs.agentSource,
     stateArgs.channelName,
-    stateArgs.systemPrompt,
-    stateArgs.systemPromptMode,
   ]);
 
   // Clear initialPrompt from persisted stateArgs after capture.

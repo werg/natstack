@@ -30,14 +30,7 @@ export interface SubscribeHeadlessAgentOptions {
   channelId: string;
   /** Context ID for authorization */
   contextId: string;
-  /**
-   * Optional system prompt to layer on top of the worker's default prompt.
-   * By default this APPENDS to the worker's NatStack prompt — to replace it
-   * entirely, also pass `systemPromptMode: "replace-natstack"` (or "replace")
-   * via `extraConfig`.
-   */
-  systemPrompt?: string;
-  /** Additional subscription config (e.g., model, temperature, systemPromptMode) */
+  /** Additional subscription config (e.g., model, temperature) */
   extraConfig?: Record<string, unknown>;
 }
 
@@ -54,7 +47,6 @@ export async function subscribeHeadlessAgent(opts: SubscribeHeadlessAgentOptions
 
   const subscriptionConfig: Record<string, unknown> = {
     ...channelConfig,
-    ...(opts.systemPrompt ? { systemPrompt: opts.systemPrompt } : {}),
     ...opts.extraConfig,
   };
 

@@ -157,7 +157,7 @@ export class ContextFolderManager {
           path.join(pluginDir, "plugin.json"),
           JSON.stringify({
             name: "natstack-workspace",
-            description: "NatStack workspace skills",
+            description: "NatStack workspace skills for sandbox runtime actions, panel and worker development, browser import, OAuth integrations, headless sessions, and system testing.",
             version: "0.1.0",
           }, null, 2),
         );

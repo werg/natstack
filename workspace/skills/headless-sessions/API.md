@@ -121,9 +121,6 @@ interface HeadlessSessionConfig {
 }
 ```
 
-To customize the agent's system prompt, use `HeadlessWithAgentConfig.systemPrompt`
-(only meaningful when subscribing an agent via `createWithAgent`).
-
 ### HeadlessWithAgentConfig
 
 Extends `HeadlessSessionConfig` with:
@@ -138,8 +135,6 @@ interface HeadlessWithAgentConfig extends HeadlessSessionConfig {
   channelId?: string;       // auto-generated if omitted
   channelConfig?: ChannelConfig;
   methods?: Record<string, MethodDefinition>;  // merged with default eval/set_title
-  /** Optional prompt appended to the worker's default. Use extraConfig.systemPromptMode to replace instead. */
-  systemPrompt?: string;
   extraConfig?: Record<string, unknown>;
 }
 ```
@@ -169,8 +164,8 @@ All SessionManager methods (send, interrupt, connect, close, etc.) are also avai
 getRecommendedChannelConfig(): Partial<ChannelConfig>
 
 // Subscribe a DO agent to a channel with full-auto approval.
-// The agent uses the same harness config and system prompt as panel sessions —
-// no extra restrictions are applied.
+// The agent uses the same worker and tool surface as panel sessions — no extra
+// restrictions are applied.
 subscribeHeadlessAgent(opts: SubscribeHeadlessAgentOptions): Promise<{ ok: boolean; participantId?: string }>
 ```
 
@@ -182,9 +177,7 @@ interface SubscribeHeadlessAgentOptions {
   objectKey: string;
   channelId: string;
   contextId: string;
-  /** Appended to the worker's default prompt by default. */
-  systemPrompt?: string;
-  /** Pass `systemPromptMode`, `model`, `temperature`, etc. through to the worker. */
+  /** Pass `model`, `temperature`, etc. through to the worker. */
   extraConfig?: Record<string, unknown>;
 }
 ```

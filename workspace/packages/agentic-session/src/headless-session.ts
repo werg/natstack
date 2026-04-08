@@ -5,9 +5,9 @@
  * - Full-auto approval is desired (no human in the loop to approve tool calls)
  * - The session creates and owns its own channel
  *
- * The agent uses the same harness config and system prompt as panel-hosted
- * sessions. UI-only tools (inline_ui, feedback_form, etc.) are simply absent
- * from method discovery because no panel is connected to advertise them.
+ * The agent uses the same worker and tool surface as panel-hosted sessions.
+ * UI-only tools (inline_ui, feedback_form, etc.) are simply absent from
+ * method discovery because no panel is connected to advertise them.
  */
 
 import {
@@ -104,13 +104,7 @@ export interface HeadlessWithAgentConfig extends HeadlessSessionConfig {
   channelConfig?: ChannelConfig;
   /** Additional methods to register on the client (merged with default eval/set_title) */
   methods?: Record<string, MethodDefinition>;
-  /**
-   * Optional system prompt to layer on top of the worker's default prompt.
-   * Appends by default — pass `systemPromptMode: "replace-natstack"` (or
-   * `"replace"`) via `extraConfig` to replace it instead.
-   */
-  systemPrompt?: string;
-  /** Additional subscription config (e.g., model, temperature, systemPromptMode) */
+  /** Additional subscription config (e.g., model, temperature) */
   extraConfig?: Record<string, unknown>;
 }
 
@@ -180,7 +174,6 @@ export class HeadlessSession {
       objectKey,
       channelId,
       contextId: config.contextId,
-      systemPrompt: config.systemPrompt,
       extraConfig: config.extraConfig,
     });
 
@@ -224,7 +217,7 @@ export class HeadlessSession {
 
     // set_title — always available
     methods["set_title"] = {
-      description: "Set the conversation title",
+      description: "Set the conversation title once the task is clear. Call this after the first substantive exchange, not on every turn.",
       parameters: z.object({ title: z.string().describe("The new title") }),
       execute: async (args: unknown) => {
         const { title } = args as { title: string };
