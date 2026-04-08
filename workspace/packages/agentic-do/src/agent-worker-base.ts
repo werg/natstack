@@ -1,43 +1,90 @@
 /**
- * AgentWorkerBase — Thin composition shell for agentic Durable Objects.
+ * AgentWorkerBase — Pi-native agent DO base.
  *
- * Extends DurableObjectBase and composes agent-specific modules:
- * DOIdentity, SubscriptionManager, HarnessManager, TurnManager,
- * ContinuationStore, and StreamWriter.
+ * Embeds `@mariozechner/pi-coding-agent` in-process. One Pi `AgentSession`
+ * per channel, owned by the DO for the lifetime of the chat. Pi tracks its
+ * own state (messages, sessions, branching, compaction, retries); the DO
+ * forwards Pi state to the channel as ephemeral events.
  *
- * Non-agent DOs extend DurableObjectBase directly.
+ * Composes:
+ * - `DOIdentity`: stable DO ref + workerd session id
+ * - `SubscriptionManager`: channel membership + replay state
+ * - `ContinuationStore`: pending callId continuations for tool callMethod
+ *   and feedback_form / inline UI awaits (Promise resolution from onCallResult)
+ * - `ChannelClient`: typed wrapper around channel DO RPC
+ *
+ * Forwards Pi events as two ephemeral channel streams:
+ * - `natstack-state-snapshot` (full session.state.messages snapshot after
+ *   every meaningful state change)
+ * - `natstack-text-delta` (cosmetic typing-indicator stream)
  */
 
 import { DurableObjectBase, type DurableObjectContext, type DORef } from "@workspace/runtime/worker";
-import type { ChannelEvent, HarnessConfig, HarnessOutput, TurnInput, ParticipantDescriptor, UnsubscribeResult, Attachment } from "@natstack/harness/types";
-import { needsApprovalForTool, isClientParticipantType } from "@natstack/pubsub";
+import type {
+  Attachment,
+  ChannelEvent,
+  ParticipantDescriptor,
+  TurnInput,
+  UnsubscribeResult,
+} from "@natstack/harness/types";
+import { isClientParticipantType } from "@natstack/pubsub";
+import {
+  PiRunner,
+  type ChannelToolMethod,
+  type NatStackUIBridgeCallbacks,
+  type AskUserParams,
+  type ApprovalLevel,
+  type ThinkingLevel,
+} from "@natstack/harness";
+import { resolveModelToPi } from "@natstack/shared/ai/resolve-model.js";
+import { AuthStorage, type AgentSessionEvent } from "@mariozechner/pi-coding-agent";
+import type { ImageContent } from "@mariozechner/pi-ai";
 
 import { DOIdentity } from "./identity.js";
 import { SubscriptionManager } from "./subscription-manager.js";
-import { HarnessManager } from "./harness-manager.js";
-import { TurnManager, type ActiveTurn, type InFlightTurn, type QueuedTurn } from "./turn-manager.js";
 import { ContinuationStore } from "./continuation-store.js";
-import { StreamWriter, type PersistedStreamState } from "./stream-writer.js";
 import { ChannelClient } from "./channel-client.js";
 
+const SAFE_TOOL_NAMES_DEFAULT: ReadonlySet<string> = new Set([
+  "read",
+  "ls",
+  "grep",
+  "find",
+]);
+
+interface RunnerEntry {
+  runner: PiRunner;
+  contextFolderPath: string;
+}
+
+/** Resolves at the channel boundary when `onCallResult` arrives. */
+interface PendingResolver {
+  resolve: (value: unknown) => void;
+  reject: (err: Error) => void;
+}
+
 export abstract class AgentWorkerBase extends DurableObjectBase {
+  static override schemaVersion = 6;
+
   protected identity: DOIdentity;
   protected subscriptions: SubscriptionManager;
-  protected harnesses: HarnessManager;
-  protected turns: TurnManager;
   protected continuations: ContinuationStore;
 
-  /** Phase 0D: Transient poison message tracker (event id → attempt count). Resets on hibernation. */
+  /** One PiRunner per channel — created lazily on first user message. */
+  private runners = new Map<string, RunnerEntry>();
+
+  /** In-flight Promise resolvers keyed by callId. Used for tool callMethod
+   *  and UI feedback_form awaits — when the channel routes the result via
+   *  onCallResult, we resolve the corresponding Promise. */
+  private pendingResolvers = new Map<string, PendingResolver>();
+
+  /** Phase 0D: Transient poison message tracker. Resets on hibernation. */
   private failedEvents = new Map<number, number>();
   private static readonly POISON_MAX_ATTEMPTS = 3;
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
 
-    // Create a lazy RPC proxy that defers to this.rpc (which requires an instance
-    // token set by postToDOWithToken before the first fetch). This lets us
-    // construct modules eagerly for createTables() while deferring actual RPC
-    // calls to when the token is available.
     const lazyRpc = {
       call: <T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T> => {
         return this.rpc.call<T>(targetId, method, ...args);
@@ -50,44 +97,40 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       (channelId) => new ChannelClient(lazyRpc, channelId),
       this.identity,
     );
-    this.harnesses = new HarnessManager(this.sql, lazyRpc);
-    this.turns = new TurnManager(this.sql);
     this.continuations = new ContinuationStore(this.sql);
 
-    // Eager schema init — safe because all modules exist.
     this.ensureReady();
-
-    // Restore identity from SQLite if previously bootstrapped
     this.identity.restore();
   }
-
-  static override schemaVersion = 5;
 
   protected createTables(): void {
     this.identity.createTables();
     this.subscriptions.createTables();
-    this.harnesses.createTables();
-    this.turns.createTables();
     this.continuations.createTables();
-    // Phase 0A: Delivery cursor for event dedup
+    // Delivery cursor for event dedup + gap repair.
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS delivery_cursor (
         channel_id TEXT PRIMARY KEY,
         last_delivered_seq INTEGER NOT NULL
       )
     `);
+    // Per-channel Pi session file path for resume after DO restart.
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS pi_sessions (
+        channel_id TEXT PRIMARY KEY,
+        session_file TEXT NOT NULL,
+        context_folder_path TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `);
   }
 
-  // --- Identity bootstrap ---
-  // Self-bootstraps from env bindings (WORKER_SOURCE, WORKER_CLASS_NAME, WORKERD_SESSION_ID)
-  // and objectKey (parsed from request URL by DurableObjectBase.fetch()).
+  // ── Identity bootstrap ──────────────────────────────────────────────────
 
   private _bootstrapped = false;
 
-  /** Ensure identity is bootstrapped. Called automatically on first fetch(). */
   private ensureBootstrapped(): void {
     if (this._bootstrapped) return;
-    // objectKey may not be available yet (before first fetch)
     try {
       const key = this.objectKey;
       const source = (this.env as Record<string, string>)["WORKER_SOURCE"];
@@ -95,18 +138,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       const sessionId = (this.env as Record<string, string>)["WORKERD_SESSION_ID"];
       if (source && className && sessionId) {
         const doRef: DORef = { source, className, objectKey: key };
-        const { isRestart } = this.identity.bootstrap(doRef, sessionId);
-        if (isRestart) {
-          this.harnesses.markCrashedOnRestart();
-          this.turns.clearAllActive();
-          this.turns.clearAllInFlight();
-          this.continuations.deleteAll();
-        }
+        this.identity.bootstrap(doRef, sessionId);
         this._bootstrapped = true;
       }
     } catch (err) {
-      // objectKey not yet available (before first fetch) — will bootstrap on next call.
-      // Log unexpected errors so they don't get silently swallowed.
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes("objectKey not available")) {
         console.error("[AgentWorkerBase] ensureBootstrapped failed:", err);
@@ -114,30 +149,42 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
   }
 
-  // --- Convenience accessors (delegate to identity) ---
-
   protected get doRef(): DORef {
     return this.identity.ref;
   }
-
-  // --- ChannelClient factory ---
 
   protected createChannelClient(channelId: string): ChannelClient {
     return new ChannelClient(this.rpc, channelId);
   }
 
-  // --- 5 Customization Hooks ---
+  // ── Customization hooks (Pi-native) ─────────────────────────────────────
 
-  protected getHarnessType(): string { return 'claude-sdk'; }
-  protected getHarnessConfig(): HarnessConfig { return {}; }
+  /** Model id in `provider:model` format (e.g. `anthropic:claude-sonnet-4-20250514`). */
+  protected getModel(): string {
+    return "anthropic:claude-sonnet-4-20250514";
+  }
+
+  protected getThinkingLevel(): ThinkingLevel {
+    return "medium";
+  }
+
+  protected getApprovalLevel(channelId: string): ApprovalLevel {
+    const value = this.getStateValue(`approvalLevel:${channelId}`);
+    if (!value) return 2; // Default: full auto
+    const parsed = parseInt(value, 10);
+    if (parsed === 0 || parsed === 1 || parsed === 2) return parsed;
+    return 2;
+  }
+
+  protected setApprovalLevel(channelId: string, level: ApprovalLevel): void {
+    this.setStateValue(`approvalLevel:${channelId}`, String(level));
+    const entry = this.runners.get(channelId);
+    if (entry) entry.runner.setApprovalLevel(level);
+  }
 
   protected shouldProcess(event: ChannelEvent): boolean {
-    if (event.type !== 'message') return false;
+    if (event.type !== "message") return false;
     if (event.contentType) return false;
-    // Positive whitelist: only process messages from known client participant
-    // types (panels, headless clients). This prevents agent-to-agent loops AND
-    // prevents unlabeled participants from accidentally driving the worker.
-    // To accept a new client kind, add it to isClientParticipantType.
     const senderType = event.senderMetadata?.["type"] as string | undefined;
     if (!isClientParticipantType(senderType)) return false;
     return true;
@@ -145,35 +192,51 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   protected buildTurnInput(event: ChannelEvent): TurnInput {
     const payload = event.payload as { content?: string; attachments?: Attachment[] };
-    return { content: payload.content ?? '', senderId: event.senderId, attachments: event.attachments };
+    return { content: payload.content ?? "", senderId: event.senderId, attachments: event.attachments };
   }
 
   protected getParticipantInfo(_channelId: string, config?: unknown): ParticipantDescriptor {
     const cfg = config as Record<string, unknown> | undefined;
     return {
-      handle: (cfg?.["handle"] as string) ?? 'agent',
-      name: 'AI Agent',
-      type: 'agent',
+      handle: (cfg?.["handle"] as string) ?? "agent",
+      name: "AI Agent",
+      type: "agent",
       metadata: {},
       methods: [],
     };
   }
 
-  // --- StreamWriter factory ---
-
-  protected createWriter(
-    channelId: string,
-    turn: { replyToId: string; typingContent: string; streamState: PersistedStreamState },
-  ): StreamWriter {
-    const participantId = this.subscriptions.getParticipantId(channelId);
-    if (!participantId) throw new Error(`No participant ID for channel ${channelId}`);
-    const channel = this.createChannelClient(channelId);
-    return new StreamWriter(channel, participantId, channelId, turn.replyToId, turn.typingContent, turn.streamState);
+  /**
+   * Resolve the contextFolder absolute path for a given channel. Subclasses
+   * can override; the default queries the server's contextFolderManager via
+   * RPC using the subscription's contextId.
+   */
+  protected async resolveContextFolderPath(channelId: string): Promise<string> {
+    const contextId = this.subscriptions.getContextId(channelId);
+    return this.rpc.call<string>("main", "contextFolder.ensureContextFolder", contextId);
   }
 
-  // --- Subscription lifecycle ---
+  /**
+   * Resolve the Pi agent dir (sandbox config root). Defaults to a hidden
+   * directory under the natstack app root. Subclasses can override.
+   */
+  protected async resolvePiAgentDir(): Promise<string> {
+    return this.rpc.call<string>("main", "contextFolder.getPiAgentDir");
+  }
 
-  async subscribeChannel(opts: { channelId: string; contextId: string; config?: unknown; replay?: boolean }): Promise<{ ok: boolean; participantId: string }> {
+  /** API keys to bridge into Pi via setRuntimeApiKey. Default: read from env. */
+  protected async getApiKeys(): Promise<Record<string, string>> {
+    return this.rpc.call<Record<string, string>>("main", "secrets.getProviderApiKeys");
+  }
+
+  // ── Subscription lifecycle ──────────────────────────────────────────────
+
+  async subscribeChannel(opts: {
+    channelId: string;
+    contextId: string;
+    config?: unknown;
+    replay?: boolean;
+  }): Promise<{ ok: boolean; participantId: string }> {
     const descriptor = this.getParticipantInfo(opts.channelId, opts.config);
     const result = await this.subscriptions.subscribe({
       channelId: opts.channelId,
@@ -184,14 +247,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     });
 
     if (result.channelConfig?.["approvalLevel"] != null) {
-      this.setApprovalLevel(opts.channelId, result.channelConfig["approvalLevel"] as number);
+      const level = result.channelConfig["approvalLevel"] as number;
+      if (level === 0 || level === 1 || level === 2) {
+        this.setApprovalLevel(opts.channelId, level);
+      }
     }
 
-    // Process replay events (messages sent before this DO subscribed).
-    // Best-effort: subscription success must not depend on replay processing.
-    // DOs are single-threaded, so live events are queued during this processing.
-    // Stop on first error — continuing after failure could skip events that
-    // depend on earlier state (e.g. harness spawn must precede turn commands).
     if (result.replay) {
       try {
         for (const event of result.replay) {
@@ -206,206 +267,34 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   }
 
   async unsubscribeChannel(channelId: string): Promise<UnsubscribeResult> {
-    const harnessIds = this.harnesses.listAll();
-
-    // Unsubscribe from channel DO
     await this.subscriptions.unsubscribeFromChannel(channelId);
 
-    // Stop harnesses via server API
-    for (const hid of harnessIds) {
-      await this.harnesses.stop(hid);
-      this.turns.deleteForHarness(hid);
+    const entry = this.runners.get(channelId);
+    if (entry) {
+      entry.runner.dispose();
+      this.runners.delete(channelId);
     }
 
-    // Clean up all tables for this channel
-    this.harnesses.deleteAll();
-    this.turns.deleteCheckpointsForChannel(channelId);
     this.continuations.deleteForChannel(channelId);
     this.subscriptions.deleteSubscription(channelId);
+    this.sql.exec(`DELETE FROM pi_sessions WHERE channel_id = ?`, channelId);
 
-    return { harnessIds };
-  }
-
-  // --- Delegated helpers (subclass API) ---
-
-  protected getActiveHarness(): string | null {
-    return this.harnesses.getActive();
-  }
-
-  protected getContextId(channelId: string): string {
-    return this.subscriptions.getContextId(channelId);
-  }
-
-  protected getSubscriptionConfig(channelId: string): Record<string, unknown> | null {
-    return this.subscriptions.getConfig(channelId);
-  }
-
-  protected getParticipantId(channelId: string): string | null {
-    return this.subscriptions.getParticipantId(channelId);
-  }
-
-  // --- Turn management delegates ---
-
-  protected setActiveTurn(harnessId: string, channelId: string, replyToId: string, turnMessageId?: string, senderParticipantId?: string, typingContent?: string): void {
-    this.turns.setActive(harnessId, channelId, replyToId, turnMessageId, senderParticipantId, typingContent);
-  }
-
-  protected getActiveTurn(harnessId: string): ActiveTurn | null {
-    return this.turns.getActive(harnessId);
-  }
-
-  protected updateActiveTurnMessageId(harnessId: string, turnMessageId: string): void {
-    this.turns.updateActiveMessageId(harnessId, turnMessageId);
-  }
-
-  protected clearActiveTurn(harnessId: string): void {
-    this.turns.clearActive(harnessId);
-  }
-
-  protected setInFlightTurn(channelId: string, harnessId: string, messageId: string, pubsubId: number, input: TurnInput): void {
-    this.turns.setInFlight(channelId, harnessId, messageId, pubsubId, input);
-  }
-
-  protected getInFlightTurn(channelId: string, harnessId: string): InFlightTurn | null {
-    return this.turns.getInFlight(channelId, harnessId);
-  }
-
-  protected clearInFlightTurn(channelId: string, harnessId: string): void {
-    this.turns.clearInFlight(channelId, harnessId);
-  }
-
-  protected enqueueTurn(channelId: string, harnessId: string, messageId: string, pubsubId: number, senderId: string, input: TurnInput, typingContent?: string): void {
-    this.turns.enqueue(channelId, harnessId, messageId, pubsubId, senderId, input, typingContent);
-  }
-
-  protected dequeueNextTurn(harnessId: string): QueuedTurn | null {
-    return this.turns.dequeue(harnessId);
-  }
-
-  protected clearTurnQueue(harnessId: string): void {
-    this.turns.clearQueueForHarness(harnessId);
-  }
-
-  protected advanceCheckpoint(channelId: string, harnessId: string | null, pubsubId: number): void {
-    this.turns.advanceCheckpoint(channelId, harnessId, pubsubId);
-  }
-
-  protected getCheckpoint(channelId: string, harnessId: string | null): number | null {
-    return this.turns.getCheckpoint(channelId, harnessId);
-  }
-
-  protected recordTurn(harnessId: string, messageId: string, triggerPubsubId: number, sessionId: string): void {
-    this.turns.recordTurn(harnessId, messageId, triggerPubsubId, sessionId);
-    this.harnesses.setSessionId(harnessId, sessionId);
-    // Consume forkSessionId after first successful turn — the new session
-    // is now recorded in turn_map and getResumeSessionIdForChannel() will
-    // fall back to it naturally on subsequent spawns.
-    if (this.getStateValue("forkSessionId")) {
-      this.deleteStateValue("forkSessionId");
-    }
-  }
-
-  protected getTurnAtOrBefore(harnessId: string, pubsubId: number) {
-    return this.turns.getTurnAtOrBefore(harnessId, pubsubId);
-  }
-
-  protected getLatestTurn(harnessId: string) {
-    return this.turns.getLatestTurn(harnessId);
-  }
-
-  protected getResumeSessionId(harnessId: string): string | undefined {
-    return this.turns.getResumeSessionId(harnessId);
-  }
-
-  protected getResumeSessionIdForChannel(_channelId: string): string | undefined {
-    // Prefer fork-specific session (set by postClone). NOT consumed here —
-    // consumed in recordTurn() after the first turn succeeds, so retries
-    // on transient spawn failures still get the fork-point session.
-    const forkSession = this.getStateValue("forkSessionId");
-    if (forkSession) {
-      return forkSession;
-    }
-    const harnessIds = this.harnesses.listAll();
-    return this.turns.getResumeSessionIdForHarnesses(harnessIds);
-  }
-
-  protected persistStreamState(harnessId: string, writer: StreamWriter): void {
-    this.turns.persistStreamState(harnessId, writer.getState());
-  }
-
-  protected adoptBootstrapTyping(harnessId: string, channelId: string): void {
-    const bootstrapKey = `bootstrap_typing:${channelId}`;
-    const bootstrapRow = this.getStateValue(bootstrapKey);
-    if (!bootstrapRow) return;
-
-    this.deleteStateValue(bootstrapKey);
-    const turn = this.getActiveTurn(harnessId);
-    if (!turn) return;
-
-    const state = { ...turn.streamState, typingMessageId: bootstrapRow };
-    this.turns.persistStreamState(harnessId, state);
-  }
-
-  // --- Harness registration ---
-
-  registerHarness(harnessId: string, type: string): void {
-    this.harnesses.register(harnessId, type, this.identity.sessionId ?? undefined);
-  }
-
-  reactivateHarness(harnessId: string): void {
-    this.harnesses.reactivate(harnessId);
-  }
-
-  recordTurnStart(harnessId: string, channelId: string, input: TurnInput, triggerMessageId: string, triggerPubsubId: number, senderParticipantId?: string): void {
-    const participantInfo = this.getParticipantInfo(channelId);
-    const typingContent = JSON.stringify({
-      senderId: input.senderId,
-      senderName: participantInfo.name,
-      senderType: participantInfo.type,
-    });
-    this.setActiveTurn(harnessId, channelId, triggerMessageId, undefined, senderParticipantId, typingContent);
-
-    this.adoptBootstrapTyping(harnessId, channelId);
-
-    this.setInFlightTurn(channelId, harnessId, triggerMessageId, triggerPubsubId, input);
-    this.advanceCheckpoint(channelId, harnessId, triggerPubsubId);
-    // Phase 1B: Schedule watchdog when a turn starts
-    this.scheduleWatchdog();
-  }
-
-  // --- Approval level caching ---
-
-  protected setApprovalLevel(channelId: string, level: number): void {
-    this.setStateValue(`approvalLevel:${channelId}`, String(level));
-  }
-
-  protected getApprovalLevel(channelId: string): number {
-    const value = this.getStateValue(`approvalLevel:${channelId}`);
-    if (!value) return 2; // Default: Full Auto
-    return parseInt(value, 10) || 2; // Default to Full Auto on parse failure
-  }
-
-  protected shouldAutoApprove(channelId: string, toolName: string): boolean {
-    return !needsApprovalForTool(toolName, this.getApprovalLevel(channelId));
+    return { ok: true };
   }
 
   // ── Channel event pipeline (dedup → gap repair → dispatch) ──────────────
 
-  /** Top-level handler for incoming channel events. Runs dedup, gap repair, poison skip, then dispatch. */
   private async handleIncomingChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
     const eventId = event.id;
 
-    // Phase 0A: Delivery cursor dedup — skip already-delivered events
     if (eventId !== undefined && eventId > 0) {
       const lastSeq = this.getDeliveryCursor(channelId);
       if (eventId <= lastSeq) return;
 
-      // Phase 2B: Gap detection — repair missed events before processing this one
       if (eventId > lastSeq + 1) {
         await this.repairGap(channelId, lastSeq, eventId);
       }
 
-      // Phase 0D: Skip poison messages that have failed too many times
       const attempts = this.failedEvents.get(eventId) ?? 0;
       if (attempts >= AgentWorkerBase.POISON_MAX_ATTEMPTS) {
         console.error(`[AgentWorkerBase] Skipping poison event id=${eventId} after ${attempts} failed attempts`);
@@ -415,7 +304,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       }
     }
 
-    // Dispatch and track success/failure
     try {
       await this.dispatchChannelEvent(channelId, event);
       if (eventId !== undefined && eventId > 0) {
@@ -451,7 +339,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     );
   }
 
-  /** Fetch and process events missed between lastSeq and eventId. */
   private async repairGap(channelId: string, lastSeq: number, eventId: number): Promise<void> {
     const gap = eventId - lastSeq - 1;
     if (gap > 1000) {
@@ -488,12 +375,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
   }
 
-  /**
-   * Dispatch a channel event through config-update interception then to the subclass.
-   * Used by both the live path and gap repair to ensure consistent handling.
-   */
   private async dispatchChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
-    // Config-update interception — apply approval level changes before subclass sees the event
     if (event.type === "config-update") {
       let newLevel: number | undefined;
       try {
@@ -504,156 +386,342 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           newLevel = config["approvalLevel"] as number;
         }
       } catch { /* ignore parse errors */ }
-      if (newLevel !== undefined) {
+      if (newLevel !== undefined && (newLevel === 0 || newLevel === 1 || newLevel === 2)) {
         this.setApprovalLevel(channelId, newLevel);
-        if (newLevel >= 2) {
-          try {
-            await this.reevaluatePendingApprovals(channelId);
-          } catch (err) {
-            console.error("[AgentWorkerBase] reevaluatePendingApprovals failed:", err);
-          }
-        }
       }
-      return; // Config-update events are not dispatched to the subclass
+      return;
     }
 
-    // Dispatch to subclass
     await this.onChannelEvent(channelId, event);
   }
 
-  protected async reevaluatePendingApprovals(channelId: string): Promise<void> {
-    const pending = this.continuations.listForChannel(channelId, 'approval');
+  // ── PiRunner lifecycle (one per channel, lazy) ──────────────────────────
 
-    for (const call of pending) {
-      const context = call.context as { harnessId: string; toolUseId: string };
-      const activeHarnessId = this.getActiveHarness();
-      if (activeHarnessId === context.harnessId) {
-        this.continuations.deleteOne(call.callId);
-        await this.rpc.call("main", "harness.sendCommand", context.harnessId, {
-          type: "approve-tool",
-          toolUseId: context.toolUseId,
-          allow: true,
-        });
-        // Clear continuation flag — harness will resume immediately
-        this.turns.setPendingContinuation(context.harnessId, false);
-        try {
-          const channel = this.createChannelClient(channelId);
-          await channel.cancelCall(call.callId);
-        } catch { /* best-effort */ }
+  protected async getOrCreateRunner(channelId: string): Promise<PiRunner> {
+    const existing = this.runners.get(channelId);
+    if (existing) return existing.runner;
+
+    const contextFolderPath = await this.resolveContextFolderPath(channelId);
+    const piAgentDir = await this.resolvePiAgentDir();
+    const apiKeys = await this.getApiKeys();
+
+    const authStorage = AuthStorage.create();
+    for (const [provider, key] of Object.entries(apiKeys)) {
+      if (key) authStorage.setRuntimeApiKey(provider, key);
+    }
+    const { model } = resolveModelToPi(this.getModel(), authStorage);
+
+    // Resume from a previously persisted Pi session file for this channel,
+    // if one exists. New chats start fresh.
+    const sessionRow = this.sql.exec(
+      `SELECT session_file FROM pi_sessions WHERE channel_id = ?`, channelId,
+    ).toArray();
+    const resumeSessionFile = sessionRow.length > 0
+      ? (sessionRow[0]!["session_file"] as string)
+      : undefined;
+
+    const runner = new PiRunner({
+      contextFolderPath,
+      piAgentDir,
+      apiKeys,
+      model,
+      thinkingLevel: this.getThinkingLevel(),
+      approvalLevel: this.getApprovalLevel(channelId),
+      uiCallbacks: this.buildUICallbacks(channelId),
+      rosterCallback: () => this.buildRoster(channelId),
+      callMethodCallback: (handle, method, args, signal) =>
+        this.invokeChannelMethod(channelId, handle, method, args, signal),
+      askUserCallback: (params, signal) => this.askUser(channelId, params, signal),
+      ...(resumeSessionFile ? { resumeSessionFile } : {}),
+    });
+
+    await runner.init();
+
+    runner.subscribe((event) => this.forwardPiEvent(channelId, event));
+
+    // Persist the session file path for restart recovery.
+    const sessionFile = runner.sessionFile;
+    if (sessionFile) {
+      this.sql.exec(
+        `INSERT OR REPLACE INTO pi_sessions (channel_id, session_file, context_folder_path, updated_at) VALUES (?, ?, ?, ?)`,
+        channelId, sessionFile, contextFolderPath, Date.now(),
+      );
+    }
+
+    this.runners.set(channelId, { runner, contextFolderPath });
+    return runner;
+  }
+
+  // ── Pi event → channel ephemeral forwarding ─────────────────────────────
+
+  private forwardPiEvent(channelId: string, event: AgentSessionEvent): void {
+    const participantId = this.subscriptions.getParticipantId(channelId);
+    if (!participantId) return;
+    const channel = this.createChannelClient(channelId);
+
+    switch (event.type) {
+      case "message_update": {
+        const ame = event.assistantMessageEvent;
+        if (ame && ame.type === "text_delta" && ame.delta) {
+          const messageId = (event.message as { id?: string } | undefined)?.id ?? "current";
+          void channel.sendEphemeralEvent(participantId, "natstack-text-delta", {
+            messageId,
+            delta: ame.delta,
+          });
+        }
+        break;
       }
+      case "message_end":
+      case "tool_execution_end":
+      case "auto_compaction_end":
+      case "auto_retry_end":
+      case "turn_end": {
+        const entry = this.runners.get(channelId);
+        if (!entry) break;
+        const snapshot = entry.runner.getStateSnapshot();
+        void channel.sendEphemeralEvent(participantId, "natstack-state-snapshot", snapshot);
+        break;
+      }
+      default:
+        // No forwarding for other events.
+        break;
     }
   }
 
-  // --- Pending call continuations ---
+  // ── Channel-tools extension wiring ──────────────────────────────────────
 
-  protected pendingCall(callId: string, channelId: string, type: string, context: Record<string, unknown>): void {
-    this.continuations.store(callId, channelId, type, context);
+  /** Sync getter for the channel-tools extension. The extension expects a
+   *  sync callback; we serve from the most-recently-cached roster. Refresh
+   *  happens before each turn via `refreshRoster`. */
+  private buildRoster(channelId: string): ChannelToolMethod[] {
+    return this.cachedRoster.get(channelId) ?? [];
   }
 
-  protected consumePendingCall(callId: string) {
-    return this.continuations.consume(callId);
+  private cachedRoster = new Map<string, ChannelToolMethod[]>();
+
+  /** Refresh the cached roster for a channel. Called before each turn. */
+  protected async refreshRoster(channelId: string): Promise<void> {
+    const channel = this.createChannelClient(channelId);
+    const participants = await channel.getParticipants();
+    const selfId = this.subscriptions.getParticipantId(channelId);
+    const roster: ChannelToolMethod[] = [];
+    for (const p of participants) {
+      if (p.participantId === selfId) continue;
+      const handle = p.metadata["handle"] as string | undefined;
+      if (!handle) continue;
+      const advertised = p.metadata["methods"];
+      if (!Array.isArray(advertised)) continue;
+      for (const m of advertised) {
+        const method = m as Record<string, unknown>;
+        const name = method["name"] as string | undefined;
+        if (!name) continue;
+        roster.push({
+          participantHandle: handle,
+          name,
+          description: (method["description"] as string) ?? "",
+          parameters: method["parameters"] ?? { type: "object" },
+        });
+      }
+    }
+    this.cachedRoster.set(channelId, roster);
+  }
+
+  private async invokeChannelMethod(
+    channelId: string,
+    participantHandle: string,
+    method: string,
+    args: unknown,
+    signal: AbortSignal | undefined,
+  ): Promise<unknown> {
+    const channel = this.createChannelClient(channelId);
+    const participants = await channel.getParticipants();
+    const target = participants.find((p) => p.metadata["handle"] === participantHandle);
+    if (!target) {
+      throw new Error(`No participant with handle "${participantHandle}" in channel ${channelId}`);
+    }
+    const callerId = this.subscriptions.getParticipantId(channelId);
+    if (!callerId) throw new Error(`Not subscribed to channel ${channelId}`);
+
+    const callId = crypto.randomUUID();
+    const promise = this.awaitContinuation(callId, signal);
+    this.continuations.store(callId, channelId, "tool-call", { handle: participantHandle, method });
+    await channel.callMethod(callerId, target.participantId, callId, method, args);
+    return promise;
+  }
+
+  private async askUser(
+    channelId: string,
+    params: AskUserParams,
+    signal: AbortSignal | undefined,
+  ): Promise<string> {
+    const callerId = this.subscriptions.getParticipantId(channelId);
+    if (!callerId) throw new Error(`Not subscribed to channel ${channelId}`);
+    const channel = this.createChannelClient(channelId);
+    // Find a panel-type participant to ask.
+    const participants = await channel.getParticipants();
+    const panel = participants.find((p) => {
+      const t = p.metadata["type"] as string | undefined;
+      return t === "panel" || t === "client";
+    });
+    if (!panel) {
+      throw new Error(`No panel participant in channel ${channelId} to ask`);
+    }
+
+    const callId = crypto.randomUUID();
+    const promise = this.awaitContinuation(callId, signal);
+    this.continuations.store(callId, channelId, "ask-user", {});
+    await channel.callMethod(callerId, panel.participantId, callId, "feedback_form", params);
+    const result = await promise;
+    return typeof result === "string" ? result : JSON.stringify(result);
+  }
+
+  private buildUICallbacks(channelId: string): NatStackUIBridgeCallbacks {
+    const askPanel = async (
+      kind: "select" | "confirm" | "input" | "editor",
+      params: Record<string, unknown>,
+      signal?: AbortSignal,
+    ): Promise<unknown> => {
+      const callerId = this.subscriptions.getParticipantId(channelId);
+      if (!callerId) throw new Error(`Not subscribed to channel ${channelId}`);
+      const channel = this.createChannelClient(channelId);
+      const participants = await channel.getParticipants();
+      const panel = participants.find((p) => {
+        const t = p.metadata["type"] as string | undefined;
+        return t === "panel" || t === "client";
+      });
+      if (!panel) throw new Error(`No panel participant in channel ${channelId}`);
+
+      const callId = crypto.randomUUID();
+      const promise = this.awaitContinuation(callId, signal);
+      this.continuations.store(callId, channelId, "ui-prompt", { kind });
+      await channel.callMethod(callerId, panel.participantId, callId, "ui_prompt", { kind, ...params });
+      return promise;
+    };
+
+    return {
+      showSelect: async (title, options, opts) => {
+        const result = await askPanel("select", { title, options }, opts?.signal);
+        return typeof result === "string" ? result : undefined;
+      },
+      showConfirm: async (title, message, opts) => {
+        const result = await askPanel("confirm", { title, message }, opts?.signal);
+        return result === true || result === "true" || result === "yes";
+      },
+      showInput: async (title, placeholder, opts) => {
+        const result = await askPanel("input", { title, placeholder }, opts?.signal);
+        return typeof result === "string" ? result : undefined;
+      },
+      showEditor: async (title, prefill) => {
+        const result = await askPanel("editor", { title, prefill });
+        return typeof result === "string" ? result : undefined;
+      },
+      notify: (message, type) => {
+        const participantId = this.subscriptions.getParticipantId(channelId);
+        if (!participantId) return;
+        const channel = this.createChannelClient(channelId);
+        void channel.sendEphemeral(participantId, message, `notify:${type ?? "info"}`);
+      },
+      setStatus: (key, text) => {
+        const participantId = this.subscriptions.getParticipantId(channelId);
+        if (!participantId) return;
+        const channel = this.createChannelClient(channelId);
+        void channel.sendEphemeralEvent(participantId, "natstack-ext-status", { key, text });
+      },
+      setWidget: (key, content, options) => {
+        const participantId = this.subscriptions.getParticipantId(channelId);
+        if (!participantId) return;
+        const channel = this.createChannelClient(channelId);
+        void channel.sendEphemeralEvent(participantId, "natstack-ext-widget", { key, content, options });
+      },
+      setWorkingMessage: (message) => {
+        const participantId = this.subscriptions.getParticipantId(channelId);
+        if (!participantId) return;
+        const channel = this.createChannelClient(channelId);
+        void channel.sendEphemeralEvent(participantId, "natstack-ext-working", { message: message ?? null });
+      },
+    };
+  }
+
+  // ── Continuation Promise plumbing ───────────────────────────────────────
+
+  private awaitContinuation(callId: string, signal?: AbortSignal): Promise<unknown> {
+    return new Promise<unknown>((resolve, reject) => {
+      this.pendingResolvers.set(callId, { resolve, reject });
+      if (signal) {
+        const onAbort = () => {
+          this.pendingResolvers.delete(callId);
+          this.continuations.deleteOne(callId);
+          reject(new Error("aborted"));
+        };
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      }
+    });
   }
 
   async onCallResult(callId: string, result: unknown, isError: boolean): Promise<void> {
-    const pending = this.consumePendingCall(callId);
+    const pending = this.continuations.consume(callId);
     if (!pending) {
       console.warn(`[AgentWorkerBase] onCallResult: no pending call for callId=${callId} (isError=${isError})`);
       return;
     }
-    // Phase 1B: Clear pending continuation — the harness will resume
-    const harnessId = (pending.context as Record<string, unknown>)["harnessId"] as string | undefined;
-    if (harnessId) {
-      this.turns.setPendingContinuation(harnessId, false);
-    }
-    await this.handleCallResult(pending.type, pending.context, pending.channelId, result, isError);
-  }
-
-  protected async handleCallResult(
-    _type: string, _context: Record<string, unknown>,
-    _channelId: string, _result: unknown, _isError: boolean,
-  ): Promise<void> {
-    // Default: no-op
-  }
-
-  // --- Crashed-harness detection (activity-based) ---
-  //
-  // This is NOT a wall-clock timeout on agentic activities. It's a crash
-  // detector: the watchdog only fires for turns where (a) the harness has
-  // produced **zero** events for the entire idle window, and (b) the turn is
-  // NOT waiting on a pending tool-call or approval continuation. Both signals
-  // are tracked elsewhere:
-  //
-  //   - `turns.touchActive(harnessId)` is called on every harness event in
-  //     fetch() handler, so a streaming text response or any tool/action
-  //     event resets the timer continuously.
-  //   - `turns.setPendingContinuation(harnessId, true)` is set when the
-  //     harness emits `tool-call` or `approval-needed`, and getStaleActiveTurns
-  //     filters out any turn with that flag set (a turn waiting for an
-  //     external result is NOT "stalled" — it's legitimately blocked).
-  //
-  // Net effect: a long-running tool call (eval, build, LLM thinking) never
-  // trips this. A genuinely crashed harness — one whose process has died and
-  // is producing no events at all — gets cleaned up after the idle window.
-  // The threshold can be generous because the false-positive rate is zero
-  // for any harness that's making progress.
-
-  private static readonly CRASH_CHECK_INTERVAL_MS = 2 * 60 * 1000;   // Check every 2 min
-  private static readonly CRASH_IDLE_THRESHOLD_MS = 10 * 60 * 1000;  // 10 min of zero activity = crashed
-
-  /** Schedule the crashed-harness check via DO alarm. */
-  protected scheduleWatchdog(): void {
-    if (this.getStateValue("watchdog_scheduled")) return;
-    this.setStateValue("watchdog_scheduled", "1");
-    this.setAlarm(AgentWorkerBase.CRASH_CHECK_INTERVAL_MS);
-  }
-
-  /** Detect and recover from crashed harnesses. Called from the alarm handler. */
-  private async checkStaleTurns(): Promise<void> {
-    const crashedTurns = this.turns.getStaleActiveTurns(AgentWorkerBase.CRASH_IDLE_THRESHOLD_MS);
-    for (const stale of crashedTurns) {
-      console.error(`[AgentWorkerBase] Crash detection: harness=${stale.harnessId} on channel=${stale.channelId} produced no activity for ${AgentWorkerBase.CRASH_IDLE_THRESHOLD_MS / 60000} minutes and has no pending continuation — assuming crashed`);
-      try {
-        // Publish error to channel BEFORE clearing active turn
-        const participantId = this.subscriptions.getParticipantId(stale.channelId);
-        if (participantId) {
-          const channel = this.createChannelClient(stale.channelId);
-          const writer = new StreamWriter(channel, participantId, stale.channelId, stale.replyToId, stale.typingContent, stale.streamState);
-          await writer.startText();
-          await writer.updateText("[The AI process appears to have crashed — no activity detected for an extended period. The next message will spawn a fresh process.]");
-          await writer.completeText();
-        }
-      } catch (err) {
-        console.error("[AgentWorkerBase] Crash recovery: failed to publish error:", err);
-      }
-      // Clear the stale turn and harness
-      this.turns.clearActive(stale.harnessId);
-      this.harnesses.stop(stale.harnessId).catch(() => {});
-      // Queued turns remain in the queue — the next onChannelEvent will find
-      // no active harness, spawn a new one, and drain the queue naturally
-    }
-  }
-
-  override async alarm(): Promise<void> {
-    await super.alarm();
-    // Phase 1B: Watchdog check
-    if (this.getStateValue("watchdog_scheduled")) {
-      this.deleteStateValue("watchdog_scheduled");
-      await this.checkStaleTurns();
-      // Reschedule if there are still active turns
-      const activeTurns = this.sql.exec(`SELECT COUNT(*) as cnt FROM active_turns`).toArray();
-      if ((activeTurns[0]?.["cnt"] as number) > 0) {
-        this.scheduleWatchdog();
+    const resolver = this.pendingResolvers.get(callId);
+    if (resolver) {
+      this.pendingResolvers.delete(callId);
+      if (isError) {
+        const err = new Error(typeof result === "string" ? result : JSON.stringify(result));
+        resolver.reject(err);
+      } else {
+        resolver.resolve(result);
       }
     }
   }
 
-  // --- Fork support ---
+  // ── Default channel event handler ────────────────────────────────────────
+  //
+  // Subclasses MAY override this for custom routing, but the default behavior
+  // covers the common case: incoming user messages are forwarded to Pi via the
+  // per-channel runner. Pi handles the rest.
 
-  /**
-   * Preflight check for fork operations. Returns subscription count so the
-   * caller can decide the threshold: cloned DOs allow ≤1 (single-channel),
-   * replacement DOs require exactly 0 (must be fresh).
-   */
+  async onChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
+    if (!this.shouldProcess(event)) return;
+
+    const input = this.buildTurnInput(event);
+    await this.refreshRoster(channelId);
+    const runner = await this.getOrCreateRunner(channelId);
+    const images: ImageContent[] | undefined = input.attachments
+      ? input.attachments
+          .filter((a) => a.mimeType?.startsWith("image/"))
+          .map((a) => ({ type: "image" as const, mimeType: a.mimeType, data: a.data }))
+      : undefined;
+    if (runner.isStreaming) {
+      await runner.steer(input.content, images);
+    } else {
+      await runner.runTurn(input.content, images);
+    }
+  }
+
+  // ── Method calls (subclass hook) ─────────────────────────────────────────
+
+  async onMethodCall(_channelId: string, _callId: string, _methodName: string, _args: unknown): Promise<{ result: unknown; isError?: boolean }> {
+    return { result: { error: "not implemented" }, isError: true };
+  }
+
+  /** Interrupt the in-flight Pi turn for every active channel runner. */
+  protected async interruptAllRunners(): Promise<void> {
+    for (const entry of this.runners.values()) {
+      await entry.runner.interrupt();
+    }
+  }
+
+  /** Interrupt the in-flight Pi turn for a specific channel. */
+  protected async interruptRunner(channelId: string): Promise<void> {
+    const entry = this.runners.get(channelId);
+    if (entry) await entry.runner.interrupt();
+  }
+
+  // ── Fork support (Pi-native) ────────────────────────────────────────────
+
   async canFork(): Promise<{ ok: boolean; subscriptionCount: number; reason?: string }> {
     const count = this.sql.exec(`SELECT COUNT(*) as cnt FROM subscriptions`).toArray();
     const n = (count[0]?.["cnt"] as number) ?? 0;
@@ -664,60 +732,54 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   }
 
   /**
-   * Called on the NEWLY CLONED agent DO after cloneDO copies parent's SQLite.
+   * Called on the newly cloned agent DO after cloneDO copies parent's SQLite.
    * Rewrites identity, clears ephemeral state, resubscribes to forked channel.
+   * The cloned worker boots its own PiRunner pointing at the parent's session
+   * file (or a forked one) on first message.
    */
   async postClone(
     parentObjectKey: string,
     newChannelId: string,
     oldChannelId: string,
-    forkPointPubsubId: number,
+    forkPointMessageId: string | null,
   ): Promise<void> {
-    // Fix __objectKey (cloneDO copied parent's key).
-    // ensureBootstrapped() in fetch() already sets the correct objectKey and doRef,
-    // but __objectKey in the state table still has the parent's value from the clone.
     this.sql.exec(
       `INSERT OR REPLACE INTO state (key, value) VALUES ('__objectKey', ?)`,
       this.objectKey,
     );
 
-    // RPC identity is automatically updated: the dispatch that calls postClone
-    // delivers the clone's fresh instance token via X-Instance-Token header,
-    // and fetch() always overwrites identity from headers.
-
-    // Record fork metadata in state KV
     this.setStateValue("forkedFrom", parentObjectKey);
-    this.setStateValue("forkPointPubsubId", String(forkPointPubsubId));
+    if (forkPointMessageId) {
+      this.setStateValue("forkPointMessageId", forkPointMessageId);
+    }
     this.setStateValue("forkSourceChannel", oldChannelId);
 
-    // 4. Resolve fork session ID from turn_map — single deterministic query
-    //    across all harnesses, picking the most recent turn at or before the fork point.
-    const sessionRow = this.sql.exec(
-      `SELECT external_session_id FROM turn_map WHERE trigger_pubsub_id <= ? ORDER BY trigger_pubsub_id DESC LIMIT 1`,
-      forkPointPubsubId,
-    ).toArray();
-    if (sessionRow.length > 0) {
-      this.setStateValue("forkSessionId", sessionRow[0]!["external_session_id"] as string);
-    }
-
-    // 5. Mark all harnesses as stopped
-    this.sql.exec(`UPDATE harnesses SET status = 'stopped' WHERE status != 'stopped'`);
-
-    // 6. Clear ephemeral tables
-    this.sql.exec(`DELETE FROM active_turns`);
-    this.sql.exec(`DELETE FROM in_flight_turns`);
-    this.sql.exec(`DELETE FROM queued_turns`);
-    this.sql.exec(`DELETE FROM pending_calls`);
-    this.sql.exec(`DELETE FROM checkpoints`);
+    // Clear ephemeral state copied from parent.
     this.sql.exec(`DELETE FROM delivery_cursor`);
+    this.sql.exec(`DELETE FROM pending_calls`);
 
-    // 7. Clean state KV: remove bootstrap typing entries, rename approval level keys
-    const stateRows = this.sql.exec(`SELECT key FROM state WHERE key LIKE 'bootstrap_typing:%'`).toArray();
-    for (const row of stateRows) {
-      this.deleteStateValue(row["key"] as string);
+    // Migrate the parent's pi_sessions row from oldChannelId to newChannelId.
+    // The fork point handling: if the parent's session file is at PATH and we
+    // need to fork at forkPointMessageId, we'll need to call the runner's
+    // fork() — but the cloned DO has no live runner yet. Defer fork until
+    // the next user message arrives: when getOrCreateRunner sees a forkPointMessageId
+    // in state, it forks via PiRunner.fork() before forwarding the user message.
+    const parentSession = this.sql.exec(
+      `SELECT session_file, context_folder_path FROM pi_sessions WHERE channel_id = ?`,
+      oldChannelId,
+    ).toArray();
+    if (parentSession.length > 0) {
+      this.sql.exec(`DELETE FROM pi_sessions WHERE channel_id = ?`, oldChannelId);
+      this.sql.exec(
+        `INSERT OR REPLACE INTO pi_sessions (channel_id, session_file, context_folder_path, updated_at) VALUES (?, ?, ?, ?)`,
+        newChannelId,
+        parentSession[0]!["session_file"] as string,
+        parentSession[0]!["context_folder_path"] as string,
+        Date.now(),
+      );
     }
 
-    // Rename approvalLevel from old channel to new channel
+    // Rename approvalLevel state key.
     const oldApprovalKey = `approvalLevel:${oldChannelId}`;
     const newApprovalKey = `approvalLevel:${newChannelId}`;
     const approvalValue = this.getStateValue(oldApprovalKey);
@@ -726,8 +788,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       this.deleteStateValue(oldApprovalKey);
     }
 
-    // 8. Resubscribe to forked channel
-    // Read old subscription data before deleting
+    // Resubscribe to the forked channel.
     const subRow = this.sql.exec(
       `SELECT context_id, config FROM subscriptions WHERE channel_id = ?`, oldChannelId,
     ).toArray();
@@ -735,50 +796,36 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const configRaw = subRow.length > 0 ? (subRow[0]!["config"] as string | null) : null;
     const config = configRaw ? JSON.parse(configRaw) : undefined;
 
-    // Delete old subscription
     this.sql.exec(`DELETE FROM subscriptions`);
+    this.runners.clear(); // No live runners on a fresh clone.
 
-    // Subscribe to forked channel (calls SubscriptionManager which calls channel.subscribe)
     if (contextId) {
       await this.subscribeChannel({ channelId: newChannelId, contextId, config });
     }
 
-    // 9. Subclass hook
-    await this.onPostClone(parentObjectKey, newChannelId, oldChannelId, forkPointPubsubId);
+    await this.onPostClone(parentObjectKey, newChannelId, oldChannelId, forkPointMessageId);
   }
 
-  /** Subclass hook called at end of postClone(). Override for custom cleanup. */
   protected async onPostClone(
     _parentObjectKey: string,
     _newChannelId: string,
     _oldChannelId: string,
-    _forkPointPubsubId: number,
+    _forkPointMessageId: string | null,
   ): Promise<void> {
     // Default: no-op
   }
 
-  // --- Abstract methods ---
-
-  abstract onChannelEvent(channelId: string, event: ChannelEvent): Promise<void>;
-  abstract onHarnessEvent(harnessId: string, event: HarnessOutput): Promise<void>;
-
-  async onMethodCall(_channelId: string, _callId: string, _methodName: string, _args: unknown): Promise<{ result: unknown; isError?: boolean }> {
-    return { result: { error: 'not implemented' }, isError: true };
-  }
-
-  // --- Fetch override for agent-specific event handling ---
+  // ── Fetch override ───────────────────────────────────────────────────────
 
   override async fetch(request: Request): Promise<Response> {
     this.ensureReady();
 
-    // Parse /{objectKey}/{method} from URL (same as base class)
     const url = new URL(request.url);
     const segments = url.pathname.split("/").filter(Boolean);
-    if (segments.length >= 1 && !(this as any)._objectKey) {
-      (this as any)._objectKey = decodeURIComponent(segments[0]!);
+    if (segments.length >= 1 && !(this as unknown as { _objectKey?: string })._objectKey) {
+      (this as unknown as { _objectKey?: string })._objectKey = decodeURIComponent(segments[0]!);
     }
 
-    // Self-bootstrap from env bindings now that objectKey is available
     this.ensureBootstrapped();
 
     if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
@@ -787,7 +834,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     const method = segments.slice(1).join("/") || "getState";
 
-    // RPC infrastructure endpoints (must match DurableObjectBase)
     if (method === "__rpc") {
       const body = await request.json();
       const result = await this.rpc.handleIncomingPost(body);
@@ -837,35 +883,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         }
       }
 
-      // Channel DO sends proper ChannelEvent objects — intercept for dedup, gap detection, dispatch
       if (method === "onChannelEvent" && args.length === 2) {
         await this.handleIncomingChannelEvent(args[0] as string, args[1] as ChannelEvent);
         return new Response(JSON.stringify(null), {
           headers: { "Content-Type": "application/json" },
         });
-      }
-
-      // Phase 0C: Harness fencing — validate session for harness events
-      if (method === "onHarnessEvent" && args.length === 2) {
-        const harnessId = args[0] as string;
-        const sessionId = this.identity.sessionId;
-        if (sessionId && !this.harnesses.isCurrentSession(harnessId, sessionId)) {
-          console.warn(`[AgentWorkerBase] Rejecting event from stale harness ${harnessId} (wrong session)`);
-          // Best-effort stop of zombie harness
-          this.harnesses.stop(harnessId).catch(() => {});
-          return new Response(JSON.stringify(null), {
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        // Phase 1B: Touch activity timestamp for watchdog
-        this.turns.touchActive(harnessId);
-        // Phase 1B: Track continuation state based on harness event type
-        const harnessEvent = args[1] as { type: string };
-        if (harnessEvent.type === "approval-needed" || harnessEvent.type === "tool-call") {
-          this.turns.setPendingContinuation(harnessId, true);
-        } else if (harnessEvent.type === "turn-complete" || harnessEvent.type === "error") {
-          this.turns.setPendingContinuation(harnessId, false);
-        }
       }
 
       const fn = (this as unknown as Record<string, unknown>)[method];
@@ -891,13 +913,14 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   override async getState(): Promise<Record<string, unknown>> {
     const subscriptions = this.sql.exec(`SELECT * FROM subscriptions`).toArray();
-    const harnesses = this.sql.exec(`SELECT * FROM harnesses`).toArray();
-    const activeTurns = this.sql.exec(`SELECT * FROM active_turns`).toArray();
-    const checkpoints = this.sql.exec(`SELECT * FROM checkpoints`).toArray();
-    const inFlightTurns = this.sql.exec(`SELECT * FROM in_flight_turns`).toArray();
-    const queuedTurns = this.sql.exec(`SELECT * FROM queued_turns`).toArray();
+    const piSessions = this.sql.exec(`SELECT * FROM pi_sessions`).toArray();
     const pendingCalls = this.sql.exec(`SELECT * FROM pending_calls`).toArray();
     const deliveryCursors = this.sql.exec(`SELECT * FROM delivery_cursor`).toArray();
-    return { subscriptions, harnesses, activeTurns, checkpoints, inFlightTurns, queuedTurns, pendingCalls, deliveryCursors };
+    return { subscriptions, piSessions, pendingCalls, deliveryCursors };
   }
+
+  // Reference SAFE_TOOL_NAMES_DEFAULT to suppress unused-import warnings;
+  // it's exported from the harness package via DEFAULT_SAFE_TOOL_NAMES, but
+  // we keep a local reference here for documentation/symmetry.
+  protected static readonly _SAFE_TOOL_NAMES_REFERENCE = SAFE_TOOL_NAMES_DEFAULT;
 }

@@ -429,7 +429,6 @@ async function main() {
   const { createTestService } = await import("./services/testService.js");
   const { createDbService } = await import("./services/dbService.js");
   const { createTypecheckService } = await import("./services/typecheckService.js");
-  const { createHarnessService } = await import("./services/harnessService.js");
   const { createWorkerService } = await import("./services/workerService.js");
 
   // Resolve testSetup.ts relative to this module's location
@@ -599,88 +598,6 @@ async function main() {
       await instance?.server?.stop();
     },
   });
-
-  // ── HarnessManager (harness process lifecycle) ──
-
-  container.register({
-    name: "harnessManager",
-    dependencies: ["rpcServer", "doDispatch"],
-    async start(resolve) {
-      const { HarnessManager } = await import("./harnessManager.js");
-      const { server: rpcServer } = resolve<{ server: import("./rpcServer.js").RpcServer }>("rpcServer")!;
-      const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
-
-      const manager = new HarnessManager({
-        getRpcWsUrl: () => `ws://127.0.0.1:${rpcServer.getPort() ?? 0}`,
-        createToken: (callerId, callerKind) => tokenManager.createToken(callerId, callerKind),
-        revokeToken: (callerId) => tokenManager.revokeToken(callerId),
-        getClientBridge: (callerId) => rpcServer.getClientBridge(callerId),
-        onCrash: (harnessId) => {
-          // Notify the owning DO of the crash via DODispatch.
-          // The DO handles all recovery internally (respawn, channel cleanup, etc.)
-          const doRef = manager.getDOForHarness(harnessId);
-          if (!doRef) {
-            console.error(`[HarnessManager] onCrash: no DO registration for harness ${harnessId}`);
-            return;
-          }
-
-          void (async () => {
-            for (let attempt = 0; attempt < 3; attempt++) {
-              try {
-                await doDispatch.dispatch(
-                  doRef, "onHarnessEvent", harnessId,
-                  { type: "error", error: "harness process crashed" },
-                );
-                return; // Success
-              } catch (err) {
-                console.error(`[HarnessManager] onCrash: crash notification failed for ${harnessId} (attempt ${attempt + 1}/3):`, err);
-                if (attempt < 2) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-              }
-            }
-          })();
-        },
-        log: {
-          info: (...args) => console.log("[HarnessManager]", ...args),
-          error: (...args) => console.error("[HarnessManager]", ...args),
-          warn: (...args) => console.warn("[HarnessManager]", ...args),
-        },
-      });
-
-      // Wire RPC auth callback so HarnessManager resolves pending bridge waiters
-      rpcServer.setOnClientAuthenticate((callerId, callerKind) => {
-        if (callerKind === "harness") {
-          manager.notifyAuthenticated(callerId);
-        }
-      });
-
-      return manager;
-    },
-    async stop(instance: import("./harnessManager.js").HarnessManager) { await instance?.stopAll(); },
-  });
-
-
-  // ── Harness RPC service ──
-
-  {
-    let harnessServiceDef: import("@natstack/shared/serviceDefinition").ServiceDefinition;
-    container.register({
-      name: "harnessRpc",
-      dependencies: ["doDispatch", "harnessManager"],
-      async start(resolve) {
-        const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
-        const harnessManagerInst = resolve<import("./harnessManager.js").HarnessManager>("harnessManager")!;
-
-        harnessServiceDef = createHarnessService({
-          doDispatch,
-          harnessManager: harnessManagerInst,
-          contextFolderManager,
-        });
-      },
-      getServiceDefinition() {
-        return harnessServiceDef;
-      },
-    });
-  }
 
   // ── Workers RPC service ──
 

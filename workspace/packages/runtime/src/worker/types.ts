@@ -31,4 +31,4 @@ export interface ExecutionContext {
 }
 
 // Re-export harness types used by DO workers
-export type { ParticipantDescriptor, MethodAdvertisement } from "@natstack/harness";
+export type { ParticipantDescriptor } from "@natstack/harness";

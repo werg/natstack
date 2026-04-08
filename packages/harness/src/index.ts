@@ -1,55 +1,39 @@
+// =============================================================================
+// @natstack/harness — In-process Pi runtime for the agent worker DO
+// =============================================================================
+
+// PiRunner — the worker DO instantiates one per channel
+export { PiRunner } from "./pi-runner.js";
+export type { PiRunnerOptions, PiStateSnapshot, ThinkingLevel } from "./pi-runner.js";
+
+// NatStack extension factories — supplied to the runner via PiRunnerOptions
+export {
+  createApprovalGateExtension,
+  DEFAULT_SAFE_TOOL_NAMES,
+} from "./extensions/approval-gate.js";
+export type { ApprovalLevel, ApprovalGateDeps } from "./extensions/approval-gate.js";
+
+export { createChannelToolsExtension } from "./extensions/channel-tools.js";
+export type { ChannelToolMethod, ChannelToolsDeps } from "./extensions/channel-tools.js";
+
+export { createAskUserExtension } from "./extensions/ask-user.js";
 export type {
-  TurnUsage,
-  HarnessOutput,
-  HarnessSettings,
-  HarnessConfig,
+  AskUserParams,
+  AskUserQuestion,
+  AskUserDeps,
+} from "./extensions/ask-user.js";
+
+// UI bridge
+export { NatStackExtensionUIContext } from "./natstack-extension-context.js";
+export type { NatStackUIBridgeCallbacks } from "./natstack-extension-context.js";
+
+// Channel boundary types (still used by agentic-do)
+export type {
   Attachment,
   ChannelEvent,
   SendMessageOptions,
   TurnInput,
-  HarnessCommand,
+  TurnUsage,
   ParticipantDescriptor,
-  MethodAdvertisement,
   UnsubscribeResult,
-} from './types.js';
-
-// Claude SDK adapter
-export { ClaudeSdkAdapter } from './claude-sdk-adapter.js';
-export type { ClaudeAdapterDeps, ClaudeAdapterOptions, DiscoveredMethod } from './claude-sdk-adapter.js';
-
-// Pi adapter
-export { PiAdapter } from './pi-adapter.js';
-export type {
-  PiAdapterDeps,
-  PiAdapterOptions,
-  PiSession,
-  PiSessionEvent,
-  PiSessionStats,
-  PiSessionManager,
-  PiImageContent,
-  CreatePiSessionOptions,
-} from './pi-adapter.js';
-
-// Pi tool conversion
-export { convertToPiTools } from './pi-tools.js';
-export type {
-  DiscoveredMethod as PiDiscoveredMethod,
-  PiToolDefinition,
-  ConvertToolsOptions,
-  ConvertToolsResult,
-} from './pi-tools.js';
-
-// System prompt utilities
-export { buildSystemPrompt, prependContextNote } from './system-prompt.js';
-
-// MCP tool utilities
-export { buildMcpToolDefinitions } from './mcp-tools.js';
-export type { McpToolDefinition } from './mcp-tools.js';
-
-// Harness transport (WebSocket RPC transport for child processes)
-export { createHarnessTransport } from './harness-transport.js';
-export type { HarnessTransportResult } from './harness-transport.js';
-
-// Tool bridge (SDK-compatible tool executors via RPC)
-export { discoverAndCreateTools, createToolExecutor } from './tool-bridge.js';
-export type { ToolBridgeDeps } from './tool-bridge.js';
+} from "./types.js";
