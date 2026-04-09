@@ -30,7 +30,7 @@ import type {
   TurnInput,
   UnsubscribeResult,
 } from "@natstack/harness/types";
-import { isClientParticipantType } from "@natstack/pubsub";
+import { isClientParticipantType, getDetailedActionDescription } from "@natstack/pubsub";
 import {
   PiRunner,
   type ChannelToolMethod,
@@ -595,13 +595,14 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
         // Create action messages for any toolCall blocks visible at start.
         for (const block of blocks) {
-          const b = block as { type?: string; id?: string; name?: string };
+          const b = block as { type?: string; id?: string; name?: string; arguments?: Record<string, unknown> };
           if (b?.type === "toolCall" && b.id) {
             const channelMsgId = crypto.randomUUID();
             state.toolCallIdMap.set(b.id, channelMsgId);
+            const description = getDetailedActionDescription(b.name ?? "tool", b.arguments ?? {});
             const actionData = JSON.stringify({
               type: b.name ?? "tool",
-              description: "Running...",
+              description,
               status: "pending",
             });
             void channel.send(participantId, channelMsgId, actionData, {
@@ -641,14 +642,15 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           state.textMsgId = null;
         }
 
-        // Walk finalized content blocks for thinking + toolCall blocks.
+        // Walk ALL finalized content blocks: thinking, toolCall, extra text, images.
         const msg = event.message as { content?: unknown[] };
         const blocks = Array.isArray(msg.content) ? msg.content : [];
+        let textBlocksSeen = 0;
 
         for (let i = 0; i < blocks.length; i++) {
           const block = blocks[i] as {
-            type?: string; thinking?: string; id?: string; name?: string;
-            arguments?: Record<string, unknown>;
+            type?: string; text?: string; thinking?: string; id?: string; name?: string;
+            arguments?: Record<string, unknown>; mimeType?: string; data?: string;
           };
 
           if (block?.type === "thinking" && typeof block.thinking === "string") {
@@ -659,13 +661,35 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
             }).then(() => channel.complete(participantId, thinkId));
           }
 
+          // Additional text blocks beyond the first (which was streamed).
+          if (block?.type === "text" && typeof block.text === "string") {
+            textBlocksSeen++;
+            if (textBlocksSeen > 1) {
+              // The first text block was streamed live; publish additional ones all-at-once.
+              const extraId = crypto.randomUUID();
+              void channel.send(participantId, extraId, block.text, { persist: true })
+                .then(() => channel.complete(participantId, extraId));
+            }
+          }
+
+          // Assistant-side image blocks (uncommon but supported by pi-ai).
+          if (block?.type === "image" && block.mimeType && block.data) {
+            const imgId = crypto.randomUUID();
+            void channel.send(participantId, imgId, "", {
+              contentType: "image",
+              persist: true,
+              attachments: [{ data: block.data, mimeType: block.mimeType }],
+            }).then(() => channel.complete(participantId, imgId));
+          }
+
           // Create action messages for toolCall blocks not yet created at message_start.
           if (block?.type === "toolCall" && block.id && !state.toolCallIdMap.has(block.id)) {
             const channelMsgId = crypto.randomUUID();
             state.toolCallIdMap.set(block.id, channelMsgId);
+            const desc = getDetailedActionDescription(block.name ?? "tool", (block.arguments ?? {}) as Record<string, unknown>);
             const actionData = JSON.stringify({
               type: block.name ?? "tool",
-              description: "Running...",
+              description: desc,
               status: "pending",
             });
             void channel.send(participantId, channelMsgId, actionData, {
@@ -725,10 +749,19 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private static summarizeToolResult(result: unknown): string {
     if (typeof result === "string") return result.slice(0, 300);
     if (result == null) return "Done";
-    // Tool results are often arrays of content blocks: [{type:"text",text:"..."}, {type:"image",...}]
+
+    // Normalize: tool results can be a plain array of content blocks OR
+    // an object with a `content` array (e.g. { content: [...], details: {...} }).
+    let blocks: unknown[] | null = null;
     if (Array.isArray(result)) {
+      blocks = result;
+    } else if (typeof result === "object" && Array.isArray((result as Record<string, unknown>)["content"])) {
+      blocks = (result as Record<string, unknown>)["content"] as unknown[];
+    }
+
+    if (blocks) {
       const parts: string[] = [];
-      for (const item of result) {
+      for (const item of blocks) {
         const block = item as { type?: string; text?: string; mimeType?: string };
         if (block?.type === "text" && typeof block.text === "string") {
           parts.push(block.text.slice(0, 200));
@@ -738,6 +771,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       }
       if (parts.length > 0) return parts.join("; ").slice(0, 300);
     }
+
     // Fallback: stringified, truncated
     const s = JSON.stringify(result);
     return s.length > 300 ? s.slice(0, 297) + "..." : s;

@@ -34,14 +34,21 @@ const ResizeOptionsSchema = z
  *  - Number array */
 function toUint8Array(value: unknown): Uint8Array {
   if (value instanceof Uint8Array) return value;
-  // BinaryEnvelope from RPC wire layer
-  if (value && typeof value === "object" && (value as Record<string, unknown>)["__bin"] === true) {
-    const data = (value as Record<string, unknown>)["data"];
-    if (typeof data === "string") return new Uint8Array(Buffer.from(data, "base64"));
-  }
-  if (value && typeof value === "object" && "buffer" in (value as any) && (value as any).buffer instanceof ArrayBuffer) {
-    const v = value as { buffer: ArrayBuffer; byteOffset?: number; byteLength?: number };
-    return new Uint8Array(v.buffer, v.byteOffset ?? 0, v.byteLength ?? v.buffer.byteLength);
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    // BinaryEnvelope from RPC wire layer: { __bin: true, data: "base64..." }
+    if (obj["__bin"] === true && typeof obj["data"] === "string") {
+      return new Uint8Array(Buffer.from(obj["data"] as string, "base64"));
+    }
+    // JSON.stringify(Buffer) produces: { type: "Buffer", data: [72, 101, ...] }
+    if (obj["type"] === "Buffer" && Array.isArray(obj["data"])) {
+      return new Uint8Array(obj["data"] as number[]);
+    }
+    // ArrayBuffer view (e.g., DataView or typed array passed by reference)
+    if ("buffer" in obj && (obj as any).buffer instanceof ArrayBuffer) {
+      const v = obj as { buffer: ArrayBuffer; byteOffset?: number; byteLength?: number };
+      return new Uint8Array(v.buffer, v.byteOffset ?? 0, v.byteLength ?? v.buffer.byteLength);
+    }
   }
   if (Array.isArray(value)) return new Uint8Array(value as number[]);
   if (typeof value === "string") return new Uint8Array(Buffer.from(value, "base64"));

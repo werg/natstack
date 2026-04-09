@@ -376,7 +376,13 @@ export class PubSubChannel extends DurableObjectBase {
       this.rpc.emit(subscriberId, "channel:message", {
         channelId: this.objectKey,
         message: msg,
-      }).catch(err => console.warn(`[Channel] emit failed:`, err));
+      }).catch(err => {
+        const code = (err as { code?: string })?.code;
+        if (code === "TARGET_NOT_REACHABLE" || code === "RECONNECT_GRACE_EXPIRED") {
+          this.sql.exec(`DELETE FROM participants WHERE id = ?`, subscriberId);
+          cleanupDeliveryChain(subscriberId);
+        }
+      });
     }
   }
 
@@ -423,7 +429,13 @@ export class PubSubChannel extends DurableObjectBase {
       this.rpc.emit(subscriberId, "channel:message", {
         channelId: this.objectKey,
         message: msg,
-      }).catch(err => console.warn(`[Channel] emit failed:`, err));
+      }).catch(err => {
+        const code = (err as { code?: string })?.code;
+        if (code === "TARGET_NOT_REACHABLE" || code === "RECONNECT_GRACE_EXPIRED") {
+          this.sql.exec(`DELETE FROM participants WHERE id = ?`, subscriberId);
+          cleanupDeliveryChain(subscriberId);
+        }
+      });
     }
   }
 
@@ -907,7 +919,14 @@ export class PubSubChannel extends DurableObjectBase {
       const participants = this.sql.exec(`SELECT id FROM participants`).toArray();
       const data = { channelId: this.objectKey, message: msg };
       for (const p of participants) {
-        this.rpc.emit(p["id"] as string, "channel:message", data).catch(err => console.warn(`[Channel] emit failed:`, err));
+        const pid = p["id"] as string;
+        this.rpc.emit(pid, "channel:message", data).catch(err => {
+          const code = (err as { code?: string })?.code;
+          if (code === "TARGET_NOT_REACHABLE" || code === "RECONNECT_GRACE_EXPIRED") {
+            this.sql.exec(`DELETE FROM participants WHERE id = ?`, pid);
+            cleanupDeliveryChain(pid);
+          }
+        });
       }
     }
   }
@@ -998,7 +1017,14 @@ export class PubSubChannel extends DurableObjectBase {
     const participants = this.sql.exec(`SELECT id FROM participants`).toArray();
     const data = { channelId: this.objectKey, message: msg };
     for (const p of participants) {
-      this.rpc.emit(p["id"] as string, "channel:message", data).catch(err => console.warn(`[Channel] emit failed:`, err));
+      const pid = p["id"] as string;
+      this.rpc.emit(pid, "channel:message", data).catch(err => {
+        const code = (err as { code?: string })?.code;
+        if (code === "TARGET_NOT_REACHABLE" || code === "RECONNECT_GRACE_EXPIRED") {
+          this.sql.exec(`DELETE FROM participants WHERE id = ?`, pid);
+          cleanupDeliveryChain(pid);
+        }
+      });
     }
   }
 

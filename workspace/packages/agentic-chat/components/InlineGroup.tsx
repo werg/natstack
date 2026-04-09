@@ -1,8 +1,6 @@
 import React, { useCallback, useState } from "react";
 import { Box, Flex } from "@radix-ui/themes";
 import type { ActionData, TypingData } from "@natstack/pubsub";
-import type { MethodHistoryEntry } from "./MethodHistoryItem";
-import { CompactMethodPill, ExpandedMethodDetail } from "./MethodHistoryItem";
 import { ThinkingPill, ExpandedThinking } from "./ThinkingMessage";
 import { ActionPill, ExpandedAction } from "./ActionMessage";
 import { TypingPill } from "./TypingMessage";
@@ -12,7 +10,6 @@ const PREVIEW_MAX_LENGTH = 50;
 export type InlineItem =
   | { type: "thinking"; id: string; content: string; complete: boolean }
   | { type: "action"; id: string; data: ActionData; complete: boolean }
-  | { type: "method"; entry: MethodHistoryEntry }
   | { type: "typing"; id: string; data: TypingData; senderId: string };
 
 interface InlineGroupProps {
@@ -22,7 +19,7 @@ interface InlineGroupProps {
 }
 
 /**
- * InlineGroup renders a collection of thinking, action, method, and typing items
+ * InlineGroup renders a collection of thinking, action, and typing items
  * as compact pills in a wrapping flex row. Only one item can be expanded at a time.
  * Typing indicators are ephemeral and don't expand - they just show interrupt button.
  */
@@ -36,8 +33,7 @@ export const InlineGroup = React.memo(function InlineGroup({ items, onInterrupt 
   // Find expanded item (typing items don't expand)
   const expandedItem = expandedId
     ? items.find((item) => {
-        if (item.type === "method") return item.entry.callId === expandedId;
-        if (item.type === "typing") return false; // Typing items don't expand
+        if (item.type === "typing") return false;
         return item.id === expandedId;
       })
     : null;
@@ -48,7 +44,7 @@ export const InlineGroup = React.memo(function InlineGroup({ items, onInterrupt 
         {/* Compact pills row */}
         <Flex gap="1" wrap="wrap" align="center">
           {items.map((item) => {
-            const itemId = item.type === "method" ? item.entry.callId : item.id;
+            const itemId = item.id;
             if (expandedId === itemId) return null;
 
             switch (item.type) {
@@ -73,15 +69,6 @@ export const InlineGroup = React.memo(function InlineGroup({ items, onInterrupt 
                     key={itemId}
                     id={itemId}
                     data={item.data}
-                    onExpand={handleExpand}
-                  />
-                );
-              case "method":
-                return (
-                  <CompactMethodPill
-                    key={itemId}
-                    id={itemId}
-                    entry={item.entry}
                     onExpand={handleExpand}
                   />
                 );
@@ -110,12 +97,6 @@ export const InlineGroup = React.memo(function InlineGroup({ items, onInterrupt 
             {expandedItem.type === "action" && (
               <ExpandedAction
                 data={expandedItem.data}
-                onCollapse={handleCollapse}
-              />
-            )}
-            {expandedItem.type === "method" && (
-              <ExpandedMethodDetail
-                entry={expandedItem.entry}
                 onCollapse={handleCollapse}
               />
             )}

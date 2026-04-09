@@ -16,7 +16,6 @@ export interface ChatMessageAreaProps {
 export function ChatMessageArea({ renderMessage, renderInlineGroup }: ChatMessageAreaProps = {}) {
   const {
     messages,
-    methodEntries,
     allParticipants,
     inlineUiComponents,
     hasMoreHistory,
@@ -30,7 +29,6 @@ export function ChatMessageArea({ renderMessage, renderInlineGroup }: ChatMessag
   return (
     <MessageList
       messages={messages}
-      methodEntries={methodEntries}
       allParticipants={allParticipants}
       inlineUiComponents={inlineUiComponents}
       hasMoreHistory={hasMoreHistory}

@@ -60,7 +60,7 @@ describe("MessageList typing indicators", () => {
     expect(screen.getAllByText("AI Chat typing")).toHaveLength(1);
   });
 
-  it("keeps action beads visible alongside method beads", () => {
+  it("renders action beads in inline groups", () => {
     render(React.createElement(MessageList, {
       messages: [
         makeMessage({
@@ -74,25 +74,22 @@ describe("MessageList typing indicators", () => {
           }),
           complete: true,
         }),
-        {
-          id: "method-call-1",
-          senderId: "panel-1",
-          content: "",
-          kind: "method",
+        makeMessage({
+          id: "action-2",
+          contentType: "action",
+          content: JSON.stringify({
+            type: "Edit",
+            description: "Edit src/config.ts",
+            toolUseId: "tool-2",
+            status: "complete",
+          }),
           complete: true,
-          method: {
-            callId: "call-1",
-            methodName: "eval",
-            args: { code: "1+1" },
-            status: "success",
-            startedAt: 1,
-          },
-        },
+        }),
       ],
       allParticipants: {},
     } as never));
 
     expect(screen.getByText("Read src/app.ts")).toBeTruthy();
-    expect(screen.getByText(/\(code: 1\+1\)/)).toBeTruthy();
+    expect(screen.getByText("Edit src/config.ts")).toBeTruthy();
   });
 });

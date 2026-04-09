@@ -14,7 +14,10 @@ export const ActionPill = React.memo(function ActionPill({
   data: ActionData;
   onExpand: (id: string) => void;
 }) {
-  const isStreaming = data.status === "pending";
+  const isPending = data.status === "pending";
+  const color = isPending ? "amber" : "green";
+  const bgVar = isPending ? "var(--amber-a3)" : "var(--green-a3)";
+  const borderVar = isPending ? "var(--amber-a5)" : "var(--green-a5)";
 
   return (
     <Flex
@@ -27,17 +30,20 @@ export const ActionPill = React.memo(function ActionPill({
         userSelect: "none",
         padding: "2px 6px",
         borderRadius: "4px",
-        backgroundColor: "var(--blue-a3)",
+        backgroundColor: bgVar,
+        border: `1px solid ${borderVar}`,
         display: "inline-flex",
       }}
     >
-      {isStreaming && <Spinner size="1" />}
-      <Text size="1" color="blue" weight="medium">
+      {isPending && <Spinner size="1" />}
+      <Text size="1" color={color} weight="medium">
         {prettifyToolName(data.type)}
       </Text>
-      <Text size="1" color="gray" style={{ opacity: 0.7 }}>
-        {data.description}
-      </Text>
+      {data.description && (
+        <Text size="1" color="gray" style={{ opacity: 0.7, maxWidth: "300px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {data.description}
+        </Text>
+      )}
     </Flex>
   );
 });
@@ -50,13 +56,18 @@ export const ExpandedAction = React.memo(function ExpandedAction({
   data: ActionData;
   onCollapse: () => void;
 }) {
+  const isPending = data.status === "pending";
+  const color = isPending ? "amber" : "green";
+  const bgVar = isPending ? "var(--amber-a2)" : "var(--green-a2)";
+  const borderVar = isPending ? "var(--amber-a4)" : "var(--green-a4)";
+
   return (
     <Box
       style={{
-        backgroundColor: "var(--blue-a2)",
+        backgroundColor: bgVar,
         borderRadius: "6px",
         padding: "8px 10px",
-        border: "1px solid var(--blue-a4)",
+        border: `1px solid ${borderVar}`,
       }}
     >
       <Flex
@@ -66,10 +77,10 @@ export const ExpandedAction = React.memo(function ExpandedAction({
         tabIndex={0}
         style={{ cursor: "pointer", userSelect: "none" }}
       >
-        <Text color="blue" style={{ display: "flex", alignItems: "center" }}>
+        <Text color={color} style={{ display: "flex", alignItems: "center" }}>
           <ExpandableChevron expanded={true} />
         </Text>
-        <Text size="1" color="blue" weight="medium">
+        <Text size="1" color={color} weight="medium">
           {prettifyToolName(data.type)}
         </Text>
         <Text size="1" color="gray">

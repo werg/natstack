@@ -342,8 +342,6 @@ export class HeadlessSession {
           if (existing) {
             const updated = { ...existing };
             if (wire.content !== undefined) {
-              // Text messages (no contentType) use delta-append protocol.
-              // Structured messages (action, etc.) use full-replacement updates.
               if (!existing.contentType) {
                 updated.content = (existing.content ?? "") + wire.content;
               } else {
@@ -355,6 +353,33 @@ export class HeadlessSession {
             this._chatMessages.set(wire.id, updated);
             this.recomputeHasIncomplete();
             this.notifyListeners();
+          }
+        } else if (wire.type === "error" && wire.id) {
+          const existing = this._chatMessages.get(wire.id);
+          if (existing) {
+            this._chatMessages.set(wire.id, { ...existing, complete: true, error: (wire as { error?: string }).error ?? "Unknown error" });
+            this.recomputeHasIncomplete();
+            this.notifyListeners();
+          }
+        } else if (wire.type === "execution-pause") {
+          const targetId = (wire as { messageId?: string }).messageId ?? wire.id;
+          if (targetId) {
+            const existing = this._chatMessages.get(targetId);
+            if (existing && !existing.complete) {
+              this._chatMessages.set(targetId, { ...existing, complete: true });
+              this.recomputeHasIncomplete();
+              this.notifyListeners();
+            }
+          } else {
+            for (let i = this._chatMessageOrder.length - 1; i >= 0; i--) {
+              const msg = this._chatMessages.get(this._chatMessageOrder[i]!);
+              if (msg && !msg.complete) {
+                this._chatMessages.set(this._chatMessageOrder[i]!, { ...msg, complete: true });
+                this.recomputeHasIncomplete();
+                this.notifyListeners();
+                break;
+              }
+            }
           }
         }
       }

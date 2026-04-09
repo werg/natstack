@@ -49,20 +49,18 @@ export function broadcast(
 
   for (const p of participants) {
     const pid = p["id"] as string;
-    if (pid === senderId) {
-      // Ack to sender with ref
-      deps.rpc.emit(pid, "channel:message", {
-        channelId: deps.objectKey,
-        message: envelope.ref !== undefined ? { ...msg, ref: envelope.ref } : msg,
-      }).catch(err => console.warn(`[Channel] emit failed:`, err));
-      continue;
-    }
+    const data = pid === senderId && envelope.ref !== undefined
+      ? { channelId: deps.objectKey, message: { ...msg, ref: envelope.ref } }
+      : { channelId: deps.objectKey, message: msg };
 
-    // Emit to all participants via RPC
-    deps.rpc.emit(pid, "channel:message", {
-      channelId: deps.objectKey,
-      message: msg,
-    }).catch(err => console.warn(`[Channel] emit failed:`, err));
+    deps.rpc.emit(pid, "channel:message", data).catch(err => {
+      const code = (err as { code?: string })?.code;
+      if (code === "TARGET_NOT_REACHABLE" || code === "RECONNECT_GRACE_EXPIRED") {
+        // Dead participant — remove from SQL so future broadcasts skip it.
+        deps.sql.exec(`DELETE FROM participants WHERE id = ?`, pid);
+        cleanupDeliveryChain(pid);
+      }
+    });
 
     // For DO participants, also deliver the structured ChannelEvent via RPC call
     // for ordered delivery (agent DOs process these via onChannelEvent)

@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from "react";
 import { Box, Button, Card, Flex, ScrollArea, Text } from "@radix-ui/themes";
 import type { Participant } from "@natstack/pubsub";
-import type { MethodHistoryEntry } from "./MethodHistoryItem";
 import { InlineGroup, type InlineItem } from "./InlineGroup";
 import { parseActionData } from "./ActionMessage";
 import { parseTypingData } from "./TypingMessage";
@@ -18,33 +17,19 @@ type GroupedItem =
 
 // --- Grouping helper functions (module-level for reuse by fast paths) ---
 
-type InlineItemType = "thinking" | "action" | "method";
+type InlineItemType = "thinking" | "action";
 
 function getInlineItemType(msg: ChatMessage): InlineItemType | null {
-  if (msg.kind === "method" && msg.method) return "method";
   if (msg.contentType === "thinking") return "thinking";
   if (msg.contentType === "action") return "action";
   return null;
 }
 
-/** Transform an inline group's messages into InlineItem[] with deduplication */
+/** Transform an inline group's messages into InlineItem[] */
 function buildInlineItems(
   items: Array<{ msg: ChatMessage; index: number }>,
-  methodEntries?: Map<string, MethodHistoryEntry>,
 ): InlineItem[] {
   return items.map(({ msg }) => {
-    if (msg.kind === "method" && msg.method) {
-      const liveEntry = methodEntries?.get(msg.method.callId);
-      return { type: "method" as const, entry: liveEntry ?? msg.method };
-    }
-    if (msg.contentType === "thinking") {
-      return {
-        type: "thinking" as const,
-        id: msg.id,
-        content: msg.content,
-        complete: msg.complete ?? false,
-      };
-    }
     if (msg.contentType === "action") {
       const data = parseActionData(msg.content, msg.complete);
       return {
@@ -57,7 +42,7 @@ function buildInlineItems(
     return {
       type: "thinking" as const,
       id: msg.id,
-      content: msg.content || "Unknown",
+      content: msg.content,
       complete: msg.complete ?? false,
     };
   });
@@ -66,7 +51,6 @@ function buildInlineItems(
 /** Full grouping computation — scans all messages from scratch */
 function fullGroupComputation(
   messages: ChatMessage[],
-  methodEntries?: Map<string, MethodHistoryEntry>,
 ): GroupedItem[] {
   const result: GroupedItem[] = [];
   let currentInlineGroup: Array<{ msg: ChatMessage; index: number }> = [];
@@ -84,7 +68,7 @@ function fullGroupComputation(
         result.push({
           type: "inline-group",
           items: currentInlineGroup,
-          inlineItems: buildInlineItems(currentInlineGroup, methodEntries),
+          inlineItems: buildInlineItems(currentInlineGroup),
           key: `inline-group-${currentInlineGroup[0]!.msg.id || currentInlineGroup[0]!.index}`,
         });
         currentInlineGroup = [];
@@ -97,7 +81,7 @@ function fullGroupComputation(
     result.push({
       type: "inline-group",
       items: currentInlineGroup,
-      inlineItems: buildInlineItems(currentInlineGroup, methodEntries),
+      inlineItems: buildInlineItems(currentInlineGroup),
       key: `inline-group-${currentInlineGroup[0]!.msg.id || currentInlineGroup[0]!.index}`,
     });
   }
@@ -132,7 +116,6 @@ export interface SenderInfo {
 
 export interface MessageListProps {
   messages: ChatMessage[];
-  methodEntries?: Map<string, MethodHistoryEntry>;
   allParticipants: Record<string, Participant<ChatParticipantMetadata>>;
   inlineUiComponents?: Map<string, InlineUiComponentEntry>;
   hasMoreHistory?: boolean;
@@ -162,7 +145,6 @@ export interface MessageListProps {
  */
 export const MessageList = React.memo(function MessageList({
   messages,
-  methodEntries,
   allParticipants,
   inlineUiComponents,
   hasMoreHistory,
@@ -409,7 +391,6 @@ export const MessageList = React.memo(function MessageList({
   // --- Message grouping (with incremental fast paths) ---
   const prevGroupCacheRef = useRef<{
     messages: ChatMessage[];
-    methodEntries: Map<string, MethodHistoryEntry> | undefined;
     result: GroupedItem[];
   } | null>(null);
 
@@ -420,7 +401,7 @@ export const MessageList = React.memo(function MessageList({
     // During streaming, the messages array is replaced with a new reference where only
     // the last element has updated content. All prior elements are reference-equal.
     if (cache && cache.messages.length === messages.length && messages.length > 0
-        && cache.methodEntries === methodEntries) {
+) {
       let onlyLastChanged = true;
       for (let i = 0; i < messages.length - 1; i++) {
         if (messages[i] !== cache.messages[i]) { onlyLastChanged = false; break; }
@@ -434,7 +415,7 @@ export const MessageList = React.memo(function MessageList({
         if (lastItem?.type === "message" && lastItem.msg.id === lastMsg.id && lastMsgInlineType === null) {
           const result = cache.result.slice(); // shallow copy
           result[result.length - 1] = { type: "message", msg: lastMsg, index: messages.length - 1 };
-          prevGroupCacheRef.current = { messages, methodEntries, result };
+          prevGroupCacheRef.current = { messages, result };
           return result;
         }
         // If it's an inline group whose last source message changed (e.g., thinking/action streaming),
@@ -448,10 +429,10 @@ export const MessageList = React.memo(function MessageList({
             result[result.length - 1] = {
               type: "inline-group",
               items: updatedItems,
-              inlineItems: buildInlineItems(updatedItems, methodEntries),
+              inlineItems: buildInlineItems(updatedItems),
               key: lastItem.key,
             };
-            prevGroupCacheRef.current = { messages, methodEntries, result };
+            prevGroupCacheRef.current = { messages, result };
             return result;
           }
         }
@@ -460,7 +441,7 @@ export const MessageList = React.memo(function MessageList({
 
     // Fast path B: append-only — prefix unchanged, new messages added at end.
     // Common when a new message arrives or a new inline item is appended.
-    if (cache && messages.length > cache.messages.length && cache.methodEntries === methodEntries) {
+    if (cache && messages.length > cache.messages.length) {
       let prefixMatch = true;
       for (let i = 0; i < cache.messages.length; i++) {
         if (messages[i] !== cache.messages[i]) { prefixMatch = false; break; }
@@ -489,7 +470,7 @@ export const MessageList = React.memo(function MessageList({
               result.push({
                 type: "inline-group",
                 items: tailInlineGroup,
-                inlineItems: buildInlineItems(tailInlineGroup, methodEntries),
+                inlineItems: buildInlineItems(tailInlineGroup),
                 key: `inline-group-${tailInlineGroup[0]!.msg.id || tailInlineGroup[0]!.index}`,
               });
               tailInlineGroup = null;
@@ -502,21 +483,21 @@ export const MessageList = React.memo(function MessageList({
           result.push({
             type: "inline-group",
             items: tailInlineGroup,
-            inlineItems: buildInlineItems(tailInlineGroup, methodEntries),
+            inlineItems: buildInlineItems(tailInlineGroup),
             key: `inline-group-${tailInlineGroup[0]!.msg.id || tailInlineGroup[0]!.index}`,
           });
         }
 
-        prevGroupCacheRef.current = { messages, methodEntries, result };
+        prevGroupCacheRef.current = { messages, result };
         return result;
       }
     }
 
     // Full recompute fallback (prepends, trims, mid-array changes)
-    const result = fullGroupComputation(messages, methodEntries);
-    prevGroupCacheRef.current = { messages, methodEntries, result };
+    const result = fullGroupComputation(messages);
+    prevGroupCacheRef.current = { messages, result };
     return result;
-  }, [messages, methodEntries]);
+  }, [messages]);
 
   const activeTypingItems = useMemo(() => buildActiveTypingItems(messages), [messages]);
 
