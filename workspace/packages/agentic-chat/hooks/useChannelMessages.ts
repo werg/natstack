@@ -21,6 +21,7 @@
 
 import { useState, useEffect } from "react";
 import type { PubSubClient, ParticipantMetadata, Attachment } from "@natstack/pubsub";
+import { isClientParticipantType } from "@natstack/pubsub";
 import type { ChatMessage } from "@workspace/agentic-core";
 
 /**
@@ -64,15 +65,19 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
           };
 
           if (wire.type === "message" && wire.id) {
-            // Determine completeness: replay messages are final state.
+            // Determine completeness:
+            // - Replay messages are final state → complete
+            // - Client messages (panel, headless) are one-shot → complete
+            // - Agent messages stream via update → complete arrives later
             const isReplay = wire.kind === "replay";
+            const isFromClient = isClientParticipantType(wire.senderMetadata?.type);
             const msg: ChatMessage = {
               id: wire.id,
               senderId: wire.senderId ?? "unknown",
               content: wire.content ?? "",
               contentType: wire.contentType,
               kind: "message",
-              complete: isReplay ? true : false,
+              complete: isReplay || isFromClient,
               attachments: wire.attachments,
               senderMetadata: wire.senderMetadata,
             };

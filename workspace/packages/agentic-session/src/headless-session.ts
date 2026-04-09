@@ -320,13 +320,14 @@ export class HeadlessSession {
 
         if (wire.type === "message" && wire.id) {
           const isReplay = wire.kind === "replay";
+          const isFromClient = wire.senderMetadata?.type === "panel" || wire.senderMetadata?.type === "headless";
           const msg: ChatMessage = {
             id: wire.id,
             senderId: wire.senderId ?? "unknown",
             content: wire.content ?? "",
             contentType: wire.contentType,
             kind: "message",
-            complete: isReplay ? true : false,
+            complete: isReplay || isFromClient,
             attachments: wire.attachments,
             senderMetadata: wire.senderMetadata,
           };

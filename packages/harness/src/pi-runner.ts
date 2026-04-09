@@ -167,12 +167,9 @@ export class PiRunner {
    */
   async init(): Promise<void> {
     const cwd = this.options.cwd ?? "/";
-    console.log(`[PiRunner] init() start cwd=${cwd} model=${this.options.model}`);
 
     // 1. Workspace resources (AGENTS.md + skill index).
-    console.log("[PiRunner] init: loading workspace resources via RPC");
     const resources = await loadNatStackResources({ rpc: this.options.rpc });
-    console.log(`[PiRunner] init: resources loaded, systemPromptLen=${resources.systemPrompt.length}, skillCount=${resources.skills.length}`);
 
     // 2. Extension runtime + UI bridge + factories.
     this.extensionRuntime = new PiExtensionRuntime(cwd);
@@ -247,12 +244,10 @@ export class PiRunner {
 
     // 7. Fire session_start so channel-tools reconciles initial roster
     //    and we then push the active tool set onto the agent.
-    console.log("[PiRunner] init: firing session_start to extensions");
     await this.extensionRuntime.dispatch("session_start", {
       type: "session_start",
     });
     this.refreshActiveTools();
-    console.log("[PiRunner] init() complete");
   }
 
   /**
@@ -274,22 +269,14 @@ export class PiRunner {
   private async fetchProviderTokenWithOAuthFallback(
     providerName: string,
   ): Promise<string> {
-    console.log(`[PiRunner] fetchProviderToken: requesting ${providerName}`);
     try {
-      const token = await this.options.rpc.call<string>(
+      return await this.options.rpc.call<string>(
         "main",
         "auth.getProviderToken",
         providerName,
       );
-      console.log(`[PiRunner] fetchProviderToken: got token for ${providerName}`);
-      return token;
     } catch (err) {
-      console.log(
-        `[PiRunner] fetchProviderToken: error for ${providerName}: ${err instanceof Error ? err.message : String(err)}`,
-      );
       if (!isNotLoggedInError(err)) throw err;
-
-      console.log(`[PiRunner] fetchProviderToken: detected not-logged-in, emitting OAuth card`);
 
       // Show the OAuth Connect card in the chat (fire-and-forget).
       // The card's Connect button calls auth.startOAuthLogin, and after

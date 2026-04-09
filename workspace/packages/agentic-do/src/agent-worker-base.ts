@@ -488,11 +488,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   protected async getOrCreateRunner(channelId: string): Promise<PiRunner> {
     const existing = this.runners.get(channelId);
-    if (existing) {
-      console.log(`[AgentWorkerBase] getOrCreateRunner: returning existing runner channel=${channelId}`);
-      return existing.runner;
-    }
-    console.log(`[AgentWorkerBase] getOrCreateRunner: constructing new runner channel=${channelId}`);
+    if (existing) return existing.runner;
 
     // Restore prior messages from SQL (warm-restart after DO hibernation,
     // or freshly cloned DO whose parent's blob was copied in postClone).
@@ -531,9 +527,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       onPersist: (messages) => this.persistMessages(channelId, messages),
     });
 
-    console.log(`[AgentWorkerBase] getOrCreateRunner: calling runner.init() channel=${channelId} model=${this.getModel()}`);
     await runner.init();
-    console.log(`[AgentWorkerBase] getOrCreateRunner: runner.init() complete channel=${channelId}`);
 
     // Warm-restore: no synthetic snapshot needed — the channel already has
     // persisted messages that replay on panel connect.
@@ -702,13 +696,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         const { toolCallId, toolName, result, isError } = event;
         const channelMsgId = state.toolCallIdMap.get(toolCallId);
         if (channelMsgId) {
-          let description: string;
-          if (isError) {
-            const errMsg = typeof result === "string" ? result : JSON.stringify(result);
-            description = `Error: ${errMsg}`.slice(0, 500);
-          } else {
-            description = (typeof result === "string" ? result : JSON.stringify(result)).slice(0, 500);
-          }
+          const summary = AgentWorkerBase.summarizeToolResult(result);
+          const description = isError ? `Error: ${summary}` : summary;
           const actionData = JSON.stringify({
             type: toolName,
             description,
@@ -730,6 +719,28 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         // tool_execution_update.
         break;
     }
+  }
+
+  /** Extract a human-readable summary from a tool result for ActionData description. */
+  private static summarizeToolResult(result: unknown): string {
+    if (typeof result === "string") return result.slice(0, 300);
+    if (result == null) return "Done";
+    // Tool results are often arrays of content blocks: [{type:"text",text:"..."}, {type:"image",...}]
+    if (Array.isArray(result)) {
+      const parts: string[] = [];
+      for (const item of result) {
+        const block = item as { type?: string; text?: string; mimeType?: string };
+        if (block?.type === "text" && typeof block.text === "string") {
+          parts.push(block.text.slice(0, 200));
+        } else if (block?.type === "image") {
+          parts.push(`Image (${block.mimeType ?? "image"})`);
+        }
+      }
+      if (parts.length > 0) return parts.join("; ").slice(0, 300);
+    }
+    // Fallback: stringified, truncated
+    const s = JSON.stringify(result);
+    return s.length > 300 ? s.slice(0, 297) + "..." : s;
   }
 
   /** Check a tool result for ImageContent blocks and publish them as image channel messages. */
@@ -906,53 +917,26 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         void channel.sendEphemeralEvent(participantId, "natstack-ext-working", { message: message ?? null });
       },
       requestProviderOAuth: (providerId, displayName) => {
-        console.log(
-          `[AgentWorkerBase] requestProviderOAuth fired channel=${channelId} provider=${providerId} displayName=${displayName}`,
-        );
         const participantId = this.subscriptions.getParticipantId(channelId);
-        if (!participantId) {
-          console.warn(
-            `[AgentWorkerBase] requestProviderOAuth: no participantId for channel=${channelId}`,
-          );
-          return;
-        }
-        // Dedupe: only emit one card per (channel, providerId). If the user
-        // restarts the agent or the token expires later we'll still get a new
-        // card on the new turn — the dedupe is per active runner instance.
+        if (!participantId) return;
         const key = `${channelId}::${providerId}`;
-        if (this.oauthCardsEmitted.has(key)) {
-          console.log(`[AgentWorkerBase] requestProviderOAuth: card already emitted for ${key}`);
-          return;
-        }
+        if (this.oauthCardsEmitted.has(key)) return;
         this.oauthCardsEmitted.add(key);
 
         const channel = this.createChannelClient(channelId);
         const messageId = crypto.randomUUID();
-        const inlineUiId = `oauth-connect-${providerId}-${messageId}`;
         const content = JSON.stringify({
-          id: inlineUiId,
+          id: `oauth-connect-${providerId}-${messageId}`,
           code: OAUTH_CONNECT_CARD_TSX,
           props: { providerId, displayName },
         });
-        console.log(
-          `[AgentWorkerBase] requestProviderOAuth: emitting inline_ui card messageId=${messageId} channel=${channelId}`,
-        );
         void channel
           .send(participantId, messageId, content, {
             contentType: "inline_ui",
             persist: true,
           })
-          .then(() => {
-            console.log(
-              `[AgentWorkerBase] requestProviderOAuth: inline_ui card sent OK messageId=${messageId}`,
-            );
-          })
           .catch((err) => {
-            console.error(
-              `[AgentWorkerBase] Failed to emit OAuth Connect card for ${providerId}:`,
-              err,
-            );
-            // Allow a retry on the next getApiKey miss.
+            console.error(`[AgentWorkerBase] Failed to emit OAuth Connect card for ${providerId}:`, err);
             this.oauthCardsEmitted.delete(key);
           });
       },
@@ -1068,18 +1052,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   // per-channel runner. Pi handles the rest.
 
   async onChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
-    console.log(
-      `[AgentWorkerBase] onChannelEvent channel=${channelId} type=${event.type} contentType=${(event as { contentType?: string }).contentType ?? "<none>"} senderType=${(event.senderMetadata?.["type"] as string | undefined) ?? "<none>"}`,
-    );
-    if (!this.shouldProcess(event)) {
-      console.log(`[AgentWorkerBase] onChannelEvent SKIPPED (shouldProcess=false) channel=${channelId}`);
-      return;
-    }
+    if (!this.shouldProcess(event)) return;
 
     const input = this.buildTurnInput(event);
-    console.log(
-      `[AgentWorkerBase] onChannelEvent processing turn channel=${channelId} contentLen=${input.content.length}`,
-    );
     await this.refreshRoster(channelId);
     const runner = await this.getOrCreateRunner(channelId);
 
@@ -1119,13 +1094,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     const imagesArg = images.length > 0 ? images : undefined;
     if (runner.isStreaming) {
-      console.log(`[AgentWorkerBase] onChannelEvent: runner.steer channel=${channelId}`);
       await runner.steer(input.content, imagesArg);
     } else {
-      console.log(`[AgentWorkerBase] onChannelEvent: runner.runTurn channel=${channelId}`);
       await runner.runTurn(input.content, imagesArg);
     }
-    console.log(`[AgentWorkerBase] onChannelEvent: turn dispatched channel=${channelId}`);
   }
 
   // ── Method calls (subclass hook) ─────────────────────────────────────────
