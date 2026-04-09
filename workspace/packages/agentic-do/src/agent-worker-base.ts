@@ -364,6 +364,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       this.runners.delete(channelId);
     }
 
+    // Clean up per-channel streaming state (tool-call ID map, text msg tracking).
+    this.channelStreamState.delete(channelId);
+
     this.continuations.deleteForChannel(channelId);
     this.subscriptions.deleteSubscription(channelId);
     this.sql.exec(`DELETE FROM pi_sessions WHERE channel_id = ?`, channelId);
@@ -719,10 +722,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           const actionData = JSON.stringify({
             type: toolName,
             description,
-            status: "complete",
+            status: isError ? "error" : "complete",
           });
           void channel.update(participantId, channelMsgId, actionData)
             .then(() => channel.complete(participantId, channelMsgId));
+          // Free the completed mapping to avoid unbounded growth in long sessions.
+          state.toolCallIdMap.delete(toolCallId);
         }
 
         // Publish image content from tool results.

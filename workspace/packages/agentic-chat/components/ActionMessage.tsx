@@ -15,9 +15,10 @@ export const ActionPill = React.memo(function ActionPill({
   onExpand: (id: string) => void;
 }) {
   const isPending = data.status === "pending";
-  const color = isPending ? "amber" : "green";
-  const bgVar = isPending ? "var(--amber-a3)" : "var(--green-a3)";
-  const borderVar = isPending ? "var(--amber-a5)" : "var(--green-a5)";
+  const isError = data.status === "error";
+  const color = isError ? "red" : isPending ? "amber" : "green";
+  const bgVar = isError ? "var(--red-a3)" : isPending ? "var(--amber-a3)" : "var(--green-a3)";
+  const borderVar = isError ? "var(--red-a5)" : isPending ? "var(--amber-a5)" : "var(--green-a5)";
 
   return (
     <Flex
@@ -57,9 +58,10 @@ export const ExpandedAction = React.memo(function ExpandedAction({
   onCollapse: () => void;
 }) {
   const isPending = data.status === "pending";
-  const color = isPending ? "amber" : "green";
-  const bgVar = isPending ? "var(--amber-a2)" : "var(--green-a2)";
-  const borderVar = isPending ? "var(--amber-a4)" : "var(--green-a4)";
+  const isError = data.status === "error";
+  const color = isError ? "red" : isPending ? "amber" : "green";
+  const bgVar = isError ? "var(--red-a2)" : isPending ? "var(--amber-a2)" : "var(--green-a2)";
+  const borderVar = isError ? "var(--red-a4)" : isPending ? "var(--amber-a4)" : "var(--green-a4)";
 
   return (
     <Box

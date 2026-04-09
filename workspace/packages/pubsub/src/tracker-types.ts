@@ -80,7 +80,7 @@ export interface ActionData {
   /** Tool use ID for correlation with method calls */
   toolUseId?: string;
   /** Action status */
-  status: "pending" | "complete";
+  status: "pending" | "complete" | "error";
 }
 
 /**
