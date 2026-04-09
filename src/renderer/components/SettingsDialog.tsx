@@ -9,57 +9,54 @@ import {
   Dialog,
   Flex,
   Heading,
-  Select,
-  Separator,
   Spinner,
   Text,
-  TextField,
 } from "@radix-ui/themes";
-import { EyeClosedIcon, EyeOpenIcon, InfoCircledIcon, TrashIcon } from "@radix-ui/react-icons";
+import { InfoCircledIcon } from "@radix-ui/react-icons";
 
 import {
   settingsDialogOpenAtom,
-  settingsDataAtom,
-  settingsLoadingAtom,
-  loadSettingsAtom,
-  setApiKeyAtom,
-  removeApiKeyAtom,
-  setModelRoleAtom,
+  authProvidersAtom,
+  authProvidersLoadingAtom,
+  loadAuthProvidersAtom,
 } from "../state/appModeAtoms";
 import { useShellOverlay } from "../shell/useShellOverlay";
-import type { ProviderInfo } from "@natstack/shared/types";
-
-const MODEL_ROLES = ["smart", "coding", "fast", "cheap"] as const;
+import { auth, type AuthProvider } from "../shell/client";
 
 interface SettingsDialogProps {
   /** If true, dialog cannot be dismissed (used for initial setup) */
   isSetupMode?: boolean;
 }
 
+function isProviderReady(p: AuthProvider): boolean {
+  return p.status === "connected" || p.status === "configured";
+}
+
 export function SettingsDialog({ isSetupMode = false }: SettingsDialogProps) {
   const isOpen = useAtomValue(settingsDialogOpenAtom);
-  const settingsData = useAtomValue(settingsDataAtom);
-  const isLoading = useAtomValue(settingsLoadingAtom);
+  const providers = useAtomValue(authProvidersAtom);
+  const isLoading = useAtomValue(authProvidersLoadingAtom);
 
   const setIsOpen = useSetAtom(settingsDialogOpenAtom);
-  const loadSettings = useSetAtom(loadSettingsAtom);
+  const loadProviders = useSetAtom(loadAuthProvidersAtom);
 
   // In setup mode, always open; in normal mode, use atom state
   const effectiveIsOpen = isSetupMode || isOpen;
   useShellOverlay(effectiveIsOpen);
 
-  // Load settings when dialog opens
+  // Load providers whenever the dialog opens.
   useEffect(() => {
     if (effectiveIsOpen) {
-      void loadSettings();
+      void loadProviders();
     }
-  }, [effectiveIsOpen, loadSettings]);
+  }, [effectiveIsOpen, loadProviders]);
 
-  // In setup mode, only allow closing if providers are configured
+  const hasConfiguredProviders = (providers ?? []).some(isProviderReady);
+
+  // In setup mode, only allow closing if providers are configured.
   const handleOpenChange = (open: boolean) => {
     if (isSetupMode && !open) {
-      // Can only close setup mode if providers are configured
-      if (settingsData?.hasConfiguredProviders) {
+      if (hasConfiguredProviders) {
         setIsOpen(false);
       }
       return;
@@ -67,7 +64,10 @@ export function SettingsDialog({ isSetupMode = false }: SettingsDialogProps) {
     setIsOpen(open);
   };
 
-  const canClose = !isSetupMode || (settingsData?.hasConfiguredProviders ?? false);
+  const canClose = !isSetupMode || hasConfiguredProviders;
+
+  const oauthProviders = (providers ?? []).filter((p) => p.kind === "oauth");
+  const envProviders = (providers ?? []).filter((p) => p.kind === "env");
 
   return (
     <Dialog.Root open={effectiveIsOpen} onOpenChange={handleOpenChange}>
@@ -78,94 +78,82 @@ export function SettingsDialog({ isSetupMode = false }: SettingsDialogProps) {
               <Heading size="5">Welcome to NatStack</Heading>
             </Dialog.Title>
             <Dialog.Description size="2" color="gray" mb="4">
-              Configure at least one AI provider to get started.
+              Connect an AI provider to get started.
             </Dialog.Description>
           </>
         ) : (
           <>
             <Dialog.Title>Settings</Dialog.Title>
             <Dialog.Description size="2" color="gray" mb="4">
-              Configure AI providers and model roles.
+              Manage AI provider connections.
             </Dialog.Description>
           </>
         )}
 
-        {isLoading ? (
+        {isLoading && providers === null ? (
           <Flex align="center" justify="center" py="6">
             <Spinner />
             <Text size="2" ml="2">
-              Loading settings...
+              Loading providers...
             </Text>
           </Flex>
-        ) : settingsData ? (
+        ) : (
           <Flex direction="column" gap="5">
             {/* Setup mode notice */}
-            {isSetupMode && !settingsData.hasConfiguredProviders && (
+            {isSetupMode && !hasConfiguredProviders && (
               <Callout.Root color="blue">
                 <Callout.Icon>
                   <InfoCircledIcon />
                 </Callout.Icon>
-                <Callout.Text>Add an API key for at least one provider to continue.</Callout.Text>
+                <Callout.Text>
+                  Connect at least one AI provider to continue.
+                </Callout.Text>
               </Callout.Root>
             )}
 
-            {/* AI Providers Section */}
             <Box>
               <Text size="2" weight="bold" mb="3" style={{ display: "block" }}>
-                AI Providers
+                AI provider configuration
               </Text>
-              <Flex direction="column" gap="2">
-                {settingsData.availableProviders.map((provider) => {
-                  const providerInfo = settingsData.providers.find((p) => p.id === provider.id);
-                  return (
-                    <ProviderRow
+
+              {/* OAuth providers (e.g. ChatGPT) */}
+              {oauthProviders.length > 0 && (
+                <Flex direction="column" gap="2" mb="3">
+                  {oauthProviders.map((provider) => (
+                    <OAuthProviderRow
                       key={provider.id}
                       provider={provider}
-                      providerInfo={providerInfo}
+                      onChanged={() => void loadProviders()}
                     />
-                  );
-                })}
-              </Flex>
+                  ))}
+                </Flex>
+              )}
+
+              {/* Env-var providers */}
+              {envProviders.length > 0 && (
+                <Flex direction="column" gap="2">
+                  <Text size="1" color="gray" style={{ display: "block" }}>
+                    Providers configured via environment variables:
+                  </Text>
+                  {envProviders.map((provider) => (
+                    <EnvProviderRow key={provider.id} provider={provider} />
+                  ))}
+                </Flex>
+              )}
+
+              {oauthProviders.length === 0 && envProviders.length === 0 && (
+                <Text size="2" color="gray">
+                  No providers available.
+                </Text>
+              )}
             </Box>
-
-            {/* Only show model roles section if providers are configured */}
-            {settingsData.hasConfiguredProviders && (
-              <>
-                <Separator size="4" />
-
-                {/* Model Roles Section */}
-                <Box>
-                  <Text size="2" weight="bold" mb="3" style={{ display: "block" }}>
-                    Model Roles
-                  </Text>
-                  <Text size="1" color="gray" mb="3" style={{ display: "block" }}>
-                    Assign models to roles. Roles fall back to each other: smart ↔ coding, fast ↔
-                    cheap.
-                  </Text>
-                  <Flex direction="column" gap="3">
-                    {MODEL_ROLES.map((role) => (
-                      <ModelRoleRow
-                        key={role}
-                        role={role}
-                        currentValue={settingsData.modelRoles[role]}
-                        providers={settingsData.providers}
-                      />
-                    ))}
-                  </Flex>
-                </Box>
-              </>
-            )}
           </Flex>
-        ) : (
-          <Text size="2" color="gray">
-            Failed to load settings.
-          </Text>
         )}
 
         <Flex gap="3" mt="5" justify="end">
           {isSetupMode ? (
             <Button disabled={!canClose} onClick={() => handleOpenChange(false)}>
-              {canClose ? "Continue" : "Configure a provider to continue"}
+              {canClose ? "Continue" : "Connect a provider to continue"}
             </Button>
           ) : (
             <Dialog.Close>
@@ -180,60 +168,88 @@ export function SettingsDialog({ isSetupMode = false }: SettingsDialogProps) {
   );
 }
 
-interface ProviderRowProps {
-  provider: { id: string; name: string; envVar: string };
-  providerInfo?: ProviderInfo;
+interface OAuthProviderRowProps {
+  provider: AuthProvider;
+  onChanged: () => void;
 }
 
-function ProviderRow({ provider, providerInfo }: ProviderRowProps) {
-  const [isEditing, setIsEditing] = useState(false);
-  const [apiKey, setApiKey] = useState("");
-  const [showKey, setShowKey] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
+function OAuthProviderRow({ provider, onChanged }: OAuthProviderRowProps) {
+  const [isBusy, setIsBusy] = useState(false);
+  const connected = provider.status === "connected" || provider.status === "configured";
 
-  const setApiKeyAction = useSetAtom(setApiKeyAtom);
-  const removeApiKeyAction = useSetAtom(removeApiKeyAtom);
-
-  const hasKey = providerInfo?.hasApiKey ?? false;
-
-  const handleSave = async () => {
-    if (!apiKey.trim()) return;
-    setIsSaving(true);
+  const handleConnect = async () => {
+    setIsBusy(true);
     try {
-      await setApiKeyAction({ providerId: provider.id, apiKey: apiKey.trim() });
-      setApiKey("");
-      setIsEditing(false);
+      await auth.startOAuthLogin(provider.id);
+      onChanged();
     } catch (error) {
-      console.error("Failed to save API key:", error);
+      console.error(`Failed to start OAuth login for ${provider.id}:`, error);
     } finally {
-      setIsSaving(false);
+      setIsBusy(false);
     }
   };
 
-  const handleRemove = async () => {
-    setIsSaving(true);
+  const handleLogout = async () => {
+    setIsBusy(true);
     try {
-      await removeApiKeyAction(provider.id);
+      await auth.logout(provider.id);
+      onChanged();
     } catch (error) {
-      console.error("Failed to remove API key:", error);
+      console.error(`Failed to log out of ${provider.id}:`, error);
     } finally {
-      setIsSaving(false);
+      setIsBusy(false);
     }
   };
 
-  const handleCancel = () => {
-    setApiKey("");
-    setIsEditing(false);
-  };
+  // Special-case the canonical "ChatGPT" label for the openai-codex provider.
+  const label =
+    provider.id === "openai-codex"
+      ? connected
+        ? "ChatGPT"
+        : "Connect to ChatGPT"
+      : connected
+        ? provider.name
+        : `Connect to ${provider.name}`;
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && apiKey.trim()) {
-      void handleSave();
-    } else if (e.key === "Escape") {
-      handleCancel();
-    }
-  };
+  return (
+    <Card>
+      <Flex justify="between" align="center" p="2">
+        <Flex align="center" gap="3">
+          <Text size="2" weight="medium">
+            {provider.name}
+          </Text>
+          {connected ? (
+            <Badge color="green" size="1">
+              Connected
+            </Badge>
+          ) : (
+            <Badge color="gray" size="1">
+              Not connected
+            </Badge>
+          )}
+        </Flex>
+        <Flex gap="2">
+          {connected ? (
+            <Button variant="soft" color="red" size="1" disabled={isBusy} onClick={handleLogout}>
+              {isBusy ? <Spinner /> : "Log out"}
+            </Button>
+          ) : (
+            <Button size="1" disabled={isBusy} onClick={handleConnect}>
+              {isBusy ? <Spinner /> : label}
+            </Button>
+          )}
+        </Flex>
+      </Flex>
+    </Card>
+  );
+}
 
+interface EnvProviderRowProps {
+  provider: AuthProvider;
+}
+
+function EnvProviderRow({ provider }: EnvProviderRowProps) {
+  const ready = isProviderReady(provider);
   return (
     <Card>
       <Flex justify="between" align="center" p="2">
@@ -241,150 +257,22 @@ function ProviderRow({ provider, providerInfo }: ProviderRowProps) {
           <Text size="2" weight="medium" style={{ minWidth: "100px" }}>
             {provider.name}
           </Text>
-          {hasKey ? (
-            <Badge color="green" size="1">
-              Configured
-            </Badge>
-          ) : (
-            <Badge color="gray" size="1">
-              Not configured
-            </Badge>
+          {provider.envVar && (
+            <Text size="1" color="gray">
+              {provider.envVar}
+            </Text>
           )}
         </Flex>
-
-        {isEditing ? (
-          <Flex gap="2" align="center">
-            <TextField.Root
-              type={showKey ? "text" : "password"}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={`Enter ${provider.envVar}`}
-              size="1"
-              style={{ width: "200px" }}
-              autoFocus
-            />
-            <Button variant="ghost" size="1" onClick={() => setShowKey(!showKey)}>
-              {showKey ? <EyeClosedIcon /> : <EyeOpenIcon />}
-            </Button>
-            <Button size="1" onClick={handleSave} disabled={!apiKey.trim() || isSaving}>
-              {isSaving ? <Spinner /> : "Save"}
-            </Button>
-            <Button variant="soft" color="gray" size="1" onClick={handleCancel} disabled={isSaving}>
-              Cancel
-            </Button>
-          </Flex>
+        {ready ? (
+          <Badge color="green" size="1">
+            Configured
+          </Badge>
         ) : (
-          <Flex gap="2">
-            {hasKey ? (
-              <>
-                <Button variant="soft" size="1" onClick={() => setIsEditing(true)}>
-                  Change
-                </Button>
-                <Button
-                  variant="soft"
-                  color="red"
-                  size="1"
-                  onClick={handleRemove}
-                  disabled={isSaving}
-                >
-                  {isSaving ? <Spinner /> : <TrashIcon />}
-                </Button>
-              </>
-            ) : (
-              <Button variant="soft" size="1" onClick={() => setIsEditing(true)}>
-                Add Key
-              </Button>
-            )}
-          </Flex>
+          <Badge color="gray" size="1">
+            Not set
+          </Badge>
         )}
       </Flex>
     </Card>
-  );
-}
-
-interface ModelRoleRowProps {
-  role: string;
-  currentValue?: string;
-  providers: ProviderInfo[];
-}
-
-function ModelRoleRow({ role, currentValue, providers }: ModelRoleRowProps) {
-  const [isSaving, setIsSaving] = useState(false);
-  const setModelRole = useSetAtom(setModelRoleAtom);
-
-  // A provider is available iff its API key is configured.
-  const isProviderAvailable = (provider: ProviderInfo) => provider.hasApiKey;
-
-  // Build list of available models from configured providers
-  const availableModels: { value: string; label: string; provider: string }[] = [];
-  for (const provider of providers) {
-    if (isProviderAvailable(provider)) {
-      for (const modelId of provider.models) {
-        availableModels.push({
-          value: `${provider.id}:${modelId}`,
-          label: modelId,
-          provider: provider.name,
-        });
-      }
-    }
-  }
-
-  const handleChange = async (value: string) => {
-    if (value === currentValue) return;
-    setIsSaving(true);
-    try {
-      await setModelRole({ role, modelSpec: value });
-    } catch (error) {
-      console.error("Failed to set model role:", error);
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const roleLabels: Record<string, string> = {
-    smart: "Smart",
-    coding: "Coding",
-    fast: "Fast",
-    cheap: "Cheap",
-  };
-
-  return (
-    <Flex align="center" gap="3">
-      <Text size="2" style={{ minWidth: "70px" }}>
-        {roleLabels[role] || role}:
-      </Text>
-      <Box style={{ flex: 1 }}>
-        <Select.Root
-          value={currentValue || ""}
-          onValueChange={handleChange}
-          disabled={isSaving || availableModels.length === 0}
-        >
-          <Select.Trigger
-            placeholder={
-              availableModels.length === 0 ? "No providers configured" : "Select model..."
-            }
-            style={{ width: "100%" }}
-          />
-          <Select.Content>
-            {/* Group by provider */}
-            {providers.filter(isProviderAvailable).map((provider) => (
-              <Select.Group key={provider.id}>
-                <Select.Label>{provider.name}</Select.Label>
-                {provider.models.map((modelId) => (
-                  <Select.Item
-                    key={`${provider.id}:${modelId}`}
-                    value={`${provider.id}:${modelId}`}
-                  >
-                    {modelId}
-                  </Select.Item>
-                ))}
-              </Select.Group>
-            ))}
-          </Select.Content>
-        </Select.Root>
-      </Box>
-      {isSaving && <Spinner />}
-    </Flex>
   );
 }

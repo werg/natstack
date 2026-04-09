@@ -6,10 +6,11 @@ This package wraps `@mariozechner/pi-coding-agent` ("Pi") for use inside
 NatStack's agentic Durable Objects. It provides:
 
 - **`PiRunner`** — Worker DO companion class that owns one Pi `AgentSession`
-  per channel. Constructs a hermetic `DefaultResourceLoader` (no auto-discovery
-  from `~/.pi/agent` or `<cwd>/.pi/extensions`), wires the three NatStack
-  extension factories, bridges API keys via `setRuntimeApiKey`, and exposes
-  `runTurn` / `steer` / `interrupt` / `fork` / `getStateSnapshot`.
+  per channel. Constructs a hermetic `DefaultResourceLoader` (no
+  auto-discovery — extensions are wired inline by `PiRunner`), registers the
+  three NatStack extension factories, bridges API keys via
+  `setRuntimeApiKey`, and exposes `runTurn` / `steer` / `interrupt` / `fork`
+  / `getStateSnapshot`.
 - **NatStack extension factories** (`extensions/{approval-gate,channel-tools,ask-user}.ts`)
   — Pi extensions supplied inline via `extensionFactories`. Closure-bound to
   the worker, NOT Pi-package-portable.

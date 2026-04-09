@@ -1,20 +1,23 @@
 /**
  * NatStackExtensionUIContext
  *
- * Bridges Pi's `ExtensionUIContext` interface to NatStack channel operations.
- * Pi extensions call `ctx.ui.confirm/select/notify/...` and the bridge
- * forwards each call to a worker-supplied callback that turns the request
- * into a channel feedback_form, ephemeral message, or metadata-update event.
+ * Bridges NatStack's local `PiExtensionUIContext` interface to channel
+ * operations. Extensions call `ctx.ui.confirm/select/notify/...` and the
+ * bridge forwards each call to a worker-supplied callback that turns the
+ * request into a channel feedback_form, ephemeral message, or
+ * metadata-update event.
  *
  * Many UI primitives are TUI-only (theme manipulation, custom editors,
- * raw terminal input). Those are no-ops in the headless NatStack context.
+ * raw terminal input). Those are no-ops in the headless NatStack context;
+ * they are still defined as methods so extensions written for Pi's full
+ * surface can target the bridge without compile errors.
  */
 
 import type {
-  ExtensionUIContext,
-  ExtensionUIDialogOptions,
-  ExtensionWidgetOptions,
-} from "@mariozechner/pi-coding-agent";
+  PiExtensionUIContext,
+  PiExtensionUIDialogOptions as ExtensionUIDialogOptions,
+  PiExtensionWidgetOptions as ExtensionWidgetOptions,
+} from "./pi-extension-api.js";
 
 export interface NatStackUIBridgeCallbacks {
   /** Show a single-choice select; return the chosen option's label or undefined if cancelled. */
@@ -49,9 +52,25 @@ export interface NatStackUIBridgeCallbacks {
   ): void;
   /** Set the working/loading message shown during streaming. */
   setWorkingMessage(message: string | undefined): void;
+  /**
+   * Push an OAuth Connect affordance into the chat (e.g., when the agent's
+   * model provider is not yet logged in).
+   *
+   * Implementations typically render an inline_ui card with a Connect button
+   * that calls `auth.startOAuthLogin(providerId)` from the panel context.
+   *
+   * Fire-and-forget on the agent side: the actual unblock signal comes from
+   * `auth.waitForProvider`, which the agent worker awaits separately. This
+   * method only needs to **show** the affordance — it does not need to wait
+   * for the user click.
+   *
+   * @param providerId  Pi-AI provider id (e.g. `"openai-codex"`).
+   * @param displayName Human-readable provider name shown in the card.
+   */
+  requestProviderOAuth(providerId: string, displayName: string): void;
 }
 
-export class NatStackExtensionUIContext implements ExtensionUIContext {
+export class NatStackExtensionUIContext implements PiExtensionUIContext {
   constructor(private readonly callbacks: NatStackUIBridgeCallbacks) {}
 
   // ── Interactive primitives ──────────────────────────────────────────────
@@ -94,6 +113,16 @@ export class NatStackExtensionUIContext implements ExtensionUIContext {
 
   setWorkingMessage(message?: string): void {
     this.callbacks.setWorkingMessage(message);
+  }
+
+  /**
+   * Push an OAuth Connect card into the chat. PiRunner calls this from inside
+   * its `getApiKey` callback when the model provider has no valid token. The
+   * actual unblock signal comes from `auth.waitForProvider`, not from the
+   * promise returned here — this method is fire-and-forget on the agent side.
+   */
+  requestProviderOAuth(providerId: string, displayName: string): void {
+    this.callbacks.requestProviderOAuth(providerId, displayName);
   }
 
   setWidget(key: string, content: unknown, options?: ExtensionWidgetOptions): void {

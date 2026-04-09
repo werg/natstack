@@ -1,5 +1,0 @@
-{
-  "compaction": { "enabled": true, "thresholdRatio": 0.85 },
-  "retry": { "enabled": true, "maxRetries": 3, "baseDelayMs": 1000 },
-  "defaultThinkingLevel": "medium"
-}

@@ -329,6 +329,11 @@ export class WorkerdManager {
         modules: [{ name: "worker.js", esModule: bundleContent }],
         bindings,
         compatibilityDate: "2025-12-01",
+        // `nodejs_compat` gives worker DOs access to the Node-compatible
+        // subset workerd ships (buffer, util, events, etc.). Required by
+        // `@mariozechner/pi-agent-core` and the harness image / pi-ai code
+        // paths that assume a Node-ish runtime.
+        compatibilityFlags: ["nodejs_compat"],
         globalOutbound: networkServiceName,
         durableObjectNamespaces: [
           { className, uniqueKey: `${doService.source.replace(/\//g, "_")}:${className}`, enableSql: true },
@@ -340,7 +345,19 @@ export class WorkerdManager {
 
       services.push({ name: doService.serviceName, worker: workerDef });
       services.push({ name: diskServiceName, disk: { path: doStoragePath, writable: true } });
-      services.push({ name: networkServiceName, network: { allow: ["public", "local"], deny: [] } });
+      services.push({
+        name: networkServiceName,
+        network: {
+          allow: ["public", "local"],
+          deny: [],
+          // Enable outbound HTTPS from worker DOs. Without TLS options,
+          // workerd's HttpClient rejects HTTPS URLs with
+          // "expected tlsNetwork != nullptr". trustBrowserCas makes the
+          // system CA store available so fetch("https://...") works for
+          // external API calls (e.g., pi-ai streaming to chatgpt.com).
+          tlsOptions: { trustBrowserCas: true },
+        },
+      });
     }
 
     // ── Regular (non-durable) worker services ──
@@ -417,7 +434,14 @@ export class WorkerdManager {
       };
 
       services.push({ name, worker: workerDef });
-      services.push({ name: networkServiceName, network: { allow: ["public", "local"], deny: [] } });
+      services.push({
+        name: networkServiceName,
+        network: {
+          allow: ["public", "local"],
+          deny: [],
+          tlsOptions: { trustBrowserCas: true },
+        },
+      });
     }
 
     // Collect DO class info for router generation (only those whose service was successfully built).

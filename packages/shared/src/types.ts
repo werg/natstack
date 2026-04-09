@@ -112,53 +112,8 @@ export interface PanelArtifacts {
 }
 
 // =============================================================================
-// StreamText Types (Unified AI API)
+// Tool Execution Result
 // =============================================================================
-
-// Import types from @natstack/types to avoid duplication
-// These are the canonical message types used by both panels and IPC
-import type { Message as AIMessage } from "@natstack/types";
-
-/** Message type for IPC - directly uses AI SDK message format */
-export type StreamTextMessage = AIMessage;
-
-/** Tool definition for IPC */
-export interface StreamTextToolDefinition {
-  name: string;
-  description?: string;
-  parameters: Record<string, unknown>;
-}
-
-/** Options for streamText IPC call */
-export interface StreamTextOptions {
-  model: string;
-  messages: StreamTextMessage[];
-  tools?: StreamTextToolDefinition[];
-  maxSteps?: number;
-  maxOutputTokens?: number;
-  temperature?: number;
-  system?: string;
-  /** Enable thinking/reasoning with optional budget */
-  thinking?: { type: "enabled" | "disabled"; budgetTokens?: number };
-  /** Context ID for scoping AI working directory to the panel's context folder */
-  contextId?: string;
-}
-
-/** Stream event sent from main to panel */
-export interface StreamTextEvent {
-  type: string;
-  text?: string;
-  toolCallId?: string;
-  toolName?: string;
-  args?: unknown;
-  result?: unknown;
-  isError?: boolean;
-  stepNumber?: number;
-  finishReason?: string;
-  totalSteps?: number;
-  usage?: { promptTokens: number; completionTokens: number };
-  error?: string;
-}
 
 /** Tool execution result sent from panel to main */
 export interface ToolExecutionResult {
@@ -225,19 +180,6 @@ export interface WorkspaceEntry {
   lastOpened: number;
 }
 
-export interface ProviderInfo {
-  id: string;
-  name: string;
-  hasApiKey: boolean;
-  models: string[];
-}
-
-export interface AvailableProvider {
-  id: string;
-  name: string;
-  envVar: string;
-}
-
 /**
  * Simplified model role config for IPC (string format only).
  * Full ModelConfig objects are converted to "provider:model" strings.
@@ -251,11 +193,7 @@ export interface ModelRoleConfig {
 }
 
 export interface SettingsData {
-  providers: ProviderInfo[];
   modelRoles: ModelRoleConfig;
-  availableProviders: AvailableProvider[];
-  /** Whether at least one provider has an API key */
-  hasConfiguredProviders: boolean;
 }
 
 /** Actions available in panel context menus */

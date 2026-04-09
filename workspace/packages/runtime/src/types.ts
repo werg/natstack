@@ -1,3 +1,5 @@
+import type { Buffer } from "buffer";
+
 export type ThemeAppearance = "light" | "dark";
 
 export interface FileStats {
@@ -62,7 +64,33 @@ export interface ReaddirOptions {
  * Compatible with Node's fs/promises and @natstack/git's FsPromisesLike.
  */
 export interface RuntimeFs {
-  readFile(path: string, encoding?: BufferEncoding): Promise<string | Uint8Array>;
+  /**
+   * `fs.constants` — mode bits for `access()`.
+   * Matches Node's `fs.constants` values so code written against
+   * `node:fs/promises` can be ported as a near-pure import swap.
+   */
+  readonly constants: {
+    readonly F_OK: 0;
+    readonly R_OK: 4;
+    readonly W_OK: 2;
+    readonly X_OK: 1;
+  };
+  /**
+   * Bind this caller's RPC identity to a context folder for the remainder of
+   * the caller's lifetime. Used by DOs (whose callerId is `do:source:class:key`)
+   * to register themselves with FsService's caller→context map so subsequent
+   * fs calls resolve paths against the correct context root.
+   */
+  bindContext(contextId: string): Promise<void>;
+  /**
+   * Create a unique temp file path inside the context's `.tmp/` directory and
+   * return it (relative to the context root, with a leading `/`). The file
+   * itself is not created — callers use the returned path for atomic writes
+   * (write to tmp → rename into place). Analogous to the pattern used around
+   * `os.tmpdir()` in Node tools.
+   */
+  mktemp(prefix?: string): Promise<string>;
+  readFile(path: string, encoding?: BufferEncoding): Promise<string | Buffer>;
   writeFile(path: string, data: string | Uint8Array): Promise<void>;
   readdir(path: string): Promise<string[]>;
   readdir(path: string, options: { withFileTypes: true }): Promise<Dirent[]>;

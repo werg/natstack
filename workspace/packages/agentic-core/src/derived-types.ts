@@ -1,14 +1,12 @@
 /**
  * Derived UI types for the chat panel.
  *
- * These shapes are computed from Pi `AgentMessage` snapshots and channel
- * events for component rendering. They live in agentic-chat (the React
- * layer) rather than agentic-core because they exist purely for the UI's
- * convenience — they aren't authoritative state.
+ * These shapes are computed from channel messages for component rendering.
+ * They live in agentic-core rather than agentic-chat so both the React
+ * layer and HeadlessSession can consume them.
  *
- * Pi (`@mariozechner/pi-coding-agent`) is the source of truth via the
- * `natstack-state-snapshot` ephemeral channel stream. `useChatCore`
- * derives `ChatMessage[]` from each snapshot.
+ * The agent worker publishes Pi events as persisted channel messages.
+ * `useChatCore` builds `ChatMessage[]` from the channel message stream.
  */
 
 import type { Attachment } from "@natstack/pubsub";
@@ -85,6 +83,14 @@ export interface ChatMessage {
   pubsubId?: number;
   senderId: string;
   content: string;
+  /**
+   * Optional structured content blocks from the underlying pi-agent-core
+   * `AgentMessage.content` array, preserved when a message includes
+   * content types the flat `content` string can't represent (e.g. image
+   * blocks). When present, the chat UI's `MessageContent` component
+   * renders these instead of the `content` fallback.
+   */
+  contentBlocks?: ReadonlyArray<unknown>;
   contentType?: string;
   kind?: "message" | "method" | "system";
   complete?: boolean;

@@ -44,6 +44,12 @@ export class ServerProcessManager {
      * `app.relaunch({ args: ["--workspace", name] }); app.exit(0);`.
      */
     onRelaunch?: (name: string) => void;
+    /**
+     * Called when the server requests opening a URL in the user's default
+     * browser (e.g. auth service OAuth flow). If omitted, the manager falls
+     * back to Electron's `shell.openExternal` directly.
+     */
+    onOpenExternal?: (url: string) => void;
   }) {}
 
   async start(): Promise<ServerPorts> {
@@ -74,10 +80,25 @@ export class ServerProcessManager {
 
     // Listen for post-startup messages from the server. waitForReady() consumes
     // the one-shot `ready`/`error` messages; this handler picks up everything
-    // afterwards (currently just `workspace-relaunch`).
+    // afterwards.
     proc.on("message", (msg: any) => {
       if (msg?.type === "workspace-relaunch" && typeof msg.name === "string") {
         this.config.onRelaunch?.(msg.name);
+      } else if (msg?.type === "open-external" && typeof msg.url === "string") {
+        // Auth service (and potentially others) asks Electron main to open
+        // a URL in the user's default browser. Used by the OAuth login flow
+        // to hand off to shell.openExternal without exposing openExternal
+        // access to panels/workers.
+        if (this.config.onOpenExternal) {
+          this.config.onOpenExternal(msg.url);
+        } else if (hasElectronUtilityProcess()) {
+          try {
+            const { shell } = require("electron");
+            shell.openExternal(msg.url);
+          } catch (err) {
+            console.error("[ServerProcessManager] shell.openExternal failed:", err);
+          }
+        }
       }
     });
 

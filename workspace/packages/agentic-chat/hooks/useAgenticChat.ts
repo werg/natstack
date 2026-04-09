@@ -13,9 +13,10 @@
 
 import { useCallback, useMemo, useRef, useEffect } from "react";
 import { z } from "zod";
-import type { ChannelConfig, MethodDefinition } from "@natstack/pubsub";
+import type { ChannelConfig, MethodDefinition, MethodExecutionContext } from "@natstack/pubsub";
 import { executeSandbox, ScopeManager, DbScopePersistence } from "@workspace/eval";
 import type { SandboxOptions, SandboxResult, HydrateResult } from "@workspace/eval";
+import type { ActiveFeedbackSchema, FeedbackResult } from "@workspace/tool-ui";
 import { useChatCore } from "./core/useChatCore";
 import { useChatFeedback } from "./features/useChatFeedback";
 import { useChatTools } from "./features/useChatTools";
@@ -306,6 +307,153 @@ export default function App({ props, chat }) {
               const data = JSON.stringify({ id, code, props });
               await client.publish("message", { id, content: data, contentType: "inline_ui" }, { persist: true, idempotencyKey: `inline_ui:${id}` });
               return { ok: true, id };
+            },
+          },
+          // ui_prompt — serves NatStackExtensionUIContext (select/confirm/input/editor)
+          // from packages/harness. The agent worker forwards extension UI calls
+          // via ui_prompt { kind, ...params }; we render them through the
+          // existing feedback_form (ActiveFeedbackSchema) machinery and return
+          // primitive results (string | boolean | undefined) directly.
+          ui_prompt: {
+            description: "Prompt the panel user for a select/confirm/input/editor response (used by NatStack extension UI bridge).",
+            parameters: z.object({
+              kind: z.enum(["select", "confirm", "input", "editor"]),
+              title: z.string(),
+              message: z.string().optional(),
+              options: z.array(z.string()).optional(),
+              placeholder: z.string().optional(),
+              prefill: z.string().optional(),
+            }).passthrough(),
+            execute: async (args: unknown, ctx: MethodExecutionContext) => {
+              const { kind, title, message, options, placeholder, prefill } = args as {
+                kind: "select" | "confirm" | "input" | "editor";
+                title: string;
+                message?: string;
+                options?: string[];
+                placeholder?: string;
+                prefill?: string;
+              };
+
+              // Build FieldDefinition[] and an initial values map based on kind.
+              let fields: ActiveFeedbackSchema["fields"];
+              let initialValues: ActiveFeedbackSchema["values"] = {};
+              let resolveKey: "choice" | "answer" | "value";
+              let hideSubmit = false;
+
+              if (kind === "select") {
+                const opts = options ?? [];
+                resolveKey = "choice";
+                fields = [
+                  {
+                    key: "choice",
+                    type: "select",
+                    label: title,
+                    required: true,
+                    options: opts.map((o) => ({ value: o, label: o })),
+                    submitOnSelect: true,
+                  },
+                ];
+                hideSubmit = true;
+              } else if (kind === "confirm") {
+                resolveKey = "answer";
+                fields = [
+                  ...(message
+                    ? ([{ key: "__msg", type: "readonly", label: "", default: message }] as ActiveFeedbackSchema["fields"])
+                    : []),
+                  {
+                    key: "answer",
+                    type: "buttonGroup",
+                    submitOnSelect: true,
+                    buttons: [
+                      { value: "no", label: "No", color: "gray" },
+                      { value: "yes", label: "Yes", color: "green" },
+                    ],
+                  },
+                ];
+                hideSubmit = true;
+              } else if (kind === "input") {
+                resolveKey = "value";
+                fields = [
+                  {
+                    key: "value",
+                    type: "string",
+                    label: title,
+                    placeholder: placeholder ?? "",
+                  },
+                ];
+              } else {
+                // editor — no textarea field type exists in FormRenderer; fall
+                // back to a single-line string field. Prefill via default value.
+                resolveKey = "value";
+                fields = [
+                  {
+                    key: "value",
+                    type: "string",
+                    label: title,
+                    default: prefill ?? "",
+                  },
+                ];
+              }
+
+              // Track in method history (best-effort, for observability).
+              const coreRef = core;
+              coreRef.addMethodHistoryEntry({
+                callId: ctx.callId,
+                methodName: "ui_prompt",
+                description: `Extension UI prompt (${kind})`,
+                args,
+                status: "pending",
+                startedAt: Date.now(),
+                callerId: ctx.callerId,
+                handledLocally: true,
+              });
+
+              const fb = feedbackRef.current;
+
+              return new Promise<string | boolean | undefined>((resolve) => {
+                let settled = false;
+                const finish = (value: string | boolean | undefined, historyResult: unknown) => {
+                  if (settled) return;
+                  settled = true;
+                  fb.removeFeedback(ctx.callId);
+                  coreRef.updateMethodHistoryEntry(ctx.callId, {
+                    status: "success",
+                    result: historyResult,
+                    completedAt: Date.now(),
+                  });
+                  resolve(value);
+                };
+
+                const entry: ActiveFeedbackSchema = {
+                  type: "schema",
+                  callId: ctx.callId,
+                  title,
+                  fields,
+                  values: initialValues,
+                  hideSubmit,
+                  createdAt: Date.now(),
+                  complete: (result: FeedbackResult) => {
+                    if (result.type === "submit") {
+                      const values = (result.value ?? {}) as Record<string, unknown>;
+                      const raw = values[resolveKey];
+                      if (kind === "confirm") {
+                        finish(raw === "yes" || raw === true, raw);
+                      } else if (kind === "select") {
+                        finish(typeof raw === "string" ? raw : undefined, raw);
+                      } else {
+                        // input or editor
+                        finish(typeof raw === "string" ? raw : undefined, raw);
+                      }
+                    } else if (result.type === "cancel") {
+                      finish(kind === "confirm" ? false : undefined, null);
+                    } else {
+                      finish(kind === "confirm" ? false : undefined, null);
+                    }
+                  },
+                };
+
+                fb.addFeedback(entry);
+              });
             },
           },
         };

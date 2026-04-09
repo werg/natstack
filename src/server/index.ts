@@ -409,17 +409,6 @@ async function main() {
     async stop(instance: import("@natstack/shared/workspace/gitWatcher").GitWatcher) { await instance?.close(); },
   });
 
-  // AI handler (lifecycle only — RPC registered separately because it needs rpcServer)
-  container.register({
-    name: "ai",
-    async start() {
-      const { AIHandler: AIHandlerClass } = await import("@natstack/shared/ai/aiHandler");
-      const aiHandler = new AIHandlerClass(workspacePath);
-      await aiHandler.initialize();
-      return aiHandler;
-    },
-  });
-
   // ── RPC-only services (replacing serverServiceRegistry.ts) ──
 
   const { createBuildService } = await import("./services/buildService.js");
@@ -620,25 +609,6 @@ async function main() {
     });
   }
 
-  // ── AI RPC (depends on rpcServer + ai) ──
-
-  const { createAiService } = await import("./services/aiService.js");
-  {
-    let aiServiceDef: import("@natstack/shared/serviceDefinition").ServiceDefinition;
-    container.register({
-      name: "aiRpc",
-      dependencies: ["rpcServer", "ai"],
-      async start(resolve) {
-        const { server: rpcServer } = resolve<{ server: import("./rpcServer.js").RpcServer; port: number }>("rpcServer")!;
-        const aiHandler = resolve<import("@natstack/shared/ai/aiHandler").AIHandler>("ai")!;
-        aiServiceDef = createAiService({ aiHandler, rpcServer, contextFolderManager });
-      },
-      getServiceDefinition() {
-        return aiServiceDef;
-      },
-    });
-  }
-
   // ===========================================================================
   // Shared services needed in both standalone and Electron modes
   // ===========================================================================
@@ -757,6 +727,21 @@ async function main() {
     })));
   }
 
+  // ── Auth service (AI provider tokens: OAuth + env-var fallback) ──
+  // Construct AuthServiceImpl once with an openBrowser dep wired to
+  // Electron's shell.openExternal in IPC mode (via parent-port message,
+  // matching the existing `workspace-relaunch` pattern) or console.log
+  // in standalone mode. The server opens the OAuth browser itself so the
+  // panel UI never sees the auth URL.
+  {
+    const { AuthServiceImpl, createAuthService } = await import("./services/authService.js");
+    const openBrowser: (url: string) => void = ipcChannel
+      ? (url: string) => ipcChannel.postMessage({ type: "open-external", url })
+      : (url: string) => console.log("Open URL:", url);
+    const authService = new AuthServiceImpl({ openBrowser });
+    container.register(rpcService(createAuthService({ authService })));
+  }
+
   if (!ipcChannel) {
     // Settings service for remote/mobile shells.
     const { createSettingsServiceStandalone } = await import("./services/settingsServiceStandalone.js");
@@ -766,6 +751,14 @@ async function main() {
     // Push notification service for mobile device registration.
     const { createPushService } = await import("./services/pushService.js");
     container.register(rpcSvc(createPushService()));
+  }
+
+  // ── W1k: image service (server-side resize/convert via photon WASM) ──
+  // Placed at the end of the registration block to minimize merge conflicts
+  // with parallel tracks editing the auth/AI sections above.
+  {
+    const { createImageService } = await import("./services/imageService.js");
+    container.register(rpcService(createImageService()));
   }
 
   // ── Start all services in dependency order ──

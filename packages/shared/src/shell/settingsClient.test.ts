@@ -41,48 +41,4 @@ describe("SettingsClient", () => {
       expect(result).toEqual(data);
     });
   });
-
-  describe("setApiKey()", () => {
-    it("calls settings.setApiKey RPC with provider and key", async () => {
-      rpc.call.mockResolvedValueOnce(undefined);
-
-      await client.setApiKey("anthropic", "sk-test-key");
-
-      expect(rpc.call).toHaveBeenCalledWith(
-        "main",
-        "settings.setApiKey",
-        "anthropic",
-        "sk-test-key"
-      );
-    });
-  });
-
-  describe("removeApiKey()", () => {
-    it("calls settings.removeApiKey RPC with provider ID", async () => {
-      rpc.call.mockResolvedValueOnce(undefined);
-
-      await client.removeApiKey("anthropic");
-
-      expect(rpc.call).toHaveBeenCalledWith(
-        "main",
-        "settings.removeApiKey",
-        "anthropic"
-      );
-    });
-  });
-
-  describe("setModelRole()", () => {
-    it("calls settings.setModelRole RPC with role and model spec", async () => {
-      rpc.call.mockResolvedValueOnce(undefined);
-
-      await client.setModelRole("chat", "claude-3-opus");
-
-      expect(rpc.call).toHaveBeenCalledWith(
-        "main",
-        "settings.setModelRole",
-        "chat",
-        "claude-3-opus"
-      );
-    });
-  });
 });

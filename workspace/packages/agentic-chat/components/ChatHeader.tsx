@@ -173,7 +173,14 @@ const ChatHeaderInner = React.memo(function ChatHeaderInner({
           );
         })}
         {/* Pending/failed agents not yet in roster */}
-        {pendingAgents && Array.from(pendingAgents.entries()).map(([handle, info]) => (
+        {pendingAgents && Array.from(pendingAgents.entries())
+          .filter(([handle, _info]) => {
+            // Hide pending badge if a participant with this handle already joined.
+            return !Object.values(participants ?? {}).some(
+              (p) => (p?.metadata?.handle as string | undefined) === handle,
+            );
+          })
+          .map(([handle, info]) => (
           <PendingAgentBadge
             key={`pending-${handle}`}
             handle={handle}

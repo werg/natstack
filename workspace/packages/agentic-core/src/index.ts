@@ -1,7 +1,7 @@
 // =============================================================================
 // @workspace/agentic-core — Headless agentic session helpers
 //
-// Pi (`@mariozechner/pi-coding-agent`) owns chat state. This package provides:
+// Pi (`@mariozechner/pi-agent-core`) owns chat state. This package provides:
 // - Pi message/event type re-exports (single import surface for consumers)
 // - The ephemeral event envelope used by the channel snapshot stream
 // - The eval tool factory
@@ -10,8 +10,7 @@
 // =============================================================================
 
 // --- Pi message/event type re-exports ---
-export type { AgentMessage } from "@mariozechner/pi-agent-core";
-export type { AgentSessionEvent } from "@mariozechner/pi-coding-agent";
+export type { AgentMessage, AgentEvent } from "@mariozechner/pi-agent-core";
 
 // --- Headless types ---
 export type {
@@ -60,5 +59,4 @@ export type {
   DirtyRepoDetails,
 } from "./derived-types.js";
 
-// --- Pi snapshot → ChatMessage[] deriver ---
-export { derivePiSnapshot } from "./derive-pi-snapshot.js";
+// --- Pi snapshot → ChatMessage[] deriver (removed: channel messages replace snapshots) ---

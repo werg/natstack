@@ -1066,6 +1066,238 @@ async function buildPanel(
 
 const WORKER_CONDITIONS = ["worker", "workerd", "import", "default"] as const;
 
+/**
+ * Node built-ins that workerd does NOT provide via `nodejs_compat` and must
+ * be stubbed out of worker bundles. The SDK dependencies of
+ * `@mariozechner/pi-ai` (aws-sdk credential providers, undici, proxy-agent,
+ * etc.) import these modules at module scope but only call them inside
+ * code paths (e.g. file-based SSO credential loaders) that the NatStack
+ * agent worker never reaches. Stubbing to an empty / throwing module keeps
+ * the bundle valid; an attempted use at runtime throws a clear error.
+ */
+const WORKERD_UNAVAILABLE_NODE_MODULES: ReadonlySet<string> = new Set([
+  "child_process",
+  "node:child_process",
+  "worker_threads",
+  "node:worker_threads",
+  "node:sqlite",
+  "node:wasi",
+  "node:vm",
+  "vm",
+  "node:v8",
+  "v8",
+  "node:repl",
+  "repl",
+  "node:readline",
+  "readline",
+  "node:perf_hooks",
+  "perf_hooks",
+  "node:module",
+  "module",
+  "node:dns",
+  "dns",
+  "node:tls",
+  "tls",
+  "node:net",
+  "net",
+  "node:http2",
+  "http2",
+  "node:tty",
+  "tty",
+  "node:os",
+  "os",
+  "node:diagnostics_channel",
+  "diagnostics_channel",
+  "node:async_hooks",
+  "async_hooks",
+]);
+
+/**
+ * Plugin: intercept imports of Node built-ins that workerd's nodejs_compat
+ * does not implement, and replace them with a throwing stub module. Keeps
+ * the worker bundle valid without shipping unused (and unimplementable)
+ * Node APIs.
+ */
+function createWorkerNodeStubPlugin(): esbuild.Plugin {
+  return {
+    name: "worker-node-stub",
+    setup(build) {
+      build.onResolve({ filter: /.*/ }, (args) => {
+        if (WORKERD_UNAVAILABLE_NODE_MODULES.has(args.path)) {
+          return { path: args.path, namespace: "worker-node-stub" };
+        }
+        return undefined;
+      });
+      build.onLoad(
+        { filter: /.*/, namespace: "worker-node-stub" },
+        (args) => {
+          // Emit every named export an aws-sdk / proxy-agent / undici
+          // transitive dep might reach for at module scope. Each export
+          // is a throwing stub — if runtime actually hits one of these
+          // the worker gets a clear error. The list only needs to cover
+          // names referenced in ES `import { name } from` at bundle
+          // time; additional names resolved through default/namespace
+          // imports get picked up by the Proxy default export.
+          const msg = `Node built-in "${args.path}" is not available in the workerd agent worker runtime`;
+          const contents = `
+const err = () => { throw new Error(${JSON.stringify(msg)}); };
+const stubFn = new Proxy(function () { return err(); }, {
+  get(_, prop) {
+    if (prop === Symbol.toPrimitive || prop === "then") return undefined;
+    if (prop === "default") return stubFn;
+    return stubFn;
+  },
+  apply() { return err(); },
+  construct() { return err(); },
+});
+export default stubFn;
+export const promises = stubFn;
+export const constants = {};
+// os
+export const homedir = () => "/";
+export const platform = () => "linux";
+export const release = () => "0.0.0";
+export const arch = () => "x64";
+export const type = () => "Linux";
+export const hostname = () => "workerd";
+export const tmpdir = () => "/tmp";
+export const cpus = () => [];
+export const totalmem = () => 0;
+export const freemem = () => 0;
+export const uptime = () => 0;
+export const loadavg = () => [0, 0, 0];
+export const networkInterfaces = () => ({});
+export const userInfo = () => ({ username: "worker", homedir: "/", shell: null, uid: -1, gid: -1 });
+export const EOL = "\\n";
+// child_process
+export const exec = stubFn;
+export const execFile = stubFn;
+export const execSync = stubFn;
+export const execFileSync = stubFn;
+export const spawn = stubFn;
+export const spawnSync = stubFn;
+export const fork = stubFn;
+// worker_threads
+export const Worker = class Worker { constructor() { err(); } };
+export const parentPort = null;
+export const workerData = null;
+export const threadId = 0;
+export const isMainThread = true;
+export const MessageChannel = class MessageChannel { constructor() { err(); } };
+export const MessagePort = class MessagePort { constructor() { err(); } };
+export const BroadcastChannel = class BroadcastChannel { constructor() { err(); } };
+// module
+export const createRequire = () => stubFn;
+export const builtinModules = [];
+export const Module = class Module { constructor() { err(); } };
+// tls / net / dns / http2
+export const connect = stubFn;
+export const createConnection = stubFn;
+export const createServer = stubFn;
+export const Socket = class Socket { constructor() { err(); } };
+export const Server = class Server { constructor() { err(); } };
+export const TLSSocket = class TLSSocket { constructor() { err(); } };
+export const resolve = stubFn;
+export const resolve4 = stubFn;
+export const resolve6 = stubFn;
+export const lookup = stubFn;
+// diagnostics_channel
+export const channel = () => ({ publish: () => {}, subscribe: () => {}, unsubscribe: () => {}, hasSubscribers: false });
+export const hasSubscribers = () => false;
+export const subscribe = () => {};
+export const unsubscribe = () => {};
+// async_hooks
+export const AsyncLocalStorage = class AsyncLocalStorage { constructor() {} getStore() { return undefined; } run(_s, fn) { return fn(); } exit(fn) { return fn(); } disable() {} enable() {} enterWith() {} };
+export const AsyncResource = class AsyncResource { constructor() {} runInAsyncScope(fn) { return fn(); } bind(fn) { return fn; } asyncId() { return 0; } triggerAsyncId() { return 0; } emitDestroy() { return this; } };
+export const executionAsyncId = () => 0;
+export const executionAsyncResource = () => ({});
+export const triggerAsyncId = () => 0;
+export const createHook = () => ({ enable: () => {}, disable: () => {} });
+// perf_hooks
+export const performance = { now: () => Date.now() };
+export const PerformanceObserver = class PerformanceObserver { constructor() {} observe() {} disconnect() {} };
+// v8
+export const getHeapStatistics = () => ({});
+export const getHeapSpaceStatistics = () => [];
+// vm
+export const runInNewContext = stubFn;
+export const runInThisContext = stubFn;
+export const createContext = stubFn;
+// readline
+export const createInterface = stubFn;
+`;
+          return { contents, loader: "js" };
+        },
+      );
+    },
+  };
+}
+
+/**
+ * Node built-in modules that must stay external in the worker bundle so that
+ * workerd's `nodejs_compat` compat flag satisfies them at runtime. These are
+ * pulled in transitively by `@mariozechner/pi-agent-core` /
+ * `@mariozechner/pi-ai` (and their SDK dependencies: openai, anthropic,
+ * google/genai, undici, proxy-agent, aws-sdk credential providers, etc.).
+ *
+ * Filesystem modules are included in this list too — the code paths that
+ * actually call `fs.readFile` from inside aws-sdk / openai SDKs are ones
+ * we never hit at runtime (credential providers, file-based config
+ * loaders). Leaving them as externals keeps the bundle building; workerd
+ * will either satisfy them via nodejs_compat or throw at the first
+ * actual call (which we never reach).
+ */
+/**
+ * Node built-in modules that workerd's `nodejs_compat` compatibility flag
+ * DOES implement (or at least provides a working subset of). These stay
+ * external in the worker bundle; workerd satisfies them at runtime.
+ */
+const WORKER_NODE_BUILTIN_EXTERNALS: readonly string[] = [
+  "node:assert",
+  "node:buffer",
+  "node:console",
+  "node:crypto",
+  "node:events",
+  "node:fs",
+  "node:fs/promises",
+  "node:http",
+  "node:https",
+  "node:path",
+  "node:process",
+  "node:punycode",
+  "node:querystring",
+  "node:stream",
+  "node:stream/web",
+  "node:string_decoder",
+  "node:timers",
+  "node:timers/promises",
+  "node:url",
+  "node:util",
+  "node:util/types",
+  "node:zlib",
+  // Bare (non-prefixed) builtins — same deal, stay external so workerd
+  // can satisfy them via nodejs_compat.
+  "assert",
+  "buffer",
+  "console",
+  "crypto",
+  "events",
+  "fs",
+  "fs/promises",
+  "http",
+  "https",
+  "path",
+  "process",
+  "punycode",
+  "querystring",
+  "stream",
+  "string_decoder",
+  "timers",
+  "url",
+  "util",
+  "zlib",
+];
+
 async function buildWorker(
   node: GraphNode,
   ev: string,
@@ -1108,6 +1340,10 @@ async function buildWorker(
   const plugins: esbuild.Plugin[] = [
     createWorkspaceResolvePlugin(graph, workspaceRoot, sourceRoot, WORKER_CONDITIONS),
     createTsExtensionPlugin(sourceRoot),
+    // Stub Node built-ins that workerd's nodejs_compat does NOT provide
+    // (e.g. child_process, worker_threads) so the bundle links even when
+    // transitive SDK deps import them for dead code paths.
+    createWorkerNodeStubPlugin(),
   ];
   const dedupePlugin = createDedupePlugin(resolveDir, dedupePackages);
   if (dedupePlugin) {
@@ -1127,9 +1363,20 @@ async function buildWorker(
       metafile: true,
       logLevel: "warning",
       conditions: [...WORKER_CONDITIONS],
+      // Fall back to the `main` field for packages that ship without
+      // `exports` or `module` (e.g. `@mariozechner/pi-agent-core`,
+      // `@mariozechner/pi-ai`). Without this, esbuild refuses to resolve
+      // a `main`-only package in "neutral" platform mode.
+      mainFields: ["module", "main"],
+      // Node built-ins that workerd's nodejs_compat flag provides at
+      // runtime stay external. Modules workerd does NOT implement
+      // (child_process, worker_threads, etc.) are intercepted by the
+      // createWorkerNodeStubPlugin plugin and replaced with throwing
+      // stubs — transitively imported by aws-sdk/proxy-agent/etc. from
+      // dead code paths we never reach at runtime.
+      external: [...WORKER_NODE_BUILTIN_EXTERNALS],
       plugins,
       nodePaths,
-      // No externals — workers must be fully self-contained
       tsconfigRaw: { compilerOptions: {} },
     });
 

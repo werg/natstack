@@ -14,10 +14,7 @@ import type {
   WsClientMessage,
   WsServerMessage,
 } from "../../packages/shared/src/ws/protocol.js";
-import type { StreamTextEvent } from "../../packages/shared/src/types.js";
-import type { StreamTarget } from "../../packages/shared/src/ai/aiHandler.js";
 import type { ToolExecutionResult } from "../../packages/shared/src/types.js";
-import { TOOL_EXECUTION_TIMEOUT_MS } from "../../packages/shared/src/constants.js";
 import type { WsClientInfo } from "../../packages/shared/src/serviceDispatcher.js";
 import { findServicePort } from "@natstack/port-utils";
 import { createDevLogger } from "@natstack/dev-log";
@@ -754,67 +751,6 @@ export class RpcServer {
         this.sendToWs(client.ws, msg);
       }
     }
-  }
-
-  // ===========================================================================
-  // StreamTarget factory
-  // ===========================================================================
-
-  /** Create a StreamTarget that sends AI stream data over WebSocket */
-  createWsStreamTarget(client: WsClientState, streamId: string): StreamTarget {
-    const ws = client.ws;
-
-    const sendChunk = (event: StreamTextEvent): void => {
-      if (ws.readyState === WebSocket.OPEN) {
-        this.sendToWs(ws, { type: "ws:stream-chunk", streamId, chunk: event });
-      }
-    };
-
-    const sendEnd = (): void => {
-      if (ws.readyState === WebSocket.OPEN) {
-        this.sendToWs(ws, { type: "ws:stream-end", streamId });
-      }
-    };
-
-    const executeTool = (
-      toolName: string,
-      args: Record<string, unknown>
-    ): Promise<ToolExecutionResult> => {
-      if (ws.readyState !== WebSocket.OPEN) {
-        return Promise.reject(new Error("Client is not available"));
-      }
-
-      const callId = randomUUID();
-
-      return new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          this.pendingToolCalls.delete(callId);
-          reject(new Error(`Tool execution timed out: ${toolName}`));
-        }, TOOL_EXECUTION_TIMEOUT_MS);
-
-        this.pendingToolCalls.set(callId, { resolve, reject, timeout, clientWs: ws });
-
-        this.sendToWs(ws, {
-          type: "ws:tool-exec",
-          callId,
-          streamId,
-          toolName,
-          args,
-        });
-      });
-    };
-
-    return {
-      targetId: client.callerId,
-      isAvailable: () => ws.readyState === WebSocket.OPEN,
-      sendChunk,
-      sendEnd,
-      executeTool,
-      onUnavailable: (listener) => {
-        ws.on("close", listener);
-        return () => ws.off("close", listener);
-      },
-    };
   }
 
   // ===========================================================================

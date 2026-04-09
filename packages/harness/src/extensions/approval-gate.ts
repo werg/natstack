@@ -12,9 +12,10 @@
  */
 
 import type {
-  ExtensionAPI,
-  ExtensionFactory,
-} from "@mariozechner/pi-coding-agent";
+  PiExtensionAPI,
+  PiExtensionFactory,
+  PiToolCallEvent,
+} from "../pi-extension-api.js";
 
 export type ApprovalLevel = 0 | 1 | 2;
 
@@ -35,9 +36,10 @@ export const DEFAULT_SAFE_TOOL_NAMES: ReadonlySet<string> = new Set([
 
 export function createApprovalGateExtension(
   deps: ApprovalGateDeps,
-): ExtensionFactory {
-  return (pi: ExtensionAPI) => {
-    pi.on("tool_call", async (event, ctx) => {
+): PiExtensionFactory {
+  return (pi: PiExtensionAPI) => {
+    pi.on("tool_call", async (rawEvent, ctx) => {
+      const event = rawEvent as PiToolCallEvent;
       const level = deps.getApprovalLevel();
 
       if (level === 2) return undefined; // full auto

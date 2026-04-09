@@ -1,330 +1,238 @@
 /**
  * Model Provider Config Page - Shell panel for AI provider configuration.
  *
- * This is a shell panel with full access to shell services.
- * It provides UI for configuring API keys and model roles.
+ * This is a shell panel with full access to shell services. It exposes the
+ * OAuth login flow for subscription providers (e.g. ChatGPT) and a read-only
+ * status view for environment-variable providers. The legacy API-key entry
+ * flow has been removed — see W1h/W1j of the humming-noodling-pnueli refactor.
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "@radix-ui/themes/styles.css";
-import {
-  Theme,
-  Card,
-  Flex,
-  Heading,
-  Text,
-  Button,
-  TextField,
-  Select,
-  Box,
-  Badge,
-  Spinner,
-} from "@radix-ui/themes";
+import { Theme } from "@radix-ui/themes";
 import { rpc } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
-import type { SettingsData, ProviderInfo, AvailableProvider } from "@workspace/about-shared/types";
 
-const MODEL_ROLES = ["smart", "coding", "fast", "cheap"] as const;
-
-const ROLE_LABELS: Record<string, string> = {
-  smart: "Smart",
-  coding: "Coding",
-  fast: "Fast",
-  cheap: "Cheap",
-};
+interface ProviderStatus {
+  provider: string;
+  kind: "oauth" | "env-var";
+  status: "connected" | "disconnected" | "configured" | "missing";
+  displayName: string;
+  envVar?: string;
+}
 
 function ModelProviderConfigPage() {
-  const [settingsData, setSettingsData] = useState<SettingsData | null>(null);
+  const [providers, setProviders] = useState<ProviderStatus[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [connecting, setConnecting] = useState<string | null>(null);
 
-  // Load config data (with spinner for initial load)
-  const loadConfig = async () => {
-    try {
-      setLoading(true);
-      const data = await rpc.call<SettingsData>("main", "settings.getData");
-      setSettingsData(data);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Refresh config data silently (no spinner, for after changes)
-  const refreshConfig = async () => {
-    try {
-      const data = await rpc.call<SettingsData>("main", "settings.getData");
-      setSettingsData(data);
-      setError(null);
-    } catch (err) {
-      console.error("Failed to refresh config:", err);
-    }
-  };
-
-  // Initial load
-  useEffect(() => {
-    loadConfig();
+  const refresh = useCallback(async () => {
+    const list = await rpc.call<ProviderStatus[]>("main", "auth.listProviders");
+    setProviders(list);
+    setLoading(false);
   }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const handleConnect = async (providerId: string) => {
+    setConnecting(providerId);
+    try {
+      const result = await rpc.call<{ success: boolean; error?: string }>(
+        "main",
+        "auth.startOAuthLogin",
+        providerId,
+      );
+      if (!result.success) {
+        alert(`Login failed: ${result.error ?? "unknown error"}`);
+      }
+      await refresh();
+    } catch (err) {
+      alert(`Login failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setConnecting(null);
+    }
+  };
+
+  const handleDisconnect = async (providerId: string) => {
+    try {
+      await rpc.call<void>("main", "auth.logout", providerId);
+      await refresh();
+    } catch (err) {
+      alert(`Disconnect failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
 
   if (loading) {
     return (
-      <Flex align="center" justify="center" gap="2" style={{ height: "100dvh" }}>
-        <Spinner />
-        <Text>Loading model provider config...</Text>
-      </Flex>
+      <div style={{ padding: "1.5rem" }}>
+        <p>Loading…</p>
+      </div>
     );
   }
 
-  if (error) {
-    return (
-      <Flex align="center" justify="center" direction="column" gap="3" style={{ height: "100dvh" }}>
-        <Text color="red">Error: {error}</Text>
-        <Button onClick={loadConfig}>Retry</Button>
-      </Flex>
-    );
-  }
+  const oauthProviders = providers.filter((p) => p.kind === "oauth");
+  const envProviders = providers.filter((p) => p.kind === "env-var");
 
   return (
-    <Box p="4" style={{ maxWidth: "600px", margin: "0 auto" }}>
-      <Heading size="7" mb="5">Model Provider Config</Heading>
+    <div
+      style={{
+        padding: "1.5rem",
+        maxWidth: "720px",
+        margin: "0 auto",
+        display: "flex",
+        flexDirection: "column",
+        gap: "1.5rem",
+      }}
+    >
+      <header style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+        <h1 style={{ fontSize: "1.5rem", fontWeight: 600, margin: 0 }}>
+          AI provider configuration
+        </h1>
+        <p style={{ fontSize: "0.875rem", opacity: 0.75, margin: 0 }}>
+          Connect to a subscription service (no per-token API costs) or set
+          environment variables for raw API keys (pay-per-token, dev only).
+        </p>
+      </header>
 
-      <Card mb="4">
-        <Heading size="4" mb="2">Providers</Heading>
-        <Text size="2" color="gray" mb="4">
-          Configure API keys for AI providers. At least one provider must be configured.
-        </Text>
+      <section style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+        <h2 style={{ fontSize: "1.125rem", fontWeight: 600, margin: 0 }}>
+          Subscription providers (OAuth)
+        </h2>
+        {oauthProviders.length === 0 ? (
+          <p style={{ fontSize: "0.875rem", opacity: 0.75, margin: 0 }}>
+            No OAuth providers available.
+          </p>
+        ) : (
+          oauthProviders.map((p) => (
+            <ProviderRow
+              key={p.provider}
+              status={p}
+              connecting={connecting === p.provider}
+              onConnect={() => handleConnect(p.provider)}
+              onDisconnect={() => handleDisconnect(p.provider)}
+            />
+          ))
+        )}
+      </section>
 
-        <Flex direction="column" gap="3">
-          {settingsData?.availableProviders.map((provider: AvailableProvider) => {
-            const providerInfo = settingsData.providers.find((p: ProviderInfo) => p.id === provider.id);
-            return (
-              <ProviderRow
-                key={provider.id}
-                provider={provider}
-                providerInfo={providerInfo}
-                onUpdate={refreshConfig}
-              />
-            );
-          })}
-        </Flex>
-      </Card>
-
-      {settingsData?.hasConfiguredProviders && (
-        <Card>
-          <Heading size="4" mb="2">Model Roles</Heading>
-          <Text size="2" color="gray" mb="4">
-            Assign models to roles. Roles fall back to each other: smart ↔ coding, fast ↔ cheap.
-          </Text>
-
-          <Flex direction="column" gap="3">
-            {MODEL_ROLES.map((role) => (
-              <ModelRoleRow
-                key={role}
-                role={role}
-                currentValue={settingsData.modelRoles[role]}
-                providers={settingsData.providers}
-                onRoleChange={(newValue) => {
-                  // Optimistically update local state without refetching
-                  setSettingsData((prev: SettingsData | null) =>
-                    prev ? { ...prev, modelRoles: { ...prev.modelRoles, [role]: newValue } } : prev
-                  );
-                }}
-              />
-            ))}
-          </Flex>
-        </Card>
-      )}
-    </Box>
+      <section style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+        <h2 style={{ fontSize: "1.125rem", fontWeight: 600, margin: 0 }}>
+          Environment variable providers
+        </h2>
+        {envProviders.length === 0 ? (
+          <p style={{ fontSize: "0.875rem", opacity: 0.75, margin: 0 }}>
+            No environment-variable providers available.
+          </p>
+        ) : (
+          envProviders.map((p) => <EnvProviderRow key={p.provider} status={p} />)
+        )}
+      </section>
+    </div>
   );
 }
 
 interface ProviderRowProps {
-  provider: AvailableProvider;
-  providerInfo?: ProviderInfo;
-  onUpdate: () => void;
+  status: ProviderStatus;
+  connecting: boolean;
+  onConnect: () => void;
+  onDisconnect: () => void;
 }
 
-function ProviderRow({ provider, providerInfo, onUpdate }: ProviderRowProps) {
-  const [isEditing, setIsEditing] = useState(false);
-  const [apiKey, setApiKey] = useState("");
-  const [isSaving, setIsSaving] = useState(false);
-
-  const hasKey = providerInfo?.hasApiKey ?? false;
-
-  const handleSave = async () => {
-    if (!apiKey.trim()) return;
-    setIsSaving(true);
-    try {
-      await rpc.call<void>("main", "settings.setApiKey", provider.id, apiKey.trim());
-      setApiKey("");
-      setIsEditing(false);
-      onUpdate();
-    } catch (error) {
-      console.error("Failed to save API key:", error);
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const handleRemove = async () => {
-    setIsSaving(true);
-    try {
-      await rpc.call<void>("main", "settings.removeApiKey", provider.id);
-      onUpdate();
-    } catch (error) {
-      console.error("Failed to remove API key:", error);
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const handleCancel = () => {
-    setApiKey("");
-    setIsEditing(false);
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && apiKey.trim()) {
-      void handleSave();
-    } else if (e.key === "Escape") {
-      handleCancel();
-    }
-  };
-
+function ProviderRow({ status, connecting, onConnect, onDisconnect }: ProviderRowProps) {
+  const isConnected = status.status === "connected";
   return (
-    <Card variant="surface">
-      <Flex justify="between" align="center">
-        <Flex align="center" gap="3">
-          <Text size="2" weight="medium" style={{ minWidth: "100px" }}>
-            {provider.name}
-          </Text>
-          {hasKey ? (
-            <Badge color="green" size="1">Configured</Badge>
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: "1rem",
+        border: "1px solid var(--gray-a5, rgba(0,0,0,0.15))",
+        borderRadius: "8px",
+        padding: "1rem",
+      }}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+        <div style={{ fontWeight: 500 }}>{status.displayName}</div>
+        <div style={{ fontSize: "0.875rem" }}>
+          {isConnected ? (
+            <span style={{ color: "var(--green-11, #2b9348)" }}>✓ Connected</span>
           ) : (
-            <Badge color="gray" size="1">Not configured</Badge>
+            <span style={{ opacity: 0.75 }}>Not connected</span>
           )}
-        </Flex>
-
-        {isEditing ? (
-          <Flex gap="2" align="center">
-            <TextField.Root
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={`Enter ${provider.envVar}`}
-              size="1"
-              style={{ width: "200px" }}
-              autoFocus
-            />
-            <Button size="1" onClick={handleSave} disabled={!apiKey.trim() || isSaving}>
-              {isSaving ? <Spinner /> : "Save"}
-            </Button>
-            <Button variant="soft" color="gray" size="1" onClick={handleCancel} disabled={isSaving}>
-              Cancel
-            </Button>
-          </Flex>
-        ) : (
-          <Flex gap="2">
-            {hasKey ? (
-              <>
-                <Button variant="soft" size="1" onClick={() => setIsEditing(true)}>
-                  Change
-                </Button>
-                <Button
-                  variant="soft"
-                  color="red"
-                  size="1"
-                  onClick={handleRemove}
-                  disabled={isSaving}
-                >
-                  {isSaving ? <Spinner /> : "Remove"}
-                </Button>
-              </>
-            ) : (
-              <Button variant="soft" size="1" onClick={() => setIsEditing(true)}>
-                Add Key
-              </Button>
-            )}
-          </Flex>
-        )}
-      </Flex>
-    </Card>
-  );
-}
-
-interface ModelRoleRowProps {
-  role: string;
-  currentValue?: string;
-  providers: ProviderInfo[];
-  onRoleChange: (newValue: string) => void;
-}
-
-function ModelRoleRow({ role, currentValue, providers, onRoleChange }: ModelRoleRowProps) {
-  const [isSaving, setIsSaving] = useState(false);
-
-  // A provider is available iff its API key is configured.
-  const isProviderAvailable = (provider: ProviderInfo) => provider.hasApiKey;
-
-  // Get available providers with models
-  const availableProviders = providers.filter(isProviderAvailable);
-
-  const handleChange = async (value: string) => {
-    if (value === currentValue) return;
-    setIsSaving(true);
-    try {
-      await rpc.call<void>("main", "settings.setModelRole", role, value);
-      // Optimistically update local state (no refetch needed)
-      onRoleChange(value);
-    } catch (error) {
-      console.error("Failed to set model role:", error);
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  return (
-    <Flex align="center" gap="3">
-      <Text size="2" style={{ minWidth: "70px" }}>
-        {ROLE_LABELS[role] || role}:
-      </Text>
-      <Box style={{ flex: 1 }}>
-        <Select.Root
-          value={currentValue || ""}
-          onValueChange={handleChange}
-          disabled={isSaving || availableProviders.length === 0}
+        </div>
+      </div>
+      {isConnected ? (
+        <button
+          type="button"
+          onClick={onDisconnect}
+          style={buttonStyle}
         >
-          <Select.Trigger
-            placeholder={
-              availableProviders.length === 0 ? "No providers configured" : "Select model..."
-            }
-            style={{ width: "100%" }}
-          />
-          <Select.Content>
-            {/* Group by provider */}
-            {availableProviders.map((provider) => (
-              <Select.Group key={provider.id}>
-                <Select.Label>{provider.name}</Select.Label>
-                {provider.models.map((modelId: string) => (
-                  <Select.Item
-                    key={`${provider.id}:${modelId}`}
-                    value={`${provider.id}:${modelId}`}
-                  >
-                    {modelId}
-                  </Select.Item>
-                ))}
-              </Select.Group>
-            ))}
-          </Select.Content>
-        </Select.Root>
-      </Box>
-      {isSaving && <Spinner />}
-    </Flex>
+          Disconnect
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={onConnect}
+          disabled={connecting}
+          style={{
+            ...buttonStyle,
+            opacity: connecting ? 0.6 : 1,
+            cursor: connecting ? "wait" : "pointer",
+          }}
+        >
+          {connecting ? "Waiting for browser…" : "Connect"}
+        </button>
+      )}
+    </div>
   );
 }
+
+interface EnvProviderRowProps {
+  status: ProviderStatus;
+}
+
+function EnvProviderRow({ status }: EnvProviderRowProps) {
+  const isConfigured = status.status === "configured";
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: "1rem",
+        border: "1px solid var(--gray-a5, rgba(0,0,0,0.15))",
+        borderRadius: "8px",
+        padding: "1rem",
+      }}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+        <div style={{ fontWeight: 500 }}>{status.displayName}</div>
+        <div style={{ fontSize: "0.875rem", opacity: 0.75 }}>
+          {status.envVar ?? "(no env var)"}:{" "}
+          {isConfigured ? (
+            <span style={{ color: "var(--green-11, #2b9348)" }}>✓ set</span>
+          ) : (
+            <span style={{ color: "var(--red-11, #c91432)" }}>✗ not set</span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const buttonStyle: React.CSSProperties = {
+  padding: "0.5rem 1rem",
+  borderRadius: "6px",
+  border: "1px solid var(--gray-a6, rgba(0,0,0,0.2))",
+  background: "var(--gray-a3, rgba(0,0,0,0.05))",
+  cursor: "pointer",
+  fontSize: "0.875rem",
+  fontWeight: 500,
+};
 
 function ThemedApp() {
   const theme = usePanelTheme();

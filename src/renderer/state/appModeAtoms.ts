@@ -1,6 +1,6 @@
 import { atom } from "jotai";
-import type { WorkspaceEntry, SettingsData } from "@natstack/shared/types";
-import { settings, workspace } from "../shell/client.js";
+import type { WorkspaceEntry } from "@natstack/shared/types";
+import { auth, workspace, type AuthProvider } from "../shell/client.js";
 
 // =============================================================================
 // Workspace State
@@ -93,85 +93,46 @@ export const selectWorkspaceAtom = atom(null, async (_get, _set, name: string) =
 // =============================================================================
 
 /**
- * Settings data from main process
- */
-export const settingsDataAtom = atom<SettingsData | null>(null);
-
-/**
- * Whether settings are loading
- */
-export const settingsLoadingAtom = atom(false);
-
-/**
  * Whether settings dialog is open
  */
 export const settingsDialogOpenAtom = atom(false);
 
+// =============================================================================
+// Auth Providers (feeds the Settings dialog)
+// =============================================================================
+
 /**
- * Load settings from main process
+ * Cached list of auth providers returned by `auth.listProviders`.
+ *
+ * Written to by `loadAuthProvidersAtom`. Null until the first load completes,
+ * [] if the call returned no providers, populated otherwise.
  */
-export const loadSettingsAtom = atom(null, async (_get, set) => {
-  set(settingsLoadingAtom, true);
+export const authProvidersAtom = atom<AuthProvider[] | null>(null);
+
+/**
+ * Whether auth providers are currently being (re)loaded.
+ */
+export const authProvidersLoadingAtom = atom(false);
+
+/**
+ * Load the provider list from the auth service and write it to
+ * `authProvidersAtom`. Errors are logged and leave the atom unchanged so the
+ * UI can fall back to whatever it last showed.
+ */
+export const loadAuthProvidersAtom = atom(null, async (get, set) => {
+  set(authProvidersLoadingAtom, true);
   try {
-    const data = await settings.getData();
-    set(settingsDataAtom, data);
+    const providers = await auth.listProviders();
+    set(authProvidersAtom, providers ?? []);
   } catch (error) {
-    console.error("Failed to load settings:", error);
+    console.error("Failed to load auth providers:", error);
+    // Leave the cached list in place; set to [] if this was the first load.
+    const prev = get(authProvidersAtom);
+    if (prev === null) set(authProvidersAtom, []);
   } finally {
-    set(settingsLoadingAtom, false);
+    set(authProvidersLoadingAtom, false);
   }
 });
-
-/**
- * Set an API key for a provider
- */
-export const setApiKeyAtom = atom(
-  null,
-  async (_get, set, params: { providerId: string; apiKey: string }) => {
-    try {
-      await settings.setApiKey(params.providerId, params.apiKey);
-      // Reload settings to reflect change
-      const data = await settings.getData();
-      set(settingsDataAtom, data);
-    } catch (error) {
-      console.error("Failed to set API key:", error);
-      throw error;
-    }
-  }
-);
-
-/**
- * Remove an API key for a provider
- */
-export const removeApiKeyAtom = atom(null, async (_get, set, providerId: string) => {
-  try {
-    await settings.removeApiKey(providerId);
-    // Reload settings to reflect change
-    const data = await settings.getData();
-    set(settingsDataAtom, data);
-  } catch (error) {
-    console.error("Failed to remove API key:", error);
-    throw error;
-  }
-});
-
-/**
- * Set a model role mapping
- */
-export const setModelRoleAtom = atom(
-  null,
-  async (_get, set, params: { role: string; modelSpec: string }) => {
-    try {
-      await settings.setModelRole(params.role, params.modelSpec);
-      // Reload settings to reflect change
-      const data = await settings.getData();
-      set(settingsDataAtom, data);
-    } catch (error) {
-      console.error("Failed to set model role:", error);
-      throw error;
-    }
-  }
-);
 
 // =============================================================================
 // Workspace Chooser State (for switch workspace dialog)

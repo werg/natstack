@@ -27,6 +27,26 @@ export type {
 export { NatStackExtensionUIContext } from "./natstack-extension-context.js";
 export type { NatStackUIBridgeCallbacks } from "./natstack-extension-context.js";
 
+// NatStack-local Pi extension API + runtime
+export { PiExtensionRuntime } from "./pi-extension-runtime.js";
+export type {
+  AgentTool,
+  PiExtensionAPI,
+  PiExtensionContext,
+  PiExtensionEvent,
+  PiExtensionEventResult,
+  PiExtensionFactory,
+  PiExtensionHandler,
+  PiExtensionUIContext,
+  PiExtensionUIDialogOptions,
+  PiExtensionWidgetOptions,
+  PiExtensionWidgetPlacement,
+  PiSessionStartEvent,
+  PiToolCallEvent,
+  PiToolInfo,
+  PiTurnStartEvent,
+} from "./pi-extension-api.js";
+
 // Channel boundary types (still used by agentic-do)
 export type {
   Attachment,
@@ -37,3 +57,49 @@ export type {
   ParticipantDescriptor,
   UnsubscribeResult,
 } from "./types.js";
+
+// File tools (workerd-clean port of pi-coding-agent's six file tools)
+export {
+  createReadTool,
+  createEditTool,
+  createWriteTool,
+  createGrepTool,
+  createFindTool,
+  createLsTool,
+  resolveToCwd,
+  resolveReadPath,
+  expandPath,
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
+  truncateHead,
+  truncateTail,
+  truncateLine,
+  formatSize,
+  detectLineEnding,
+  normalizeToLF,
+  restoreLineEndings,
+  normalizeForFuzzyMatch,
+  fuzzyFindText,
+  stripBom,
+  generateDiffString,
+} from "./tools/index.js";
+export type {
+  ReadToolInput,
+  ReadToolDetails,
+  ReadToolDeps,
+  EditToolInput,
+  EditToolDetails,
+  WriteToolInput,
+  WriteToolDetails,
+  GrepToolInput,
+  GrepToolDetails,
+  FindToolInput,
+  FindToolDetails,
+  LsToolInput,
+  LsToolDetails,
+  TruncationResult,
+  TruncationOptions,
+  LineEnding,
+  FuzzyMatchResult,
+  DiffResult,
+} from "./tools/index.js";

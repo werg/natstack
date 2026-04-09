@@ -100,13 +100,13 @@ const workerSurface = loadRuntimeSurface(
 const checkOnly = process.argv.includes("--check");
 
 updateDoc(
-  "workspace/.pi/skills/sandbox/RUNTIME_API.md",
+  "workspace/skills/sandbox/RUNTIME_API.md",
   [["panel-runtime-surface", renderSurfaceTable(panelSurface)]],
   checkOnly,
 );
 
 updateDoc(
-  "workspace/.pi/skills/paneldev/WORKERS.md",
+  "workspace/skills/paneldev/WORKERS.md",
   [["worker-runtime-surface", renderSurfaceTable(workerSurface)]],
   checkOnly,
 );

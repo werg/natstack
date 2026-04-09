@@ -4,13 +4,18 @@ import type { ParticipantDescriptor } from "@natstack/harness/types";
 /**
  * TestAgentWorker — Minimal agent DO for testing the Pi runtime pipeline.
  *
- * The system prompt lives in the test contextFolder's `.pi/AGENTS.md`
- * (typically a copy of the workspace prompt with test-specific overrides).
- * Tests that need a different prompt write a per-test AGENTS.md file before
- * spawning the worker.
+ * Uses the default `workspace/AGENTS.md` system prompt resolved by the
+ * base class via the workspace.* RPC service. Tests that need a
+ * different prompt drop a per-test `AGENTS.md` file at the workspace
+ * root before spawning the worker.
  */
 export class TestAgentWorker extends AgentWorkerBase {
-  static override schemaVersion = 4;
+  static override schemaVersion = 5;
+
+  /** Anthropic sonnet — smaller surface for unit tests than OpenAI Codex. */
+  protected override getModel(): string {
+    return "anthropic:claude-sonnet-4-20250514";
+  }
 
   protected override getParticipantInfo(): ParticipantDescriptor {
     return {

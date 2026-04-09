@@ -29,6 +29,18 @@ export function _initFsWithRpc(rpc: RpcBridge): void {
 }
 
 /**
+ * `fs.constants` is a plain object, not a method. Expose it synchronously so
+ * panel code like `if (mode & fs.constants.R_OK)` works without awaiting.
+ * These values match Node's `fs.constants` on POSIX systems.
+ */
+const FS_CONSTANTS = {
+  F_OK: 0,
+  R_OK: 4,
+  W_OK: 2,
+  X_OK: 1,
+} as const;
+
+/**
  * Proxy-based fs that waits for RPC initialization on each call.
  * Ensures the correct implementation is used regardless of import timing.
  */
@@ -36,6 +48,9 @@ export const fs: RuntimeFs = new Proxy({} as RuntimeFs, {
   get(_target, prop: string | symbol) {
     // Prevent the proxy from being treated as a thenable (e.g. `await fs`)
     if (prop === "then" || typeof prop === "symbol") return undefined;
+    // `constants` is a sync data property — not a method — so return it
+    // directly without wrapping in a promise-producing function.
+    if (prop === "constants") return FS_CONSTANTS;
     return async (...args: unknown[]) => {
       await _ready;
       if (!_fs) throw new Error("[NatStack] Filesystem not initialized");

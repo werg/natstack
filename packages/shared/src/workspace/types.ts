@@ -14,20 +14,6 @@
  */
 
 /**
- * Supported AI provider identifiers
- */
-export type SupportedProvider =
-  | "anthropic"
-  | "openai"
-  | "google"
-  | "groq"
-  | "openrouter"
-  | "mistral"
-  | "together"
-  | "replicate"
-  | "perplexity";
-
-/**
  * Standard model roles with fallback behavior
  */
 export type StandardModelRole = "smart" | "coding" | "fast" | "cheap";
@@ -38,7 +24,7 @@ export type StandardModelRole = "smart" | "coding" | "fast" | "cheap";
  */
 export interface ModelConfig {
   /** Provider ID (e.g., "anthropic", "openai", "groq") */
-  provider: SupportedProvider;
+  provider: string;
   /** Model ID within the provider (e.g., "claude-sonnet-4-20250514") */
   model: string;
   /** Optional temperature (0-2, default varies by model) */

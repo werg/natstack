@@ -1,10 +1,11 @@
 /**
- * HeadlessSession — Pi-native headless agentic session wrapper.
+ * HeadlessSession — Channel-message-driven headless agentic session wrapper.
  *
  * Provides a programmatic interface for spawning agent chats from skill
  * code, system tests, etc. Pi runs in-process inside the worker DO; this
- * wrapper subscribes a PubSubClient to the channel and reads the worker's
- * `natstack-state-snapshot` ephemeral stream to expose chat state.
+ * wrapper subscribes a PubSubClient to the channel and reads persisted
+ * channel messages (text, thinking, action, image, inline_ui) to expose
+ * chat state.
  *
  * Public API mirrors the legacy SessionManager-based wrapper:
  *   - `HeadlessSession.create()` — wire up a session, no agent yet
@@ -20,8 +21,6 @@ import {
   ConnectionManager,
   buildEvalTool,
   isAgentParticipantType,
-  derivePiSnapshot,
-  parseEphemeralEvent,
   type ConnectionConfig,
   type ChatParticipantMetadata,
   type ChatMessage,
@@ -36,10 +35,10 @@ import type {
   MethodDefinition,
   AttachmentInput,
   AgentDebugPayload,
+  Attachment,
 } from "@natstack/pubsub";
 import { z } from "zod";
 import { ScopeManager, DbScopePersistence } from "@workspace/eval";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import {
   getRecommendedChannelConfig,
   subscribeHeadlessAgent,
@@ -126,9 +125,10 @@ export class HeadlessSession {
   private _createdAt = Date.now();
   private _config: HeadlessSessionConfig;
 
-  // Snapshot state derived from natstack-state-snapshot ephemerals
-  private _piMessages: AgentMessage[] = [];
-  private _isStreaming = false;
+  // Channel message state (derived from persisted + live channel messages)
+  private _chatMessages = new Map<string, ChatMessage>();
+  private _chatMessageOrder: string[] = [];
+  private _hasIncomplete = false;
   private _participants: Record<string, Participant<ChatParticipantMetadata>> = {};
   private _methodHistory = new Map<string, MethodHistoryEntry>();
   private _debugEvents: Array<AgentDebugPayload & { ts: number }> = [];
@@ -303,42 +303,86 @@ export class HeadlessSession {
   private async consumeChannelMessages(signal: AbortSignal): Promise<void> {
     if (!this._client) return;
     try {
-      for await (const msg of this._client.messages()) {
+      for await (const event of this._client.events({ includeReplay: true, includeEphemeral: false })) {
         if (signal.aborted) break;
-        const wire = msg as unknown as {
+
+        const wire = event as unknown as {
+          type?: string;
           kind?: string;
-          contentType?: string;
+          id?: string;
+          senderId?: string;
           content?: string;
-          payload?: { content?: string; contentType?: string };
+          contentType?: string;
+          complete?: boolean;
+          attachments?: Attachment[];
+          senderMetadata?: { name?: string; type?: string; handle?: string };
         };
-        if (wire.kind !== "ephemeral") continue;
-        const content = wire.content ?? wire.payload?.content;
-        const contentType = wire.contentType ?? wire.payload?.contentType;
-        if (!content || !contentType) continue;
-        if (contentType === "natstack-state-snapshot") {
-          const parsed = parseEphemeralEvent<{ messages: AgentMessage[]; isStreaming: boolean }>(
-            { content, contentType },
-            "natstack-state-snapshot",
-          );
-          if (parsed) {
-            this._piMessages = parsed.messages;
-            this._isStreaming = parsed.isStreaming;
-            // Notify listeners with each derived ChatMessage
-            const derived = derivePiSnapshot(this._piMessages, this._clientId);
-            for (const m of derived) {
-              for (const listener of this._messageListeners) {
-                try {
-                  listener(m);
-                } catch (err) {
-                  console.error("[HeadlessSession] message listener threw:", err);
-                }
+
+        if (wire.type === "message" && wire.id) {
+          const isReplay = wire.kind === "replay";
+          const msg: ChatMessage = {
+            id: wire.id,
+            senderId: wire.senderId ?? "unknown",
+            content: wire.content ?? "",
+            contentType: wire.contentType,
+            kind: "message",
+            complete: isReplay ? true : false,
+            attachments: wire.attachments,
+            senderMetadata: wire.senderMetadata,
+          };
+          if (!this._chatMessages.has(wire.id)) {
+            this._chatMessageOrder.push(wire.id);
+          }
+          this._chatMessages.set(wire.id, msg);
+          this.recomputeHasIncomplete();
+          this.notifyListeners();
+        } else if (wire.type === "update-message" && wire.id) {
+          const existing = this._chatMessages.get(wire.id);
+          if (existing) {
+            const updated = { ...existing };
+            if (wire.content !== undefined) {
+              // Text messages (no contentType) use delta-append protocol.
+              // Structured messages (action, etc.) use full-replacement updates.
+              if (!existing.contentType) {
+                updated.content = (existing.content ?? "") + wire.content;
+              } else {
+                updated.content = wire.content;
               }
             }
+            if (wire.complete !== undefined) updated.complete = wire.complete;
+            if (wire.attachments) updated.attachments = wire.attachments;
+            this._chatMessages.set(wire.id, updated);
+            this.recomputeHasIncomplete();
+            this.notifyListeners();
           }
         }
       }
     } catch (err) {
       if (!signal.aborted) console.error("[HeadlessSession] message consumer error:", err);
+    }
+  }
+
+  /** Scan all messages to determine if any are still incomplete (streaming). */
+  private recomputeHasIncomplete(): void {
+    for (const msg of this._chatMessages.values()) {
+      if (!msg.complete) {
+        this._hasIncomplete = true;
+        return;
+      }
+    }
+    this._hasIncomplete = false;
+  }
+
+  private notifyListeners(): void {
+    const msgs = this.messages;
+    if (msgs.length === 0) return;
+    const latest = msgs[msgs.length - 1]!;
+    for (const listener of this._messageListeners) {
+      try {
+        listener(latest);
+      } catch (err) {
+        console.error("[HeadlessSession] message listener threw:", err);
+      }
     }
   }
 
@@ -364,7 +408,7 @@ export class HeadlessSession {
   }
 
   async loadEarlierMessages(): Promise<void> {
-    /* no-op: Pi snapshots include the entire conversation tree by construction */
+    /* no-op: channel replay delivers full persisted history */
   }
 
   disconnect(): void {
@@ -402,7 +446,7 @@ export class HeadlessSession {
   // ===========================================================================
 
   get messages(): readonly ChatMessage[] {
-    return derivePiSnapshot(this._piMessages, this._clientId);
+    return this._chatMessageOrder.map((id) => this._chatMessages.get(id)!);
   }
 
   get participants(): Readonly<Record<string, Participant<ChatParticipantMetadata>>> {
@@ -446,7 +490,7 @@ export class HeadlessSession {
   }
 
   get isStreaming(): boolean {
-    return this._isStreaming;
+    return this._hasIncomplete;
   }
 
   get client(): PubSubClient<ChatParticipantMetadata> | null {
@@ -481,7 +525,7 @@ export class HeadlessSession {
       callerId: e.callerId,
     }));
     return {
-      messages: derivePiSnapshot(this._piMessages, this._clientId),
+      messages: this.messages,
       methodHistory,
       debugEvents: this._debugEvents,
       participants,
@@ -596,8 +640,8 @@ export class HeadlessSession {
         if (!lastMatch) return;
         if (debounceTimer !== undefined) clearTimeout(debounceTimer);
         debounceTimer = setTimeout(() => {
-          // Don't resolve while Pi is still streaming
-          if (this._isStreaming) {
+          // Don't resolve while there are incomplete (streaming) messages
+          if (this._hasIncomplete) {
             scheduleResolve();
             return;
           }

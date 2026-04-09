@@ -240,6 +240,31 @@ export class PubSubChannel extends DurableObjectBase {
       }
     }
 
+    // Validate advertised method names. The channel-tools extension exposes
+    // each method to the LLM by its bare name, so names must satisfy the
+    // LLM-tool-name contract: ASCII letters/digits/`_`/`-`, starting with a
+    // letter, length 1..64, and not collide with Pi's built-in tool names.
+    // Reject the subscribe up-front so a misconfigured participant cannot
+    // poison the agent's tool list.
+    const advertisedMethods = metadata["methods"];
+    if (Array.isArray(advertisedMethods)) {
+      const VALID_METHOD_NAME = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+      const RESERVED_METHOD_NAMES = new Set(["read", "edit", "write", "grep", "find", "ls"]);
+      for (const m of advertisedMethods) {
+        const name = (m && typeof m === "object" && typeof (m as { name?: unknown }).name === "string")
+          ? (m as { name: string }).name
+          : null;
+        if (name === null) continue; // unknown shape; let downstream handle it
+        if (!VALID_METHOD_NAME.test(name) || RESERVED_METHOD_NAMES.has(name)) {
+          throw new Error(
+            `Invalid method name "${name}" advertised by participant "${participantId}". ` +
+            `Method names must match /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/ and ` +
+            `not collide with built-in tool names (read, edit, write, grep, find, ls).`,
+          );
+        }
+      }
+    }
+
     // Re-subscribe with the same participant ID: replace the roster entry, but
     // only fail in-flight calls if the underlying client session changed.
     const existing = this.sql.exec(

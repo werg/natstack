@@ -8,7 +8,7 @@
  */
 
 import type { RpcMessage } from "@natstack/rpc";
-import type { StreamTextEvent, ToolExecutionResult } from "../types.js";
+import type { ToolExecutionResult } from "../types.js";
 
 // =============================================================================
 // Client → Server messages
@@ -68,25 +68,6 @@ export interface WsRpcResponseMessage {
   message: RpcMessage;
 }
 
-export interface WsStreamChunkMessage {
-  type: "ws:stream-chunk";
-  streamId: string;
-  chunk: StreamTextEvent;
-}
-
-export interface WsStreamEndMessage {
-  type: "ws:stream-end";
-  streamId: string;
-}
-
-export interface WsToolExecMessage {
-  type: "ws:tool-exec";
-  callId: string;
-  streamId: string;
-  toolName: string;
-  args: Record<string, unknown>;
-}
-
 export interface WsEventMessage {
   type: "ws:event";
   event: string;
@@ -126,9 +107,6 @@ export interface WsPanelRpcDeliveryMessage {
 export type WsServerMessage =
   | WsAuthResultMessage
   | WsRpcResponseMessage
-  | WsStreamChunkMessage
-  | WsStreamEndMessage
-  | WsToolExecMessage
   | WsEventMessage
   | WsRoutedMessage
   | WsRoutedEventErrorMessage

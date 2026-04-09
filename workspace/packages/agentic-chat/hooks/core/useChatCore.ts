@@ -1,15 +1,15 @@
 /**
- * useChatCore — Pi-native chat hook.
+ * useChatCore — Channel-message-driven chat hook.
  *
- * Pi (`@mariozechner/pi-coding-agent`) is the source of truth. This hook:
+ * The agent worker publishes Pi events as real channel messages. This hook:
  * - Owns the PubSubClient connection lifecycle
- * - Subscribes to the channel's `natstack-state-snapshot` ephemeral stream
- * - Derives a flat `ChatMessage[]` from the latest Pi snapshot
+ * - Subscribes to ALL channel messages (persisted + replay) via useChannelMessages
+ * - Builds a flat `ChatMessage[]` from channel messages
  * - Tracks method history from channel method-call/result events
  * - Tracks participants from roster events
  *
- * NO event-replay state machine. NO message reducer. The hook just renders
- * what Pi has published.
+ * NO snapshot ephemerals. NO text-delta overlays. Messages stream via the
+ * PubSub send → update → complete protocol.
  */
 
 import { useState, useCallback, useMemo, useRef, useEffect } from "react";
@@ -24,7 +24,6 @@ import type {
 } from "@natstack/pubsub";
 import {
   ConnectionManager,
-  derivePiSnapshot,
   type ConnectionConfig,
   type ChatParticipantMetadata,
   type ChatMessage,
@@ -34,9 +33,7 @@ import {
 } from "@workspace/agentic-core";
 import { cleanupPendingImages, type PendingImage } from "../../utils/imageUtils";
 import type { ChatInputContextValue } from "../../types";
-import { useChannelEphemeralMessages } from "../useChannelEphemeralMessages.js";
-import { usePiSessionSnapshot } from "../usePiSessionSnapshot.js";
-import { usePiTextDeltas } from "../usePiTextDeltas.js";
+import { useChannelMessages } from "../useChannelMessages.js";
 
 // =============================================================================
 // Types
@@ -98,6 +95,7 @@ export interface ChatCoreState {
   dirtyRepoWarnings: Map<string, DirtyRepoDetails>;
   pendingAgents: Map<string, PendingAgent>;
   addPendingAgent: (handle: string, agentId: string) => void;
+  removePendingAgent: (handle: string) => void;
   onDismissDirtyWarning: (agentName: string) => void;
 
   selfIdRef: React.MutableRefObject<string | null>;
@@ -171,29 +169,11 @@ export function useChatCore({
     return () => { cleanupPendingImages(pendingImagesRef.current); };
   }, []);
 
-  // --- Pi snapshot subscription ---
-  const snapshotEphemerals = useChannelEphemeralMessages(client, "natstack-state-snapshot");
-  const { snapshot, latestTs } = usePiSessionSnapshot(snapshotEphemerals);
-
-  // --- Pi text-delta subscription (for typing-indicator overlay) ---
-  const deltaEphemerals = useChannelEphemeralMessages(client, "natstack-text-delta");
-  const textDelta = usePiTextDeltas(deltaEphemerals, latestTs);
-
-  // --- Derive ChatMessage[] from Pi snapshot ---
-  const messages = useMemo<ChatMessage[]>(() => {
-    const derived = derivePiSnapshot(snapshot.messages, selfIdRef.current);
-    if (textDelta && snapshot.isStreaming) {
-      // Overlay an in-progress assistant message with the live delta text.
-      derived.push({
-        id: `delta-${textDelta.messageId}`,
-        senderId: "assistant",
-        content: textDelta.text,
-        kind: "message",
-        complete: false,
-      });
-    }
-    return derived;
-  }, [snapshot, textDelta]);
+  // --- Channel messages subscription ---
+  // All message types (text, thinking, action, image, inline_ui, feedback)
+  // are published as real channel messages by the agent worker. The hook
+  // consumes replay + live events and builds the ChatMessage[] array.
+  const messages = useChannelMessages(client, selfIdRef.current);
 
   // --- Connect ---
   const connectToChannel = useCallback(
@@ -223,6 +203,42 @@ export function useChatCore({
         const next = { ...update.participants };
         participantsRef.current = next;
         setParticipants(next);
+
+        // Auto-clear pending agents whose handle is now in the actual roster.
+        setPendingAgents((prev) => {
+          if (prev.size === 0) return prev;
+          let changed = false;
+          const nextPending = new Map(prev);
+          for (const handle of prev.keys()) {
+            const found = Object.values(next).some(
+              (p) => (p?.metadata?.handle as string | undefined) === handle,
+            );
+            if (found) {
+              nextPending.delete(handle);
+              changed = true;
+            }
+          }
+          return changed ? nextPending : prev;
+        });
+      });
+
+      // Also check the client's current roster snapshot in case participants
+      // were already present at connect time (onRoster may not have fired yet).
+      const initialRoster = newClient.roster ?? {};
+      setPendingAgents((prev) => {
+        if (prev.size === 0) return prev;
+        let changed = false;
+        const nextPending = new Map(prev);
+        for (const handle of prev.keys()) {
+          const found = Object.values(initialRoster).some(
+            (p) => (p?.metadata?.handle as string | undefined) === handle,
+          );
+          if (found) {
+            nextPending.delete(handle);
+            changed = true;
+          }
+        }
+        return changed ? nextPending : prev;
       });
 
       return newClient;
@@ -280,7 +296,7 @@ export function useChatCore({
     setMethodEntries(new Map());
   }, []);
 
-  // --- Typing (no-op in Pi-native mode; the worker controls typing via snapshots) ---
+  // --- Typing (no-op; the worker streams via channel update messages) ---
   const stopTyping = useCallback(async () => {
     /* no-op */
   }, []);
@@ -330,9 +346,9 @@ export function useChatCore({
     sendMessage().catch((err) => console.warn("[Chat] Failed to send initial prompt:", err));
   }, [connected, client, sendMessage]);
 
-  // --- Load earlier messages (no-op in Pi snapshot model) ---
+  // --- Load earlier messages (no-op: channel replays full history on connect) ---
   const loadEarlierMessages = useCallback(async () => {
-    /* no-op: Pi snapshots include the entire conversation tree */
+    /* no-op: channel replay delivers full persisted history */
   }, []);
 
   // --- Interrupt / call method ---
@@ -364,6 +380,15 @@ export function useChatCore({
     setPendingAgents((prev) => {
       const next = new Map(prev);
       next.set(handle, { agentId, status: "starting" });
+      return next;
+    });
+  }, []);
+
+  const removePendingAgent = useCallback((handle: string) => {
+    setPendingAgents((prev) => {
+      if (!prev.has(handle)) return prev;
+      const next = new Map(prev);
+      next.delete(handle);
       return next;
     });
   }, []);
@@ -414,6 +439,7 @@ export function useChatCore({
     dirtyRepoWarnings,
     pendingAgents,
     addPendingAgent,
+    removePendingAgent,
     onDismissDirtyWarning,
     selfIdRef,
     sessionEnabled: true,

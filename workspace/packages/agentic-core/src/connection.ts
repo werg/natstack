@@ -96,8 +96,7 @@ export class ConnectionManager {
             reconnect: true,
             clientId: this.config.clientId,
             methods,
-            replayMode: "collect",
-            replayMessageLimit: 200,
+            replayMode: "stream",
           })
         : connect<ChatParticipantMetadata>({
             serverUrl: this.config.serverUrl,
@@ -111,8 +110,7 @@ export class ConnectionManager {
             reconnect: true,
             clientId: this.config.clientId,
             methods,
-            replayMode: "collect",
-            replayMessageLimit: 200,
+            replayMode: "stream",
           });
 
       // Wait for the initial replay to complete

@@ -1,8 +1,9 @@
 /**
- * SettingsClient -- Shared settings RPC wrappers.
+ * SettingsClient -- Shared settings RPC wrapper.
  *
- * Wraps settings-related server RPC calls for provider configuration
- * and model role management.
+ * Wraps the settings.getData server RPC call. Provider/model mutation methods
+ * (setApiKey, removeApiKey, setModelRole) were removed in the Phase 8
+ * migration to the chat agent path.
  */
 
 import type { RpcBridge } from "@natstack/rpc";
@@ -17,17 +18,5 @@ export class SettingsClient {
 
   getData(): Promise<SettingsData> {
     return this.rpc.call<SettingsData>("main", "settings.getData");
-  }
-
-  setApiKey(providerId: string, apiKey: string): Promise<void> {
-    return this.rpc.call<void>("main", "settings.setApiKey", providerId, apiKey);
-  }
-
-  removeApiKey(providerId: string): Promise<void> {
-    return this.rpc.call<void>("main", "settings.removeApiKey", providerId);
-  }
-
-  setModelRole(role: string, modelSpec: string): Promise<void> {
-    return this.rpc.call<void>("main", "settings.setModelRole", role, modelSpec);
   }
 }

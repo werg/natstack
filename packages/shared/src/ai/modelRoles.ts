@@ -15,7 +15,6 @@ import type {
   ModelRoleValue,
   ModelConfig,
   StandardModelRole,
-  SupportedProvider,
 } from "../workspace/types.js";
 
 /**
@@ -26,7 +25,7 @@ export interface ResolvedModelSpec {
   /** Full model ID in format "provider:model" */
   modelId: string;
   /** Provider ID */
-  provider: SupportedProvider;
+  provider: string;
   /** Model name within the provider */
   model: string;
   /** Optional generation parameters */
@@ -95,14 +94,14 @@ function isModelConfig(value: ModelRoleValue): value is ModelConfig {
 /**
  * Parse a model string in format "provider:model" into components
  */
-function parseModelString(modelStr: string): { provider: SupportedProvider; model: string } | null {
+function parseModelString(modelStr: string): { provider: string; model: string } | null {
   if (!modelStr.includes(":")) {
     return null;
   }
   const [provider, ...modelParts] = modelStr.split(":");
   const model = modelParts.join(":"); // Handle model IDs that contain colons
   return {
-    provider: provider as SupportedProvider,
+    provider: provider ?? "",
     model,
   };
 }

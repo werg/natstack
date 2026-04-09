@@ -26,29 +26,25 @@ The harness child layer became unnecessary substrate. Phase 3 of this
 rearchitecture deleted ~9000 lines of harness/transport/adapter/worker-state
 code and replaced it with one PiRunner per channel.
 
-## ContextFolder layout
+## Workspace layout
 
-Each panel context gets its own folder under `~/.config/natstack/contexts/`
-with a copy of the workspace tree. The `.pi/` subdirectory is the canonical
-Pi package:
+Skills and the agent system prompt live directly in `workspace/` and are
+read via the `workspace.*` RPC service — they are no longer copied into
+per-context folders:
 
 ```
-<contextFolder>/
-├── .pi/
-│   ├── package.json     # Pi package manifest
-│   ├── AGENTS.md        # System prompt (Pi loads via cwd-walk)
-│   ├── settings.json    # Compaction / retry / thinking-level defaults
-│   └── skills/          # Workspace skills (Pi loads via additionalSkillPaths)
-│       ├── eval/
-│       ├── sandbox/
-│       ├── paneldev/
-│       └── ...
-├── workspace/...        # Other workspace files
-└── ...
+workspace/
+├── AGENTS.md        # System prompt (read via workspace RPC)
+├── skills/          # Workspace skills (read via workspace RPC)
+│   ├── eval/
+│   ├── sandbox/
+│   ├── paneldev/
+│   └── ...
+└── ...              # Other workspace files
 ```
 
-The contextFolderManager copies `workspace/.pi/` into each contextFolder
-automatically because `.pi` is not in its `SKIP_DIRS` allowlist.
+Workers access these files through the workspace RPC client, not through
+a filesystem copy.
 
 ## The three NatStack extensions
 
@@ -182,12 +178,12 @@ The cloned worker:
 
 ## How to add a new skill
 
-1. Create a directory under `workspace/.pi/skills/<skill-name>/`
+1. Create a directory under `workspace/skills/<skill-name>/`
 2. Add a `SKILL.md` file with frontmatter (`name`, `description`)
 3. Add additional markdown docs the agent can load
-4. Ship — the skill is part of the workspace, copied into every contextFolder
-   automatically, and Pi loads it via `additionalSkillPaths` in the resource
-   loader.
+4. Ship — the skill is part of the workspace and is read via the
+   `workspace.*` RPC service; Pi loads it via `additionalSkillPaths` in the
+   resource loader.
 
 ## How to debug Pi events at the worker boundary
 

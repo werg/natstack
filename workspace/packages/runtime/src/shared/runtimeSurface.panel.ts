@@ -49,7 +49,6 @@ export const panelRuntimeSurface: RuntimeSurface = {
       "cloneDO",
       "destroyDO",
     ]),
-    ai: valueEntry(),
     normalizePath: valueEntry(),
     getFileName: valueEntry(),
     resolvePath: valueEntry(),

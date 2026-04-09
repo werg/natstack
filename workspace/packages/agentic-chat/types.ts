@@ -12,7 +12,7 @@ export type {
 } from "@workspace/agentic-core";
 
 // Pi message/event types — re-exported via agentic-core
-export type { AgentMessage, AgentSessionEvent } from "@workspace/agentic-core";
+export type { AgentMessage, AgentEvent } from "@workspace/agentic-core";
 
 // ===========================================================================
 // Re-export derived UI types from agentic-core (ChatMessage, MethodHistoryEntry, …)

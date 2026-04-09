@@ -1,15 +1,13 @@
 /**
  * @natstack/ai
  *
- * AI client for NatStack.
+ * Tool helper for NatStack panels.
  *
- * Provides a factory for creating AI clients backed by an RPC bridge.
- * Types live in @natstack/types (canonical source).
+ * The legacy `createAiClient` factory was removed as part of the Phase 8
+ * migration to the chat agent path. Only the `tool()` helper and the
+ * `StreamTextSession` class remain; consumers that need a streaming AI client
+ * should use the chat agent RPC surface instead.
  */
-
-// Export the AI client factory and type
-export { createAiClient } from "./client.js";
-export type { AiClient } from "./client.js";
 
 // =============================================================================
 // Tool Helper (Zod -> JSON Schema)

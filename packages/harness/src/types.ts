@@ -48,6 +48,7 @@ export interface SendMessageOptions {
   senderMetadata?: Record<string, unknown>;
   replyTo?: string;
   idempotencyKey?: string;
+  attachments?: Array<{ data: string; mimeType: string }>;
 }
 
 /** Input for starting a new agent turn. */

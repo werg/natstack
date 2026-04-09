@@ -12,6 +12,7 @@
 import * as fs from "fs/promises";
 import * as fsSync from "fs";
 import * as path from "path";
+import { randomBytes } from "node:crypto";
 import type { FileHandle as NodeFileHandle } from "fs/promises";
 import type { ServiceContext } from "./serviceDispatcher.js";
 import type { ContextFolderManager } from "./contextFolderManager.js";
@@ -262,6 +263,18 @@ export class FsService {
     method: string,
     rawArgs: unknown[],
   ): Promise<unknown> {
+    // `bindContext` is special: it registers the caller→context mapping and
+    // therefore must run *before* resolveContextRoot (which would otherwise
+    // throw "No context registered" for an unbound caller).
+    if (method === "bindContext") {
+      const contextId = rawArgs[0];
+      if (typeof contextId !== "string" || contextId.length === 0) {
+        throw new Error("bindContext requires a non-empty contextId string");
+      }
+      this.registerCallerContext(ctx.callerId, contextId);
+      return;
+    }
+
     // Clone args so shift() in resolveContextRoot doesn't mutate the original
     const args = [...rawArgs];
     const { root, panelId } = await this.resolveContextRoot(ctx, args);
@@ -495,6 +508,24 @@ export class FsService {
       case "handleStat": {
         const tracked = this.getTrackedHandle(args[0] as number, panelId);
         return serializeStat(await tracked.handle.stat());
+      }
+
+      // ----- Tmp files (atomic-write helper for tools) -----
+      case "mktemp": {
+        const prefix = args[0];
+        if (prefix !== undefined && typeof prefix !== "string") {
+          throw new Error("mktemp prefix must be a string when provided");
+        }
+        // Normalize prefix: strip any path separators so callers can't escape
+        // `.tmp/` by passing e.g. "../foo".
+        const safePrefix = (prefix ?? "tmp").replace(/[\\/]/g, "_");
+        const tmpDir = path.join(root, ".tmp");
+        await fs.mkdir(tmpDir, { recursive: true });
+        const random = randomBytes(8).toString("hex");
+        const filename = `${safePrefix}-${random}`;
+        // Return path relative to context root (with leading `/`) so it
+        // matches the format other fs methods accept.
+        return "/" + path.posix.join(".tmp", filename);
       }
 
       default:

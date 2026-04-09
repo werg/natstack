@@ -7,9 +7,9 @@
  */
 
 import type {
-  ExtensionAPI,
-  ExtensionFactory,
-} from "@mariozechner/pi-coding-agent";
+  PiExtensionAPI,
+  PiExtensionFactory,
+} from "../pi-extension-api.js";
 
 export interface AskUserQuestion {
   question: string;
@@ -67,8 +67,8 @@ const ASK_USER_PARAMETERS = {
   },
 };
 
-export function createAskUserExtension(deps: AskUserDeps): ExtensionFactory {
-  return (pi: ExtensionAPI) => {
+export function createAskUserExtension(deps: AskUserDeps): PiExtensionFactory {
+  return (pi: PiExtensionAPI) => {
     pi.registerTool({
       name: "ask_user",
       label: "Ask User",

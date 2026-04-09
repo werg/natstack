@@ -62,13 +62,35 @@ function toDirent(d: SerializedDirent): Dirent {
 // Factory
 // ---------------------------------------------------------------------------
 
+/**
+ * `fs.constants` shared between all `createRpcFs` instances. Defined at module
+ * scope (rather than per-instance) because these values are true constants and
+ * the `readonly` tuple literal lets TypeScript narrow them precisely.
+ */
+const FS_CONSTANTS = {
+  F_OK: 0,
+  R_OK: 4,
+  W_OK: 2,
+  X_OK: 1,
+} as const;
+
 export function createRpcFs(rpc: RpcCaller): RuntimeFs {
   function call<T>(method: string, ...args: unknown[]): Promise<T> {
     return rpc.call<T>("main", `fs.${method}`, ...args);
   }
 
   return {
-    async readFile(path: string, encoding?: BufferEncoding): Promise<string | Uint8Array> {
+    constants: FS_CONSTANTS,
+
+    async bindContext(contextId: string): Promise<void> {
+      await call<void>("bindContext", contextId);
+    },
+
+    async mktemp(prefix?: string): Promise<string> {
+      return call<string>("mktemp", prefix);
+    },
+
+    async readFile(path: string, encoding?: BufferEncoding): Promise<string | Buffer> {
       const result = await call<string | BinaryEnvelope>("readFile", path, encoding);
       if (isBinaryEnvelope(result)) {
         return decodeBinary(result);

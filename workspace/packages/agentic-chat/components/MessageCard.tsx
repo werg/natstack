@@ -120,9 +120,15 @@ export const MessageCard = React.memo(function MessageCard({
         }}
       >
         <Flex direction="column" gap="2">
-          {hasContent && (
+          {(hasContent || msg.contentBlocks) && (
             <Box style={{ color: isClient ? "white" : "inherit" }}>
-              <MessageContent content={msg.content} isStreaming={isStreaming} />
+              <MessageContent
+                content={msg.content}
+                isStreaming={isStreaming}
+                contentBlocks={
+                  msg.contentBlocks as React.ComponentProps<typeof MessageContent>["contentBlocks"]
+                }
+              />
             </Box>
           )}
           {hasAttachments && (

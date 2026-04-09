@@ -5,7 +5,7 @@
  * to the RPC server. Used by both panel/worker preloads and the shell preload.
  */
 
-import type { RpcMessage, RpcRequest, RpcResponse, RpcEvent } from "@natstack/rpc";
+import type { RpcMessage, RpcEvent } from "@natstack/rpc";
 import type { WsClientMessage, WsServerMessage } from "@natstack/shared/ws/protocol";
 
 type AnyMessageHandler = (fromId: string, message: unknown) => void;
@@ -33,8 +33,6 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
   const listeners = new Set<AnyMessageHandler>();
   const bufferedMessages: Array<{ fromId: string; message: RpcMessage }> = [];
   const outgoingBuffer: string[] = [];
-  // Track pending tool call IDs so we only convert matching responses to ws:tool-result
-  const pendingToolCallIds = new Set<string>();
   let transportReady = false;
   let flushScheduled = false;
   let ws: WebSocket | null = null;
@@ -118,40 +116,6 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
       case "ws:rpc": {
         // RPC response from server
         deliver("main", msg.message);
-        break;
-      }
-
-      case "ws:stream-chunk": {
-        deliver("main", {
-          type: "event",
-          fromId: "main",
-          event: "ai:stream-text-chunk",
-          payload: { streamId: msg.streamId, chunk: msg.chunk },
-        } as RpcEvent);
-        break;
-      }
-
-      case "ws:stream-end": {
-        deliver("main", {
-          type: "event",
-          fromId: "main",
-          event: "ai:stream-text-end",
-          payload: { streamId: msg.streamId },
-        } as RpcEvent);
-        break;
-      }
-
-      case "ws:tool-exec": {
-        // Server requesting tool execution — deliver as a synthetic RPC request.
-        // Track the callId so we can identify the response as a tool result.
-        pendingToolCallIds.add(msg.callId);
-        deliver("main", {
-          type: "request",
-          requestId: msg.callId,
-          fromId: "main",
-          method: "ai.executeTool",
-          args: [msg.streamId, msg.toolName, msg.args],
-        } as RpcRequest);
         break;
       }
 
@@ -271,43 +235,7 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
       }
 
       if (rpcMessage.type === "response") {
-        const response = rpcMessage as RpcResponse;
-
-        if (pendingToolCallIds.has(response.requestId)) {
-          // Tool execution result — convert to ws:tool-result protocol message
-          pendingToolCallIds.delete(response.requestId);
-          if ("error" in response) {
-            wsSend({
-              type: "ws:tool-result",
-              callId: response.requestId,
-              result: {
-                content: [{ type: "text", text: response.error }],
-                isError: true,
-              },
-            });
-          } else {
-            const result = response.result as { content?: unknown[]; isError?: boolean; data?: unknown } | null | undefined;
-            if (!result || !Array.isArray(result.content)) {
-              wsSend({
-                type: "ws:tool-result",
-                callId: response.requestId,
-                result: {
-                  content: [{ type: "text", text: "Tool execution failed: no valid response from panel" }],
-                  isError: true,
-                },
-              });
-            } else {
-              wsSend({
-                type: "ws:tool-result",
-                callId: response.requestId,
-                result: result as { content: Array<{ type: "text"; text: string }>; isError?: boolean; data?: unknown },
-              });
-            }
-          }
-        } else {
-          // Regular RPC response (not a tool result)
-          wsSend({ type: "ws:rpc", message: rpcMessage });
-        }
+        wsSend({ type: "ws:rpc", message: rpcMessage });
         return;
       }
 

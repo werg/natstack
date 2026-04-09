@@ -2,9 +2,14 @@
  * useChannelEphemeralMessages — React subscription to a channel's ephemeral
  * message stream, filtered by contentType.
  *
- * Used by `usePiSessionSnapshot` and `usePiTextDeltas` to consume the
- * worker's snapshot/text-delta streams. The returned messages are an array
- * with `{ ts, content, contentType }` shape compatible with `parseEphemeralEvent`.
+ * Used for ephemeral channel events (notifications, ext-status, ext-widget,
+ * ext-working). The returned messages are an array with
+ * `{ ts, content, contentType }` shape compatible with `parseEphemeralEvent`.
+ *
+ * Uses `client.events({ includeEphemeral: true })` instead of
+ * `client.messages()` because `messages()` is a single-consumer async
+ * generator — multiple hooks calling it race on a shared queue and lose
+ * messages. `events()` uses a fanout that supports multiple subscribers.
  */
 
 import { useState, useEffect } from "react";
@@ -17,8 +22,8 @@ export interface EphemeralWireMessage {
 }
 
 /**
- * Subscribe to a PubSubClient's incoming message stream and collect every
- * ephemeral message whose `contentType` matches `expectedContentType`.
+ * Subscribe to a PubSubClient's event stream and collect every ephemeral
+ * event whose `contentType` matches `expectedContentType`.
  * Returns a growing array as new messages arrive.
  *
  * The hook keeps the last 200 matching messages to avoid unbounded growth.
@@ -34,9 +39,11 @@ export function useChannelEphemeralMessages<T extends ParticipantMetadata = Part
     let cancelled = false;
     const consume = async () => {
       try {
-        for await (const msg of client.messages()) {
+        // Use events() with includeEphemeral so we get ephemerals via the
+        // fanout (supports multiple concurrent subscribers).
+        for await (const event of client.events({ includeEphemeral: true })) {
           if (cancelled) break;
-          const wire = msg as unknown as {
+          const wire = event as unknown as {
             kind?: string;
             type?: string;
             payload?: { content?: string; contentType?: string };
@@ -45,8 +52,8 @@ export function useChannelEphemeralMessages<T extends ParticipantMetadata = Part
             content?: string;
           };
           if (wire.kind !== "ephemeral") continue;
-          // Pubsub wire shape: payload may carry { content, contentType } or
-          // the message may have top-level content/contentType. Try both.
+          // Pubsub wire shape: IncomingNewMessage has top-level
+          // content/contentType; raw protocol may nest them in payload.
           const content =
             wire.content ?? wire.payload?.content ?? "";
           const contentType =

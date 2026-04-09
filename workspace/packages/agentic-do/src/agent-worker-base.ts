@@ -1,10 +1,12 @@
 /**
  * AgentWorkerBase — Pi-native agent DO base.
  *
- * Embeds `@mariozechner/pi-coding-agent` in-process. One Pi `AgentSession`
- * per channel, owned by the DO for the lifetime of the chat. Pi tracks its
- * own state (messages, sessions, branching, compaction, retries); the DO
- * forwards Pi state to the channel as ephemeral events.
+ * Embeds `@mariozechner/pi-agent-core`'s `Agent` in-process via `PiRunner`
+ * from `@natstack/harness`. One PiRunner per channel, owned by the DO for
+ * the lifetime of the chat. The runner drives agent state (messages,
+ * streaming, tool calls); the DO persists `AgentMessage[]` snapshots to
+ * its SQL storage and forwards runner events to the channel as ephemeral
+ * events.
  *
  * Composes:
  * - `DOIdentity`: stable DO ref + workerd session id
@@ -13,10 +15,11 @@
  *   and feedback_form / inline UI awaits (Promise resolution from onCallResult)
  * - `ChannelClient`: typed wrapper around channel DO RPC
  *
- * Forwards Pi events as two ephemeral channel streams:
- * - `natstack-state-snapshot` (full session.state.messages snapshot after
- *   every meaningful state change)
- * - `natstack-text-delta` (cosmetic typing-indicator stream)
+ * Publishes Pi events as real channel messages (persisted, streamable):
+ * - Text blocks stream via send → per-token delta updates → complete
+ * - Thinking blocks publish all-at-once from finalized message_end
+ * - Tool calls publish as contentType "action" (ActionData JSON)
+ * - Image tool results publish as contentType "image" with attachments
  */
 
 import { DurableObjectBase, type DurableObjectContext, type DORef } from "@workspace/runtime/worker";
@@ -36,8 +39,7 @@ import {
   type ApprovalLevel,
   type ThinkingLevel,
 } from "@natstack/harness";
-import { resolveModelToPi } from "@natstack/shared/ai/resolve-model.js";
-import { AuthStorage, type AgentSessionEvent } from "@mariozechner/pi-coding-agent";
+import type { AgentEvent, AgentMessage } from "@mariozechner/pi-agent-core";
 import type { ImageContent } from "@mariozechner/pi-ai";
 
 import { DOIdentity } from "./identity.js";
@@ -52,9 +54,89 @@ const SAFE_TOOL_NAMES_DEFAULT: ReadonlySet<string> = new Set([
   "find",
 ]);
 
+/**
+ * TSX source for the OAuth Connect card pushed into the chat as an inline_ui
+ * message when the model provider is not yet logged in. The chat panel's
+ * `useInlineUi` hook compiles this via `compileComponent`/`transformCode` and
+ * renders the resulting React component inside `<InlineUiMessage>`.
+ *
+ * Available imports inside the inline_ui sandbox: see
+ * `workspace/skills/sandbox/INLINE_UI.md`. The component receives
+ * `{ props, chat }` where `chat.rpc.call` is the panel's runtime RPC.
+ *
+ * The button calls `auth.startOAuthLogin(providerId)` directly. Server-side
+ * idempotency in the auth service handles concurrent / repeated clicks:
+ *   - First click → starts the OAuth flow, returns success on completion.
+ *   - Concurrent clicks → return the same in-flight Promise.
+ *   - Clicks after success → fast path returns success immediately.
+ */
+const OAUTH_CONNECT_CARD_TSX = `
+import { useState } from "react";
+import { Box, Button, Card, Flex, Text } from "@radix-ui/themes";
+
+export default function OAuthConnectCard({ props, chat }) {
+  const [status, setStatus] = useState("idle");
+  const [error, setError] = useState(null);
+  const providerId = props.providerId;
+  const displayName = props.displayName;
+
+  const handleConnect = async () => {
+    setStatus("connecting");
+    setError(null);
+    try {
+      const result = await chat.rpc.call("main", "auth.startOAuthLogin", providerId);
+      if (result && result.success) {
+        setStatus("connected");
+        // Auto-retry: publish a message so the agent's turn restarts with
+        // valid credentials. The agent worker's onChannelEvent picks this up
+        // and calls runner.runTurn, which calls getApiKey — this time it
+        // succeeds because the auth service now has fresh OAuth credentials.
+        chat.publish("message", {
+          content: "Connected to " + displayName + ". Please continue where you left off."
+        });
+      } else {
+        setStatus("error");
+        setError((result && result.error) || "Login failed");
+      }
+    } catch (err) {
+      setStatus("error");
+      setError(err && err.message ? err.message : String(err));
+    }
+  };
+
+  return (
+    <Card variant="surface" size="2">
+      <Flex direction="column" gap="3">
+        <Box>
+          <Text as="div" size="2" weight="medium">Sign in to {displayName}</Text>
+          <Text as="div" size="1" color="gray" mt="1">
+            To continue, this workspace needs to connect your {displayName} account.
+            Click below to open the sign-in page in your browser.
+          </Text>
+        </Box>
+        {status === "idle" && (
+          <Button onClick={handleConnect}>Connect to {displayName}</Button>
+        )}
+        {status === "connecting" && (
+          <Button disabled>Waiting for browser\\u2026</Button>
+        )}
+        {status === "connected" && (
+          <Text size="2" color="green" weight="medium">Connected to {displayName}</Text>
+        )}
+        {status === "error" && (
+          <Flex direction="column" gap="2">
+            <Text size="1" color="red">{error}</Text>
+            <Button onClick={handleConnect} variant="soft">Try again</Button>
+          </Flex>
+        )}
+      </Flex>
+    </Card>
+  );
+}
+`.trim();
+
 interface RunnerEntry {
   runner: PiRunner;
-  contextFolderPath: string;
 }
 
 /** Resolves at the channel boundary when `onCallResult` arrives. */
@@ -64,7 +146,7 @@ interface PendingResolver {
 }
 
 export abstract class AgentWorkerBase extends DurableObjectBase {
-  static override schemaVersion = 6;
+  static override schemaVersion = 7;
 
   protected identity: DOIdentity;
   protected subscriptions: SubscriptionManager;
@@ -73,10 +155,21 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   /** One PiRunner per channel — created lazily on first user message. */
   private runners = new Map<string, RunnerEntry>();
 
+  /** Channels whose `fs.bindContext` has been called at least once per DO
+   *  lifetime. The FsService caller→context map is process-scoped, so we
+   *  only need to bind once per DO startup per context. */
+  private _fsContextBound = new Set<string>();
+
   /** In-flight Promise resolvers keyed by callId. Used for tool callMethod
    *  and UI feedback_form awaits — when the channel routes the result via
    *  onCallResult, we resolve the corresponding Promise. */
   private pendingResolvers = new Map<string, PendingResolver>();
+
+  /** OAuth Connect cards already emitted into a channel for a given provider.
+   *  Keys are `${channelId}::${providerId}`. Process-scoped — resets on DO
+   *  hibernation, which is fine because the next agent run will re-emit if
+   *  the user hasn't connected yet. */
+  private oauthCardsEmitted = new Set<string>();
 
   /** Phase 0D: Transient poison message tracker. Resets on hibernation. */
   private failedEvents = new Map<number, number>();
@@ -114,12 +207,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         last_delivered_seq INTEGER NOT NULL
       )
     `);
-    // Per-channel Pi session file path for resume after DO restart.
+    // Per-channel Pi agent message history for warm restore after DO hibernation.
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS pi_sessions (
         channel_id TEXT PRIMARY KEY,
-        session_file TEXT NOT NULL,
-        context_folder_path TEXT NOT NULL,
+        messages_blob TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       )
     `);
@@ -159,7 +251,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   // ── Customization hooks (Pi-native) ─────────────────────────────────────
 
-  /** Model id in `provider:model` format (e.g. `anthropic:claude-sonnet-4-20250514`). */
+  /**
+   * Model id in `provider:model` format (e.g. `anthropic:claude-sonnet-4-20250514`,
+   * `openai-codex:gpt-5`). Subclasses override to pick a different default.
+   * PiRunner passes this directly to `pi-ai.getModel(provider, modelId)`.
+   */
   protected getModel(): string {
     return "anthropic:claude-sonnet-4-20250514";
   }
@@ -206,29 +302,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     };
   }
 
-  /**
-   * Resolve the contextFolder absolute path for a given channel. Subclasses
-   * can override; the default queries the server's contextFolderManager via
-   * RPC using the subscription's contextId.
-   */
-  protected async resolveContextFolderPath(channelId: string): Promise<string> {
-    const contextId = this.subscriptions.getContextId(channelId);
-    return this.rpc.call<string>("main", "contextFolder.ensureContextFolder", contextId);
-  }
-
-  /**
-   * Resolve the Pi agent dir (sandbox config root). Defaults to a hidden
-   * directory under the natstack app root. Subclasses can override.
-   */
-  protected async resolvePiAgentDir(): Promise<string> {
-    return this.rpc.call<string>("main", "contextFolder.getPiAgentDir");
-  }
-
-  /** API keys to bridge into Pi via setRuntimeApiKey. Default: read from env. */
-  protected async getApiKeys(): Promise<Record<string, string>> {
-    return this.rpc.call<Record<string, string>>("main", "secrets.getProviderApiKeys");
-  }
-
   // ── Subscription lifecycle ──────────────────────────────────────────────
 
   async subscribeChannel(opts: {
@@ -245,6 +318,22 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       descriptor,
       replay: opts.replay,
     });
+
+    // Bind this DO's caller identity to the context folder in FsService's
+    // caller→context map. Required before `runtime.fs.*` calls can resolve
+    // paths. Idempotent; guarded by _fsContextBound so we don't re-call
+    // across repeated subscribes to the same context.
+    if (!this._fsContextBound.has(opts.contextId)) {
+      try {
+        await this.rpc.call<void>("main", "fs.bindContext", opts.contextId);
+        this._fsContextBound.add(opts.contextId);
+      } catch (err) {
+        console.warn(
+          `[AgentWorkerBase] fs.bindContext failed for contextId=${opts.contextId}:`,
+          err,
+        );
+      }
+    }
 
     if (result.channelConfig?.["approvalLevel"] != null) {
       const level = result.channelConfig["approvalLevel"] as number;
@@ -399,92 +488,269 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   protected async getOrCreateRunner(channelId: string): Promise<PiRunner> {
     const existing = this.runners.get(channelId);
-    if (existing) return existing.runner;
-
-    const contextFolderPath = await this.resolveContextFolderPath(channelId);
-    const piAgentDir = await this.resolvePiAgentDir();
-    const apiKeys = await this.getApiKeys();
-
-    const authStorage = AuthStorage.create();
-    for (const [provider, key] of Object.entries(apiKeys)) {
-      if (key) authStorage.setRuntimeApiKey(provider, key);
+    if (existing) {
+      console.log(`[AgentWorkerBase] getOrCreateRunner: returning existing runner channel=${channelId}`);
+      return existing.runner;
     }
-    const { model } = resolveModelToPi(this.getModel(), authStorage);
+    console.log(`[AgentWorkerBase] getOrCreateRunner: constructing new runner channel=${channelId}`);
 
-    // Resume from a previously persisted Pi session file for this channel,
-    // if one exists. New chats start fresh.
+    // Restore prior messages from SQL (warm-restart after DO hibernation,
+    // or freshly cloned DO whose parent's blob was copied in postClone).
     const sessionRow = this.sql.exec(
-      `SELECT session_file FROM pi_sessions WHERE channel_id = ?`, channelId,
+      `SELECT messages_blob FROM pi_sessions WHERE channel_id = ?`,
+      channelId,
     ).toArray();
-    const resumeSessionFile = sessionRow.length > 0
-      ? (sessionRow[0]!["session_file"] as string)
-      : undefined;
+    let initialMessages: AgentMessage[] = [];
+    if (sessionRow.length > 0 && sessionRow[0]!["messages_blob"]) {
+      try {
+        initialMessages = JSON.parse(sessionRow[0]!["messages_blob"] as string) as AgentMessage[];
+      } catch (err) {
+        console.warn(
+          `[AgentWorkerBase] failed to parse persisted messages for channel=${channelId}:`,
+          err,
+        );
+        initialMessages = [];
+      }
+    }
 
     const runner = new PiRunner({
-      contextFolderPath,
-      piAgentDir,
-      apiKeys,
-      model,
-      thinkingLevel: this.getThinkingLevel(),
-      approvalLevel: this.getApprovalLevel(channelId),
+      rpc: {
+        call: <T = unknown>(target: string, method: string, ...args: unknown[]): Promise<T> =>
+          this.rpc.call<T>(target, method, ...args),
+      },
+      fs: this.fs,
       uiCallbacks: this.buildUICallbacks(channelId),
       rosterCallback: () => this.buildRoster(channelId),
       callMethodCallback: (handle, method, args, signal) =>
         this.invokeChannelMethod(channelId, handle, method, args, signal),
       askUserCallback: (params, signal) => this.askUser(channelId, params, signal),
-      ...(resumeSessionFile ? { resumeSessionFile } : {}),
+      model: this.getModel(),
+      thinkingLevel: this.getThinkingLevel(),
+      approvalLevel: this.getApprovalLevel(channelId),
+      initialMessages,
+      onPersist: (messages) => this.persistMessages(channelId, messages),
     });
 
+    console.log(`[AgentWorkerBase] getOrCreateRunner: calling runner.init() channel=${channelId} model=${this.getModel()}`);
     await runner.init();
+    console.log(`[AgentWorkerBase] getOrCreateRunner: runner.init() complete channel=${channelId}`);
 
-    runner.subscribe((event) => this.forwardPiEvent(channelId, event));
+    // Warm-restore: no synthetic snapshot needed — the channel already has
+    // persisted messages that replay on panel connect.
 
-    // Persist the session file path for restart recovery.
-    const sessionFile = runner.sessionFile;
-    if (sessionFile) {
-      this.sql.exec(
-        `INSERT OR REPLACE INTO pi_sessions (channel_id, session_file, context_folder_path, updated_at) VALUES (?, ?, ?, ?)`,
-        channelId, sessionFile, contextFolderPath, Date.now(),
-      );
-    }
+    runner.subscribe((event) => this.publishPiEvent(channelId, event));
 
-    this.runners.set(channelId, { runner, contextFolderPath });
+    this.runners.set(channelId, { runner });
     return runner;
   }
 
-  // ── Pi event → channel ephemeral forwarding ─────────────────────────────
+  /** Persist the current `AgentMessage[]` snapshot for warm restart. Called
+   *  by PiRunner's `onPersist` hook on every `message_end` / `agent_end`. */
+  private persistMessages(channelId: string, messages: AgentMessage[]): void {
+    this.sql.exec(
+      `INSERT OR REPLACE INTO pi_sessions (channel_id, updated_at, messages_blob) VALUES (?, ?, ?)`,
+      channelId,
+      Date.now(),
+      JSON.stringify(messages),
+    );
+  }
 
-  private forwardPiEvent(channelId: string, event: AgentSessionEvent): void {
+  // ── Pi event → channel message publishing ──────────────────────────────
+
+  /** Per-channel streaming state for message ID tracking. */
+  private channelStreamState = new Map<string, {
+    /** Channel message UUID for the current streaming text block. */
+    textMsgId: string | null;
+    /** Maps pi-agent-core toolCallId (e.g. "call_abc123") → channel message UUID.
+     *  Needed because the PubSub protocol requires UUIDs for message IDs. */
+    toolCallIdMap: Map<string, string>;
+  }>();
+
+  private getStreamState(channelId: string) {
+    let state = this.channelStreamState.get(channelId);
+    if (!state) {
+      state = { textMsgId: null, toolCallIdMap: new Map() };
+      this.channelStreamState.set(channelId, state);
+    }
+    return state;
+  }
+
+  private publishPiEvent(channelId: string, event: AgentEvent): void {
     const participantId = this.subscriptions.getParticipantId(channelId);
     if (!participantId) return;
     const channel = this.createChannelClient(channelId);
+    const state = this.getStreamState(channelId);
 
     switch (event.type) {
-      case "message_update": {
-        const ame = event.assistantMessageEvent;
-        if (ame && ame.type === "text_delta" && ame.delta) {
-          const messageId = (event.message as { id?: string } | undefined)?.id ?? "current";
-          void channel.sendEphemeralEvent(participantId, "natstack-text-delta", {
-            messageId,
-            delta: ame.delta,
-          });
+      case "message_start": {
+        const msg = event.message as { role?: string; content?: unknown[] };
+        if (msg.role !== "assistant") break;
+
+        const blocks = Array.isArray(msg.content) ? msg.content : [];
+
+        // Create streaming channel message for the first text block.
+        for (let i = 0; i < blocks.length; i++) {
+          const block = blocks[i] as { type?: string; text?: string };
+          if (block?.type === "text") {
+            const msgId = crypto.randomUUID();
+            state.textMsgId = msgId;
+            void channel.send(participantId, msgId, block.text ?? "", { persist: true });
+            break;
+          }
+        }
+
+        // Create action messages for any toolCall blocks visible at start.
+        for (const block of blocks) {
+          const b = block as { type?: string; id?: string; name?: string };
+          if (b?.type === "toolCall" && b.id) {
+            const channelMsgId = crypto.randomUUID();
+            state.toolCallIdMap.set(b.id, channelMsgId);
+            const actionData = JSON.stringify({
+              type: b.name ?? "tool",
+              description: "Running...",
+              status: "pending",
+            });
+            void channel.send(participantId, channelMsgId, actionData, {
+              contentType: "action",
+              persist: true,
+            });
+          }
         }
         break;
       }
-      case "message_end":
-      case "tool_execution_end":
-      case "auto_compaction_end":
-      case "auto_retry_end":
-      case "turn_end": {
-        const entry = this.runners.get(channelId);
-        if (!entry) break;
-        const snapshot = entry.runner.getStateSnapshot();
-        void channel.sendEphemeralEvent(participantId, "natstack-state-snapshot", snapshot);
+
+      case "message_update": {
+        const ame = (event as { assistantMessageEvent?: { type?: string; delta?: string } })
+          .assistantMessageEvent;
+        if (ame?.type !== "text_delta" || !ame.delta) break;
+
+        // If a text block hasn't been created yet (model started with tool calls
+        // and then added text), create one now.
+        if (!state.textMsgId) {
+          const msgId = crypto.randomUUID();
+          state.textMsgId = msgId;
+          void channel.send(participantId, msgId, "", { persist: true });
+        }
+
+        // Send delta directly — the PubSub protocol appends update content.
+        if (state.textMsgId) {
+          void channel.update(participantId, state.textMsgId, ame.delta);
+        }
         break;
       }
-      default:
-        // No forwarding for other events.
+
+      case "message_end": {
+        // Complete text message.
+        if (state.textMsgId) {
+          const textId = state.textMsgId;
+          void channel.complete(participantId, textId);
+          state.textMsgId = null;
+        }
+
+        // Walk finalized content blocks for thinking + toolCall blocks.
+        const msg = event.message as { content?: unknown[] };
+        const blocks = Array.isArray(msg.content) ? msg.content : [];
+
+        for (let i = 0; i < blocks.length; i++) {
+          const block = blocks[i] as {
+            type?: string; thinking?: string; id?: string; name?: string;
+            arguments?: Record<string, unknown>;
+          };
+
+          if (block?.type === "thinking" && typeof block.thinking === "string") {
+            const thinkId = crypto.randomUUID();
+            void channel.send(participantId, thinkId, block.thinking, {
+              contentType: "thinking",
+              persist: true,
+            }).then(() => channel.complete(participantId, thinkId));
+          }
+
+          // Create action messages for toolCall blocks not yet created at message_start.
+          if (block?.type === "toolCall" && block.id && !state.toolCallIdMap.has(block.id)) {
+            const channelMsgId = crypto.randomUUID();
+            state.toolCallIdMap.set(block.id, channelMsgId);
+            const actionData = JSON.stringify({
+              type: block.name ?? "tool",
+              description: "Running...",
+              status: "pending",
+            });
+            void channel.send(participantId, channelMsgId, actionData, {
+              contentType: "action",
+              persist: true,
+            });
+          }
+        }
+
         break;
+      }
+
+      case "tool_execution_start": {
+        const { toolCallId, toolName } = event;
+        const channelMsgId = state.toolCallIdMap.get(toolCallId);
+        if (channelMsgId) {
+          const actionData = JSON.stringify({
+            type: toolName,
+            description: `Running ${toolName}...`,
+            status: "pending",
+          });
+          void channel.update(participantId, channelMsgId, actionData);
+        }
+        break;
+      }
+
+      case "tool_execution_end": {
+        const { toolCallId, toolName, result, isError } = event;
+        const channelMsgId = state.toolCallIdMap.get(toolCallId);
+        if (channelMsgId) {
+          let description: string;
+          if (isError) {
+            const errMsg = typeof result === "string" ? result : JSON.stringify(result);
+            description = `Error: ${errMsg}`.slice(0, 500);
+          } else {
+            description = (typeof result === "string" ? result : JSON.stringify(result)).slice(0, 500);
+          }
+          const actionData = JSON.stringify({
+            type: toolName,
+            description,
+            status: "complete",
+          });
+          void channel.update(participantId, channelMsgId, actionData)
+            .then(() => channel.complete(participantId, channelMsgId));
+        }
+
+        // Publish image content from tool results.
+        if (!isError && result != null) {
+          this.publishToolResultImages(channelId, participantId, channel, result);
+        }
+        break;
+      }
+
+      default:
+        // No channel message needed for agent_start, turn_start, turn_end, agent_end,
+        // tool_execution_update.
+        break;
+    }
+  }
+
+  /** Check a tool result for ImageContent blocks and publish them as image channel messages. */
+  private publishToolResultImages(
+    _channelId: string,
+    participantId: string,
+    channel: ChannelClient,
+    result: unknown,
+  ): void {
+    // Tool results can be arrays containing ImageContent-like objects.
+    const items = Array.isArray(result) ? result : [result];
+    for (const item of items) {
+      const img = item as { type?: string; mimeType?: string; data?: string };
+      if (img?.type === "image" && img.mimeType && img.data) {
+        const imgId = crypto.randomUUID();
+        void channel.send(participantId, imgId, "", {
+          contentType: "image",
+          persist: true,
+          attachments: [{ data: img.data, mimeType: img.mimeType }],
+        }).then(() => channel.complete(participantId, imgId));
+      }
     }
   }
 
@@ -639,14 +905,73 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         const channel = this.createChannelClient(channelId);
         void channel.sendEphemeralEvent(participantId, "natstack-ext-working", { message: message ?? null });
       },
+      requestProviderOAuth: (providerId, displayName) => {
+        console.log(
+          `[AgentWorkerBase] requestProviderOAuth fired channel=${channelId} provider=${providerId} displayName=${displayName}`,
+        );
+        const participantId = this.subscriptions.getParticipantId(channelId);
+        if (!participantId) {
+          console.warn(
+            `[AgentWorkerBase] requestProviderOAuth: no participantId for channel=${channelId}`,
+          );
+          return;
+        }
+        // Dedupe: only emit one card per (channel, providerId). If the user
+        // restarts the agent or the token expires later we'll still get a new
+        // card on the new turn — the dedupe is per active runner instance.
+        const key = `${channelId}::${providerId}`;
+        if (this.oauthCardsEmitted.has(key)) {
+          console.log(`[AgentWorkerBase] requestProviderOAuth: card already emitted for ${key}`);
+          return;
+        }
+        this.oauthCardsEmitted.add(key);
+
+        const channel = this.createChannelClient(channelId);
+        const messageId = crypto.randomUUID();
+        const inlineUiId = `oauth-connect-${providerId}-${messageId}`;
+        const content = JSON.stringify({
+          id: inlineUiId,
+          code: OAUTH_CONNECT_CARD_TSX,
+          props: { providerId, displayName },
+        });
+        console.log(
+          `[AgentWorkerBase] requestProviderOAuth: emitting inline_ui card messageId=${messageId} channel=${channelId}`,
+        );
+        void channel
+          .send(participantId, messageId, content, {
+            contentType: "inline_ui",
+            persist: true,
+          })
+          .then(() => {
+            console.log(
+              `[AgentWorkerBase] requestProviderOAuth: inline_ui card sent OK messageId=${messageId}`,
+            );
+          })
+          .catch((err) => {
+            console.error(
+              `[AgentWorkerBase] Failed to emit OAuth Connect card for ${providerId}:`,
+              err,
+            );
+            // Allow a retry on the next getApiKey miss.
+            this.oauthCardsEmitted.delete(key);
+          });
+      },
     };
   }
 
   // ── Continuation Promise plumbing ───────────────────────────────────────
 
+  /** Watchdog alarm interval for orphaned continuations (ms). */
+  private static readonly CONTINUATION_WATCHDOG_MS = 60_000;
+
   private awaitContinuation(callId: string, signal?: AbortSignal): Promise<unknown> {
     return new Promise<unknown>((resolve, reject) => {
       this.pendingResolvers.set(callId, { resolve, reject });
+
+      // Set a watchdog alarm so that if the DO hibernates (losing in-memory
+      // resolvers), the alarm wakes us and we can detect orphaned continuations.
+      this.setAlarm(AgentWorkerBase.CONTINUATION_WATCHDOG_MS);
+
       if (signal) {
         const onAbort = () => {
           this.pendingResolvers.delete(callId);
@@ -674,7 +999,66 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       } else {
         resolver.resolve(result);
       }
+    } else {
+      // Resolver lost — DO restarted while waiting for this result.
+      // The agent turn that was awaiting this is gone. Notify the channel.
+      console.warn(
+        `[AgentWorkerBase] onCallResult: orphaned continuation callId=${callId} channel=${pending.channelId} — DO restarted while waiting`,
+      );
+      this.notifyOrphanedContinuation(pending.channelId);
     }
+  }
+
+  // ── Orphaned continuation recovery ─────────────────────────────────────
+
+  override async alarm(): Promise<void> {
+    await super.alarm();
+    this.recoverOrphanedContinuations();
+  }
+
+  /**
+   * Detect SQL-persisted continuations that have no in-memory resolver.
+   * This happens when the DO hibernated/restarted while the agent was
+   * waiting for a panel response. The agent turn is gone; clean up and
+   * notify.
+   */
+  private recoverOrphanedContinuations(): void {
+    // Query all pending continuations from SQL.
+    const rows = this.sql.exec(
+      `SELECT call_id, channel_id FROM pending_calls`,
+    ).toArray();
+
+    const notifiedChannels = new Set<string>();
+    for (const row of rows) {
+      const callId = row["call_id"] as string;
+      const channelId = row["channel_id"] as string;
+
+      if (!this.pendingResolvers.has(callId)) {
+        // Orphaned: SQL row exists but no in-memory resolver.
+        console.warn(
+          `[AgentWorkerBase] alarm: cleaning orphaned continuation callId=${callId} channel=${channelId}`,
+        );
+        this.continuations.deleteOne(callId);
+        if (!notifiedChannels.has(channelId)) {
+          notifiedChannels.add(channelId);
+          this.notifyOrphanedContinuation(channelId);
+        }
+      }
+    }
+  }
+
+  /** Send a system message to the channel that the agent was interrupted. */
+  private notifyOrphanedContinuation(channelId: string): void {
+    const participantId = this.subscriptions.getParticipantId(channelId);
+    if (!participantId) return;
+    const channel = this.createChannelClient(channelId);
+    const msgId = `interrupted-${crypto.randomUUID()}`;
+    void channel.send(
+      participantId,
+      msgId,
+      "The agent was interrupted while waiting for a response. Please resend your message to continue.",
+      { persist: true },
+    ).then(() => channel.complete(participantId, msgId));
   }
 
   // ── Default channel event handler ────────────────────────────────────────
@@ -684,21 +1068,64 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   // per-channel runner. Pi handles the rest.
 
   async onChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
-    if (!this.shouldProcess(event)) return;
+    console.log(
+      `[AgentWorkerBase] onChannelEvent channel=${channelId} type=${event.type} contentType=${(event as { contentType?: string }).contentType ?? "<none>"} senderType=${(event.senderMetadata?.["type"] as string | undefined) ?? "<none>"}`,
+    );
+    if (!this.shouldProcess(event)) {
+      console.log(`[AgentWorkerBase] onChannelEvent SKIPPED (shouldProcess=false) channel=${channelId}`);
+      return;
+    }
 
     const input = this.buildTurnInput(event);
+    console.log(
+      `[AgentWorkerBase] onChannelEvent processing turn channel=${channelId} contentLen=${input.content.length}`,
+    );
     await this.refreshRoster(channelId);
     const runner = await this.getOrCreateRunner(channelId);
-    const images: ImageContent[] | undefined = input.attachments
-      ? input.attachments
-          .filter((a) => a.mimeType?.startsWith("image/"))
-          .map((a) => ({ type: "image" as const, mimeType: a.mimeType, data: a.data }))
-      : undefined;
-    if (runner.isStreaming) {
-      await runner.steer(input.content, images);
-    } else {
-      await runner.runTurn(input.content, images);
+
+    // Resize user-pasted image attachments via the server-side image service
+    // (W1k). Most providers will happily accept oversize images but at
+    // noticeable token/latency cost. Best-effort: on failure fall through to
+    // the original bytes.
+    const images: ImageContent[] = [];
+    for (const att of input.attachments ?? []) {
+      if (!att.mimeType?.startsWith("image/")) continue;
+      try {
+        const bytes = Buffer.from(att.data, "base64");
+        const resized = await this.rpc.call<{
+          data: Uint8Array;
+          mimeType: string;
+          wasResized: boolean;
+        }>(
+          "main",
+          "image.resize",
+          bytes,
+          att.mimeType,
+          { maxWidth: 2000, maxHeight: 2000 },
+        );
+        images.push({
+          type: "image",
+          mimeType: resized.mimeType,
+          data: Buffer.from(resized.data).toString("base64"),
+        });
+      } catch (err) {
+        console.warn(
+          `[AgentWorkerBase] image.resize failed for channel=${channelId}; passing original:`,
+          err,
+        );
+        images.push({ type: "image", mimeType: att.mimeType, data: att.data });
+      }
     }
+
+    const imagesArg = images.length > 0 ? images : undefined;
+    if (runner.isStreaming) {
+      console.log(`[AgentWorkerBase] onChannelEvent: runner.steer channel=${channelId}`);
+      await runner.steer(input.content, imagesArg);
+    } else {
+      console.log(`[AgentWorkerBase] onChannelEvent: runner.runTurn channel=${channelId}`);
+      await runner.runTurn(input.content, imagesArg);
+    }
+    console.log(`[AgentWorkerBase] onChannelEvent: turn dispatched channel=${channelId}`);
   }
 
   // ── Method calls (subclass hook) ─────────────────────────────────────────
@@ -734,14 +1161,15 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   /**
    * Called on the newly cloned agent DO after cloneDO copies parent's SQLite.
    * Rewrites identity, clears ephemeral state, resubscribes to forked channel.
-   * The cloned worker boots its own PiRunner pointing at the parent's session
-   * file (or a forked one) on first message.
+   * The cloned worker boots its own PiRunner from the persisted
+   * `messages_blob` on first user message (optionally truncated to
+   * `forkAtMessageIndex` messages if the caller forked mid-history).
    */
   async postClone(
     parentObjectKey: string,
     newChannelId: string,
     oldChannelId: string,
-    forkPointMessageId: string | null,
+    forkAtMessageIndex: number | null,
   ): Promise<void> {
     this.sql.exec(
       `INSERT OR REPLACE INTO state (key, value) VALUES ('__objectKey', ?)`,
@@ -749,8 +1177,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     );
 
     this.setStateValue("forkedFrom", parentObjectKey);
-    if (forkPointMessageId) {
-      this.setStateValue("forkPointMessageId", forkPointMessageId);
+    if (forkAtMessageIndex != null) {
+      this.setStateValue("forkAtMessageIndex", String(forkAtMessageIndex));
     }
     this.setStateValue("forkSourceChannel", oldChannelId);
 
@@ -758,24 +1186,33 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.sql.exec(`DELETE FROM delivery_cursor`);
     this.sql.exec(`DELETE FROM pending_calls`);
 
-    // Migrate the parent's pi_sessions row from oldChannelId to newChannelId.
-    // The fork point handling: if the parent's session file is at PATH and we
-    // need to fork at forkPointMessageId, we'll need to call the runner's
-    // fork() — but the cloned DO has no live runner yet. Defer fork until
-    // the next user message arrives: when getOrCreateRunner sees a forkPointMessageId
-    // in state, it forks via PiRunner.fork() before forwarding the user message.
+    // Migrate the parent's pi_sessions row from oldChannelId → newChannelId.
+    // If forking mid-history, slice the parent's messages_blob to the desired
+    // length so the cloned runner starts with the truncated history.
     const parentSession = this.sql.exec(
-      `SELECT session_file, context_folder_path FROM pi_sessions WHERE channel_id = ?`,
+      `SELECT messages_blob FROM pi_sessions WHERE channel_id = ?`,
       oldChannelId,
     ).toArray();
     if (parentSession.length > 0) {
+      let messagesBlob = parentSession[0]!["messages_blob"] as string;
+      if (forkAtMessageIndex != null) {
+        try {
+          const parsed = JSON.parse(messagesBlob) as AgentMessage[];
+          const truncated = parsed.slice(0, forkAtMessageIndex);
+          messagesBlob = JSON.stringify(truncated);
+        } catch (err) {
+          console.warn(
+            `[AgentWorkerBase] failed to truncate parent messages_blob at index=${forkAtMessageIndex}:`,
+            err,
+          );
+        }
+      }
       this.sql.exec(`DELETE FROM pi_sessions WHERE channel_id = ?`, oldChannelId);
       this.sql.exec(
-        `INSERT OR REPLACE INTO pi_sessions (channel_id, session_file, context_folder_path, updated_at) VALUES (?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO pi_sessions (channel_id, updated_at, messages_blob) VALUES (?, ?, ?)`,
         newChannelId,
-        parentSession[0]!["session_file"] as string,
-        parentSession[0]!["context_folder_path"] as string,
         Date.now(),
+        messagesBlob,
       );
     }
 
@@ -798,19 +1235,20 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     this.sql.exec(`DELETE FROM subscriptions`);
     this.runners.clear(); // No live runners on a fresh clone.
+    this._fsContextBound.clear(); // Re-bind fs context on first resubscribe.
 
     if (contextId) {
       await this.subscribeChannel({ channelId: newChannelId, contextId, config });
     }
 
-    await this.onPostClone(parentObjectKey, newChannelId, oldChannelId, forkPointMessageId);
+    await this.onPostClone(parentObjectKey, newChannelId, oldChannelId, forkAtMessageIndex);
   }
 
   protected async onPostClone(
     _parentObjectKey: string,
     _newChannelId: string,
     _oldChannelId: string,
-    _forkPointMessageId: string | null,
+    _forkAtMessageIndex: number | null,
   ): Promise<void> {
     // Default: no-op
   }

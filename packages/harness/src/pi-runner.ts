@@ -1,37 +1,45 @@
 /**
- * PiRunner — In-process Pi `AgentSession` wrapper for the agent worker DO.
+ * PiRunner — In-process pi-agent-core `Agent` wrapper for the agent worker DO.
  *
- * Replaces the entire harness child-process layer. The worker DO instantiates
- * one PiRunner per chat lifetime, runs Pi in-process, and forwards Pi events
- * to the channel as ephemeral messages (state snapshots + text deltas).
+ * The worker DO instantiates one PiRunner per chat lifetime, runs an Agent
+ * in-process, and forwards Agent events to the channel as ephemeral
+ * messages (state snapshots + text deltas).
  *
- * Key choices:
- * - **Hermetic sandbox**: noExtensions/noSkills/noPromptTemplates/noThemes
- *   are all true; only `additionalSkillPaths` and `extensionFactories` are
- *   used. Pi never auto-discovers anything from `~/.pi/agent/` or
- *   `<cwd>/.pi/extensions/`. AGENTS.md and settings.json still load via
- *   Pi's normal cwd-walk for context files.
- * - **Auth via setRuntimeApiKey**: NatStack-supplied keys are priority #1
- *   in Pi's auth resolution chain.
- * - **`createCodingTools(cwd)` factory**: built-in tools resolve paths
- *   relative to the contextFolder, not `process.cwd()`.
- * - **Closure-bound extensions**: approval gate, channel tools, and ask-user
- *   are factory functions that capture the worker's callbacks. They are not
- *   Pi-package-portable and never will be.
+ * Wave-2 rewrite: this no longer depends on `pi-coding-agent`. It composes
+ * `Agent` from `@mariozechner/pi-agent-core` directly with:
+ *   - NatStack's local extension runtime (`PiExtensionRuntime`) hosting the
+ *     three closure-bound factories: approval-gate, channel-tools, ask-user.
+ *   - The six workerd-clean built-in file tools from `./tools/`, each wrapped
+ *     by `wrapToolWithApproval` so the approval-gate can short-circuit them.
+ *   - Workspace resources (`AGENTS.md` + skill index) loaded over RPC and
+ *     concatenated into the system prompt.
+ *   - An `auth.getProviderToken` RPC callback supplied as Agent's `getApiKey`
+ *     hook so per-call OAuth refresh / env-var lookup goes through the
+ *     server-side auth service.
+ *
+ * No bash, no auto-compaction, no auto-retry, no file-based session JSONL.
  */
 
-import { join } from "path";
 import {
-  AuthStorage,
-  DefaultResourceLoader,
-  SessionManager,
-  createAgentSession,
-  createCodingTools,
-  type AgentSession,
-  type AgentSessionEvent,
-} from "@mariozechner/pi-coding-agent";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { ImageContent, Model, Api } from "@mariozechner/pi-ai";
+  Agent,
+  type AgentEvent,
+  type AgentMessage,
+  type AgentTool,
+} from "@mariozechner/pi-agent-core";
+import { getModel as piGetModel, type ImageContent } from "@mariozechner/pi-ai";
+
+import type { RuntimeFs } from "./tools/runtime-fs.js";
+import { type RpcCaller, loadNatStackResources } from "./resource-loader.js";
+
+import { PiExtensionRuntime } from "./pi-extension-runtime.js";
+import {
+  createReadTool,
+  createEditTool,
+  createWriteTool,
+  createGrepTool,
+  createFindTool,
+  createLsTool,
+} from "./tools/index.js";
 import {
   createApprovalGateExtension,
   DEFAULT_SAFE_TOOL_NAMES,
@@ -52,17 +60,48 @@ import {
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
-/** Built-in Pi tool names that are always active alongside roster tools. */
-const BUILTIN_TOOL_NAMES = ["read", "bash", "edit", "write"] as const;
+/** Built-in file tool names that are always active alongside roster tools. */
+const BUILTIN_TOOL_NAMES = ["read", "edit", "write", "grep", "find", "ls"] as const;
+
+/**
+ * Detect a "not logged in" error from `auth.getProviderToken`. The auth
+ * service throws errors with a `Not logged in to <provider>` message for
+ * OAuth providers and `No API key configured for <provider>` for env-var
+ * providers. Both are considered the same condition for OAuth fallback.
+ */
+function isNotLoggedInError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return /not logged in|no api key configured/i.test(err.message);
+}
+
+/** Display name shown in OAuth Connect cards. Falls back to the raw id. */
+function providerDisplayName(providerId: string): string {
+  switch (providerId) {
+    case "openai-codex":
+      return "ChatGPT";
+    case "anthropic":
+      return "Anthropic";
+    case "openai":
+      return "OpenAI";
+    case "google":
+      return "Google";
+    case "groq":
+      return "Groq";
+    case "mistral":
+      return "Mistral";
+    case "openrouter":
+      return "OpenRouter";
+    default:
+      return providerId;
+  }
+}
 
 export interface PiRunnerOptions {
-  /** Working directory: the contextFolder root, includes .pi/. */
-  contextFolderPath: string;
-  /** Pi config sandbox dir (e.g. <NATSTACK_APP_ROOT>/.natstack-pi-agent). */
-  piAgentDir: string;
-  /** API keys bridged via setRuntimeApiKey at session creation. Provider id → key. */
-  apiKeys: Record<string, string>;
-  /** Bridge for Pi extension UI primitives (select, confirm, notify, etc.). */
+  /** RPC caller — used for `workspace.*` resource loading and `auth.getProviderToken`. */
+  rpc: RpcCaller;
+  /** Per-context filesystem the file tools operate against. */
+  fs: RuntimeFs;
+  /** Bridge that turns extension UI primitive calls into channel events. */
   uiCallbacks: NatStackUIBridgeCallbacks;
   /** Returns the current channel roster's tool list. Lazily read on every reconcile. */
   rosterCallback: () => ChannelToolMethod[];
@@ -78,10 +117,8 @@ export interface PiRunnerOptions {
     params: AskUserParams,
     signal: AbortSignal | undefined,
   ) => Promise<string>;
-  /** Resume from this JSONL file path; omit for a new session. */
-  resumeSessionFile?: string;
-  /** Pi Model object — the worker resolves "provider:model" via @natstack/shared/ai/resolve-model.ts before constructing the runner. */
-  model: Model<Api>;
+  /** "provider:model" string (e.g. "openai-codex:gpt-5"). */
+  model: string;
   /** Default thinking level for new sessions. */
   thinkingLevel?: ThinkingLevel;
   /**
@@ -90,106 +127,259 @@ export interface PiRunnerOptions {
    * on the next tool_call.
    */
   approvalLevel: ApprovalLevel;
+  /** Pre-existing message history for warm restore from SQL. */
+  initialMessages?: AgentMessage[];
+  /** Called whenever a message_end / agent_end fires so the worker can persist. */
+  onPersist?: (messages: AgentMessage[]) => void;
+  /** Working directory passed to file tools and the extension runtime. */
+  cwd?: string;
 }
 
-/** Snapshot of Pi state forwarded as a `natstack-state-snapshot` ephemeral. */
+/** Snapshot of Agent state surfaced via the snapshot ephemeral channel stream. */
 export interface PiStateSnapshot {
   messages: AgentMessage[];
   isStreaming: boolean;
 }
 
 export class PiRunner {
-  private session: AgentSession | null = null;
-  private listeners: Array<(event: AgentSessionEvent) => void> = [];
+  private agent: Agent | null = null;
+  private extensionRuntime: PiExtensionRuntime | null = null;
+  private builtinTools: AgentTool<any>[] = [];
+  private listeners: Array<(event: AgentEvent) => void> = [];
+  private agentUnsub: (() => void) | null = null;
   private _approvalLevel: ApprovalLevel;
-  private _modelFallbackMessage: string | undefined;
 
   constructor(private readonly options: PiRunnerOptions) {
     this._approvalLevel = options.approvalLevel;
   }
 
   /**
-   * Initialize Pi: build auth, resolve model, build hermetic resource loader,
-   * create the agent session, bind the UI context, and subscribe to events.
+   * Initialize the runner end-to-end:
+   *   1. Load workspace resources (AGENTS.md + skill index) via RPC.
+   *   2. Build the inline extension runtime, bind UI bridge, load factories.
+   *   3. Build the workerd-clean file tools, each wrapped with approval-gate.
+   *   4. Resolve the model (`provider:model`) via `pi-ai.getModel`.
+   *   5. Construct the Agent with a `getApiKey` callback that delegates to
+   *      `auth.getProviderToken` over RPC.
+   *   6. Subscribe to Agent events.
+   *   7. Fire `session_start` so channel-tools can reconcile its initial roster
+   *      and assign the active set to `agent.state.tools`.
    */
   async init(): Promise<void> {
-    // 1. Auth — runtime overrides take priority over file-based auth.
-    const authStorage = AuthStorage.create();
-    for (const [provider, key] of Object.entries(this.options.apiKeys)) {
-      if (key) authStorage.setRuntimeApiKey(provider, key);
+    const cwd = this.options.cwd ?? "/";
+    console.log(`[PiRunner] init() start cwd=${cwd} model=${this.options.model}`);
+
+    // 1. Workspace resources (AGENTS.md + skill index).
+    console.log("[PiRunner] init: loading workspace resources via RPC");
+    const resources = await loadNatStackResources({ rpc: this.options.rpc });
+    console.log(`[PiRunner] init: resources loaded, systemPromptLen=${resources.systemPrompt.length}, skillCount=${resources.skills.length}`);
+
+    // 2. Extension runtime + UI bridge + factories.
+    this.extensionRuntime = new PiExtensionRuntime(cwd);
+    this.extensionRuntime.bindUI(
+      new NatStackExtensionUIContext(this.options.uiCallbacks),
+    );
+    await this.extensionRuntime.loadFactories([
+      createApprovalGateExtension({
+        getApprovalLevel: () => this._approvalLevel,
+        safeToolNames: DEFAULT_SAFE_TOOL_NAMES,
+      }),
+      createChannelToolsExtension({
+        getRoster: this.options.rosterCallback,
+        callMethod: this.options.callMethodCallback,
+        builtinToolNames: [...BUILTIN_TOOL_NAMES],
+      }),
+      createAskUserExtension({
+        askUser: this.options.askUserCallback,
+      }),
+    ]);
+
+    // 3. Built-in file tools, wrapped with approval-gate dispatch.
+    //    The read tool gets the RPC caller so AGENTS.md / skill files can be
+    //    routed through workspace.readSkill / workspace.getAgentsMd.
+    this.builtinTools = [
+      createReadTool(cwd, this.options.fs, { rpc: this.options.rpc }),
+      createEditTool(cwd, this.options.fs),
+      createWriteTool(cwd, this.options.fs),
+      createGrepTool(cwd, this.options.fs),
+      createFindTool(cwd, this.options.fs),
+      createLsTool(cwd, this.options.fs),
+    ].map((t) => this.wrapToolWithApproval(t as AgentTool<any>));
+
+    // 4. Resolve the model via pi-ai.
+    const colonIdx = this.options.model.indexOf(":");
+    if (colonIdx < 0) {
+      throw new Error(
+        `PiRunner: model must be "provider:model", got: ${this.options.model}`,
+      );
+    }
+    const provider = this.options.model.slice(0, colonIdx);
+    const modelId = this.options.model.slice(colonIdx + 1);
+    const model = piGetModel(provider as never, modelId as never);
+    if (!model) {
+      throw new Error(`PiRunner: unknown model: ${this.options.model}`);
     }
 
-    // 2. Use the pre-resolved model from the worker.
-    const model = this.options.model;
-
-    // 3. SessionManager: resume an existing JSONL or create a new one.
-    const sessionManager = this.options.resumeSessionFile
-      ? SessionManager.open(this.options.resumeSessionFile)
-      : SessionManager.create(this.options.contextFolderPath);
-
-    // 4. Hermetic resource loader. Disable Pi's auto-discovery, opt back in
-    //    only to the workspace skills directory and the inline NatStack
-    //    extension factories.
-    const resourceLoader = new DefaultResourceLoader({
-      cwd: this.options.contextFolderPath,
-      agentDir: this.options.piAgentDir,
-      noExtensions: true,
-      noSkills: true,
-      noPromptTemplates: true,
-      noThemes: true,
-      additionalSkillPaths: [
-        join(this.options.contextFolderPath, ".pi/skills"),
-      ],
-      extensionFactories: [
-        createApprovalGateExtension({
-          getApprovalLevel: () => this._approvalLevel,
-          safeToolNames: DEFAULT_SAFE_TOOL_NAMES,
-        }),
-        createChannelToolsExtension({
-          getRoster: this.options.rosterCallback,
-          callMethod: this.options.callMethodCallback,
-          builtinToolNames: BUILTIN_TOOL_NAMES,
-        }),
-        createAskUserExtension({
-          askUser: this.options.askUserCallback,
-        }),
-      ],
-    });
-    await resourceLoader.reload();
-
-    // 5. Create the AgentSession. Built-in coding tools must be created with
-    //    the explicit cwd factory or they'll fall back to process.cwd().
-    const result = await createAgentSession({
-      cwd: this.options.contextFolderPath,
-      agentDir: this.options.piAgentDir,
-      model,
-      thinkingLevel: this.options.thinkingLevel ?? "medium",
-      tools: createCodingTools(this.options.contextFolderPath),
-      authStorage,
-      sessionManager,
-      resourceLoader,
+    // 5. Construct the Agent. The auth service is the only auth source —
+    //    the DO calls auth.getProviderToken over RPC and the server-side
+    //    handler resolves env-var lookup OR OAuth refresh transparently.
+    this.agent = new Agent({
+      // pi-agent-core 0.66+: initialState only accepts the user-controllable
+      // fields. Runtime state (`isStreaming`, `streamingMessage`,
+      // `pendingToolCalls`, `errorMessage`) is owned by the Agent and Omit'd
+      // from the Partial.
+      initialState: {
+        systemPrompt: `${resources.systemPrompt}\n\n${resources.skillIndex}`,
+        model,
+        thinkingLevel: this.options.thinkingLevel ?? "medium",
+        tools: [],
+        messages: this.options.initialMessages ?? [],
+      },
+      getApiKey: async (providerName: string) => {
+        return await this.fetchProviderTokenWithOAuthFallback(providerName);
+      },
     });
 
-    this.session = result.session;
-    this._modelFallbackMessage = result.modelFallbackMessage;
+    // 6. Forward Agent events into our handler.
+    this.agentUnsub = this.agent.subscribe((event, _signal) =>
+      this.handleAgentEvent(event),
+    );
 
-    // 6. Bind the UI context so extensions can call ctx.ui.confirm/select/...
-    const uiContext = new NatStackExtensionUIContext(this.options.uiCallbacks);
-    await this.session.bindExtensions({ uiContext });
-
-    // 7. Subscribe to the session's event stream and fan out to listeners.
-    this.session.subscribe((event) => this.notifyListeners(event));
+    // 7. Fire session_start so channel-tools reconciles initial roster
+    //    and we then push the active tool set onto the agent.
+    console.log("[PiRunner] init: firing session_start to extensions");
+    await this.extensionRuntime.dispatch("session_start", {
+      type: "session_start",
+    });
+    this.refreshActiveTools();
+    console.log("[PiRunner] init() complete");
   }
 
-  /** Subscribe to Pi events. Returns an unsubscribe function. */
-  subscribe(listener: (event: AgentSessionEvent) => void): () => void {
-    this.listeners.push(listener);
-    return () => {
-      this.listeners = this.listeners.filter((l) => l !== listener);
+  /**
+   * Resolve an auth token for a model provider, falling back to an in-chat
+   * OAuth Connect card if the auth service reports the provider is not
+   * logged in.
+   *
+   * On not-logged-in:
+   *   1. Push an inline_ui Connect card into the chat (fire-and-forget).
+   *   2. Park on `auth.waitForProvider` server-side until ANY auth flow
+   *      completes for this provider — could be the user clicking *this*
+   *      panel's card, a sibling panel's card, or the SettingsDialog.
+   *   3. Retry the token lookup. The auth service has fresh credentials by
+   *      now so this should succeed.
+   *
+   * If the user never completes OAuth, `waitForProvider` rejects with a
+   * timeout error which surfaces to the agent loop as a turn failure.
+   */
+  private async fetchProviderTokenWithOAuthFallback(
+    providerName: string,
+  ): Promise<string> {
+    console.log(`[PiRunner] fetchProviderToken: requesting ${providerName}`);
+    try {
+      const token = await this.options.rpc.call<string>(
+        "main",
+        "auth.getProviderToken",
+        providerName,
+      );
+      console.log(`[PiRunner] fetchProviderToken: got token for ${providerName}`);
+      return token;
+    } catch (err) {
+      console.log(
+        `[PiRunner] fetchProviderToken: error for ${providerName}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      if (!isNotLoggedInError(err)) throw err;
+
+      console.log(`[PiRunner] fetchProviderToken: detected not-logged-in, emitting OAuth card`);
+
+      // Show the OAuth Connect card in the chat (fire-and-forget).
+      // The card's Connect button calls auth.startOAuthLogin, and after
+      // success automatically publishes a retry message to the chat so the
+      // agent's turn restarts with valid credentials.
+      //
+      // We do NOT block here (e.g., via auth.waitForProvider) because
+      // workerd DOs are single-threaded — blocking the turn would prevent
+      // the DO from processing ANY incoming events, including the channel
+      // broadcasts the inline_ui card needs to arrive at the panel.
+      try {
+        this.options.uiCallbacks.requestProviderOAuth(
+          providerName,
+          providerDisplayName(providerName),
+        );
+      } catch (uiErr) {
+        console.error("[PiRunner] requestProviderOAuth threw:", uiErr);
+      }
+
+      // Throw so pi-agent-core records this as a failed turn. The user
+      // sees the error + the Connect card. When the card auto-retries
+      // after successful OAuth, a new turn starts and getApiKey succeeds.
+      throw new Error(
+        `Sign in required for ${providerDisplayName(providerName)}. ` +
+          `Use the Connect button below to authenticate.`,
+      );
+    }
+  }
+
+  /**
+   * Wrap a tool's `execute()` to consult the extension runtime's `tool_call`
+   * handlers first. If a handler returns `{ block: true }`, throw — the
+   * pi-agent-core agent loop catches the throw and converts it into a
+   * `ToolResultMessage` with `isError: true` that flows back to the LLM.
+   */
+  private wrapToolWithApproval(tool: AgentTool<any>): AgentTool<any> {
+    const runner = this;
+    const wrapped: AgentTool<any> = {
+      ...tool,
+      execute: async (toolCallId, params, signal, onUpdate) => {
+        const result = await runner.extensionRuntime!.dispatch("tool_call", {
+          type: "tool_call",
+          toolCallId,
+          toolName: tool.name,
+          input: params,
+        });
+        if (result?.block) {
+          throw new Error(result.reason ?? `Tool "${tool.name}" blocked`);
+        }
+        return tool.execute(toolCallId, params, signal, onUpdate);
+      },
     };
+    return wrapped;
   }
 
-  private notifyListeners(event: AgentSessionEvent): void {
+  /**
+   * Compute the active tool set the agent should see for the next turn:
+   * builtin tools + any extension tools the channel-tools extension has
+   * marked active in its current roster reconcile.
+   */
+  private computeActiveTools(): AgentTool<any>[] {
+    return this.extensionRuntime!.getActiveTools(this.builtinTools);
+  }
+
+  /** Push the current active set onto the agent. Cheap; called between turns. */
+  private refreshActiveTools(): void {
+    if (!this.agent) return;
+    // pi-agent-core 0.66+: assign to state.tools (the setter copies the array).
+    this.agent.state.tools = this.computeActiveTools();
+  }
+
+  /**
+   * Pi-agent-core event handler. We:
+   *   - Reconcile channel-tools at every `turn_start` (so mid-session roster
+   *     changes are visible on the next LLM call).
+   *   - Persist messages on `message_end` and `agent_end`.
+   *   - Forward all events to user-supplied subscribers.
+   */
+  private async handleAgentEvent(event: AgentEvent): Promise<void> {
+    if (event.type === "turn_start") {
+      try {
+        await this.extensionRuntime!.dispatch("turn_start", event);
+      } catch (err) {
+        console.error("[PiRunner] turn_start dispatch threw:", err);
+      }
+      this.refreshActiveTools();
+    }
+    if (event.type === "message_end" || event.type === "agent_end") {
+      this.options.onPersist?.([...this.agent!.state.messages]);
+    }
     for (const listener of this.listeners) {
       try {
         listener(event);
@@ -199,56 +389,87 @@ export class PiRunner {
     }
   }
 
-  /** Send a user message to start (or continue) a turn. */
-  async runTurn(content: string, images?: ImageContent[]): Promise<void> {
-    const session = this.requireSession();
-    await session.prompt(content, images ? { images } : undefined);
-  }
-
-  /**
-   * Steer the agent mid-stream with a follow-up message. Use when the user
-   * sends a message while the agent is already streaming.
-   */
-  async steer(content: string, images?: ImageContent[]): Promise<void> {
-    const session = this.requireSession();
-    await session.steer(content, images);
-  }
-
-  /** Abort the current operation. */
-  async interrupt(): Promise<void> {
-    await this.session?.abort();
-  }
-
-  /**
-   * Fork the session at a given entry id. Pi's `fork` calls
-   * `sessionManager.createBranchedSession` internally and switches to the
-   * new file. Returns the new session file path (or null if not persisted).
-   */
-  async fork(entryId: string): Promise<string | null> {
-    const session = this.requireSession();
-    const result = await session.fork(entryId);
-    if (result.cancelled) return null;
-    return session.sessionFile ?? null;
-  }
-
-  /** Snapshot of the session state for the snapshot ephemeral channel stream. */
-  getStateSnapshot(): PiStateSnapshot {
-    const session = this.requireSession();
-    return {
-      messages: [...session.state.messages],
-      isStreaming: session.isStreaming,
+  /** Subscribe to Agent events. Returns an unsubscribe function. */
+  subscribe(listener: (event: AgentEvent) => void): () => void {
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter((l) => l !== listener);
     };
   }
 
-  /** Fallback message surfaced if the resumed session was created with a now-unavailable model. */
-  get modelFallbackMessage(): string | undefined {
-    return this._modelFallbackMessage;
+  /**
+   * Send a user message to start (or continue) a turn. When `images` are
+   * present we build a multi-content user message; otherwise we pass the
+   * string straight through to `agent.prompt(string)`.
+   */
+  async runTurn(content: string, images?: ImageContent[]): Promise<void> {
+    if (!this.agent) throw new Error("PiRunner not initialized");
+    if (images && images.length > 0) {
+      const message: AgentMessage = {
+        role: "user",
+        content: [{ type: "text", text: content }, ...images],
+        timestamp: Date.now(),
+      };
+      await this.agent.prompt(message);
+    } else {
+      await this.agent.prompt(content);
+    }
+  }
+
+  /**
+   * Steer the agent mid-stream with a follow-up message. pi-agent-core's
+   * `agent.steer` takes an `AgentMessage`, not a raw string, so we always
+   * build the wrapping message ourselves.
+   */
+  async steer(content: string, images?: ImageContent[]): Promise<void> {
+    if (!this.agent) throw new Error("PiRunner not initialized");
+    const message: AgentMessage = {
+      role: "user",
+      content:
+        images && images.length > 0
+          ? [{ type: "text", text: content }, ...images]
+          : content,
+      timestamp: Date.now(),
+    };
+    this.agent.steer(message);
+  }
+
+  /** Abort the current operation and wait for the loop to drain. */
+  async interrupt(): Promise<void> {
+    this.agent?.abort();
+    await this.agent?.waitForIdle();
+  }
+
+  /**
+   * Fork at a given message index by truncating the message array and
+   * assigning back to `agent.state.messages` (the setter copies the array).
+   * pi-agent-core has no fork primitive, so the worker is responsible for
+   * any persistence/branching it wants; this method only mutates in-memory
+   * state and returns the new history.
+   */
+  async forkAtMessage(messageIndex: number): Promise<AgentMessage[]> {
+    if (!this.agent) throw new Error("PiRunner not initialized");
+    const truncated = this.agent.state.messages.slice(0, messageIndex);
+    // pi-agent-core 0.66+: assign to state.messages (the setter copies the array).
+    this.agent.state.messages = truncated;
+    return truncated;
+  }
+
+  /** Snapshot of the agent state for the snapshot ephemeral channel stream. */
+  getStateSnapshot(): PiStateSnapshot {
+    if (!this.agent) {
+      return { messages: [], isStreaming: false };
+    }
+    return {
+      messages: [...this.agent.state.messages],
+      isStreaming: this.agent.state.isStreaming,
+    };
   }
 
   /**
    * Update the approval level. The approval-gate extension reads this lazily
    * via closure, so changes are visible on the next tool_call without a
-   * session reload.
+   * runtime reload.
    */
   setApprovalLevel(level: ApprovalLevel): void {
     this._approvalLevel = level;
@@ -258,30 +479,18 @@ export class PiRunner {
     return this._approvalLevel;
   }
 
-  get sessionFile(): string | undefined {
-    return this.session?.sessionFile;
-  }
-
-  get sessionId(): string | undefined {
-    return this.session?.sessionId;
-  }
-
-  /** Whether Pi is currently streaming a response. */
+  /** Whether the underlying agent is currently streaming a response. */
   get isStreaming(): boolean {
-    return this.session?.isStreaming ?? false;
+    return this.agent?.state.isStreaming ?? false;
   }
 
-  /** Tear down the session. Idempotent. */
+  /** Tear down the runner. Idempotent. */
   dispose(): void {
-    this.session?.dispose();
-    this.session = null;
+    this.agent?.abort();
+    this.agentUnsub?.();
+    this.agentUnsub = null;
+    this.agent = null;
+    this.extensionRuntime = null;
     this.listeners.length = 0;
-  }
-
-  private requireSession(): AgentSession {
-    if (!this.session) {
-      throw new Error("PiRunner not initialized — call init() before use");
-    }
-    return this.session;
   }
 }

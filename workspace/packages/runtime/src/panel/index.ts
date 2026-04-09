@@ -17,11 +17,6 @@ const { runtime, config } = initRuntime({
   fs,
 });
 
-import { createAiClient, type AiClient } from "@natstack/ai";
-
-// Create AI client with the runtime's RPC bridge, scoped to this panel's context
-const aiClient: AiClient = createAiClient(runtime.rpc, runtime.contextId);
-
 export * as Rpc from "../core/rpc.js";
 export { z } from "../core/zod.js";
 export { defineContract, noopParent } from "../core/defineContract.js";
@@ -83,7 +78,7 @@ export {
 
 const { workers } = runtime;
 const helpfulWorkers = helpfulNamespace("workers", workers);
-export { fs, gitConfig, pubsubConfig, env, helpfulWorkers as workers, aiClient as ai };
+export { fs, gitConfig, pubsubConfig, env, helpfulWorkers as workers };
 
 // Path utilities for cross-platform path handling
 export { normalizePath, getFileName, resolvePath } from "../shared/pathUtils.js";

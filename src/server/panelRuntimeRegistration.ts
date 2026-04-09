@@ -209,6 +209,13 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
       },
       getServiceDefinition() {
         const fsMethodSchema = { args: z.tuple([z.string()]).rest(z.unknown()) };
+        // `bindContext` is special: it takes exactly one string (the contextId)
+        // and is invoked before any caller→context mapping exists, so its args
+        // must validate against a bare tuple rather than the generic
+        // `[string, ...unknown[]]` path-first shape.
+        const bindContextSchema = { args: z.tuple([z.string()]) };
+        // `mktemp` takes an optional prefix string; no leading path arg.
+        const mktempSchema = { args: z.tuple([z.string().optional()]) };
         return {
           name: "fs",
           description: "Per-context filesystem operations (sandboxed to context folder)",
@@ -218,6 +225,8 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
             readdir: fsMethodSchema, mkdir: fsMethodSchema,
             stat: fsMethodSchema, open: fsMethodSchema,
             close: fsMethodSchema, read: fsMethodSchema, write: fsMethodSchema,
+            bindContext: bindContextSchema,
+            mktemp: mktempSchema,
           },
           handler: async (ctx, method, serviceArgs) => {
             return handleFsCall(fsServiceInstance, ctx, method, serviceArgs as unknown[]);

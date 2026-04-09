@@ -16,9 +16,31 @@
  */
 
 import type {
-  ExtensionAPI,
-  ExtensionFactory,
-} from "@mariozechner/pi-coding-agent";
+  PiExtensionAPI,
+  PiExtensionFactory,
+} from "../pi-extension-api.js";
+
+/**
+ * Tool name validation. We require names to start with a letter, contain
+ * only ASCII letters/digits/`_`/`-`, and not collide with Pi's built-in
+ * tool names. The channel itself enforces the same regex at subscribe
+ * time (see workspace/workers/pubsub-channel/channel-do.ts), so this
+ * check is defense-in-depth: if it ever fires, the channel-side validation
+ * has been bypassed and we should investigate.
+ */
+const VALID_TOOL_NAME = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+const RESERVED_TOOL_NAMES = new Set([
+  "read",
+  "edit",
+  "write",
+  "grep",
+  "find",
+  "ls",
+]);
+
+function isValidToolName(name: string): boolean {
+  return VALID_TOOL_NAME.test(name) && !RESERVED_TOOL_NAMES.has(name);
+}
 
 export interface ChannelToolMethod {
   /** Stable, unique participant handle. NOT the random participantId. */
@@ -47,8 +69,8 @@ export interface ChannelToolsDeps {
 
 export function createChannelToolsExtension(
   deps: ChannelToolsDeps,
-): ExtensionFactory {
-  return (pi: ExtensionAPI) => {
+): PiExtensionFactory {
+  return (pi: PiExtensionAPI) => {
     const registered = new Set<string>();
 
     const validateRoster = (roster: ChannelToolMethod[]): void => {
@@ -67,7 +89,18 @@ export function createChannelToolsExtension(
     };
 
     const reconcile = (): void => {
-      const roster = deps.getRoster();
+      const rawRoster = deps.getRoster();
+      // Defense-in-depth: filter out methods with invalid names. The channel
+      // enforces the same constraint at subscribe time, so a violation here
+      // means a participant slipped through; warn and skip rather than throw
+      // so one bad participant cannot break the agent.
+      const roster = rawRoster.filter((m) => {
+        if (isValidToolName(m.name)) return true;
+        console.warn(
+          `[channel-tools] Skipping invalid tool name "${m.name}" from participant ${m.participantHandle}`,
+        );
+        return false;
+      });
       validateRoster(roster);
 
       // Register any tools we haven't seen yet. Pi's registerTool is a Map.set

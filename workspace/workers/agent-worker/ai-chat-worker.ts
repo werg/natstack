@@ -4,18 +4,26 @@ import type { ParticipantDescriptor } from "@natstack/harness/types";
 /**
  * AiChatWorker — The default AI chat Durable Object.
  *
- * Pi-native: embeds `@mariozechner/pi-coding-agent` in-process via PiRunner
- * (see `AgentWorkerBase`). The system prompt lives in
- * `<contextFolder>/.pi/AGENTS.md` (loaded automatically by Pi). Workspace
- * skills live under `<contextFolder>/.pi/skills/`.
+ * Pi-native: embeds `@mariozechner/pi-agent-core`'s `Agent` in-process via
+ * the `PiRunner` harness (see `AgentWorkerBase`). The system prompt is
+ * loaded from `workspace/AGENTS.md` via the workspace.* RPC service;
+ * skill metadata is merged in from `workspace/skills/*.skill.md`.
  *
  * The model, thinking level, and approval level can be customized via the
  * `getModel`/`getThinkingLevel`/`getApprovalLevel` overridable hooks. The
- * default is `anthropic:claude-sonnet-4-20250514` at "medium" thinking with
- * full-auto approval.
+ * default is `openai-codex:gpt-5` at "medium" thinking with full-auto
+ * approval. OpenAI Codex uses the OAuth flow from the auth service, so no
+ * API key is required.
  */
 export class AiChatWorker extends AgentWorkerBase {
-  static override schemaVersion = 4;
+  static override schemaVersion = 5;
+
+  /** Default to OpenAI Codex / gpt-5.4 — the strongest non-codex variant in
+   *  pi-ai 0.66's openai-codex registry. The auth service supplies an OAuth
+   *  token at Agent call time via `auth.getProviderToken("openai-codex")`. */
+  protected override getModel(): string {
+    return "openai-codex:gpt-5.4";
+  }
 
   protected override getParticipantInfo(
     _channelId: string,

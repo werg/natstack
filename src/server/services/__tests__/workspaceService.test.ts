@@ -28,7 +28,10 @@
  *    by which the server signals Electron main to call `app.relaunch()`).
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { SERVER_SERVICE_NAMES } from "@natstack/rpc";
 import type { RpcCaller } from "@natstack/rpc";
 import { createWorkspaceService } from "../workspaceService.js";
@@ -314,5 +317,174 @@ describe("workspace.select", () => {
     expect(captured).toHaveLength(1);
     expect(captured[0]!.method).toBe("workspace.select");
     expect(captured[0]!.args).toEqual(["other"]);
+  });
+});
+
+// ─── Agent resource loading: getAgentsMd / listSkills / readSkill ────────────
+//
+// These tests use a real tmpdir fixture because the handlers read from disk.
+// The fixture layout mirrors the post-W1c workspace structure:
+//
+//   <tmp>/
+//     AGENTS.md
+//     skills/
+//       alpha/SKILL.md          ← has frontmatter
+//       beta/SKILL.md           ← no frontmatter at all
+//       broken/                  ← no SKILL.md (should be skipped)
+
+describe("workspace service agent resources", () => {
+  let tmpRoot: string;
+
+  // Build a service bound to a fresh tmpdir so filesystem reads are hermetic.
+  function makeFsService(wsPath: string) {
+    return createWorkspaceService({
+      workspace: {
+        path: wsPath,
+        statePath: path.join(wsPath, ".state"),
+        config: makeConfig(),
+        panelsPath: path.join(wsPath, "panels"),
+        packagesPath: path.join(wsPath, "packages"),
+        contextsPath: path.join(wsPath, ".contexts"),
+        gitReposPath: wsPath,
+        cachePath: path.join(wsPath, ".cache"),
+        agentsPath: path.join(wsPath, "agents"),
+      },
+      getConfig: () => makeConfig(),
+      setConfigField: vi.fn(),
+      centralData: makeCentralData(),
+      createWorkspace: vi.fn(),
+      deleteWorkspaceDir: vi.fn(),
+    });
+  }
+
+  beforeAll(() => {
+    tmpRoot = mkdtempSync(path.join(tmpdir(), "natstack-wsvc-"));
+  });
+
+  afterAll(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  // ─── getAgentsMd ───────────────────────────────────────────────────────────
+
+  describe("getAgentsMd", () => {
+    it("reads an existing AGENTS.md at the workspace root", async () => {
+      const wsPath = mkdtempSync(path.join(tmpRoot, "ws-"));
+      writeFileSync(path.join(wsPath, "AGENTS.md"), "# Agents\nhello world\n");
+      const service = makeFsService(wsPath);
+      const result = await service.handler(panelCtx, "getAgentsMd", []);
+      expect(result).toBe("# Agents\nhello world\n");
+    });
+
+    it("returns an empty string when AGENTS.md is missing (ENOENT)", async () => {
+      const wsPath = mkdtempSync(path.join(tmpRoot, "ws-"));
+      // Note: no AGENTS.md written.
+      const service = makeFsService(wsPath);
+      const result = await service.handler(panelCtx, "getAgentsMd", []);
+      expect(result).toBe("");
+    });
+  });
+
+  // ─── listSkills ────────────────────────────────────────────────────────────
+
+  describe("listSkills", () => {
+    it("walks skills/ and parses SKILL.md frontmatter for name + description", async () => {
+      const wsPath = mkdtempSync(path.join(tmpRoot, "ws-"));
+      const skillsDir = path.join(wsPath, "skills");
+      mkdirSync(path.join(skillsDir, "alpha"), { recursive: true });
+      writeFileSync(
+        path.join(skillsDir, "alpha", "SKILL.md"),
+        "---\nname: alpha\ndescription: First skill\n---\n\nbody\n",
+      );
+      mkdirSync(path.join(skillsDir, "gamma"), { recursive: true });
+      writeFileSync(
+        path.join(skillsDir, "gamma", "SKILL.md"),
+        '---\nname: "gamma-named"\ndescription: \'Third skill\'\n---\n',
+      );
+      const service = makeFsService(wsPath);
+      const result = await service.handler(panelCtx, "listSkills", []) as Array<{
+        name: string; description: string; dirPath: string;
+      }>;
+      // Sort to make assertion order-independent (readdir order varies by FS).
+      result.sort((a, b) => a.name.localeCompare(b.name));
+      expect(result).toEqual([
+        { name: "alpha", description: "First skill", dirPath: "skills/alpha" },
+        { name: "gamma-named", description: "Third skill", dirPath: "skills/gamma" },
+      ]);
+    });
+
+    it("skips directories that lack a SKILL.md and still returns the rest", async () => {
+      const wsPath = mkdtempSync(path.join(tmpRoot, "ws-"));
+      const skillsDir = path.join(wsPath, "skills");
+      mkdirSync(path.join(skillsDir, "alpha"), { recursive: true });
+      writeFileSync(
+        path.join(skillsDir, "alpha", "SKILL.md"),
+        "---\nname: alpha\ndescription: Real\n---\n",
+      );
+      // 'broken' exists but has no SKILL.md — must be skipped, not crash.
+      mkdirSync(path.join(skillsDir, "broken"), { recursive: true });
+      const service = makeFsService(wsPath);
+      const result = await service.handler(panelCtx, "listSkills", []) as Array<{ name: string }>;
+      expect(result).toHaveLength(1);
+      expect(result[0]!.name).toBe("alpha");
+    });
+
+    it("falls back to directory name and empty description when frontmatter is absent", async () => {
+      const wsPath = mkdtempSync(path.join(tmpRoot, "ws-"));
+      const skillsDir = path.join(wsPath, "skills");
+      mkdirSync(path.join(skillsDir, "beta"), { recursive: true });
+      writeFileSync(path.join(skillsDir, "beta", "SKILL.md"), "# Just a heading, no frontmatter\n");
+      const service = makeFsService(wsPath);
+      const result = await service.handler(panelCtx, "listSkills", []) as Array<{
+        name: string; description: string; dirPath: string;
+      }>;
+      expect(result).toEqual([
+        { name: "beta", description: "", dirPath: "skills/beta" },
+      ]);
+    });
+
+    it("returns an empty array when skills/ does not exist (ENOENT)", async () => {
+      const wsPath = mkdtempSync(path.join(tmpRoot, "ws-"));
+      const service = makeFsService(wsPath);
+      const result = await service.handler(panelCtx, "listSkills", []);
+      expect(result).toEqual([]);
+    });
+  });
+
+  // ─── readSkill ─────────────────────────────────────────────────────────────
+
+  describe("readSkill", () => {
+    it("returns the raw SKILL.md content for a valid skill name", async () => {
+      const wsPath = mkdtempSync(path.join(tmpRoot, "ws-"));
+      const skillsDir = path.join(wsPath, "skills");
+      mkdirSync(path.join(skillsDir, "alpha"), { recursive: true });
+      const body = "---\nname: alpha\ndescription: a\n---\n\nreal body\n";
+      writeFileSync(path.join(skillsDir, "alpha", "SKILL.md"), body);
+      const service = makeFsService(wsPath);
+      const result = await service.handler(panelCtx, "readSkill", ["alpha"]);
+      expect(result).toBe(body);
+    });
+
+    it("rejects path traversal attempts like '../etc/passwd'", async () => {
+      const wsPath = mkdtempSync(path.join(tmpRoot, "ws-"));
+      const service = makeFsService(wsPath);
+      await expect(
+        service.handler(panelCtx, "readSkill", ["../etc/passwd"]),
+      ).rejects.toThrow(/Invalid skill name/);
+    });
+
+    it("rejects names containing slashes or dots", async () => {
+      const wsPath = mkdtempSync(path.join(tmpRoot, "ws-"));
+      const service = makeFsService(wsPath);
+      await expect(
+        service.handler(panelCtx, "readSkill", ["foo/bar"]),
+      ).rejects.toThrow(/Invalid skill name/);
+      await expect(
+        service.handler(panelCtx, "readSkill", ["foo.bar"]),
+      ).rejects.toThrow(/Invalid skill name/);
+      await expect(
+        service.handler(panelCtx, "readSkill", [""]),
+      ).rejects.toThrow(/Invalid skill name/);
+    });
   });
 });

@@ -73,9 +73,10 @@ Location: `workspace/packages/agentic-do/src/agent-worker-base.ts`
 | `buildTurnInput(event)` | Extract content | Transform to TurnInput |
 | `getParticipantInfo()` | Generic agent | Channel identity + advertised methods |
 
-The system prompt lives in `<contextFolder>/.pi/AGENTS.md` (loaded
-automatically by Pi's cwd-walk). Workspace skills live under
-`<contextFolder>/.pi/skills/` and are loaded via `additionalSkillPaths`.
+The system prompt lives in `workspace/AGENTS.md` and workspace skills live
+under `workspace/skills/`. Both are read via the `workspace.*` RPC service
+and loaded into Pi (AGENTS.md as the system prompt, skills via
+`additionalSkillPaths`).
 
 ### SQLite tables
 
@@ -94,8 +95,8 @@ gone.
 
 ## Hermetic sandbox
 
-The worker constructs `DefaultResourceLoader` with explicit opt-outs so Pi
-never auto-discovers anything from `~/.pi/agent/` or `<cwd>/.pi/extensions/`:
+The worker constructs `DefaultResourceLoader` with explicit opt-outs — there
+is no auto-discovery, extensions are wired inline by `PiRunner`:
 
 ```typescript
 new DefaultResourceLoader({
@@ -105,7 +106,7 @@ new DefaultResourceLoader({
   noSkills: true,
   noPromptTemplates: true,
   noThemes: true,
-  additionalSkillPaths: [join(contextFolderPath, ".pi/skills")],
+  additionalSkillPaths: [/* workspace skill paths resolved via workspace RPC */],
   extensionFactories: [
     natstackApprovalGateFactory(...),
     natstackChannelToolsFactory(...),
@@ -114,10 +115,10 @@ new DefaultResourceLoader({
 })
 ```
 
-Pi reads `<contextFolder>/.pi/AGENTS.md` for the system prompt and
-`<contextFolder>/.pi/settings.json` for compaction/retry/thinking-level
-defaults. Both go through Pi's normal cwd resolution, not its skill/extension
-auto-discovery.
+The system prompt (`workspace/AGENTS.md`) and compaction/retry/thinking-level
+defaults (`workspace/settings.json`) are read via the `workspace.*` RPC
+service and handed to Pi through the resource loader — not via Pi's
+skill/extension auto-discovery.
 
 API keys are bridged via `AuthStorage.setRuntimeApiKey(provider, key)` —
 priority #1 in Pi's auth resolution chain, ahead of any file-based auth.
@@ -156,26 +157,23 @@ Promise.
 This is the bridge between Pi's synchronous-await tool API and the channel's
 asynchronous fire-and-forget call/result protocol.
 
-## Workspace as a Pi package
+## Workspace layout
 
-`workspace/.pi/` IS the Pi package. The existing `contextFolderManager.ts`
-repo-tree copy replicates the workspace into each contextFolder, so
-`<contextFolder>/.pi/` exists automatically:
+Skills and the agent system prompt live directly in `workspace/` and are
+read via the `workspace.*` RPC service:
 
 ```
-workspace/.pi/
-├── package.json     # {"keywords": ["pi-package"], "pi": {"skills": ["./skills"]}}
+workspace/
 ├── AGENTS.md        # System prompt content
 ├── settings.json    # Compaction/retry/thinking-level defaults
 └── skills/          # Workspace skills (eval, sandbox, paneldev, etc.)
     └── ...
 ```
 
-There is no `workspace/.pi/extensions/` — extensions are NatStack-only and
-live in `packages/harness/src/extensions/` as TypeScript modules supplied
-inline (closure-bound to the worker). Standalone Pi running against the
-workspace gets skills + AGENTS.md + settings.json — no extensions, no chat
-behavior. That's coherent because chat behavior is intrinsically NatStack-bound.
+Extensions are NatStack-only and live in `packages/harness/src/extensions/`
+as TypeScript modules supplied inline (closure-bound to the worker). There
+is no workspace-level extensions directory — chat behavior is intrinsically
+NatStack-bound.
 
 ## Package map
 
@@ -195,4 +193,4 @@ behavior. That's coherent because chat behavior is intrinsically NatStack-bound.
 - **Pi-architecture deep dive**: `docs/pi-architecture.md`
 - **Pi SDK reference**: `node_modules/@mariozechner/pi-coding-agent/README.md`
 - **Worker authoring**: `workspace/workers/README.md`
-- **Paneldev skill**: `workspace/.pi/skills/paneldev/WORKERS.md`
+- **Paneldev skill**: `workspace/skills/paneldev/WORKERS.md`
