@@ -378,7 +378,11 @@ export class PiRunner {
       this.refreshActiveTools();
     }
     if (event.type === "message_end" || event.type === "agent_end") {
-      this.options.onPersist?.([...this.agent!.state.messages]);
+      try {
+        this.options.onPersist?.([...this.agent!.state.messages]);
+      } catch (err) {
+        console.error("[PiRunner] onPersist threw (listeners will still fire):", err);
+      }
     }
     for (const listener of this.listeners) {
       try {
