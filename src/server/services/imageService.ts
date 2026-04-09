@@ -26,11 +26,19 @@ const ResizeOptionsSchema = z
   })
   .optional();
 
-/** Coerce arbitrary RPC payloads (Buffer/Uint8Array/array/base64) into a
- *  Uint8Array. The wire layer's BinaryEnvelope decodes to Uint8Array but in
- *  unit tests / direct dispatch we may also see Buffers or arrays. */
+/** Coerce arbitrary RPC payloads (Buffer/Uint8Array/array/base64/BinaryEnvelope)
+ *  into a Uint8Array. The wire layer may encode binary data as:
+ *  - Raw Uint8Array/Buffer (in-process or direct dispatch)
+ *  - BinaryEnvelope: `{ __bin: true, data: "base64..." }` (HTTP RPC bridge)
+ *  - Plain base64 string
+ *  - Number array */
 function toUint8Array(value: unknown): Uint8Array {
   if (value instanceof Uint8Array) return value;
+  // BinaryEnvelope from RPC wire layer
+  if (value && typeof value === "object" && (value as Record<string, unknown>)["__bin"] === true) {
+    const data = (value as Record<string, unknown>)["data"];
+    if (typeof data === "string") return new Uint8Array(Buffer.from(data, "base64"));
+  }
   if (value && typeof value === "object" && "buffer" in (value as any) && (value as any).buffer instanceof ArrayBuffer) {
     const v = value as { buffer: ArrayBuffer; byteOffset?: number; byteLength?: number };
     return new Uint8Array(v.buffer, v.byteOffset ?? 0, v.byteLength ?? v.buffer.byteLength);

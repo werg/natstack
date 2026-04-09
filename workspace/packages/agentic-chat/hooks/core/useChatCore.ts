@@ -140,6 +140,42 @@ export function useChatCore({
           setStatus(s);
           setConnected(s === "connected");
         },
+        // Wire method-call and method-result events from the PubSub protocol
+        // into the methodEntries Map so method call beads render in the chat.
+        onEvent: (event) => {
+          if (event.type === "method-call") {
+            const e = event as { callId: string; methodName: string; senderId: string; args?: unknown; ts: number };
+            setMethodEntries((prev) => {
+              const next = new Map(prev);
+              next.set(e.callId, {
+                callId: e.callId,
+                methodName: e.methodName,
+                args: e.args,
+                status: "pending",
+                startedAt: e.ts,
+              });
+              return next;
+            });
+          } else if (event.type === "method-result") {
+            const e = event as { callId: string; content?: unknown; complete?: boolean; isError?: boolean };
+            if (e.complete) {
+              setMethodEntries((prev) => {
+                const next = new Map(prev);
+                const existing = next.get(e.callId);
+                if (existing) {
+                  next.set(e.callId, {
+                    ...existing,
+                    status: e.isError ? "error" : "success",
+                    result: e.content,
+                    error: e.isError ? String(e.content ?? "") : undefined,
+                    completedAt: Date.now(),
+                  });
+                }
+                return next;
+              });
+            }
+          }
+        },
       },
     });
   }
