@@ -19,7 +19,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { PubSubClient, ParticipantMetadata, Attachment } from "@natstack/pubsub";
-import { isClientParticipantType } from "@natstack/pubsub";
+import { isClientParticipantType, CONTENT_TYPE_TYPING } from "@natstack/pubsub";
 import type { ChatMessage } from "@workspace/agentic-core";
 
 /** Maximum messages in the visible window. New messages push oldest out. */
@@ -120,7 +120,13 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
             const isReplay = wire.kind === "replay";
             const isEphemeral = wire.kind === "ephemeral";
             const isFromClient = isClientParticipantType(wire.senderMetadata?.type);
-            const isTyping = wire.contentType === "typing";
+            const isTyping = wire.contentType === CONTENT_TYPE_TYPING;
+
+            // Only allow typing indicators from the ephemeral stream.
+            // Worker-side notifications (notify:*, natstack-ext-status,
+            // natstack-ext-widget, natstack-ext-working) are handled by
+            // separate ephemeral hooks and must not leak into the transcript.
+            if (isEphemeral && !isTyping) continue;
             const msg: ChatMessage = {
               id: wire.id,
               pubsubId: wire.pubsubId,

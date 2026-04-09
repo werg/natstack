@@ -703,16 +703,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       }
 
       case "tool_execution_start": {
-        const { toolCallId, toolName } = event;
-        const channelMsgId = state.toolCallIdMap.get(toolCallId);
-        if (channelMsgId) {
-          const actionData = JSON.stringify({
-            type: toolName,
-            description: `Running ${toolName}...`,
-            status: "pending",
-          });
-          void channel.update(participantId, channelMsgId, actionData);
-        }
+        // Don't overwrite the detailed action description from message_start/end.
+        // The initial description (from getDetailedActionDescription) carries the
+        // tool args summary; replacing it with "Running..." loses that context.
+        // The status stays "pending" until tool_execution_end flips to "complete".
         break;
       }
 
@@ -777,16 +771,29 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     return s.length > 300 ? s.slice(0, 297) + "..." : s;
   }
 
-  /** Check a tool result for ImageContent blocks and publish them as image channel messages. */
+  /** Check a tool result for ImageContent blocks and publish them as image channel messages.
+   *  Pi-agent-core wraps tool results as `{ content: [{type, ...}], details }`.
+   *  We check both the top-level result AND the `.content` array. */
   private publishToolResultImages(
     _channelId: string,
     participantId: string,
     channel: ChannelClient,
     result: unknown,
   ): void {
-    // Tool results can be arrays containing ImageContent-like objects.
-    const items = Array.isArray(result) ? result : [result];
-    for (const item of items) {
+    const candidates: unknown[] = [];
+    // Direct array of content items
+    if (Array.isArray(result)) {
+      candidates.push(...result);
+    } else if (result && typeof result === "object") {
+      // Pi-agent-core AgentToolResult shape: { content: [...], details: {...} }
+      const r = result as { content?: unknown[] };
+      if (Array.isArray(r.content)) {
+        candidates.push(...r.content);
+      } else {
+        candidates.push(result);
+      }
+    }
+    for (const item of candidates) {
       const img = item as { type?: string; mimeType?: string; data?: string };
       if (img?.type === "image" && img.mimeType && img.data) {
         const imgId = crypto.randomUUID();
