@@ -380,6 +380,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   async unsubscribeChannel(channelId: string): Promise<UnsubscribeResult> {
     await this.subscriptions.unsubscribeFromChannel(channelId);
 
+    // Complete any active typing indicator before tearing down.
+    this.completeTypingIndicator(channelId);
+
     const entry = this.runners.get(channelId);
     if (entry) {
       entry.runner.dispose();
@@ -617,6 +620,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private channelStreamState = new Map<string, {
     /** Channel message UUID for the current streaming text block. */
     textMsgId: string | null;
+    /** Channel message UUID for the active "typing" indicator (contentType: "typing").
+     *  Created in onChannelEvent BEFORE the runner turn starts so the user sees
+     *  immediate "Agent typing" feedback. Completed on first assistant message_start
+     *  (when text actually begins streaming) or on agent_end / error. */
+    typingMsgId: string | null;
     /** Per-tool-call state keyed by pi-agent-core toolCallId (e.g. "call_abc123"). */
     toolCalls: Map<string, ToolCallState>;
   }>();
@@ -624,10 +632,48 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private getStreamState(channelId: string) {
     let state = this.channelStreamState.get(channelId);
     if (!state) {
-      state = { textMsgId: null, toolCalls: new Map() };
+      state = { textMsgId: null, typingMsgId: null, toolCalls: new Map() };
       this.channelStreamState.set(channelId, state);
     }
     return state;
+  }
+
+  /** Send a "typing" channel message so the chat UI shows "Agent typing" immediately.
+   *  The message is persisted so it survives reconnects/replays and stays visible
+   *  until we call completeTyping(). */
+  private sendTypingIndicator(channelId: string): void {
+    const participantId = this.subscriptions.getParticipantId(channelId);
+    if (!participantId) return;
+    const channel = this.createChannelClient(channelId);
+    const state = this.getStreamState(channelId);
+
+    // Don't double-send if one is already active.
+    if (state.typingMsgId) return;
+
+    const info = this.getParticipantInfo(channelId);
+    const typingData = JSON.stringify({
+      senderId: participantId,
+      senderName: info.name,
+      senderType: info.type,
+    });
+    const msgId = crypto.randomUUID();
+    state.typingMsgId = msgId;
+    void channel.send(participantId, msgId, typingData, {
+      contentType: "typing",
+      persist: true,
+    });
+  }
+
+  /** Complete the active typing indicator for a channel (hides the "Agent typing" pill). */
+  private completeTypingIndicator(channelId: string): void {
+    const participantId = this.subscriptions.getParticipantId(channelId);
+    if (!participantId) return;
+    const state = this.channelStreamState.get(channelId);
+    if (!state?.typingMsgId) return;
+
+    const channel = this.createChannelClient(channelId);
+    void channel.complete(participantId, state.typingMsgId);
+    state.typingMsgId = null;
   }
 
   private publishPiEvent(channelId: string, event: AgentEvent): void {
@@ -640,6 +686,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       case "message_start": {
         const msg = event.message as { role?: string; content?: unknown[] };
         if (msg.role !== "assistant") break;
+
+        // The agent is producing output — complete the typing indicator.
+        // This transitions the UI from "Agent typing" → actual streaming content.
+        this.completeTypingIndicator(channelId);
 
         const blocks = Array.isArray(msg.content) ? msg.content : [];
 
@@ -807,11 +857,27 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         if (!isError && result != null) {
           this.publishToolResultImages(channelId, participantId, channel, result);
         }
+
+        // After a tool completes, the agent will either call another tool or
+        // produce an assistant message. Re-show the typing indicator to cover
+        // the gap between tool-end and the next message_start. If the agent
+        // immediately starts a new message, message_start will complete it
+        // within milliseconds — the flicker is imperceptible.
+        this.sendTypingIndicator(channelId);
         break;
       }
 
+      case "agent_end":
+      case "turn_end":
+        // Cleanup: if the typing indicator is still active (e.g., the agent
+        // finished without producing an assistant message, or an error occurred
+        // before message_start), complete it now so the UI doesn't show a
+        // stale "Agent typing" pill.
+        this.completeTypingIndicator(channelId);
+        break;
+
       default:
-        // No channel message needed for agent_start, turn_start, turn_end, agent_end.
+        // No channel message needed for agent_start, turn_start.
         break;
     }
   }
@@ -1183,6 +1249,15 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
 
     const imagesArg = images.length > 0 ? images : undefined;
+
+    // Send a typing indicator BEFORE the runner starts so the user sees
+    // immediate "Agent typing" feedback. The indicator will be completed
+    // when the first assistant message arrives (message_start in publishPiEvent),
+    // or on agent_end/error as cleanup.
+    if (!runner.isStreaming) {
+      this.sendTypingIndicator(channelId);
+    }
+
     if (runner.isStreaming) {
       await runner.steer(input.content, imagesArg);
     } else {
@@ -1206,7 +1281,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   /** Interrupt the in-flight Pi turn for a specific channel. */
   protected async interruptRunner(channelId: string): Promise<void> {
     const entry = this.runners.get(channelId);
-    if (entry) await entry.runner.interrupt();
+    if (entry) {
+      // Clear the typing indicator immediately on interrupt so the UI
+      // doesn't show a stale "Agent typing" pill after the user cancelled.
+      this.completeTypingIndicator(channelId);
+      await entry.runner.interrupt();
+    }
   }
 
   // ── Fork support (Pi-native) ────────────────────────────────────────────
