@@ -163,7 +163,7 @@ interface ToolCallState {
 }
 
 export abstract class AgentWorkerBase extends DurableObjectBase {
-  static override schemaVersion = 7;
+  static override schemaVersion = 8;
 
   protected identity: DOIdentity;
   protected subscriptions: SubscriptionManager;
@@ -229,12 +229,23 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         last_delivered_seq INTEGER NOT NULL
       )
     `);
-    // Per-channel Pi agent message history for warm restore after DO hibernation.
+    // Legacy table — kept for lazy migration to pi_messages.
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS pi_sessions (
         channel_id TEXT PRIMARY KEY,
         messages_blob TEXT NOT NULL,
         updated_at INTEGER NOT NULL
+      )
+    `);
+    // Per-channel Pi agent message history for warm restore after DO hibernation.
+    // One row per message — avoids SQLITE_TOOBIG on long conversations and
+    // makes persist append-only instead of full-rewrite.
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS pi_messages (
+        channel_id TEXT NOT NULL,
+        idx INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        PRIMARY KEY (channel_id, idx)
       )
     `);
   }
@@ -394,6 +405,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     this.continuations.deleteForChannel(channelId);
     this.subscriptions.deleteSubscription(channelId);
+    this.sql.exec(`DELETE FROM pi_messages WHERE channel_id = ?`, channelId);
     this.sql.exec(`DELETE FROM pi_sessions WHERE channel_id = ?`, channelId);
 
     return { ok: true };
@@ -535,20 +547,38 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     // Restore prior messages from SQL (warm-restart after DO hibernation,
     // or freshly cloned DO whose parent's blob was copied in postClone).
-    const sessionRow = this.sql.exec(
-      `SELECT messages_blob FROM pi_sessions WHERE channel_id = ?`,
+    let initialMessages: AgentMessage[] = [];
+
+    // Try normalized pi_messages table first.
+    const msgRows = this.sql.exec(
+      `SELECT content FROM pi_messages WHERE channel_id = ? ORDER BY idx`,
       channelId,
     ).toArray();
-    let initialMessages: AgentMessage[] = [];
-    if (sessionRow.length > 0 && sessionRow[0]!["messages_blob"]) {
+    if (msgRows.length > 0) {
       try {
-        initialMessages = JSON.parse(sessionRow[0]!["messages_blob"] as string) as AgentMessage[];
+        initialMessages = msgRows.map(r => JSON.parse(r["content"] as string) as AgentMessage);
       } catch (err) {
-        console.warn(
-          `[AgentWorkerBase] failed to parse persisted messages for channel=${channelId}:`,
-          err,
-        );
-        initialMessages = [];
+        console.warn(`[AgentWorkerBase] failed to parse pi_messages for channel=${channelId}:`, err);
+      }
+    } else {
+      // Lazy migration: read from legacy pi_sessions blob, migrate to pi_messages.
+      const sessionRow = this.sql.exec(
+        `SELECT messages_blob FROM pi_sessions WHERE channel_id = ?`, channelId,
+      ).toArray();
+      if (sessionRow.length > 0 && sessionRow[0]!["messages_blob"]) {
+        try {
+          initialMessages = JSON.parse(sessionRow[0]!["messages_blob"] as string) as AgentMessage[];
+          // Migrate to normalized table.
+          for (let i = 0; i < initialMessages.length; i++) {
+            this.sql.exec(
+              `INSERT INTO pi_messages (channel_id, idx, content) VALUES (?, ?, ?)`,
+              channelId, i, JSON.stringify(initialMessages[i]),
+            );
+          }
+          this.sql.exec(`DELETE FROM pi_sessions WHERE channel_id = ?`, channelId);
+        } catch (err) {
+          console.warn(`[AgentWorkerBase] failed to migrate pi_sessions for channel=${channelId}:`, err);
+        }
       }
     }
 
@@ -582,14 +612,39 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   }
 
   /** Persist the current `AgentMessage[]` snapshot for warm restart. Called
-   *  by PiRunner's `onPersist` hook on every `message_end` / `agent_end`. */
+   *  by PiRunner's `onPersist` hook on every `message_end` / `agent_end`.
+   *  Append-only: only new messages are INSERTed. The last existing row is
+   *  always updated because pi-agent-core mutates the last message in-place
+   *  during streaming (partial → final). */
   private persistMessages(channelId: string, messages: AgentMessage[]): void {
-    this.sql.exec(
-      `INSERT OR REPLACE INTO pi_sessions (channel_id, updated_at, messages_blob) VALUES (?, ?, ?)`,
-      channelId,
-      Date.now(),
-      JSON.stringify(messages),
-    );
+    const rows = this.sql.exec(
+      `SELECT COUNT(*) as cnt FROM pi_messages WHERE channel_id = ?`, channelId,
+    ).toArray();
+    const existingCount = (rows[0]?.["cnt"] as number) ?? 0;
+
+    if (messages.length < existingCount) {
+      // Context window management trimmed messages — remove excess rows.
+      this.sql.exec(
+        `DELETE FROM pi_messages WHERE channel_id = ? AND idx >= ?`,
+        channelId, messages.length,
+      );
+    }
+
+    // Update the last existing row (pi-agent-core mutates last message in-place).
+    if (existingCount > 0 && messages.length >= existingCount) {
+      this.sql.exec(
+        `UPDATE pi_messages SET content = ? WHERE channel_id = ? AND idx = ?`,
+        JSON.stringify(messages[existingCount - 1]), channelId, existingCount - 1,
+      );
+    }
+
+    // Append new messages.
+    for (let i = existingCount; i < messages.length; i++) {
+      this.sql.exec(
+        `INSERT INTO pi_messages (channel_id, idx, content) VALUES (?, ?, ?)`,
+        channelId, i, JSON.stringify(messages[i]),
+      );
+    }
   }
 
   // ── Pi event → channel message publishing ──────────────────────────────
@@ -1303,9 +1358,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   /**
    * Called on the newly cloned agent DO after cloneDO copies parent's SQLite.
    * Rewrites identity, clears ephemeral state, resubscribes to forked channel.
-   * The cloned worker boots its own PiRunner from the persisted
-   * `messages_blob` on first user message (optionally truncated to
-   * `forkAtMessageIndex` messages if the caller forked mid-history).
+   * The cloned worker boots its own PiRunner from the persisted pi_messages
+   * on first user message (optionally truncated to `forkAtMessageIndex`).
    */
   async postClone(
     parentObjectKey: string,
@@ -1328,34 +1382,44 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.sql.exec(`DELETE FROM delivery_cursor`);
     this.sql.exec(`DELETE FROM pending_calls`);
 
-    // Migrate the parent's pi_sessions row from oldChannelId → newChannelId.
-    // If forking mid-history, slice the parent's messages_blob to the desired
-    // length so the cloned runner starts with the truncated history.
-    const parentSession = this.sql.exec(
-      `SELECT messages_blob FROM pi_sessions WHERE channel_id = ?`,
-      oldChannelId,
-    ).toArray();
-    if (parentSession.length > 0) {
-      let messagesBlob = parentSession[0]!["messages_blob"] as string;
-      if (forkAtMessageIndex != null) {
-        try {
-          const parsed = JSON.parse(messagesBlob) as AgentMessage[];
-          const truncated = parsed.slice(0, forkAtMessageIndex);
-          messagesBlob = JSON.stringify(truncated);
-        } catch (err) {
-          console.warn(
-            `[AgentWorkerBase] failed to truncate parent messages_blob at index=${forkAtMessageIndex}:`,
-            err,
-          );
-        }
-      }
-      this.sql.exec(`DELETE FROM pi_sessions WHERE channel_id = ?`, oldChannelId);
+    // Migrate parent's message history from oldChannelId → newChannelId.
+    // Check pi_messages first (normalized), fall back to legacy pi_sessions blob.
+    const hasPiMessages = (this.sql.exec(
+      `SELECT COUNT(*) as cnt FROM pi_messages WHERE channel_id = ?`, oldChannelId,
+    ).toArray()[0]?.["cnt"] as number ?? 0) > 0;
+
+    if (hasPiMessages) {
+      // Normalized path: rename channel via UPDATE, trim via DELETE.
       this.sql.exec(
-        `INSERT OR REPLACE INTO pi_sessions (channel_id, updated_at, messages_blob) VALUES (?, ?, ?)`,
-        newChannelId,
-        Date.now(),
-        messagesBlob,
+        `UPDATE pi_messages SET channel_id = ? WHERE channel_id = ?`,
+        newChannelId, oldChannelId,
       );
+      if (forkAtMessageIndex != null) {
+        this.sql.exec(
+          `DELETE FROM pi_messages WHERE channel_id = ? AND idx >= ?`,
+          newChannelId, forkAtMessageIndex,
+        );
+      }
+    } else {
+      // Legacy blob path: migrate to pi_messages during fork.
+      const parentSession = this.sql.exec(
+        `SELECT messages_blob FROM pi_sessions WHERE channel_id = ?`, oldChannelId,
+      ).toArray();
+      if (parentSession.length > 0) {
+        try {
+          let messages = JSON.parse(parentSession[0]!["messages_blob"] as string) as AgentMessage[];
+          if (forkAtMessageIndex != null) messages = messages.slice(0, forkAtMessageIndex);
+          for (let i = 0; i < messages.length; i++) {
+            this.sql.exec(
+              `INSERT INTO pi_messages (channel_id, idx, content) VALUES (?, ?, ?)`,
+              newChannelId, i, JSON.stringify(messages[i]),
+            );
+          }
+        } catch (err) {
+          console.warn(`[AgentWorkerBase] failed to migrate pi_sessions during fork:`, err);
+        }
+        this.sql.exec(`DELETE FROM pi_sessions WHERE channel_id = ?`, oldChannelId);
+      }
     }
 
     // Rename approvalLevel state key.
@@ -1493,10 +1557,13 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   override async getState(): Promise<Record<string, unknown>> {
     const subscriptions = this.sql.exec(`SELECT * FROM subscriptions`).toArray();
-    const piSessions = this.sql.exec(`SELECT * FROM pi_sessions`).toArray();
+    const piMessages = this.sql.exec(
+      `SELECT channel_id, idx, LENGTH(content) as content_len FROM pi_messages`,
+    ).toArray();
+    const piSessionsLegacy = this.sql.exec(`SELECT channel_id, updated_at FROM pi_sessions`).toArray();
     const pendingCalls = this.sql.exec(`SELECT * FROM pending_calls`).toArray();
     const deliveryCursors = this.sql.exec(`SELECT * FROM delivery_cursor`).toArray();
-    return { subscriptions, piSessions, pendingCalls, deliveryCursors };
+    return { subscriptions, piMessages, piSessionsLegacy, pendingCalls, deliveryCursors };
   }
 
   // Reference SAFE_TOOL_NAMES_DEFAULT to suppress unused-import warnings;
