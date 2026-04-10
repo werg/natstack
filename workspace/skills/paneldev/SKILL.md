@@ -40,7 +40,7 @@ Create a project via eval with the `imports` parameter:
 eval({ code: `
   import { createProject } from "@workspace-skills/paneldev";
   await createProject({ projectType: "panel", name: "my-app", title: "My App" });
-`, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
+`, timeout: 30000 })
 ```
 
 Edit the generated files, then commit, push, and launch:
@@ -51,16 +51,16 @@ eval({ code: `
   import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/my-app", "Initial launch");
   await openPanel("panels/my-app");
-`, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
+`, timeout: 30000 })
 ```
 
 ## Common Tasks
 
 | Task | How |
 |------|-----|
-| Create project | `eval` with `imports: { "@workspace-skills/paneldev": "latest" }` — call `createProject({ projectType, name, title })` |
-| Commit & push | `eval` with `imports` — call `commitAndPush("panels/my-app", "message")` |
-| Launch panel | `eval` with `imports` — `commitAndPush(...)` + `openPanel(source)` |
+| Create project | `eval` — `import { createProject } from "@workspace-skills/paneldev"` then `createProject({ projectType, name, title })` |
+| Commit & push | `eval` — `import { commitAndPush } from "@workspace-skills/paneldev"` then `commitAndPush("panels/my-app", "message")` |
+| Launch panel | `eval` — `commitAndPush(...)` + `openPanel(source)` |
 | Launch worker | `eval` — `workers.create({ source: "workers/my-worker", contextId })` |
 | Read a file | `Read({ file_path: "panels/my-app/index.tsx" })` |
 | Edit a file | `Edit({ file_path: "panels/my-app/index.tsx", old_string: "...", new_string: "..." })` |

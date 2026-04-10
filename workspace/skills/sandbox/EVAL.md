@@ -36,28 +36,30 @@ eval({ code: `
 
 ## Dynamic Imports
 
-Use the `imports` parameter to build and load packages on-demand — both workspace packages and third-party npm packages.
+### Workspace packages — auto-resolved
 
-### Workspace packages
+Workspace packages (`@workspace/*`, `@workspace-skills/*`, `@natstack/*`) are **automatically built and loaded** when you import them. Just write the import — no `imports` parameter needed:
 
 ```
-eval({
-  code: `
-    import { createProject } from "@workspace-skills/paneldev";
-    await createProject({ projectType: "panel", name: "my-app", title: "My App" });
-  `,
-  imports: { "@workspace-skills/paneldev": "latest" },
-  timeout: 30000
-})
+eval({ code: `
+  import { createProject } from "@workspace-skills/paneldev";
+  await createProject({ projectType: "panel", name: "my-app", title: "My App" });
+`, timeout: 30000 })
 ```
 
-Values are git refs: `"latest"` (current HEAD), a branch name, tag, or commit SHA.
+The first import triggers an on-demand build from git (a few seconds). Subsequent imports use the cached build.
 
-**Important:** Workspace packages are built from git, not from the working tree. If you edit a workspace package's source files, you must **commit and push** the changes before they take effect in eval imports. Use `commitAndPush` from the paneldev skill or the GitClient API.
+To pin a specific git ref (branch, tag, or commit SHA), use the `imports` parameter explicitly:
 
-### npm packages
+```
+eval({ code: `...`, imports: { "@workspace-skills/paneldev": "my-branch" } })
+```
 
-Use the `"npm:<version>"` value format to install and bundle third-party npm packages:
+**Important:** Workspace packages are built from git, not from the working tree. If you edit source files, you must **commit and push** before changes take effect. Use `commitAndPush` from the paneldev skill or the GitClient API.
+
+### npm packages — require `imports` parameter
+
+npm packages are NOT auto-resolved. Use the `imports` parameter with `"npm:<version>"`:
 
 ```
 eval({

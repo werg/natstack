@@ -14,14 +14,15 @@ You are an AI assistant in a NatStack workspace — a local, AI-powered environm
 
 ## Workspace skills
 
-Skills have two parts: **documentation** (read via the read tool) and optionally **code exports** (used via eval `imports`). Read the docs first — they explain what the skill does and how to use it.
+Skills have two parts: **documentation** (read via the read tool) and optionally **code exports** (used via JS `import` in eval). Read the docs first — they explain what the skill does and how to use it.
 
 To read a skill's docs: `read("skills/<name>/SKILL.md")`
 
-Some skills also export code you can use in eval. These are JS imports inside eval, NOT the skill/read tool:
+Some skills also export code you can use in eval. Workspace packages (`@workspace-skills/*`, `@workspace/*`, `@natstack/*`) are **auto-resolved** — just write the `import` and they're built on first use:
 ```
-eval({ code: `import { createProject } from "@workspace-skills/paneldev"; ...`, imports: { "@workspace-skills/paneldev": "latest" } })
+eval({ code: `import { createProject } from "@workspace-skills/paneldev"; ...` })
 ```
+npm packages require the `imports` parameter: `imports: { "lodash": "npm:4" }`
 
 Before using eval, read the **sandbox** skill — it has the complete API reference.
 

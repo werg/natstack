@@ -58,24 +58,23 @@ These are built on first use. Pass them in the eval `imports` parameter:
 
 | Module | `imports` value | What it provides |
 |--------|----------------|-----------------|
-| `@workspace-skills/*` | `"latest"` | Skill code (e.g., `"@workspace-skills/paneldev": "latest"`) |
-| `@workspace/*` packages | `"latest"` | Workspace packages not pre-bundled above |
-| `@natstack/*` packages | `"latest"` | Platform packages (e.g., `"@natstack/git": "latest"`) |
-| npm packages | `"npm:<version>"` | Any npm package (e.g., `"lodash": "npm:4"`, `"d3": "npm:7"`) |
+| `@workspace-skills/*` | auto-resolved | Just `import` — built on first use |
+| `@workspace/*` packages | auto-resolved | Just `import` — built on first use |
+| `@natstack/*` packages | auto-resolved | Just `import` — built on first use |
+| npm packages | `imports: { "lodash": "npm:4" }` | Requires explicit `imports` parameter |
 
-Example:
+Workspace packages (`@workspace*`, `@natstack/*`) are **auto-resolved** — just write the `import` statement in your code and they're built on-demand. No `imports` parameter needed.
+
+npm packages require the `imports` parameter with `"npm:<version>"`.
+
+To pin a workspace package to a specific git ref, use the `imports` parameter explicitly: `imports: { "pkg": "branch-name" }`.
+
 ```
-eval({
-  code: `
-    import { GitClient } from "@natstack/git";
-    import { createProject } from "@workspace-skills/paneldev";
-    // ...
-  `,
-  imports: {
-    "@natstack/git": "latest",
-    "@workspace-skills/paneldev": "latest",
-  }
-})
+eval({ code: `
+  import { GitClient } from "@natstack/git";
+  import { createProject } from "@workspace-skills/paneldev";
+  // workspace packages: just import, auto-resolved
+` })
 ```
 
 See [EVAL.md](EVAL.md) for details. On-demand imports are not available in inline_ui/feedback_custom (use eval to preload first).
@@ -87,7 +86,7 @@ See [INTERACTION_PATTERNS.md](INTERACTION_PATTERNS.md) for when to use inline UI
 ## Critical Rules
 
 1. **Static imports only** — `import { rpc } from "@workspace/runtime"` (NOT `await import(...)`)
-2. **`@natstack/*` packages are importable** — `import { GitClient } from "@natstack/git"` works via the `imports` parameter
+2. **Workspace packages are auto-resolved** — `import { GitClient } from "@natstack/git"` just works. npm packages require `imports: { "lodash": "npm:4" }`
 3. **Components must `export default`** — named exports alone won't work for inline_ui/feedback_custom
 4. **Inline UI components receive `{ props, chat }`** — not raw props
 5. **Feedback components receive `{ onSubmit, onCancel, onError, chat }`**

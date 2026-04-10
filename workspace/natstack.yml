@@ -39,8 +39,8 @@ initPanels:
         First, read the skill docs: `read("skills/system-testing/SKILL.md")`
 
         The system-testing skill exports code (HeadlessRunner, TestRunner, test suites)
-        that you run inside eval. Use the eval tool's `imports` parameter to build the
-        skill package on-demand — this is a JS `import`, not the skill tool:
+        that you run inside eval. Workspace packages are auto-resolved — just write
+        the `import` statement:
         ```
         eval({
           code: `
@@ -55,10 +55,8 @@ initPanels:
             scope.results = results;
             return { total: results.total, passed: results.passed, failed: results.failed };
           `,
-          imports: { "@workspace-skills/system-testing": "latest" },
         })
         ```
-        The `imports` parameter builds the skill package on-demand and makes it available for import.
 
         ## When something goes wrong
         Stop as soon as you encounter a problem — whether it's an import failure, a test

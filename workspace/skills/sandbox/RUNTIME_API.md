@@ -269,7 +269,6 @@ eval({
     await git.push("/my-lib", { remote: "origin", ref: "fix/my-change" });
     // Branch is auto-pushed to GitHub
   `,
-  imports: { "@natstack/git": "latest" },
 })
 ```
 

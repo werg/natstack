@@ -87,7 +87,7 @@ export function validateRequires(
       return {
         valid: false,
         missingModule: spec,
-        error: `Module "${spec}" not available. Use the imports parameter to load it on-demand, e.g. imports: { "${spec}": "latest" }`,
+        error: `Module "${spec}" not available. For npm packages, use the imports parameter: imports: { "${spec}": "npm:latest" }`,
       };
     }
   }

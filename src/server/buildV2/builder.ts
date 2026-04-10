@@ -623,7 +623,7 @@ export function generateModuleMapBootstrap(target: BootstrapTarget = "panel"): s
 globalThis.__natstackRequire__ = function(id) {
   const mod = globalThis.__natstackModuleMap__[id];
   if (mod) return mod;
-  throw new Error('Module "' + id + '" not available. Use the imports parameter to load it on-demand, e.g. imports: { "' + id + '": "latest" }');
+  throw new Error('Module "' + id + '" not available. Workspace packages (@workspace/*, @natstack/*) are auto-resolved. For npm packages, use imports: { "' + id + '": "npm:latest" }');
 };`;
 
   if (target === "worker") return base;
@@ -656,9 +656,30 @@ export function generateExposeModuleCode(
       `globalThis.__natstackModuleMap__[${JSON.stringify(dep)}] = __mod${index}__;`,
   );
 
+  // Register Node built-in shims if @workspace/runtime is exposed.
+  // This lets eval code use `import fs from "fs"` and `import path from "path"`
+  // transparently — they delegate to @workspace/runtime's RPC-backed implementations.
+  const shimLines: string[] = [];
+  const runtimeIndex = exposeModules.indexOf("@workspace/runtime");
+  if (runtimeIndex >= 0) {
+    const rtVar = `__mod${runtimeIndex}__`;
+    shimLines.push(`(function() {
+  var _fs = ${rtVar}.fs;
+  if (!_fs) return;
+  var fsShim = { promises: _fs, default: null, constants: {} };
+  var methods = ["readFile","writeFile","readdir","stat","lstat","mkdir","rmdir","unlink","rename","copyFile","access","rm","symlink","readlink","realpath","appendFile","chmod","chown","truncate","utimes","open"];
+  methods.forEach(function(m) { if (_fs[m]) fsShim[m] = function() { return _fs[m].apply(_fs, arguments); }; });
+  fsShim.default = fsShim;
+  var map = globalThis.__natstackModuleMap__;
+  map["fs"] = fsShim; map["node:fs"] = fsShim;
+  map["fs/promises"] = _fs; map["node:fs/promises"] = _fs;
+})();`);
+  }
+
   return `${generateModuleMapBootstrap(target)}
 ${importLines.join("\n")}
 ${registerLines.join("\n")}
+${shimLines.join("\n")}
 `;
 }
 

@@ -46,14 +46,14 @@ export function buildEvalTool(opts: BuildEvalToolOptions): MethodDefinition {
 
 Call \`await help()\` first when you need the live service catalog or runtime surface for this context. Only \`chat\`, \`scope\`, \`scopes\`, and \`help\` are pre-injected. Import everything else from \`@workspace/runtime\` using static \`import\`, not \`await import(...)\`.
 
-To use workspace skills or extra packages, pass the \`imports\` parameter — e.g. \`imports: { "@workspace-skills/system-testing": "latest" }\`. These are built on-demand and made available for \`import\` in the code. For npm packages use \`"npm:<version>"\`.
+Workspace packages (\`@workspace/*\`, \`@workspace-skills/*\`, \`@natstack/*\`) are auto-resolved — just write the \`import\` statement. npm packages require the \`imports\` parameter with \`"npm:<version>"\`.
 
 \`return\` sends a value back to the agent. \`console.log\` streams in real time. \`scope\` persists across eval calls.`,
     parameters: z.object({
       code: z.string().describe("The TypeScript/JavaScript code to execute"),
       syntax: z.enum(["typescript", "jsx", "tsx"]).default("tsx").describe("Target syntax"),
       imports: z.record(z.string(), z.string()).optional()
-        .describe("Packages to build on-demand. For workspace packages: \"latest\". For npm: \"npm:<version>\". E.g. { \"@workspace-skills/paneldev\": \"latest\", \"lodash\": \"npm:4\" }"),
+        .describe("On-demand package builds. Workspace packages (@workspace/*, @natstack/*) are auto-resolved and don't need this. Use for npm packages (\"npm:<version>\") or to pin a workspace package to a specific git ref."),
     }),
     streaming: true,
     execute: async (args: unknown, ctx: MethodExecutionContext) => {
@@ -85,7 +85,7 @@ To use workspace skills or extra packages, pass the \`imports\` parameter — e.
                 runtime,
                 imports: {
                   description: "Use the eval tool's `imports` parameter to load additional packages on-demand.",
-                  usage: 'imports: { "@workspace-skills/system-testing": "latest", "lodash": "npm:4" }',
+                  usage: 'Workspace packages (@workspace/*, @natstack/*) are auto-resolved. For npm: imports: { "lodash": "npm:4" }. To pin a git ref: imports: { "pkg": "branch-name" }',
                   workspaceSkills: skillPackages ?? "Use build.listSkills to discover available skills",
                   npmPackages: 'Use "npm:<version>" for npm packages, e.g. "npm:latest" or "npm:^4.0.0"',
                 },

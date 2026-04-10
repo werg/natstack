@@ -33,7 +33,6 @@ eval({
     scope.results = results;
     return { total: results.total, passed: results.passed, failed: results.failed };
   `,
-  imports: { "@workspace-skills/system-testing": "latest" },
 })
 ```
 
@@ -145,7 +144,6 @@ eval({
     await git.clone({ url: gitConfig.serverUrl + "/github.com/werg/natstack.git", dir: "natstack" });
     scope.git = git;
   `,
-  imports: { "@natstack/git": "latest" },
 })
 ```
 

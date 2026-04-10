@@ -290,22 +290,37 @@ export async function executeSandbox(
       };
     }
 
-    const validation = validateRequires(transformed.requires, requireFn);
+    let validation = validateRequires(transformed.requires, requireFn);
+    if (!validation.valid && options.loadImport) {
+      // Auto-resolve: build missing workspace packages on-demand
+      const moduleMap = getModuleMap();
+      const missingWorkspace = transformed.requires.filter(
+        (r) => !moduleMap[r] && (r.startsWith("@workspace") || r.startsWith("@natstack/")),
+      );
+      if (missingWorkspace.length > 0) {
+        options.onConsole?.(`[eval] Auto-loading: ${missingWorkspace.join(", ")}...`);
+        const autoImports = Object.fromEntries(
+          missingWorkspace.map((m) => [m, "latest"]),
+        );
+        await loadImports(autoImports, options.loadImport);
+        validation = validateRequires(transformed.requires, requireFn);
+      }
+    }
     if (!validation.valid) {
       const missing = validation.missingModule!;
       const moduleMap = getModuleMap();
       const available = Object.keys(moduleMap);
-      // Build a suggested imports object for ALL missing modules
       const missingModules = transformed.requires.filter(
         (r) => !moduleMap[r],
       );
+      // For npm packages, suggest the imports parameter
       const suggestedImports = Object.fromEntries(
-        missingModules.map((m) => [m, "latest"]),
+        missingModules.map((m) => [m, m.startsWith("@workspace") || m.startsWith("@natstack/") ? "latest" : "npm:latest"]),
       );
       return {
         success: false,
         consoleOutput: "",
-        error: `Module "${missing}" not available. Add the imports parameter to your eval call:\n  imports: ${JSON.stringify(suggestedImports)}\nCurrently loaded: ${available.join(", ")}`,
+        error: `Module "${missing}" not available. For npm packages, add the imports parameter:\n  imports: ${JSON.stringify(suggestedImports)}\nCurrently loaded: ${available.join(", ")}`,
       };
     }
 

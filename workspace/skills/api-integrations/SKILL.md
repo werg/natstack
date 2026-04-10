@@ -256,7 +256,6 @@ eval({
     const events = await calendar.listEvents({ maxResults: 5 });
     for (const e of events) console.log(e.summary, e.start);
   `,
-  imports: { "@workspace/integrations": "latest" },
   timeout: 30000
 })
 ```
@@ -309,7 +308,6 @@ eval({
     import { createProject } from "@workspace-skills/paneldev";
     await createProject({ projectType: "panel", name: "notion", title: "Notion" });
   `,
-  imports: { "@workspace-skills/paneldev": "latest" },
   timeout: 30000
 })
 ```

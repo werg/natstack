@@ -18,7 +18,7 @@ Scaffold a new project via eval with the `imports` parameter. This writes templa
 eval({ code: `
   import { createProject } from "@workspace-skills/paneldev";
   await createProject({ projectType: "panel", name: "my-app", title: "My App" });
-`, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
+`, timeout: 30000 })
 ```
 
 After creation, the files are available in your working directory at `panels/my-app/`.
@@ -65,7 +65,7 @@ eval({ code: `
   import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/my-app", "Initial launch");
   await openPanel("panels/my-app");
-`, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
+`, timeout: 30000 })
 ```
 
 ### 5. Iterate
@@ -78,7 +78,7 @@ eval({ code: `
   import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/my-app", "Update");
   await openPanel("panels/my-app");
-`, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
+`, timeout: 30000 })
 ```
 
 ---
@@ -87,7 +87,7 @@ eval({ code: `
 
 ### New Panel
 
-1. `eval` with `imports: { "@workspace-skills/paneldev": "latest" }` — call `createProject({ ... })`
+1. `eval` — `import { createProject } from "@workspace-skills/paneldev"` then call `createProject({ ... })`
    - `createProject()` accepts an optional `template` parameter (e.g., `template: "svelte"`) to scaffold with a non-default workspace template. When omitted, the default React+Radix template is used.
 2. Edit the generated `index.tsx` using Edit/Write tools
 3. Launch via eval (`commitAndPush(...)` + `openPanel(...)`)

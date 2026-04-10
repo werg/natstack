@@ -34,9 +34,10 @@ eval({
     scope.results = results;
     return { total: results.total, passed: results.passed, failed: results.failed };
   `,
-  imports: { "@workspace-skills/system-testing": "latest" },
 })
 ```
+
+Workspace packages like `@workspace-skills/system-testing` are auto-resolved — the build system builds them on first import. No `imports` parameter needed.
 
 ## Inspecting Results
 

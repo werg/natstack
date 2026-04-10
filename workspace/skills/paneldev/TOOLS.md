@@ -62,7 +62,7 @@ Grep({ pattern: "import.*runtime", type: "ts" })
 
 ## Creating Projects
 
-Create new projects via eval with the `imports` parameter. The `imports` parameter triggers an on-demand library build and loads the skill package before code execution.
+Create new projects via eval. Workspace skill packages are auto-resolved — just write the `import` statement.
 
 Supported types: `panel`, `package`, `skill`, `agent`, `worker`. Each scaffolds into its directory (`panels/`, `packages/`, `skills/`, `agents/`, `workers/`).
 
@@ -72,7 +72,7 @@ Supported types: `panel`, `package`, `skill`, `agent`, `worker`. Each scaffolds 
 eval({ code: `
   import { createProject } from "@workspace-skills/paneldev";
   await createProject({ projectType: "panel", name: "my-app", title: "My App" });
-`, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
+`, timeout: 30000 })
 ```
 
 **`createProject(params)` parameters:**
@@ -161,7 +161,7 @@ eval({ code: `
   import { commitAndPush } from "@workspace-skills/paneldev";
   const result = await commitAndPush("panels/my-app", "Update");
   console.log(result);
-`, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
+`, timeout: 30000 })
 ```
 
 **`commitAndPush(dir, message)`** — stages all changes, commits, and pushes. Auto-initializes git if the directory doesn't have `.git` yet.
@@ -323,7 +323,7 @@ eval({ code: `
   import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/my-app", "Initial");
   await openPanel("panels/my-app");
-`, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
+`, timeout: 30000 })
 ```
 
 #### Rebuild after edits
@@ -334,7 +334,7 @@ eval({ code: `
   import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/my-app", "Update");
   await openPanel("panels/my-app");
-`, imports: { "@workspace-skills/paneldev": "latest" }, timeout: 30000 })
+`, timeout: 30000 })
 ```
 
 ---
