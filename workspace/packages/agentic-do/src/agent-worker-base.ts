@@ -716,6 +716,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     void channel.send(participantId, msgId, typingData, {
       contentType: "typing",
       persist: true,
+    }).catch((err) => {
+      console.error(`[AgentWorkerBase] sendTypingIndicator failed for channel=${channelId}:`, err);
+      state.typingMsgId = null;
     });
   }
 
@@ -1266,13 +1269,19 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     if (!this.shouldProcess(event)) return;
 
     const input = this.buildTurnInput(event);
+
+    // Send the typing indicator FIRST — before any async work (roster refresh,
+    // runner init, image resizing). The old system had "bootstrap typing" for
+    // exactly this reason: the user must see "Agent typing" instantly, even if
+    // the runner takes seconds to initialize on the first message. The indicator
+    // gets completed on the first assistant message_start, or on agent_end/error.
+    this.sendTypingIndicator(channelId);
+
     await this.refreshRoster(channelId);
     const runner = await this.getOrCreateRunner(channelId);
 
-    // Resize user-pasted image attachments via the server-side image service
-    // (W1k). Most providers will happily accept oversize images but at
-    // noticeable token/latency cost. Best-effort: on failure fall through to
-    // the original bytes.
+    // Resize user-pasted image attachments via the server-side image service.
+    // Best-effort: on failure fall through to the original bytes.
     const images: ImageContent[] = [];
     for (const att of input.attachments ?? []) {
       if (!att.mimeType?.startsWith("image/")) continue;
@@ -1304,15 +1313,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
 
     const imagesArg = images.length > 0 ? images : undefined;
-
-    // Send a typing indicator BEFORE the runner starts so the user sees
-    // immediate "Agent typing" feedback. The indicator will be completed
-    // when the first assistant message arrives (message_start in publishPiEvent),
-    // or on agent_end/error as cleanup.
-    if (!runner.isStreaming) {
-      this.sendTypingIndicator(channelId);
-    }
-
     if (runner.isStreaming) {
       await runner.steer(input.content, imagesArg);
     } else {
