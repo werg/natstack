@@ -32,6 +32,10 @@ export function createBuildService(deps: {
       gc: { args: z.tuple([z.array(z.string())]) },
       getAboutPages: { args: z.tuple([]) },
       hasUnit: { args: z.tuple([z.string()]) },
+      listSkills: {
+        description: "List available workspace skill packages that can be loaded via the eval imports parameter.",
+        args: z.tuple([]),
+      },
     },
     handler: async (_ctx, method, args) => {
       const bs = deps.buildSystem;
@@ -51,6 +55,9 @@ export function createBuildService(deps: {
         case "gc": return bs.gc(args[0] as string[]);
         case "getAboutPages": return bs.getAboutPages();
         case "hasUnit": return bs.hasUnit(args[0] as string);
+        case "listSkills": return bs.getGraph().allNodes()
+          .filter(n => n.name.startsWith("@workspace-skills/"))
+          .map(n => ({ name: n.name, path: n.relativePath, description: n.manifest.description }));
         default: throw new Error(`Unknown build method: ${method}`);
       }
     },

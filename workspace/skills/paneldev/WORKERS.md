@@ -221,65 +221,34 @@ AgentWorkerBase supports semantic conversation forking — cloning at a specific
 | Method | Description |
 |--------|-------------|
 | `canFork()` | Preflight: returns `{ ok: true }` if single-channel, rejects multi-channel agents |
-| `postClone(parentObjectKey, newChannelId, oldChannelId, forkPointPubsubId)` | Post-clone cleanup on the new DO: fixes identity, resolves fork session, clears ephemeral state, resubscribes to forked channel |
+| `postClone(parentObjectKey, newChannelId, oldChannelId, forkPointMessageId)` | Post-clone cleanup on the new DO: fixes identity, migrates pi_sessions row, clears ephemeral state, resubscribes to forked channel |
 
-**`postClone()` sequence**: fix `__objectKey` + `do_identity` → record fork metadata → resolve `forkSessionId` from `turn_map` (most recent session at or before fork point) → mark harnesses stopped → clear ephemeral tables → rename approval keys → delete old subscription + resubscribe to forked channel → call `onPostClone()`.
+**`postClone()` sequence**: fix `__objectKey` → record fork metadata → migrate `pi_sessions` row (oldChannelId → newChannelId, truncate messages_blob at fork point) → rename approval keys → clear ephemeral state → delete old subscription + resubscribe to forked channel → call `onPostClone()`.
 
-**Resume after fork**: `getResumeSessionIdForChannel()` returns `forkSessionId` on first call (consumed after use), passed as `RESUME_SESSION_ID` to the harness. Claude SDK forks the conversation at that session point. Subsequent spawns use the latest session.
+**Resume after fork**: the cloned DO's `getOrCreateRunner()` restores messages from the truncated `messages_blob`, creating a fresh `Agent` with the forked conversation history. No harness respawn or session-file management.
 
 **Fork worker** (`workspace/workers/fork/`): stateless fetch handler that orchestrates forks. Uses platform RPC primitives (`workerd.cloneDO`, `workerd.destroyDO`) for filesystem ops and `fetch()` for DO method calls (`canFork`, `postClone`, `subscribeChannel`). Trigger: `POST /fork` with `{ channelId, forkPointPubsubId, exclude?, replace? }`. Rolls back cloned SQLite and replacement subscriptions on failure.
 
-### Tool Approval via Continuations
+### Tool Approval via the Approval Gate Extension
 
-Tool approval uses the **async continuation pattern** -- the DO stores pending call state in SQLite (survives hibernation), calls `channel.callMethod()` (async, routed through the Channel DO), and receives the result via POST-back to `onCallResult()` → `handleCallResult()`.
+Tool approval is handled by the **approval-gate extension** (`packages/harness/src/extensions/approval-gate.ts`). The extension intercepts `tool_call` events before tool execution and checks the approval level:
+
+- **Level 2 (Full Auto)**: all tools run without prompts (default)
+- **Level 1 (Auto Safe)**: read-only tools (`read`, `ls`, `grep`, `find`) auto-approve; others get a UI confirm prompt via the `NatStackExtensionUIContext` bridge
+- **Level 0 (Ask All)**: every tool call gets a confirm prompt
+
+The approval level is read lazily via a closure-bound getter so the worker can change it mid-conversation (e.g., when the channel config updates).
 
 ```typescript
-// In your onHarnessEvent handler for "approval-needed":
-case "approval-needed": {
-  const callId = crypto.randomUUID();
-  const turn = this.getActiveTurn(harnessId);
-  const panelId = turn?.senderParticipantId;
-  if (!panelId) {
-    await this.server.sendHarnessCommand(harnessId, {
-      type: "approve-tool", toolUseId: event.toolUseId, allow: false,
-    });
-    break;
-  }
-  // Store continuation in SQLite (survives hibernation)
-  this.pendingCall(callId, channelId, 'approval', {
-    harnessId, toolUseId: event.toolUseId,
-  });
-  // Async call via Channel DO — result arrives at onCallResult
-  const channel = this.createChannelClient(channelId);
-  await channel.callMethod(
-    this.getParticipantId(channelId)!,
-    panelId, callId, 'request_tool_approval',
-    { agentId: this.getParticipantId(channelId), toolName: event.toolName, toolArgs: event.input },
-  );
-  break;
+// The approval gate is wired automatically by PiRunner. To customize
+// the approval level per channel:
+protected override getApprovalLevel(channelId: string): ApprovalLevel {
+  // 0 = ask all, 1 = auto-safe, 2 = full auto
+  return 2;
 }
 ```
 
-```typescript
-// Override handleCallResult to process the approval response:
-protected override async handleCallResult(
-  type: string, context: Record<string, unknown>,
-  channelId: string, result: unknown, isError: boolean,
-): Promise<void> {
-  if (type === 'approval') {
-    const { harnessId, toolUseId } = context as { harnessId: string; toolUseId: string };
-    let allow = false;
-    if (!isError && result && typeof result === 'object') {
-      allow = (result as Record<string, unknown>)["allow"] === true;
-    }
-    await this.server.sendHarnessCommand(harnessId, {
-      type: "approve-tool", toolUseId, allow,
-    });
-  }
-}
-```
-
-The built-in `AiChatWorker` implements this pattern -- see `workspace/workers/agent-worker/ai-chat-worker.ts` for the full reference implementation.
+Under the hood, PiRunner wraps each tool's `execute()` to consult the extension runtime's `tool_call` handlers first. If a handler returns `{ block: true, reason }`, the wrapper throws an error which pi-agent-core's loop catches and feeds to the LLM as an error tool result. No continuation store or harness commands — the extension runs in-process.
 
 ## 7. Testing with createTestDO()
 
@@ -291,17 +260,17 @@ import { createTestDO } from "@workspace/runtime/worker";
 import { MyWorker } from "./my-worker.js";
 
 describe("MyWorker", () => {
-  it("spawns harness on first message", async () => {
+  it("initializes PiRunner on first message", async () => {
     const { instance, sql } = await createTestDO(MyWorker);
     await instance.subscribeChannel({ channelId: "ch-1", contextId: "ctx-1" });
 
     const event = {
       id: 1, messageId: "msg-1", type: "message",
       payload: { content: "Hello" }, senderId: "user-1",
-      senderType: "panel", ts: Date.now(), persist: true,
+      senderMetadata: { type: "panel" }, ts: Date.now(), persist: true,
     };
 
-    // onChannelEvent returns void — side effects happen via direct calls to Channel DO and server
+    // onChannelEvent: shouldProcess → buildTurnInput → getOrCreateRunner → runTurn
     await instance.onChannelEvent("ch-1", event);
   });
 });
@@ -310,7 +279,7 @@ describe("MyWorker", () => {
 The `sql` object allows direct database inspection:
 
 ```typescript
-const rows = sql.exec(`SELECT * FROM active_turns`).toArray();
+const rows = sql.exec(`SELECT * FROM pi_sessions`).toArray();
 expect(rows).toHaveLength(1);
 ```
 
@@ -329,11 +298,9 @@ This calls `getState()` on the DO and returns all table contents as JSON:
 ```json
 {
   "subscriptions": [...],
-  "harnesses": [...],
-  "activeTurns": [...],
-  "checkpoints": [...],
-  "inFlightTurns": [...],
-  "pendingCalls": [...]
+  "piSessions": [...],
+  "pendingCalls": [...],
+  "deliveryCursors": [...]
 }
 ```
 
@@ -358,7 +325,7 @@ if (config?.model) {
 }
 ```
 
-The built-in `AiChatWorker` merges subscription config with `getHarnessConfig()` automatically -- per-channel overrides for `systemPrompt`, `model`, `temperature`, and `maxTokens` take precedence. `toolAllowlist` is sourced exclusively from the worker class (`getHarnessConfig`) — subscriptions cannot override it. The worker defines the upper bound of tools it's willing to expose, and natural method discovery handles the lower bound (a tool only appears if some participant actually advertises it).
+Subscription config can override `model` and `thinkingLevel` via `extraConfig`. The system prompt comes from `workspace/AGENTS.md` (loaded via `workspace.getAgentsMd` RPC). Tools are dynamically discovered from channel participants via the channel-tools extension.
 
 ## Headless Agentic Sessions
 

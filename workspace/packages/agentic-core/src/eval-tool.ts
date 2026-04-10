@@ -46,6 +46,8 @@ export function buildEvalTool(opts: BuildEvalToolOptions): MethodDefinition {
 
 Call \`await help()\` first when you need the live service catalog or runtime surface for this context. Only \`chat\`, \`scope\`, \`scopes\`, and \`help\` are pre-injected. Import everything else from \`@workspace/runtime\` using static \`import\`, not \`await import(...)\`.
 
+To use workspace skills or extra packages, pass the \`imports\` parameter — e.g. \`imports: { "@workspace-skills/system-testing": "latest" }\`. These are built on-demand and made available for \`import\` in the code. For npm packages use \`"npm:<version>"\`.
+
 \`return\` sends a value back to the agent. \`console.log\` streams in real time. \`scope\` persists across eval calls.`,
     parameters: z.object({
       code: z.string().describe("The TypeScript/JavaScript code to execute"),
@@ -73,11 +75,21 @@ Call \`await help()\` first when you need the live service catalog or runtime su
               if (serviceName) {
                 return await opts.rpc.call("main", "meta.describeService", serviceName);
               }
-              const [services, runtime] = await Promise.all([
+              const [services, runtime, skillPackages] = await Promise.all([
                 opts.rpc.call("main", "meta.listServices"),
                 opts.rpc.call("main", "meta.getRuntimeSurface", opts.runtimeTarget),
+                opts.rpc.call("main", "build.listSkills").catch(() => null),
               ]);
-              return { services, runtime };
+              return {
+                services,
+                runtime,
+                imports: {
+                  description: "Use the eval tool's `imports` parameter to load additional packages on-demand.",
+                  usage: 'imports: { "@workspace-skills/system-testing": "latest", "lodash": "npm:4" }',
+                  workspaceSkills: skillPackages ?? "Use build.listSkills to discover available skills",
+                  npmPackages: 'Use "npm:<version>" for npm packages, e.g. "npm:latest" or "npm:^4.0.0"',
+                },
+              };
             },
           },
           onConsole: (formatted: string) => {

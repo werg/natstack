@@ -290,7 +290,7 @@ describe("MyWorker", () => {
 The `sql` object exposes `exec(query, ...bindings)` for direct database inspection:
 
 ```typescript
-const rows = sql.exec(`SELECT * FROM active_turns`).toArray();
+const rows = sql.exec(`SELECT * FROM pi_sessions`).toArray();
 expect(rows).toHaveLength(1);
 ```
 

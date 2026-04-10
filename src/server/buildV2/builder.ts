@@ -623,7 +623,7 @@ export function generateModuleMapBootstrap(target: BootstrapTarget = "panel"): s
 globalThis.__natstackRequire__ = function(id) {
   const mod = globalThis.__natstackModuleMap__[id];
   if (mod) return mod;
-  throw new Error('Module "' + id + '" not available via __natstackRequire__');
+  throw new Error('Module "' + id + '" not available. Use the imports parameter to load it on-demand, e.g. imports: { "' + id + '": "latest" }');
 };`;
 
   if (target === "worker") return base;

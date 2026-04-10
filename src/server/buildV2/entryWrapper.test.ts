@@ -28,7 +28,7 @@ describe("generateModuleMapBootstrap (panel target)", () => {
 
   it("__natstackRequire__ throws a clear error for unknown modules", () => {
     const code = generateModuleMapBootstrap("panel");
-    expect(code).toContain("not available via __natstackRequire__");
+    expect(code).toContain("not available. Use the imports parameter");
   });
 
   it("defaults to panel target when no argument is passed", () => {

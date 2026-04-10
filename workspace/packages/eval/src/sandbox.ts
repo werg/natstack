@@ -290,22 +290,22 @@ export async function executeSandbox(
       };
     }
 
-    // Debug: log available modules and what the code requires
-    if (transformed.requires.length > 0) {
-      const moduleMap = getModuleMap();
-      const available = Object.keys(moduleMap);
-      options.onConsole?.(`[eval] Requires: ${transformed.requires.join(", ")}`);
-      options.onConsole?.(`[eval] Available modules: ${available.join(", ")}`);
-    }
-
     const validation = validateRequires(transformed.requires, requireFn);
     if (!validation.valid) {
+      const missing = validation.missingModule!;
       const moduleMap = getModuleMap();
       const available = Object.keys(moduleMap);
+      // Build a suggested imports object for ALL missing modules
+      const missingModules = transformed.requires.filter(
+        (r) => !moduleMap[r],
+      );
+      const suggestedImports = Object.fromEntries(
+        missingModules.map((m) => [m, "latest"]),
+      );
       return {
         success: false,
         consoleOutput: "",
-        error: `Module "${validation.missingModule}" not available. Available: ${available.join(", ")}`,
+        error: `Module "${missing}" not available. Add the imports parameter to your eval call:\n  imports: ${JSON.stringify(suggestedImports)}\nCurrently loaded: ${available.join(", ")}`,
       };
     }
 

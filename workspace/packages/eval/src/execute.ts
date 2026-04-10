@@ -87,7 +87,7 @@ export function validateRequires(
       return {
         valid: false,
         missingModule: spec,
-        error: `Module "${spec}" not available. Import it in the panel or add it to the expose list.`,
+        error: `Module "${spec}" not available. Use the imports parameter to load it on-demand, e.g. imports: { "${spec}": "latest" }`,
       };
     }
   }

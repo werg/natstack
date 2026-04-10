@@ -5,7 +5,7 @@
  * The React adapter (@workspace/agentic-chat) re-exports these and adds
  * its own UI-specific types on top.
  *
- * Pi (`@mariozechner/pi-coding-agent`) owns the agent message shape now.
+ * Pi (`@mariozechner/pi-agent-core`) owns the agent message shape now.
  * `AgentMessage` is re-exported from `index.ts` for downstream consumers.
  */
 
