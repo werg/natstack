@@ -2,12 +2,12 @@
 
 In-process Pi runtime for the NatStack agent worker DO.
 
-This package wraps `@mariozechner/pi-coding-agent` ("Pi") for use inside
-NatStack's agentic Durable Objects. It provides:
+This package wraps `@mariozechner/pi-agent-core` + `@mariozechner/pi-ai`
+("Pi") for use inside NatStack's agentic Durable Objects. It provides:
 
-- **`PiRunner`** — Worker DO companion class that owns one Pi `AgentSession`
-  per channel. Constructs a hermetic `DefaultResourceLoader` (no
-  auto-discovery — extensions are wired inline by `PiRunner`), registers the
+- **`PiRunner`** — Worker DO companion class that owns one Pi `Agent`
+  per channel. Constructs tools via the workerd-compatible RuntimeFs bridge,
+  loads system prompt and skills via workspace.* RPC, registers the
   three NatStack extension factories, bridges API keys via
   `setRuntimeApiKey`, and exposes `runTurn` / `steer` / `interrupt` / `fork`
   / `getStateSnapshot`.

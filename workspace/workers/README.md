@@ -2,9 +2,9 @@
 
 This guide covers building Durable Object (DO) workers that participate in AI chat channels. Workers run in workerd (Cloudflare's V8 isolate runtime) and use SQLite-backed state that survives across invocations.
 
-NatStack runs Pi (`@mariozechner/pi-coding-agent`) in-process inside each
-agent worker DO — there is no harness child process layer. See
-`docs/pi-architecture.md` for the full architectural picture and
+NatStack runs Pi (`@mariozechner/pi-agent-core` + `@mariozechner/pi-ai`)
+in-process inside each agent worker DO — there is no harness child process
+layer. See `docs/pi-architecture.md` for the full architectural picture and
 `docs/agentic-architecture.md` for the higher-level overview.
 
 ## 1. Quick Start
@@ -96,12 +96,9 @@ The default reads from a per-channel `state` table key
 
 ### System prompt
 
-The system prompt lives in `<contextFolder>/.pi/AGENTS.md` and is loaded
-automatically by Pi's cwd-walk. To customize it for a specific worker,
-either edit the file or write a per-context AGENTS.md before subscribing.
-
-There is **no** `getHarnessConfig`, no `systemPrompt` field, and no
-`systemPromptMode` — those were harness-era constructs.
+The system prompt lives in `workspace/AGENTS.md` and is loaded via
+`workspace.getAgentsMd` RPC at PiRunner init. Customization is via
+`getModel()` / `getThinkingLevel()` / `getApprovalLevel()` hooks.
 
 ### shouldProcess(event: ChannelEvent): boolean
 
@@ -176,44 +173,22 @@ const channel = this.createChannelClient(channelId);
 | `channel.callMethod(callerPid, targetPid, callId, method, args)` | Async method call |
 | `channel.getParticipants()` | Get channel roster |
 
-### Server Operations — `this.server`
+## 4. Pi Event Forwarding
 
-| Method | Description |
-|--------|-------------|
-| `.spawnHarness(opts)` | Spawn a new harness process |
-| `.sendHarnessCommand(harnessId, command)` | Send command to harness |
-| `.stopHarness(harnessId)` | Stop a harness process |
-| `.cloneDO(ref, newObjectKey)` | Clone a DO's SQLite storage |
-| `.destroyDO(ref)` | Destroy a DO's SQLite storage |
+The worker base subscribes to the in-process Pi `Agent`'s event stream and forwards events to the channel as persisted messages. The mapping is handled automatically by `publishPiEvent()`:
 
-## 4. StreamWriter
+| Pi Event | Channel Message |
+|----------|----------------|
+| `message_start` (assistant) | `channel.send()` a new streaming text message |
+| `message_update` (text_delta) | `channel.update()` appending the delta |
+| `message_end` | `channel.complete()` the text message; emit thinking blocks, extra text, images |
+| `tool_execution_start/update/end` | `contentType: "action"` messages with status transitions |
+| `agent_end` / `turn_end` | Complete any active typing indicator |
 
-`StreamWriter` handles the send -> update -> complete lifecycle of streaming messages. It takes a `ChannelClient` directly:
-
-```typescript
-const turn = this.getActiveTurn(harnessId);
-if (turn) {
-  const writer = this.createWriter(channelId, turn);
-  await writer.startText();           // sends a new message
-  await writer.updateText("chunk");   // updates the message content
-  await writer.completeText();        // marks message as complete
-  this.persistStreamState(harnessId, writer);
-}
-```
-
-### StreamWriter Methods
-
-All methods are async (calls to the Channel DO):
-
-| Method | Description |
-|--------|-------------|
-| `startThinking()` / `updateThinking(content)` / `endThinking()` | Thinking block lifecycle |
-| `startText(metadata?)` / `updateText(content)` / `completeText()` | Text message lifecycle |
-| `startAction(tool, description, toolUseId?)` / `endAction()` | Tool action lifecycle |
-| `sendInlineUi(data)` | Send inline UI component |
-| `startTyping()` / `stopTyping()` | Typing indicator lifecycle |
-
-Call `this.persistStreamState(harnessId, writer)` after using the writer to save message IDs to SQLite.
+Typing indicators are sent automatically:
+- **Before `runTurn`**: a `contentType: "typing"` message is sent so the user sees "Agent typing" immediately
+- **On `message_start`**: the typing message is completed (transition to actual content)
+- **After `tool_execution_end`**: typing re-sent to cover the gap between tool completion and next message
 
 ## 5. ParticipantDescriptor
 
@@ -237,18 +212,15 @@ interface MethodAdvertisement {
 
 ### SQLite Tables
 
-The base class creates 8 tables on initialization:
+The base class creates these tables on initialization:
 
 | Table | Purpose |
 |-------|---------|
 | `state` | Key-value store (schema version, custom state) |
 | `subscriptions` | Channel subscriptions with config + participant ID |
-| `harnesses` | Harness instances (id, type, status) |
-| `turn_map` | Completed turn records for fork resolution |
-| `checkpoints` | Last-processed event ID per channel/harness |
-| `in_flight_turns` | Currently executing turns (for crash retry) |
-| `active_turns` | Currently streaming turns (replyToId, turnMessageId, senderParticipantId) |
+| `pi_sessions` | Per-channel Pi message persistence (`messages_blob` JSON) |
 | `pending_calls` | Continuation state for async method calls (survives hibernation) |
+| `delivery_cursor` | Last-processed event ID per channel (dedup + gap detection) |
 
 ### Helper Methods
 
@@ -343,83 +315,63 @@ if (config?.model) {
 }
 ```
 
-The `AiChatWorker` merges subscription config with `getHarnessConfig()` automatically — per-channel overrides for `systemPrompt`, `model`, `temperature`, and `maxTokens` take precedence.
+Subscription config can override `model` and `thinkingLevel` via `extraConfig`. The system prompt comes from `workspace/AGENTS.md` (loaded via `workspace.getAgentsMd` RPC).
 
-## 10. Full Annotated AiChatWorker Walkthrough
-
-The built-in `AiChatWorker` (in `workspace/workers/agent-worker/`) implements all three event handlers. Here is the complete flow:
-
-### Channel Event Flow
+## 10. Event Flow
 
 ```
 User sends message
   -> onChannelEvent(channelId, event)
-    -> Does shouldProcess() pass?
-       No  -> Advance checkpoint, return empty actions
-       Yes -> Build TurnInput from event
-              -> Is there an active harness?
-                 No  -> registerHarness + recordTurnStart locally
-                        then $.spawnHarness() with initialInput
-                 Yes -> $.harness(id).startTurn(input)
-                        + typing indicator
-                        + record active/in-flight turns
+    -> shouldProcess(event)?
+       No  -> return
+       Yes -> buildTurnInput(event)
+              -> refreshRoster(channelId)
+              -> getOrCreateRunner(channelId) [lazy init: loads resources, creates Agent]
+              -> sendTypingIndicator(channelId)  [instant "Agent typing" feedback]
+              -> runner.runTurn(content, images) or runner.steer(content, images)
 ```
 
-### Harness Event Flow
+Pi Agent events flow through `publishPiEvent()`:
 
 ```
-Harness emits event
-  -> onHarnessEvent(harnessId, event)
-    -> Look up active turn + channel
-    -> Create StreamWriter via this.createWriter(channelId, turn)
-    -> Map event type to StreamWriter calls:
-       thinking-start  -> writer.startThinking()
-       thinking-delta  -> writer.updateThinking(content)
-       thinking-end    -> writer.endThinking()
-       text-start      -> writer.startText(metadata)
-       text-delta      -> writer.updateText(content)
-       text-end        -> writer.completeText()
-       action-start    -> writer.startAction(tool, description)
-       action-end      -> writer.endAction()
-       inline-ui       -> writer.sendInlineUi(data)
-       turn-complete   -> recordTurn(), clearActiveTurn(), clearInFlightTurn()
-       error           -> Mark crashed, complete partial message, respawn via this.server.spawnHarness()
-       approval-needed -> Store continuation + channel.callMethod(request_tool_approval)
-       metadata-update -> channel.updateMetadata()
-       ready           -> Set harness status to 'active'
+Agent emits event
+  -> publishPiEvent(channelId, event)
+    -> message_start (assistant):
+         completeTypingIndicator()
+         channel.send() text message
+         channel.send() action messages for tool calls
+    -> message_update (text_delta):
+         channel.update() text delta
+    -> message_end:
+         channel.complete() text message
+         emit thinking blocks, extra text blocks, images
+    -> tool_execution_update:
+         channel.update() action message (console output)
+    -> tool_execution_end:
+         channel.update() + complete() action message (result)
+         sendTypingIndicator()  [re-show between tools]
+    -> agent_end / turn_end:
+         completeTypingIndicator()  [cleanup]
 ```
-
-### Crash Recovery
-
-When a harness sends an `error` event:
-1. Harness is marked `crashed` in SQLite with the error message
-2. Any partial streaming message is completed
-3. The resume session ID is looked up from turn_map
-4. The in-flight turn is read for retry
-5. Active turn state is cleared
-6. `reactivateHarness()` + `recordTurnStart()` locally
-7. Respawns via `this.server.spawnHarness()` with `initialInput`
 
 ## 11. Fork Support
 
-AgentWorkerBase has built-in support for semantic conversation forking — cloning an agent DO at a specific point in the conversation history so the fork can resume independently.
+AgentWorkerBase supports conversation forking — cloning an agent DO at a specific message index so the fork resumes independently.
 
 ### Preflight: `canFork()`
 
-Called by the fork orchestrator before cloning. Returns `{ ok, subscriptionCount }`. The orchestrator rejects multi-channel agents (>1 sub) and replacement DOs with existing subscriptions (>0 subs).
+Returns `{ ok, subscriptionCount }`. Rejects multi-channel agents (>1 sub).
 
-### Post-clone: `postClone(parentObjectKey, newChannelId, oldChannelId, forkPointPubsubId)`
+### Post-clone: `postClone(parentObjectKey, newChannelId, oldChannelId, forkPointMessageId)`
 
 Called on the **newly cloned** DO after `cloneDO()` copies the parent's SQLite. Performs:
 
 1. Fixes `__objectKey` and restores identity
-2. Records fork metadata in state KV (`forkedFrom`, `forkPointPubsubId`, `forkSourceChannel`)
-3. Resolves the fork session ID from `turn_map` (most recent session at or before fork point) → `forkSessionId`
-4. Marks all harnesses as `stopped`
-5. Clears ephemeral tables (`active_turns`, `in_flight_turns`, `pending_calls`, `checkpoints`)
-6. Renames `approvalLevel:{oldChannel}` → `approvalLevel:{newChannel}`
-7. Deletes old subscription and resubscribes to the forked channel
-8. Calls `onPostClone()` subclass hook
+2. Records fork metadata in state KV
+3. Migrates the parent's `pi_sessions` row from oldChannelId → newChannelId (messages blob is truncated at the fork point)
+4. Renames `approvalLevel:{oldChannel}` → `approvalLevel:{newChannel}`
+5. Deletes old subscription, clears ephemeral state, resubscribes to forked channel
+6. Calls `onPostClone()` subclass hook
 
 ### Resume after fork
 
@@ -471,22 +423,15 @@ Flow:
 
 ```typescript
 import { AgentWorkerBase } from "@workspace/agentic-do";
-import type {
-  ChannelEvent, HarnessConfig, HarnessOutput,
-  ParticipantDescriptor, TurnInput,
-} from "@natstack/harness";
+import type { ChannelEvent, ParticipantDescriptor, TurnInput } from "@natstack/harness";
 
 export class CodeReviewWorker extends AgentWorkerBase {
   static override schemaVersion = 3;
 
-  protected override getHarnessConfig(): HarnessConfig {
-    return {
-      systemPrompt: `You are a code review assistant. When given a diff or code snippet,
-        provide constructive feedback on: correctness, performance, readability, and security.
-        Format your response as a structured review with sections.`,
-      model: 'claude-sonnet-4-20250514',
-      temperature: 0.3,
-    };
+  // The system prompt comes from workspace/AGENTS.md by default.
+  // Override getModel() to select a specific model for code review:
+  protected override getModel(): string {
+    return "anthropic:claude-sonnet-4-20250514";
   }
 
   protected override getParticipantInfo(channelId: string, config?: unknown): ParticipantDescriptor {
@@ -517,69 +462,14 @@ export class CodeReviewWorker extends AgentWorkerBase {
     };
   }
 
-  async onChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
-    if (!this.shouldProcess(event)) {
-      this.advanceCheckpoint(channelId, null, event.id);
-      return;
-    }
-
-    const input = this.buildTurnInput(event);
-    const activeHarnessId = this.getActiveHarness();
-
-    if (!activeHarnessId) {
-      const contextId = this.getContextId(channelId);
-      const harnessId = `harness-${crypto.randomUUID()}`;
-      this.registerHarness(harnessId, this.getHarnessType());
-      this.recordTurnStart(harnessId, channelId, input, event.messageId, event.id);
-      await this.server.spawnHarness({
-        doRef: this.doRef,
-        harnessId,
-        type: this.getHarnessType(),
-        contextId,
-        config: this.getHarnessConfig() as unknown as Record<string, unknown>,
-        initialInput: input,
-      });
-    } else {
-      this.setActiveTurn(activeHarnessId, channelId, event.messageId);
-      this.setInFlightTurn(channelId, activeHarnessId, event.messageId, event.id, input);
-      this.advanceCheckpoint(channelId, harnessId, event.id);
-      await this.server.sendHarnessCommand(activeHarnessId, { type: "start-turn", input });
-    }
-  }
-
-  async onHarnessEvent(harnessId: string, event: HarnessOutput): Promise<void> {
-    if (event.type === "ready") {
-      this.sql.exec(`UPDATE harnesses SET status = 'active' WHERE id = ?`, harnessId);
-      return;
-    }
-    const turn = this.getActiveTurn(harnessId);
-    const channelId = turn?.channelId;
-    if (!channelId || !turn) return;
-
-    const writer = this.createWriter(channelId, turn);
-
-    switch (event.type) {
-      case 'text-start': await writer.startText(); break;
-      case 'text-delta': await writer.updateText(event.content); break;
-      case 'text-end': await writer.completeText(); break;
-      case 'turn-complete': {
-        this.persistStreamState(harnessId, writer);
-        const at = this.getActiveTurn(harnessId);
-        if (at?.turnMessageId) {
-          const inf = this.getInFlightTurn(channelId, harnessId);
-          this.recordTurn(harnessId, at.turnMessageId, inf?.triggerPubsubId ?? 0, event.sessionId);
-        }
-        this.clearActiveTurn(harnessId);
-        this.clearInFlightTurn(channelId, harnessId);
-        return;
-      }
-      case 'ready':
-        this.harnesses.setStatus(harnessId, 'active');
-        break;
-    }
-
-    this.persistStreamState(harnessId, writer);
-  }
+  // onChannelEvent is inherited from AgentWorkerBase — no override needed.
+  // The base class handles:
+  //   shouldProcess → buildTurnInput → refreshRoster → getOrCreateRunner
+  //   → sendTypingIndicator → runner.runTurn/steer
+  //   → publishPiEvent (typing → text → actions → cleanup)
+  //
+  // Override onChannelEvent only when you need custom routing logic (e.g.,
+  // filtering messages by content like the shouldProcess override above).
 
   override async onMethodCall(
     channelId: string, callId: string, methodName: string, args: unknown,

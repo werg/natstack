@@ -248,7 +248,7 @@ import type { ParticipantDescriptor } from "@natstack/harness";
 /**
  * ${className} — Pi-native agent DO.
  *
- * Pi (\`@mariozechner/pi-coding-agent\`) runs in-process. The base class
+ * Pi (\`@mariozechner/pi-agent-core\`) runs in-process. The base class
  * handles channel subscriptions, the channel event pipeline, the per-channel
  * PiRunner lifecycle, and forwards Pi state to the channel as snapshot/text-delta
  * ephemerals. You only need to override the small set of customization hooks

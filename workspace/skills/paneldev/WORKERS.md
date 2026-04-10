@@ -3,7 +3,7 @@
 Workers are fetch handlers running in workerd (Cloudflare's V8 isolate runtime). They execute outside Node.js and the browser in a lightweight sandbox. This stack does not expose built-in per-instance CPU or subrequest limits. Workers come in two flavors:
 
 1. **Stateless workers** — simple fetch handlers for HTTP endpoints
-2. **Durable Object (DO) workers** — stateful agents extending `AgentWorkerBase`. NatStack runs Pi (`@mariozechner/pi-coding-agent`) in-process inside each agent worker; there is no harness child process layer. See `docs/pi-architecture.md` for the full picture.
+2. **Durable Object (DO) workers** — stateful agents extending `AgentWorkerBase`. NatStack runs Pi (`@mariozechner/pi-agent-core` + `@mariozechner/pi-ai`) in-process inside each agent worker; there is no harness child process layer. See `docs/pi-architecture.md` for the full picture.
 
 ## 1. Quick Start
 
