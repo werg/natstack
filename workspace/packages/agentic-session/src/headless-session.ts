@@ -340,8 +340,8 @@ export class HeadlessSession {
       // Dirty repo warnings
       if (payload.debugType === "lifecycle" && payload.event === "warning" && payload.reason === "dirty-repo") {
         const details = payload.details as DirtyRepoDetails | undefined;
-        if (details?.repoPath) {
-          this._dirtyRepoWarnings.set(details.repoPath, details);
+        if (details) {
+          this._dirtyRepoWarnings.set(payload.handle, details);
         }
       }
     }

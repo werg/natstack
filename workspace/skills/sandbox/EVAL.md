@@ -228,30 +228,33 @@ eval({ code: `
 ` })
 ```
 
-## AI Client
+## Git Operations
+
+Use `GitClient` from `@natstack/git` — do NOT use `node:child_process` or shell commands.
 
 ```
 eval({ code: `
-  import { ai } from "@workspace/runtime";
-  const roles = await ai.listRoles();
-  console.log("Available models:", Object.keys(roles));
-  const result = await ai.generateText({
-    model: "fast",
-    messages: [{ role: "user", content: "Say hello in 3 words" }],
-  });
-  console.log(result);
-`, timeout: 30000 })
+  import { fs, gitConfig } from "@workspace/runtime";
+  import { GitClient } from "@natstack/git";
+
+  const git = new GitClient(fs, { serverUrl: gitConfig.serverUrl, token: gitConfig.token });
+  await git.init("/my-repo", "main");
+  await fs.writeFile("/my-repo/hello.txt", "Hello world");
+  await git.addAll("/my-repo");
+  const sha = await git.commit({ dir: "/my-repo", message: "Initial commit" });
+  console.log("Committed:", sha);
+  const log = await git.log("/my-repo");
+  console.log("History:", log);
+` })
 ```
 
-## Git Operations
+For read-only queries, RPC shortcuts work too:
 
 ```
 eval({ code: `
   import { rpc } from "@workspace/runtime";
   const tree = await rpc.call("main", "git.getWorkspaceTree");
   console.log("Workspace tree:", tree);
-  const branches = await rpc.call("main", "git.listBranches", ".");
-  console.log("Branches:", branches);
 ` })
 ```
 

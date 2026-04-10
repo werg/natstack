@@ -1,12 +1,14 @@
 import type { TestCase } from "../types.js";
 import { findLastAgentMessage } from "./_helpers.js";
 
+const gitHint = `Use GitClient from @natstack/git with fs and gitConfig from @workspace/runtime. Do NOT use node:child_process or shell commands. Example:\nimport { fs, gitConfig } from "@workspace/runtime";\nimport { GitClient } from "@natstack/git";\nconst git = new GitClient(fs, { serverUrl: gitConfig.serverUrl, token: gitConfig.token });`;
+
 export const gitTests: TestCase[] = [
   {
     name: "init-commit",
     description: "Initialize a git repo, create a file, and commit",
     category: "git",
-    prompt: "Initialize a new git repo, create a file, and commit it. Tell me the commit hash.",
+    prompt: `Initialize a new git repo at /test-repo, create a file, and commit it. Tell me the commit hash.\n\n${gitHint}\nKey methods: git.init(dir, branch), fs.writeFile(path, content), git.addAll(dir), git.commit({ dir, message })`,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       // Commit hashes are hex strings of 7+ chars
@@ -21,7 +23,7 @@ export const gitTests: TestCase[] = [
     name: "branch-checkout",
     description: "Create and switch branches",
     category: "git",
-    prompt: "In a git repo, create a new branch, switch to it, and make a commit. Tell me the branch name.",
+    prompt: `In a git repo at /test-repo, create a new branch called "feature", switch to it, and make a commit. Tell me the branch name.\n\n${gitHint}\nKey methods: git.init(dir, branch), git.createBranch(dir, name), git.checkout(dir, name), git.commit({ dir, message })`,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -36,12 +38,12 @@ export const gitTests: TestCase[] = [
     name: "diff-status",
     description: "Modify a file and check git status/diff",
     category: "git",
-    prompt: "In a git repo, modify a tracked file and check the diff. Tell me what changed.",
+    prompt: `Create a git repo at /test-repo, commit a file, then modify it and check the status. Tell me what changed.\n\n${gitHint}\nKey methods: git.init(dir, branch), git.status(dir) returns an array of file statuses`,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
       const hasChange = lower.includes("modified") || lower.includes("changed") || lower.includes("diff") ||
-        lower.includes("added") || lower.includes("removed");
+        lower.includes("added") || lower.includes("removed") || lower.includes("status");
       return {
         passed: hasChange,
         reason: hasChange ? undefined : `Expected diff/change info, got: ${msg.slice(0, 200)}`,
@@ -52,7 +54,7 @@ export const gitTests: TestCase[] = [
     name: "log-history",
     description: "Make multiple commits and view the log",
     category: "git",
-    prompt: "Create a git repo, make a few commits, and show the log. Tell me the commit messages.",
+    prompt: `Create a git repo at /test-repo, make 3 commits with different messages, then show the log. Tell me the commit messages.\n\n${gitHint}\nKey methods: git.init(dir, branch), git.commit({ dir, message }), git.log(dir) returns commit history`,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -67,7 +69,7 @@ export const gitTests: TestCase[] = [
     name: "stash-pop",
     description: "Stash changes, verify clean state, then pop",
     category: "git",
-    prompt: "In a git repo, modify a file, stash the changes, verify the working tree is clean, then pop the stash. Tell me what happened at each step.",
+    prompt: `Create a git repo at /test-repo, commit a file, modify it, stash the changes, verify the working tree is clean, then pop the stash. Tell me what happened at each step.\n\n${gitHint}\nKey methods: git.stash(dir), git.status(dir), git.stashPop(dir)`,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
@@ -82,7 +84,7 @@ export const gitTests: TestCase[] = [
     name: "push-to-remote",
     description: "Push a commit to the workspace git server",
     category: "git",
-    prompt: "Set up a repo and try to push a commit to the workspace git server. Report the result.",
+    prompt: `Create a git repo at /test-repo, add a remote pointing to the workspace git server, commit a file, and push. Report the result.\n\n${gitHint}\nKey methods: git.addRemote(dir, "origin", dir), git.push({ dir, ref: "main" }). The git server URL comes from gitConfig.serverUrl.`,
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();

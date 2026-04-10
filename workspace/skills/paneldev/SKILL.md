@@ -15,7 +15,7 @@ Documentation for developing NatStack panels.
 | [PANEL_SYSTEM.md](PANEL_SYSTEM.md) | API reference |
 | [WORKERS.md](WORKERS.md) | Workers & Durable Objects: AgentWorkerBase (@workspace/agentic-do), DurableObjectBase, PiRunner, approval continuations |
 | [RPC.md](RPC.md) | Typed parent-child contracts |
-| [AI.md](AI.md) | AI and browser automation |
+| [BROWSER.md](BROWSER.md) | Browser automation (Playwright/CDP) |
 | [TOOLS.md](TOOLS.md) | Agent tools reference |
 | [WORKFLOW.md](WORKFLOW.md) | Development workflow |
 | [create-project.ts](create-project.ts) | Project scaffolding and git helpers (importable via eval `imports` parameter) |

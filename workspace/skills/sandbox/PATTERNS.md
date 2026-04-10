@@ -329,34 +329,6 @@ export default function SqlRunner({ props, chat }) {
 })
 ```
 
-## Ask User to Pick a Model, Then Generate Text
-
-```
-// Step 1: feedback_form to pick model
-feedback_form({
-  title: "AI Generation",
-  fields: [
-    { key: "model", label: "Model", type: "select", options: [
-      { value: "fast", label: "Fast (Haiku)" },
-      { value: "balanced", label: "Balanced (Sonnet)" },
-      { value: "powerful", label: "Powerful (Opus)" },
-    ] },
-    { key: "prompt", label: "Prompt", type: "string", required: true },
-  ]
-})
-
-// Step 2: eval to generate (using the result from step 1)
-eval({ code: `
-  import { ai } from "@workspace/runtime";
-  const result = await ai.generateText({
-    model: "fast",
-    messages: [{ role: "user", content: "Tell me a joke" }],
-  });
-  console.log(result);
-  return result;
-`, timeout: 30000 })
-```
-
 ## Open a Website and Import Its Cookies
 
 ```

@@ -5,7 +5,7 @@ description: Automated system testing via headless agentic sessions. Spawns test
 
 # System Testing Skill
 
-Spin up headless agentic sessions to systematically test every NatStack capability — filesystem, database, git, workers, panels, browser panels, build system, OAuth, AI, skills, and more. Collect structured pass/fail results with full diagnostic data for every turn.
+Spin up headless agentic sessions to systematically test every NatStack capability — filesystem, database, git, workers, panels, browser panels, build system, OAuth, skills, and more. Collect structured pass/fail results with full diagnostic data for every turn.
 
 ## Files
 
@@ -14,7 +14,7 @@ Spin up headless agentic sessions to systematically test every NatStack capabili
 | runner.ts | `HeadlessRunner` — spawn headless sessions from eval with one line |
 | test-runner.ts | `TestRunner` — orchestrate test suites, collect full diagnostics |
 | types.ts | `TestCase`, `TestResult`, `TestSuiteResult`, `TestExecutionResult` |
-| tests/ | 70 pre-built test cases across 15 categories |
+| tests/ | 66 pre-built test cases across 14 categories |
 | [SELF_IMPROVEMENT.md](SELF_IMPROVEMENT.md) | Workflow for analyzing failures and pushing fixes |
 
 ## Quick Start
@@ -117,7 +117,6 @@ if (fail.execution.snapshot) {
 | `workerTests` | 6 | Create, list, callDO, destroy, env bindings, list sources |
 | `buildTests` | 4 | Workspace + npm builds, build at ref, eval imports |
 | `oauthTests` | 3 | List providers/connections, error on missing connection |
-| `aiTests` | 4 | Generate, stream, tool use, list models |
 | `workspaceTests` | 3 | List, active, config |
 | `notificationTests` | 2 | Show + dismiss |
 | `skillTests` | 4 | Load sandbox, paneldev, api-integrations, headless-sessions |
@@ -125,7 +124,7 @@ if (fail.execution.snapshot) {
 | `rpcTests` | 2 | Cross-service calls |
 | `edgeCaseTests` | 5 | Timeouts, invalid imports, bad SQL, missing files |
 
-Use `allTests()` to get all 71 tests combined.
+Use `allTests()` to get all 66 tests combined.
 
 ## Filtering
 

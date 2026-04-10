@@ -57,7 +57,6 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `pubsubConfig` | value |  |  |
 | `env` | value |  |  |
 | `workers` | namespace | `create`, `destroy`, `update`, `list`, `status`, `listInstanceSources`, `getPort`, `restartAll`, `cloneDO`, `destroyDO` |  |
-| `ai` | value |  |  |
 | `normalizePath` | value |  |  |
 | `getFileName` | value |  |  |
 | `resolvePath` | value |  |  |
@@ -153,41 +152,6 @@ Manage workerd (Cloudflare V8 isolate) instances.
 | `getPort()` | Get the workerd HTTP port |
 | `restartAll()` | Restart all instances |
 
-## AI Client (`ai`)
-
-```typescript
-import { ai } from "@workspace/runtime";
-```
-
-| Method | Description |
-|--------|-------------|
-| `listRoles()` | List available model roles and their configs |
-| `generateText(options)` | Generate text (returns full response) |
-| `streamText(options)` | Stream text (returns async iterable of events) |
-
-### generateText
-
-```typescript
-const result = await ai.generateText({
-  model: "fast",  // role name from listRoles()
-  messages: [{ role: "user", content: "Hello" }],
-  system: "You are helpful.",
-  maxOutputTokens: 500,
-  temperature: 0.7,
-});
-```
-
-### streamText
-
-```typescript
-for await (const event of ai.streamText({ model: "fast", messages })) {
-  if (event.type === "text-delta") process.stdout.write(event.text);
-  if (event.type === "finish") console.log("\nDone:", event.usage);
-}
-```
-
-Event types: `text-delta`, `reasoning-start`, `reasoning-delta`, `reasoning-end`, `tool-call`, `tool-result`, `step-finish`, `finish`, `error`.
-
 ## Workspace (`workspace`)
 
 ```typescript
@@ -207,7 +171,42 @@ import { workspace } from "@workspace/runtime";
 
 `workspace.create("name")` requires a string `name` as its first argument. Passing `null` or no name fails with a Zod validation error. Workspace creation is only available in the host process that owns the workspace catalog (Electron main / standalone bridge); in remote-server / mobile-client modes the method is not registered at all and the call returns "Unknown workspace method: create".
 
-## Git
+## Git (`GitClient`)
+
+**Do NOT use `node:child_process` or shell commands for git.** Use `GitClient` from `@natstack/git`:
+
+```typescript
+import { fs, gitConfig } from "@workspace/runtime";
+import { GitClient } from "@natstack/git";
+
+const git = new GitClient(fs, {
+  serverUrl: gitConfig.serverUrl,
+  token: gitConfig.token,
+});
+```
+
+| Method | Description |
+|--------|-------------|
+| `git.init(dir, branch?)` | Initialize a new repo |
+| `git.isRepo(dir)` | Check if directory is a repo |
+| `git.status(dir)` | Array of file statuses |
+| `git.add(dir, filepath)` | Stage a file |
+| `git.addAll(dir)` | Stage all changes |
+| `git.commit({ dir, message })` | Commit staged changes → SHA |
+| `git.log(dir, opts?)` | Commit history |
+| `git.createBranch(dir, name)` | Create a branch |
+| `git.checkout(dir, name)` | Switch branch |
+| `git.listBranches(dir)` | List branches |
+| `git.stash(dir, opts?)` | Stash changes |
+| `git.stashPop(dir, index?)` | Pop stash |
+| `git.addRemote(dir, name, url)` | Add a remote |
+| `git.listRemotes(dir)` | List remotes |
+| `git.push({ dir, ref })` | Push to remote |
+| `git.pull({ dir })` | Pull from remote |
+
+### Read-only RPC shortcuts
+
+For quick queries without constructing a `GitClient`:
 
 ```typescript
 import { rpc } from "@workspace/runtime";
@@ -220,14 +219,6 @@ import { rpc } from "@workspace/runtime";
 | `rpc.call("main", "git.listCommits", repoPath, ref?, limit?)` | Commit log |
 | `rpc.call("main", "git.resolveRef", repoPath, ref)` | Resolve ref to SHA |
 | `rpc.call("main", "git.getBaseUrl")` | Git server base URL |
-
-For full git operations, use `isomorphic-git` with the runtime `fs`:
-
-```typescript
-import git from "isomorphic-git";
-import { fs } from "@workspace/runtime";
-const log = await git.log({ fs, dir: "/", depth: 5 });
-```
 
 ### Cloning Remote GitHub Repos
 

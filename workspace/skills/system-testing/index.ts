@@ -12,7 +12,6 @@ export { panelTests } from "./tests/panels.js";
 export { workerTests } from "./tests/workers.js";
 export { buildTests } from "./tests/build.js";
 export { oauthTests } from "./tests/oauth.js";
-export { aiTests } from "./tests/ai.js";
 export { workspaceTests } from "./tests/workspace.js";
 export { notificationTests } from "./tests/notifications.js";
 export { skillTests } from "./tests/skills.js";
@@ -29,7 +28,6 @@ import { panelTests as _panels } from "./tests/panels.js";
 import { workerTests as _workers } from "./tests/workers.js";
 import { buildTests as _build } from "./tests/build.js";
 import { oauthTests as _oauth } from "./tests/oauth.js";
-import { aiTests as _ai } from "./tests/ai.js";
 import { workspaceTests as _ws } from "./tests/workspace.js";
 import { notificationTests as _notif } from "./tests/notifications.js";
 import { skillTests as _skills } from "./tests/skills.js";
@@ -41,7 +39,7 @@ import type { TestCase } from "./types.js";
 export function allTests(): TestCase[] {
   return [
     ..._smoke, ..._fs, ..._db, ..._git, ..._panels, ..._workers,
-    ..._build, ..._oauth, ..._ai, ..._ws, ..._notif, ..._skills,
+    ..._build, ..._oauth, ..._ws, ..._notif, ..._skills,
     ..._agent, ..._rpc, ..._edge,
   ];
 }

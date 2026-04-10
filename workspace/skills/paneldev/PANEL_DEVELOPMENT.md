@@ -234,6 +234,6 @@ Templates live in `workspace/templates/{name}/` and define the framework and HTM
 ## Related Docs
 
 - [RPC.md](RPC.md) - Typed contracts for parent-child communication
-- [AI.md](AI.md) - AI integration
+- [BROWSER.md](BROWSER.md) - Browser automation (Playwright/CDP)
 - [PANEL_SYSTEM.md](PANEL_SYSTEM.md) - API reference
 - [TOOLS.md](TOOLS.md) - Agent tools reference
