@@ -148,6 +148,20 @@ interface PendingResolver {
   reject: (err: Error) => void;
 }
 
+/** Per-tool-call state stashed between message_start and tool_execution_end. */
+interface ToolCallState {
+  /** Channel message UUID for this action message. */
+  channelMsgId: string;
+  /** Tool name (e.g. "Read", "eval"). */
+  toolName: string;
+  /** Human-readable description from getDetailedActionDescription. */
+  description: string;
+  /** Tool arguments. */
+  args: Record<string, unknown>;
+  /** Accumulated console output from streaming updates. */
+  consoleOutput: string;
+}
+
 export abstract class AgentWorkerBase extends DurableObjectBase {
   static override schemaVersion = 7;
 
@@ -577,31 +591,40 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   // ── Pi event → channel message publishing ──────────────────────────────
 
+  /** Per-tool-call state stashed between message_start and tool_execution_end. */
+  private static serializeActionData(
+    toolCall: ToolCallState,
+    overrides: {
+      status: "pending" | "complete";
+      result?: unknown;
+      isError?: boolean;
+      resultTruncated?: boolean;
+    },
+  ): string {
+    return JSON.stringify({
+      type: toolCall.toolName,
+      description: toolCall.description,
+      status: overrides.status,
+      args: toolCall.args,
+      consoleOutput: toolCall.consoleOutput || undefined,
+      result: overrides.result,
+      isError: overrides.isError,
+      resultTruncated: overrides.resultTruncated,
+    });
+  }
+
   /** Per-channel streaming state for message ID tracking. */
   private channelStreamState = new Map<string, {
     /** Channel message UUID for the current streaming text block. */
     textMsgId: string | null;
-    /** Maps pi-agent-core toolCallId (e.g. "call_abc123") → channel message UUID.
-     *  Needed because the PubSub protocol requires UUIDs for message IDs. */
-    toolCallIdMap: Map<string, string>;
-    /** Stashed args from message_start/end, keyed by piToolCallId. */
-    toolArgsMap: Map<string, Record<string, unknown>>;
-    /** Stashed description from message_start/end, keyed by piToolCallId. */
-    toolDescriptionMap: Map<string, string>;
-    /** Accumulated console output from tool_execution_update, keyed by piToolCallId. */
-    toolConsoleMap: Map<string, string>;
+    /** Per-tool-call state keyed by pi-agent-core toolCallId (e.g. "call_abc123"). */
+    toolCalls: Map<string, ToolCallState>;
   }>();
 
   private getStreamState(channelId: string) {
     let state = this.channelStreamState.get(channelId);
     if (!state) {
-      state = {
-        textMsgId: null,
-        toolCallIdMap: new Map(),
-        toolArgsMap: new Map(),
-        toolDescriptionMap: new Map(),
-        toolConsoleMap: new Map(),
-      };
+      state = { textMsgId: null, toolCalls: new Map() };
       this.channelStreamState.set(channelId, state);
     }
     return state;
@@ -635,22 +658,18 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         for (const block of blocks) {
           const b = block as { type?: string; id?: string; name?: string; arguments?: Record<string, unknown> };
           if (b?.type === "toolCall" && b.id) {
-            const channelMsgId = crypto.randomUUID();
-            state.toolCallIdMap.set(b.id, channelMsgId);
-            const args = b.arguments ?? {};
-            const description = getDetailedActionDescription(b.name ?? "tool", args);
-            state.toolArgsMap.set(b.id, args);
-            state.toolDescriptionMap.set(b.id, description);
-            const actionData = JSON.stringify({
-              type: b.name ?? "tool",
-              description,
-              status: "pending",
-              args,
-            });
-            void channel.send(participantId, channelMsgId, actionData, {
-              contentType: "action",
-              persist: true,
-            });
+            const toolCall: ToolCallState = {
+              channelMsgId: crypto.randomUUID(),
+              toolName: b.name ?? "tool",
+              description: getDetailedActionDescription(b.name ?? "tool", b.arguments ?? {}),
+              args: b.arguments ?? {},
+              consoleOutput: "",
+            };
+            state.toolCalls.set(b.id, toolCall);
+            void channel.send(participantId, toolCall.channelMsgId,
+              AgentWorkerBase.serializeActionData(toolCall, { status: "pending" }),
+              { contentType: "action", persist: true },
+            );
           }
         }
         break;
@@ -725,23 +744,20 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           }
 
           // Create action messages for toolCall blocks not yet created at message_start.
-          if (block?.type === "toolCall" && block.id && !state.toolCallIdMap.has(block.id)) {
-            const channelMsgId = crypto.randomUUID();
-            state.toolCallIdMap.set(block.id, channelMsgId);
-            const args = ((block.arguments ?? {}) as Record<string, unknown>);
-            const desc = getDetailedActionDescription(block.name ?? "tool", args);
-            state.toolArgsMap.set(block.id, args);
-            state.toolDescriptionMap.set(block.id, desc);
-            const actionData = JSON.stringify({
-              type: block.name ?? "tool",
-              description: desc,
-              status: "pending",
+          if (block?.type === "toolCall" && block.id && !state.toolCalls.has(block.id)) {
+            const args = (block.arguments ?? {}) as Record<string, unknown>;
+            const toolCall: ToolCallState = {
+              channelMsgId: crypto.randomUUID(),
+              toolName: block.name ?? "tool",
+              description: getDetailedActionDescription(block.name ?? "tool", args),
               args,
-            });
-            void channel.send(participantId, channelMsgId, actionData, {
-              contentType: "action",
-              persist: true,
-            });
+              consoleOutput: "",
+            };
+            state.toolCalls.set(block.id, toolCall);
+            void channel.send(participantId, toolCall.channelMsgId,
+              AgentWorkerBase.serializeActionData(toolCall, { status: "pending" }),
+              { contentType: "action", persist: true },
+            );
           }
         }
 
@@ -754,57 +770,37 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       }
 
       case "tool_execution_update": {
-        // Streaming partial results from method providers (e.g. console output
-        // from eval). Accumulate console lines and update the action message.
         const { toolCallId } = event;
-        const channelMsgId = state.toolCallIdMap.get(toolCallId);
-        if (channelMsgId) {
+        const toolCall = state.toolCalls.get(toolCallId);
+        if (toolCall) {
           const details = (event as { partialResult?: { details?: unknown } }).partialResult?.details;
           const content = details as { type?: string; content?: string } | undefined;
           if (content?.type === "console" && typeof content.content === "string") {
-            const prev = state.toolConsoleMap.get(toolCallId) ?? "";
-            const updated = prev ? `${prev}\n${content.content}` : content.content;
-            state.toolConsoleMap.set(toolCallId, updated);
-            // Update the action message with accumulated console output.
-            const stashedDesc = state.toolDescriptionMap.get(toolCallId) ?? "";
-            const stashedArgs = state.toolArgsMap.get(toolCallId);
-            const actionData = JSON.stringify({
-              type: event.toolName,
-              description: stashedDesc,
-              status: "pending",
-              args: stashedArgs,
-              consoleOutput: updated,
-            });
-            void channel.update(participantId, channelMsgId, actionData);
+            toolCall.consoleOutput = toolCall.consoleOutput
+              ? `${toolCall.consoleOutput}\n${content.content}`
+              : content.content;
+            void channel.update(participantId, toolCall.channelMsgId,
+              AgentWorkerBase.serializeActionData(toolCall, { status: "pending" }),
+            );
           }
         }
         break;
       }
 
       case "tool_execution_end": {
-        const { toolCallId, toolName, result, isError } = event;
-        const channelMsgId = state.toolCallIdMap.get(toolCallId);
-        if (channelMsgId) {
-          const stashedDesc = state.toolDescriptionMap.get(toolCallId) ?? toolName;
-          const stashedArgs = state.toolArgsMap.get(toolCallId);
-          const consoleOutput = state.toolConsoleMap.get(toolCallId);
+        const { toolCallId, result, isError } = event;
+        const toolCall = state.toolCalls.get(toolCallId);
+        if (toolCall) {
           const { value: truncatedResult, truncated } = truncateResult(result);
-          const actionData = JSON.stringify({
-            type: toolName,
-            description: stashedDesc,
-            status: "complete",
-            args: stashedArgs,
-            result: truncatedResult,
-            isError: isError || false,
-            resultTruncated: truncated,
-            consoleOutput,
-          });
-          void channel.update(participantId, channelMsgId, actionData)
-            .then(() => channel.complete(participantId, channelMsgId));
-          state.toolCallIdMap.delete(toolCallId);
-          state.toolArgsMap.delete(toolCallId);
-          state.toolDescriptionMap.delete(toolCallId);
-          state.toolConsoleMap.delete(toolCallId);
+          void channel.update(participantId, toolCall.channelMsgId,
+            AgentWorkerBase.serializeActionData(toolCall, {
+              status: "complete",
+              result: truncatedResult,
+              isError: isError || false,
+              resultTruncated: truncated,
+            }),
+          ).then(() => channel.complete(participantId, toolCall.channelMsgId));
+          state.toolCalls.delete(toolCallId);
         }
 
         // Publish image content from tool results.
