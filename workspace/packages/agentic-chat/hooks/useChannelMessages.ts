@@ -127,6 +127,11 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
             // natstack-ext-widget, natstack-ext-working) are handled by
             // separate ephemeral hooks and must not leak into the transcript.
             if (isEphemeral && !isTyping) continue;
+
+            // Don't show our OWN typing indicator — the user already sees
+            // their keystrokes in the input box; a redundant "You are typing"
+            // pill is confusing.
+            if (isTyping && selfId && wire.senderId === selfId) continue;
             const msg: ChatMessage = {
               id: wire.id,
               pubsubId: wire.pubsubId,
