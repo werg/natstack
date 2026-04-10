@@ -53,6 +53,8 @@ eval({
 
 Values are git refs: `"latest"` (current HEAD), a branch name, tag, or commit SHA.
 
+**Important:** Workspace packages are built from git, not from the working tree. If you edit a workspace package's source files, you must **commit and push** the changes before they take effect in eval imports. Use `commitAndPush` from the paneldev skill or the GitClient API.
+
 ### npm packages
 
 Use the `"npm:<version>"` value format to install and bundle third-party npm packages:

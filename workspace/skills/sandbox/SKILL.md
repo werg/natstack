@@ -91,7 +91,7 @@ See [INTERACTION_PATTERNS.md](INTERACTION_PATTERNS.md) for when to use inline UI
 3. **Components must `export default`** — named exports alone won't work for inline_ui/feedback_custom
 4. **Inline UI components receive `{ props, chat }`** — not raw props
 5. **Feedback components receive `{ onSubmit, onCancel, onError, chat }`**
-6. **Workspace code is built from git** — files under `workspace/` (`packages/`, `panels/`, `workers/`) are built artifacts. Editing them has no effect until committed, pushed, and rebuilt. Load the `paneldev` skill for this workflow.
+6. **Workspace code is built from git, not from the working tree** — `workspace/` source (`packages/`, `panels/`, `workers/`, `skills/`) is extracted from git commits for builds. Editing files has NO effect until you **commit and push**. This applies to eval imports too: if you edit `@workspace/agentic-session` source, it won't change the imported module until the edit is committed and pushed.
 
 ## Environment Compatibility
 

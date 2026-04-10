@@ -1277,46 +1277,53 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     // gets completed on the first assistant message_start, or on agent_end/error.
     this.sendTypingIndicator(channelId);
 
-    await this.refreshRoster(channelId);
-    const runner = await this.getOrCreateRunner(channelId);
+    try {
+      await this.refreshRoster(channelId);
+      const runner = await this.getOrCreateRunner(channelId);
 
-    // Resize user-pasted image attachments via the server-side image service.
-    // Best-effort: on failure fall through to the original bytes.
-    const images: ImageContent[] = [];
-    for (const att of input.attachments ?? []) {
-      if (!att.mimeType?.startsWith("image/")) continue;
-      try {
-        const bytes = Buffer.from(att.data, "base64");
-        const resized = await this.rpc.call<{
-          data: Uint8Array;
-          mimeType: string;
-          wasResized: boolean;
-        }>(
-          "main",
-          "image.resize",
-          bytes,
-          att.mimeType,
-          { maxWidth: 2000, maxHeight: 2000 },
-        );
-        images.push({
-          type: "image",
-          mimeType: resized.mimeType,
-          data: Buffer.from(resized.data).toString("base64"),
-        });
-      } catch (err) {
-        console.warn(
-          `[AgentWorkerBase] image.resize failed for channel=${channelId}; passing original:`,
-          err,
-        );
-        images.push({ type: "image", mimeType: att.mimeType, data: att.data });
+      // Resize user-pasted image attachments via the server-side image service.
+      // Best-effort: on failure fall through to the original bytes.
+      const images: ImageContent[] = [];
+      for (const att of input.attachments ?? []) {
+        if (!att.mimeType?.startsWith("image/")) continue;
+        try {
+          const bytes = Buffer.from(att.data, "base64");
+          const resized = await this.rpc.call<{
+            data: Uint8Array;
+            mimeType: string;
+            wasResized: boolean;
+          }>(
+            "main",
+            "image.resize",
+            bytes,
+            att.mimeType,
+            { maxWidth: 2000, maxHeight: 2000 },
+          );
+          images.push({
+            type: "image",
+            mimeType: resized.mimeType,
+            data: Buffer.from(resized.data).toString("base64"),
+          });
+        } catch (err) {
+          console.warn(
+            `[AgentWorkerBase] image.resize failed for channel=${channelId}; passing original:`,
+            err,
+          );
+          images.push({ type: "image", mimeType: att.mimeType, data: att.data });
+        }
       }
-    }
 
-    const imagesArg = images.length > 0 ? images : undefined;
-    if (runner.isStreaming) {
-      await runner.steer(input.content, imagesArg);
-    } else {
-      await runner.runTurn(input.content, imagesArg);
+      const imagesArg = images.length > 0 ? images : undefined;
+      if (runner.isStreaming) {
+        await runner.steer(input.content, imagesArg);
+      } else {
+        await runner.runTurn(input.content, imagesArg);
+      }
+    } catch (err) {
+      // If anything throws (runner init, model resolution, auth, runTurn),
+      // complete the typing indicator so the UI doesn't show a stale pill.
+      this.completeTypingIndicator(channelId);
+      throw err;
     }
   }
 

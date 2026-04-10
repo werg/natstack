@@ -36,6 +36,8 @@ import type {
   AttachmentInput,
   AgentDebugPayload,
   Attachment,
+  IncomingEvent,
+  IncomingMethodResultEvent,
 } from "@natstack/pubsub";
 import { z } from "zod";
 import { ScopeManager, DbScopePersistence } from "@workspace/eval";
@@ -160,7 +162,9 @@ export class HeadlessSession {
     this._connection = new ConnectionManager({
       config: config.config,
       metadata: config.metadata ?? DEFAULT_METADATA,
-      callbacks: {},
+      callbacks: {
+        onEvent: (event) => this.handleEvent(event),
+      },
     });
   }
 
@@ -261,6 +265,92 @@ export class HeadlessSession {
       channelId: this._channelId,
       rpc: this._sandbox?.rpc ?? { call: async () => undefined as unknown },
     };
+  }
+
+  // ===========================================================================
+  // Event tracking (method history + debug events)
+  // ===========================================================================
+
+  private handleEvent(event: IncomingEvent): void {
+    if (event.type === "method-call") {
+      const e = event as IncomingEvent & {
+        callId: string; methodName: string; senderId: string;
+        providerId?: string; args?: unknown; ts: number;
+      };
+      if (!this._methodHistory.has(e.callId)) {
+        this._methodHistory.set(e.callId, {
+          callId: e.callId,
+          methodName: e.methodName,
+          args: e.args,
+          status: "pending",
+          startedAt: e.ts ?? Date.now(),
+          providerId: e.providerId,
+          callerId: e.senderId,
+        });
+        this.notifyMethodHistoryListeners();
+      }
+    }
+
+    if (event.type === "method-result") {
+      const e = event as IncomingMethodResultEvent;
+      const existing = this._methodHistory.get(e.callId);
+      if (existing) {
+        if (e.complete) {
+          if (e.isError) {
+            const errorMessage = typeof e.content === "string"
+              ? e.content
+              : Array.isArray(e.content)
+                ? (e.content as Array<{ text?: string }>).map((c) => c.text ?? "").join("")
+                : String(e.content ?? "Unknown error");
+            this._methodHistory.set(e.callId, {
+              ...existing, status: "error", error: errorMessage, completedAt: Date.now(),
+            });
+          } else {
+            this._methodHistory.set(e.callId, {
+              ...existing, status: "success", result: e.content, completedAt: Date.now(),
+            });
+          }
+        } else if ((e as { progress?: number }).progress !== undefined) {
+          this._methodHistory.set(e.callId, {
+            ...existing, progress: (e as { progress?: number }).progress,
+          });
+        }
+        // Capture streamed console output
+        if (e.contentType === "application/json" && !e.complete) {
+          try {
+            const parsed = typeof e.content === "string" ? JSON.parse(e.content) : e.content;
+            if (parsed && typeof parsed === "object" && (parsed as { type?: string }).type === "console") {
+              const prev = existing.consoleOutput ?? "";
+              this._methodHistory.set(e.callId, {
+                ...this._methodHistory.get(e.callId)!,
+                consoleOutput: prev + ((parsed as { content?: string }).content ?? ""),
+              });
+            }
+          } catch { /* not JSON, ignore */ }
+        }
+        this.notifyMethodHistoryListeners();
+      }
+    }
+
+    if (event.type === "agent-debug") {
+      const payload = (event as IncomingEvent & { payload: AgentDebugPayload }).payload;
+      const ts = (event as IncomingEvent & { ts: number }).ts ?? Date.now();
+      this._debugEvents.push({ ...payload, ts });
+
+      // Dirty repo warnings
+      if (payload.debugType === "lifecycle" && payload.event === "warning" && payload.reason === "dirty-repo") {
+        const details = payload.details as DirtyRepoDetails | undefined;
+        if (details?.repoPath) {
+          this._dirtyRepoWarnings.set(details.repoPath, details);
+        }
+      }
+    }
+  }
+
+  private notifyMethodHistoryListeners(): void {
+    for (const listener of this._methodHistoryListeners) {
+      try { listener(); } catch { /* best-effort */ }
+    }
   }
 
   // ===========================================================================
@@ -579,7 +669,9 @@ export class HeadlessSession {
       msg.kind === "message" &&
       !!msg.complete &&
       !msg.pending &&
-      msg.contentType !== "thinking";
+      msg.contentType !== "thinking" &&
+      msg.contentType !== "typing" &&
+      msg.contentType !== "action";
 
     const knownAgentHandles = new Set<string>();
     for (const p of Object.values(this._participants)) {
@@ -634,7 +726,9 @@ export class HeadlessSession {
       msg.kind === "message" &&
       !!msg.complete &&
       !msg.pending &&
-      msg.contentType !== "thinking";
+      msg.contentType !== "thinking" &&
+      msg.contentType !== "typing" &&
+      msg.contentType !== "action";
 
     const baselineMessages = this.messages;
     const alreadyPresent = [...baselineMessages].reverse().find(isAgentMessage);

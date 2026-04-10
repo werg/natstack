@@ -97,6 +97,19 @@ function buildActiveTypingItems(messages: ChatMessage[]): InlineItem[] {
     latestTypingBySender.set(msg.senderId, { msg, index });
   });
 
+  // Filter out stale typing indicators: if there are non-typing messages
+  // from the SAME sender AFTER the typing message, the agent has already
+  // produced output and the typing indicator is orphaned (e.g., from a
+  // crash or hibernation where the complete event was lost).
+  for (const [senderId, { index: typingIndex }] of latestTypingBySender) {
+    const hasLaterOutput = messages.some(
+      (m, i) => i > typingIndex && m.senderId === senderId && m.contentType !== "typing",
+    );
+    if (hasLaterOutput) {
+      latestTypingBySender.delete(senderId);
+    }
+  }
+
   return Array.from(latestTypingBySender.values())
     .sort((a, b) => a.index - b.index)
     .map(({ msg }) => ({

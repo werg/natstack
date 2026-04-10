@@ -17,7 +17,7 @@ function makeMessage(overrides: Record<string, unknown>) {
 }
 
 describe("MessageList typing indicators", () => {
-  it("renders active typing at the bottom even after later agent output", () => {
+  it("suppresses typing indicator when the same sender has later output (orphaned indicator)", () => {
     render(React.createElement(MessageList, {
       messages: [
         makeMessage({
@@ -33,11 +33,32 @@ describe("MessageList typing indicators", () => {
       allParticipants: {},
     } as never));
 
-    const textNode = screen.getByText("Working...");
-    const typingNode = screen.getByText("AI Chat typing");
+    // The typing indicator should NOT render because the same sender
+    // has produced output after it — the indicator is stale/orphaned
+    // (its complete event was lost, e.g., due to a crash).
+    expect(screen.queryByText("AI Chat typing")).toBeNull();
+    expect(screen.getByText("Working...")).toBeTruthy();
+  });
 
-    expect(typingNode).toBeTruthy();
-    expect(textNode.compareDocumentPosition(typingNode) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  it("renders typing indicator when it is the latest message from a sender (no later output)", () => {
+    render(React.createElement(MessageList, {
+      messages: [
+        makeMessage({
+          id: "msg-1",
+          content: "Here is the result.",
+        }),
+        makeMessage({
+          id: "typing-1",
+          contentType: "typing",
+          content: JSON.stringify({ senderName: "AI Chat" }),
+        }),
+      ],
+      allParticipants: {},
+    } as never));
+
+    // The typing indicator is AFTER the output — it's active (e.g.,
+    // the agent finished a tool call and is about to produce more text).
+    expect(screen.getByText("AI Chat typing")).toBeTruthy();
   });
 
   it("shows only the latest active typing badge per sender", () => {

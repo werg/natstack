@@ -173,10 +173,17 @@ await fs.writeFile("natstack/src/server/services/fsService.ts", fixedContent);
 - [ ] The fix is in the service/infrastructure layer, not a workaround in caller code
 - [ ] Skill documentation matches the actual API after the fix
 
-## Phase 7: Verify
+## Phase 7: Commit, Push, then Verify
+
+**Critical:** The build system builds from git, not from the working tree. Your edits have NO effect until you commit and push them. Always commit+push before verifying.
 
 ```typescript
-// Rebuild
+// First: commit and push your changes
+await scope.git.addAll("natstack");
+await scope.git.commit("natstack", `fix: describe the change`);
+await scope.git.push("natstack", { remote: "origin", ref: branchName });
+
+// Then rebuild — this picks up the pushed changes
 const buildResult = await chat.rpc.call("main", "build.recompute");
 console.log("Build recomputed:", buildResult);
 
@@ -191,19 +198,14 @@ const retest = await tester.runOne(failedTest);
 console.log(`Re-test: ${retest.result.passed ? "PASS" : "FAIL"}`);
 ```
 
-## Phase 8: Commit and Push
-
-The git server automatically pushes branches to the upstream GitHub repo:
+## Phase 8: Iterate or Finalize
 
 ```typescript
 if (retest.result.passed) {
-  await scope.git.addAll("natstack");
-  await scope.git.commit("natstack", `fix: ${failedTest.name} — ${failedTest.description}`);
-  await scope.git.push("natstack", { remote: "origin", ref: branchName });
-  console.log(`Pushed fix to branch: ${branchName} (auto-pushed to GitHub)`);
+  console.log(`Fix verified on branch: ${branchName}`);
 } else {
   console.log("Fix didn't work. Iterating...");
-  // Go back to Phase 6
+  // Go back to Phase 6 — edit, commit+push, rebuild, re-test
 }
 ```
 

@@ -147,33 +147,11 @@ The test agent is a standard AiChatWorker with full eval + set_title tools and f
 
 ## Auto-Start as Initial Panel
 
-Add to `natstack.yml` to run tests when a workspace starts:
+See `natstack.yml` for the current testing agent configuration.
 
-```yaml
-initPanels:
-  - source: panels/chat
-  - source: panels/chat
-    stateArgs:
-      initialPrompt: |
-        Load the system-testing skill. Run the smoke test suite first. For every failure,
-        inspect the full execution: conversation log, method history (every tool call the
-        agent made and its result), debug events, and participant state. Identify whether
-        the root cause is in the infrastructure (services, RPC methods, error handling) or
-        the test. Fix infrastructure bugs first — read SELF_IMPROVEMENT.md for the workflow.
-      systemPrompt: |
-        You are a NatStack system testing and self-improvement agent. Your workflow:
-        1. Import the system-testing skill via eval with imports parameter
-        2. Run test suites using HeadlessRunner and TestRunner
-        3. For every failure, thoroughly inspect the TestExecutionResult:
-           - The full conversation (every message the test agent sent/received)
-           - The method history (every eval/tool call, its arguments, return value, errors)
-           - The debug events (harness lifecycle: spawn, start, stop, crash)
-           - The participant state (did the agent join? did it disconnect?)
-        4. Classify root cause: infrastructure bug vs documentation bug vs test bug
-        5. Fix infrastructure first — never work around broken APIs in prompts
-        6. Read SELF_IMPROVEMENT.md for the detailed fix workflow
-      systemPromptMode: append
-```
+## Build Model
+
+**Workspace packages are built from git, not from the working tree.** When fixing bugs in workspace source files (`packages/`, `panels/`, `workers/`, `skills/`), you must **commit and push** changes before they take effect. Editing a file alone does nothing — the build system extracts source from git commits. See [SELF_IMPROVEMENT.md](SELF_IMPROVEMENT.md) for the full workflow.
 
 ## Environment Compatibility
 
