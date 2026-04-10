@@ -31,7 +31,12 @@ export function summarizeToolResult(result: unknown): string {
   }
 
   // Fallback: stringified, truncated
-  const s = JSON.stringify(result);
+  let s: string;
+  try {
+    s = JSON.stringify(result);
+  } catch {
+    return String(result);
+  }
   return s.length > 300 ? s.slice(0, 297) + "..." : s;
 }
 
@@ -52,11 +57,16 @@ export function truncateResult(result: unknown): { value: unknown; truncated: bo
     if (result.length <= RESULT_MAX_BYTES) return { value: result, truncated: false };
     return { value: result.slice(0, STRING_TRUNCATE_LEN) + `\n... (${result.length - STRING_TRUNCATE_LEN} chars truncated)`, truncated: true };
   }
-  const serialized = JSON.stringify(result);
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(result);
+  } catch {
+    // Non-serializable result (circular refs, BigInts, etc.)
+    return { value: String(result), truncated: true };
+  }
   if (serialized.length <= RESULT_MAX_BYTES) {
     return { value: result, truncated: false };
   }
-  // Structure-preserving: walk the result and truncate individual strings.
   return { value: deepTruncateStrings(result), truncated: true };
 }
 

@@ -94,4 +94,21 @@ describe("truncateResult", () => {
     expect(truncated).toBe(false);
     expect(value).toBe(result); // same reference
   });
+
+  it("handles non-serializable results (circular refs) without throwing", () => {
+    const circular: Record<string, unknown> = { name: "test" };
+    circular["self"] = circular;
+    const { value, truncated } = truncateResult(circular);
+    expect(truncated).toBe(true);
+    expect(typeof value).toBe("string");
+  });
+});
+
+describe("summarizeToolResult edge cases", () => {
+  it("handles non-serializable results without throwing", () => {
+    const circular: Record<string, unknown> = { name: "test" };
+    circular["self"] = circular;
+    const result = summarizeToolResult(circular);
+    expect(typeof result).toBe("string");
+  });
 });
