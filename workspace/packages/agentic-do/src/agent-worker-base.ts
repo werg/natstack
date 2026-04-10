@@ -873,7 +873,13 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       }
 
       case "tool_execution_start": {
-        // Status stays "pending" until tool_execution_end flips to "complete".
+        // Show "Agent typing" during tool execution so the user sees animated
+        // dots while a long-running tool (e.g., eval) is in progress. The
+        // action pill also shows "pending", but the typing indicator provides
+        // the familiar visual heartbeat that the agent is alive. Completed
+        // when the next message_start fires (agent responds to the result)
+        // or at agent_end/turn_end.
+        this.sendTypingIndicator(channelId);
         break;
       }
 
