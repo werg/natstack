@@ -68,7 +68,7 @@ export { InlineGroup } from "./components/InlineGroup";
 export type { InlineItem } from "./components/InlineGroup";
 export { ThinkingPill, ExpandedThinking, PREVIEW_MAX_LENGTH } from "./components/ThinkingMessage";
 export { ActionPill, ExpandedAction, parseActionData } from "./components/ActionMessage";
-export { CompactMethodPill, ExpandedMethodDetail } from "./components/MethodHistoryItem";
+export type { RichActionData } from "./components/ActionMessage";
 export { MethodArgumentsModal } from "./components/MethodArgumentsModal";
 export { TypingPill, parseTypingData } from "./components/TypingMessage";
 export { TypingIndicator } from "./components/TypingIndicator";

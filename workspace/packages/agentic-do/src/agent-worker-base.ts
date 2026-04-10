@@ -46,6 +46,9 @@ import { DOIdentity } from "./identity.js";
 import { SubscriptionManager } from "./subscription-manager.js";
 import { ContinuationStore } from "./continuation-store.js";
 import { ChannelClient } from "./channel-client.js";
+import {
+  truncateResult,
+} from "./action-data.js";
 
 const SAFE_TOOL_NAMES_DEFAULT: ReadonlySet<string> = new Set([
   "read",
@@ -561,12 +564,21 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     /** Maps pi-agent-core toolCallId (e.g. "call_abc123") → channel message UUID.
      *  Needed because the PubSub protocol requires UUIDs for message IDs. */
     toolCallIdMap: Map<string, string>;
+    /** Stashed args from message_start/end, keyed by piToolCallId. */
+    toolArgsMap: Map<string, Record<string, unknown>>;
+    /** Stashed description from message_start/end, keyed by piToolCallId. */
+    toolDescriptionMap: Map<string, string>;
   }>();
 
   private getStreamState(channelId: string) {
     let state = this.channelStreamState.get(channelId);
     if (!state) {
-      state = { textMsgId: null, toolCallIdMap: new Map() };
+      state = {
+        textMsgId: null,
+        toolCallIdMap: new Map(),
+        toolArgsMap: new Map(),
+        toolDescriptionMap: new Map(),
+      };
       this.channelStreamState.set(channelId, state);
     }
     return state;
@@ -602,11 +614,15 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           if (b?.type === "toolCall" && b.id) {
             const channelMsgId = crypto.randomUUID();
             state.toolCallIdMap.set(b.id, channelMsgId);
-            const description = getDetailedActionDescription(b.name ?? "tool", b.arguments ?? {});
+            const args = b.arguments ?? {};
+            const description = getDetailedActionDescription(b.name ?? "tool", args);
+            state.toolArgsMap.set(b.id, args);
+            state.toolDescriptionMap.set(b.id, description);
             const actionData = JSON.stringify({
               type: b.name ?? "tool",
               description,
               status: "pending",
+              args,
             });
             void channel.send(participantId, channelMsgId, actionData, {
               contentType: "action",
@@ -689,11 +705,15 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           if (block?.type === "toolCall" && block.id && !state.toolCallIdMap.has(block.id)) {
             const channelMsgId = crypto.randomUUID();
             state.toolCallIdMap.set(block.id, channelMsgId);
-            const desc = getDetailedActionDescription(block.name ?? "tool", (block.arguments ?? {}) as Record<string, unknown>);
+            const args = ((block.arguments ?? {}) as Record<string, unknown>);
+            const desc = getDetailedActionDescription(block.name ?? "tool", args);
+            state.toolArgsMap.set(block.id, args);
+            state.toolDescriptionMap.set(block.id, desc);
             const actionData = JSON.stringify({
               type: block.name ?? "tool",
               description: desc,
               status: "pending",
+              args,
             });
             void channel.send(participantId, channelMsgId, actionData, {
               contentType: "action",
@@ -717,17 +737,27 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         const { toolCallId, toolName, result, isError } = event;
         const channelMsgId = state.toolCallIdMap.get(toolCallId);
         if (channelMsgId) {
-          const summary = AgentWorkerBase.summarizeToolResult(result);
-          const description = isError ? `Error: ${summary}` : summary;
+          // Preserve the original contextual description ("Reading src/index.ts")
+          // from the pending message. The result is in the `result` field and
+          // rendered by ExpandedAction's JsonValue tree.
+          const stashedDesc = state.toolDescriptionMap.get(toolCallId) ?? toolName;
+          const stashedArgs = state.toolArgsMap.get(toolCallId);
+          const { value: truncatedResult, truncated } = truncateResult(result);
           const actionData = JSON.stringify({
             type: toolName,
-            description,
-            status: isError ? "error" : "complete",
+            description: stashedDesc,
+            status: "complete",
+            args: stashedArgs,
+            result: truncatedResult,
+            isError: isError || false,
+            resultTruncated: truncated,
           });
           void channel.update(participantId, channelMsgId, actionData)
             .then(() => channel.complete(participantId, channelMsgId));
-          // Free the completed mapping to avoid unbounded growth in long sessions.
+          // Free completed mappings to avoid unbounded growth in long sessions.
           state.toolCallIdMap.delete(toolCallId);
+          state.toolArgsMap.delete(toolCallId);
+          state.toolDescriptionMap.delete(toolCallId);
         }
 
         // Publish image content from tool results.
@@ -744,37 +774,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
   }
 
-  /** Extract a human-readable summary from a tool result for ActionData description. */
-  private static summarizeToolResult(result: unknown): string {
-    if (typeof result === "string") return result.slice(0, 300);
-    if (result == null) return "Done";
-
-    // Normalize: tool results can be a plain array of content blocks OR
-    // an object with a `content` array (e.g. { content: [...], details: {...} }).
-    let blocks: unknown[] | null = null;
-    if (Array.isArray(result)) {
-      blocks = result;
-    } else if (typeof result === "object" && Array.isArray((result as Record<string, unknown>)["content"])) {
-      blocks = (result as Record<string, unknown>)["content"] as unknown[];
-    }
-
-    if (blocks) {
-      const parts: string[] = [];
-      for (const item of blocks) {
-        const block = item as { type?: string; text?: string; mimeType?: string };
-        if (block?.type === "text" && typeof block.text === "string") {
-          parts.push(block.text.slice(0, 200));
-        } else if (block?.type === "image") {
-          parts.push(`Image (${block.mimeType ?? "image"})`);
-        }
-      }
-      if (parts.length > 0) return parts.join("; ").slice(0, 300);
-    }
-
-    // Fallback: stringified, truncated
-    const s = JSON.stringify(result);
-    return s.length > 300 ? s.slice(0, 297) + "..." : s;
-  }
 
   /** Check a tool result for ImageContent blocks and publish them as image channel messages.
    *  Pi-agent-core wraps tool results as `{ content: [{type, ...}], details }`.
