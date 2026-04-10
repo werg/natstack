@@ -53,6 +53,9 @@ export interface ChannelToolMethod {
   parameters: unknown;
 }
 
+/** Callback for streaming partial results during tool execution. */
+export type StreamUpdateCallback = (content: unknown) => void;
+
 export interface ChannelToolsDeps {
   /** Returns the current channel roster's tool list. Worker keeps this fresh. */
   getRoster: () => ChannelToolMethod[];
@@ -62,6 +65,7 @@ export interface ChannelToolsDeps {
     method: string,
     args: unknown,
     signal: AbortSignal | undefined,
+    onStreamUpdate?: StreamUpdateCallback,
   ) => Promise<unknown>;
   /** Built-in tool names to keep active alongside roster tools. */
   builtinToolNames: readonly string[];
@@ -117,9 +121,7 @@ export function createChannelToolsExtension(
           // Pi accepts JSON Schema at runtime; the TSchema type annotation is a
           // compile-time hint that erases. Cast through unknown.
           parameters: (captured.parameters ?? { type: "object" }) as never,
-          execute: async (_toolCallId, params, signal) => {
-            // Lazy lookup so a tool removed from the roster between registration
-            // and execution returns a clean error rather than calling a stale handle.
+          execute: async (_toolCallId, params, signal, onUpdate) => {
             const current = deps
               .getRoster()
               .find((m) => m.name === captured.name);
@@ -135,11 +137,22 @@ export function createChannelToolsExtension(
                 isError: true,
               };
             }
+            // Bridge Pi's onUpdate callback to the method streaming system.
+            // When the method provider calls ctx.stream(), the channel broadcasts
+            // a method-result event; the agent-worker intercepts it and invokes
+            // this callback, which causes Pi to emit tool_execution_update.
+            const streamCb: StreamUpdateCallback | undefined = onUpdate
+              ? (content) => onUpdate({
+                  content: [],
+                  details: content,
+                })
+              : undefined;
             const result = await deps.callMethod(
               current.participantHandle,
               captured.name,
               params,
               signal ?? undefined,
+              streamCb,
             );
             const text =
               typeof result === "string" ? result : JSON.stringify(result);

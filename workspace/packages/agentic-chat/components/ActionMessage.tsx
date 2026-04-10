@@ -65,6 +65,8 @@ export interface RichActionData {
   isError?: boolean;
   /** True when the result was too large and was truncated. */
   resultTruncated?: boolean;
+  /** Accumulated console output from streaming tool_execution_update events. */
+  consoleOutput?: string;
 }
 
 // ── Utility functions ──────────────────────────────────────────────────────
@@ -472,6 +474,25 @@ export const ExpandedAction = React.memo(function ExpandedAction({
 
         {CODE_TOOL_TYPES.has(data.type) && typeof data.args?.["code"] === "string" && (
           <CodePreview code={data.args["code"] as string} />
+        )}
+
+        {data.consoleOutput && (
+          <CollapsibleSection label="Console" defaultOpen={true} color="blue">
+            <Code
+              size="1"
+              style={{
+                display: "block",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                padding: "8px",
+                maxHeight: "300px",
+                overflow: "auto",
+                backgroundColor: "var(--gray-a3)",
+              }}
+            >
+              {data.consoleOutput}
+            </Code>
+          </CollapsibleSection>
         )}
 
         {data.args && Object.keys(data.args).length > 0 && (

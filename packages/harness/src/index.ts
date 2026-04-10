@@ -14,7 +14,7 @@ export {
 export type { ApprovalLevel, ApprovalGateDeps } from "./extensions/approval-gate.js";
 
 export { createChannelToolsExtension } from "./extensions/channel-tools.js";
-export type { ChannelToolMethod, ChannelToolsDeps } from "./extensions/channel-tools.js";
+export type { ChannelToolMethod, ChannelToolsDeps, StreamUpdateCallback } from "./extensions/channel-tools.js";
 
 export { createAskUserExtension } from "./extensions/ask-user.js";
 export type {

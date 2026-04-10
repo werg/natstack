@@ -168,6 +168,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
    *  onCallResult, we resolve the corresponding Promise. */
   private pendingResolvers = new Map<string, PendingResolver>();
 
+  /** Streaming callbacks keyed by method callId. When a method-result event
+   *  arrives with complete:false, the callback is invoked with the content.
+   *  This bridges ctx.stream() from method providers to Pi's onUpdate. */
+  private streamCallbacks = new Map<string, (content: unknown) => void>();
+
   /** OAuth Connect cards already emitted into a channel for a given provider.
    *  Keys are `${channelId}::${providerId}`. Process-scoped — resets on DO
    *  hibernation, which is fine because the next agent run will re-emit if
@@ -487,6 +492,21 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       return;
     }
 
+    // Intercept streaming method-result events (complete: false) and forward
+    // to the registered stream callback. This bridges ctx.stream() from method
+    // providers through to Pi's tool_execution_update event system.
+    if (event.type === "method-result") {
+      const payload = event.payload as Record<string, unknown> | undefined;
+      if (payload && payload["complete"] === false) {
+        const callId = payload["callId"] as string | undefined;
+        if (callId) {
+          const cb = this.streamCallbacks.get(callId);
+          if (cb) cb(payload["content"]);
+        }
+      }
+      return;
+    }
+
     await this.onChannelEvent(channelId, event);
   }
 
@@ -523,8 +543,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       fs: this.fs,
       uiCallbacks: this.buildUICallbacks(channelId),
       rosterCallback: () => this.buildRoster(channelId),
-      callMethodCallback: (handle, method, args, signal) =>
-        this.invokeChannelMethod(channelId, handle, method, args, signal),
+      callMethodCallback: (handle, method, args, signal, onStreamUpdate) =>
+        this.invokeChannelMethod(channelId, handle, method, args, signal, onStreamUpdate),
       askUserCallback: (params, signal) => this.askUser(channelId, params, signal),
       model: this.getModel(),
       thinkingLevel: this.getThinkingLevel(),
@@ -568,6 +588,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     toolArgsMap: Map<string, Record<string, unknown>>;
     /** Stashed description from message_start/end, keyed by piToolCallId. */
     toolDescriptionMap: Map<string, string>;
+    /** Accumulated console output from tool_execution_update, keyed by piToolCallId. */
+    toolConsoleMap: Map<string, string>;
   }>();
 
   private getStreamState(channelId: string) {
@@ -578,6 +600,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         toolCallIdMap: new Map(),
         toolArgsMap: new Map(),
         toolDescriptionMap: new Map(),
+        toolConsoleMap: new Map(),
       };
       this.channelStreamState.set(channelId, state);
     }
@@ -726,10 +749,35 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       }
 
       case "tool_execution_start": {
-        // Don't overwrite the detailed action description from message_start/end.
-        // The initial description (from getDetailedActionDescription) carries the
-        // tool args summary; replacing it with "Running..." loses that context.
-        // The status stays "pending" until tool_execution_end flips to "complete".
+        // Status stays "pending" until tool_execution_end flips to "complete".
+        break;
+      }
+
+      case "tool_execution_update": {
+        // Streaming partial results from method providers (e.g. console output
+        // from eval). Accumulate console lines and update the action message.
+        const { toolCallId } = event;
+        const channelMsgId = state.toolCallIdMap.get(toolCallId);
+        if (channelMsgId) {
+          const details = (event as { partialResult?: { details?: unknown } }).partialResult?.details;
+          const content = details as { type?: string; content?: string } | undefined;
+          if (content?.type === "console" && typeof content.content === "string") {
+            const prev = state.toolConsoleMap.get(toolCallId) ?? "";
+            const updated = prev ? `${prev}\n${content.content}` : content.content;
+            state.toolConsoleMap.set(toolCallId, updated);
+            // Update the action message with accumulated console output.
+            const stashedDesc = state.toolDescriptionMap.get(toolCallId) ?? "";
+            const stashedArgs = state.toolArgsMap.get(toolCallId);
+            const actionData = JSON.stringify({
+              type: event.toolName,
+              description: stashedDesc,
+              status: "pending",
+              args: stashedArgs,
+              consoleOutput: updated,
+            });
+            void channel.update(participantId, channelMsgId, actionData);
+          }
+        }
         break;
       }
 
@@ -737,11 +785,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         const { toolCallId, toolName, result, isError } = event;
         const channelMsgId = state.toolCallIdMap.get(toolCallId);
         if (channelMsgId) {
-          // Preserve the original contextual description ("Reading src/index.ts")
-          // from the pending message. The result is in the `result` field and
-          // rendered by ExpandedAction's JsonValue tree.
           const stashedDesc = state.toolDescriptionMap.get(toolCallId) ?? toolName;
           const stashedArgs = state.toolArgsMap.get(toolCallId);
+          const consoleOutput = state.toolConsoleMap.get(toolCallId);
           const { value: truncatedResult, truncated } = truncateResult(result);
           const actionData = JSON.stringify({
             type: toolName,
@@ -751,13 +797,14 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
             result: truncatedResult,
             isError: isError || false,
             resultTruncated: truncated,
+            consoleOutput,
           });
           void channel.update(participantId, channelMsgId, actionData)
             .then(() => channel.complete(participantId, channelMsgId));
-          // Free completed mappings to avoid unbounded growth in long sessions.
           state.toolCallIdMap.delete(toolCallId);
           state.toolArgsMap.delete(toolCallId);
           state.toolDescriptionMap.delete(toolCallId);
+          state.toolConsoleMap.delete(toolCallId);
         }
 
         // Publish image content from tool results.
@@ -768,8 +815,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       }
 
       default:
-        // No channel message needed for agent_start, turn_start, turn_end, agent_end,
-        // tool_execution_update.
+        // No channel message needed for agent_start, turn_start, turn_end, agent_end.
         break;
     }
   }
@@ -854,6 +900,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     method: string,
     args: unknown,
     signal: AbortSignal | undefined,
+    onStreamUpdate?: (content: unknown) => void,
   ): Promise<unknown> {
     const channel = this.createChannelClient(channelId);
     const participants = await channel.getParticipants();
@@ -865,6 +912,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     if (!callerId) throw new Error(`Not subscribed to channel ${channelId}`);
 
     const callId = crypto.randomUUID();
+    if (onStreamUpdate) this.streamCallbacks.set(callId, onStreamUpdate);
     const promise = this.awaitContinuation(callId, signal);
     this.continuations.store(callId, channelId, "tool-call", { handle: participantHandle, method });
     await channel.callMethod(callerId, target.participantId, callId, method, args);
@@ -1014,6 +1062,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   }
 
   async onCallResult(callId: string, result: unknown, isError: boolean): Promise<void> {
+    this.streamCallbacks.delete(callId);
     const pending = this.continuations.consume(callId);
     if (!pending) {
       console.warn(`[AgentWorkerBase] onCallResult: no pending call for callId=${callId} (isError=${isError})`);

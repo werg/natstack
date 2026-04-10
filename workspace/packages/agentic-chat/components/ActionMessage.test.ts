@@ -88,4 +88,18 @@ describe("parseActionData", () => {
     expect(data.status).toBe("complete");
     expect(data.isError).toBe(true);
   });
+
+  it("preserves consoleOutput field from rich action data", () => {
+    const content = JSON.stringify({
+      type: "eval",
+      description: "Executing code",
+      status: "complete",
+      args: { code: "console.log('hi')" },
+      consoleOutput: "hi",
+      result: { content: [{ type: "text", text: "[eval] Return value:\nundefined" }] },
+    });
+    const data = parseActionData(content);
+    expect(data.consoleOutput).toBe("hi");
+    expect(data.args).toEqual({ code: "console.log('hi')" });
+  });
 });

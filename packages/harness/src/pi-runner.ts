@@ -48,6 +48,7 @@ import {
 import {
   createChannelToolsExtension,
   type ChannelToolMethod,
+  type StreamUpdateCallback,
 } from "./extensions/channel-tools.js";
 import {
   createAskUserExtension,
@@ -111,6 +112,7 @@ export interface PiRunnerOptions {
     method: string,
     args: unknown,
     signal: AbortSignal | undefined,
+    onStreamUpdate?: StreamUpdateCallback,
   ) => Promise<unknown>;
   /** Bridge for the ask_user extension. */
   askUserCallback: (
