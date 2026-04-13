@@ -4,52 +4,67 @@
  * Collapsible card that stays in the chat history. Users can expand/collapse
  * at any time to interact with the component.
  */
-import { Component, Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState, type ComponentType, type ReactNode } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState, type ComponentType } from "react";
 import { Box, Button, Card, Callout, Flex, Spinner, Text } from "@radix-ui/themes";
 import { ExclamationTriangleIcon, ChevronDownIcon, ChevronUpIcon, ComponentInstanceIcon } from "@radix-ui/react-icons";
+import { EventErrorBoundary } from "@workspace/tool-ui";
+import { wrapChatForErrorReporting, wrapScopesForErrorReporting } from "../utils/wrapSandboxApis";
 import type { InlineUiData } from "@natstack/pubsub";
+import type { ChatSandboxValue } from "@workspace/agentic-core";
 import { useChatContext } from "../context/ChatContext";
 
-/**
- * Error boundary for inline UI components.
- */
-class InlineUiErrorBoundary extends Component<
-  { children: ReactNode; resetKey?: string },
-  { hasError: boolean; error?: Error }
-> {
-  constructor(props: { children: ReactNode; resetKey?: string }) {
-    super(props);
-    this.state = { hasError: false };
-  }
+// ---------------------------------------------------------------------------
+// InlineUiErrorCallout — error display with "Report to Agent" button
+// ---------------------------------------------------------------------------
 
-  static getDerivedStateFromError(error: Error) {
-    return { hasError: true, error };
-  }
+function InlineUiErrorCallout({
+  error,
+  componentId,
+  chat,
+}: {
+  error: Error;
+  componentId: string;
+  chat: ChatSandboxValue;
+}) {
+  const [reported, setReported] = useState(false);
 
-  static getDerivedStateFromProps(
-    props: { resetKey?: string },
-    state: { hasError: boolean; prevResetKey?: string }
-  ) {
-    if (props.resetKey !== state.prevResetKey) {
-      return { hasError: false, error: undefined, prevResetKey: props.resetKey };
-    }
-    return { prevResetKey: props.resetKey };
-  }
+  const handleReport = useCallback(() => {
+    const message =
+      `[Inline UI Error] Component "${componentId}" encountered an error ` +
+      `during user interaction:\n\n\`\`\`\n${error.message}\n\`\`\`\n\n` +
+      `${error.stack ? `Stack trace:\n\`\`\`\n${error.stack}\n\`\`\`` : ""}`;
+    chat.publish("message", { content: message }).catch((err) => {
+      console.error("[InlineUiMessage] Failed to report error to agent:", err);
+    });
+    setReported(true);
+  }, [error, componentId, chat]);
 
-  render() {
-    if (this.state.hasError) {
-      return (
-        <Callout.Root color="red" size="1">
-          <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
-          <Callout.Text>
-            <Text size="1">Component error: {this.state.error?.message || "Unknown error"}</Text>
-          </Callout.Text>
-        </Callout.Root>
-      );
-    }
-    return this.props.children;
-  }
+  return (
+    <Callout.Root color="red" size="1">
+      <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
+      <Callout.Text>
+        <Flex direction="column" gap="2">
+          <Text size="1">Component error: {error.message || "Unknown error"}</Text>
+          <Box>
+            <Button
+              size="1"
+              variant="soft"
+              color="red"
+              disabled={reported}
+              onClick={handleReport}
+            >
+              {reported ? "Reported" : "Report to Agent"}
+            </Button>
+          </Box>
+        </Flex>
+      </Callout.Text>
+    </Callout.Root>
+  );
 }
+
+// ---------------------------------------------------------------------------
+// InlineUiMessage
+// ---------------------------------------------------------------------------
 
 interface InlineUiMessageProps {
   data: InlineUiData;
@@ -61,6 +76,18 @@ export function InlineUiMessage({ data, compiledComponent: CompiledComponent, co
   const { chat, scope, scopes, scopeManager } = useChatContext();
   const componentProps = useMemo(() => data.props ?? {}, [data.props]);
   const [, forceUpdate] = useReducer((x: number) => x + 1, 0);
+  const [asyncError, setAsyncError] = useState<Error | null>(null);
+
+  // Wrap chat/scopes so unhandled async rejections surface visually
+  const onAsyncError = useCallback((err: Error) => setAsyncError(err), []);
+  const wrappedChat = useMemo(
+    () => wrapChatForErrorReporting(chat, onAsyncError),
+    [chat, onAsyncError],
+  );
+  const wrappedScopes = useMemo(
+    () => wrapScopesForErrorReporting(scopes, onAsyncError),
+    [scopes, onAsyncError],
+  );
 
   // Subscribe to scope changes — debounced re-render
   useEffect(() => {
@@ -90,22 +117,27 @@ export function InlineUiMessage({ data, compiledComponent: CompiledComponent, co
     });
   }, [autoCollapsed]);
 
+  // Reset async error when props change (same trigger as EventErrorBoundary's resetKey)
+  const resetKey = JSON.stringify(data.props);
+  useEffect(() => { setAsyncError(null); }, [resetKey]);
+
+  if (asyncError) {
+    return <InlineUiErrorCallout error={asyncError} componentId={data.id} chat={chat} />;
+  }
+
   if (compilationError) {
     return (
-      <Callout.Root color="red" size="1">
-        <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
-        <Callout.Text>
-          <Text size="1">Failed to render UI: {compilationError}</Text>
-        </Callout.Text>
-      </Callout.Root>
+      <InlineUiErrorCallout
+        error={new Error(compilationError)}
+        componentId={data.id}
+        chat={chat}
+      />
     );
   }
 
   if (!CompiledComponent) {
     return null;
   }
-
-  const resetKey = JSON.stringify(data.props);
 
   return (
     <Card
@@ -140,11 +172,16 @@ export function InlineUiMessage({ data, compiledComponent: CompiledComponent, co
       {/* Collapsible content */}
       {expanded && (
         <Box p="2" ref={measuredRef} onClickCapture={onInteraction} onInputCapture={onInteraction} onChangeCapture={onInteraction}>
-          <InlineUiErrorBoundary resetKey={resetKey}>
+          <EventErrorBoundary
+            resetKey={resetKey}
+            renderFallback={(error) => (
+              <InlineUiErrorCallout error={error} componentId={data.id} chat={chat} />
+            )}
+          >
             <Suspense fallback={<Spinner size="1" />}>
-              <CompiledComponent props={componentProps} chat={chat as unknown as Record<string, unknown>} scope={scope} scopes={scopes as unknown as Record<string, unknown>} />
+              <CompiledComponent props={componentProps} chat={wrappedChat as unknown as Record<string, unknown>} scope={scope} scopes={wrappedScopes as unknown as Record<string, unknown>} />
             </Suspense>
-          </InlineUiErrorBoundary>
+          </EventErrorBoundary>
         </Box>
       )}
     </Card>

@@ -35,6 +35,7 @@ export { FeedbackFormRenderer, type FeedbackFormRendererProps } from "./componen
 export { FeedbackContainer, type FeedbackContainerProps } from "./components/FeedbackContainer";
 export { ToolPreviewField, type ToolPreviewFieldProps } from "./components/ToolPreviewField";
 export { ErrorBoundary } from "./components/ErrorBoundary";
+export { EventErrorBoundary, type EventErrorBoundaryProps } from "./components/EventErrorBoundary";
 
 // Tool Previews (core exports)
 export {
@@ -56,6 +57,7 @@ export { useToolApproval, APPROVAL_LEVELS, type FeedbackFunctions } from "./hook
 // Utilities
 // ============================================================================
 export { createApprovalSchema, type CreateApprovalSchemaParams } from "./utils/createApprovalSchema";
+export { trackPromise } from "./utils/trackAsyncErrors";
 
 // ============================================================================
 // Additional Components

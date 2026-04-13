@@ -10,7 +10,7 @@ import { Box, Button, Card, Flex, ScrollArea, Text } from "@radix-ui/themes";
 import { Cross2Icon, DragHandleHorizontalIcon } from "@radix-ui/react-icons";
 import { type ReactNode, useState, useCallback, useRef, useEffect } from "react";
 import { useViewportHeight } from "@workspace/react";
-import { ErrorBoundary } from "./ErrorBoundary";
+import { EventErrorBoundary } from "./EventErrorBoundary";
 
 export interface FeedbackContainerProps {
   /** The feedback component to render */
@@ -129,7 +129,7 @@ export function FeedbackContainer({
 
       {/* Scrollable content — grows to fit, scrolls at max-height */}
       <Box px="3" py="2" flexGrow="1" style={{ minHeight: 0, overflow: "auto" }}>
-        <ErrorBoundary onError={onError}>{children}</ErrorBoundary>
+        <EventErrorBoundary onError={onError}>{children}</EventErrorBoundary>
       </Box>
     </Card>
   );

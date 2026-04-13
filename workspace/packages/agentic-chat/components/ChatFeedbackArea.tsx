@@ -1,9 +1,14 @@
-import { useCallback } from "react";
+import { useCallback, useMemo, type ComponentType } from "react";
 import { Flex } from "@radix-ui/themes";
 import {
   FeedbackContainer,
   FeedbackFormRenderer,
+  type ActiveFeedbackTsx,
+  type FeedbackComponentProps,
 } from "@workspace/tool-ui";
+import type { ChatSandboxValue } from "@workspace/agentic-core";
+import type { ScopesApi, ScopeManager } from "@workspace/eval";
+import { wrapChatForErrorReporting, wrapScopesForErrorReporting } from "../utils/wrapSandboxApis";
 import { useChatContext } from "../context/ChatContext";
 
 /**
@@ -55,31 +60,77 @@ export function ChatFeedbackArea() {
           return null;
         }
         return (
-          <FeedbackContainer
+          <TsxFeedbackItem
             key={feedback.callId}
-            title={feedback.title}
+            feedback={feedback}
+            FeedbackComponent={FeedbackComponent}
+            chat={chat}
+            scope={scope}
+            scopes={scopes}
+            scopeManager={scopeManager}
             onDismiss={() => onFeedbackDismiss(feedback.callId)}
             onError={(error) => onFeedbackError(feedback.callId, error)}
-          >
-            <div onClickCapture={onInteraction} onInputCapture={onInteraction} onChangeCapture={onInteraction}>
-              <FeedbackComponent
-                onSubmit={(value) => {
-                  const done = () => feedback.complete({ type: "submit", value });
-                  scopeManager ? void scopeManager.persist().catch(() => {}).then(done) : done();
-                }}
-                onCancel={() => {
-                  const done = () => feedback.complete({ type: "cancel" });
-                  scopeManager ? void scopeManager.persist().catch(() => {}).then(done) : done();
-                }}
-                onError={(message) => feedback.complete({ type: "error", message })}
-                chat={chat as unknown as Record<string, unknown>}
-                scope={scope}
-                scopes={scopes as unknown as Record<string, unknown>}
-              />
-            </div>
-          </FeedbackContainer>
+            onInteraction={onInteraction}
+          />
         );
       })}
     </Flex>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// TsxFeedbackItem — per-feedback wrapper that memoizes async-error wrappers
+// ---------------------------------------------------------------------------
+
+interface TsxFeedbackItemProps {
+  feedback: ActiveFeedbackTsx;
+  FeedbackComponent: ComponentType<FeedbackComponentProps>;
+  chat: ChatSandboxValue;
+  scope: Record<string, unknown>;
+  scopes: ScopesApi;
+  scopeManager: ScopeManager | null;
+  onDismiss: () => void;
+  onError: (error: Error) => void;
+  onInteraction: () => void;
+}
+
+function TsxFeedbackItem({
+  feedback, FeedbackComponent, chat, scope, scopes, scopeManager,
+  onDismiss, onError, onInteraction,
+}: TsxFeedbackItemProps) {
+  // Wrap chat/scopes so unhandled async rejections route to onError.
+  // Memoized per feedback — onError changes when callId changes (new feedback).
+  const wrappedChat = useMemo(
+    () => wrapChatForErrorReporting(chat, onError),
+    [chat, onError],
+  );
+  const wrappedScopes = useMemo(
+    () => wrapScopesForErrorReporting(scopes, onError),
+    [scopes, onError],
+  );
+
+  return (
+    <FeedbackContainer
+      title={feedback.title}
+      onDismiss={onDismiss}
+      onError={onError}
+    >
+      <div onClickCapture={onInteraction} onInputCapture={onInteraction} onChangeCapture={onInteraction}>
+        <FeedbackComponent
+          onSubmit={(value) => {
+            const done = () => feedback.complete({ type: "submit", value });
+            scopeManager ? void scopeManager.persist().catch(() => {}).then(done) : done();
+          }}
+          onCancel={() => {
+            const done = () => feedback.complete({ type: "cancel" });
+            scopeManager ? void scopeManager.persist().catch(() => {}).then(done) : done();
+          }}
+          onError={(message) => feedback.complete({ type: "error", message })}
+          chat={wrappedChat as unknown as Record<string, unknown>}
+          scope={scope}
+          scopes={wrappedScopes as unknown as Record<string, unknown>}
+        />
+      </div>
+    </FeedbackContainer>
   );
 }
