@@ -119,4 +119,60 @@ describe("TypeCheckService workspace resolution", () => {
     const unresolvedModules = result.diagnostics.filter((d) => d.code === 2307);
     expect(unresolvedModules).toHaveLength(1);
   });
+
+  it("resolves external packages from explicit nodeModulesPaths", () => {
+    const root = createTempDir("typecheck-service-node-modules-");
+    const consumerDir = path.join(root, "workspace", "packages", "consumer");
+    const externalNodeModules = path.join(root, "external-deps", "node_modules");
+
+    writeFile(
+      path.join(consumerDir, "package.json"),
+      JSON.stringify({
+        name: "@workspace/consumer",
+        type: "module",
+        dependencies: {
+          "use-stick-to-bottom": "^1.1.3",
+        },
+      }, null, 2),
+    );
+    writeFile(
+      path.join(externalNodeModules, "use-stick-to-bottom", "package.json"),
+      JSON.stringify({
+        name: "use-stick-to-bottom",
+        type: "module",
+        types: "./dist/index.d.ts",
+      }, null, 2),
+    );
+    writeFile(
+      path.join(externalNodeModules, "use-stick-to-bottom", "dist", "index.d.ts"),
+      'export declare function useStickToBottom(): { isAtBottom: boolean };\n',
+    );
+
+    const consumerFile = path.join(consumerDir, "index.ts");
+    writeFile(
+      consumerFile,
+      [
+        'import { useStickToBottom } from "use-stick-to-bottom";',
+        "const state = useStickToBottom();",
+        "const atBottom: boolean = state.isAtBottom;",
+        "void atBottom;",
+      ].join("\n"),
+    );
+
+    const service = new TypeCheckService({
+      panelPath: consumerDir,
+      nodeModulesPaths: [externalNodeModules],
+      skipSuggestions: true,
+      disableTsconfigDiscovery: true,
+      workspaceContext: null,
+    });
+
+    service.updateFile(consumerFile, fs.readFileSync(consumerFile, "utf-8"));
+
+    const result = service.check(consumerFile);
+    const unresolvedModules = result.diagnostics.filter((d) => d.code === 2307);
+    expect(unresolvedModules).toHaveLength(0);
+    const errors = result.diagnostics.filter((d) => d.severity === "error");
+    expect(errors).toHaveLength(0);
+  });
 });

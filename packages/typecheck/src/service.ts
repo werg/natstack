@@ -67,6 +67,9 @@ export interface TypeCheckServiceConfig {
   /** Root path of the panel/package being checked. Also the cwd for tsconfig
    *  discovery and module resolution. */
   panelPath: string;
+  /** Additional node_modules roots to search before falling back to TS's
+   *  normal ancestor walk. Useful for isolated build/typecheck caches. */
+  nodeModulesPaths?: string[];
   /** Override TypeScript compiler options. Merged on top of defaults + any
    *  loaded tsconfig.json. `noEmit` is always forced to true. */
   compilerOptions?: ts.CompilerOptions;
@@ -416,6 +419,9 @@ export class TypeCheckService {
       if (fromContext) return fromContext;
     }
 
+    const fromNodeModulesPaths = this.resolveFromNodeModulesPaths(moduleName);
+    if (fromNodeModulesPaths) return fromNodeModulesPaths;
+
     return ts.resolveModuleName(
       moduleName,
       containingFile,
@@ -484,6 +490,61 @@ export class TypeCheckService {
       return this.resolvePackageSubpath(info.dir, info.packageJson, subpath);
     }
     return null;
+  }
+
+  /**
+   * Resolve bare package imports against explicit node_modules roots. This is
+   * used for isolated external-dependency caches that are not on the normal
+   * parent-directory node_modules walk.
+   */
+  private resolveFromNodeModulesPaths(
+    moduleName: string,
+  ): ts.ResolvedModuleWithFailedLookupLocations | null {
+    if (moduleName.startsWith(".") || path.isAbsolute(moduleName)) return null;
+
+    const parts = moduleName.split("/");
+    const packageName = moduleName.startsWith("@")
+      ? parts.slice(0, 2).join("/")
+      : parts[0]!;
+    const subpath = parts.length > (moduleName.startsWith("@") ? 2 : 1)
+      ? parts.slice(moduleName.startsWith("@") ? 2 : 1).join("/")
+      : null;
+
+    for (const nodeModulesPath of this.config.nodeModulesPaths ?? []) {
+      const resolved = this.resolveFromNodeModulesRoot(nodeModulesPath, packageName, subpath);
+      if (resolved) return resolved;
+
+      // Fallback to DefinitelyTyped naming for packages that don't ship types.
+      if (!packageName.startsWith("@types/")) {
+        const typesName = `@types/${packageName.replace("@", "").replace("/", "__")}`;
+        const fromTypes = this.resolveFromNodeModulesRoot(nodeModulesPath, typesName, null);
+        if (fromTypes) return fromTypes;
+      }
+    }
+
+    return null;
+  }
+
+  private resolveFromNodeModulesRoot(
+    nodeModulesPath: string,
+    packageName: string,
+    subpath: string | null,
+  ): ts.ResolvedModuleWithFailedLookupLocations | null {
+    const packageDir = path.join(nodeModulesPath, packageName);
+    if (!this.diskFileExists(path.join(packageDir, "package.json"))) return null;
+
+    try {
+      const packageJson = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf-8")) as {
+        exports?: unknown;
+        types?: string;
+        typings?: string;
+        main?: string;
+        module?: string;
+      };
+      return this.resolvePackageSubpath(packageDir, packageJson, subpath);
+    } catch {
+      return null;
+    }
   }
 
   /**
