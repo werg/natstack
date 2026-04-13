@@ -20,6 +20,7 @@ Guide new users through understanding NatStack and getting their workspace set u
 | Skill | When to use |
 |-------|-------------|
 | `browser-import` | Importing cookies, passwords, bookmarks, history from existing browsers |
+| `api-integrations` | Connecting third-party APIs (Gmail, GitHub, Slack, etc.) via OAuth/Nango |
 | `sandbox` | Learning the eval tool, inline UI, runtime APIs |
 | `paneldev` | Building and launching panels, workers, full development workflow |
 
@@ -46,8 +47,9 @@ eval({ code: `
 1. **Explain** — Read [OVERVIEW.md](OVERVIEW.md), introduce key concepts based on what the user already knows
 2. **Set up workspace** — Walk through [GETTING_STARTED.md](GETTING_STARTED.md) to configure their environment
 3. **Import browser data** — Use the `browser-import` skill to bring in cookies, bookmarks, passwords
-4. **First project** — Use the `paneldev` skill to scaffold and launch a panel
-5. **Explore** — Point to the `sandbox` skill for runtime API exploration
+4. **API integrations** — Offer to set up OAuth via Nango for Gmail, GitHub, Slack, etc. (optional, uses inline UI)
+5. **First project** — Use the `paneldev` skill to scaffold and launch a panel
+6. **Explore** — Point to the `sandbox` skill for runtime API exploration
 
 ### Returning Users
 

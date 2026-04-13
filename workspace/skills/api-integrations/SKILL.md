@@ -71,19 +71,49 @@ eval({
 
 **If no cookies** — offer the user a choice: import browser data first (for seamless panel-based setup) or use their system browser directly. Use a `feedback_form` to let them decide.
 
-**After the user gets their secret key** — help them save it:
+**After the user gets their secret key** — use an inline UI that saves it directly via the secrets service. **Never read the secret value into the model's context.** The UI should call `rpc.call("main", "secrets.setSecret", ...)` from component code so the key goes straight from user input to the secrets service, bypassing the model entirely. The resolve value should indicate success/skip only — never the key itself.
+
 ```
-eval({
-  code: `
-    import { fs } from "@workspace/runtime";
-    // Read existing secrets, add nango key, write back
-    const secretsPath = "~/.config/natstack/.secrets.yml";
-    // Guide user to paste their key, then save it
-    console.log("Add this line to " + secretsPath + ":");
-    console.log("  nango: sk-your-secret-key-here");
-    console.log("Then restart the workspace.");
+inline_ui({
+  component: `
+    const [key, setKey] = useState("");
+    const [status, setStatus] = useState("idle");
+    const [error, setError] = useState("");
+
+    const handleSave = async () => {
+      setStatus("saving");
+      try {
+        await rpc.call("main", "secrets.setSecret", "nango", key);
+        setStatus("saved");
+        resolve({ saved: true });
+      } catch (e) {
+        setStatus("error");
+        setError(e.message || "Failed to save");
+      }
+    };
+
+    if (status === "saved") return (
+      <div>Nango secret saved. Restart the workspace to activate OAuth.</div>
+    );
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div>Paste your Nango secret key:</div>
+        <input
+          type="password"
+          placeholder="sk-..."
+          value={key}
+          onChange={e => setKey(e.target.value)}
+          style={{ fontFamily: "monospace", padding: 6 }}
+        />
+        {status === "error" && <div style={{ color: "red" }}>{error}</div>}
+        <button
+          disabled={!key.startsWith("sk-") || status === "saving"}
+          onClick={handleSave}
+        >{status === "saving" ? "Saving..." : "Save key"}</button>
+      </div>
+    );
   `,
-  timeout: 5000
 })
 ```
 

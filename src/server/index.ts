@@ -509,6 +509,17 @@ async function main() {
   const notificationInternal = notificationResult.internal;
   container.register(rpcService(notificationResult.definition));
 
+  // ── Secrets service (API keys with user consent) ──
+  {
+    const { createSecretsService } = await import("./services/secretsService.js");
+    let panelRegistry: import("@natstack/shared/panelRegistry").PanelRegistry | undefined;
+    try { panelRegistry = container.get<import("@natstack/shared/panelRegistry").PanelRegistry>("panelRegistry"); } catch { /* not available */ }
+    container.register(rpcService(createSecretsService({
+      notificationService: notificationInternal,
+      panelRegistry,
+    })));
+  }
+
   // ── OAuth service (works in both Electron and standalone modes) ──
   {
     const { OAuthManager } = await import("@natstack/shared/oauth/oauthManager");
