@@ -42,8 +42,9 @@ export default defineConfig({
   },
   test: {
     globals: true,
-    include: ["src/**/*.test.ts", "workspace/**/*.test.ts", "packages/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx", "workspace/**/*.test.ts", "workspace/**/*.test.tsx", "packages/**/*.test.ts", "packages/**/*.test.tsx"],
     exclude: ["**/node_modules/**", "dist", "workspace/.contexts"],
+    setupFiles: ["tests/setup/vitest.setup.ts"],
     server: {
       deps: {
         // Inline Radix so its imports go through Vite's transform pipeline,

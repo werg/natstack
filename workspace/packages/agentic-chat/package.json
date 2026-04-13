@@ -8,17 +8,17 @@
     "./styles.css": "./styles.css"
   },
   "dependencies": {
-    "@workspace/agentic-core": "workspace:*",
+    "@mdx-js/mdx": "^3.1.0",
     "@natstack/pubsub": "workspace:*",
+    "@radix-ui/react-icons": "^1.3.2",
+    "@radix-ui/themes": "^3.2.1",
+    "@workspace/agentic-core": "workspace:*",
     "@workspace/eval": "workspace:*",
     "@workspace/tool-ui": "workspace:*",
-    "@mdx-js/mdx": "^3.1.0",
-    "@radix-ui/themes": "^3.2.1",
-    "@radix-ui/react-icons": "^1.3.2",
-    "@tanstack/react-virtual": "^3.13.0",
     "highlight.js": "^11.11.1",
     "react-markdown": "^9.0.1",
     "rehype-highlight": "^7.0.2",
-    "remark-gfm": "^4.0.0"
+    "remark-gfm": "^4.0.0",
+    "use-stick-to-bottom": "^1.1.3"
   }
 }

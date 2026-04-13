@@ -1,14 +1,13 @@
-import React, { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo, useLayoutEffect } from "react";
 import { Box, Button, Card, Flex, ScrollArea, Text } from "@radix-ui/themes";
 import type { Participant } from "@natstack/pubsub";
+import { useStickToBottom } from "use-stick-to-bottom";
 import { InlineGroup, type InlineItem } from "./InlineGroup";
 import { parseActionData } from "./ActionMessage";
 import { parseTypingData } from "./TypingMessage";
 import { NewContentIndicator } from "./NewContentIndicator";
 import { MessageCard } from "./MessageCard";
 import type { ChatMessage, ChatParticipantMetadata, InlineUiComponentEntry } from "../types";
-
-const BOTTOM_THRESHOLD_PX = 48;
 
 // Grouped item types produced by the grouping logic
 type GroupedItem =
@@ -171,14 +170,20 @@ export const MessageList = React.memo(function MessageList({
   renderMessage: customRenderMessage,
   renderInlineGroup: customRenderInlineGroup,
 }: MessageListProps) {
-  // --- Scroll refs and state ---
-  const scrollAreaRef = useRef<HTMLDivElement>(null);
-  const scrollContentRef = useRef<HTMLDivElement>(null);
+  // --- Scroll state ---
   const [showNewContent, setShowNewContent] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
-  const [viewportEl, setViewportEl] = useState<HTMLElement | null>(null);
+  const {
+    scrollRef,
+    contentRef,
+    scrollToBottom,
+    isAtBottom,
+  } = useStickToBottom({
+    initial: "instant",
+    resize: "instant",
+  });
 
-  // Refs for scroll position tracking
+  // Refs for message window tracking
   const lastMessageCountRef = useRef(0);
   const lastFirstMessageIdRef = useRef<string | null>(null);
   const lastScrollTopRef = useRef(0);
@@ -191,171 +196,73 @@ export const MessageList = React.memo(function MessageList({
   hasMoreHistoryRef.current = hasMoreHistory;
   loadingMoreRef.current = loadingMore;
   onLoadEarlierMessagesRef.current = onLoadEarlierMessages;
-  // Explicit "at bottom" flag — scrollToIndex is async (estimated offset may
-  // undershoot), so reading viewport.scrollTop right after may not reflect the
-  // true position. Setting this flag after auto-scrolling ensures consecutive
-  // streaming updates keep scrolling without waiting for the scroll event.
-  const isAtBottomRef = useRef(true);
 
-  const getViewport = useCallback((): HTMLElement | null => {
-    const content = scrollContentRef.current;
-    const root = scrollAreaRef.current;
-    if (!content || !root) return null;
-    // Walk up from the content div to the ScrollArea root to find the
-    // scrollable viewport.  Radix may insert intermediate wrappers (e.g. a
-    // `display:table` div) between the viewport and our content, so a simple
-    // `parentElement` isn't reliable.
-    let el: HTMLElement | null = content.parentElement;
-    while (el && el !== root) {
-      // Fast path: Radix marks the viewport with a data attribute
-      if (el.hasAttribute("data-radix-scroll-area-viewport")) return el;
-      // Fallback: look for scrollable overflow
-      const { overflowY } = getComputedStyle(el);
-      if (overflowY === "scroll" || overflowY === "auto" || overflowY === "hidden") return el;
-      el = el.parentElement;
-    }
-    return null;
-  }, []);
-
-  // Track the actual viewport element so scroll listeners attach reliably.
-  useLayoutEffect(() => {
-    const nextViewport = getViewport();
-    if (nextViewport !== viewportEl) {
-      setViewportEl(nextViewport);
-    }
-  }, [getViewport, viewportEl]);
-
-  // Handle scroll events.
-  // Only clear isAtBottomRef when the user explicitly scrolls UP (scrollTop
-  // decreased). Layout-induced scroll events (e.g. flex container resizing
-  // from sibling re-renders, viewport height changes) can shift scrollTop
-  // without user intent — clearing isAtBottom in those cases breaks autoscroll
-  // because the next streaming update sees the flag as false and skips
-  // scrollToEnd().
-  const handleScroll = useCallback(() => {
-    const viewport = viewportEl ?? getViewport();
+  const handleViewportScroll = useCallback(() => {
+    const viewport = scrollRef.current;
     if (!viewport) return;
-    const { scrollTop, scrollHeight, clientHeight } = viewport;
-    const prevScrollTop = lastScrollTopRef.current;
-    lastScrollTopRef.current = scrollTop;
-    lastScrollHeightRef.current = scrollHeight;
-
-    const nearBottom =
-      scrollHeight - scrollTop - clientHeight <= BOTTOM_THRESHOLD_PX;
-
-    if (nearBottom) {
-      isAtBottomRef.current = true;
-      setShowNewContent(false);
-    } else if (scrollTop < prevScrollTop) {
-      // User scrolled up — clear the flag.
-      isAtBottomRef.current = false;
-    }
-    // Otherwise (scrollTop >= prevScrollTop but not nearBottom) leave the flag
-    // unchanged. This handles content growth and layout-induced shifts that
-    // move the bottom further away without user action.
-
-    // Auto-load earlier messages when scrolling near the top
+    lastScrollTopRef.current = viewport.scrollTop;
+    lastScrollHeightRef.current = viewport.scrollHeight;
     if (viewport.scrollTop < 200 && hasMoreHistoryRef.current && !loadingMoreRef.current) {
       onLoadEarlierMessagesRef.current?.();
     }
-  }, [getViewport, viewportEl]);
+  }, [scrollRef]);
 
   // Attach scroll listener
   useEffect(() => {
-    if (!viewportEl) return;
-    viewportEl.addEventListener("scroll", handleScroll, { passive: true });
-    handleScroll();
-    return () => viewportEl.removeEventListener("scroll", handleScroll);
-  }, [handleScroll, viewportEl]);
+    const viewport = scrollRef.current;
+    if (!viewport) {
+      return;
+    }
 
-  // Handle new content: keep position unless the user was near the bottom.
-  const scrollRafRef = useRef(0);
-  useEffect(() => {
-    return () => cancelAnimationFrame(scrollRafRef.current);
-  }, []);
+    viewport.addEventListener("scroll", handleViewportScroll, { passive: true });
+    handleViewportScroll();
+    return () => viewport.removeEventListener("scroll", handleViewportScroll);
+  }, [handleViewportScroll, scrollRef]);
 
   useLayoutEffect(() => {
-    const viewport = viewportEl ?? getViewport();
+    const viewport = scrollRef.current;
     const prevCount = lastMessageCountRef.current;
     const nextCount = messages.length;
     const prevFirstId = lastFirstMessageIdRef.current;
     const nextFirstId = messages[0]?.id ?? null;
+    const countDelta = nextCount - prevCount;
+    const isPrepend =
+      countDelta > 0 && prevFirstId !== null && nextFirstId !== prevFirstId;
 
-    if (!viewport) {
-      lastMessageCountRef.current = nextCount;
-      lastFirstMessageIdRef.current = nextFirstId;
-      return;
+    if (viewport && prevCount > 0 && !isAtBottom && isPrepend) {
+      const scrollHeightDelta = viewport.scrollHeight - lastScrollHeightRef.current;
+      if (scrollHeightDelta !== 0) {
+        viewport.scrollTop = lastScrollTopRef.current + scrollHeightDelta;
+      }
     }
 
-    const scrollToEnd = () => {
-      // Direct DOM scroll — always lands at the true bottom.
-      // scrollToIndex uses estimated offsets and often undershoots,
-      // causing handleScroll to incorrectly clear isAtBottomRef.
-      viewport.scrollTo({ top: viewport.scrollHeight, behavior: "auto" });
-      // Retry next frame: layout may shift between now and the next paint.
-      cancelAnimationFrame(scrollRafRef.current);
-      scrollRafRef.current = requestAnimationFrame(() => {
-        const vp = viewportEl ?? getViewport();
-        if (vp) vp.scrollTo({ top: vp.scrollHeight, behavior: "auto" });
-      });
-    };
-
-    if (prevCount === 0) {
-      if (nextCount > 0) {
-        scrollToEnd();
-        isAtBottomRef.current = true;
-      }
-    } else {
-      const countDelta = nextCount - prevCount;
-      const { scrollHeight } = viewport;
-      const prevScrollHeight = lastScrollHeightRef.current;
-      const scrollHeightDelta = scrollHeight - prevScrollHeight;
-      const isPrepend =
-        countDelta > 0 && prevFirstId !== null && nextFirstId !== prevFirstId;
-
-      if (isAtBottomRef.current) {
-        scrollToEnd();
+    if (prevCount > 0) {
+      if (isAtBottom) {
         setShowNewContent(false);
-        // Keep the flag true — the rAF retry fires asynchronously, and
-        // scroll events from the first scrollTo may arrive before the retry.
-        isAtBottomRef.current = true;
-      } else {
-        if (isPrepend && scrollHeightDelta !== 0) {
-          viewport.scrollTop = lastScrollTopRef.current + scrollHeightDelta;
-        } else if (countDelta > 0 && !isPrepend) {
-          setShowNewContent(true);
-        }
+      } else if (countDelta > 0 && !isPrepend) {
+        setShowNewContent(true);
       }
     }
 
-    // Re-evaluate isAtBottomRef from the DOM — catches cases where the
-    // flag was cleared by an intermediate scroll event but we're actually
-    // at the bottom.
-    if (!isAtBottomRef.current) {
-      isAtBottomRef.current =
-        viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= BOTTOM_THRESHOLD_PX;
+    if (viewport) {
+      lastScrollTopRef.current = viewport.scrollTop;
+      lastScrollHeightRef.current = viewport.scrollHeight;
     }
-
-    lastScrollTopRef.current = viewport.scrollTop;
-    lastScrollHeightRef.current = viewport.scrollHeight;
     lastMessageCountRef.current = nextCount;
     lastFirstMessageIdRef.current = nextFirstId;
-  }, [messages, getViewport, viewportEl]);
+  }, [isAtBottom, messages]);
+
+  useEffect(() => {
+    if (isAtBottom) {
+      setShowNewContent(false);
+    }
+  }, [isAtBottom]);
 
   // Scroll to the latest content when the indicator is clicked.
   const handleScrollToNewContent = useCallback(() => {
-    const viewport = viewportEl ?? getViewport();
-    if (viewport) {
-      viewport.scrollTo({ top: viewport.scrollHeight, behavior: "auto" });
-      cancelAnimationFrame(scrollRafRef.current);
-      scrollRafRef.current = requestAnimationFrame(() => {
-        const vp = viewportEl ?? getViewport();
-        if (vp) vp.scrollTo({ top: vp.scrollHeight, behavior: "auto" });
-      });
-    }
-    isAtBottomRef.current = true;
+    void scrollToBottom({ animation: "instant" });
     setShowNewContent(false);
-  }, [getViewport, viewportEl]);
+  }, [scrollToBottom]);
 
   // --- Copy handler (local to MessageList) ---
   const handleCopyMessage = useCallback(async (messageId: string, content: string) => {
@@ -572,60 +479,55 @@ export const MessageList = React.memo(function MessageList({
   return (
     <Box flexGrow="1" overflow="hidden" style={{ minHeight: 0, position: "relative" }} asChild>
       <Card>
-      <ScrollArea ref={scrollAreaRef} style={{ height: "100%" }}>
-        <div ref={scrollContentRef} style={{ overflowAnchor: "none", padding: "var(--space-1)" }}>
-          {/* Load earlier messages button */}
-          {hasMoreHistory && onLoadEarlierMessages && (
-            <Flex justify="center" py="2">
-              <Button
-                size="1"
-                variant="soft"
-                onClick={onLoadEarlierMessages}
-                disabled={loadingMore}
-              >
-                {loadingMore ? "Loading..." : "Load earlier messages"}
-              </Button>
-            </Flex>
-          )}
-          {groupedItems.length === 0 && activeTypingItems.length === 0 ? (
-            <Text color="gray" size="2">
-              Send a message to start chatting
-            </Text>
-          ) : (
-            <Flex direction="column" gap="1">
-              {groupedItems.map((item, index) => (
-                <div
-                  key={item.type === "inline-group" ? item.key : (item.msg.id || `msg-${index}`)}
-                  style={{
-                    contentVisibility: "auto",
-                    containIntrinsicSize: item.type === "inline-group" ? "auto 36px" : "auto 100px",
-                  } as React.CSSProperties}
+        <ScrollArea
+          ref={scrollRef}
+          style={{
+            height: "100%",
+          }}
+          scrollbars="vertical"
+          size="1"
+        >
+          <div ref={contentRef} style={{ padding: "var(--space-1)" }}>
+            {/* Load earlier messages button */}
+            {hasMoreHistory && onLoadEarlierMessages && (
+              <Flex justify="center" py="2">
+                <Button
+                  size="1"
+                  variant="soft"
+                  onClick={onLoadEarlierMessages}
+                  disabled={loadingMore}
                 >
-                  {renderItem(index)}
-                </div>
-              ))}
-              {activeTypingItems.length > 0 && (
-                <div
-                  key="active-typing"
-                  style={{
-                    contentVisibility: "auto",
-                    containIntrinsicSize: "auto 36px",
-                  } as React.CSSProperties}
-                >
-                  <Flex direction="column">
-                    {customRenderInlineGroup
-                      ? customRenderInlineGroup(activeTypingItems)
-                      : <InlineGroup items={activeTypingItems} onInterrupt={handleTypingInterrupt} />}
-                  </Flex>
-                </div>
-              )}
-            </Flex>
-          )}
-        </div>
-      </ScrollArea>
-      {showNewContent && (
-        <NewContentIndicator onClick={handleScrollToNewContent} />
-      )}
+                  {loadingMore ? "Loading..." : "Load earlier messages"}
+                </Button>
+              </Flex>
+            )}
+            {groupedItems.length === 0 && activeTypingItems.length === 0 ? (
+              <Text color="gray" size="2">
+                Send a message to start chatting
+              </Text>
+            ) : (
+              <Flex direction="column" gap="1">
+                {groupedItems.map((item, index) => (
+                  <div key={item.type === "inline-group" ? item.key : (item.msg.id || `msg-${index}`)}>
+                    {renderItem(index)}
+                  </div>
+                ))}
+                {activeTypingItems.length > 0 && (
+                  <div key="active-typing">
+                    <Flex direction="column">
+                      {customRenderInlineGroup
+                        ? customRenderInlineGroup(activeTypingItems)
+                        : <InlineGroup items={activeTypingItems} onInterrupt={handleTypingInterrupt} />}
+                    </Flex>
+                  </div>
+                )}
+              </Flex>
+            )}
+          </div>
+        </ScrollArea>
+        {showNewContent && (
+          <NewContentIndicator onClick={handleScrollToNewContent} />
+        )}
       </Card>
     </Box>
   );
