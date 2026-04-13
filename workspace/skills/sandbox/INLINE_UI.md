@@ -18,15 +18,18 @@ Render persistent interactive React components inline in the chat. Components st
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `code` | string | required | TSX source code for the component |
-| `props` | `Record<string, unknown>` | `{}` | Data passed to the component as `{ props }` |
+| `props` | `Record<string, unknown>` | `{}` | Optional data passed to the component as `{ props }` |
+
+> **Defensive coding rule:** Components always receive `props`, but individual keys may be absent if the caller omitted them. Always default `props` and guard property access:
+> `const items = props?.items ?? []`. For maximum portability, prefer embedding small constant data directly in the component source rather than relying on specific `props` keys.
 
 ## Component Contract
 
-The component receives `{ props, chat }`:
+Components receive `{ props, chat, scope, scopes }`:
 
 ```tsx
-export default function MyWidget({ props, chat }) {
-  // props — the data you passed via the props parameter
+export default function MyWidget({ props = {}, chat }) {
+  // props — data from the props parameter (always default to {})
   // chat — ChatSandboxValue for interacting with the conversation
 }
 ```
@@ -118,6 +121,8 @@ import { browserData } from "@workspace/panel-browser";
 
 ### Data Table with Copy
 
+Self-contained example — data is embedded directly in the component, no `props` needed:
+
 ```
 inline_ui({
   code: `
@@ -125,26 +130,32 @@ import { useState } from "react";
 import { Button, Flex, Table } from "@radix-ui/themes";
 import { CopyIcon, CheckIcon } from "@radix-ui/react-icons";
 
-export default function DataTable({ props }) {
+const columns = ["name", "status", "count"];
+const data = [
+  { name: "alpha", status: "active", count: 42 },
+  { name: "beta", status: "pending", count: 7 },
+];
+
+export default function DataTable() {
   const [copied, setCopied] = useState(false);
   return (
     <Flex direction="column" gap="2">
       <Table.Root size="1">
         <Table.Header>
           <Table.Row>
-            {props.columns.map(c => <Table.ColumnHeaderCell key={c}>{c}</Table.ColumnHeaderCell>)}
+            {columns.map(c => <Table.ColumnHeaderCell key={c}>{c}</Table.ColumnHeaderCell>)}
           </Table.Row>
         </Table.Header>
         <Table.Body>
-          {props.data.map((row, i) => (
+          {data.map((row, i) => (
             <Table.Row key={i}>
-              {props.columns.map(c => <Table.Cell key={c}>{row[c]}</Table.Cell>)}
+              {columns.map(c => <Table.Cell key={c}>{row[c]}</Table.Cell>)}
             </Table.Row>
           ))}
         </Table.Body>
       </Table.Root>
       <Button size="1" variant="soft" onClick={() => {
-        navigator.clipboard.writeText(JSON.stringify(props.data, null, 2));
+        navigator.clipboard.writeText(JSON.stringify(data, null, 2));
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
       }}>
@@ -152,29 +163,34 @@ export default function DataTable({ props }) {
       </Button>
     </Flex>
   );
-}`,
-  props: {
-    columns: ["name", "status", "count"],
-    data: [
-      { name: "alpha", status: "active", count: 42 },
-      { name: "beta", status: "pending", count: 7 },
-    ]
-  }
+}`
 })
 ```
 
+Alternative using `props` — always default and guard:
+
+```tsx
+export default function DataTable({ props = {} }) {
+  const columns = props?.columns ?? [];
+  const data = props?.data ?? [];
+  // ...
+}
+```
+
 ### File Browser with Chat Integration
+
+Self-contained pattern — data fetched via `chat.rpc` instead of `props`:
 
 ```
 inline_ui({
   code: `
 import { useState, useEffect } from "react";
-import { Button, Flex, Text, Box } from "@radix-ui/themes";
+import { Flex, Text } from "@radix-ui/themes";
 import { fs } from "@workspace/runtime";
 
-export default function FileBrowser({ props, chat }) {
+export default function FileBrowser({ chat }) {
   const [files, setFiles] = useState([]);
-  const [cwd, setCwd] = useState(props.startPath || "/");
+  const [cwd, setCwd] = useState("/");
 
   useEffect(() => {
     fs.readdir(cwd, { withFileTypes: true }).then(setFiles).catch(() => setFiles([]));
@@ -196,7 +212,14 @@ export default function FileBrowser({ props, chat }) {
       ))}
     </Flex>
   );
-}`,
-  props: { startPath: "/src" }
+}`
 })
+```
+
+Alternative using `props` — always default and guard:
+
+```tsx
+export default function FileBrowser({ props = {}, chat }) {
+  const [cwd, setCwd] = useState(props?.startPath ?? "/");
+}
 ```

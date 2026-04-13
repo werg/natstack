@@ -50,6 +50,12 @@ export class ServerProcessManager {
      * back to Electron's `shell.openExternal` directly.
      */
     onOpenExternal?: (url: string) => void;
+    /**
+     * Handle typed IPC requests from the server that expect a response.
+     * Called with the request type and full message; the return value is
+     * merged into the response and sent back with the same correlation ID.
+     */
+    onIpcRequest?: (type: string, msg: Record<string, unknown>) => Promise<Record<string, unknown> | null>;
   }) {}
 
   async start(): Promise<ServerPorts> {
@@ -99,6 +105,15 @@ export class ServerProcessManager {
             console.error("[ServerProcessManager] shell.openExternal failed:", err);
           }
         }
+      } else if (msg?.type?.endsWith("-request") && typeof msg.id === "string" && this.config.onIpcRequest) {
+        // Request/response IPC: dispatch to handler, send correlated response
+        const responseType = (msg.type as string).replace(/-request$/, "-response");
+        void this.config.onIpcRequest(msg.type, msg).then((result) => {
+          proc.postMessage({ type: responseType, id: msg.id, ...(result ?? {}) });
+        }).catch((err) => {
+          console.error(`[ServerProcessManager] IPC request handler error for ${msg.type}:`, err);
+          proc.postMessage({ type: responseType, id: msg.id, error: String(err) });
+        });
       }
     });
 

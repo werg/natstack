@@ -109,6 +109,8 @@ eval({
 
 ## Preload npm Package for Inline UI
 
+> **Defensive coding:** When using `props` in inline UI components, always default the parameter (`{ props = {}, chat }`) and guard property access (`props?.items ?? []`). For small datasets, embedding constants directly in the component source is simpler and more portable than passing `props`.
+
 npm packages aren't directly available in `inline_ui`. Preload via `eval` first — the module stays in the module map:
 
 ```

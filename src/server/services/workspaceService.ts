@@ -97,6 +97,12 @@ export interface WorkspaceServiceDeps {
    * a no-op (the caller is expected to reconnect manually).
    */
   requestRelaunch?: (name: string) => void;
+  /**
+   * IPC proxy: fetch the workspace catalog from Electron main when
+   * centralData is null (IPC mode). This keeps workspace.list() consistent
+   * with workspace.getActive() regardless of runtime mode.
+   */
+  requestWorkspaceList?: () => Promise<unknown[]>;
 }
 
 export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefinition {
@@ -160,8 +166,10 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
           };
 
         case "list":
-          if (!deps.centralData) return [];
-          return deps.centralData.listWorkspaces();
+          if (deps.centralData) return deps.centralData.listWorkspaces();
+          // IPC mode: proxy to Electron main which owns the catalog
+          if (deps.requestWorkspaceList) return deps.requestWorkspaceList();
+          return [];
 
         case "getActive":
           return deps.getConfig().id;

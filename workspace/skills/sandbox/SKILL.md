@@ -88,7 +88,7 @@ See [INTERACTION_PATTERNS.md](INTERACTION_PATTERNS.md) for when to use inline UI
 1. **Static imports only** — `import { rpc } from "@workspace/runtime"` (NOT `await import(...)`)
 2. **Workspace packages are auto-resolved** — `import { GitClient } from "@natstack/git"` just works. npm packages require `imports: { "lodash": "npm:4" }`
 3. **Components must `export default`** — named exports alone won't work for inline_ui/feedback_custom
-4. **Inline UI components receive `{ props, chat }`** — not raw props
+4. **Inline UI components receive `{ props, chat, scope, scopes }`** — always default `props` (`{ props = {}, chat }`) and guard property access (`props?.items ?? []`). For maximum portability, prefer embedding small constant data in the component source.
 5. **Feedback components receive `{ onSubmit, onCancel, onError, chat }`**
 6. **Workspace code is built from git, not from the working tree** — `workspace/` source (`packages/`, `panels/`, `workers/`, `skills/`) is extracted from git commits for builds. Editing files has NO effect until you **commit and push**. This applies to eval imports too: if you edit `@workspace/agentic-session` source, it won't change the imported module until the edit is committed and pushed.
 

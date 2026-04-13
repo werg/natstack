@@ -240,6 +240,8 @@ eval({ code: `
 
 ### Inline UI: Browser Control Panel
 
+> **Defensive coding:** This example uses `props.startUrl`. Always default: `const startUrl = props?.startUrl ?? "https://example.com"` to handle cases where the caller omits the prop.
+
 ```
 inline_ui({
   code: `

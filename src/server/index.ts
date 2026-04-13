@@ -58,6 +58,46 @@ function detectServerIpcChannel(): IpcChannel | null {
 const ipcChannel = detectServerIpcChannel();
 
 // =============================================================================
+// IPC request/response — bidirectional message correlation
+// =============================================================================
+// Extends the existing fire-and-forget IPC pattern (workspace-relaunch,
+// open-external, shutdown) with request/response support. The server sends
+// a typed request with a correlation ID; the parent (Electron main) returns
+// a response with the same ID. A single persistent listener routes all
+// responses to their pending promises.
+
+const pendingIpcResponses = new Map<string, (response: unknown) => void>();
+
+if (ipcChannel) {
+  ipcChannel.on("message", (msg: any) => {
+    if (msg?.id && pendingIpcResponses.has(msg.id)) {
+      pendingIpcResponses.get(msg.id)!(msg);
+      pendingIpcResponses.delete(msg.id);
+    }
+  });
+}
+
+/**
+ * Send a typed request to the parent process and await a correlated response.
+ * Returns null if no IPC channel or if the parent doesn't respond within 5s.
+ */
+function ipcRequest<T = unknown>(type: string, payload?: Record<string, unknown>): Promise<T | null> {
+  if (!ipcChannel) return Promise.resolve(null);
+  const id = randomBytes(8).toString("hex");
+  return new Promise<T | null>((resolve) => {
+    const timeout = setTimeout(() => {
+      pendingIpcResponses.delete(id);
+      resolve(null);
+    }, 5000);
+    pendingIpcResponses.set(id, (response: unknown) => {
+      clearTimeout(timeout);
+      resolve(response as T);
+    });
+    ipcChannel.postMessage({ type, id, ...(payload ?? {}) });
+  });
+}
+
+// =============================================================================
 // Phase A: Synchronous preamble — parse CLI args OR inherit env vars
 // =============================================================================
 
@@ -711,7 +751,15 @@ async function main() {
   const requestRelaunch: ((name: string) => void) | undefined = ipcChannel
     ? (name: string) => ipcChannel.postMessage({ type: "workspace-relaunch", name })
     : undefined;
-  const commonDeps = { container, dispatcher, tokenManager, workspace, workspacePath, workspaceConfig, gitServer, adminToken, centralData: centralData ?? null, args, hostConfig, isIpcMode: !!ipcChannel, eventService, requestRelaunch };
+  // In IPC mode, the workspace catalog lives in Electron main. Proxy list()
+  // requests through IPC so the server returns the real catalog, not [].
+  const requestWorkspaceList: (() => Promise<unknown[]>) | undefined = ipcChannel
+    ? async () => {
+        const resp = await ipcRequest<{ workspaces: unknown[] }>("workspace-list-request");
+        return resp?.workspaces ?? [];
+      }
+    : undefined;
+  const commonDeps = { container, dispatcher, tokenManager, workspace, workspacePath, workspaceConfig, gitServer, adminToken, centralData: centralData ?? null, args, hostConfig, isIpcMode: !!ipcChannel, eventService, requestRelaunch, requestWorkspaceList };
   await registerPanelServices(commonDeps);
 
   {

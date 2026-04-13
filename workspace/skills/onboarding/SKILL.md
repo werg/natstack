@@ -36,8 +36,8 @@ eval({ code: `
 ` })
 ```
 
-- **New user** (1 workspace, the default) — give the full walkthrough with explanations of key concepts. These users need context on what NatStack is and what it can do.
-- **Returning user** (multiple workspaces) — skip the overview, be succinct, and ask what they need help with. They already know the basics.
+- **New user** (`count <= 1`, or `count === 0` with an active workspace) — give the full walkthrough with explanations of key concepts. These users need context on what NatStack is and what it can do. Note: in some runtime modes `workspace.list()` may return an empty array even when an active workspace exists — treat this as a new user.
+- **Returning user** (`count > 1`) — skip the overview, be succinct, and ask what they need help with. They already know the basics.
 
 ## Typical Onboarding Flow
 
@@ -69,4 +69,4 @@ See the sandbox skill's [INTERACTION_PATTERNS.md](../sandbox/INTERACTION_PATTERN
 
 ## Environment Compatibility
 
-- Onboarding is **panel-only** -- it depends on `inline_ui`, interactive workflows, and browser import features that require a panel rendering context.
+- Best experience is **panel-only** — `inline_ui`, interactive workflows, and browser import features require a panel rendering context. However, basic onboarding (workspace exploration, config, creating a first project) can still proceed via `eval` and plain text replies in non-panel environments.

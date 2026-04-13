@@ -28,6 +28,8 @@ export interface CommonDeps {
   hostConfig: HostConfig;
   isIpcMode: boolean;
   requestRelaunch?: (name: string) => void;
+  /** IPC proxy: fetch workspace list from Electron main when centralData is null. */
+  requestWorkspaceList?: () => Promise<unknown[]>;
 }
 
 export async function registerPanelServices(deps: CommonDeps): Promise<void> {
@@ -113,6 +115,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
       },
       deleteWorkspaceDir,
       requestRelaunch: deps.requestRelaunch,
+      requestWorkspaceList: deps.requestWorkspaceList,
     })));
   }
 

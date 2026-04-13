@@ -324,6 +324,7 @@ app.on("ready", async () => {
     // Phase 1: Establish server session (spawn or connect)
     serverSession = await establishServerSession({
       mode: startupMode,
+      centralData,
       onServerEvent: handleServerEvent,
       onConnectionStatusChanged: (status) => {
         eventService.emit("server-connection-changed", {

@@ -15,7 +15,7 @@ eval({ code: `
 ` })
 ```
 
-- **`count === 1`** → new user. Start from Step 1, explain concepts thoroughly.
+- **`count <= 1`** → new user. Start from Step 1, explain concepts thoroughly. Note: in IPC/remote mode `workspace.list()` may return `[]` even when an active workspace exists — treat `count === 0` with a valid `active` as a new user too.
 - **`count > 1`** → returning user. Greet them briefly, mention their active workspace, and ask what they need. Skip to whichever step is relevant, or point them to the right skill directly.
 
 ## Step 1: Explore Your Workspace

@@ -14,6 +14,7 @@ import { createServerClient, type ServerClient, type ConnectionStatus } from "./
 import type { PanelHttpServerLike, ServerInfoLike } from "@natstack/shared/panelInterfaces";
 import type { ServerInfo } from "./serverInfo.js";
 import type { WorkspaceConfig } from "@natstack/shared/workspace/types";
+import type { CentralDataManager } from "@natstack/shared/centralData";
 import type { StartupMode } from "./startupMode.js";
 
 const log = createDevLogger("ServerSession");
@@ -88,6 +89,7 @@ function buildServerInfo(
  */
 export async function establishServerSession(args: {
   mode: StartupMode;
+  centralData: CentralDataManager;
   onServerEvent: (event: string, payload: unknown) => void;
   onConnectionStatusChanged?: (status: ConnectionStatus) => void;
 }): Promise<SessionConnection> {
@@ -155,6 +157,12 @@ export async function establishServerSession(args: {
         );
         app.relaunch();
         app.exit(1);
+      },
+      onIpcRequest: async (type) => {
+        if (type === "workspace-list-request") {
+          return { workspaces: args.centralData.listWorkspaces() };
+        }
+        return null;
       },
       onRelaunch: (name) => {
         // workspace.select on the server side asked us to relaunch into a

@@ -74,6 +74,60 @@ async function setupContextGit(srcGit: string, destGit: string): Promise<void> {
       await fs.symlink(relTarget, destPath);
     }
   }
+
+  // Integrity check: verify the objects/ symlink resolves and that HEAD
+  // points to a reachable object. If the object store is stale (e.g. the
+  // source repo was GC'd or repacked since the symlink was created) the
+  // context repo will fail on any git operation. Detect this early so the
+  // caller can warn or recover.
+  try {
+    const objectsPath = path.join(destGit, "objects");
+    const resolved = await fs.realpath(objectsPath);
+    await fs.access(resolved);
+
+    // Verify HEAD's target object exists in the store
+    const headContent = (await fs.readFile(path.join(destGit, "HEAD"), "utf-8")).trim();
+    if (headContent.startsWith("ref: ")) {
+      // Symbolic ref — resolve through refs/
+      const refPath = path.join(destGit, headContent.slice(5));
+      try {
+        const sha = (await fs.readFile(refPath, "utf-8")).trim();
+        await verifyObjectExists(objectsPath, sha);
+      } catch {
+        // Ref doesn't exist yet (empty repo) — not necessarily an error
+      }
+    } else {
+      // Detached HEAD — verify the commit object directly
+      await verifyObjectExists(objectsPath, headContent);
+    }
+  } catch (err) {
+    log.warn(`Git integrity check failed for ${destGit}: ${err}`);
+  }
+}
+
+/**
+ * Verify a git object (by SHA) exists in the object store.
+ * Checks both loose objects (objects/ab/cdef...) and the existence of
+ * pack files (objects/pack/*.pack) as a heuristic for packed objects.
+ */
+async function verifyObjectExists(objectsPath: string, sha: string): Promise<void> {
+  if (!sha || sha.length < 4) return;
+  const loosePath = path.join(objectsPath, sha.slice(0, 2), sha.slice(2));
+  try {
+    await fs.access(loosePath);
+    return; // Loose object exists
+  } catch {
+    // Not a loose object — check if pack files exist (packed objects can't
+    // be verified without parsing the index, but their presence is a good sign)
+    const packDir = path.join(objectsPath, "pack");
+    try {
+      const packEntries = await fs.readdir(packDir);
+      if (packEntries.some((e) => e.endsWith(".pack"))) return; // Packs exist, object is likely packed
+    } catch {
+      // No pack directory
+    }
+    throw new Error(`Object ${sha} not found in object store (no loose object, no pack files)`);
+  }
 }
 
 export class ContextFolderManager {

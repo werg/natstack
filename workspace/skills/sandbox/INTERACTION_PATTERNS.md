@@ -46,6 +46,8 @@ chat.publish("message", {
 
 ### Template
 
+> **Defensive coding:** Always default `props` in the component signature (`{ props = {}, chat }`) and guard property access (`const options = props?.options ?? []`). This prevents crashes when specific props keys are not provided.
+
 ```
 inline_ui({
   code: `

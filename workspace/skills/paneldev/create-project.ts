@@ -44,8 +44,9 @@ export async function commitAndPush(
   if (!hasChanges) return "Nothing to commit";
 
   const sha = await git.commit({ dir, message });
-  await git.push({ dir, ref: "main" });
-  return `Committed ${sha.slice(0, 7)} and pushed to origin/main`;
+  const branch = await git.getCurrentBranch(dir) ?? "main";
+  await git.push({ dir, ref: branch });
+  return `Committed ${sha.slice(0, 7)} and pushed to origin/${branch}`;
 }
 
 const TYPE_DIRS: Record<string, string> = {
