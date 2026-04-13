@@ -3,7 +3,9 @@
   "version": "0.1.0-git.dfc926d-dirty.431476b8002f",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./components/EventErrorBoundary": "./src/components/EventErrorBoundary.tsx",
+    "./utils/trackAsyncErrors": "./src/utils/trackAsyncErrors.ts"
   },
   "dependencies": {
     "@natstack/types": "workspace:*",

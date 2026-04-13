@@ -7,7 +7,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useReducer, useState, type ComponentType } from "react";
 import { Box, Button, Card, Callout, Flex, Spinner, Text } from "@radix-ui/themes";
 import { ExclamationTriangleIcon, ChevronDownIcon, ChevronUpIcon, ComponentInstanceIcon } from "@radix-ui/react-icons";
-import { EventErrorBoundary } from "@workspace/tool-ui";
+import { EventErrorBoundary } from "@workspace/tool-ui/components/EventErrorBoundary";
 import { wrapChatForErrorReporting, wrapScopesForErrorReporting } from "../utils/wrapSandboxApis";
 import type { InlineUiData } from "@natstack/pubsub";
 import type { ChatSandboxValue } from "@workspace/agentic-core";

@@ -9,7 +9,7 @@
  * If the component handles the rejection itself, nothing extra happens.
  */
 
-import { trackPromise } from "@workspace/tool-ui";
+import { trackPromise } from "@workspace/tool-ui/utils/trackAsyncErrors";
 import type { ChatSandboxValue } from "@workspace/agentic-core";
 import type { ScopesApi } from "@workspace/eval";
 

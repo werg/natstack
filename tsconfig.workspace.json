@@ -219,6 +219,9 @@
       ],
       "@workspace/tool-ui": [
         "workspace/packages/tool-ui/src/index.ts"
+      ],
+      "@workspace/tool-ui/*": [
+        "workspace/packages/tool-ui/src/*"
       ]
     }
   },
