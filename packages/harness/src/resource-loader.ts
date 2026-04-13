@@ -4,15 +4,11 @@
  *
  * PiRunner uses this at session startup to inject `AGENTS.md` content and
  * a formatted skill index into the agent's system prompt. The skill index
- * is markdown that the LLM can read; actual skill files are fetched on
- * demand by the read tool via `workspace.readSkill`.
+ * is markdown that the LLM can read; actual skill files are read on demand
+ * by the read tool from the per-context folder (skills and AGENTS.md are
+ * copied into each context folder at creation time).
  *
- * Pure RPC client — no fs access. The workspace tree (where skills live)
- * is NOT mirrored into per-context fs sandboxes; the resource loader and
- * read-tool routing are the only paths through which skill content is
- * surfaced to the agent.
- *
- * Contract (W1b): `workspace.getAgentsMd` returns the workspace AGENTS.md
+ * Contract: `workspace.getAgentsMd` returns the workspace AGENTS.md
  * as a string; `workspace.listSkills` returns an array of `SkillEntry`
  * descriptors (one per skill directory under `workspace/skills/`).
  */
@@ -77,7 +73,7 @@ export function formatSkillIndex(skills: SkillEntry[]): string {
   lines.push("");
   lines.push('Use the read tool to load a skill: `read("skills/<name>/SKILL.md")`.');
   lines.push(
-    "(The read tool transparently fetches skill files from the workspace via workspace.readSkill \u2014 they live outside the per-context fs sandbox.)",
+    "(Skill files are available in the per-context folder under `skills/<name>/`.)",
   );
   return lines.join("\n");
 }

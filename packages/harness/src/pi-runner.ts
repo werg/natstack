@@ -194,8 +194,7 @@ export class PiRunner {
     ]);
 
     // 3. Built-in file tools, wrapped with approval-gate dispatch.
-    //    The read tool gets the RPC caller so AGENTS.md / skill files can be
-    //    routed through workspace.readSkill / workspace.getAgentsMd.
+    //    The read tool gets the RPC caller for image resize support.
     this.builtinTools = [
       createReadTool(cwd, this.options.fs, { rpc: this.options.rpc }),
       createEditTool(cwd, this.options.fs),

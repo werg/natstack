@@ -239,7 +239,7 @@ await git.clone({
 });
 ```
 
-Once cloned via the git server, the repo appears in the workspace tree and can be referenced by other workspace operations. Private repos require a GitHub token configured in the workspace's `natstack.yml` or `.secrets.yml`.
+Once cloned via the git server, the repo appears in the workspace tree and can be referenced by other workspace operations. Private repos require a GitHub token configured in the workspace's `meta/natstack.yml` or `.secrets.yml`.
 
 ### Pushing to GitHub
 

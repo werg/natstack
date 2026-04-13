@@ -323,10 +323,10 @@ describe("workspace.select", () => {
 // ─── Agent resource loading: getAgentsMd / listSkills / readSkill ────────────
 //
 // These tests use a real tmpdir fixture because the handlers read from disk.
-// The fixture layout mirrors the post-W1c workspace structure:
+// The fixture layout mirrors the workspace structure:
 //
 //   <tmp>/
-//     AGENTS.md
+//     meta/AGENTS.md
 //     skills/
 //       alpha/SKILL.md          ← has frontmatter
 //       beta/SKILL.md           ← no frontmatter at all
@@ -368,9 +368,10 @@ describe("workspace service agent resources", () => {
   // ─── getAgentsMd ───────────────────────────────────────────────────────────
 
   describe("getAgentsMd", () => {
-    it("reads an existing AGENTS.md at the workspace root", async () => {
+    it("reads an existing AGENTS.md from meta/", async () => {
       const wsPath = mkdtempSync(path.join(tmpRoot, "ws-"));
-      writeFileSync(path.join(wsPath, "AGENTS.md"), "# Agents\nhello world\n");
+      mkdirSync(path.join(wsPath, "meta"), { recursive: true });
+      writeFileSync(path.join(wsPath, "meta", "AGENTS.md"), "# Agents\nhello world\n");
       const service = makeFsService(wsPath);
       const result = await service.handler(panelCtx, "getAgentsMd", []);
       expect(result).toBe("# Agents\nhello world\n");

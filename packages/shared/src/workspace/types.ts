@@ -7,8 +7,9 @@
  *    - .secrets.yml: API keys (format: `providername: secret`)
  *    - .env: Environment variables
  *
- * 2. Workspace (project directory with natstack.yml):
- *    - natstack.yml: Workspace ID, git port, init panels
+ * 2. Workspace (project directory):
+ *    - meta/natstack.yml: Workspace ID, git port, init panels
+ *    - meta/AGENTS.md: Agent system prompt
  *    - panels/: Panel source code
  *    - .cache/: Build cache
  */
@@ -140,7 +141,7 @@ export interface OAuthConfig {
 }
 
 /**
- * Workspace configuration from natstack.yml
+ * Workspace configuration from meta/natstack.yml
  * This is specific to each workspace/project.
  */
 export interface WorkspaceConfig {
@@ -162,11 +163,11 @@ export interface WorkspaceConfig {
  * Resolved workspace with computed paths.
  *
  * Directory layout:
- *   workspaces/{name}/source/   ← path (source root: git repos, natstack.yml)
+ *   workspaces/{name}/source/   ← path (source root: git repos, meta/natstack.yml)
  *   workspaces/{name}/state/    ← statePath (Electron userData + runtime state)
  */
 export interface Workspace {
-  /** Absolute path to source directory (git repos, natstack.yml) */
+  /** Absolute path to source directory (git repos, meta/natstack.yml) */
   path: string;
   /** Absolute path to state directory (Electron userData, databases, cache) */
   statePath: string;

@@ -227,9 +227,9 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
         // -----------------------------------------------------------------
 
         case "getAgentsMd": {
-          // Read the workspace-level AGENTS.md. Missing file is not an error —
-          // an empty string lets the agent resource loader fall back cleanly.
-          const filePath = path.join(workspace.path, "AGENTS.md");
+          // Read the workspace-level AGENTS.md from meta/. Missing file is not
+          // an error — an empty string lets the agent resource loader fall back.
+          const filePath = path.join(workspace.path, "meta", "AGENTS.md");
           try {
             return await fs.readFile(filePath, "utf-8");
           } catch (err) {

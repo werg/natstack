@@ -4,10 +4,10 @@ import type { ParticipantDescriptor } from "@natstack/harness/types";
 /**
  * TestAgentWorker — Minimal agent DO for testing the Pi runtime pipeline.
  *
- * Uses the default `workspace/AGENTS.md` system prompt resolved by the
+ * Uses the default `meta/AGENTS.md` system prompt resolved by the
  * base class via the workspace.* RPC service. Tests that need a
- * different prompt drop a per-test `AGENTS.md` file at the workspace
- * root before spawning the worker.
+ * different prompt drop a per-test `AGENTS.md` file in the context
+ * folder before spawning the worker.
  */
 export class TestAgentWorker extends AgentWorkerBase {
   static override schemaVersion = 5;

@@ -24,7 +24,7 @@ A workspace is a named collection of panels, packages, workers, and configuratio
 - Switch between workspaces (triggers app relaunch)
 - Configure which panels open on first launch (`initPanels`)
 
-Workspace config lives in `natstack.yml`. Each workspace gets its own git repository.
+Workspace config lives in `meta/natstack.yml`. Each workspace gets its own git repository.
 
 ### Contexts
 

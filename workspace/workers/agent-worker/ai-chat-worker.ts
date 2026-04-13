@@ -6,8 +6,8 @@ import type { ParticipantDescriptor } from "@natstack/harness/types";
  *
  * Pi-native: embeds `@mariozechner/pi-agent-core`'s `Agent` in-process via
  * the `PiRunner` harness (see `AgentWorkerBase`). The system prompt is
- * loaded from `workspace/AGENTS.md` via the workspace.* RPC service;
- * skill metadata is merged in from `workspace/skills/*.skill.md`.
+ * loaded from `meta/AGENTS.md` via the workspace.* RPC service;
+ * skill metadata is merged in from each skill's SKILL.md.
  *
  * The model, thinking level, and approval level can be customized via the
  * `getModel`/`getThinkingLevel`/`getApprovalLevel` overridable hooks. The

@@ -6,9 +6,6 @@
  * - Image handling is delegated to the `image.*` RPC service (W1k); detection
  *   uses magic-byte sniffing in `image.detectMimeType` rather than the
  *   filename-extension table that pi-coding-agent ships.
- * - When the path is `AGENTS.md` or `skills/<name>/SKILL.md`, the read is
- *   re-routed to the `workspace.*` RPC service so the LLM can see workspace-
- *   shared files that aren't physically present in the per-context folder.
  */
 
 import { Type, type Static } from "@sinclair/typebox";
@@ -57,11 +54,9 @@ interface ImageResizeResult {
 }
 
 export interface ReadToolDeps {
-  /** RPC caller — needed for image resize and workspace skill / AGENTS.md routing. */
+  /** RPC caller — needed for image resize. */
   rpc?: RpcCaller;
 }
-
-const SKILL_PATH_RE = /^skills\/([^/]+)\/SKILL\.md$/;
 
 export function createReadTool(
   cwd: string,
@@ -76,32 +71,6 @@ export function createReadTool(
     execute: async (_toolCallId, { path, offset, limit }, signal) => {
       if (signal?.aborted) {
         throw new Error("Operation aborted");
-      }
-
-      // --- Workspace-shared file routing -------------------------------------------------
-      // skills/<name>/SKILL.md and AGENTS.md live at the workspace root and are
-      // surfaced via RPC; the per-context folder doesn't actually contain them.
-      if (deps?.rpc) {
-        const skillMatch = SKILL_PATH_RE.exec(path);
-        if (skillMatch) {
-          const skillName = skillMatch[1]!;
-          const text = await deps.rpc.call<string | null>(
-            "main",
-            "workspace.readSkill",
-            skillName,
-          );
-          if (text == null) {
-            throw new Error(`Skill not found: ${skillName}`);
-          }
-          return formatTextResult(text, path, offset, limit);
-        }
-        if (path === "AGENTS.md") {
-          const text = await deps.rpc.call<string | null>("main", "workspace.getAgentsMd");
-          if (text == null) {
-            throw new Error("AGENTS.md not found in workspace");
-          }
-          return formatTextResult(text, path, offset, limit);
-        }
       }
 
       const absolutePath = resolveReadPath(path, cwd);

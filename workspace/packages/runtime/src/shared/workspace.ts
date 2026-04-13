@@ -28,7 +28,7 @@ export interface WorkspaceClient {
   getActive(): Promise<string>;
   /** Get the full entry for the active workspace (name, lastOpened). */
   getActiveEntry(): Promise<WorkspaceEntry>;
-  /** Read the active workspace's natstack.yml config. */
+  /** Read the active workspace's meta/natstack.yml config. */
   getConfig(): Promise<WorkspaceConfig>;
   /** Create a new workspace. */
   create(name: string, opts?: { forkFrom?: string }): Promise<WorkspaceEntry>;

@@ -147,7 +147,7 @@ The test agent is a standard AiChatWorker with full eval + set_title tools and f
 
 ## Auto-Start as Initial Panel
 
-See `natstack.yml` for the current testing agent configuration.
+See `meta/natstack.yml` for the current testing agent configuration.
 
 ## Build Model
 

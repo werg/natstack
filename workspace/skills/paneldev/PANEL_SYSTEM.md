@@ -173,7 +173,7 @@ const name = await workspace.getActive();
 const active = await workspace.getActiveEntry();
 // => { name: "default", lastOpened: 1710000000000 }
 
-// Read workspace config (natstack.yml)
+// Read workspace config (meta/natstack.yml)
 const config = await workspace.getConfig();
 // => { id: "default", initPanels: [{ source: "panels/chat" }], git: { port: 63524 } }
 
@@ -197,7 +197,7 @@ If no option is given, creates an empty workspace.
 
 ### workspace.setInitPanels
 
-Updates `natstack.yml` safely, preserving all other config. The workspace `id` and `git` config are not writable via RPC.
+Updates `meta/natstack.yml` safely, preserving all other config. The workspace `id` and `git` config are not writable via RPC.
 
 ### Restrictions
 

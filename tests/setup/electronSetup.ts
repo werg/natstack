@@ -100,7 +100,7 @@ function getWorkspaceInfo(workspaceDir: string): ManagedWorkspaceInfo {
 
 function getWorkspaceTemplateDir(projectRoot: string): string {
   const templateDir = path.join(projectRoot, "workspace");
-  if (!fs.existsSync(path.join(templateDir, "natstack.yml"))) {
+  if (!fs.existsSync(path.join(templateDir, "meta/natstack.yml"))) {
     throw new Error(`Workspace template not found at ${templateDir}`);
   }
   return templateDir;
@@ -133,7 +133,7 @@ export function createManagedTestWorkspace(projectRoot?: string): string {
     }
   }
 
-  fs.copyFileSync(path.join(templateDir, "natstack.yml"), path.join(sourceRoot, "natstack.yml"));
+  // natstack.yml is already copied as part of the meta/ SOURCE_DIR above
 
   for (const dir of STATE_DIRS) {
     fs.mkdirSync(path.join(stateRoot, dir), { recursive: true });

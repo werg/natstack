@@ -359,7 +359,7 @@ Imported browser cookies are synced before auth, so if the user imported Chrome 
 
 ## Self-hosted Nango
 
-By default, OAuth uses Nango Cloud (`https://api.nango.dev`). To use a self-hosted Nango instance, add this to `natstack.yml`:
+By default, OAuth uses Nango Cloud (`https://api.nango.dev`). To use a self-hosted Nango instance, add this to `meta/natstack.yml`:
 
 ```yaml
 oauth:

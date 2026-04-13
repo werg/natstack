@@ -99,7 +99,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
   {
     const { createWorkspaceService } = await import("./services/workspaceService.js");
     const { createWorkspaceConfigManager, createAndRegisterWorkspace, deleteWorkspaceDir } = await import("@natstack/shared/workspace/loader");
-    const wsConfigPath = path.join(workspacePath, "natstack.yml");
+    const wsConfigPath = path.join(workspacePath, "meta/natstack.yml");
     const wsConfigManager = createWorkspaceConfigManager(wsConfigPath, workspaceConfig);
 
     container.register(rpcService(createWorkspaceService({

@@ -68,7 +68,7 @@ describe("loadNatStackResources", () => {
       "- **search** \u2014 Search the codebase using ripgrep.",
     );
     expect(skillIndex).toContain('read("skills/<name>/SKILL.md")');
-    expect(skillIndex).toContain("workspace.readSkill");
+    expect(skillIndex).toContain("per-context folder");
   });
 
   it("returns an empty skillIndex when there are no skills", async () => {

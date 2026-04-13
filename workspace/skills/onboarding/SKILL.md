@@ -12,6 +12,7 @@ Guide new users through understanding NatStack and getting their workspace set u
 | Document | Content |
 |----------|---------|
 | [OVERVIEW.md](OVERVIEW.md) | What NatStack is, key concepts, architecture at a glance |
+| [WORKSPACE_STRUCTURE.md](WORKSPACE_STRUCTURE.md) | Workspace directory layout, meta/, context folders, template vs live |
 | [GETTING_STARTED.md](GETTING_STARTED.md) | First-time setup: workspace, browser import, first panel |
 
 ## Related Skills

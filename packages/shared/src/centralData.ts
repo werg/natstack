@@ -76,7 +76,7 @@ export class CentralDataManager {
   listWorkspaces(): WorkspaceEntry[] {
     let pruned = false;
     this.data.workspaces = this.data.workspaces.filter((w) => {
-      const configPath = path.join(getWorkspaceDir(w.name), "source", "natstack.yml");
+      const configPath = path.join(getWorkspaceDir(w.name), "source", "meta/natstack.yml");
       if (fs.existsSync(configPath)) return true;
       pruned = true;
       return false;
@@ -93,7 +93,7 @@ export class CentralDataManager {
     const idx = this.data.workspaces.findIndex((w) => w.name === name);
     if (idx === -1) return false;
 
-    const configPath = path.join(getWorkspaceDir(name), "source", "natstack.yml");
+    const configPath = path.join(getWorkspaceDir(name), "source", "meta/natstack.yml");
     if (fs.existsSync(configPath)) return true;
 
     // Stale entry — prune it
@@ -152,7 +152,7 @@ export class CentralDataManager {
     const sorted = [...this.data.workspaces].sort((a, b) => b.lastOpened - a.lastOpened);
     let pruned = false;
     for (const entry of sorted) {
-      const configPath = path.join(getWorkspaceDir(entry.name), "source", "natstack.yml");
+      const configPath = path.join(getWorkspaceDir(entry.name), "source", "meta/natstack.yml");
       if (fs.existsSync(configPath)) return entry;
       // Stale — prune
       this.data.workspaces = this.data.workspaces.filter((w) => w.name !== entry.name);

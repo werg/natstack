@@ -31,24 +31,6 @@ describe("createReadTool", () => {
     await expect(tool.execute("call-1", { path: "missing.txt" })).rejects.toThrow(/not found/i);
   });
 
-  it("routes AGENTS.md through workspace.getAgentsMd RPC", async () => {
-    const fs = new StubFs();
-    const rpc = { call: vi.fn().mockResolvedValue("AGENTS body") };
-    const tool = createReadTool(CWD, fs, { rpc });
-    const result = await tool.execute("call-1", { path: "AGENTS.md" });
-    expect(rpc.call).toHaveBeenCalledWith("main", "workspace.getAgentsMd");
-    expect((result.content[0] as { text: string }).text).toContain("AGENTS body");
-  });
-
-  it("routes skills/<name>/SKILL.md through workspace.readSkill RPC", async () => {
-    const fs = new StubFs();
-    const rpc = { call: vi.fn().mockResolvedValue("SKILL body") };
-    const tool = createReadTool(CWD, fs, { rpc });
-    const result = await tool.execute("call-1", { path: "skills/foo/SKILL.md" });
-    expect(rpc.call).toHaveBeenCalledWith("main", "workspace.readSkill", "foo");
-    expect((result.content[0] as { text: string }).text).toContain("SKILL body");
-  });
-
   it("returns ImageContent when image.detectMimeType reports an image type", async () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     const fs = new StubFs({ files: { [`${CWD}/pic.png`]: pngBytes } });

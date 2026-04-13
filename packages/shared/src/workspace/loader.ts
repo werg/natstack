@@ -20,7 +20,7 @@ const log = createDevLogger("Workspace");
 import type { Workspace, WorkspaceConfig, CentralConfig, CentralConfigPaths, WorkspaceEntry } from "./types.js";
 import type { CentralDataManager } from "../centralData.js";
 
-const WORKSPACE_CONFIG_FILE = "natstack.yml";
+const WORKSPACE_CONFIG_FILE = "meta/natstack.yml";
 const CENTRAL_CONFIG_FILE = "config.yml";
 const SECRETS_FILE = ".secrets.yml";
 const ENV_FILE = ".env";
@@ -320,7 +320,7 @@ export function resolveWorkspaceTemplateDir(appRoot: string): string | null {
 }
 
 /** Source directories (live under source/) — copied when forking or creating from template. */
-const SOURCE_DIRS = ["panels", "packages", "agents", "workers", "skills", "about", "templates"];
+const SOURCE_DIRS = ["meta", "panels", "packages", "agents", "workers", "skills", "about", "templates"];
 
 /** State directories (live under state/) — never copied, always scaffolded fresh. */
 const STATE_DIRS = [".cache", ".databases", ".contexts"];
@@ -372,11 +372,6 @@ export function initWorkspace(
       if (fs.existsSync(src)) {
         copyDirRecursive(src, path.join(sourceRoot, dir));
       }
-    }
-    // Copy natstack.yml if present (will be rewritten below)
-    const srcConfig = path.join(templateSrc, WORKSPACE_CONFIG_FILE);
-    if (fs.existsSync(srcConfig)) {
-      fs.copyFileSync(srcConfig, path.join(sourceRoot, WORKSPACE_CONFIG_FILE));
     }
   } else {
     // Bare workspace
