@@ -4,7 +4,7 @@
  * Collapsible card that stays in the chat history. Users can expand/collapse
  * at any time to interact with the component.
  */
-import { Suspense, useCallback, useEffect, useMemo, useReducer, useRef, useState, type ComponentType } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useReducer, useState, type ComponentType } from "react";
 import { Box, Button, Card, Callout, Flex, Spinner, Text } from "@radix-ui/themes";
 import { ExclamationTriangleIcon, ChevronDownIcon, ChevronUpIcon, ComponentInstanceIcon } from "@radix-ui/react-icons";
 import { EventErrorBoundary } from "@workspace/tool-ui";
@@ -102,20 +102,6 @@ export function InlineUiMessage({ data, compiledComponent: CompiledComponent, co
   // DOM event delegation — silent best-effort persist after user interaction
   const onInteraction = useCallback(() => scopeManager?.schedulePersist(2000), [scopeManager]);
   const [expanded, setExpanded] = useState(true);
-  const [autoCollapsed, setAutoCollapsed] = useState(false);
-  const contentRef = useRef<HTMLDivElement>(null);
-
-  // Auto-collapse if rendered content exceeds 400px
-  const measuredRef = useCallback((node: HTMLDivElement | null) => {
-    if (!node || autoCollapsed) return;
-    // Use requestAnimationFrame to measure after paint
-    requestAnimationFrame(() => {
-      if (node.scrollHeight > 400) {
-        setExpanded(false);
-        setAutoCollapsed(true);
-      }
-    });
-  }, [autoCollapsed]);
 
   // Reset async error when props change (same trigger as EventErrorBoundary's resetKey)
   const resetKey = JSON.stringify(data.props);
@@ -171,7 +157,7 @@ export function InlineUiMessage({ data, compiledComponent: CompiledComponent, co
 
       {/* Collapsible content */}
       {expanded && (
-        <Box p="2" ref={measuredRef} onClickCapture={onInteraction} onInputCapture={onInteraction} onChangeCapture={onInteraction}>
+        <Box p="2" onClickCapture={onInteraction} onInputCapture={onInteraction} onChangeCapture={onInteraction}>
           <EventErrorBoundary
             resetKey={resetKey}
             renderFallback={(error) => (
