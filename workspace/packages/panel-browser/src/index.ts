@@ -242,6 +242,69 @@ export interface BrowserDataApi {
 
 const SVC = "browser-data";
 
+/**
+ * Call function signature: (method, ...args) → Promise.
+ * Both the Electron IPC path and the RPC bridge path satisfy this shape.
+ */
+type ServiceCallFn = <T = unknown>(method: string, ...args: unknown[]) => Promise<T>;
+
+function buildApi(call: ServiceCallFn): BrowserDataApi {
+  return {
+    // Detection
+    detectBrowsers: () => call(`${SVC}.detectBrowsers`),
+
+    // Import
+    startImport: (request) => call(`${SVC}.startImport`, request),
+    getImportHistory: () => call(`${SVC}.getImportHistory`),
+
+    // Bookmarks
+    getBookmarks: (folderPath?) => call(`${SVC}.getBookmarks`, folderPath),
+    addBookmark: (bookmark) => call(`${SVC}.addBookmark`, bookmark),
+    updateBookmark: (id, partial) => call(`${SVC}.updateBookmark`, id, partial),
+    deleteBookmark: (id) => call(`${SVC}.deleteBookmark`, id),
+    moveBookmark: (id, folder, pos) => call(`${SVC}.moveBookmark`, id, folder, pos),
+    searchBookmarks: (query) => call(`${SVC}.searchBookmarks`, query),
+
+    // History
+    getHistory: (query) => call(`${SVC}.getHistory`, query),
+    deleteHistoryEntry: (id) => call(`${SVC}.deleteHistoryEntry`, id),
+    deleteHistoryRange: (start, end) => call(`${SVC}.deleteHistoryRange`, start, end),
+    clearAllHistory: () => call(`${SVC}.clearAllHistory`),
+    searchHistory: (query, limit?) => call(`${SVC}.searchHistory`, query, limit),
+
+    // Passwords
+    getPasswords: () => call(`${SVC}.getPasswords`),
+    getPasswordForSite: (url) => call(`${SVC}.getPasswordForSite`, url),
+    addPassword: (pw) => call(`${SVC}.addPassword`, pw),
+    updatePassword: (id, partial) => call(`${SVC}.updatePassword`, id, partial),
+    deletePassword: (id) => call(`${SVC}.deletePassword`, id),
+
+    // Autofill
+    getAutofillSuggestions: (field, prefix?) => call(`${SVC}.getAutofillSuggestions`, field, prefix),
+
+    // Search Engines
+    getSearchEngines: () => call(`${SVC}.getSearchEngines`),
+    setDefaultEngine: (id) => call(`${SVC}.setDefaultEngine`, id),
+
+    // Permissions
+    getPermissions: (origin?) => call(`${SVC}.getPermissions`, origin),
+    setPermission: (origin, perm, setting) => call(`${SVC}.setPermission`, origin, perm, setting),
+
+    // Cookies
+    getCookies: (domain?) => call(`${SVC}.getCookies`, domain),
+    deleteCookie: (id) => call(`${SVC}.deleteCookie`, id),
+    clearCookies: (domain?) => call(`${SVC}.clearCookies`, domain),
+    syncCookiesToSession: (domain?) => call(`${SVC}.syncCookiesToSession`, domain),
+    syncCookiesFromSession: (domain?) => call(`${SVC}.syncCookiesFromSession`, domain),
+
+    // Export
+    exportBookmarks: (format) => call(`${SVC}.exportBookmarks`, format),
+    exportPasswords: (format) => call(`${SVC}.exportPasswords`, format),
+    exportCookies: (format) => call(`${SVC}.exportCookies`, format),
+    exportAll: () => call(`${SVC}.exportAll`),
+  };
+}
+
 export function createBrowserDataApi(rpc: RpcBridge): BrowserDataApi {
   if (!rpc) {
     throw new Error(
@@ -250,64 +313,14 @@ export function createBrowserDataApi(rpc: RpcBridge): BrowserDataApi {
       "In inline_ui components: use chat.rpc.",
     );
   }
-  return {
-    // Detection
-    detectBrowsers: () => rpc.call("main", `${SVC}.detectBrowsers`),
-
-    // Import
-    startImport: (request) => rpc.call("main", `${SVC}.startImport`, request),
-    getImportHistory: () => rpc.call("main", `${SVC}.getImportHistory`),
-
-    // Bookmarks
-    getBookmarks: (folderPath?) => rpc.call("main", `${SVC}.getBookmarks`, folderPath),
-    addBookmark: (bookmark) => rpc.call("main", `${SVC}.addBookmark`, bookmark),
-    updateBookmark: (id, partial) => rpc.call("main", `${SVC}.updateBookmark`, id, partial),
-    deleteBookmark: (id) => rpc.call("main", `${SVC}.deleteBookmark`, id),
-    moveBookmark: (id, folder, pos) => rpc.call("main", `${SVC}.moveBookmark`, id, folder, pos),
-    searchBookmarks: (query) => rpc.call("main", `${SVC}.searchBookmarks`, query),
-
-    // History
-    getHistory: (query) => rpc.call("main", `${SVC}.getHistory`, query),
-    deleteHistoryEntry: (id) => rpc.call("main", `${SVC}.deleteHistoryEntry`, id),
-    deleteHistoryRange: (start, end) => rpc.call("main", `${SVC}.deleteHistoryRange`, start, end),
-    clearAllHistory: () => rpc.call("main", `${SVC}.clearAllHistory`),
-    searchHistory: (query, limit?) => rpc.call("main", `${SVC}.searchHistory`, query, limit),
-
-    // Passwords
-    getPasswords: () => rpc.call("main", `${SVC}.getPasswords`),
-    getPasswordForSite: (url) => rpc.call("main", `${SVC}.getPasswordForSite`, url),
-    addPassword: (pw) => rpc.call("main", `${SVC}.addPassword`, pw),
-    updatePassword: (id, partial) => rpc.call("main", `${SVC}.updatePassword`, id, partial),
-    deletePassword: (id) => rpc.call("main", `${SVC}.deletePassword`, id),
-
-    // Autofill
-    getAutofillSuggestions: (field, prefix?) => rpc.call("main", `${SVC}.getAutofillSuggestions`, field, prefix),
-
-    // Search Engines
-    getSearchEngines: () => rpc.call("main", `${SVC}.getSearchEngines`),
-    setDefaultEngine: (id) => rpc.call("main", `${SVC}.setDefaultEngine`, id),
-
-    // Permissions
-    getPermissions: (origin?) => rpc.call("main", `${SVC}.getPermissions`, origin),
-    setPermission: (origin, perm, setting) => rpc.call("main", `${SVC}.setPermission`, origin, perm, setting),
-
-    // Cookies
-    getCookies: (domain?) => rpc.call("main", `${SVC}.getCookies`, domain),
-    deleteCookie: (id) => rpc.call("main", `${SVC}.deleteCookie`, id),
-    clearCookies: (domain?) => rpc.call("main", `${SVC}.clearCookies`, domain),
-    syncCookiesToSession: (domain?) => rpc.call("main", `${SVC}.syncCookiesToSession`, domain),
-    syncCookiesFromSession: (domain?) => rpc.call("main", `${SVC}.syncCookiesFromSession`, domain),
-
-    // Export
-    exportBookmarks: (format) => rpc.call("main", `${SVC}.exportBookmarks`, format),
-    exportPasswords: (format) => rpc.call("main", `${SVC}.exportPasswords`, format),
-    exportCookies: (format) => rpc.call("main", `${SVC}.exportCookies`, format),
-    exportAll: () => rpc.call("main", `${SVC}.exportAll`),
-  };
+  return buildApi((method, ...args) => rpc.call("main", method, ...args));
 }
 
 // Auto-initialize using the runtime's RPC bridge via __natstackRequire__
 // (the module system for panel bundles and eval/inline_ui blocks).
+// Routing to the correct backend (Electron IPC vs server WebSocket) is
+// handled by the panel transport layer — callers don't need to know
+// where browser-data lives.
 let _browserData: BrowserDataApi | undefined;
 
 export function getBrowserData(): BrowserDataApi {

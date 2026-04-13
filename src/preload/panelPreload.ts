@@ -36,6 +36,11 @@ const natstackShell = {
   reload: (id: string) => ipcRenderer.invoke("natstack:reload", id),
   stop: (id: string) => ipcRenderer.invoke("natstack:stop", id),
 
+  // Generic Electron service dispatch — lets panels call Electron-local services
+  // (e.g., browser-data, autofill) via IPC instead of going through the server.
+  serviceCall: (method: string, ...args: unknown[]) =>
+    ipcRenderer.invoke("natstack:serviceCall", method, args),
+
   // Event subscription (Electron→panel push: theme, focus, child-created)
   // Returns a numeric subscription ID; call removeEventListener(id) to unsubscribe.
   addEventListener: (handler: (event: string, payload: unknown) => void): number => {

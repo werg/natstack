@@ -26,7 +26,7 @@ import { EventService } from "@natstack/shared/eventsService";
 
 const eventService = new EventService();
 import { ViewManager } from "./viewManager.js";
-import { ServiceDispatcher } from "@natstack/shared/serviceDispatcher";
+import { ServiceDispatcher, parseServiceMethod } from "@natstack/shared/serviceDispatcher";
 // RpcServer type: inline import("...") used intentionally — main/ constructs
 // server objects via dynamic import at runtime; inline types are acceptable
 // in entry points per the boundary rule (no static module-level imports).
@@ -631,6 +631,17 @@ app.on("ready", async () => {
       }
       const { shell } = await import("electron");
       await shell.openExternal(url);
+    });
+
+    // Generic Electron service dispatch — lets panels call Electron-local
+    // services (browser-data, autofill, etc.) directly via IPC instead of
+    // going through the server, which may be remote.
+    ipcMain.handle("natstack:serviceCall", async (event, method: string, args: unknown[]) => {
+      const callerId = resolveCallerId(event);
+      const parsed = parseServiceMethod(method);
+      if (!parsed) throw new Error(`Invalid method format: "${method}". Expected "service.method"`);
+      const callerKind = callerId === "shell" ? "shell" as const : "panel" as const;
+      return dispatcher.dispatch({ callerId, callerKind }, parsed.service, parsed.method, args);
     });
 
     // Browser automation (CdpServer)
