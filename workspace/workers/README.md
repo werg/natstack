@@ -175,20 +175,20 @@ const channel = this.createChannelClient(channelId);
 
 ## 4. Pi Event Forwarding
 
-The worker base subscribes to the in-process Pi `Agent`'s event stream and forwards events to the channel as persisted messages. The mapping is handled automatically by `publishPiEvent()`:
+The worker base subscribes to the in-process Pi `Agent`'s event stream and routes events through a `ContentBlockProjector`, which emits one channel message per Pi content block. The mapping:
 
 | Pi Event | Channel Message |
 |----------|----------------|
-| `message_start` (assistant) | `channel.send()` a new streaming text message |
-| `message_update` (text_delta) | `channel.update()` appending the delta |
-| `message_end` | `channel.complete()` the text message; emit thinking blocks, extra text, images |
-| `tool_execution_start/update/end` | `contentType: "action"` messages with status transitions |
-| `agent_end` / `turn_end` | Complete any active typing indicator |
+| `message_update` / `text_start` | `channel.send()` a new streaming text message |
+| `message_update` / `text_delta` | `channel.update()` appending the delta |
+| `message_update` / `text_end` | `channel.complete()` the text message |
+| `message_update` / `thinking_*` | `contentType: "thinking"` message streamed via `{ append: true }` updates |
+| `message_update` / `toolcall_start` | `contentType: "toolCall"` message carrying a `ToolCallPayload` snapshot |
+| `tool_execution_update` (console) | `channel.update()` with updated payload (status `"pending"`) |
+| `tool_execution_end` | `channel.update()` with final payload (status `"complete"` or `"error"`; any result images fold into `execution.resultImages`) then `channel.complete()` |
+| `agent_end` | Complete typing indicator |
 
-Typing indicators are sent automatically:
-- **Before `runTurn`**: a `contentType: "typing"` message is sent so the user sees "Agent typing" immediately
-- **On `message_start`**: the typing message is completed (transition to actual content)
-- **After `tool_execution_end`**: typing re-sent to cover the gap between tool completion and next message
+Typing is a roster-metadata state (`participant.metadata.typing`), toggled before `runTurn` and on `agent_end`. On abort/error, the projector's `closeAll()` emits `channel.complete` for every in-flight block so clients see clean closure.
 
 ## 5. ParticipantDescriptor
 
@@ -331,27 +331,27 @@ User sends message
               -> runner.runTurn(content, images) or runner.steer(content, images)
 ```
 
-Pi Agent events flow through `publishPiEvent()`:
+Pi Agent events flow through `ContentBlockProjector` (one channel message per Pi content block):
 
 ```
 Agent emits event
-  -> publishPiEvent(channelId, event)
-    -> message_start (assistant):
-         completeTypingIndicator()
-         channel.send() text message
-         channel.send() action messages for tool calls
-    -> message_update (text_delta):
-         channel.update() text delta
-    -> message_end:
-         channel.complete() text message
-         emit thinking blocks, extra text blocks, images
-    -> tool_execution_update:
-         channel.update() action message (console output)
+  -> projector.handleEvent(event)
+    -> text_start / text_delta / text_end:
+         channel.send → update (deltas) → complete
+    -> thinking_start / thinking_delta / thinking_end:
+         channel.send(contentType:"thinking") → update(append:true) → complete
+    -> toolcall_start:
+         channel.send(contentType:"toolCall") with ToolCallPayload snapshot
+    -> toolcall_end:
+         channel.update() with finalized args
+    -> tool_execution_update (console):
+         channel.update() with payload (consoleOutput appended)
     -> tool_execution_end:
-         channel.update() + complete() action message (result)
-         sendTypingIndicator()  [re-show between tools]
-    -> agent_end / turn_end:
-         completeTypingIndicator()  [cleanup]
+         channel.update() with status:"complete"|"error", result, resultImages
+         channel.complete()
+    -> agent_end:
+         setTyping(false)
+  -> projector.closeAll()  (on abort/error — completes every in-flight block)
 ```
 
 ## 11. Fork Support
@@ -465,8 +465,8 @@ export class CodeReviewWorker extends AgentWorkerBase {
   // onChannelEvent is inherited from AgentWorkerBase — no override needed.
   // The base class handles:
   //   shouldProcess → buildTurnInput → refreshRoster → getOrCreateRunner
-  //   → sendTypingIndicator → runner.runTurn/steer
-  //   → publishPiEvent (typing → text → actions → cleanup)
+  //   → setTyping(true) → runner.runTurn/steer
+  //   → ContentBlockProjector (text / thinking / toolCall streams → cleanup)
   //
   // Override onChannelEvent only when you need custom routing logic (e.g.,
   // filtering messages by content like the shouldProcess override above).

@@ -3,10 +3,10 @@ import { Box, Button, Card, Flex, ScrollArea, Text } from "@radix-ui/themes";
 import type { Participant } from "@natstack/pubsub";
 import { useStickToBottom } from "use-stick-to-bottom";
 import { InlineGroup, type InlineItem } from "./InlineGroup";
-import { parseActionData } from "./ActionMessage";
 import { NewContentIndicator } from "./NewContentIndicator";
 import { MessageCard } from "./MessageCard";
 import type { ChatMessage, ChatParticipantMetadata, InlineUiComponentEntry } from "../types";
+import type { ToolCallPayload } from "@workspace/agentic-core";
 
 // Grouped item types produced by the grouping logic
 type GroupedItem =
@@ -15,25 +15,34 @@ type GroupedItem =
 
 // --- Grouping helper functions (module-level for reuse by fast paths) ---
 
-type InlineItemType = "thinking" | "action";
+type InlineItemType = "thinking" | "toolCall";
 
 function getInlineItemType(msg: ChatMessage): InlineItemType | null {
   if (msg.contentType === "thinking") return "thinking";
-  if (msg.contentType === "action") return "action";
+  if (msg.contentType === "toolCall") return "toolCall";
   return null;
 }
+
+const FALLBACK_TOOLCALL_PAYLOAD: ToolCallPayload = {
+  id: "",
+  name: "tool",
+  arguments: {},
+  execution: { status: "pending", description: "" },
+};
 
 /** Transform an inline group's messages into InlineItem[] */
 function buildInlineItems(
   items: Array<{ msg: ChatMessage; index: number }>,
 ): InlineItem[] {
   return items.map(({ msg }) => {
-    if (msg.contentType === "action") {
-      const data = parseActionData(msg.content, msg.complete);
+    if (msg.contentType === "toolCall") {
+      // `msg.toolCall` is populated by the shared merge helper. Fall back
+      // only if the payload failed to parse — the pill should still render.
+      const payload = msg.toolCall ?? FALLBACK_TOOLCALL_PAYLOAD;
       return {
-        type: "action" as const,
+        type: "toolCall" as const,
         id: msg.id,
-        data,
+        toolCall: payload,
         complete: msg.complete ?? false,
       };
     }

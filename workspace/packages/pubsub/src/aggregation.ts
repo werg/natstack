@@ -46,9 +46,16 @@ function aggregateMessage(
   let content = initial.content;
   let hasCompletionUpdate = false;
 
+  // Typed messages (contentType set on the initial send) carry snapshot
+  // payloads — each update's content fully replaces the previous state.
+  // Untyped plain-text streaming appends. An explicit `append: true` on a
+  // typed update overrides replace semantics (used for streaming thinking
+  // deltas while still carrying contentType: "thinking").
+  const useReplaceDefault = initial.contentType != null;
   for (const update of updates) {
-    if (update.content) {
-      content += update.content;
+    if (update.content !== undefined) {
+      const append = update.append || !useReplaceDefault;
+      content = append ? content + update.content : update.content;
     }
     if (update.complete) {
       hasCompletionUpdate = true;

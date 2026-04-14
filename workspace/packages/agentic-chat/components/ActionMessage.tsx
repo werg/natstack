@@ -1,16 +1,12 @@
 import React, { useMemo } from "react";
 import { Badge, Box, Code, Flex, Spinner, Text } from "@radix-ui/themes";
 import { prettifyToolName } from "@natstack/pubsub";
+import type { ToolCallPayload } from "@workspace/agentic-core";
 import { ExpandableChevron } from "./shared/Chevron";
 import { CollapsibleSection } from "./shared/CollapsibleSection";
 import { JsonValue } from "./shared/JsonValue";
 import { CodePreview } from "./shared/CodePreview";
 import { formatArgsSummary } from "./action-format";
-import type { RichActionData } from "./action-types";
-
-// Re-export so existing consumers don't need to change imports yet.
-export type { RichActionData } from "./action-types";
-export { parseActionData } from "./action-types";
 
 // ── Status helpers ─────────────────────────────────────────────────────────
 
@@ -22,9 +18,10 @@ const STATUS_DOT_COLOR = {
 
 type StatusKey = "pending" | "complete" | "error";
 
-function getStatusKey(data: RichActionData): StatusKey {
-  if (data.status === "pending") return "pending";
-  return data.isError ? "error" : "complete";
+function getStatusKey(payload: ToolCallPayload): StatusKey {
+  const status = payload.execution.status;
+  if (status === "pending") return "pending";
+  return payload.execution.isError || status === "error" ? "error" : "complete";
 }
 
 function getStatusColor(sk: StatusKey): "red" | "amber" | "green" {
@@ -49,18 +46,21 @@ const CODE_TOOL_TYPES = new Set(["eval", "inline_ui", "feedback_custom"]);
 
 export const ActionPill = React.memo(function ActionPill({
   id,
-  data,
+  payload,
   onExpand,
 }: {
   id: string;
-  data: RichActionData;
+  payload: ToolCallPayload;
   onExpand: (id: string) => void;
 }) {
-  const statusKey = getStatusKey(data);
+  const statusKey = getStatusKey(payload);
   const isPending = statusKey === "pending";
   const color = getStatusColor(statusKey);
 
-  const argsSummary = useMemo(() => formatArgsSummary(data.args, 50), [data.args]);
+  const argsSummary = useMemo(
+    () => formatArgsSummary(payload.arguments, 50),
+    [payload.arguments],
+  );
 
   return (
     <Flex
@@ -80,7 +80,7 @@ export const ActionPill = React.memo(function ActionPill({
     >
       {isPending ? <Spinner size="1" /> : <StatusDot statusKey={statusKey} />}
       <Text size="1" color={color} weight="medium">
-        {prettifyToolName(data.type)}
+        {prettifyToolName(payload.name)}
       </Text>
       {argsSummary && (
         <Text size="1" color="gray" style={{
@@ -89,11 +89,11 @@ export const ActionPill = React.memo(function ActionPill({
           ({argsSummary})
         </Text>
       )}
-      {data.description && (
+      {payload.execution.description && (
         <Text size="1" color="gray" style={{
           opacity: 0.7, maxWidth: "300px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
         }}>
-          {data.description}
+          {payload.execution.description}
         </Text>
       )}
     </Flex>
@@ -103,18 +103,24 @@ export const ActionPill = React.memo(function ActionPill({
 // ── ExpandedAction (expanded view) ─────────────────────────────────────────
 
 export const ExpandedAction = React.memo(function ExpandedAction({
-  data,
+  payload,
   onCollapse,
 }: {
-  data: RichActionData;
+  payload: ToolCallPayload;
   onCollapse: () => void;
 }) {
-  const statusKey = getStatusKey(data);
+  const statusKey = getStatusKey(payload);
   const isPending = statusKey === "pending";
   const isError = statusKey === "error";
   const color = getStatusColor(statusKey);
 
-  const argsSummary = useMemo(() => formatArgsSummary(data.args, 80), [data.args]);
+  const argsSummary = useMemo(
+    () => formatArgsSummary(payload.arguments, 80),
+    [payload.arguments],
+  );
+
+  const exec = payload.execution;
+  const hasArgs = Object.keys(payload.arguments).length > 0;
 
   return (
     <Box
@@ -137,17 +143,17 @@ export const ExpandedAction = React.memo(function ExpandedAction({
         </Text>
         <StatusDot statusKey={statusKey} />
         <Text size="1" color={color} weight="medium">
-          {prettifyToolName(data.type)}
+          {prettifyToolName(payload.name)}
         </Text>
         <Badge color={color} size="1" variant="soft">
-          {isError ? "error" : data.status}
+          {isError ? "error" : exec.status}
         </Badge>
       </Flex>
 
       <Flex direction="column" gap="2" mt="2" ml="4">
-        {data.description && (
+        {exec.description && (
           <Text size="1" color="gray" style={{ fontStyle: "italic" }}>
-            {data.description}
+            {exec.description}
           </Text>
         )}
 
@@ -162,56 +168,74 @@ export const ExpandedAction = React.memo(function ExpandedAction({
           </Box>
         )}
 
-        {CODE_TOOL_TYPES.has(data.type) && typeof data.args?.["code"] === "string" && (
-          <CodePreview code={data.args["code"] as string} />
+        {CODE_TOOL_TYPES.has(payload.name) && typeof payload.arguments?.["code"] === "string" && (
+          <CodePreview code={payload.arguments["code"] as string} />
         )}
 
-        {data.consoleOutput && (
+        {exec.consoleOutput && (
           <CollapsibleSection label="Console" defaultOpen={true} color="blue">
             <Code size="1" style={{
               display: "block", whiteSpace: "pre-wrap", wordBreak: "break-word",
               padding: "8px", maxHeight: "300px", overflow: "auto", backgroundColor: "var(--gray-a3)",
             }}>
-              {data.consoleOutput}
+              {exec.consoleOutput}
             </Code>
           </CollapsibleSection>
         )}
 
-        {data.args && Object.keys(data.args).length > 0 && (
+        {hasArgs && (
           <CollapsibleSection label="Args" defaultOpen={false}>
             <Box style={{
               backgroundColor: "var(--gray-a2)", borderRadius: "4px",
               padding: "6px", maxHeight: "300px", overflow: "auto",
             }}>
-              <JsonValue value={data.args} />
+              <JsonValue value={payload.arguments} />
             </Box>
           </CollapsibleSection>
         )}
 
-        {data.result !== undefined && !isError && (
+        {exec.result !== undefined && !isError && (
           <CollapsibleSection label="Result" defaultOpen={!isPending} color="green">
             <Box style={{
               backgroundColor: "var(--gray-a2)", borderRadius: "4px",
               padding: "6px", maxHeight: "300px", overflow: "auto",
             }}>
-              <JsonValue value={data.result} />
+              <JsonValue value={exec.result} />
             </Box>
           </CollapsibleSection>
         )}
 
-        {isError && data.result !== undefined && (
+        {isError && exec.result !== undefined && (
           <CollapsibleSection label="Error" defaultOpen={true} color="red">
             <Box style={{
               padding: "6px", backgroundColor: "var(--red-a3)", borderRadius: "4px",
             }}>
               <Text size="1" color="red" style={{ whiteSpace: "pre-wrap" }}>
-                {typeof data.result === "string" ? data.result : JSON.stringify(data.result, null, 2)}
+                {typeof exec.result === "string" ? exec.result : JSON.stringify(exec.result, null, 2)}
               </Text>
             </Box>
           </CollapsibleSection>
         )}
 
-        {data.resultTruncated && (
+        {exec.resultImages && exec.resultImages.length > 0 && (
+          <CollapsibleSection label="Images" defaultOpen={true} color="blue">
+            <Flex gap="2" wrap="wrap">
+              {exec.resultImages.map((img, i) => (
+                <img
+                  key={i}
+                  src={`data:${img.mimeType};base64,${img.data}`}
+                  alt=""
+                  style={{
+                    maxWidth: "240px", maxHeight: "240px",
+                    borderRadius: "4px", border: "1px solid var(--gray-a4)",
+                  }}
+                />
+              ))}
+            </Flex>
+          </CollapsibleSection>
+        )}
+
+        {exec.resultTruncated && (
           <Text size="1" color="gray" style={{ opacity: 0.6 }}>
             Result truncated
           </Text>

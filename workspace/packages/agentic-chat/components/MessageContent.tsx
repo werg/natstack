@@ -15,90 +15,9 @@ async function getMdx() {
 }
 import { markdownComponents, mdxComponents } from "./markdownComponents";
 
-// ---------------------------------------------------------------------------
-// Content block rendering (pi-ai ImageContent + TextContent)
-// ---------------------------------------------------------------------------
-
-/**
- * A pi-ai content block (text or image), as it appears inside a Pi
- * `AgentMessage.content` array. We accept both the canonical pi-ai shape
- * (`{ type: "image", mimeType, data }`) and a defensive Anthropic-style
- * `source` shape (`{ type: "image", source: { media_type, data } }`) so the
- * renderer keeps working if a tool result ever passes the alternate form
- * through unchanged.
- */
-export interface TextBlock {
-  type: "text";
-  text: string;
-}
-
-interface ImageBlockSimple {
-  type: "image";
-  mimeType: string;
-  data: string;
-}
-
-interface ImageBlockSource {
-  type: "image";
-  source: {
-    type?: "base64" | "url";
-    media_type?: string;
-    data?: string;
-    url?: string;
-  };
-}
-
-export type ImageBlock = ImageBlockSimple | ImageBlockSource;
-export type ContentBlock = TextBlock | ImageBlock | { type: string; [key: string]: unknown };
-
-/** Extract `{ mimeType, data }` from either supported image-content shape. */
-function readImageBlock(block: ImageBlock): { mimeType: string; data: string } | null {
-  // pi-ai canonical shape: { type: "image", mimeType, data }
-  if ("mimeType" in block && "data" in block && typeof block.mimeType === "string" && typeof block.data === "string") {
-    return { mimeType: block.mimeType, data: block.data };
-  }
-  // Defensive Anthropic-style: { source: { media_type, data } } — base64 only.
-  if ("source" in block && block.source && typeof block.source === "object") {
-    const media = block.source.media_type;
-    const data = block.source.data;
-    // We deliberately do not handle source.type === "url" — pi-ai's read tool
-    // only emits base64 images in this codebase.
-    if (typeof media === "string" && typeof data === "string") {
-      return { mimeType: media, data };
-    }
-  }
-  return null;
-}
-
-/**
- * Render a single pi-ai `ImageContent` block as an `<img>` tag with size
- * capping. Used inline by both MessageContent (assistant text+image streams)
- * and tool-result renderers that may receive base64 images from the read tool.
- */
-export function ImageContentBlock({ block, alt }: { block: ImageBlock; alt?: string }) {
-  const parsed = readImageBlock(block);
-  if (!parsed) return null;
-  return (
-    <img
-      src={`data:${parsed.mimeType};base64,${parsed.data}`}
-      alt={alt ?? "image"}
-      className="max-w-full rounded"
-      style={{ maxWidth: "100%", maxHeight: 400, borderRadius: "var(--radius-2)", display: "block" }}
-    />
-  );
-}
-
 interface MessageContentProps {
-  /** Plain-text/markdown content (legacy single-string path). */
   content: string;
   isStreaming: boolean;
-  /**
-   * Optional pi-ai content block array. When provided, MessageContent
-   * renders text blocks via the markdown pipeline and image blocks via
-   * `ImageContentBlock`, ignoring the `content` string. When omitted,
-   * the legacy string-based render path is used unchanged.
-   */
-  contentBlocks?: ReadonlyArray<ContentBlock>;
 }
 
 const remarkPlugins = [remarkGfm];
@@ -142,7 +61,7 @@ const MARKDOWN_SYNTAX_RE = /^[ \t]*#{1,6} |`[^`]|```|\*\*|__|\*[^\s*]|_[^\s_]|^[
 // Debounce interval for streaming content updates (ms)
 const STREAMING_DEBOUNCE_MS = 100;
 
-export const MessageContent = React.memo(function MessageContent({ content, isStreaming, contentBlocks }: MessageContentProps) {
+export const MessageContent = React.memo(function MessageContent({ content, isStreaming }: MessageContentProps) {
   const [MdxComponent, setMdxComponent] = useState<ComponentType | null>(null);
   const [highlightLoaded, setHighlightLoaded] = useState<RehypeHighlightPlugin | null>(rehypeHighlightPlugin);
   const contentRef = useRef(content);
@@ -240,35 +159,6 @@ export const MessageContent = React.memo(function MessageContent({ content, isSt
       if (retryTimer) clearTimeout(retryTimer);
     };
   }, [content, isStreaming, highlightLoaded]);
-
-  // ---------------------------------------------------------------------
-  // Block-array path: when callers pass a pi-ai content block array we
-  // render text + image blocks together. Bypasses MDX / streaming-debounce
-  // because block arrays come from already-finalised Pi messages. Placed
-  // after all hook calls to comply with React's rules of hooks.
-  // ---------------------------------------------------------------------
-  if (contentBlocks && contentBlocks.length > 0) {
-    return (
-      <>
-        {contentBlocks.map((block, i) => {
-          if (block.type === "text" && typeof (block as TextBlock).text === "string") {
-            return (
-              <ReactMarkdown
-                key={`text-${i}`}
-                remarkPlugins={remarkPlugins}
-                components={markdownComponents}
-              >
-                {(block as TextBlock).text}
-              </ReactMarkdown>
-            );
-          } else if (block.type === "image") {
-            return <ImageContentBlock key={`img-${i}`} block={block as ImageBlock} />;
-          }
-          return null;
-        })}
-      </>
-    );
-  }
 
   if (MdxComponent) {
     return <MdxComponent />;

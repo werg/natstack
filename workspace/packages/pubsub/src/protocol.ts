@@ -22,6 +22,8 @@ export const UpdateMessageSchema = z.object({
   content: z.string().optional(),
   contentType: z.string().optional(),
   complete: z.boolean().optional(),
+  /** When true, content appends even on typed (contentType-set) messages. */
+  append: z.boolean().optional(),
 });
 
 export const ErrorMessageSchema = z.object({

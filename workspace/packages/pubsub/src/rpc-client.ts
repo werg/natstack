@@ -326,6 +326,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
         content: parsed.data.content,
         complete: parsed.data.complete,
         contentType: parsed.data.contentType,
+        append: parsed.data.append,
       } as IncomingUpdateMessage;
     }
 

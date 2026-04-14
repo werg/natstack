@@ -23,9 +23,38 @@ export interface BroadcastDeps {
  *  agent DOs handle ordering via their own checkpoints. */
 const deliveryChains = new Map<string, Promise<void>>();
 
+/** Per-subscriber emit chains. Used to serialize `rpc.emit` calls to the same
+ *  subscriber in FIFO order without blocking the caller — awaiting each emit
+ *  inline would deadlock against RPC transport backpressure (the subscriber
+ *  is typically parked on an outstanding RPC call when replay runs). */
+const emitChains = new Map<string, Promise<void>>();
+
+/**
+ * Queue an `rpc.emit` to `subscriberId` behind any previously queued emits to
+ * the same subscriber. Returns the tail of the chain for callers that want to
+ * wait until every enqueued emit has drained (e.g. subscribe handlers that
+ * need `ready` to land after replay before they return).
+ */
+export function queueEmit(
+  deps: BroadcastDeps,
+  subscriberId: string,
+  payload: unknown,
+  onFatalDelivery?: (err: { code?: string }) => void,
+): Promise<void> {
+  const prev = emitChains.get(subscriberId) ?? Promise.resolve();
+  const next = prev.then(() =>
+    deps.rpc.emit(subscriberId, "channel:message", payload).catch((err) => {
+      onFatalDelivery?.(err as { code?: string });
+    }),
+  );
+  emitChains.set(subscriberId, next);
+  return next;
+}
+
 /** Clean up delivery chain for a participant that unsubscribed. */
 export function cleanupDeliveryChain(participantId: string): void {
   deliveryChains.delete(participantId);
+  emitChains.delete(participantId);
 }
 
 // ── Broadcast ────────────────────────────────────────────────────────────────
@@ -53,10 +82,11 @@ export function broadcast(
       ? { channelId: deps.objectKey, message: { ...msg, ref: envelope.ref } }
       : { channelId: deps.objectKey, message: msg };
 
-    deps.rpc.emit(pid, "channel:message", data).catch(err => {
-      const code = (err as { code?: string })?.code;
+    // Route through the per-subscriber emit chain so replay emits queued
+    // during a concurrent subscribe stay ahead of live broadcasts.
+    void queueEmit(deps, pid, data, (err) => {
+      const code = err?.code;
       if (code === "TARGET_NOT_REACHABLE" || code === "RECONNECT_GRACE_EXPIRED") {
-        // Dead participant — remove from SQL so future broadcasts skip it.
         deps.sql.exec(`DELETE FROM participants WHERE id = ?`, pid);
         cleanupDeliveryChain(pid);
       }
@@ -150,7 +180,10 @@ export function sendReady(
   const firstRow = sql.exec(`SELECT MIN(id) as mid FROM messages WHERE type = 'message'`).toArray();
   const firstChatMessageId = (firstRow[0]?.["mid"] as number | null) ?? undefined;
 
-  deps.rpc.emit(subscriberId, "channel:message", {
+  // Queued (not awaited) so the subscribe handler returns and unblocks the
+  // subscriber's RPC call reply; the per-subscriber emit chain guarantees
+  // `ready` lands after any replay emits already enqueued.
+  void queueEmit(deps, subscriberId, {
     channelId: deps.objectKey,
     message: {
       kind: "ready",
@@ -160,7 +193,7 @@ export function sendReady(
       chatMessageCount,
       firstChatMessageId,
     },
-  }).catch(err => console.warn(`[Channel] emit failed:`, err));
+  });
 }
 
 // ── ChannelEvent builders ────────────────────────────────────────────────────

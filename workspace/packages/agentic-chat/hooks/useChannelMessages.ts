@@ -20,7 +20,15 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { PubSubClient, ParticipantMetadata, Attachment } from "@natstack/pubsub";
 import { isClientParticipantType } from "@natstack/pubsub";
-import type { ChatMessage } from "@workspace/agentic-core";
+import {
+  type ChatMessage,
+  createChatMessageFromWire,
+  applyChatMessageUpdate,
+  applyChatMessageError,
+  type WireNewMessage,
+  type WireUpdateMessage,
+  type WireErrorMessage,
+} from "@workspace/agentic-core";
 
 /** Maximum messages in the visible window. New messages push oldest out. */
 const MAX_VISIBLE = 500;
@@ -123,18 +131,10 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
             // separate ephemeral hooks and must not leak into the transcript.
             if (isEphemeral) continue;
 
-            const msg: ChatMessage = {
-              id: wire.id,
-              pubsubId: wire.pubsubId,
-              senderId: wire.senderId ?? "unknown",
-              content: wire.content ?? "",
-              contentType: wire.contentType,
-              replyTo: wire.replyTo,
-              kind: "message",
-              complete: isReplay || isFromClient,
-              attachments: wire.attachments,
-              senderMetadata: wire.senderMetadata,
-            };
+            const msg = createChatMessageFromWire(wire as WireNewMessage, {
+              isReplay,
+              isFromClient,
+            });
 
             if (!byId.has(wire.id)) {
               order.push(wire.id);
@@ -152,23 +152,13 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
           } else if (wire.type === "update-message" && wire.id) {
             const existing = byId.get(wire.id);
             if (existing) {
-              const updated = { ...existing };
-              if (wire.content !== undefined) {
-                if (!existing.contentType) {
-                  updated.content = (existing.content ?? "") + wire.content;
-                } else {
-                  updated.content = wire.content;
-                }
-              }
-              if (wire.complete !== undefined) updated.complete = wire.complete;
-              if (wire.attachments) updated.attachments = wire.attachments;
-              byId.set(wire.id, updated);
+              byId.set(wire.id, applyChatMessageUpdate(existing, wire as WireUpdateMessage));
               flush();
             }
           } else if (wire.type === "error" && wire.id) {
             const existing = byId.get(wire.id);
             if (existing) {
-              byId.set(wire.id, { ...existing, complete: true, error: wire.error ?? "Unknown error" });
+              byId.set(wire.id, applyChatMessageError(existing, wire as WireErrorMessage));
               flush();
             }
           } else if (wire.type === "execution-pause") {
@@ -180,14 +170,19 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
                 flush();
               }
             } else {
-              for (let i = order.length - 1; i >= 0; i--) {
-                const msg = byId.get(order[i]!);
+              // Close *every* non-complete message. At any moment during a
+              // turn the projector may have multiple open channel messages
+              // simultaneously (active text + in-progress toolCall + thinking),
+              // so the sweep cannot stop at the first match.
+              let changed = false;
+              for (const id of order) {
+                const msg = byId.get(id);
                 if (msg && !msg.complete) {
-                  byId.set(order[i]!, { ...msg, complete: true });
-                  flush();
-                  break;
+                  byId.set(id, { ...msg, complete: true });
+                  changed = true;
                 }
               }
+              if (changed) flush();
             }
           }
         }
@@ -234,33 +229,41 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
         const msgId = (payload["id"] as string) ?? `pubsub-${raw.id}`;
         if (byId.has(msgId)) continue; // dedup
 
-        const msg: ChatMessage = {
+        let msg = createChatMessageFromWire({
+          type: "message",
           id: msgId,
           pubsubId: raw.id,
           senderId: raw.senderId,
           content: (payload["content"] as string) ?? "",
           contentType: payload["contentType"] as string | undefined,
           replyTo: payload["replyTo"] as string | undefined,
-          kind: "message",
-          complete: true,
           attachments: raw.attachments as Attachment[] | undefined,
-          senderMetadata: raw.senderMetadata as ChatMessage["senderMetadata"],
-        };
+          senderMetadata: raw.senderMetadata as {
+            name?: string; type?: string; handle?: string;
+          } | undefined,
+        }, { isReplay: true });
 
-        // Apply trailing updates (content appended, complete flag, errors).
+        // Apply trailing updates from the server (paginated view may split
+        // an initial message from its deltas across batches).
         if (result.trailingUpdates) {
           for (const upd of result.trailingUpdates) {
             const updPayload = upd.payload as Record<string, unknown> | undefined;
             if (!updPayload || (updPayload["id"] as string) !== msgId) continue;
-            if (updPayload["content"] !== undefined) {
-              if (!msg.contentType) {
-                msg.content += updPayload["content"] as string;
-              } else {
-                msg.content = updPayload["content"] as string;
-              }
+            if (upd.type === "error") {
+              msg = applyChatMessageError(msg, {
+                type: "error",
+                id: msgId,
+                error: updPayload["error"] as string | undefined,
+              });
+              continue;
             }
-            if (updPayload["complete"] !== undefined) msg.complete = updPayload["complete"] as boolean;
-            if (updPayload["error"] !== undefined) msg.error = updPayload["error"] as string;
+            msg = applyChatMessageUpdate(msg, {
+              type: "update-message",
+              id: msgId,
+              content: updPayload["content"] as string | undefined,
+              append: updPayload["append"] as boolean | undefined,
+              complete: updPayload["complete"] as boolean | undefined,
+            });
           }
         }
 

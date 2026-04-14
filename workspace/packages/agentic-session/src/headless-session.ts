@@ -21,12 +21,18 @@ import {
   ConnectionManager,
   buildEvalTool,
   isAgentParticipantType,
+  createChatMessageFromWire,
+  applyChatMessageUpdate,
+  applyChatMessageError,
   type ConnectionConfig,
   type ChatParticipantMetadata,
   type ChatMessage,
   type MethodHistoryEntry,
   type SandboxConfig,
   type DirtyRepoDetails,
+  type WireNewMessage,
+  type WireUpdateMessage,
+  type WireErrorMessage,
 } from "@workspace/agentic-core";
 import type {
   PubSubClient,
@@ -410,17 +416,12 @@ export class HeadlessSession {
 
         if (wire.type === "message" && wire.id) {
           const isReplay = wire.kind === "replay";
-          const isFromClient = wire.senderMetadata?.type === "panel" || wire.senderMetadata?.type === "headless";
-          const msg: ChatMessage = {
-            id: wire.id,
-            senderId: wire.senderId ?? "unknown",
-            content: wire.content ?? "",
-            contentType: wire.contentType,
-            kind: "message",
-            complete: isReplay || isFromClient,
-            attachments: wire.attachments,
-            senderMetadata: wire.senderMetadata,
-          };
+          const isFromClient =
+            wire.senderMetadata?.type === "panel" || wire.senderMetadata?.type === "headless";
+          const msg = createChatMessageFromWire(wire as WireNewMessage, {
+            isReplay,
+            isFromClient,
+          });
           if (!this._chatMessages.has(wire.id)) {
             this._chatMessageOrder.push(wire.id);
           }
@@ -430,24 +431,20 @@ export class HeadlessSession {
         } else if (wire.type === "update-message" && wire.id) {
           const existing = this._chatMessages.get(wire.id);
           if (existing) {
-            const updated = { ...existing };
-            if (wire.content !== undefined) {
-              if (!existing.contentType) {
-                updated.content = (existing.content ?? "") + wire.content;
-              } else {
-                updated.content = wire.content;
-              }
-            }
-            if (wire.complete !== undefined) updated.complete = wire.complete;
-            if (wire.attachments) updated.attachments = wire.attachments;
-            this._chatMessages.set(wire.id, updated);
+            this._chatMessages.set(
+              wire.id,
+              applyChatMessageUpdate(existing, wire as WireUpdateMessage),
+            );
             this.recomputeHasIncomplete();
             this.notifyListeners();
           }
         } else if (wire.type === "error" && wire.id) {
           const existing = this._chatMessages.get(wire.id);
           if (existing) {
-            this._chatMessages.set(wire.id, { ...existing, complete: true, error: (wire as { error?: string }).error ?? "Unknown error" });
+            this._chatMessages.set(
+              wire.id,
+              applyChatMessageError(existing, wire as WireErrorMessage),
+            );
             this.recomputeHasIncomplete();
             this.notifyListeners();
           }
@@ -461,14 +458,19 @@ export class HeadlessSession {
               this.notifyListeners();
             }
           } else {
-            for (let i = this._chatMessageOrder.length - 1; i >= 0; i--) {
-              const msg = this._chatMessages.get(this._chatMessageOrder[i]!);
+            // Close *every* non-complete message — at any moment the projector
+            // may have multiple open channel messages (text + toolCall + thinking).
+            let changed = false;
+            for (const id of this._chatMessageOrder) {
+              const msg = this._chatMessages.get(id);
               if (msg && !msg.complete) {
-                this._chatMessages.set(this._chatMessageOrder[i]!, { ...msg, complete: true });
-                this.recomputeHasIncomplete();
-                this.notifyListeners();
-                break;
+                this._chatMessages.set(id, { ...msg, complete: true });
+                changed = true;
               }
+            }
+            if (changed) {
+              this.recomputeHasIncomplete();
+              this.notifyListeners();
             }
           }
         }
@@ -671,7 +673,7 @@ export class HeadlessSession {
       !msg.pending &&
       msg.contentType !== "thinking" &&
       msg.contentType !== "typing" &&
-      msg.contentType !== "action";
+      msg.contentType !== "toolCall";
 
     const knownAgentHandles = new Set<string>();
     for (const p of Object.values(this._participants)) {
@@ -728,7 +730,7 @@ export class HeadlessSession {
       !msg.pending &&
       msg.contentType !== "thinking" &&
       msg.contentType !== "typing" &&
-      msg.contentType !== "action";
+      msg.contentType !== "toolCall";
 
     const baselineMessages = this.messages;
     const alreadyPresent = [...baselineMessages].reverse().find(isAgentMessage);

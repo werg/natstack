@@ -310,6 +310,13 @@ export interface IncomingUpdateMessage extends IncomingBase {
   id: string;
   /** Content to append (if any) */
   content?: string;
+  /**
+   * When true, content appends regardless of the initial message's contentType.
+   * Without this flag, typed messages (contentType set) replace on update;
+   * untyped messages always append. Used by thinking streaming, which carries
+   * `contentType: "thinking"` yet streams deltas.
+   */
+  append?: boolean;
   /** Whether the message is now complete */
   complete?: boolean;
   /** MIME type for attachment */

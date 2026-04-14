@@ -15,11 +15,12 @@
  *   and feedback_form / inline UI awaits (Promise resolution from onCallResult)
  * - `ChannelClient`: typed wrapper around channel DO RPC
  *
- * Publishes Pi events as real channel messages (persisted, streamable):
- * - Text blocks stream via send → per-token delta updates → complete
- * - Thinking blocks publish all-at-once from finalized message_end
- * - Tool calls publish as contentType "action" (ActionData JSON)
- * - Image tool results publish as contentType "image" with attachments
+ * Publishes Pi events as real channel messages via `ContentBlockProjector`
+ * (one channel message per Pi content block):
+ * - Text blocks stream via send → delta updates → complete
+ * - Thinking blocks stream via send → delta updates (append flag) → complete
+ * - Tool calls publish as contentType "toolCall" (ToolCallPayload snapshot)
+ * - Tool-result images fold into the tool call's `execution.resultImages`
  */
 
 import { DurableObjectBase, type DurableObjectContext, type DORef } from "@workspace/runtime/worker";
@@ -30,7 +31,7 @@ import type {
   TurnInput,
   UnsubscribeResult,
 } from "@natstack/harness/types";
-import { isClientParticipantType, getDetailedActionDescription } from "@natstack/pubsub";
+import { isClientParticipantType } from "@natstack/pubsub";
 import {
   PiRunner,
   type ChannelToolMethod,
@@ -46,9 +47,7 @@ import { DOIdentity } from "./identity.js";
 import { SubscriptionManager } from "./subscription-manager.js";
 import { ContinuationStore } from "./continuation-store.js";
 import { ChannelClient } from "./channel-client.js";
-import {
-  truncateResult,
-} from "./action-data.js";
+import { ContentBlockProjector, type ProjectorSink } from "./content-block-projector.js";
 
 const SAFE_TOOL_NAMES_DEFAULT: ReadonlySet<string> = new Set([
   "read",
@@ -146,20 +145,6 @@ interface RunnerEntry {
 interface PendingResolver {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
-}
-
-/** Per-tool-call state stashed between message_start and tool_execution_end. */
-interface ToolCallState {
-  /** Channel message UUID for this action message. */
-  channelMsgId: string;
-  /** Tool name (e.g. "Read", "eval"). */
-  toolName: string;
-  /** Human-readable description from getDetailedActionDescription. */
-  description: string;
-  /** Tool arguments. */
-  args: Record<string, unknown>;
-  /** Accumulated console output from streaming updates. */
-  consoleOutput: string;
 }
 
 export abstract class AgentWorkerBase extends DurableObjectBase {
@@ -399,8 +384,17 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       this.runners.delete(channelId);
     }
 
-    // Clean up per-channel streaming state (tool-call ID map, text msg tracking).
-    this.channelStreamState.delete(channelId);
+    // Clean up per-channel projector state. closeAll before deletion so any
+    // still-open channel messages receive their final `complete` (defensive —
+    // the runner.dispose above should have drained pi events already).
+    const projector = this.projectors.get(channelId);
+    if (projector) {
+      try { await projector.closeAll(); }
+      catch (err) {
+        console.warn(`[AgentWorkerBase] projector.closeAll on unsubscribe failed for ${channelId}:`, err);
+      }
+      this.projectors.delete(channelId);
+    }
 
     this.continuations.deleteForChannel(channelId);
     this.subscriptions.deleteSubscription(channelId);
@@ -604,10 +598,52 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     // Warm-restore: no synthetic snapshot needed — the channel already has
     // persisted messages that replay on panel connect.
 
-    runner.subscribe((event) => this.publishPiEvent(channelId, event));
+    const projector = this.getOrCreateProjector(channelId);
+    runner.subscribe((event) => projector.handleEvent(event));
 
     this.runners.set(channelId, { runner });
     return runner;
+  }
+
+  // ── Per-channel projector (Pi events → channel messages) ───────────────
+
+  /** One projector per channel, created lazily when the runner is wired up. */
+  private projectors = new Map<string, ContentBlockProjector>();
+
+  private getOrCreateProjector(channelId: string): ContentBlockProjector {
+    const existing = this.projectors.get(channelId);
+    if (existing) return existing;
+    const projector = new ContentBlockProjector(this.createProjectorSink(channelId));
+    this.projectors.set(channelId, projector);
+    return projector;
+  }
+
+  private createProjectorSink(channelId: string): ProjectorSink {
+    return {
+      send: async (msgId, content, opts) => {
+        const participantId = this.subscriptions.getParticipantId(channelId);
+        if (!participantId) return;
+        const channel = this.createChannelClient(channelId);
+        await channel.send(participantId, msgId, content, {
+          persist: true,
+          contentType: opts?.contentType,
+          attachments: opts?.attachments,
+        });
+      },
+      update: async (msgId, content, opts) => {
+        const participantId = this.subscriptions.getParticipantId(channelId);
+        if (!participantId) return;
+        const channel = this.createChannelClient(channelId);
+        await channel.update(participantId, msgId, content, undefined, opts);
+      },
+      complete: async (msgId) => {
+        const participantId = this.subscriptions.getParticipantId(channelId);
+        if (!participantId) return;
+        const channel = this.createChannelClient(channelId);
+        await channel.complete(participantId, msgId);
+      },
+      setTyping: (on) => this.setTyping(channelId, on),
+    };
   }
 
   /** Persist the current `AgentMessage[]` snapshot for warm restart. Called
@@ -646,49 +682,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
   }
 
-  // ── Pi event → channel message publishing ──────────────────────────────
-
-  /** Per-tool-call state stashed between message_start and tool_execution_end. */
-  private static serializeActionData(
-    toolCall: ToolCallState,
-    overrides: {
-      status: "pending" | "complete";
-      result?: unknown;
-      isError?: boolean;
-      resultTruncated?: boolean;
-    },
-  ): string {
-    return JSON.stringify({
-      type: toolCall.toolName,
-      description: toolCall.description,
-      status: overrides.status,
-      args: toolCall.args,
-      consoleOutput: toolCall.consoleOutput || undefined,
-      result: overrides.result,
-      isError: overrides.isError,
-      resultTruncated: overrides.resultTruncated,
-    });
-  }
-
-  /** Per-channel streaming state for message ID tracking. */
-  private channelStreamState = new Map<string, {
-    /** Channel message UUID for the current streaming text block. */
-    textMsgId: string | null;
-    /** Per-tool-call state keyed by pi-agent-core toolCallId (e.g. "call_abc123"). */
-    toolCalls: Map<string, ToolCallState>;
-    /** Promise chain that serializes all channel operations so RPC calls
-     *  arrive at the channel DO in emission order. */
-    pendingOp: Promise<void>;
-  }>();
-
-  private getStreamState(channelId: string) {
-    let state = this.channelStreamState.get(channelId);
-    if (!state) {
-      state = { textMsgId: null, toolCalls: new Map(), pendingOp: Promise.resolve() };
-      this.channelStreamState.set(channelId, state);
-    }
-    return state;
-  }
+  // ── Typing indicator ─────────────────────────────────────────────────
 
   /** Track which channels have typing=true so we skip redundant updates. */
   private typingActive = new Set<string>();
@@ -714,261 +708,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     });
   }
 
-  /**
-   * Publish a pi-agent-core event as channel message(s).
-   *
-   * Returns a Promise that resolves once all enqueued channel operations for
-   * this event have completed. pi-agent-core `await`s listener return values,
-   * so returning the promise provides back-pressure: the agent loop won't emit
-   * the next event until the current one's RPC calls finish, guaranteeing that
-   * deltas arrive at the channel DO in emission order.
-   */
-  private publishPiEvent(channelId: string, event: AgentEvent): Promise<void> {
-    const participantId = this.subscriptions.getParticipantId(channelId);
-    if (!participantId) return Promise.resolve();
-    const channel = this.createChannelClient(channelId);
-    const state = this.getStreamState(channelId);
-
-    /** Append an async operation to the per-channel serialization chain.
-     *  Errors are logged but swallowed so the chain stays alive. */
-    const enqueue = (op: () => Promise<void>): void => {
-      state.pendingOp = state.pendingOp.then(op).catch((err) => {
-        console.warn(`[AgentWorkerBase] channel op failed for ${channelId}:`, err);
-      });
-    };
-
-    switch (event.type) {
-      case "message_start": {
-        const msg = event.message as { role?: string; content?: unknown[] };
-        if (msg.role !== "assistant") break;
-
-        const blocks = Array.isArray(msg.content) ? msg.content : [];
-
-        // Create streaming channel message for the first text block.
-        for (let i = 0; i < blocks.length; i++) {
-          const block = blocks[i] as { type?: string; text?: string };
-          if (block?.type === "text") {
-            const msgId = crypto.randomUUID();
-            state.textMsgId = msgId;
-            enqueue(() => channel.send(participantId, msgId, block.text ?? "", { persist: true }));
-            break;
-          }
-        }
-
-        // Create action messages for any toolCall blocks visible at start.
-        for (const block of blocks) {
-          const b = block as { type?: string; id?: string; name?: string; arguments?: Record<string, unknown> };
-          if (b?.type === "toolCall" && b.id) {
-            const toolCall: ToolCallState = {
-              channelMsgId: crypto.randomUUID(),
-              toolName: b.name ?? "tool",
-              description: getDetailedActionDescription(b.name ?? "tool", b.arguments ?? {}),
-              args: b.arguments ?? {},
-              consoleOutput: "",
-            };
-            state.toolCalls.set(b.id, toolCall);
-            enqueue(() => channel.send(participantId, toolCall.channelMsgId,
-              AgentWorkerBase.serializeActionData(toolCall, { status: "pending" }),
-              { contentType: "action", persist: true },
-            ));
-          }
-        }
-        break;
-      }
-
-      case "message_update": {
-        const ame = (event as { assistantMessageEvent?: { type?: string; delta?: string } })
-          .assistantMessageEvent;
-        if (ame?.type !== "text_delta" || !ame.delta) break;
-
-        // If a text block hasn't been created yet (model started with tool calls
-        // and then added text), create one now.
-        if (!state.textMsgId) {
-          const msgId = crypto.randomUUID();
-          state.textMsgId = msgId;
-          enqueue(() => channel.send(participantId, msgId, "", { persist: true }));
-        }
-
-        // Send delta — serialized through pendingOp so deltas arrive in order.
-        if (state.textMsgId) {
-          const textId = state.textMsgId;
-          const delta = ame.delta;
-          enqueue(() => channel.update(participantId, textId, delta));
-        }
-        break;
-      }
-
-      case "message_end": {
-        // Complete text message.
-        if (state.textMsgId) {
-          const textId = state.textMsgId;
-          enqueue(() => channel.complete(participantId, textId));
-          state.textMsgId = null;
-        }
-
-        // Walk ALL finalized content blocks: thinking, toolCall, extra text, images.
-        const msg = event.message as { content?: unknown[] };
-        const blocks = Array.isArray(msg.content) ? msg.content : [];
-        let textBlocksSeen = 0;
-
-        for (let i = 0; i < blocks.length; i++) {
-          const block = blocks[i] as {
-            type?: string; text?: string; thinking?: string; id?: string; name?: string;
-            arguments?: Record<string, unknown>; mimeType?: string; data?: string;
-          };
-
-          if (block?.type === "thinking" && typeof block.thinking === "string") {
-            const thinkId = crypto.randomUUID();
-            enqueue(() =>
-              channel.send(participantId, thinkId, block.thinking!, {
-                contentType: "thinking",
-                persist: true,
-              }).then(() => channel.complete(participantId, thinkId))
-            );
-          }
-
-          // Additional text blocks beyond the first (which was streamed).
-          if (block?.type === "text" && typeof block.text === "string") {
-            textBlocksSeen++;
-            if (textBlocksSeen > 1) {
-              // The first text block was streamed live; publish additional ones all-at-once.
-              const extraId = crypto.randomUUID();
-              const text = block.text;
-              enqueue(() =>
-                channel.send(participantId, extraId, text, { persist: true })
-                  .then(() => channel.complete(participantId, extraId))
-              );
-            }
-          }
-
-          // Assistant-side image blocks (uncommon but supported by pi-ai).
-          if (block?.type === "image" && block.mimeType && block.data) {
-            const imgId = crypto.randomUUID();
-            const { mimeType, data } = block;
-            enqueue(() =>
-              channel.send(participantId, imgId, "", {
-                contentType: "image",
-                persist: true,
-                attachments: [{ data, mimeType }],
-              }).then(() => channel.complete(participantId, imgId))
-            );
-          }
-
-          // Create action messages for toolCall blocks not yet created at message_start.
-          if (block?.type === "toolCall" && block.id && !state.toolCalls.has(block.id)) {
-            const args = (block.arguments ?? {}) as Record<string, unknown>;
-            const toolCall: ToolCallState = {
-              channelMsgId: crypto.randomUUID(),
-              toolName: block.name ?? "tool",
-              description: getDetailedActionDescription(block.name ?? "tool", args),
-              args,
-              consoleOutput: "",
-            };
-            state.toolCalls.set(block.id, toolCall);
-            enqueue(() => channel.send(participantId, toolCall.channelMsgId,
-              AgentWorkerBase.serializeActionData(toolCall, { status: "pending" }),
-              { contentType: "action", persist: true },
-            ));
-          }
-        }
-
-        break;
-      }
-
-      case "tool_execution_start":
-        break;
-
-      case "tool_execution_update": {
-        const { toolCallId } = event;
-        const toolCall = state.toolCalls.get(toolCallId);
-        if (toolCall) {
-          const details = (event as { partialResult?: { details?: unknown } }).partialResult?.details;
-          const content = details as { type?: string; content?: string } | undefined;
-          if (content?.type === "console" && typeof content.content === "string") {
-            toolCall.consoleOutput = toolCall.consoleOutput
-              ? `${toolCall.consoleOutput}\n${content.content}`
-              : content.content;
-            enqueue(() => channel.update(participantId, toolCall.channelMsgId,
-              AgentWorkerBase.serializeActionData(toolCall, { status: "pending" }),
-            ));
-          }
-        }
-        break;
-      }
-
-      case "tool_execution_end": {
-        const { toolCallId, result, isError } = event;
-        const toolCall = state.toolCalls.get(toolCallId);
-        if (toolCall) {
-          const { value: truncatedResult, truncated } = truncateResult(result);
-          enqueue(() =>
-            channel.update(participantId, toolCall.channelMsgId,
-              AgentWorkerBase.serializeActionData(toolCall, {
-                status: "complete",
-                result: truncatedResult,
-                isError: isError || false,
-                resultTruncated: truncated,
-              }),
-            ).then(() => channel.complete(participantId, toolCall.channelMsgId))
-          );
-          state.toolCalls.delete(toolCallId);
-        }
-
-        // Publish image content from tool results.
-        if (!isError && result != null) {
-          this.publishToolResultImages(channelId, participantId, channel, result);
-        }
-
-        break;
-      }
-
-      case "agent_end":
-        this.setTyping(channelId, false);
-        break;
-
-      default:
-        // No channel message needed for agent_start, turn_start.
-        break;
-    }
-
-    return state.pendingOp;
-  }
-
-
-  /** Check a tool result for ImageContent blocks and publish them as image channel messages.
-   *  Pi-agent-core wraps tool results as `{ content: [{type, ...}], details }`.
-   *  We check both the top-level result AND the `.content` array. */
-  private publishToolResultImages(
-    _channelId: string,
-    participantId: string,
-    channel: ChannelClient,
-    result: unknown,
-  ): void {
-    const candidates: unknown[] = [];
-    // Direct array of content items
-    if (Array.isArray(result)) {
-      candidates.push(...result);
-    } else if (result && typeof result === "object") {
-      // Pi-agent-core AgentToolResult shape: { content: [...], details: {...} }
-      const r = result as { content?: unknown[] };
-      if (Array.isArray(r.content)) {
-        candidates.push(...r.content);
-      } else {
-        candidates.push(result);
-      }
-    }
-    for (const item of candidates) {
-      const img = item as { type?: string; mimeType?: string; data?: string };
-      if (img?.type === "image" && img.mimeType && img.data) {
-        const imgId = crypto.randomUUID();
-        void channel.send(participantId, imgId, "", {
-          contentType: "image",
-          persist: true,
-          attachments: [{ data: img.data, mimeType: img.mimeType }],
-        }).then(() => channel.complete(participantId, imgId));
-      }
-    }
-  }
 
   // ── Channel-tools extension wiring ──────────────────────────────────────
 
@@ -1312,6 +1051,16 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         await runner.runTurn(input.content, imagesArg);
       }
     } catch (err) {
+      // Worker-level failure (e.g., runTurn rejecting before pi-agent-core
+      // could emit its own agent_end). Close any in-flight channel messages
+      // so the client doesn't see stuck "pending" text/thinking/toolCall.
+      const projector = this.projectors.get(channelId);
+      if (projector) {
+        try { await projector.closeAll(); }
+        catch (closeErr) {
+          console.warn(`[AgentWorkerBase] projector.closeAll failed for ${channelId}:`, closeErr);
+        }
+      }
       this.setTyping(channelId, false);
       throw err;
     }
@@ -1325,7 +1074,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   /** Interrupt the in-flight Pi turn for every active channel runner. */
   protected async interruptAllRunners(): Promise<void> {
-    for (const entry of this.runners.values()) {
+    for (const [channelId, entry] of this.runners.entries()) {
+      const projector = this.projectors.get(channelId);
+      if (projector) await projector.closeAll();
       await entry.runner.interrupt();
     }
   }
@@ -1334,6 +1085,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   protected async interruptRunner(channelId: string): Promise<void> {
     const entry = this.runners.get(channelId);
     if (entry) {
+      // Close every in-flight channel message (text/thinking/toolCall) before
+      // tearing down the runner, so the client sees clean completion events
+      // even though the *_end Pi events won't fire post-abort.
+      const projector = this.projectors.get(channelId);
+      if (projector) await projector.closeAll();
       this.setTyping(channelId, false);
       await entry.runner.interrupt();
     }

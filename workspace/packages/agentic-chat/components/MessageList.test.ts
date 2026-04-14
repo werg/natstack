@@ -54,29 +54,31 @@ describe("MessageList typing indicators (roster-based)", () => {
     expect(screen.queryByText("User typing")).toBeNull();
   });
 
-  it("renders action beads in inline groups", () => {
+  it("renders toolCall beads in inline groups", () => {
     render(React.createElement(MessageList, {
       messages: [
         makeMessage({
           id: "action-1",
-          contentType: "action",
-          content: JSON.stringify({
-            type: "Read",
-            description: "Read src/app.ts",
-            toolUseId: "tool-1",
-            status: "complete",
-          }),
+          contentType: "toolCall",
+          content: "",
+          toolCall: {
+            id: "tool-1",
+            name: "Read",
+            arguments: { file_path: "src/app.ts" },
+            execution: { status: "complete", description: "Read src/app.ts" },
+          },
           complete: true,
         }),
         makeMessage({
           id: "action-2",
-          contentType: "action",
-          content: JSON.stringify({
-            type: "Edit",
-            description: "Edit src/config.ts",
-            toolUseId: "tool-2",
-            status: "complete",
-          }),
+          contentType: "toolCall",
+          content: "",
+          toolCall: {
+            id: "tool-2",
+            name: "Edit",
+            arguments: { file_path: "src/config.ts" },
+            execution: { status: "complete", description: "Edit src/config.ts" },
+          },
           complete: true,
         }),
       ],

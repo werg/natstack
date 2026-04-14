@@ -25,8 +25,14 @@ export class ChannelClient {
     await this.rpc.call(this.doTarget, "send", participantId, messageId, content, opts);
   }
 
-  async update(participantId: string, messageId: string, content: string, idempotencyKey?: string): Promise<void> {
-    await this.rpc.call(this.doTarget, "update", participantId, messageId, content, idempotencyKey);
+  async update(
+    participantId: string,
+    messageId: string,
+    content: string,
+    idempotencyKey?: string,
+    opts?: { append?: boolean },
+  ): Promise<void> {
+    await this.rpc.call(this.doTarget, "update", participantId, messageId, content, idempotencyKey, opts);
   }
 
   async complete(participantId: string, messageId: string, idempotencyKey?: string): Promise<void> {

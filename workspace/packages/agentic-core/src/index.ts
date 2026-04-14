@@ -59,4 +59,20 @@ export type {
   DirtyRepoDetails,
 } from "./derived-types.js";
 
+// --- Tool call payload (structured content for contentType "toolCall") ---
+export type { ToolCallPayload, ToolExecutionState } from "./tool-call-payload.js";
+export { parseToolCallPayload } from "./tool-call-payload.js";
+
+// --- Shared wire-event → ChatMessage merge helpers ---
+export {
+  createChatMessageFromWire,
+  applyChatMessageUpdate,
+  applyChatMessageError,
+} from "./channel-chat-merge.js";
+export type {
+  WireNewMessage,
+  WireUpdateMessage,
+  WireErrorMessage,
+} from "./channel-chat-merge.js";
+
 // --- Pi snapshot → ChatMessage[] deriver (removed: channel messages replace snapshots) ---

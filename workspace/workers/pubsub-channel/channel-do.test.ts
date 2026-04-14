@@ -665,4 +665,94 @@ describe("PubSubChannel", () => {
       expect(presenceRows["cnt"]).toBe(0);
     });
   });
+
+  describe("replay ordering", () => {
+    it("emits persisted messages to a reconnecting subscriber in id order, ready last", async () => {
+      const { instance, sql } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+
+      // Capture every rpc.emit to `channel:message` in call order.
+      const emitted: Array<{ subscriberId: string; message: Record<string, unknown> }> = [];
+      const mockRpc = {
+        emit: vi.fn(async (subscriberId: string, _evt: string, payload: unknown) => {
+          emitted.push({
+            subscriberId,
+            message: (payload as { message: Record<string, unknown> }).message,
+          });
+        }),
+        call: vi.fn().mockResolvedValue(undefined),
+      };
+      (instance as any)._rpc = mockRpc;
+
+      // Seed a multi-block turn: message M1 + two deltas + complete, plus
+      // a second interleaved message M2. IDs are AUTOINCREMENT row ids.
+      const m1 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      const m2 = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+      sql.exec(
+        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist, content_type)
+         VALUES (?, 'message', ?, 'agent', ?, 1, NULL)`,
+        m1, JSON.stringify({ id: m1, content: "Hel" }), 1000,
+      );
+      sql.exec(
+        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist)
+         VALUES (?, 'update-message', ?, 'agent', ?, 1)`,
+        m1, JSON.stringify({ id: m1, content: "lo " }), 1001,
+      );
+      sql.exec(
+        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist, content_type)
+         VALUES (?, 'message', ?, 'agent', ?, 1, 'toolCall')`,
+        m2, JSON.stringify({ id: m2, content: "{\"id\":\"tc\",\"name\":\"R\",\"arguments\":{},\"execution\":{\"status\":\"pending\",\"description\":\"\"}}" }), 1002,
+      );
+      sql.exec(
+        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist)
+         VALUES (?, 'update-message', ?, 'agent', ?, 1)`,
+        m1, JSON.stringify({ id: m1, content: "world", complete: true }), 1003,
+      );
+      sql.exec(
+        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist)
+         VALUES (?, 'update-message', ?, 'agent', ?, 1)`,
+        m2, JSON.stringify({ id: m2, complete: true }), 1004,
+      );
+
+      await instance.subscribe("panel-1", {
+        contextId: "ctx-1",
+        transport: "rpc",
+        callerKind: "panel",
+        // RPC replay is gated on sinceId / replayMessageLimit.
+        replayMessageLimit: 100,
+      });
+
+      // Emits are queued through a per-subscriber promise chain (fire-and-
+      // queue, not awaited inside subscribe — awaiting inline would deadlock
+      // against the subscriber's own RPC call reply). Flush the microtask
+      // queue until the chain has drained.
+      for (let i = 0; i < 10; i++) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+
+      // Panel-targeted emits for 'channel:message' only. Filter out non-panel.
+      const panelEmits = emitted.filter(e => e.subscriberId === "panel-1");
+      const kinds = panelEmits.map(e => e.message["type"] ?? e.message["kind"]);
+
+      // Expect messages to land in id order (m1, update, m2, update, update)
+      // followed by a ready event at the end.
+      expect(kinds[kinds.length - 1]).toBe("ready");
+
+      // Every 'update-message' for a given id must come AFTER its parent 'message'.
+      // Wire format: top-level { type, payload: { id, ... } }.
+      const firstIdx = (targetId: string, type: "message" | "update-message") =>
+        panelEmits.findIndex(e => {
+          if (e.message["type"] !== type) return false;
+          const payload = e.message["payload"] as { id?: string } | undefined;
+          return payload?.id === targetId;
+        });
+      expect(firstIdx(m1, "message")).toBeGreaterThanOrEqual(0);
+      expect(firstIdx(m1, "update-message")).toBeGreaterThanOrEqual(0);
+      expect(firstIdx(m1, "message")).toBeLessThan(firstIdx(m1, "update-message"));
+      expect(firstIdx(m2, "message")).toBeGreaterThanOrEqual(0);
+      expect(firstIdx(m2, "update-message")).toBeGreaterThanOrEqual(0);
+      expect(firstIdx(m2, "message")).toBeLessThan(firstIdx(m2, "update-message"));
+    });
+  });
 });

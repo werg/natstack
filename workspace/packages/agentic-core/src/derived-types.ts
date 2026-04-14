@@ -10,6 +10,7 @@
  */
 
 import type { Attachment } from "@natstack/pubsub";
+import type { ToolCallPayload } from "./tool-call-payload.js";
 
 // ===========================================================================
 // Method history (still tracked from channel method-call/result events)
@@ -83,14 +84,6 @@ export interface ChatMessage {
   pubsubId?: number;
   senderId: string;
   content: string;
-  /**
-   * Optional structured content blocks from the underlying pi-agent-core
-   * `AgentMessage.content` array, preserved when a message includes
-   * content types the flat `content` string can't represent (e.g. image
-   * blocks). When present, the chat UI's `MessageContent` component
-   * renders these instead of the `content` fallback.
-   */
-  contentBlocks?: ReadonlyArray<unknown>;
   contentType?: string;
   kind?: "message" | "method" | "system";
   complete?: boolean;
@@ -101,4 +94,10 @@ export interface ChatMessage {
   attachments?: Attachment[];
   senderMetadata?: { name?: string; type?: string; handle?: string };
   disconnectedAgent?: DisconnectedAgentInfo;
+  /**
+   * Parsed structured payload for channel messages with `contentType === "toolCall"`.
+   * Populated by the shared channel-chat-merge helper; UI components read it
+   * directly instead of re-parsing `content`.
+   */
+  toolCall?: ToolCallPayload;
 }

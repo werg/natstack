@@ -26,6 +26,7 @@ import {
   buildChannelEvent,
   parseRowToChannelEvent,
   channelEventToWsJson,
+  queueEmit,
   type BroadcastDeps,
   cleanupDeliveryChain,
 } from "./broadcast.js";
@@ -336,7 +337,12 @@ export class PubSubChannel extends DurableObjectBase {
       if (events.length > 0) replay = events;
     }
 
-    // Stream roster replay + message replay + ready via RPC events (for panel/RPC clients)
+    // Stream roster replay + message replay + ready to the subscriber.
+    // All three enqueue through the per-subscriber emit chain (not awaited
+    // inline — that would deadlock RPC backpressure, since the subscriber is
+    // typically parked on this very subscribe call's reply). FIFO order is
+    // enforced by `queueEmit`, so `update-message` always lands after its
+    // parent `message` and `ready` lands after the whole replay batch.
     this.sendRosterReplay(participantId);
     this.sendMessageReplay(participantId, sinceId, replayMessageLimit);
     sendReady(this.broadcastDeps, participantId, this.sql, this.getStateValue("contextId"), this.getChannelConfig());
@@ -362,6 +368,13 @@ export class PubSubChannel extends DurableObjectBase {
    * to reconnecting clients.
    */
   private sendRosterReplay(subscriberId: string): void {
+    const onFatal = (err: { code?: string }) => {
+      if (err?.code === "TARGET_NOT_REACHABLE" || err?.code === "RECONNECT_GRACE_EXPIRED") {
+        this.sql.exec(`DELETE FROM participants WHERE id = ?`, subscriberId);
+        cleanupDeliveryChain(subscriberId);
+      }
+    };
+
     // 1. Replay persisted presence history (join/leave/update events).
     const rows = this.sql.exec(
       `SELECT id, message_id, type, content, sender_id, ts, sender_metadata FROM messages WHERE type = 'presence' ORDER BY id ASC`,
@@ -370,16 +383,10 @@ export class PubSubChannel extends DurableObjectBase {
     for (const row of rows) {
       const event = parseRowToChannelEvent(row);
       const msg = channelEventToWsJson(event, "replay");
-      this.rpc.emit(subscriberId, "channel:message", {
+      void queueEmit(this.broadcastDeps, subscriberId, {
         channelId: this.objectKey,
         message: msg,
-      }).catch(err => {
-        const code = (err as { code?: string })?.code;
-        if (code === "TARGET_NOT_REACHABLE" || code === "RECONNECT_GRACE_EXPIRED") {
-          this.sql.exec(`DELETE FROM participants WHERE id = ?`, subscriberId);
-          cleanupDeliveryChain(subscriberId);
-        }
-      });
+      }, onFatal);
     }
 
     // 2. Emit current metadata snapshot from the participants table.
@@ -399,10 +406,10 @@ export class PubSubChannel extends DurableObjectBase {
         JSON.stringify(payload), pid, metadata, ts, false,
       );
       const msg = channelEventToWsJson(event, "replay");
-      this.rpc.emit(subscriberId, "channel:message", {
+      void queueEmit(this.broadcastDeps, subscriberId, {
         channelId: this.objectKey,
         message: msg,
-      }).catch(() => {});
+      });
     }
   }
 
@@ -443,19 +450,19 @@ export class PubSubChannel extends DurableObjectBase {
       return; // No replay requested
     }
 
+    const onFatal = (err: { code?: string }) => {
+      if (err?.code === "TARGET_NOT_REACHABLE" || err?.code === "RECONNECT_GRACE_EXPIRED") {
+        this.sql.exec(`DELETE FROM participants WHERE id = ?`, subscriberId);
+        cleanupDeliveryChain(subscriberId);
+      }
+    };
     for (const row of rows) {
       const event = parseRowToChannelEvent(row);
       const msg = channelEventToWsJson(event, "replay");
-      this.rpc.emit(subscriberId, "channel:message", {
+      void queueEmit(this.broadcastDeps, subscriberId, {
         channelId: this.objectKey,
         message: msg,
-      }).catch(err => {
-        const code = (err as { code?: string })?.code;
-        if (code === "TARGET_NOT_REACHABLE" || code === "RECONNECT_GRACE_EXPIRED") {
-          this.sql.exec(`DELETE FROM participants WHERE id = ?`, subscriberId);
-          cleanupDeliveryChain(subscriberId);
-        }
-      });
+      }, onFatal);
     }
   }
 
@@ -674,12 +681,17 @@ export class PubSubChannel extends DurableObjectBase {
 
   /**
    * Update an existing message (from a participant).
+   *
+   * `opts.append` forces append semantics on a typed (contentType-set)
+   * message. Untyped messages already append by default on the client;
+   * the flag is only meaningful for typed streams (e.g. thinking).
    */
   async update(
     participantId: string,
     messageId: string,
     content: string,
     idempotencyKey?: string,
+    opts?: { append?: boolean },
   ): Promise<void> {
     // Phase 0B: Idempotency check
     if (idempotencyKey) {
@@ -695,7 +707,8 @@ export class PubSubChannel extends DurableObjectBase {
 
     const senderMetadata = this.getSenderMetadata(participantId);
 
-    const payload = { id: messageId, content };
+    const payload: Record<string, unknown> = { id: messageId, content };
+    if (opts?.append) payload["append"] = true;
     const payloadJson = JSON.stringify(payload);
 
     this.sql.exec(
