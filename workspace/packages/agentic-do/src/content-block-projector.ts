@@ -26,6 +26,11 @@ export interface ProjectorSink {
   update(msgId: string, content: string, opts?: { append?: boolean }): Promise<void>;
   complete(msgId: string): Promise<void>;
   setTyping(on: boolean): void;
+  /** Best-effort error marker for a specific channel message. Called by the
+   *  projector when a preceding op (send/update/complete) fails — the chat
+   *  UI renders `ChatMessage.error` inline so users see the failure rather
+   *  than a stuck "pending" block. */
+  error(msgId: string, message: string, code?: string): Promise<void>;
 }
 
 export type ChannelOp =
@@ -472,9 +477,29 @@ export class ContentBlockProjector {
     await this.pendingOp;
   }
 
+  /** msgIds for which a preceding op already failed. Further ops for the
+   *  same msgId are dropped so we don't emit a cascade of failures on the
+   *  same already-errored channel message. */
+  private poisonedMsgIds = new Set<string>();
+
   private dispatch(op: ChannelOp): void {
+    // Short-circuit ops for already-errored messages without poking the sink.
+    if ("msgId" in op && this.poisonedMsgIds.has(op.msgId)) return;
+
     this.pendingOp = this.pendingOp.then(() => this.execute(op)).catch((err) => {
-      console.warn("[ContentBlockProjector] channel op failed:", err);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[ContentBlockProjector] channel op failed:", op.kind, ("msgId" in op ? op.msgId : ""), msg);
+      if ("msgId" in op) {
+        // Surface the failure as a visible error on that channel message so
+        // the user sees something instead of a stuck "pending" block. The
+        // error emit itself is best-effort; we swallow its failure here
+        // rather than recursing.
+        this.poisonedMsgIds.add(op.msgId);
+        return this.sink.error(op.msgId, `Channel op failed (${op.kind}): ${msg}`).catch((errErr) => {
+          console.warn("[ContentBlockProjector] channel.error emit failed:", errErr);
+        });
+      }
+      return undefined;
     });
   }
 

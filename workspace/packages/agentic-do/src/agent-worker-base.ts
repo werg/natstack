@@ -642,6 +642,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         const channel = this.createChannelClient(channelId);
         await channel.complete(participantId, msgId);
       },
+      error: async (msgId, message, code) => {
+        const participantId = this.subscriptions.getParticipantId(channelId);
+        if (!participantId) return;
+        const channel = this.createChannelClient(channelId);
+        await channel.error(participantId, msgId, message, code);
+      },
       setTyping: (on) => this.setTyping(channelId, on),
     };
   }

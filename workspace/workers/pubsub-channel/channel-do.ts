@@ -778,6 +778,36 @@ export class PubSubChannel extends DurableObjectBase {
   }
 
   /**
+   * Mark a message as errored. Persists an `error` channel event with a
+   * human-readable error string, which the client merge helper surfaces as
+   * `ChatMessage.error` + `complete: true` in the chat UI. Used by the
+   * worker's ContentBlockProjector when a channel op fails so users see a
+   * visible error instead of a silent empty message.
+   */
+  async error(
+    participantId: string,
+    messageId: string,
+    errorMessage: string,
+    code?: string,
+  ): Promise<void> {
+    const ts = Date.now();
+    const senderMetadata = this.getSenderMetadata(participantId);
+    const payload: Record<string, unknown> = { id: messageId, error: errorMessage };
+    if (code) payload["code"] = code;
+    const payloadJson = JSON.stringify(payload);
+
+    this.sql.exec(
+      `INSERT INTO messages (message_id, type, content, sender_id, ts, persist, sender_metadata)
+       VALUES (?, 'error', ?, ?, ?, 1, ?)`,
+      messageId, payloadJson, participantId, ts,
+      senderMetadata ? JSON.stringify(senderMetadata) : null,
+    );
+    const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
+    const event = buildChannelEvent(id, messageId, "error", payloadJson, participantId, senderMetadata, ts, true);
+    broadcast(this.broadcastDeps, event, { kind: "persisted" }, participantId);
+  }
+
+  /**
    * Phase 2A: Return persisted events in a sequence range (for gap repair).
    * Returns events where fromSeq < id <= toSeq, ordered ascending.
    */

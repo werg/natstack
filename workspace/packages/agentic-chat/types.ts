@@ -89,6 +89,15 @@ export interface ChatContextValue {
   status: string;
   channelId: string | null;
   sessionEnabled?: boolean;
+  /**
+   * Last connection-layer error surfaced by `ConnectionManager.onError`
+   * (subscribe failure, event-stream rejection). Cleared on successful
+   * reconnect. Rendered inline at the top of the chat by `ChatLayout`
+   * so silent stalls become visibly broken.
+   */
+  connectionError: { message: string; at: number } | null;
+  /** Clear the current connectionError (e.g., after a retry). */
+  dismissConnectionError?: () => void;
 
   /** Chat API for sandboxed code */
   chat: ChatSandboxValue;

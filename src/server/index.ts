@@ -499,6 +499,10 @@ async function main() {
   }
   container.register(rpcService(createGitService({ gitServer, tokenManager, workspacePath }), ["gitServer"]));
   container.register(rpcService(createTestService({ contextFolderManager, workspacePath, panelTestSetupPath })));
+  {
+    const { createWorkerLogService } = await import("./services/workerLogService.js");
+    container.register(rpcService(createWorkerLogService()));
+  }
   container.register(rpcService(createDbService({ databaseManager }), ["databaseManager"]));
   container.register(rpcService(createTypecheckService({ contextFolderManager })));
   container.register(rpcService(createEventsServiceDefinition(eventService)));

@@ -516,6 +516,8 @@ export default function App({ props, chat }) {
     status: core.status,
     channelId: channelName,
     sessionEnabled,
+    connectionError: core.connectionError,
+    dismissConnectionError: core.dismissConnectionError,
     chat,
     scope: scopeProxy,
     scopes: scopesApi,
@@ -548,7 +550,8 @@ export default function App({ props, chat }) {
     onReloadPanel,
     toolApproval: chatTools.toolApprovalValue,
   }), [
-    core.connected, core.status, channelName, sessionEnabled, chat,
+    core.connected, core.status, core.connectionError, core.dismissConnectionError,
+    channelName, sessionEnabled, chat,
     core.messages, core.methodEntries, inlineUi.inlineUiComponents, core.hasMoreHistory, core.loadingMore,
     core.participants, core.allParticipants,
     core.debugEvents, debug.debugConsoleAgent, core.dirtyRepoWarnings, core.pendingAgents,

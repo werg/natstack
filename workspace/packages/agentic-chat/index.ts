@@ -81,6 +81,7 @@ export { AgentDisconnectedMessage } from "./components/AgentDisconnectedMessage"
 export { DirtyRepoWarning } from "./components/DirtyRepoWarning";
 export { PendingAgentBadge } from "./components/PendingAgentBadge";
 export { NewContentIndicator } from "./components/NewContentIndicator";
+export { ChatConnectionErrorBanner } from "./components/ChatConnectionErrorBanner";
 export { ContextUsageRing } from "./components/ContextUsageRing";
 export { JsonSchemaForm } from "./components/JsonSchemaForm";
 export { ErrorBoundary } from "./components/ErrorBoundary";

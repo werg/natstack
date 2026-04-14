@@ -72,6 +72,10 @@ export interface ChatCoreState {
   // Connection
   connected: boolean;
   status: string;
+  /** Last connection-layer error (subscribe failure, event-stream rejection).
+   *  Surfaced via `ConnectionManager.onError`. Cleared by `dismissConnectionError`. */
+  connectionError: { message: string; at: number } | null;
+  dismissConnectionError: () => void;
   clientRef: React.RefObject<PubSubClient<ChatParticipantMetadata> | null>;
   connectToChannel: (options: { channelId: string; methods: Record<string, MethodDefinition>; channelConfig?: ChannelConfig; contextId?: string }) => Promise<PubSubClient<ChatParticipantMetadata>>;
   hasConnectedRef: React.MutableRefObject<boolean>;
@@ -166,6 +170,14 @@ export function useChatCore({
         onStatusChange: (s) => {
           setStatus(s);
           setConnected(s === "connected");
+          if (s === "connected") {
+            // Clear any prior error on successful (re)connect.
+            setConnectionError(null);
+          }
+        },
+        onError: (err) => {
+          console.error("[useChatCore] connection error:", err);
+          setConnectionError({ message: err.message, at: Date.now() });
         },
         onEvent: (event: IncomingEvent) => {
           // --- Method call tracking ---
@@ -310,6 +322,8 @@ export function useChatCore({
   const [client, setClient] = useState<PubSubClient<ChatParticipantMetadata> | null>(null);
   const [connected, setConnected] = useState(false);
   const [status, setStatus] = useState("Connecting...");
+  const [connectionError, setConnectionError] = useState<{ message: string; at: number } | null>(null);
+  const dismissConnectionError = useCallback(() => setConnectionError(null), []);
   const [selfId, setSelfId] = useState<string | null>(null);
   const [participants, setParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
   const [methodEntries, setMethodEntries] = useState<Map<string, MethodHistoryEntry>>(new Map());
@@ -737,6 +751,8 @@ export function useChatCore({
     messages,
     connected,
     status,
+    connectionError,
+    dismissConnectionError,
     clientRef,
     connectToChannel,
     hasConnectedRef,

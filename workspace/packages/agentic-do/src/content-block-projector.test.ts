@@ -20,32 +20,51 @@ import {
 
 // ─── Test doubles ────────────────────────────────────────────────────────────
 
-function makeSink(): ProjectorSink & { ops: ChannelOp[] } {
+interface MockSink extends ProjectorSink {
+  ops: ChannelOp[];
+  errors: Array<{ msgId: string; message: string; code?: string }>;
+}
+
+function makeSink(opts?: { failOn?: (op: ChannelOp) => boolean }): MockSink {
   const ops: ChannelOp[] = [];
+  const errors: Array<{ msgId: string; message: string; code?: string }> = [];
+  const maybeFail = (op: ChannelOp) => {
+    if (opts?.failOn?.(op)) throw new Error(`mock failure: ${op.kind}`);
+  };
   return {
     ops,
+    errors,
     async send(msgId, content, o) {
-      ops.push({
+      const op: ChannelOp = {
         kind: "send",
         msgId,
         content,
         contentType: o?.contentType,
         ...(o?.attachments ? { attachments: o.attachments } : {}),
-      });
+      };
+      ops.push(op);
+      maybeFail(op);
     },
     async update(msgId, content, o) {
-      ops.push({
+      const op: ChannelOp = {
         kind: "update",
         msgId,
         content,
         ...(o?.append ? { append: true } : {}),
-      });
+      };
+      ops.push(op);
+      maybeFail(op);
     },
     async complete(msgId) {
-      ops.push({ kind: "complete", msgId });
+      const op: ChannelOp = { kind: "complete", msgId };
+      ops.push(op);
+      maybeFail(op);
     },
     setTyping(on) {
       ops.push({ kind: "typing", on });
+    },
+    async error(msgId, message, code) {
+      errors.push({ msgId, message, ...(code ? { code } : {}) });
     },
   };
 }
@@ -383,6 +402,50 @@ describe("piEventToChannelOps — agent_end", () => {
   it("emits typing off even when stopReason absent (legacy traces)", () => {
     const ops = runTrace([agentEnd()]);
     expect(ops).toEqual([{ kind: "typing", on: false }]);
+  });
+});
+
+describe("ContentBlockProjector — channel op failure surfacing", () => {
+  it("emits channel.error for a failed op and drops subsequent ops on the same msgId", async () => {
+    const sink = makeSink({
+      failOn: (op) => op.kind === "update" && "msgId" in op && op.msgId === "m1",
+    });
+    const projector = new ContentBlockProjector(sink, makeAllocator());
+
+    await projector.handleEvent(textStart(0));
+    await projector.handleEvent(textDelta(0, "hi"));
+    // At this point the update rejected and the msgId is poisoned.
+    await projector.handleEvent(textDelta(0, "more"));
+    await projector.handleEvent(textEnd(0));
+
+    // Exactly one error emitted for m1.
+    expect(sink.errors).toHaveLength(1);
+    expect(sink.errors[0]!.msgId).toBe("m1");
+    expect(sink.errors[0]!.message).toMatch(/update/);
+
+    // The first failing update was attempted; the subsequent update + complete
+    // should be short-circuited by the poison set (not pushed to ops).
+    const updateCount = sink.ops.filter((o) => o.kind === "update" && "msgId" in o && o.msgId === "m1").length;
+    const completeCount = sink.ops.filter((o) => o.kind === "complete" && o.msgId === "m1").length;
+    expect(updateCount).toBe(1);
+    expect(completeCount).toBe(0);
+  });
+
+  it("failure on one msgId does not poison other channel messages", async () => {
+    const sink = makeSink({
+      failOn: (op) => op.kind === "send" && "msgId" in op && op.msgId === "m1",
+    });
+    const projector = new ContentBlockProjector(sink, makeAllocator());
+
+    await projector.handleEvent(textStart(0));       // m1 — send fails
+    await projector.handleEvent(thinkingStart(1));   // m2 — send succeeds
+    await projector.handleEvent(thinkingDelta(1, "x"));
+    await projector.handleEvent(thinkingEnd(1));
+
+    // m1 errored; m2 completed normally.
+    expect(sink.errors.map((e) => e.msgId)).toEqual(["m1"]);
+    const m2Ops = sink.ops.filter((o) => "msgId" in o && o.msgId === "m2").map((o) => o.kind);
+    expect(m2Ops).toEqual(["send", "update", "complete"]);
   });
 });
 

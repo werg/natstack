@@ -18,6 +18,69 @@ import type { RpcBridge } from "@natstack/rpc";
 import type { DbClient } from "@natstack/types";
 import type { RuntimeFs } from "../types.js";
 
+// ---------------------------------------------------------------------------
+// Console bridge — forwards DO console.* output to the server terminal.
+//
+// workerd's native console routing does not reliably surface DO logs to the
+// embedding process's stdout/stderr, which makes swallowed errors inside DOs
+// invisible during development. The bridge installs a proxy that, in
+// addition to the local console.*, fires a best-effort `workerLog.write`
+// RPC to the server. The server's `workerLog` service prefixes the caller
+// DO's identity and prints through dev-log, so lines appear in the main
+// terminal as `[server] [workerLog] [do:<src>:<cls>:<key>] <level>: <msg>`.
+//
+// Installed at most once per isolate via a module-local guard. The bridged
+// handlers route their own failure logs back to the original console to
+// avoid recursion.
+// ---------------------------------------------------------------------------
+
+let consoleBridgeInstalled = false;
+
+function installConsoleBridge(rpc: RpcBridge): void {
+  if (consoleBridgeInstalled) return;
+  consoleBridgeInstalled = true;
+  const original = {
+    log: console.log.bind(console),
+    info: console.info.bind(console),
+    warn: console.warn.bind(console),
+    error: console.error.bind(console),
+  };
+  // Re-entrancy guard: if the RPC path itself logs (directly or via a
+  // downstream library), the proxy would recurse. Keep forwards suppressed
+  // while one is in-flight on the same synchronous stack.
+  let forwarding = false;
+  const forward = (level: "log" | "info" | "warn" | "error", args: unknown[]): void => {
+    if (forwarding) return;
+    forwarding = true;
+    let message: string;
+    try {
+      message = args
+        .map((a) => {
+          if (typeof a === "string") return a;
+          if (a instanceof Error) return a.stack ?? `${a.name}: ${a.message}`;
+          try { return JSON.stringify(a); }
+          catch { return String(a); }
+        })
+        .join(" ");
+    } catch {
+      message = "<unserializable>";
+    }
+    try {
+      // Fire-and-forget. Failures go to the *original* console to avoid
+      // infinite recursion if the RPC path itself is broken.
+      rpc.call("main", "workerLog.write", level, message).catch((err) => {
+        original.warn("[console-bridge] forward failed:", err);
+      });
+    } finally {
+      forwarding = false;
+    }
+  };
+  console.log = (...args: unknown[]) => { original.log(...args); forward("log", args); };
+  console.info = (...args: unknown[]) => { original.info(...args); forward("info", args); };
+  console.warn = (...args: unknown[]) => { original.warn(...args); forward("warn", args); };
+  console.error = (...args: unknown[]) => { original.error(...args); forward("error", args); };
+}
+
 // Minimal types for workerd DurableObject context (cannot import cloudflare:workers in Node)
 
 export interface DurableObjectContext {
@@ -188,6 +251,10 @@ export abstract class DurableObjectBase {
         serverUrl,
         authToken: token,
       });
+      // Bridge DO `console.*` to the server terminal. Installed lazily on
+      // first rpc access — constructor-time logs are still local-only, but
+      // steady-state errors reach the main terminal.
+      installConsoleBridge(this._rpc);
     }
     return this._rpc;
   }

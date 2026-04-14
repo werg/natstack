@@ -39,6 +39,10 @@ export class ChannelClient {
     await this.rpc.call(this.doTarget, "complete", participantId, messageId, idempotencyKey);
   }
 
+  async error(participantId: string, messageId: string, error: string, code?: string): Promise<void> {
+    await this.rpc.call(this.doTarget, "error", participantId, messageId, error, code);
+  }
+
   async sendEphemeral(participantId: string, content: string, contentType?: string): Promise<void> {
     await this.rpc.call(this.doTarget, "sendEphemeral", participantId, content, contentType);
   }
