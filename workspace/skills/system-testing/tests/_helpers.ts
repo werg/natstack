@@ -17,7 +17,6 @@ export function findLastAgentMessage(result: TestExecutionResult): string {
       m.kind === "message" &&
       m.complete &&
       m.contentType !== "thinking" &&
-      m.contentType !== "typing" &&
       m.contentType !== "action" &&
       !m.pending
     ) {

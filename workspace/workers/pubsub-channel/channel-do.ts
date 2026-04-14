@@ -151,6 +151,7 @@ export class PubSubChannel extends DurableObjectBase {
     metadata: Record<string, unknown>,
     leaveReason?: "graceful" | "disconnect" | "replaced",
     senderRef?: number,
+    persist = true,
   ): void {
     const ts = Date.now();
     const payload: PresencePayload = {
@@ -161,16 +162,23 @@ export class PubSubChannel extends DurableObjectBase {
     const payloadJson = JSON.stringify(payload);
     const messageId = crypto.randomUUID();
 
-    this.sql.exec(
-      `INSERT INTO messages (message_id, type, content, sender_id, ts, persist, sender_metadata)
-       VALUES (?, 'presence', ?, ?, ?, 1, ?)`,
-      messageId, payloadJson, senderId, ts,
-      metadata ? JSON.stringify(metadata) : null,
-    );
-    const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
-
-    const event = buildChannelEvent(id, messageId, "presence", payloadJson, senderId, metadata, ts, true);
-    broadcast(this.broadcastDeps, event, { kind: "persisted", ref: senderRef }, senderId);
+    if (persist) {
+      this.sql.exec(
+        `INSERT INTO messages (message_id, type, content, sender_id, ts, persist, sender_metadata)
+         VALUES (?, 'presence', ?, ?, ?, 1, ?)`,
+        messageId, payloadJson, senderId, ts,
+        metadata ? JSON.stringify(metadata) : null,
+      );
+      const id = this.sql.exec(`SELECT last_insert_rowid() as id`).one()["id"] as number;
+      const event = buildChannelEvent(id, messageId, "presence", payloadJson, senderId, metadata, ts, true);
+      broadcast(this.broadcastDeps, event, { kind: "persisted", ref: senderRef }, senderId);
+    } else {
+      // Ephemeral: broadcast without persisting to messages table.
+      // id: 0 becomes undefined on the wire (channelEventToWsJson: `id: event.id || undefined`),
+      // which skips client-side roster dedup (gated on `msg.id !== undefined`).
+      const event = buildChannelEvent(0, messageId, "presence", payloadJson, senderId, metadata, ts, false);
+      broadcast(this.broadcastDeps, event, { kind: "ephemeral" }, senderId);
+    }
   }
 
   // ── RPC-callable methods ──────────────────────────────────────────────
@@ -348,8 +356,13 @@ export class PubSubChannel extends DurableObjectBase {
 
   /**
    * Send roster (presence) replay to a newly subscribed participant via RPC emit.
+   * After replaying persisted presence history, emits a snapshot of current
+   * participant metadata from the participants table. This ensures transient
+   * state (e.g. typing indicators) that was broadcast ephemerally is visible
+   * to reconnecting clients.
    */
   private sendRosterReplay(subscriberId: string): void {
+    // 1. Replay persisted presence history (join/leave/update events).
     const rows = this.sql.exec(
       `SELECT id, message_id, type, content, sender_id, ts, sender_metadata FROM messages WHERE type = 'presence' ORDER BY id ASC`,
     ).toArray();
@@ -367,6 +380,29 @@ export class PubSubChannel extends DurableObjectBase {
           cleanupDeliveryChain(subscriberId);
         }
       });
+    }
+
+    // 2. Emit current metadata snapshot from the participants table.
+    //    This overrides any stale metadata from replayed events with the
+    //    latest state (including ephemeral fields like `typing`).
+    const participants = this.sql.exec(
+      `SELECT id, metadata FROM participants`,
+    ).toArray();
+    const ts = Date.now();
+    for (const p of participants) {
+      const pid = p["id"] as string;
+      let metadata: Record<string, unknown>;
+      try { metadata = JSON.parse(p["metadata"] as string); } catch { continue; }
+      const payload: PresencePayload = { action: "update", metadata };
+      const event = buildChannelEvent(
+        0, `snapshot_${pid}`, "presence",
+        JSON.stringify(payload), pid, metadata, ts, false,
+      );
+      const msg = channelEventToWsJson(event, "replay");
+      this.rpc.emit(subscriberId, "channel:message", {
+        channelId: this.objectKey,
+        message: msg,
+      }).catch(() => {});
     }
   }
 
@@ -763,7 +799,7 @@ export class PubSubChannel extends DurableObjectBase {
   }
 
   /**
-   * Update a participant's metadata.
+   * Replace a participant's metadata entirely.
    */
   async updateMetadata(
     participantId: string,
@@ -774,6 +810,25 @@ export class PubSubChannel extends DurableObjectBase {
       JSON.stringify(metadata), participantId,
     );
     this.publishPresenceEvent(participantId, "update", metadata);
+  }
+
+  /**
+   * Set a participant's typing state. Updates the participants table (so
+   * reconnecting clients see current state) but broadcasts ephemerally
+   * (no row inserted into the messages table).
+   */
+  async setTypingState(participantId: string, typing: boolean): Promise<void> {
+    const rows = this.sql.exec(
+      `SELECT metadata FROM participants WHERE id = ?`,
+      participantId,
+    ).toArray();
+    if (rows.length === 0) return;
+    const final = { ...JSON.parse(rows[0]!["metadata"] as string), typing };
+    this.sql.exec(
+      `UPDATE participants SET metadata = ? WHERE id = ?`,
+      JSON.stringify(final), participantId,
+    );
+    this.publishPresenceEvent(participantId, "update", final, undefined, undefined, false);
   }
 
   /**

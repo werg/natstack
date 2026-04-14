@@ -55,6 +55,9 @@ export interface ChatParticipantMetadata extends AgenticParticipantMetadata {
   executionMode?: "plan" | "edit";
   /** Display name of the model currently in use (e.g., `"Claude Opus 4.6"`) */
   activeModel?: string;
+  /** Whether this participant is currently typing / working. Set via updateMetadata;
+   *  automatically cleared when the participant leaves the channel. */
+  typing?: boolean;
 }
 
 /**
@@ -95,20 +98,6 @@ export interface TrackerClient {
     options?: { complete?: boolean; persist?: boolean; contentType?: string }
   ): Promise<void | number | undefined>;
   complete(messageId: string): Promise<void | number | undefined>;
-}
-
-/**
- * Typing indicator data structure sent as message content (JSON stringified).
- */
-export interface TypingData {
-  /** Participant ID of who is typing */
-  senderId: string;
-  /** Display name of who is typing */
-  senderName?: string;
-  /** Participant type (e.g., "panel", "headless", "agent") */
-  senderType?: string;
-  /** Optional context (e.g., "preparing response", "searching files") */
-  context?: string;
 }
 
 // --- Thinking Tracker ---
@@ -190,45 +179,3 @@ export interface ActionTracker {
   cleanup(): Promise<boolean>;
 }
 
-// --- Typing Tracker ---
-
-/**
- * State managed by the typing tracker.
- */
-export interface TypingTrackerState {
-  /** Message ID for the current typing indicator, if any */
-  typingMessageId: string | null;
-  /** Whether we're currently showing a typing indicator */
-  isTyping: boolean;
-}
-
-/**
- * Options for creating a typing tracker.
- */
-export interface TypingTrackerOptions {
-  /** Client to use for sending messages */
-  client: TrackerClient;
-  /** Logger function for debug output */
-  log?: (message: string) => void;
-  /** Message ID to use as replyTo for typing indicators */
-  replyTo?: string;
-  /** Sender metadata to include in typing indicator */
-  senderInfo?: {
-    senderId: string;
-    senderName?: string;
-    senderType?: string;
-  };
-}
-
-/**
- * TypingTracker manages ephemeral typing indicator messages.
- */
-export interface TypingTracker {
-  /** Current state of the tracker */
-  readonly state: TypingTrackerState;
-  setReplyTo(id: string | undefined): void;
-  startTyping(context?: string): Promise<string>;
-  stopTyping(): Promise<void>;
-  isTyping(): boolean;
-  cleanup(): Promise<boolean>;
-}

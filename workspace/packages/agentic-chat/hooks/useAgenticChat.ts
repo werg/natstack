@@ -459,7 +459,6 @@ export default function App({ props, chat }) {
         };
 
         await core.connectToChannel({ channelId: channelName, methods, channelConfig, contextId });
-        core.selfIdRef.current = core.clientRef.current?.clientId ?? null;
 
         // Scope hydration system message (best-effort — must not poison chat startup)
         let hr: HydrateResult | null = null;
@@ -526,6 +525,7 @@ export default function App({ props, chat }) {
     inlineUiComponents: inlineUi.inlineUiComponents,
     hasMoreHistory: core.hasMoreHistory,
     loadingMore: core.loadingMore,
+    selfId: core.selfId,
     participants: core.participants,
     allParticipants: core.allParticipants,
     debugEvents: core.debugEvents,

@@ -19,7 +19,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { PubSubClient, ParticipantMetadata, Attachment } from "@natstack/pubsub";
-import { isClientParticipantType, CONTENT_TYPE_TYPING } from "@natstack/pubsub";
+import { isClientParticipantType } from "@natstack/pubsub";
 import type { ChatMessage } from "@workspace/agentic-core";
 
 /** Maximum messages in the visible window. New messages push oldest out. */
@@ -40,7 +40,6 @@ export interface UseChannelMessagesResult {
  */
 export function useChannelMessages<T extends ParticipantMetadata = ParticipantMetadata>(
   client: PubSubClient<T> | null,
-  selfId: string | null,
 ): UseChannelMessagesResult {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
@@ -94,9 +93,7 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
 
     const consume = async () => {
       try {
-        // includeEphemeral: true so we receive typing indicators from other
-        // participants (contentType: "typing", persist: false).
-        for await (const event of client.events({ includeReplay: true, includeEphemeral: true })) {
+        for await (const event of client.events({ includeReplay: true })) {
           if (cancelledRef.current) break;
 
           const wire = event as unknown as {
@@ -120,18 +117,12 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
             const isReplay = wire.kind === "replay";
             const isEphemeral = wire.kind === "ephemeral";
             const isFromClient = isClientParticipantType(wire.senderMetadata?.type);
-            const isTyping = wire.contentType === CONTENT_TYPE_TYPING;
 
-            // Only allow typing indicators from the ephemeral stream.
             // Worker-side notifications (notify:*, natstack-ext-status,
             // natstack-ext-widget, natstack-ext-working) are handled by
             // separate ephemeral hooks and must not leak into the transcript.
-            if (isEphemeral && !isTyping) continue;
+            if (isEphemeral) continue;
 
-            // Don't show our OWN typing indicator — the user already sees
-            // their keystrokes in the input box; a redundant "You are typing"
-            // pill is confusing.
-            if (isTyping && selfId && wire.senderId === selfId) continue;
             const msg: ChatMessage = {
               id: wire.id,
               pubsubId: wire.pubsubId,
@@ -140,10 +131,7 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
               contentType: wire.contentType,
               replyTo: wire.replyTo,
               kind: "message",
-              // Typing indicators start incomplete (stopped via update with complete:true).
-              // Ephemeral messages don't replay, so they're always "live".
-              // Client one-shot messages are immediately complete.
-              complete: isTyping ? false : (isReplay || isFromClient),
+              complete: isReplay || isFromClient,
               attachments: wire.attachments,
               senderMetadata: wire.senderMetadata,
             };
@@ -211,7 +199,7 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
     return () => {
       cancelledRef.current = true;
     };
-  }, [client, selfId, flush]);
+  }, [client, flush]);
 
   // --- Pagination: load earlier messages ---
   const loadEarlierMessages = useCallback(async () => {

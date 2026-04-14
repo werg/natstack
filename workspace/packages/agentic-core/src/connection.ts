@@ -5,7 +5,7 @@
  * Manages connect/disconnect, event loop, roster, reconnect.
  */
 
-import { connect, connectViaRpc, isAggregatedEvent } from "@natstack/pubsub";
+import { connectViaRpc, isAggregatedEvent } from "@natstack/pubsub";
 import type {
   PubSubClient,
   RosterUpdate,
@@ -72,8 +72,8 @@ export class ConnectionManager {
   async connect(options: ConnectionConnectOptions): Promise<PubSubClient<ChatParticipantMetadata>> {
     const { channelId, methods, channelConfig, contextId } = options;
 
-    if (!this.config.rpc && (!this.config.serverUrl || !this.config.token)) {
-      const error = new Error("PubSub configuration not available");
+    if (!this.config.rpc) {
+      const error = new Error("PubSub RPC configuration not available");
       this.callbacks.onError?.(error);
       this.setStatus("error");
       throw error;
@@ -84,34 +84,19 @@ export class ConnectionManager {
     this.setStatus("connecting");
 
     try {
-      const newClient = this.config.rpc
-        ? connectViaRpc<ChatParticipantMetadata>({
-            rpc: this.config.rpc,
-            channel: channelId,
-            contextId,
-            channelConfig,
-            handle: this.metadata.handle,
-            name: this.metadata.name,
-            type: this.metadata.type,
-            reconnect: true,
-            clientId: this.config.clientId,
-            methods,
-            replayMode: "stream",
-          })
-        : connect<ChatParticipantMetadata>({
-            serverUrl: this.config.serverUrl,
-            token: this.config.token,
-            channel: channelId,
-            contextId,
-            channelConfig,
-            handle: this.metadata.handle,
-            name: this.metadata.name,
-            type: this.metadata.type,
-            reconnect: true,
-            clientId: this.config.clientId,
-            methods,
-            replayMode: "stream",
-          });
+      const newClient = connectViaRpc<ChatParticipantMetadata>({
+        rpc: this.config.rpc,
+        channel: channelId,
+        contextId,
+        channelConfig,
+        handle: this.metadata.handle,
+        name: this.metadata.name,
+        type: this.metadata.type,
+        reconnect: true,
+        clientId: this.config.clientId,
+        methods,
+        replayMode: "stream",
+      });
 
       // Wait for the initial replay to complete
       await newClient.ready();

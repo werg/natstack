@@ -16,69 +16,42 @@ function makeMessage(overrides: Record<string, unknown>) {
   };
 }
 
-describe("MessageList typing indicators", () => {
-  it("suppresses typing indicator when the same sender has later output (orphaned indicator)", () => {
+function makeParticipant(id: string, metadata: Record<string, unknown>) {
+  return { [id]: { id, metadata: { name: "AI Chat", type: "agent", handle: "agent", ...metadata } } };
+}
+
+describe("MessageList typing indicators (roster-based)", () => {
+  it("shows typing indicator when participant metadata has typing=true", () => {
     render(React.createElement(MessageList, {
-      messages: [
-        makeMessage({
-          id: "typing-1",
-          contentType: "typing",
-          content: JSON.stringify({ senderName: "AI Chat" }),
-        }),
-        makeMessage({
-          id: "msg-1",
-          content: "Working...",
-        }),
-      ],
+      messages: [],
+      participants: makeParticipant("agent-1", { typing: true }),
+      selfId: "user-1",
       allParticipants: {},
     } as never));
 
-    // The typing indicator should NOT render because the same sender
-    // has produced output after it — the indicator is stale/orphaned
-    // (its complete event was lost, e.g., due to a crash).
-    expect(screen.queryByText("AI Chat typing")).toBeNull();
-    expect(screen.getByText("Working...")).toBeTruthy();
-  });
-
-  it("renders typing indicator when it is the latest message from a sender (no later output)", () => {
-    render(React.createElement(MessageList, {
-      messages: [
-        makeMessage({
-          id: "msg-1",
-          content: "Here is the result.",
-        }),
-        makeMessage({
-          id: "typing-1",
-          contentType: "typing",
-          content: JSON.stringify({ senderName: "AI Chat" }),
-        }),
-      ],
-      allParticipants: {},
-    } as never));
-
-    // The typing indicator is AFTER the output — it's active (e.g.,
-    // the agent finished a tool call and is about to produce more text).
     expect(screen.getByText("AI Chat typing")).toBeTruthy();
   });
 
-  it("shows only the latest active typing badge per sender", () => {
+  it("does not show typing for participants with typing=false", () => {
     render(React.createElement(MessageList, {
-      messages: [
-        makeMessage({
-          id: "typing-1",
-          contentType: "typing",
-          content: JSON.stringify({ senderName: "AI Chat" }),
-        }),
-        makeMessage({
-          id: "typing-2",
-          contentType: "typing",
-          content: JSON.stringify({ senderName: "AI Chat" }),
-        }),
-      ],
+      messages: [],
+      participants: makeParticipant("agent-1", { typing: false }),
+      selfId: "user-1",
       allParticipants: {},
     } as never));
 
-    expect(screen.getAllByText("AI Chat typing")).toHaveLength(1);
+    expect(screen.queryByText("AI Chat typing")).toBeNull();
+  });
+
+  it("does not show own typing indicator", () => {
+    render(React.createElement(MessageList, {
+      messages: [],
+      participants: makeParticipant("user-1", { typing: true, name: "User", type: "panel" }),
+      selfId: "user-1",
+      allParticipants: {},
+    } as never));
+
+    expect(screen.queryByText("User typing")).toBeNull();
   });
 
   it("renders action beads in inline groups", () => {
@@ -107,6 +80,8 @@ describe("MessageList typing indicators", () => {
           complete: true,
         }),
       ],
+      participants: {},
+      selfId: "user-1",
       allParticipants: {},
     } as never));
 

@@ -1,28 +1,23 @@
 /**
  * Factory functions for creating message trackers.
  *
- * These factories create ThinkingTracker, ActionTracker, and TypingTracker
- * instances that operate against the TrackerClient interface.
+ * These factories create ThinkingTracker and ActionTracker instances
+ * that operate against the TrackerClient interface.
  */
 
 import {
   CONTENT_TYPE_THINKING,
   CONTENT_TYPE_ACTION,
-  CONTENT_TYPE_TYPING,
 } from "./content-types.js";
 import type {
   TrackerClient,
   ActionData,
-  TypingData,
   ThinkingTrackerState,
   ThinkingTrackerOptions,
   ThinkingTracker,
   ActionTrackerState,
   ActionTrackerOptions,
   ActionTracker,
-  TypingTrackerState,
-  TypingTrackerOptions,
-  TypingTracker,
 } from "./tracker-types.js";
 
 /**
@@ -191,81 +186,3 @@ export function createActionTracker(options: ActionTrackerOptions): ActionTracke
   };
 }
 
-/**
- * Create a TypingTracker for managing ephemeral typing indicator messages.
- */
-export function createTypingTracker(options: TypingTrackerOptions): TypingTracker {
-  const { client, log = () => {}, senderInfo } = options;
-  let currentReplyTo = options.replyTo;
-
-  const state: TypingTrackerState = {
-    typingMessageId: null,
-    isTyping: false,
-  };
-
-  return {
-    get state() {
-      return state;
-    },
-
-    setReplyTo(id: string | undefined): void {
-      currentReplyTo = id;
-    },
-
-    async startTyping(context?: string): Promise<string> {
-      // Stop any existing typing indicator first
-      if (state.typingMessageId) {
-        await this.stopTyping();
-      }
-
-      const typingData: TypingData = {
-        senderId: senderInfo?.senderId ?? "",
-        senderName: senderInfo?.senderName,
-        senderType: senderInfo?.senderType,
-        context,
-      };
-
-      const { messageId } = await client.send(JSON.stringify(typingData), {
-        replyTo: currentReplyTo,
-        contentType: CONTENT_TYPE_TYPING,
-        persist: false, // EPHEMERAL - key difference from other trackers
-      });
-
-      state.typingMessageId = messageId;
-      state.isTyping = true;
-
-      log(`Started typing indicator: ${messageId}${context ? ` (${context})` : ""}`);
-      return messageId;
-    },
-
-    async stopTyping(): Promise<void> {
-      if (state.typingMessageId) {
-        await client.update(state.typingMessageId, "", { complete: true, persist: false });
-        log(`Stopped typing indicator: ${state.typingMessageId}`);
-        state.typingMessageId = null;
-        state.isTyping = false;
-      }
-    },
-
-    isTyping(): boolean {
-      return state.isTyping;
-    },
-
-    async cleanup(): Promise<boolean> {
-      if (state.typingMessageId) {
-        const messageId = state.typingMessageId;
-        state.typingMessageId = null;
-        state.isTyping = false;
-        try {
-          await client.update(messageId, "", { complete: true, persist: false });
-          log(`Cleanup: stopped typing indicator: ${messageId}`);
-          return true;
-        } catch (err) {
-          log(`Cleanup: failed to stop typing indicator ${messageId}: ${err}`);
-          return false;
-        }
-      }
-      return true;
-    },
-  };
-}

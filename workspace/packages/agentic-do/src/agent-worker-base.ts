@@ -391,8 +391,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   async unsubscribeChannel(channelId: string): Promise<UnsubscribeResult> {
     await this.subscriptions.unsubscribeFromChannel(channelId);
 
-    // Complete any active typing indicator before tearing down.
-    this.completeTypingIndicator(channelId);
+    this.setTyping(channelId, false);
 
     const entry = this.runners.get(channelId);
     if (entry) {
@@ -675,11 +674,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private channelStreamState = new Map<string, {
     /** Channel message UUID for the current streaming text block. */
     textMsgId: string | null;
-    /** Channel message UUID for the active "typing" indicator (contentType: "typing").
-     *  Created in onChannelEvent BEFORE the runner turn starts so the user sees
-     *  immediate "Agent typing" feedback. Completed on first assistant message_start
-     *  (when text actually begins streaming) or on agent_end / error. */
-    typingMsgId: string | null;
     /** Per-tool-call state keyed by pi-agent-core toolCallId (e.g. "call_abc123"). */
     toolCalls: Map<string, ToolCallState>;
   }>();
@@ -687,51 +681,34 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private getStreamState(channelId: string) {
     let state = this.channelStreamState.get(channelId);
     if (!state) {
-      state = { textMsgId: null, typingMsgId: null, toolCalls: new Map() };
+      state = { textMsgId: null, toolCalls: new Map() };
       this.channelStreamState.set(channelId, state);
     }
     return state;
   }
 
-  /** Send a "typing" channel message so the chat UI shows "Agent typing" immediately.
-   *  The message is persisted so it survives reconnects/replays and stays visible
-   *  until we call completeTyping(). */
-  private sendTypingIndicator(channelId: string): void {
+  /** Track which channels have typing=true so we skip redundant updates. */
+  private typingActive = new Set<string>();
+
+  /** Set typing state via participant metadata. Broadcast ephemerally (no
+   *  message row persisted). Dedup is one-directional: only skip redundant
+   *  true→true; always allow false through to defend against stale state
+   *  after DO hibernation. */
+  private setTyping(channelId: string, typing: boolean): void {
+    if (typing && this.typingActive.has(channelId)) return; // already typing
+
+    if (typing) {
+      this.typingActive.add(channelId);
+    } else {
+      this.typingActive.delete(channelId);
+    }
+
     const participantId = this.subscriptions.getParticipantId(channelId);
     if (!participantId) return;
     const channel = this.createChannelClient(channelId);
-    const state = this.getStreamState(channelId);
-
-    // Don't double-send if one is already active.
-    if (state.typingMsgId) return;
-
-    const info = this.getParticipantInfo(channelId);
-    const typingData = JSON.stringify({
-      senderId: participantId,
-      senderName: info.name,
-      senderType: info.type,
+    void channel.setTypingState(participantId, typing).catch((err) => {
+      console.warn(`[AgentWorkerBase] setTyping(${typing}) failed for channel=${channelId}:`, err);
     });
-    const msgId = crypto.randomUUID();
-    state.typingMsgId = msgId;
-    void channel.send(participantId, msgId, typingData, {
-      contentType: "typing",
-      persist: true,
-    }).catch((err) => {
-      console.error(`[AgentWorkerBase] sendTypingIndicator failed for channel=${channelId}:`, err);
-      state.typingMsgId = null;
-    });
-  }
-
-  /** Complete the active typing indicator for a channel (hides the "Agent typing" pill). */
-  private completeTypingIndicator(channelId: string): void {
-    const participantId = this.subscriptions.getParticipantId(channelId);
-    if (!participantId) return;
-    const state = this.channelStreamState.get(channelId);
-    if (!state?.typingMsgId) return;
-
-    const channel = this.createChannelClient(channelId);
-    void channel.complete(participantId, state.typingMsgId);
-    state.typingMsgId = null;
   }
 
   private publishPiEvent(channelId: string, event: AgentEvent): void {
@@ -744,10 +721,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       case "message_start": {
         const msg = event.message as { role?: string; content?: unknown[] };
         if (msg.role !== "assistant") break;
-
-        // The agent is producing output — complete the typing indicator.
-        // This transitions the UI from "Agent typing" → actual streaming content.
-        this.completeTypingIndicator(channelId);
 
         const blocks = Array.isArray(msg.content) ? msg.content : [];
 
@@ -872,16 +845,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         break;
       }
 
-      case "tool_execution_start": {
-        // Show "Agent typing" during tool execution so the user sees animated
-        // dots while a long-running tool (e.g., eval) is in progress. The
-        // action pill also shows "pending", but the typing indicator provides
-        // the familiar visual heartbeat that the agent is alive. Completed
-        // when the next message_start fires (agent responds to the result)
-        // or at agent_end/turn_end.
-        this.sendTypingIndicator(channelId);
+      case "tool_execution_start":
         break;
-      }
 
       case "tool_execution_update": {
         const { toolCallId } = event;
@@ -922,22 +887,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           this.publishToolResultImages(channelId, participantId, channel, result);
         }
 
-        // After a tool completes, the agent will either call another tool or
-        // produce an assistant message. Re-show the typing indicator to cover
-        // the gap between tool-end and the next message_start. If the agent
-        // immediately starts a new message, message_start will complete it
-        // within milliseconds — the flicker is imperceptible.
-        this.sendTypingIndicator(channelId);
         break;
       }
 
       case "agent_end":
-      case "turn_end":
-        // Cleanup: if the typing indicator is still active (e.g., the agent
-        // finished without producing an assistant message, or an error occurred
-        // before message_start), complete it now so the UI doesn't show a
-        // stale "Agent typing" pill.
-        this.completeTypingIndicator(channelId);
+        this.setTyping(channelId, false);
         break;
 
       default:
@@ -1276,12 +1230,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     const input = this.buildTurnInput(event);
 
-    // Send the typing indicator FIRST — before any async work (roster refresh,
-    // runner init, image resizing). The old system had "bootstrap typing" for
-    // exactly this reason: the user must see "Agent typing" instantly, even if
-    // the runner takes seconds to initialize on the first message. The indicator
-    // gets completed on the first assistant message_start, or on agent_end/error.
-    this.sendTypingIndicator(channelId);
+    // Set typing FIRST — before any async work (roster refresh, runner init,
+    // image resizing). The user must see "typing" instantly, even if the runner
+    // takes seconds to initialize.
+    this.setTyping(channelId, true);
 
     try {
       await this.refreshRoster(channelId);
@@ -1326,9 +1278,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         await runner.runTurn(input.content, imagesArg);
       }
     } catch (err) {
-      // If anything throws (runner init, model resolution, auth, runTurn),
-      // complete the typing indicator so the UI doesn't show a stale pill.
-      this.completeTypingIndicator(channelId);
+      this.setTyping(channelId, false);
       throw err;
     }
   }
@@ -1350,9 +1300,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   protected async interruptRunner(channelId: string): Promise<void> {
     const entry = this.runners.get(channelId);
     if (entry) {
-      // Clear the typing indicator immediately on interrupt so the UI
-      // doesn't show a stale "Agent typing" pill after the user cancelled.
-      this.completeTypingIndicator(channelId);
+      this.setTyping(channelId, false);
       await entry.runner.interrupt();
     }
   }

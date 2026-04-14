@@ -57,6 +57,17 @@ export interface InlineUiComponentEntry {
 }
 
 // ===========================================================================
+// Typing Indicators
+// ===========================================================================
+
+/** Typing indicator data derived from roster participant metadata. */
+export interface TypingIndicatorData {
+  senderId: string;
+  senderName?: string;
+  senderType?: string;
+}
+
+// ===========================================================================
 // ChatInputContext Value
 // ===========================================================================
 
@@ -99,6 +110,8 @@ export interface ChatContextValue {
   loadingMore: boolean;
 
   // Participants
+  /** This client's participant ID */
+  selfId: string | null;
   participants: Record<string, Participant<ChatParticipantMetadata>>;
   allParticipants: Record<string, Participant<ChatParticipantMetadata>>;
 

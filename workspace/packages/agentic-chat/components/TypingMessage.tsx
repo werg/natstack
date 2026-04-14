@@ -1,16 +1,16 @@
 import { Flex, IconButton, Spinner, Text } from "@radix-ui/themes";
 import { StopIcon } from "@radix-ui/react-icons";
-import type { TypingData } from "@natstack/pubsub";
+import type { TypingIndicatorData } from "../types";
 
 /**
  * Compact pill for typing indicators.
- * Shows who is typing with an optional context and interrupt button.
+ * Shows who is typing with an optional interrupt button.
  */
 export function TypingPill({
   data,
   onInterrupt,
 }: {
-  data: TypingData;
+  data: TypingIndicatorData;
   onInterrupt?: () => void;
 }) {
   return (
@@ -28,11 +28,6 @@ export function TypingPill({
       <Text size="1" color="purple" weight="medium">
         {data.senderName ?? "Agent"} typing
       </Text>
-      {data.context && (
-        <Text size="1" color="gray" style={{ opacity: 0.7 }}>
-          {data.context}
-        </Text>
-      )}
       {onInterrupt && (
         <IconButton
           size="1"
@@ -51,15 +46,4 @@ export function TypingPill({
       )}
     </Flex>
   );
-}
-
-/**
- * Parse typing data from message content.
- */
-export function parseTypingData(content: string): TypingData {
-  try {
-    return JSON.parse(content);
-  } catch {
-    return { senderId: "" };
-  }
 }

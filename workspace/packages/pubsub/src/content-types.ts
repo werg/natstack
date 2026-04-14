@@ -25,8 +25,4 @@ export const CONTENT_TYPE_ACTION = "action" as const;
  */
 export const CONTENT_TYPE_INLINE_UI = "inline_ui" as const;
 
-/**
- * Content type constant for typing indicator messages.
- * Typing indicators are ephemeral (not persisted) and show that a participant is preparing a response.
- */
-export const CONTENT_TYPE_TYPING = "typing" as const;
+

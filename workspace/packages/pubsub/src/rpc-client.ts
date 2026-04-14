@@ -925,10 +925,14 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   }
 
   async function updateMetadata(
-    newMetadata: T,
-    _updateOptions: UpdateMetadataOptions = {},
+    newMetadata: Partial<T>,
+    updateOptions: UpdateMetadataOptions = {},
   ): Promise<void> {
     await rpc.call(doTarget, "updateMetadata", pid, newMetadata);
+  }
+
+  async function setTyping(active: boolean): Promise<void> {
+    await rpc.call(doTarget, "setTypingState", pid, active);
   }
 
   async function updateChannelConfig(
@@ -1143,6 +1147,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     messages,
     publish,
     updateMetadata,
+    setTyping,
     ready,
     close,
     sendRaw,

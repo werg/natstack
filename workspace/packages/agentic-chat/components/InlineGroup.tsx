@@ -1,17 +1,17 @@
 import React, { useCallback, useState } from "react";
 import { Box, Flex } from "@radix-ui/themes";
-import type { TypingData } from "@natstack/pubsub";
 import type { RichActionData } from "./ActionMessage";
 import { ThinkingPill, ExpandedThinking } from "./ThinkingMessage";
 import { ActionPill, ExpandedAction } from "./ActionMessage";
 import { TypingPill } from "./TypingMessage";
+import type { TypingIndicatorData } from "../types";
 
 const PREVIEW_MAX_LENGTH = 50;
 
 export type InlineItem =
   | { type: "thinking"; id: string; content: string; complete: boolean }
   | { type: "action"; id: string; data: RichActionData; complete: boolean }
-  | { type: "typing"; id: string; data: TypingData; senderId: string };
+  | { type: "typing"; id: string; data: TypingIndicatorData; senderId: string };
 
 interface InlineGroupProps {
   items: InlineItem[];

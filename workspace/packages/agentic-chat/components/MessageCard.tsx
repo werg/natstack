@@ -52,11 +52,6 @@ export const MessageCard = React.memo(function MessageCard({
     void onCopy(msg.id, msg.content);
   }, [onCopy, msg.id, msg.content]);
 
-  // Skip completed typing indicators
-  if (msg.contentType === "typing" && msg.complete) {
-    return null;
-  }
-
   // Handle inline_ui messages
   if (msg.contentType === CONTENT_TYPE_INLINE_UI) {
     const data = parseInlineUiData(msg.content);

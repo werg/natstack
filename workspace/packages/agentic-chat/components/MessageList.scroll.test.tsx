@@ -72,6 +72,8 @@ describe("MessageList scroll behavior", () => {
     const { rerender } = render(
       <MessageList
         messages={[makeMessage("m1")]}
+        participants={{}}
+        selfId={null}
         allParticipants={{}}
         hasMoreHistory={true}
         loadingMore={false}
@@ -84,6 +86,8 @@ describe("MessageList scroll behavior", () => {
     rerender(
       <MessageList
         messages={[makeMessage("m1"), makeMessage("m2")]}
+        participants={{}}
+        selfId={null}
         allParticipants={{}}
         hasMoreHistory={true}
         loadingMore={false}
@@ -102,6 +106,8 @@ describe("MessageList scroll behavior", () => {
     const { rerender } = render(
       <MessageList
         messages={[makeMessage("m2"), makeMessage("m3")]}
+        participants={{}}
+        selfId={null}
         allParticipants={{}}
       />,
     );
@@ -111,6 +117,8 @@ describe("MessageList scroll behavior", () => {
     rerender(
       <MessageList
         messages={[makeMessage("m1"), makeMessage("m2"), makeMessage("m3")]}
+        participants={{}}
+        selfId={null}
         allParticipants={{}}
       />,
     );
@@ -125,6 +133,8 @@ describe("MessageList scroll behavior", () => {
     const { rerender } = render(
       <MessageList
         messages={[makeMessage("m1")]}
+        participants={{}}
+        selfId={null}
         allParticipants={{}}
       />,
     );
@@ -132,6 +142,8 @@ describe("MessageList scroll behavior", () => {
     rerender(
       <MessageList
         messages={[makeMessage("m1"), makeMessage("m2")]}
+        participants={{}}
+        selfId={null}
         allParticipants={{}}
       />,
     );

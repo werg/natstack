@@ -70,8 +70,9 @@ export { ThinkingPill, ExpandedThinking, PREVIEW_MAX_LENGTH } from "./components
 export { ActionPill, ExpandedAction, parseActionData } from "./components/ActionMessage";
 export type { RichActionData } from "./components/ActionMessage";
 export { MethodArgumentsModal } from "./components/MethodArgumentsModal";
-export { TypingPill, parseTypingData } from "./components/TypingMessage";
+export { TypingPill } from "./components/TypingMessage";
 export { TypingIndicator } from "./components/TypingIndicator";
+export type { TypingIndicatorData } from "./types";
 export { InlineUiMessage, parseInlineUiData } from "./components/InlineUiMessage";
 export { ImageGallery } from "./components/ImageGallery";
 export { ImageInput, getAttachmentInputsFromPendingImages } from "./components/ImageInput";

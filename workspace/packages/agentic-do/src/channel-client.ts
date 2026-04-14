@@ -51,6 +51,10 @@ export class ChannelClient {
     await this.rpc.call(this.doTarget, "updateMetadata", participantId, metadata);
   }
 
+  async setTypingState(participantId: string, typing: boolean): Promise<void> {
+    await this.rpc.call(this.doTarget, "setTypingState", participantId, typing);
+  }
+
   async subscribe(participantId: string, metadata: Record<string, unknown>): Promise<{ ok: boolean; channelConfig?: Record<string, unknown>; replay?: ChannelEvent[]; replayTruncated?: boolean }> {
     return this.rpc.call(this.doTarget, "subscribe", participantId, metadata) as Promise<{ ok: boolean; channelConfig?: Record<string, unknown>; replay?: ChannelEvent[]; replayTruncated?: boolean }>;
   }

@@ -582,4 +582,87 @@ describe("PubSubChannel", () => {
       expect(remaining.every(r => r["type"] !== "presence")).toBe(true);
     });
   });
+
+  describe("setTypingState()", () => {
+    it("updates participant metadata with typing field", async () => {
+      const { instance, sql } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+
+      sql.exec(
+        `INSERT INTO participants (id, metadata, transport, connected_at)
+         VALUES ('agent-1', '{"name":"Agent","type":"agent","handle":"ai-chat"}', 'do', 1000)`,
+      );
+
+      await instance.setTypingState("agent-1", true);
+
+      const rows = sql.exec(`SELECT metadata FROM participants WHERE id = 'agent-1'`).toArray();
+      const metadata = JSON.parse(rows[0]!["metadata"] as string);
+      expect(metadata.typing).toBe(true);
+      expect(metadata.name).toBe("Agent"); // identity preserved
+
+      await instance.setTypingState("agent-1", false);
+
+      const rows2 = sql.exec(`SELECT metadata FROM participants WHERE id = 'agent-1'`).toArray();
+      const metadata2 = JSON.parse(rows2[0]!["metadata"] as string);
+      expect(metadata2.typing).toBe(false);
+    });
+
+    it("does NOT insert into messages table", async () => {
+      const { instance, sql } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+
+      sql.exec(
+        `INSERT INTO participants (id, metadata, transport, connected_at)
+         VALUES ('agent-1', '{"name":"Agent","type":"agent"}', 'do', 1000)`,
+      );
+
+      const beforeCount = (sql.exec(`SELECT COUNT(*) as cnt FROM messages`).one()["cnt"] as number);
+
+      await instance.setTypingState("agent-1", true);
+      await instance.setTypingState("agent-1", false);
+
+      const afterCount = (sql.exec(`SELECT COUNT(*) as cnt FROM messages`).one()["cnt"] as number);
+      expect(afterCount).toBe(beforeCount);
+    });
+
+    it("is a no-op for non-existent participants", async () => {
+      const { instance } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+
+      // Should not throw
+      await instance.setTypingState("nonexistent", true);
+    });
+
+    it("typing metadata survives in participants table for roster snapshot on reconnect", async () => {
+      // sendRosterReplay emits a snapshot from the participants table after
+      // replaying persisted presence events. This test verifies the precondition:
+      // typing state set via setTypingState is present in the participants table
+      // and would be included in that snapshot. Full end-to-end verification of
+      // the snapshot broadcast requires an RPC emit mock (integration test).
+      const { instance, sql } = await createTestDO(PubSubChannel, {
+        __objectKey: "test-channel",
+      });
+
+      sql.exec(
+        `INSERT INTO participants (id, metadata, transport, connected_at)
+         VALUES ('agent-1', '{"name":"Agent","type":"agent","handle":"ai-chat"}', 'do', 1000)`,
+      );
+
+      await instance.setTypingState("agent-1", true);
+
+      // Verify typing is in participants table (source for roster snapshot)
+      const rows = sql.exec(`SELECT metadata FROM participants WHERE id = 'agent-1'`).toArray();
+      const metadata = JSON.parse(rows[0]!["metadata"] as string);
+      expect(metadata.typing).toBe(true);
+
+      // Verify NO presence row was persisted in messages (ephemeral broadcast only)
+      const presenceRows = sql.exec(
+        `SELECT COUNT(*) as cnt FROM messages WHERE type = 'presence' AND content LIKE '%typing%'`,
+      ).one();
+      expect(presenceRows["cnt"]).toBe(0);
+    });
+  });
 });

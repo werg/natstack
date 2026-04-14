@@ -4,7 +4,6 @@ import type { Participant } from "@natstack/pubsub";
 import { useStickToBottom } from "use-stick-to-bottom";
 import { InlineGroup, type InlineItem } from "./InlineGroup";
 import { parseActionData } from "./ActionMessage";
-import { parseTypingData } from "./TypingMessage";
 import { NewContentIndicator } from "./NewContentIndicator";
 import { MessageCard } from "./MessageCard";
 import type { ChatMessage, ChatParticipantMetadata, InlineUiComponentEntry } from "../types";
@@ -55,9 +54,6 @@ function fullGroupComputation(
   let currentInlineGroup: Array<{ msg: ChatMessage; index: number }> = [];
 
   messages.forEach((msg, index) => {
-    // Typing is rendered as bottom-of-chat busy state, not transcript history.
-    if (msg.contentType === "typing") return;
-
     const inlineType = getInlineItemType(msg);
 
     if (inlineType !== null) {
@@ -88,37 +84,32 @@ function fullGroupComputation(
   return result;
 }
 
-function buildActiveTypingItems(messages: ChatMessage[]): InlineItem[] {
-  const latestTypingBySender = new Map<string, { msg: ChatMessage; index: number }>();
-
-  messages.forEach((msg, index) => {
-    if (msg.contentType !== "typing" || msg.complete) return;
-    latestTypingBySender.set(msg.senderId, { msg, index });
-  });
-
-  // Filter out stale typing indicators: if there is a later *text* message
-  // from the SAME sender, the agent has already produced output and the
-  // typing indicator is orphaned (e.g., from a crash or hibernation where
-  // the complete event was lost).  Only plain text (no contentType) counts
-  // as output — action, thinking, inline_ui, and image messages coexist
-  // with active typing during tool execution.
-  for (const [senderId, { index: typingIndex }] of latestTypingBySender) {
-    const hasLaterTextOutput = messages.some(
-      (m, i) => i > typingIndex && m.senderId === senderId && !m.contentType,
-    );
-    if (hasLaterTextOutput) {
-      latestTypingBySender.delete(senderId);
-    }
-  }
-
-  return Array.from(latestTypingBySender.values())
-    .sort((a, b) => a.index - b.index)
-    .map(({ msg }) => ({
+/**
+ * Build typing indicator items from the current roster.
+ * Participants with `metadata.typing === true` are shown as typing.
+ * When a participant leaves the channel, they disappear from the roster
+ * and the typing indicator is automatically gone — no cleanup needed.
+ */
+function buildActiveTypingItems(
+  participants: Record<string, Participant<ChatParticipantMetadata>>,
+  selfId: string | null,
+): InlineItem[] {
+  const items: InlineItem[] = [];
+  for (const [pid, p] of Object.entries(participants)) {
+    if (!p.metadata.typing) continue;
+    if (pid === selfId) continue;
+    items.push({
       type: "typing" as const,
-      id: msg.id,
-      data: parseTypingData(msg.content),
-      senderId: msg.senderId,
-    }));
+      id: `typing-${pid}`,
+      data: {
+        senderId: pid,
+        senderName: p.metadata.name,
+        senderType: p.metadata.type,
+      },
+      senderId: pid,
+    });
+  }
+  return items;
 }
 
 /** Sender info returned by getSenderInfo */
@@ -130,6 +121,10 @@ export interface SenderInfo {
 
 export interface MessageListProps {
   messages: ChatMessage[];
+  /** Current active roster — typing indicators are derived from participant metadata */
+  participants: Record<string, Participant<ChatParticipantMetadata>>;
+  /** This client's participant ID — excluded from typing display */
+  selfId: string | null;
   allParticipants: Record<string, Participant<ChatParticipantMetadata>>;
   inlineUiComponents?: Map<string, InlineUiComponentEntry>;
   hasMoreHistory?: boolean;
@@ -159,6 +154,8 @@ export interface MessageListProps {
  */
 export const MessageList = React.memo(function MessageList({
   messages,
+  participants,
+  selfId,
   allParticipants,
   inlineUiComponents,
   hasMoreHistory,
@@ -421,7 +418,7 @@ export const MessageList = React.memo(function MessageList({
     return result;
   }, [messages]);
 
-  const activeTypingItems = useMemo(() => buildActiveTypingItems(messages), [messages]);
+  const activeTypingItems = useMemo(() => buildActiveTypingItems(participants, selfId), [participants, selfId]);
 
   // Refs for stable renderItem callback — avoids recreating the closure on every
   // groupedItems / copiedMessageId change, which would force every visible

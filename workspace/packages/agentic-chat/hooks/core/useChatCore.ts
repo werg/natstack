@@ -23,7 +23,7 @@ import type {
   IncomingEvent,
   MethodDefinition,
 } from "@natstack/pubsub";
-import { isAgentParticipantType, CONTENT_TYPE_TYPING } from "@natstack/pubsub";
+import { isAgentParticipantType } from "@natstack/pubsub";
 import {
   ConnectionManager,
   type ConnectionConfig,
@@ -49,7 +49,7 @@ const METHOD_HISTORY_MAX = 2000;
 const METHOD_HISTORY_PRUNE_TO = 1400;
 
 /** Typing indicator auto-stop debounce (ms). */
-const TYPING_DEBOUNCE_MS = 2000;
+const TYPING_DEBOUNCE_MS = 3000;
 
 // =============================================================================
 // Types
@@ -113,6 +113,7 @@ export interface ChatCoreState {
   removePendingAgent: (handle: string) => void;
   onDismissDirtyWarning: (agentName: string) => void;
 
+  selfId: string | null;
   selfIdRef: React.MutableRefObject<string | null>;
 
   sessionEnabled: boolean | undefined;
@@ -152,8 +153,7 @@ export function useChatCore({
   const expectedStopsRef = useRef(new Set<string>());
   // Per-handle pending agent timeout timers.
   const pendingTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
-  // Typing indicator state.
-  const typingMessageIdRef = useRef<string | null>(null);
+  // Typing indicator state (metadata-based).
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // --- Connection manager (PubSubClient lifecycle) ---
@@ -310,6 +310,7 @@ export function useChatCore({
   const [client, setClient] = useState<PubSubClient<ChatParticipantMetadata> | null>(null);
   const [connected, setConnected] = useState(false);
   const [status, setStatus] = useState("Connecting...");
+  const [selfId, setSelfId] = useState<string | null>(null);
   const [participants, setParticipants] = useState<Record<string, Participant<ChatParticipantMetadata>>>({});
   const [methodEntries, setMethodEntries] = useState<Map<string, MethodHistoryEntry>>(new Map());
   const [debugEvents, setDebugEvents] = useState<Array<AgentDebugPayload & { ts: number }>>([]);
@@ -343,7 +344,7 @@ export function useChatCore({
     hasMoreHistory: channelHasMore,
     loadingMore: channelLoadingMore,
     loadEarlierMessages: channelLoadEarlier,
-  } = useChannelMessages(client, selfIdRef.current);
+  } = useChannelMessages(client);
 
   // --- Optimistic local messages (shown immediately on send, reconciled on server echo) ---
   const [optimisticMessages, setOptimisticMessages] = useState<ChatMessage[]>([]);
@@ -371,7 +372,9 @@ export function useChatCore({
       setClient(newClient);
       setConnected(true);
       setStatus("Connected");
-      selfIdRef.current = newClient.clientId ?? config.clientId;
+      const resolvedSelfId = newClient.clientId ?? config.clientId;
+      selfIdRef.current = resolvedSelfId;
+      setSelfId(resolvedSelfId);
       hasConnectedRef.current = true;
 
       // Channel title from config
@@ -563,41 +566,35 @@ export function useChatCore({
     setMethodEntries(new Map());
   }, []);
 
-  // --- Typing indicators ---
+  // --- Typing indicators (ephemeral, roster-based) ---
+  const typingActiveRef = useRef(false);
+
   const stopTyping = useCallback(async () => {
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
       typingTimeoutRef.current = null;
     }
+    if (!typingActiveRef.current) return;
+    typingActiveRef.current = false;
     const c = clientRef.current;
-    if (typingMessageIdRef.current && c?.connected) {
-      try {
-        await c.update(typingMessageIdRef.current, "", { complete: true, persist: false });
-      } catch { /* best-effort */ }
-      typingMessageIdRef.current = null;
+    if (c?.connected) {
+      try { await c.setTyping(false); } catch { /* best-effort */ }
     }
   }, []);
 
   const startTyping = useCallback(async () => {
-    const c = clientRef.current;
-    if (!c?.connected) return;
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    if (!typingMessageIdRef.current) {
-      const typingData = {
-        senderId: c.clientId ?? config.clientId,
-        senderName: metadata.name,
-        senderType: metadata.type,
-      };
-      const { messageId } = await c.send(JSON.stringify(typingData), {
-        contentType: CONTENT_TYPE_TYPING,
-        persist: false,
-      });
-      typingMessageIdRef.current = messageId;
+    if (!typingActiveRef.current) {
+      typingActiveRef.current = true;
+      const c = clientRef.current;
+      if (c?.connected) {
+        try { await c.setTyping(true); } catch { /* best-effort */ }
+      }
     }
     typingTimeoutRef.current = setTimeout(() => {
       void stopTyping().catch(() => {});
     }, TYPING_DEBOUNCE_MS);
-  }, [config.clientId, metadata.name, metadata.type, stopTyping]);
+  }, [stopTyping]);
 
   const handleInputChange = useCallback((value: string) => {
     setInput(value);
@@ -768,6 +765,7 @@ export function useChatCore({
     addPendingAgent,
     removePendingAgent,
     onDismissDirtyWarning,
+    selfId,
     selfIdRef,
     sessionEnabled: true,
     channelName,
