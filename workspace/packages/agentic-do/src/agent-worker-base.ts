@@ -676,12 +676,15 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     textMsgId: string | null;
     /** Per-tool-call state keyed by pi-agent-core toolCallId (e.g. "call_abc123"). */
     toolCalls: Map<string, ToolCallState>;
+    /** Promise chain that serializes all channel operations so RPC calls
+     *  arrive at the channel DO in emission order. */
+    pendingOp: Promise<void>;
   }>();
 
   private getStreamState(channelId: string) {
     let state = this.channelStreamState.get(channelId);
     if (!state) {
-      state = { textMsgId: null, toolCalls: new Map() };
+      state = { textMsgId: null, toolCalls: new Map(), pendingOp: Promise.resolve() };
       this.channelStreamState.set(channelId, state);
     }
     return state;
@@ -711,11 +714,28 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     });
   }
 
-  private publishPiEvent(channelId: string, event: AgentEvent): void {
+  /**
+   * Publish a pi-agent-core event as channel message(s).
+   *
+   * Returns a Promise that resolves once all enqueued channel operations for
+   * this event have completed. pi-agent-core `await`s listener return values,
+   * so returning the promise provides back-pressure: the agent loop won't emit
+   * the next event until the current one's RPC calls finish, guaranteeing that
+   * deltas arrive at the channel DO in emission order.
+   */
+  private publishPiEvent(channelId: string, event: AgentEvent): Promise<void> {
     const participantId = this.subscriptions.getParticipantId(channelId);
-    if (!participantId) return;
+    if (!participantId) return Promise.resolve();
     const channel = this.createChannelClient(channelId);
     const state = this.getStreamState(channelId);
+
+    /** Append an async operation to the per-channel serialization chain.
+     *  Errors are logged but swallowed so the chain stays alive. */
+    const enqueue = (op: () => Promise<void>): void => {
+      state.pendingOp = state.pendingOp.then(op).catch((err) => {
+        console.warn(`[AgentWorkerBase] channel op failed for ${channelId}:`, err);
+      });
+    };
 
     switch (event.type) {
       case "message_start": {
@@ -730,7 +750,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           if (block?.type === "text") {
             const msgId = crypto.randomUUID();
             state.textMsgId = msgId;
-            void channel.send(participantId, msgId, block.text ?? "", { persist: true });
+            enqueue(() => channel.send(participantId, msgId, block.text ?? "", { persist: true }));
             break;
           }
         }
@@ -747,10 +767,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
               consoleOutput: "",
             };
             state.toolCalls.set(b.id, toolCall);
-            void channel.send(participantId, toolCall.channelMsgId,
+            enqueue(() => channel.send(participantId, toolCall.channelMsgId,
               AgentWorkerBase.serializeActionData(toolCall, { status: "pending" }),
               { contentType: "action", persist: true },
-            );
+            ));
           }
         }
         break;
@@ -766,12 +786,14 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         if (!state.textMsgId) {
           const msgId = crypto.randomUUID();
           state.textMsgId = msgId;
-          void channel.send(participantId, msgId, "", { persist: true });
+          enqueue(() => channel.send(participantId, msgId, "", { persist: true }));
         }
 
-        // Send delta directly — the PubSub protocol appends update content.
+        // Send delta — serialized through pendingOp so deltas arrive in order.
         if (state.textMsgId) {
-          void channel.update(participantId, state.textMsgId, ame.delta);
+          const textId = state.textMsgId;
+          const delta = ame.delta;
+          enqueue(() => channel.update(participantId, textId, delta));
         }
         break;
       }
@@ -780,7 +802,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         // Complete text message.
         if (state.textMsgId) {
           const textId = state.textMsgId;
-          void channel.complete(participantId, textId);
+          enqueue(() => channel.complete(participantId, textId));
           state.textMsgId = null;
         }
 
@@ -797,10 +819,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
           if (block?.type === "thinking" && typeof block.thinking === "string") {
             const thinkId = crypto.randomUUID();
-            void channel.send(participantId, thinkId, block.thinking, {
-              contentType: "thinking",
-              persist: true,
-            }).then(() => channel.complete(participantId, thinkId));
+            enqueue(() =>
+              channel.send(participantId, thinkId, block.thinking!, {
+                contentType: "thinking",
+                persist: true,
+              }).then(() => channel.complete(participantId, thinkId))
+            );
           }
 
           // Additional text blocks beyond the first (which was streamed).
@@ -809,19 +833,25 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
             if (textBlocksSeen > 1) {
               // The first text block was streamed live; publish additional ones all-at-once.
               const extraId = crypto.randomUUID();
-              void channel.send(participantId, extraId, block.text, { persist: true })
-                .then(() => channel.complete(participantId, extraId));
+              const text = block.text;
+              enqueue(() =>
+                channel.send(participantId, extraId, text, { persist: true })
+                  .then(() => channel.complete(participantId, extraId))
+              );
             }
           }
 
           // Assistant-side image blocks (uncommon but supported by pi-ai).
           if (block?.type === "image" && block.mimeType && block.data) {
             const imgId = crypto.randomUUID();
-            void channel.send(participantId, imgId, "", {
-              contentType: "image",
-              persist: true,
-              attachments: [{ data: block.data, mimeType: block.mimeType }],
-            }).then(() => channel.complete(participantId, imgId));
+            const { mimeType, data } = block;
+            enqueue(() =>
+              channel.send(participantId, imgId, "", {
+                contentType: "image",
+                persist: true,
+                attachments: [{ data, mimeType }],
+              }).then(() => channel.complete(participantId, imgId))
+            );
           }
 
           // Create action messages for toolCall blocks not yet created at message_start.
@@ -835,10 +865,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
               consoleOutput: "",
             };
             state.toolCalls.set(block.id, toolCall);
-            void channel.send(participantId, toolCall.channelMsgId,
+            enqueue(() => channel.send(participantId, toolCall.channelMsgId,
               AgentWorkerBase.serializeActionData(toolCall, { status: "pending" }),
               { contentType: "action", persist: true },
-            );
+            ));
           }
         }
 
@@ -858,9 +888,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
             toolCall.consoleOutput = toolCall.consoleOutput
               ? `${toolCall.consoleOutput}\n${content.content}`
               : content.content;
-            void channel.update(participantId, toolCall.channelMsgId,
+            enqueue(() => channel.update(participantId, toolCall.channelMsgId,
               AgentWorkerBase.serializeActionData(toolCall, { status: "pending" }),
-            );
+            ));
           }
         }
         break;
@@ -871,14 +901,16 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         const toolCall = state.toolCalls.get(toolCallId);
         if (toolCall) {
           const { value: truncatedResult, truncated } = truncateResult(result);
-          void channel.update(participantId, toolCall.channelMsgId,
-            AgentWorkerBase.serializeActionData(toolCall, {
-              status: "complete",
-              result: truncatedResult,
-              isError: isError || false,
-              resultTruncated: truncated,
-            }),
-          ).then(() => channel.complete(participantId, toolCall.channelMsgId));
+          enqueue(() =>
+            channel.update(participantId, toolCall.channelMsgId,
+              AgentWorkerBase.serializeActionData(toolCall, {
+                status: "complete",
+                result: truncatedResult,
+                isError: isError || false,
+                resultTruncated: truncated,
+              }),
+            ).then(() => channel.complete(participantId, toolCall.channelMsgId))
+          );
           state.toolCalls.delete(toolCallId);
         }
 
@@ -898,6 +930,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         // No channel message needed for agent_start, turn_start.
         break;
     }
+
+    return state.pendingOp;
   }
 
 
