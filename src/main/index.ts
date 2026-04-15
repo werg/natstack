@@ -147,8 +147,14 @@ function installRemoteCertificateOverride(mode: StartupMode): void {
     });
   };
 
-  installForSession(session.defaultSession);
   app.on("session-created", installForSession);
+  if (app.isReady()) {
+    installForSession(session.defaultSession);
+  } else {
+    void app.whenReady().then(() => {
+      installForSession(session.defaultSession);
+    });
+  }
 }
 
 // =============================================================================
