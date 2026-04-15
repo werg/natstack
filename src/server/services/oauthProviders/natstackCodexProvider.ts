@@ -68,28 +68,19 @@ function loadPiAiOauth(): Promise<PiAiOauthModule> {
   return _piAiOauthPromise;
 }
 
-// pi-ai's success/error HTML helpers live at `./utils/oauth/oauth-page.js`
-// but aren't surfaced through any package subpath export — importing the
-// deep path directly fails with ERR_PACKAGE_PATH_NOT_EXPORTED. Small enough
-// to inline. Keep markup minimal and self-contained so it renders in any
-// browser without relying on external assets.
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-function oauthSuccessHtml(message: string): string {
-  return `<!doctype html><meta charset="utf-8"><title>Signed in</title>
-<style>body{font-family:system-ui,sans-serif;max-width:32em;margin:4em auto;padding:0 1em;color:#222}h1{color:#0a7a3b}</style>
-<h1>✓ Signed in</h1><p>${escapeHtml(message)}</p>`;
-}
-function oauthErrorHtml(message: string, details?: string): string {
-  return `<!doctype html><meta charset="utf-8"><title>Sign-in failed</title>
-<style>body{font-family:system-ui,sans-serif;max-width:32em;margin:4em auto;padding:0 1em;color:#222}h1{color:#b00020}</style>
-<h1>Sign-in failed</h1><p>${escapeHtml(message)}</p>${details ? `<p><em>${escapeHtml(details)}</em></p>` : ""}`;
+import { oauthSuccessHtml, oauthErrorHtml } from "@natstack/shared/oauthPage";
+
+/**
+ * Test-only access to private provider state. Indirected through a symbol
+ * so it's impossible to call accidentally from production code: callers
+ * must `import { __testAccess }` explicitly. Not exported via the service
+ * surface; real consumers never need this.
+ */
+export const __testAccess: unique symbol = Symbol("NatstackCodexProvider.__testAccess");
+
+export interface NatstackCodexTestHandle {
+  pendingStates(): string[];
+  resolveFlow(state: string, code: string): boolean;
 }
 
 interface FlowEntry {
@@ -304,7 +295,7 @@ export class NatstackCodexProvider implements OAuthProviderInterface {
     entry.resolve(code);
   }
 
-  /** For tests / shutdown: drop all in-flight flows. */
+  /** Drop all in-flight flows. Called on shutdown and from tests. */
   teardown(): void {
     for (const entry of this.flows.values()) {
       clearTimeout(entry.timer);
@@ -313,20 +304,24 @@ export class NatstackCodexProvider implements OAuthProviderInterface {
     this.flows.clear();
   }
 
-  /** Exposed for tests — resolves a flow by state as if the callback had
-   *  arrived. Returns `false` if no such flow. */
-  _resolveFlowForTest(state: string, code: string): boolean {
-    const entry = this.flows.get(state);
-    if (!entry) return false;
-    clearTimeout(entry.timer);
-    this.flows.delete(state);
-    entry.resolve(code);
-    return true;
-  }
-
-  /** Test-only: inspect pending flow states (copy). */
-  _pendingStatesForTest(): string[] {
-    return [...this.flows.keys()];
+  /**
+   * Test-only accessor — see `__testAccess` at module top. Private state
+   * (pending flow table, synthetic resolve) is reachable only through the
+   * exported symbol, not by any public method name. Production callers
+   * have no way to accidentally poke at it.
+   */
+  [__testAccess](): NatstackCodexTestHandle {
+    return {
+      pendingStates: () => [...this.flows.keys()],
+      resolveFlow: (state, code) => {
+        const entry = this.flows.get(state);
+        if (!entry) return false;
+        clearTimeout(entry.timer);
+        this.flows.delete(state);
+        entry.resolve(code);
+        return true;
+      },
+    };
   }
 
   // =========================================================================

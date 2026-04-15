@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { NatstackCodexProvider } from "./natstackCodexProvider.js";
+import { NatstackCodexProvider, __testAccess } from "./natstackCodexProvider.js";
 import type { ServerResponse } from "node:http";
 
 const PUBLIC_URL = "https://server.lan:3000";
@@ -41,7 +41,7 @@ function makeTokenFetch(response: { ok?: boolean; body?: unknown; status?: numbe
  *  (crypto.subtle.digest) is asynchronous and takes more than one microtask. */
 async function waitForFlow(provider: NatstackCodexProvider, timeoutMs = 2000): Promise<void> {
   const start = Date.now();
-  while (provider._pendingStatesForTest().length === 0) {
+  while (provider[__testAccess]().pendingStates().length === 0) {
     if (Date.now() - start > timeoutMs) throw new Error("flow registration timed out");
     await new Promise((r) => setTimeout(r, 5));
   }
@@ -74,7 +74,7 @@ describe("NatstackCodexProvider", () => {
     expect(capturedUrl).toContain("state=");
 
     // One flow is registered and waiting.
-    expect(provider._pendingStatesForTest()).toHaveLength(1);
+    expect(provider[__testAccess]().pendingStates()).toHaveLength(1);
 
     provider.teardown();
     await expect(p).rejects.toThrow(/torn down/i);
@@ -98,7 +98,7 @@ describe("NatstackCodexProvider", () => {
       onPrompt: async () => { throw new Error("not called"); },
     });
     await waitForFlow(provider);
-    const state = provider._pendingStatesForTest()[0]!;
+    const state = provider[__testAccess]().pendingStates()[0]!;
 
     const res = makeRes();
     await provider.handleCallback(
@@ -131,7 +131,7 @@ describe("NatstackCodexProvider", () => {
       onPrompt: async () => { throw new Error("not called"); },
     });
     await waitForFlow(provider);
-    const state = provider._pendingStatesForTest()[0]!;
+    const state = provider[__testAccess]().pendingStates()[0]!;
 
     const res = makeRes();
     await provider.handleCallback(
@@ -158,7 +158,7 @@ describe("NatstackCodexProvider", () => {
       onPrompt: async () => { throw new Error("not called"); },
     });
     await waitForFlow(provider);
-    const state = provider._pendingStatesForTest()[0]!;
+    const state = provider[__testAccess]().pendingStates()[0]!;
 
     await provider.handleCallback(
       { url: `/_r/s/auth/oauth/callback?state=${state}&code=ok` } as any,
@@ -181,7 +181,7 @@ describe("NatstackCodexProvider", () => {
       onPrompt: async () => { throw new Error("not called"); },
     });
     await waitForFlow(provider);
-    const state = provider._pendingStatesForTest()[0]!;
+    const state = provider[__testAccess]().pendingStates()[0]!;
     await provider.handleCallback(
       { url: `/_r/s/auth/oauth/callback?state=${state}&code=ok` } as any,
       makeRes(),

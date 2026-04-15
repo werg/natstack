@@ -7,6 +7,16 @@
  * callback; more later) return the pair; bootstrap wraps it with this helper
  * so the service definition lands on the dispatcher AND routes land on the
  * registry in one declaration.
+ *
+ * Failure semantics: `stop()` unregisters routes, but only runs on clean
+ * shutdown (container.stopAll). On crash / SIGKILL the registry entries go
+ * with the process — the registry is in-memory, so this is self-cleaning
+ * on next start. No persistent orphans.
+ *
+ * Startup failure: if `container.startAll()` crashes mid-way AFTER this
+ * service's `start()` registered routes but before other services are up,
+ * `stopAll` will still fire the `stop()` hook as part of the cleanup
+ * cascade, so routes unregister correctly.
  */
 
 import type { ManagedService } from "@natstack/shared/managedService";

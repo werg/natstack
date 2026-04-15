@@ -269,8 +269,12 @@ export class RouteRegistry {
     liveDoClasses: Set<string>,
     canonicalInstanceName: string | null,
   ): void {
-    // Drop all existing entries for this source and rebuild from scratch —
-    // route tables are small and this avoids subtle diff bugs.
+    // Drop all existing entries for this source and rebuild from scratch.
+    // **This is safe only because route entries carry no per-registration
+    // state** — they're pure (path + methods + auth + target). If a future
+    // field lands that's expensive to recompute or holds a DO handle / token
+    // tied to a registration, this must become a real diff (keep-matching,
+    // unregister-dropped, register-added) to avoid data loss.
     this.workerRoutes.delete(source);
     if (newRoutes.length === 0) return;
 

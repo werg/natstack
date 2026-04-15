@@ -165,14 +165,31 @@ export class AuthServiceImpl {
     }
   }
 
+  /**
+   * True when this instance has a live NatstackCodexProvider that needs a
+   * `/oauth/callback` route. False only when a test's `providerOverrides`
+   * replaces openai-codex with a non-NatstackCodex provider — in that case
+   * the factory must NOT register the route, because the handler would be
+   * a permanent 404. Exposed so `createAuthService` can gate route
+   * registration at construction time, keeping dead routes out of the
+   * registry.
+   */
+  hasCodexCallback(): boolean {
+    return this.codexProvider !== null;
+  }
+
   /** HTTP handler for `GET /_r/s/auth/oauth/callback`. Delegates to the
-   *  NatstackCodexProvider instance. Returns 404 body if the codex provider
-   *  has been overridden out. */
+   *  NatstackCodexProvider instance. Only reachable when
+   *  `hasCodexCallback()` was true at factory time — otherwise the route is
+   *  not registered and this method is unreachable from the gateway. */
   async handleOAuthCallback(
     req: import("node:http").IncomingMessage,
     res: import("node:http").ServerResponse,
   ): Promise<void> {
     if (!this.codexProvider) {
+      // Defensive: `createAuthService` should not have registered the route
+      // if `hasCodexCallback()` was false. If we land here, something wired
+      // this method up manually — return 404 rather than throw.
       res.statusCode = 404;
       res.setHeader("Content-Type", "text/plain");
       res.end("OAuth callback handler not available");
@@ -459,13 +476,18 @@ export function createAuthService(deps: {
     },
   };
 
-  const routes: ServiceRouteDecl[] = [{
-    serviceName: "auth",
-    path: CODEX_CALLBACK_PATH,
-    methods: ["GET"],
-    auth: "public",
-    handler: (req, res) => deps.authService.handleOAuthCallback(req, res),
-  }];
+  // Only register the OAuth callback route when there's actually a handler
+  // behind it. Skips dead entries in the route table when a test swaps
+  // openai-codex for a non-NatstackCodex provider.
+  const routes: ServiceRouteDecl[] = deps.authService.hasCodexCallback()
+    ? [{
+        serviceName: "auth",
+        path: CODEX_CALLBACK_PATH,
+        methods: ["GET"],
+        auth: "public",
+        handler: (req, res) => deps.authService.handleOAuthCallback(req, res),
+      }]
+    : [];
 
   return { definition, routes };
 }

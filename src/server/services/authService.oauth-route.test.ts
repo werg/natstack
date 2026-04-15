@@ -17,6 +17,7 @@ import * as path from "node:path";
 import { AuthServiceImpl, createAuthService } from "./authService.js";
 import { RouteRegistry } from "../routeRegistry.js";
 import { Gateway } from "../gateway.js";
+import { NatstackCodexProvider, __testAccess } from "./oauthProviders/natstackCodexProvider.js";
 
 function buildJwt(payload: Record<string, unknown>): string {
   const header = Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url");
@@ -77,7 +78,6 @@ async function startHarness(opts: { emitDelivers?: boolean } = {}): Promise<Harn
 
   // Swap NatstackCodexProvider's token endpoint by overriding fetchImpl via
   // providerOverrides — we construct our own provider pointing at the fake.
-  const { NatstackCodexProvider } = await import("./oauthProviders/natstackCodexProvider.js");
   const customProvider = new NatstackCodexProvider({
     getPublicUrl: () => publicUrl,
     fetchImpl: (async () => ({
@@ -129,12 +129,10 @@ describe("authService OAuth route", () => {
     // Kick off login — it'll block until the callback route is hit.
     const loginP = h.authService.startOAuthLogin("openai-codex", "panel-42");
     // Poll until the provider registers the flow.
-    const { NatstackCodexProvider } = await import("./oauthProviders/natstackCodexProvider.js");
-    type CodexProvider = InstanceType<typeof NatstackCodexProvider>;
     const provider = (h.authService as unknown as {
-      oauthProviders: Record<string, { provider: CodexProvider }>;
+      oauthProviders: Record<string, { provider: NatstackCodexProvider }>;
     }).oauthProviders["openai-codex"]!.provider;
-    for (let i = 0; i < 200 && provider._pendingStatesForTest().length === 0; i++) {
+    for (let i = 0; i < 200 && provider[__testAccess]().pendingStates().length === 0; i++) {
       await new Promise((r) => setTimeout(r, 5));
     }
 
@@ -146,7 +144,7 @@ describe("authService OAuth route", () => {
 
     // Hit the gateway's /_r/s/auth/oauth/callback route with the registered
     // state + a code. This should resolve the flow and complete login.
-    const state = provider._pendingStatesForTest()[0]!;
+    const state = provider[__testAccess]().pendingStates()[0]!;
     const callbackUrl = `${h.publicUrl}/_r/s/auth/oauth/callback?state=${state}&code=c-ok`;
     const resp = await fetch(callbackUrl);
     expect(resp.status).toBe(200);

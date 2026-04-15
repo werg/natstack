@@ -75,6 +75,33 @@ export class WsSubscriber implements Subscriber {
 
 /**
  * Event service for managing subscriptions and emitting events.
+ *
+ * Two independent delivery surfaces, intentionally kept distinct:
+ *
+ *   1. **`emit(event, data)` — pub/sub broadcast.** Fans `data` out to every
+ *      subscriber that called `events.subscribe(event)`. Iterates the
+ *      event-keyed table (`subscribers`). Use for anything a caller opts
+ *      into ("notify me when the panel tree changes").
+ *
+ *   2. **`emitTo(callerId, event, data)` — direct address.** Delivers to
+ *      exactly one caller by ID, bypassing the subscription table. The
+ *      target doesn't need to have called `events.subscribe` — being
+ *      authenticated on the RPC server is sufficient (see
+ *      `RpcServer.handleAuth`, which auto-registers a WsSubscriber on
+ *      `subscribersByCallerId`). Use for initiator-scoped messages
+ *      ("reply to the client that asked for this"): OAuth URLs, inline
+ *      acks, per-request streams.
+ *
+ * The two tables overlap deliberately. A caller who calls `events.subscribe`
+ * for event X AND is authenticated will receive a `broadcast(X)` via `emit`
+ * AND a direct-address via `emitTo(event=X)`. That's fine — `emitTo` doesn't
+ * consult `subscribers`, and `emit` iterates `subscribers` only. A caller
+ * who `events.unsubscribe`s from X still receives `emitTo(callerId, X, …)`
+ * because direct-address semantics aren't governed by the subscription
+ * table: the message is addressed to them specifically, not fanned out on
+ * the event channel. If you want a caller to stop receiving direct events
+ * entirely, disconnect or `unsubscribeAll()` + drop the subscriber (close
+ * the WS); `registerSubscriber`'s onDestroyed hook will clean it up.
  */
 export class EventService {
   private subscribers = new Map<EventName, Map<string, Subscriber>>();
