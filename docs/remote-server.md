@@ -32,7 +32,7 @@ Remote panel mode does still require a trustworthy browser origin. In practice:
 ### 1. Start the server in standalone mode
 
 ```bash
-pnpm server -- \
+pnpm server \
   --workspace my-workspace \
   --host my-server.example.com \
   --serve-panels \
@@ -44,7 +44,7 @@ workspace from the repo's checked-in `workspace/` template instead of a bare
 workspace:
 
 ```bash
-pnpm server:dev -- \
+pnpm server:dev \
   --workspace my-workspace \
   --host my-server.example.com \
   --serve-panels \
@@ -60,7 +60,7 @@ may create a bare workspace if that template is not present.
 Use `--help` for a full list of options:
 
 ```bash
-pnpm server -- --help
+pnpm server --help
 ```
 
 The server will print its gateway URL and admin token on startup:
@@ -143,7 +143,7 @@ store and relaunches for you.
 To serve over HTTPS directly (without a reverse proxy):
 
 ```bash
-pnpm server -- \
+pnpm server \
   --workspace my-workspace \
   --host my-server.example.com \
   --tls-cert /path/to/cert.pem \
