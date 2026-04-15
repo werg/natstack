@@ -341,5 +341,60 @@ describe("WorkerdManager", () => {
       // No additional getBuild calls (no restart triggered)
       expect(vi.mocked(deps.getBuild).mock.calls.length).toBe(callsBefore);
     });
+
+    it("tears down stale DO services when a class is removed from the manifest", async () => {
+      const deps = createMockDeps();
+      const mgr = new WorkerdManager(deps);
+
+      // Pre-register two DO classes from the same source.
+      await mgr.registerAllDOClasses([
+        { source: "workers/agent", className: "AgentDO" },
+        { source: "workers/agent", className: "LegacyDO" },
+      ]);
+
+      const revokeSpy = vi.spyOn(deps.tokenManager, "revokeToken");
+
+      // Manifest is re-read after a rebuild and now only declares AgentDO.
+      await mgr.onSourceRebuilt("workers/agent", [{ className: "AgentDO" }]);
+
+      // LegacyDO's service-level token was revoked.
+      expect(revokeSpy).toHaveBeenCalledWith("do-service:workers/agent:LegacyDO");
+      // The entry is gone from the map — config regeneration won't emit it.
+      expect(revokeSpy).not.toHaveBeenCalledWith("do-service:workers/agent:AgentDO");
+    });
+
+    it("leaves DO services alone when doClasses is undefined", async () => {
+      const deps = createMockDeps();
+      const mgr = new WorkerdManager(deps);
+
+      await mgr.registerAllDOClasses([
+        { source: "workers/agent", className: "AgentDO" },
+      ]);
+
+      const revokeSpy = vi.spyOn(deps.tokenManager, "revokeToken");
+      await mgr.onSourceRebuilt("workers/agent");
+
+      // No revokes — the caller passed `undefined` meaning "don't touch DOs".
+      expect(revokeSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining("do-service:workers/agent"),
+      );
+    });
+
+    it("tears down all DO services when manifest drops the durable block entirely", async () => {
+      const deps = createMockDeps();
+      const mgr = new WorkerdManager(deps);
+
+      await mgr.registerAllDOClasses([
+        { source: "workers/agent", className: "A" },
+        { source: "workers/agent", className: "B" },
+      ]);
+
+      const revokeSpy = vi.spyOn(deps.tokenManager, "revokeToken");
+      // Empty array = "manifest declares no DO classes now" → remove all.
+      await mgr.onSourceRebuilt("workers/agent", []);
+
+      expect(revokeSpy).toHaveBeenCalledWith("do-service:workers/agent:A");
+      expect(revokeSpy).toHaveBeenCalledWith("do-service:workers/agent:B");
+    });
   });
 });

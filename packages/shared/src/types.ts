@@ -70,6 +70,19 @@ export interface PackageManifest {
   // ----- Worker-only fields -----
   /** Durable Object classes exported by this worker (workers only). */
   durable?: { classes: Array<{ className: string }> };
+  /**
+   * HTTP routes this worker exposes via the gateway's `/_r/w/<source>/...` namespace.
+   * Each entry binds either a DO class (when `durableObject` is set) or the worker's
+   * default `fetch` export (regular-worker route, only bound on the canonical-name
+   * instance). Default auth is "public" — handlers own their own validation.
+   */
+  routes?: Array<{
+    path: string;
+    methods?: ("GET" | "POST" | "PUT" | "DELETE" | "PATCH")[];
+    durableObject?: { className: string; objectKey?: string };
+    auth?: "public" | "admin-token";
+    websocket?: boolean;
+  }>;
 }
 
 export type ThemeMode = "light" | "dark" | "system";

@@ -27,6 +27,7 @@ import {
 } from "../../packages/shared/src/serviceDispatcher.js";
 import { checkServiceAccess } from "../../packages/shared/src/servicePolicy.js";
 import type { TokenManager } from "../../packages/shared/src/tokenManager.js";
+import { WsSubscriber, type EventService } from "../../packages/shared/src/eventsService.js";
 
 const log = createDevLogger("RpcServer");
 
@@ -134,6 +135,17 @@ export class RpcServer {
       onClientDisconnect?: (callerId: string, callerKind: CallerKind) => void;
       /** Called when a client successfully authenticates */
       onClientAuthenticate?: (callerId: string, callerKind: CallerKind) => void;
+      /**
+       * Optional: the shared EventService. When provided, every authenticated
+       * WS connection is registered as an event subscriber so
+       * `eventService.emitTo(callerId, ...)` can deliver events to the caller
+       * even before they've issued any explicit `events.subscribe` call.
+       * Without this, emitTo returns false for admin-client and other
+       * passive subscribers — which broke remote OAuth (the initiating
+       * Electron client never called events.subscribe, so the login URL
+       * had nowhere to go).
+       */
+      eventService?: EventService;
     }
   ) {
     this.dispatcher = deps.dispatcher;
@@ -350,6 +362,20 @@ export class RpcServer {
       callerKind,
     };
     ws.send(JSON.stringify(authResult));
+
+    // Register the authenticated connection as an event subscriber so
+    // `emitTo(callerId, ...)` can reach this client regardless of whether
+    // they call `events.subscribe`. The subscriber's `onDestroyed` handler
+    // (wired inside registerSubscriber) fires on ws.close and cleans itself
+    // up, so we don't need to double-unregister on disconnect.
+    if (this.deps.eventService) {
+      try {
+        const subscriber = new WsSubscriber(ws, callerKind);
+        this.deps.eventService.registerSubscriber(callerId, subscriber);
+      } catch (err) {
+        log.warn(`Failed to register event subscriber for ${callerId}: ${(err as Error).message}`);
+      }
+    }
 
     // Notify auth callback (e.g., for HarnessManager bridge resolution)
     this.deps.onClientAuthenticate?.(callerId, callerKind);

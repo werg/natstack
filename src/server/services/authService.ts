@@ -24,33 +24,11 @@ import type {
   OAuthProviderInterface,
 } from "@mariozechner/pi-ai";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
-
-/**
- * pi-ai's runtime OAuth helpers live at the `@mariozechner/pi-ai/oauth` deep
- * subpath (since 0.66). pi-ai is ESM-only and that subpath only declares an
- * `import` condition — no `require`. Our server bundles in CJS format
- * (`dist/server-electron.cjs`) and marks pi-ai as external, so a static
- * `import` would be transpiled to `require("@mariozechner/pi-ai/oauth")` and
- * fail at runtime with `ERR_PACKAGE_PATH_NOT_EXPORTED`.
- *
- * Workaround: lazy-load via dynamic `import()` (preserved verbatim by esbuild
- * for externals; Node's ESM loader handles the deep subpath correctly). The
- * module is loaded once on first use and cached.
- */
-type PiAiOauthModule = {
-  openaiCodexOAuthProvider: OAuthProviderInterface;
-  getOAuthApiKey: (
-    providerId: string,
-    credentials: Record<string, OAuthCredentials>,
-  ) => Promise<{ newCredentials: OAuthCredentials; apiKey: string } | null>;
-};
-let _piAiOauthPromise: Promise<PiAiOauthModule> | null = null;
-function loadPiAiOauth(): Promise<PiAiOauthModule> {
-  if (!_piAiOauthPromise) {
-    _piAiOauthPromise = import("@mariozechner/pi-ai/oauth") as Promise<PiAiOauthModule>;
-  }
-  return _piAiOauthPromise;
-}
+import type { ServiceRouteDecl } from "../routeRegistry.js";
+import {
+  NatstackCodexProvider,
+  CODEX_CALLBACK_PATH,
+} from "./oauthProviders/natstackCodexProvider.js";
 
 const OAUTH_TOKENS_PATH = path.join(homedir(), ".config", "natstack", "oauth-tokens.json");
 
@@ -67,26 +45,19 @@ const ENV_API_KEY_PROVIDERS: Record<string, string> = {
   openrouter: "OPENROUTER_API_KEY",
 };
 
-// Providers that go through OAuth. The OAuthProviderInterface instance is
-// resolved lazily from `loadPiAiOauth()` because pi-ai is ESM-only and we
-// can't statically import its runtime values from our CJS bundle.
-// Map shape: providerId → { displayName, key into the loaded module }.
-// In v1: just openai-codex. In v2: github-copilot, google-gemini-cli, etc.
-const OAUTH_PROVIDERS: Record<
-  string,
-  { displayName: string; moduleKey: keyof PiAiOauthModule }
-> = {
-  "openai-codex": {
-    displayName: "OpenAI Codex (ChatGPT subscription)",
-    moduleKey: "openaiCodexOAuthProvider",
-  },
-};
-
-async function getOAuthProvider(providerId: string): Promise<OAuthProviderInterface | null> {
-  const cfg = OAUTH_PROVIDERS[providerId];
-  if (!cfg) return null;
-  const mod = await loadPiAiOauth();
-  return mod[cfg.moduleKey] as OAuthProviderInterface;
+// Providers that go through OAuth. Each entry carries both the UI-facing
+// display name AND a live `OAuthProviderInterface` instance. openai-codex
+// now uses `NatstackCodexProvider` — our own implementation that works with
+// a remote server (pi-ai's implementation hardcodes `localhost:1455` as the
+// redirect URI, which fails when the browser lives on a different machine
+// than the server; see `natstackCodexProvider.ts`).
+interface OAuthProviderRegistration {
+  displayName: string;
+  provider: OAuthProviderInterface;
+  /** Routes to register on the gateway for this provider's callback flow.
+   *  Service-routes are keyed by serviceName (always "auth" here) so the
+   *  final URL is `/_r/s/auth${path}`. */
+  routes?: ServiceRouteDecl[];
 }
 
 export interface ProviderStatus {
@@ -99,13 +70,29 @@ export interface ProviderStatus {
 
 export interface AuthServiceDeps {
   /**
-   * Open a URL in the user's default browser. In Electron mode, wires to
-   * `shell.openExternal` via a parent-port message. In standalone mode,
-   * prints the URL to the console for manual opening.
+   * Open a URL in the user's default browser. In Electron IPC mode, wires to
+   * `shell.openExternal` via a parent-port message. In standalone mode this
+   * is typically a console.log fallback — remote clients receive the URL via
+   * `emitOpenExternalTo` instead and open it on the machine they run on.
    */
   openBrowser: (url: string) => void;
+  /**
+   * Send a URL-open request to exactly ONE connected client (the initiator
+   * of the flow), identified by its callerId. Returns `true` if the target
+   * is alive and the event was delivered, `false` if the target is missing
+   * (client disconnected since starting the flow). Callers must NOT fall
+   * back to a broadcast on `false` — that would fan the URL out to other
+   * connected clients, causing every open app to spawn its own browser tab.
+   */
+  emitOpenExternalTo?: (url: string, initiatorCallerId: string) => boolean;
+  /** Externally-reachable base URL. Used to build OAuth redirect URIs.
+   *  The gateway now runs in both IPC and standalone modes, so this is
+   *  always available — required, not optional. */
+  getPublicUrl: () => string;
   /** Override the on-disk credentials path. Used by tests. */
   tokensPath?: string;
+  /** Injection points for tests — swap the default provider instances. */
+  providerOverrides?: Record<string, OAuthProviderInterface>;
 }
 
 /** A waiter parked on `waitForProvider`. Resolved when an OAuth completes
@@ -120,10 +107,18 @@ export class AuthServiceImpl {
   private credentials: StoredCredentials = {};
   private loaded = false;
   private readonly tokensPath: string;
+  /** Provider instances keyed by providerId. `NatstackCodexProvider` for
+   *  openai-codex, plus any test overrides. */
+  private readonly oauthProviders: Record<string, OAuthProviderRegistration> = {};
+  /** Reference to the codex provider — kept alongside its `OAuthProviderInterface`
+   *  registration so the `/oauth/callback` route handler can delegate to it.
+   *  `null` only when a test's `providerOverrides` replaces openai-codex with
+   *  a non-NatstackCodex instance. */
+  private codexProvider: NatstackCodexProvider | null = null;
   /**
    * In-flight `startOAuthLogin` calls keyed by providerId. Concurrent calls
    * for the same provider get the same in-flight Promise back, so two chat
-   * panels racing to OAuth never start two local callback servers.
+   * panels racing to OAuth never start two flows.
    */
   private readonly inFlightLogins = new Map<
     string,
@@ -139,6 +134,51 @@ export class AuthServiceImpl {
 
   constructor(private readonly deps: AuthServiceDeps) {
     this.tokensPath = deps.tokensPath ?? OAUTH_TOKENS_PATH;
+
+    // openai-codex is always served by our own `NatstackCodexProvider`
+    // (gateway-hosted callback route). The gateway runs in both IPC and
+    // standalone modes, so `getPublicUrl()` resolves in both: IPC →
+    // `http://localhost:<gatewayPort>`, standalone → whatever the operator
+    // configured. No mode-specific fallback — one OAuth code path.
+    const codex = new NatstackCodexProvider({
+      getPublicUrl: deps.getPublicUrl,
+    });
+    this.codexProvider = codex;
+    this.oauthProviders["openai-codex"] = {
+      displayName: "OpenAI Codex (ChatGPT subscription)",
+      provider: codex,
+    };
+
+    // Apply test overrides.
+    if (deps.providerOverrides) {
+      for (const [id, p] of Object.entries(deps.providerOverrides)) {
+        this.oauthProviders[id] = {
+          displayName: this.oauthProviders[id]?.displayName ?? id,
+          provider: p,
+        };
+        if (id === "openai-codex") {
+          // Override dropped the NatstackCodex path — no callback handler.
+          this.codexProvider =
+            p instanceof NatstackCodexProvider ? p : null;
+        }
+      }
+    }
+  }
+
+  /** HTTP handler for `GET /_r/s/auth/oauth/callback`. Delegates to the
+   *  NatstackCodexProvider instance. Returns 404 body if the codex provider
+   *  has been overridden out. */
+  async handleOAuthCallback(
+    req: import("node:http").IncomingMessage,
+    res: import("node:http").ServerResponse,
+  ): Promise<void> {
+    if (!this.codexProvider) {
+      res.statusCode = 404;
+      res.setHeader("Content-Type", "text/plain");
+      res.end("OAuth callback handler not available");
+      return;
+    }
+    await this.codexProvider.handleCallback(req, res);
   }
 
   private async load(): Promise<void> {
@@ -167,7 +207,7 @@ export class AuthServiceImpl {
    * Throws if not configured.
    */
   async getProviderToken(providerId: string): Promise<string> {
-    const oauth = OAUTH_PROVIDERS[providerId];
+    const oauth = this.oauthProviders[providerId];
     if (oauth) {
       await this.load();
       const stored = this.credentials[providerId];
@@ -175,20 +215,20 @@ export class AuthServiceImpl {
         throw new Error(`Not logged in to ${providerId}. Use the settings panel to connect.`);
       }
 
-      // pi-ai's getOAuthApiKey reads credentials[providerId], refreshes locally
-      // if Date.now() >= creds.expires, and returns the (possibly new) creds via
-      // newCredentials. It does NOT mutate the input map. Verified in
-      // node_modules/@mariozechner/pi-ai/dist/utils/oauth/index.js:112-132.
-      const { getOAuthApiKey } = await loadPiAiOauth();
-      const result = await getOAuthApiKey(providerId, { [providerId]: stored });
-      if (!result) throw new Error(`No credentials for ${providerId}`);
-
-      // If credentials were refreshed, persist the new ones.
-      if (result.newCredentials !== stored) {
-        this.credentials[providerId] = { ...result.newCredentials, storedAt: Date.now() };
+      // Call the provider directly rather than pi-ai's getOAuthApiKey wrapper:
+      // that wrapper hardcodes lookup into pi-ai's own provider registry, so
+      // it doesn't know about `NatstackCodexProvider`. Inlining the refresh
+      // branch is five lines and keeps the provider contract the source of
+      // truth.
+      const now = Date.now();
+      let current = stored;
+      if (now >= stored.expires) {
+        const refreshed = await oauth.provider.refreshToken(stored);
+        current = { ...refreshed, storedAt: Date.now() };
+        this.credentials[providerId] = current;
         await this.persist();
       }
-      return result.apiKey;
+      return oauth.provider.getApiKey(current);
     }
 
     const envVar = ENV_API_KEY_PROVIDERS[providerId];
@@ -214,8 +254,11 @@ export class AuthServiceImpl {
    * The server opens the browser itself via `deps.openBrowser(url)`. The panel
    * UI just shows "Waiting for browser…" and never sees the URL.
    */
-  async startOAuthLogin(providerId: string): Promise<{ success: boolean; error?: string }> {
-    const oauth = OAUTH_PROVIDERS[providerId];
+  async startOAuthLogin(
+    providerId: string,
+    initiatorCallerId?: string,
+  ): Promise<{ success: boolean; error?: string }> {
+    const oauth = this.oauthProviders[providerId];
     if (!oauth) return { success: false, error: `OAuth not supported for ${providerId}` };
 
     // Layer 1: fast path — credentials already exist and resolve cleanly.
@@ -233,13 +276,29 @@ export class AuthServiceImpl {
     const promise = (async () => {
       const callbacks: OAuthLoginCallbacks = {
         onAuth: (info) => {
-          // pi-ai's loginOpenAICodex emits the auth URL via this callback after
-          // it spins up the local HTTP callback server. Open the browser server-side.
+          // Server-side open (logs URL in standalone mode; shell.openExternal
+          // in Electron-IPC mode when the user IS on the server).
           this.deps.openBrowser(info.url);
+
+          // Dispatch the URL to the initiating client only. Broadcasting
+          // would cause every connected app (desktop + mobile) to spawn its
+          // own browser tab on its own device. If delivery fails, the flow
+          // must abort: there's no safe fallback — another client shouldn't
+          // handle somebody else's login.
+          if (initiatorCallerId && this.deps.emitOpenExternalTo) {
+            const delivered = this.deps.emitOpenExternalTo(info.url, initiatorCallerId);
+            if (!delivered) {
+              throw new Error(
+                "OAuth initiator disconnected before the auth URL was ready; retry from the client",
+              );
+            }
+          }
         },
         onPrompt: async (_prompt) => {
-          // OpenAI Codex flow uses the local callback server, not manual code entry.
-          throw new Error("Manual code prompt not supported for openai-codex");
+          // NatstackCodexProvider never falls back to manual paste — its
+          // gateway callback route catches the code. If this fires, it's a
+          // bug in the provider, not user error.
+          throw new Error("Manual code prompt is not supported; this indicates an internal error");
         },
         onProgress: (_msg) => {
           // Optional progress messages — could be streamed back to the UI later.
@@ -247,11 +306,7 @@ export class AuthServiceImpl {
       };
 
       try {
-        const provider = await getOAuthProvider(providerId);
-        if (!provider) {
-          return { success: false, error: `OAuth not supported for ${providerId}` };
-        }
-        const credentials = await provider.login(callbacks);
+        const credentials = await oauth.provider.login(callbacks);
         await this.load();
         this.credentials[providerId] = { ...credentials, storedAt: Date.now() };
         await this.persist();
@@ -337,7 +392,7 @@ export class AuthServiceImpl {
   async listProviders(): Promise<ProviderStatus[]> {
     await this.load();
     const all: ProviderStatus[] = [];
-    for (const [providerId, info] of Object.entries(OAUTH_PROVIDERS)) {
+    for (const [providerId, info] of Object.entries(this.oauthProviders)) {
       all.push({
         provider: providerId,
         kind: "oauth",
@@ -358,8 +413,15 @@ export class AuthServiceImpl {
   }
 }
 
-export function createAuthService(deps: { authService: AuthServiceImpl }): ServiceDefinition {
-  return {
+/**
+ * Factory that produces the auth service's RPC definition plus the HTTP
+ * route that receives OAuth callbacks. The gateway wires the route via
+ * `RouteRegistry.registerService(routes)` alongside dispatcher registration.
+ */
+export function createAuthService(deps: {
+  authService: AuthServiceImpl;
+}): { definition: ServiceDefinition; routes: ServiceRouteDecl[] } {
+  const definition: ServiceDefinition = {
     name: "auth",
     description: "Auth tokens for AI providers (OAuth + env-var)",
     // "shell" is included because both src/renderer/components/SettingsDialog.tsx
@@ -373,13 +435,15 @@ export function createAuthService(deps: { authService: AuthServiceImpl }): Servi
       listProviders: { args: z.tuple([]) },
       waitForProvider: { args: z.tuple([z.string(), z.number().optional()]) },
     },
-    handler: async (_ctx, method, args) => {
+    handler: async (ctx, method, args) => {
       const svc = deps.authService;
       switch (method) {
         case "getProviderToken":
           return svc.getProviderToken(args[0] as string);
         case "startOAuthLogin":
-          return svc.startOAuthLogin(args[0] as string);
+          // Thread the caller's ID so open-external events can be routed
+          // back to just the initiating client (see emitOpenExternalTo).
+          return svc.startOAuthLogin(args[0] as string, ctx.callerId);
         case "logout":
           return svc.logout(args[0] as string);
         case "listProviders":
@@ -394,4 +458,14 @@ export function createAuthService(deps: { authService: AuthServiceImpl }): Servi
       }
     },
   };
+
+  const routes: ServiceRouteDecl[] = [{
+    serviceName: "auth",
+    path: CODEX_CALLBACK_PATH,
+    methods: ["GET"],
+    auth: "public",
+    handler: (req, res) => deps.authService.handleOAuthCallback(req, res),
+  }];
+
+  return { definition, routes };
 }

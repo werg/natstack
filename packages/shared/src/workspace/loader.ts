@@ -39,6 +39,22 @@ export function getCentralConfigDir(): string {
   return getCentralDataPath();
 }
 
+// Central-config dir management + admin-token helpers live in `centralAuth.ts`
+// (they're central-data concerns, not workspace concerns). Re-exported here
+// for backwards compatibility with existing importers.
+import {
+  ensureCentralConfigDir,
+  getAdminTokenPath,
+  loadPersistedAdminToken,
+  savePersistedAdminToken,
+} from "../centralAuth.js";
+export {
+  ensureCentralConfigDir,
+  getAdminTokenPath,
+  loadPersistedAdminToken,
+  savePersistedAdminToken,
+};
+
 const DATA_FILE = "data.json";
 
 /**
@@ -215,7 +231,7 @@ export function saveSecrets(secrets: Record<string, string>): void {
   const paths = getCentralConfigPaths();
 
   try {
-    fs.mkdirSync(paths.configDir, { recursive: true });
+    ensureCentralConfigDir();
     fs.writeFileSync(paths.secretsPath, YAML.stringify(secrets), "utf-8");
 
     // Update process.env with new secrets
@@ -233,7 +249,7 @@ export function saveCentralConfig(config: CentralConfig): void {
   const paths = getCentralConfigPaths();
 
   try {
-    fs.mkdirSync(paths.configDir, { recursive: true });
+    ensureCentralConfigDir();
     fs.writeFileSync(paths.configPath, YAML.stringify(config), "utf-8");
   } catch (error) {
     console.error("[Config] Failed to save central config:", error);

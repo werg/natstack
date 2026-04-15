@@ -295,6 +295,16 @@ app.on("ready", async () => {
 
   // Build event handler — receives build:complete events from server
   function handleServerEvent(event: string, payload: unknown) {
+    // event:open-external-requested — emitted by the server when an OAuth
+    // flow needs the user's default browser. The initiating Electron client
+    // opens the URL locally so this works even when the server is remote.
+    if (event === "event:open-external-requested") {
+      const { url } = payload as { url?: string };
+      if (url && /^https?:\/\//i.test(url)) {
+        void import("electron").then(({ shell }) => shell.openExternal(url));
+      }
+      return;
+    }
     if (event !== "build:complete" || !panelRegistry || !panelOrchestrator) return;
     const { source, error } = payload as { source: string; error?: string };
     const allPanels = panelRegistry.listPanels();
@@ -321,6 +331,17 @@ app.on("ready", async () => {
   try {
     performance.mark("startup:server-spawn-begin");
 
+    // Emit a synthetic "connecting" sample so the connection badge has a
+    // state to render from the very first frame (rather than flickering
+    // from empty → connected). This mirrors what ServerClient's own
+    // onConnectionStatusChanged callback will emit a few moments later
+    // once the WS lifecycle begins.
+    eventService.emit("server-connection-changed", {
+      status: "connecting",
+      isRemote: startupMode.kind === "remote",
+      remoteHost: startupMode.kind === "remote" ? startupMode.remoteUrl.hostname : undefined,
+    });
+
     // Phase 1: Establish server session (spawn or connect)
     serverSession = await establishServerSession({
       mode: startupMode,
@@ -341,6 +362,20 @@ app.on("ready", async () => {
 
     if (mainWindow) {
       mainWindow.setTitle(`NatStack — ${workspaceId}`);
+    }
+
+    // Remote-mode only: poll /healthz from main-process every 60s and emit
+    // `server-health` samples to the renderer. Local mode manages the
+    // server process directly and doesn't need polled liveness info.
+    if (startupMode.kind === "remote") {
+      const { startRemoteHealthPoll } = await import("./remoteHealthPoll.js");
+      startRemoteHealthPoll({
+        baseUrl: startupMode.remoteUrl,
+        adminToken: startupMode.adminToken,
+        caPath: startupMode.tls?.caPath,
+        fingerprint: startupMode.tls?.fingerprint,
+        eventService,
+      });
     }
 
     // CDP server (Electron-local) — must start before panel services
@@ -466,6 +501,8 @@ app.on("ready", async () => {
     // (relaunch) is signalled from the server back to Electron main via
     // ServerProcessManager.onRelaunch (wired in serverSession.ts).
     electronContainer.register(rpcService(createSettingsService({ serverClient: sc })));
+    const { createRemoteCredService } = await import("./services/remoteCredService.js");
+    electronContainer.register(rpcService(createRemoteCredService({ startupMode })));
     electronContainer.register(rpcService(createAdblockService({ adBlockManager })));
 
     // Locally-hosted services
@@ -616,6 +653,17 @@ app.on("ready", async () => {
       const result = await dialog.showOpenDialog({
         properties: ["openDirectory", "createDirectory"],
         title: opts?.title ?? "Select Folder",
+      });
+      return result.canceled ? null : result.filePaths[0] ?? null;
+    });
+    ipcMain.handle("natstack:openFileDialog", async (
+      _event,
+      opts?: { title?: string; filters?: { name: string; extensions: string[] }[] },
+    ) => {
+      const result = await dialog.showOpenDialog({
+        properties: ["openFile"],
+        title: opts?.title ?? "Select File",
+        filters: opts?.filters,
       });
       return result.canceled ? null : result.filePaths[0] ?? null;
     });

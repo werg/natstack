@@ -94,6 +94,14 @@ export interface CentralConfig {
     url?: string;
     /** Admin token for the remote server */
     token?: string;
+    /** Path to a CA certificate (PEM) for verifying self-signed HTTPS servers */
+    caPath?: string;
+    /**
+     * SHA-256 fingerprint of the expected server certificate, in colon-separated
+     * uppercase hex (e.g., "AB:CD:..."). When set, overrides normal CA verification
+     * — the connection succeeds iff the server's leaf cert matches this fingerprint.
+     */
+    fingerprint?: string;
   };
 }
 

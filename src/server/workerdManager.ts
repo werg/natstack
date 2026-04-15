@@ -17,6 +17,7 @@ import * as os from "os";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { FsService } from "@natstack/shared/fsService";
 import type { BuildResult } from "./buildV2/buildStore.js";
+import type { RouteRegistry, ManifestRouteDecl } from "./routeRegistry.js";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("WorkerdManager");
@@ -97,6 +98,18 @@ export interface WorkerdManagerDeps {
   workspacePath: string;
   /** State directory — used for DO storage (localDisk). */
   statePath: string;
+  /** Route registry for `/_r/` dispatch — optional; when absent, route
+   *  registration is a no-op and routes in package manifests have no effect. */
+  routeRegistry?: RouteRegistry;
+  /** Manifest-route lookup, keyed by source. Used alongside routeRegistry. */
+  getManifestRoutes?: (source: string) => ManifestRouteDecl[];
+}
+
+/** The canonical regular-worker instance name for a source. Matches the
+ *  sanitization that createRegularInstance applies to rawName. */
+function canonicalInstanceNameForSource(source: string): string {
+  const raw = source.split("/").pop() ?? "worker";
+  return raw.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +216,22 @@ export class WorkerdManager {
 
       instance.status = "running";
       log.info(`Worker instance "${name}" started (source: ${options.source})`);
+
+      // Register regular-worker routes only for the canonical-named instance.
+      // Non-canonical instances of the same source don't shadow routes.
+      if (this.deps.routeRegistry && this.deps.getManifestRoutes) {
+        const canonical = canonicalInstanceNameForSource(options.source);
+        if (name === canonical) {
+          const routes = this.deps.getManifestRoutes(options.source);
+          if (routes.length > 0) {
+            this.deps.routeRegistry.registerWorkerRoutes(
+              options.source,
+              name,
+              routes,
+            );
+          }
+        }
+      }
     } catch (error) {
       // Rollback: clean up token, context registration, and instance map entry
       instance.status = "error";
@@ -227,6 +256,14 @@ export class WorkerdManager {
     this.deps.fsService.unregisterCallerContext(instance.callerId);
     this.deps.fsService.closeHandlesForCaller(instance.callerId);
     this.instances.delete(name);
+
+    // Unregister regular-worker routes if this was the canonical instance.
+    if (this.deps.routeRegistry) {
+      const canonical = canonicalInstanceNameForSource(instance.source);
+      if (instance.name === canonical) {
+        this.deps.routeRegistry.unregisterWorkerRoutes(instance.source);
+      }
+    }
 
     instance.status = "stopped";
 
@@ -755,6 +792,7 @@ ${doBlock}${cases.join("\n")}
           serviceName,
           source,
         });
+        this.registerRoutesForDoClass(source, className);
         added = true;
       } catch (err) {
         log.warn(`Skipping DO class ${source}:${className} — build failed:`, err);
@@ -765,6 +803,14 @@ ${doBlock}${cases.join("\n")}
       await this.restartWorkerd();
       log.info(`Pre-registered ${this.doServices.size} DO class(es)`);
     }
+  }
+
+  /** Register DO-backed routes from a source's manifest for the given class. */
+  private registerRoutesForDoClass(source: string, className: string): void {
+    if (!this.deps.routeRegistry || !this.deps.getManifestRoutes) return;
+    const routes = this.deps.getManifestRoutes(source);
+    if (routes.length === 0) return;
+    this.deps.routeRegistry.registerDoRoutes(source, className, routes);
   }
 
   /**
@@ -787,6 +833,7 @@ ${doBlock}${cases.join("\n")}
         serviceName,
         source,
       });
+      this.registerRoutesForDoClass(source, className);
       await this.restartWorkerd();
     }
 
@@ -884,7 +931,20 @@ ${doBlock}${cases.join("\n")}
   /**
    * Called by push trigger when a worker source is rebuilt.
    * Restarts HEAD-tracking instances (no ref) running the given source.
-   * If the source has DO classes not yet registered, registers them too.
+   *
+   * DO class reconciliation:
+   *   - `doClasses === undefined`: caller doesn't know the current DO shape
+   *     for this source, leave DO services untouched (legacy/conservative
+   *     behavior).
+   *   - `doClasses` is an explicit array (possibly empty): treat it as the
+   *     authoritative current list. Classes in the list that aren't yet
+   *     registered get registered; classes registered but missing from the
+   *     list get torn down (service-level token revoked, entry removed from
+   *     `doServices`, workerd restarted).
+   *
+   * This is what lets a manifest edit that DROPS a DO class actually remove
+   * the stale workerd service on the next rebuild, rather than leaving an
+   * orphaned class bound forever.
    */
   async onSourceRebuilt(source: string, doClasses?: Array<{ className: string }>): Promise<void> {
     let needsRestart = false;
@@ -904,8 +964,23 @@ ${doBlock}${cases.join("\n")}
       }
     }
 
-    // Register any new DO classes from this source
+    // Reconcile DO services for this source against the new manifest list.
     if (doClasses) {
+      const newClassNames = new Set(doClasses.map((c) => c.className));
+
+      // 1. Remove stale DO services: entries for this source whose className
+      //    is no longer in the manifest.
+      for (const [serviceKey, svc] of Array.from(this.doServices.entries())) {
+        if (svc.source !== source) continue;
+        if (newClassNames.has(svc.className)) continue;
+        this.deps.tokenManager.revokeToken(`do-service:${serviceKey}`);
+        this.doServices.delete(serviceKey);
+        this.deps.routeRegistry?.unregisterDoRoutes(source, svc.className);
+        needsRestart = true;
+        log.info(`Unregistered stale DO class ${serviceKey} after manifest change`);
+      }
+
+      // 2. Register newly-added DO classes.
       for (const { className } of doClasses) {
         const serviceKey = `${source}:${className}`;
         if (!this.doServices.has(serviceKey)) {
@@ -919,6 +994,7 @@ ${doBlock}${cases.join("\n")}
               serviceName,
               source,
             });
+            this.registerRoutesForDoClass(source, className);
             needsRestart = true;
             log.info(`Registered new DO class ${source}:${className} from push`);
           } catch (err) {
@@ -926,6 +1002,26 @@ ${doBlock}${cases.join("\n")}
           }
         }
       }
+    }
+
+    // Reconcile routes: manifest may have added, removed, or changed route
+    // entries for this source. The registry is rebuilt from scratch for this
+    // source using the current manifest + live DO classes + canonical instance.
+    if (this.deps.routeRegistry && this.deps.getManifestRoutes) {
+      const newRoutes = this.deps.getManifestRoutes(source);
+      const liveDoClasses = new Set<string>();
+      for (const svc of this.doServices.values()) {
+        if (svc.source === source) liveDoClasses.add(svc.className);
+      }
+      const canonical = canonicalInstanceNameForSource(source);
+      const hasCanonicalInstance = this.instances.has(canonical)
+        && this.instances.get(canonical)!.source === source;
+      this.deps.routeRegistry.reconcileWorkerRoutes(
+        source,
+        newRoutes,
+        liveDoClasses,
+        hasCanonicalInstance ? canonical : null,
+      );
     }
 
     if (needsRestart) {

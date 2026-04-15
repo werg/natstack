@@ -8,11 +8,21 @@
 
 import { WebSocket } from "ws";
 import { randomUUID } from "crypto";
+import * as fs from "fs";
 import type { RpcMessage, RpcResponse } from "@natstack/rpc";
 import type {
   WsClientMessage,
   WsServerMessage,
 } from "@natstack/shared/ws/protocol";
+import { redactTokenIn } from "@natstack/shared/redact";
+import { createPinnedTlsSocket } from "./tlsPinning.js";
+
+export interface TlsPinningOptions {
+  /** Path to a CA certificate (PEM) for self-signed servers */
+  caPath?: string;
+  /** Expected leaf cert SHA-256 fingerprint (uppercase, colon-separated) */
+  fingerprint?: string;
+}
 
 interface PendingCall {
   resolve: (value: unknown) => void;
@@ -35,6 +45,8 @@ export interface ServerClient {
 export interface ServerClientOptions {
   /** Full WebSocket URL (e.g., "ws://127.0.0.1:3000" or "ws://remote.example.com:8080/rpc") */
   wsUrl?: string;
+  /** TLS pinning options — only honored for wss:// URLs */
+  tls?: TlsPinningOptions;
   /** Called when the connection is permanently lost (after all retries exhausted) */
   onDisconnect?: () => void;
   /** Called when connection status changes (for UI indicators) */
@@ -48,8 +60,40 @@ export interface ServerClientOptions {
 }
 
 /** Connect a WebSocket and authenticate. Returns the connected+authed ws. */
-async function connectAndAuth(wsUrl: string, adminToken: string): Promise<WebSocket> {
-  const ws = new WebSocket(wsUrl);
+async function connectAndAuth(wsUrl: string, adminToken: string, tlsOpts?: TlsPinningOptions): Promise<WebSocket> {
+  const isTls = wsUrl.startsWith("wss://");
+  const wsOptions: Record<string, unknown> = {};
+
+  if (isTls && tlsOpts) {
+    if (tlsOpts.caPath) {
+      try {
+        wsOptions["ca"] = fs.readFileSync(tlsOpts.caPath);
+      } catch (err) {
+        throw new Error(`Failed to read CA cert at ${tlsOpts.caPath}: ${(err as Error).message}`);
+      }
+    }
+
+    if (tlsOpts.fingerprint) {
+      // **Fingerprint pinning.** Install a `createConnection` factory that
+      // validates the leaf cert in `secureConnect` — fires between TLS
+      // handshake completion and any app-layer write, so a mismatched peer
+      // is guaranteed never to receive our `ws:auth` frame or the upgrade
+      // request. See `tlsPinning.ts`. `rejectUnauthorized: false` below
+      // only suspends Node's own CA path; the factory's secureConnect
+      // listener is what actually enforces trust.
+      wsOptions["rejectUnauthorized"] = false;
+      wsOptions["checkServerIdentity"] = () => undefined;
+
+      const expected = tlsOpts.fingerprint;
+      const wsProtocolUrl = new URL(wsUrl);
+      const host = wsProtocolUrl.hostname;
+      const port = parseInt(wsProtocolUrl.port, 10) || 443;
+      wsOptions["createConnection"] = () =>
+        createPinnedTlsSocket({ host, port, expectedFingerprint: expected });
+    }
+  }
+
+  const ws = new WebSocket(wsUrl, wsOptions);
 
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -100,6 +144,7 @@ export async function createServerClient(
   const wsUrl = options?.wsUrl ?? `ws://127.0.0.1:${serverRpcPort}`;
   const shouldReconnect = options?.reconnect ?? !!options?.wsUrl;
   const maxAttempts = options?.maxReconnectAttempts ?? 10;
+  const tls = options?.tls;
 
   let ws: WebSocket;
   let connectionStatus: ConnectionStatus = "connecting";
@@ -114,7 +159,7 @@ export async function createServerClient(
 
   function wireErrorHandler(socket: WebSocket) {
     socket.on("error", (err) => {
-      console.warn("[ServerClient] WebSocket error:", err.message);
+      console.warn("[ServerClient] WebSocket error:", redactTokenIn(err.message, adminToken));
       // The 'close' event will follow and trigger reconnection
     });
   }
@@ -184,7 +229,7 @@ export async function createServerClient(
       if (closed) return;
 
       try {
-        ws = await connectAndAuth(wsUrl, adminToken);
+        ws = await connectAndAuth(wsUrl, adminToken, tls);
         wireErrorHandler(ws);
         wireMessageHandler(ws);
         wireCloseHandler(ws);
@@ -192,7 +237,7 @@ export async function createServerClient(
         console.log(`[ServerClient] Reconnected successfully`);
         return;
       } catch (err) {
-        console.warn(`[ServerClient] Reconnect attempt ${attempt} failed:`, (err as Error).message);
+        console.warn(`[ServerClient] Reconnect attempt ${attempt} failed:`, redactTokenIn((err as Error).message, adminToken));
       }
     }
 
@@ -223,7 +268,7 @@ export async function createServerClient(
   }
 
   // Initial connection
-  ws = await connectAndAuth(wsUrl, adminToken);
+  ws = await connectAndAuth(wsUrl, adminToken, tls);
   wireErrorHandler(ws);
   wireMessageHandler(ws);
   wireCloseHandler(ws);

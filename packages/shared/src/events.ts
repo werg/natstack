@@ -24,7 +24,8 @@ export type EventName =
   | "notification:show"
   | "notification:dismiss"
   | "notification:action"
-  | "server-connection-changed";
+  | "server-connection-changed"
+  | "server-health";
 
 /**
  * Action button definition for notifications.
@@ -108,6 +109,18 @@ export interface EventPayloads {
     /** Remote server hostname (only when isRemote) */
     remoteHost?: string;
   };
+  "server-health": {
+    /** Server version string from /healthz response body. */
+    version?: string;
+    /** Process uptime in ms from /healthz. */
+    uptimeMs?: number;
+    /** workerd status — "running" or "stopped". */
+    workerd?: string;
+    /** Set when the poll failed; consumers can render "stale" state. */
+    error?: string;
+    /** Epoch ms when this sample was captured. */
+    sampledAt: number;
+  };
 }
 
 /**
@@ -130,6 +143,7 @@ export const VALID_EVENT_NAMES: EventName[] = [
   "notification:dismiss",
   "notification:action",
   "server-connection-changed",
+  "server-health",
 ];
 
 /**

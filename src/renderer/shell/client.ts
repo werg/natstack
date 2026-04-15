@@ -167,6 +167,56 @@ export const settings = {
 };
 
 // =============================================================================
+// Remote credential store
+// =============================================================================
+
+export interface RemoteCredCurrent {
+  configured: boolean;
+  isActive: boolean;
+  url?: string;
+  caPath?: string;
+  fingerprint?: string;
+  tokenPreview?: string;
+}
+
+export interface RemoteCredSaveArgs {
+  url: string;
+  token: string;
+  caPath?: string;
+  fingerprint?: string;
+}
+
+export interface TestConnectionResult {
+  ok: boolean;
+  error?: "invalid-url" | "unreachable" | "tls-mismatch" | "unauthorized" | "unknown";
+  message?: string;
+  observedFingerprint?: string;
+  serverVersion?: string;
+}
+
+export const remoteCred = {
+  getCurrent: () => rpc.call<RemoteCredCurrent>("main", "remoteCred.getCurrent"),
+  save: (args: RemoteCredSaveArgs) =>
+    rpc.call<{ ok: boolean }>("main", "remoteCred.save", args),
+  testConnection: (args: RemoteCredSaveArgs) =>
+    rpc.call<TestConnectionResult>("main", "remoteCred.testConnection", args),
+  fetchPeerFingerprint: (url: string) =>
+    rpc.call<string>("main", "remoteCred.fetchPeerFingerprint", url),
+  pickCaFile: () =>
+    rpc.call<string | null>("main", "remoteCred.pickCaFile"),
+  clear: () => rpc.call<{ ok: boolean }>("main", "remoteCred.clear"),
+  relaunch: () => rpc.call<{ ok: boolean }>("main", "remoteCred.relaunch"),
+};
+
+// =============================================================================
+// Token rotation
+// =============================================================================
+
+export const tokens = {
+  rotateAdmin: () => rpc.call<string>("main", "tokens.rotateAdmin"),
+};
+
+// =============================================================================
 // Auth Service (W1a)
 // =============================================================================
 

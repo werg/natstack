@@ -16,12 +16,20 @@ import {
   loadCentralConfig,
 } from "@natstack/shared/workspace/loader";
 import type { CentralDataManager } from "@natstack/shared/centralData";
+import { loadRemoteCredentials } from "./remoteCredentialStore.js";
 
 const log = createDevLogger("StartupMode");
 
+export interface RemoteTlsOptions {
+  /** Absolute path to a CA certificate (PEM) for self-signed servers */
+  caPath?: string;
+  /** SHA-256 fingerprint (uppercase, colon-separated) of the expected leaf cert */
+  fingerprint?: string;
+}
+
 export type StartupMode =
   | { kind: "local"; wsDir: string; workspaceId: string; isEphemeral: boolean }
-  | { kind: "remote"; remoteUrl: URL; adminToken: string };
+  | { kind: "remote"; remoteUrl: URL; adminToken: string; tls?: RemoteTlsOptions };
 
 /**
  * Parse remote startup mode from env vars, falling back to config.yml.
@@ -29,10 +37,19 @@ export type StartupMode =
  *
  * Priority: environment variables > config.yml > nothing
  */
-export function parseRemoteStartupMode(): { remoteUrl: URL; adminToken: string } | null {
+export function parseRemoteStartupMode(): { remoteUrl: URL; adminToken: string; tls?: RemoteTlsOptions } | null {
   const centralConfig = loadCentralConfig();
-  const rawUrl = process.env["NATSTACK_REMOTE_URL"] ?? centralConfig.remote?.url;
-  const adminToken = process.env["NATSTACK_REMOTE_TOKEN"] ?? centralConfig.remote?.token;
+  const stored = loadRemoteCredentials();
+
+  // Resolution order: env var → safeStorage-backed store → legacy config.yml
+  const rawUrl =
+    process.env["NATSTACK_REMOTE_URL"] ??
+    stored?.url ??
+    centralConfig.remote?.url;
+  const adminToken =
+    process.env["NATSTACK_REMOTE_TOKEN"] ??
+    stored?.token ??
+    centralConfig.remote?.token;
 
   if (!rawUrl || !adminToken) return null;
 
@@ -47,7 +64,29 @@ export function parseRemoteStartupMode(): { remoteUrl: URL; adminToken: string }
     throw new Error(`Invalid NATSTACK_REMOTE_URL: protocol must be http or https, got "${remoteUrl.protocol}"`);
   }
 
-  return { remoteUrl, adminToken };
+  const caPath =
+    process.env["NATSTACK_REMOTE_CA"] ??
+    stored?.caPath ??
+    centralConfig.remote?.caPath;
+  const fingerprint =
+    process.env["NATSTACK_REMOTE_FINGERPRINT"] ??
+    stored?.fingerprint ??
+    centralConfig.remote?.fingerprint;
+  const tls: RemoteTlsOptions | undefined =
+    caPath || fingerprint ? { caPath, fingerprint: normalizeFingerprint(fingerprint) } : undefined;
+
+  return { remoteUrl, adminToken, tls };
+}
+
+/**
+ * Normalize a fingerprint string to uppercase colon-separated hex.
+ * Accepts lowercase, spaces, or no separators.
+ */
+function normalizeFingerprint(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const hex = raw.replace(/[^0-9a-fA-F]/g, "").toUpperCase();
+  if (hex.length !== 64) return raw.toUpperCase(); // let caller surface the mismatch
+  return hex.match(/.{2}/g)!.join(":");
 }
 
 /**
@@ -70,7 +109,7 @@ export function resolveStartupMode(centralData: CentralDataManager): StartupMode
   const remote = parseRemoteStartupMode();
   if (remote) {
     log.info("[Workspace] Remote mode — workspace on server");
-    return { kind: "remote", ...remote };
+    return { kind: "remote", remoteUrl: remote.remoteUrl, adminToken: remote.adminToken, tls: remote.tls };
   }
 
   // Local mode: resolve workspace from disk

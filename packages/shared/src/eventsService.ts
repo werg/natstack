@@ -132,6 +132,30 @@ export class EventService {
   }
 
   /**
+   * Send an event to a single caller, identified by `callerId`, bypassing the
+   * pub/sub event-name subscription table. Used for initiator-scoped messages
+   * (OAuth open-browser requests, reply-to-sender patterns) where exactly one
+   * client should receive the event — even if they haven't explicitly
+   * subscribed to the event name.
+   *
+   * Returns `true` if the subscriber was present and alive, `false` otherwise.
+   * Callers should NOT fall back to broadcast on `false`; the point of this
+   * method is to avoid fanning out to other connected clients. If the target
+   * is missing (e.g. disconnected after initiating the flow), the caller must
+   * decide how to handle it — typically aborting the flow.
+   */
+  emitTo<E extends EventName>(
+    callerId: string,
+    event: E,
+    data?: EventPayloads[E],
+  ): boolean {
+    const subscriber = this.subscribersByCallerId.get(callerId);
+    if (!subscriber || !subscriber.isAlive) return false;
+    subscriber.send(`event:${event}`, data);
+    return true;
+  }
+
+  /**
    * Get the number of subscribers for an event.
    */
   getSubscriberCount(event: EventName): number {

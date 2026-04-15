@@ -115,6 +115,7 @@ interface CliArgs {
   tlsCert?: string;
   tlsKey?: string;
   printToken?: boolean;
+  publicUrl?: string;
   help?: boolean;
 }
 
@@ -139,6 +140,10 @@ Options:
   --init                   Auto-create workspace from template if it doesn't exist
   --log-level <level>      Log verbosity
   --print-token            Print the admin token in NATSTACK_ADMIN_TOKEN=... format
+  --public-url <url>       Externally-reachable base URL (e.g. https://server.lan:3000).
+                           Used for OAuth redirect URIs, webhooks, and any route that
+                           needs to be reached from the user's browser. Falls back to
+                           constructing a URL from --protocol/--host/<gatewayPort>.
   --help                   Show this help message and exit
 
 Environment variables:
@@ -150,6 +155,7 @@ Environment variables:
   NATSTACK_WORKSPACE_DIR   Workspace directory (same as --workspace-dir)
   NATSTACK_APP_ROOT        Application root (same as --app-root)
   NATSTACK_LOG_LEVEL       Log verbosity (same as --log-level)
+  NATSTACK_PUBLIC_URL      External base URL (same as --public-url)
 
 Remote Electron connection:
   To connect an Electron frontend to this server, set these env vars before
@@ -161,7 +167,7 @@ Remote Electron connection:
 
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {};
-  const known = new Set(["workspace", "workspace-dir", "app-root", "log-level", "serve-panels", "panel-port", "init", "host", "bind-host", "protocol", "tls-cert", "tls-key", "print-token", "help"]);
+  const known = new Set(["workspace", "workspace-dir", "app-root", "log-level", "serve-panels", "panel-port", "init", "host", "bind-host", "protocol", "tls-cert", "tls-key", "print-token", "public-url", "help"]);
   /** Flags that don't take a value */
   const booleanFlags = new Set(["serve-panels", "init", "print-token", "help"]);
 
@@ -248,6 +254,9 @@ function parseArgs(argv: string[]): CliArgs {
       case "print-token":
         args.printToken = true;
         break;
+      case "public-url":
+        args.publicUrl = value;
+        break;
       case "help":
         args.help = true;
         break;
@@ -287,7 +296,7 @@ if (!ipcChannel) {
 
 async function main() {
   const { setUserDataPath } = await import("@natstack/env-paths");
-  const { loadCentralEnv, resolveOrCreateWorkspace } = await import("@natstack/shared/workspace/loader");
+  const { loadCentralEnv, resolveOrCreateWorkspace, loadPersistedAdminToken, savePersistedAdminToken, getAdminTokenPath } = await import("@natstack/shared/workspace/loader");
   const { CentralDataManager } = await import("@natstack/shared/centralData");
   const { GitServer } = await import("@natstack/git-server");
   const { TokenManager } = await import("@natstack/shared/tokenManager");
@@ -407,6 +416,12 @@ async function main() {
   const dispatcher = new ServiceDispatcher();
   const container = new ServiceContainer(dispatcher);
 
+  // Route registry — shared across workerdManager (registers manifest-declared
+  // worker routes) and the gateway (dispatches `/_r/` requests). Constructed
+  // early so both consumers can wire it without awaiting other services.
+  const { RouteRegistry } = await import("./routeRegistry.js");
+  const routeRegistry = new RouteRegistry();
+
   // ── Lifecycle services ──
 
   // Foundation: pre-created instances wrapped for container participation
@@ -489,7 +504,19 @@ async function main() {
       async start(resolve) {
         const fsService = resolve<import("@natstack/shared/fsService").FsService>("fsService")!;
         const liveGitServer = resolve<import("@natstack/git-server").GitServer>("gitServer")!;
-        tokensDefinition = createTokensService({ tokenManager, fsService, gitServer: liveGitServer });
+        // Only persist the admin token centrally in standalone mode. In
+        // IPC/Electron-embedded mode the token is consumed by the parent
+        // process from the ready message, and writing it into the shared
+        // central config would leak into other workspaces.
+        const persistAdminToken = !ipcChannel
+          ? (token: string) => savePersistedAdminToken(token)
+          : undefined;
+        tokensDefinition = createTokensService({
+          tokenManager,
+          fsService,
+          gitServer: liveGitServer,
+          persistAdminToken,
+        });
       },
       getServiceDefinition() {
         if (!tokensDefinition) throw new Error("tokens service not initialized");
@@ -614,8 +641,36 @@ async function main() {
     },
   });
 
-  // Admin token: use NATSTACK_ADMIN_TOKEN env var if set, otherwise generate random.
-  const adminToken = process.env["NATSTACK_ADMIN_TOKEN"] || randomBytes(32).toString("hex");
+  // Admin token resolution (first hit wins):
+  //   1. NATSTACK_ADMIN_TOKEN env var (always overrides)
+  //   2. Persisted token at ~/.config/natstack/admin-token (survives restarts)
+  //   3. Generate a random one and persist it so remote clients can save it
+  //
+  // In IPC mode (Electron-embedded) we skip persistence: the Electron parent
+  // process consumes the token directly via the "ready" message, and writing
+  // a token for one workspace into the shared central config would leak into
+  // other workspaces.
+  let adminToken: string;
+  let tokenSource: "env" | "persisted" | "generated" = "generated";
+  if (process.env["NATSTACK_ADMIN_TOKEN"]) {
+    adminToken = process.env["NATSTACK_ADMIN_TOKEN"]!;
+    tokenSource = "env";
+  } else if (!ipcChannel) {
+    const persisted = loadPersistedAdminToken();
+    if (persisted) {
+      adminToken = persisted;
+      tokenSource = "persisted";
+    } else {
+      adminToken = randomBytes(32).toString("hex");
+      try {
+        savePersistedAdminToken(adminToken);
+      } catch (err) {
+        console.warn(`[Server] Failed to persist admin token at ${getAdminTokenPath()}:`, err);
+      }
+    }
+  } else {
+    adminToken = randomBytes(32).toString("hex");
+  }
   tokenManager.setAdminToken(adminToken);
 
   // ── RPC server (always present) ──
@@ -627,7 +682,7 @@ async function main() {
       // In IPC mode, panels now connect to the server WS, so the server's
       // RpcServer needs a panelManager for panel-to-panel RPC auth.
       // We'll wire it lazily after panelService starts.
-      const server = new RpcServer({ tokenManager, dispatcher });
+      const server = new RpcServer({ tokenManager, dispatcher, eventService });
       if (ipcChannel) {
         // IPC mode: server binds its own socket (Electron connects directly)
         await server.start();
@@ -700,15 +755,25 @@ async function main() {
           getBuild: (unitPath, ref) => buildSystemForWorkerd!.getBuild(unitPath, ref),
           workspacePath,
           statePath,
+          routeRegistry,
+          getManifestRoutes: (source) => {
+            const node = buildSystemForWorkerd?.getGraph().allNodes().find(n => n.relativePath === source);
+            const manifest = node?.manifest as import("@natstack/shared/types").PackageManifest | undefined;
+            return manifest?.routes ?? [];
+          },
         });
 
-        // Wire push trigger to restart workers on source rebuild
+        // Wire push trigger to restart workers on source rebuild.
+        //
+        // Always pass an explicit array (possibly empty) so onSourceRebuilt
+        // can reconcile removals: if a manifest edit DROPS a DO class, the
+        // array reflects that absence and the stale DO service gets torn
+        // down. Passing `undefined` would leave stale services bound forever.
         buildSystemForWorkerd.onPushBuild((source) => {
-          // Check if the rebuilt source has DO classes (from the current graph)
           const node = buildSystemForWorkerd?.getGraph().allNodes().find(n => n.relativePath === source);
           const manifest = node?.manifest as Record<string, unknown> | undefined;
           const durable = manifest?.["durable"] as { classes?: Array<{ className: string }> } | undefined;
-          const doClasses = durable?.classes;
+          const doClasses = durable?.classes ?? [];
 
           workerdManagerInstance?.onSourceRebuilt(source, doClasses).catch((err) => {
             console.error(`[WorkerdManager] Failed to handle rebuilt source ${source}:`, err);
@@ -798,11 +863,27 @@ async function main() {
   // panel UI never sees the auth URL.
   {
     const { AuthServiceImpl, createAuthService } = await import("./services/authService.js");
+    const { rpcServiceWithRoutes } = await import("./rpcServiceWithRoutes.js");
+    const { getPublicUrl } = await import("./publicUrl.js");
     const openBrowser: (url: string) => void = ipcChannel
       ? (url: string) => ipcChannel.postMessage({ type: "open-external", url })
       : (url: string) => console.log("Open URL:", url);
-    const authService = new AuthServiceImpl({ openBrowser });
-    container.register(rpcService(createAuthService({ authService })));
+    // Initiator-scoped dispatch: route the OAuth URL to only the client
+    // that started the flow. Broadcasting would fan the login URL out to
+    // every connected device, each spawning its own browser tab.
+    const emitOpenExternalTo = (url: string, initiatorCallerId: string) =>
+      eventService.emitTo(initiatorCallerId, "open-external-requested", { url });
+    const authService = new AuthServiceImpl({
+      openBrowser,
+      emitOpenExternalTo,
+      // The gateway (and therefore the public URL) runs in both IPC and
+      // standalone modes, so `getPublicUrl()` always resolves. No fallback.
+      getPublicUrl,
+    });
+    container.register(rpcServiceWithRoutes(
+      createAuthService({ authService }),
+      routeRegistry,
+    ));
   }
 
   if (!ipcChannel) {
@@ -871,6 +952,97 @@ async function main() {
     ? container.get<{ port: number }>("panelHttpServer").port
     : null;
 
+  // =========================================================================
+  // Gateway — runs in BOTH IPC and standalone modes.
+  //
+  // Standalone mode: the gateway is the only ingress. RPC flows through it
+  // via in-process dispatch (`rpcHandler`), panels and workerd are
+  // reverse-proxied, and external URLs (OAuth callbacks, webhooks) resolve to
+  // this port.
+  //
+  // IPC mode: the RPC socket lives on rpcServer's own port (Electron connects
+  // there directly — unchanged from before). The gateway still runs on a
+  // separate port *purely* to serve the `/_r/` namespace to the user's
+  // browser. That's what lets `NatstackCodexProvider` work identically in
+  // local and remote deployments: OpenAI's IdP redirects the browser to
+  // `http://127.0.0.1:${gatewayPort}/_r/s/auth/oauth/callback`, which is
+  // reachable because in IPC mode the browser runs on the same machine as
+  // the server process.
+  //
+  // This is the fix for the IPC-mode OAuth regression: previously we
+  // fell back to pi-ai's bundled `localhost:1455` callback server when no
+  // public URL was configured. That split openai-codex across two
+  // implementations with diverging behavior. Running the gateway in both
+  // modes lets us use NatstackCodexProvider everywhere.
+  // =========================================================================
+
+  const { Gateway } = await import("./gateway.js");
+  const panelHttpServer = container.has("panelHttpServer")
+    ? container.get<{ server: import("./panelHttpServer.js").PanelHttpServer }>("panelHttpServer")?.server
+    : null;
+
+  const startedAt = Date.now();
+  const isTlsInitial = !!(hostConfig.tlsCert && hostConfig.tlsKey);
+  const gateway = new Gateway({
+    rpcHandler: rpcServerInstance,
+    panelHttpHandler: panelHttpServer ?? undefined,
+    gitPort: gitServer.getPort(),
+    workerdPort: workerdMgr?.getPort() ?? null,
+    externalHost: hostConfig.externalHost,
+    bindHost: hostConfig.bindHost,
+    tlsCert: hostConfig.tlsCert,
+    tlsKey: hostConfig.tlsKey,
+    adminToken,
+    routeRegistry,
+    healthProvider: (detailed) => {
+      const base: Record<string, unknown> = {
+        ok: true,
+        protocol: isTlsInitial ? "https" : "http",
+      };
+      if (!detailed) return base;
+      return {
+        ...base,
+        version: "0.1.0",
+        uptimeMs: Date.now() - startedAt,
+        workerd: workerdMgr?.getPort() ? "running" : "stopped",
+        tokenSource,
+      };
+    },
+  });
+  const gatewayPort = await gateway.start(0);
+
+  // Publish the externally-reachable base URL. Resolution:
+  //   1. --public-url / NATSTACK_PUBLIC_URL (explicit override for reverse-
+  //      proxy setups where the server sees different hostnames than users).
+  //   2. `${protocol}://${externalHost}:${gatewayPort}` — works for loopback
+  //      IPC mode (127.0.0.1) and for direct-binding standalone mode.
+  {
+    const { configurePublicUrl } = await import("./publicUrl.js");
+    configurePublicUrl({
+      override: args.publicUrl ?? process.env["NATSTACK_PUBLIC_URL"],
+      protocol: isTlsInitial ? "https" : "http",
+      externalHost: hostConfig.externalHost,
+      gatewayPort,
+    });
+  }
+
+  if (!ipcChannel) {
+    // Standalone: gateway IS the RPC ingress — propagate its port so
+    // rpcServer.getPort() + panel URL generation see the real port.
+    rpcServerInstance.setPort(gatewayPort);
+
+    const panelServiceData = container.get<{ urlConfig: import("./services/panelService.js").PanelUrlConfig }>("panelService");
+    if (panelServiceData?.urlConfig) {
+      panelServiceData.urlConfig.finalizeForGateway(gatewayPort);
+    }
+
+    // Restart workerd so DO/worker bindings pick up the real RPC port (they
+    // started with 0 because the gateway hadn't bound yet).
+    if (workerdMgr) {
+      await workerdMgr.restartAll();
+    }
+  }
+
   if (ipcChannel) {
     ipcChannel.postMessage({
       type: "ready",
@@ -879,44 +1051,10 @@ async function main() {
       pubsubPort: 0, // deprecated — channel DOs replace PubSub server
       workerdPort: workerdMgr?.getPort() ?? 0,
       panelHttpPort: panelHttpPort ?? 0,
+      gatewayPort,
       adminToken,
     });
   } else {
-    // Start gateway in standalone mode — in-process routing for RPC + panels
-    const { Gateway } = await import("./gateway.js");
-    const panelHttpServer = container.has("panelHttpServer")
-      ? container.get<{ server: import("./panelHttpServer.js").PanelHttpServer }>("panelHttpServer")?.server
-      : null;
-
-    const gateway = new Gateway({
-      rpcHandler: rpcServerInstance,
-      panelHttpHandler: panelHttpServer ?? undefined,
-      gitPort: gitServer.getPort(),
-      workerdPort: workerdMgr?.getPort() ?? null,
-      externalHost: hostConfig.externalHost,
-      bindHost: hostConfig.bindHost,
-      tlsCert: hostConfig.tlsCert,
-      tlsKey: hostConfig.tlsKey,
-    });
-    const gatewayPort = await gateway.start(0);
-
-    // Back-propagate gateway port: all services that read rpcServer.getPort()
-    // now see the gateway port instead of 0.
-    rpcServerInstance.setPort(gatewayPort);
-
-    // Update panel-facing URLs to route through the gateway
-    const panelServiceData = container.get<{ urlConfig: import("./services/panelService.js").PanelUrlConfig }>("panelService");
-    if (panelServiceData?.urlConfig) {
-      panelServiceData.urlConfig.finalizeForGateway(gatewayPort);
-    }
-
-    // Restart workerd so DO/worker bindings pick up the real gateway port.
-    // The initial startup ran with getRpcPort() === 0 because the gateway
-    // hadn't bound yet. This restart regenerates the config with the real port.
-    if (workerdMgr) {
-      await workerdMgr.restartAll();
-    }
-
     // Register for browser extension auto-discovery (idempotent file writes)
     const { registerHeadlessService } = await import("./headlessServiceRegistration.js");
     try {
@@ -950,8 +1088,15 @@ async function main() {
     if (panelHttpPort) {
       console.log(`  Panels:      ${proto}://${hostConfig.externalHost}:${panelHttpPort}`);
     }
-    console.log(`  Admin token: ${adminToken}`);
+    const sourceLabel =
+      tokenSource === "env" ? " (from NATSTACK_ADMIN_TOKEN)"
+      : tokenSource === "persisted" ? " (persisted)"
+      : " (newly generated — copy this into your client; it will survive restarts)";
+    console.log(`  Admin token: ${adminToken}${sourceLabel}`);
     console.log(`  Token file:  ${tokenFilePath}`);
+    if (tokenSource !== "env") {
+      console.log(`  Persisted:   ${getAdminTokenPath()}`);
+    }
     // Mint a shell token for mobile/remote shell clients.
     // Shell tokens give callerKind "shell" (not "server"), which is the correct
     // privilege level for browser chrome operations.

@@ -14,6 +14,7 @@ Guide new users through understanding NatStack and getting their workspace set u
 | [OVERVIEW.md](OVERVIEW.md) | What NatStack is, key concepts, architecture at a glance |
 | [WORKSPACE_STRUCTURE.md](WORKSPACE_STRUCTURE.md) | Workspace directory layout, meta/, context folders, template vs live |
 | [GETTING_STARTED.md](GETTING_STARTED.md) | First-time setup: workspace, browser import, first panel |
+| [REMOTE_SERVER.md](REMOTE_SERVER.md) | Running the state server on a different machine (home server, VPS) and connecting desktop/mobile clients to it |
 
 ## Related Skills
 

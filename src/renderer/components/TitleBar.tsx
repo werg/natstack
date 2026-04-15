@@ -14,6 +14,8 @@ import { useTouchDevice } from "@workspace/react/responsive";
 
 import { useNavigation } from "./NavigationContext";
 import { panel } from "../shell/client";
+import { ConnectionStatusBadge } from "./ConnectionStatusBadge";
+import { ConnectionSettingsDialog } from "./ConnectionSettingsDialog";
 
 const isMac = process.platform === "darwin";
 
@@ -42,6 +44,7 @@ export function TitleBar({ title, onNavigateToId, onPanelAction, onArchive }: Ti
     lazyTitleNavigation: navigationData,
     lazyStatusNavigation: statusNavigation,
   } = useNavigation();
+  const [connectionSettingsOpen, setConnectionSettingsOpen] = useState(false);
 
   const handleNavigationToggle = () => {
     const nextMode: NavigationMode = navigationMode === "stack" ? "tree" : "stack";
@@ -134,9 +137,18 @@ export function TitleBar({ title, onNavigateToId, onPanelAction, onArchive }: Ti
           />
         </Box>
 
-        {/* Right side: spacer for native window controls (titleBarOverlay) - Windows/Linux only */}
-        {!isMac && <Box style={{ width: "138px" }} />}
+        {/* Right side: connection badge + spacer for native window controls */}
+        <Flex
+          align="center"
+          gap="1"
+          style={{ appRegion: "no-drag", WebkitAppRegion: "no-drag" } as CSSProperties}
+        >
+          <ConnectionStatusBadge onOpenSettings={() => setConnectionSettingsOpen(true)} />
+          {!isMac && <Box style={{ width: "138px" }} />}
+        </Flex>
       </Flex>
+
+      <ConnectionSettingsDialog open={connectionSettingsOpen} onOpenChange={setConnectionSettingsOpen} />
     </Box>
   );
 }

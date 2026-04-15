@@ -106,7 +106,7 @@ export async function establishServerSession(args: {
 
   if (mode.kind === "remote") {
     // Remote mode: connect to existing server with automatic reconnection
-    const { remoteUrl, adminToken } = mode;
+    const { remoteUrl, adminToken, tls } = mode;
     externalHost = remoteUrl.hostname;
     protocol = remoteUrl.protocol === "https:" ? "https" : "http";
     const remotePort = parseInt(remoteUrl.port) || (protocol === "https" ? 443 : 80);
@@ -116,6 +116,7 @@ export async function establishServerSession(args: {
 
     serverClient = await createServerClient(remotePort, adminToken, {
       wsUrl: rpcWsUrl,
+      tls,
       reconnect: true,
       maxReconnectAttempts: 10,
       onConnectionStatusChanged: (status) => {
