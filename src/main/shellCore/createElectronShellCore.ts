@@ -9,6 +9,7 @@ export function createElectronShellCore(deps: {
   statePath: string;
   workspaceId: string;
   workspacePath: string;
+  allowMissingManifests?: boolean;
   registry: PanelRegistry;
   serverClient: ServerClient;
   protocol: "http" | "https";
@@ -31,6 +32,7 @@ export function createElectronShellCore(deps: {
     store,
     registry: deps.registry,
     workspacePath: deps.workspacePath,
+    allowMissingManifests: deps.allowMissingManifests,
     searchIndex,
     workspaceConfig: deps.workspaceConfig,
     serverInfo: {

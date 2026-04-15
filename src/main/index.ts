@@ -394,6 +394,9 @@ app.on("ready", async () => {
       statePath: serverSession.statePath,
       workspaceId: serverSession.workspaceId,
       workspacePath: serverSession.workspacePath,
+      // In remote mode the workspace source tree lives on the server, so the
+      // Electron process cannot require local panel manifests during bootstrap.
+      allowMissingManifests: startupMode.kind === "remote",
       registry: panelRegistry,
       serverClient: serverSession.serverClient,
       protocol: serverSession.protocol,
