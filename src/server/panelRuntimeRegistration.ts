@@ -70,7 +70,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
           protocol,
           externalHost,
           gitBaseUrl: `${protocol}://${externalHost}:${gitServer.getPort()}`,
-          pubsubBaseUrl: wkrdPort ? `${wsProto}://default.${externalHost}:${wkrdPort}` : "",
+          pubsubBaseUrl: wkrdPort ? `${wsProto}://${externalHost}:${wkrdPort}` : "",
           gatewayPort: 0,
         });
 

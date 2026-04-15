@@ -12,8 +12,9 @@ import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { PanelViewLike, ServerInfoLike } from "@natstack/shared/panelInterfaces";
 import { BROWSER_SESSION_PARTITION } from "@natstack/shared/panelInterfaces";
 import { getCurrentSnapshot, getPanelSource, getPanelContextId } from "@natstack/shared/panelTypes";
-import { contextIdToSubdomain } from "@natstack/shared/panelIdUtils";
+import { contextIdToPartition } from "@natstack/shared/contextIdToPartition.js";
 import { buildPanelUrl } from "@natstack/shared/panelFactory";
+import { isManagedHost, parsePanelUrl } from "@natstack/shared/shell/urlParsing.js";
 import type { Panel } from "@natstack/shared/types";
 import { logMemorySnapshot } from "./memoryMonitor.js";
 // Persistence removed — server panel service handles all persistence
@@ -47,13 +48,6 @@ interface AutofillManagerLike {
   attachToWebContents(webContentsId: number, webContents: Electron.WebContents): void;
   detachFromWebContents(webContentsId: number, webContents?: Electron.WebContents): void;
 }
-
-type ParsedPanelUrl = {
-  source: string;
-  contextId?: string;
-  options: { name?: string; contextId?: string; focus?: boolean };
-  stateArgs?: Record<string, unknown>;
-};
 
 export class PanelView implements PanelViewLike {
   private viewManager: ViewManager;
@@ -117,6 +111,7 @@ export class PanelView implements PanelViewLike {
     const view = this.viewManager.createView({
       id: panelId, type: "panel", preload: this.panelPreloadPath ?? null,
       url, parentId: parentId ?? undefined,
+      partition: contextId ? contextIdToPartition(contextId) : undefined,
       injectHostThemeVariables: true,
     });
 
@@ -353,7 +348,7 @@ export class PanelView implements PanelViewLike {
   private setupLinkInterception(panelId: string, contents: Electron.WebContents): void {
     contents.setWindowOpenHandler((details) => {
       const url = details.url;
-      const parsed = this.parseLocalhostUrl(url);
+      const parsed = parsePanelUrl(url, this.externalHost);
       if (parsed) {
         void this.panelOrchestrator.createPanel(panelId, parsed.source, parsed.options, parsed.stateArgs)
           .catch((err: unknown) => this.handleChildCreationError(panelId, err, url));
@@ -371,7 +366,7 @@ export class PanelView implements PanelViewLike {
     });
 
     const willNavigateHandler = (event: Electron.Event, url: string) => {
-      if (!this.isManagedHost(url)) {
+      if (!isManagedHost(url, this.externalHost)) {
         if (/^https?:\/\//i.test(url)) {
           event.preventDefault();
           void this.panelOrchestrator.createBrowserPanel(panelId, url, { focus: true })
@@ -385,53 +380,23 @@ export class PanelView implements PanelViewLike {
 
       const panel = this.panelRegistry.getPanel(panelId);
       if (!panel) return;
+      const parsed = parsePanelUrl(url, this.externalHost);
+      if (!parsed) return;
 
-      const currentSubdomain = contextIdToSubdomain(getPanelContextId(panel));
-      try {
-        const targetUrl = new URL(url);
-        const hostSuffix = `.${this.externalHost}`;
-        const targetSubdomain = targetUrl.hostname.endsWith(hostSuffix)
-          ? targetUrl.hostname.slice(0, -hostSuffix.length) : null;
-        if (!targetSubdomain || targetSubdomain === currentSubdomain) return;
+      const currentSource = getPanelSource(panel);
+      const currentContextId = getPanelContextId(panel);
+      const targetContextId = parsed.contextId ?? currentContextId;
+      const sourceChanged = parsed.source !== currentSource;
+      const contextChanged = targetContextId !== currentContextId;
+      if (!sourceChanged && !contextChanged) return;
 
-        event.preventDefault();
-        void this.handleCrossContextNavigation(panelId, panel, targetUrl, targetSubdomain)
-          .catch((err) => log.warn(`[CrossCtx] Navigation failed for ${panelId}:`, err));
-      } catch { /* not a valid URL */ }
+      event.preventDefault();
+      void this.handleManagedNavigation(panelId, panel, parsed.source, targetContextId, parsed.stateArgs)
+        .catch((err) => log.warn(`[PanelNav] Navigation failed for ${panelId}:`, err));
     };
 
     this.linkInterceptionHandlers.set(panelId, willNavigateHandler);
     contents.on("will-navigate", willNavigateHandler);
-  }
-
-  /** Check if a URL targets our managed host (with or without explicit port). */
-  private isManagedHost(url: string): boolean {
-    try {
-      const u = new URL(url);
-      return u.hostname.endsWith(`.${this.externalHost}`) || u.hostname === this.externalHost;
-    } catch { return false; }
-  }
-
-  private parseLocalhostUrl(url: string): ParsedPanelUrl | null {
-    try {
-      const u = new URL(url);
-      if (!u.hostname.endsWith(`.${this.externalHost}`) && u.hostname !== this.externalHost) return null;
-
-      const match = u.pathname.match(/^\/([^/]+\/[^/]+)(\/.*)?$/);
-      if (!match) return null;
-      const source = match[1]!;
-      if ((match[2] || "/") !== "/") return null;
-      return {
-        source,
-        contextId: u.searchParams.get("contextId") ?? undefined,
-        options: {
-          contextId: u.searchParams.get("contextId") ?? undefined,
-          name: u.searchParams.get("name") ?? undefined,
-          focus: u.searchParams.get("focus") === "true" || undefined,
-        },
-        stateArgs: u.searchParams.has("stateArgs") ? (() => { try { return JSON.parse(u.searchParams.get("stateArgs")!); } catch { return undefined; } })() : undefined,
-      };
-    } catch { return null; }
   }
 
   private cleanupLinkInterception(panelId: string, contents?: Electron.WebContents): void {
@@ -448,26 +413,21 @@ export class PanelView implements PanelViewLike {
     this.sendPanelEvent?.(parentId, "runtime:child-creation-error", { url, error: message });
   }
 
-  // ==== Cross-context navigation ============================================
+  // ==== Managed navigation ==================================================
 
   /**
-   * Handle cross-subdomain navigation by updating the panel identity in the
-   * shell first, then navigating the existing WebContents to the new origin.
+   * Handle navigation to another managed panel source and/or context by
+   * updating shell state first, then recreating the view when the storage
+   * partition changes.
    */
-  private async handleCrossContextNavigation(
-    panelId: string, panel: Panel, targetUrl: URL, targetSubdomain: string,
+  private async handleManagedNavigation(
+    panelId: string,
+    panel: Panel,
+    source: string,
+    newContextId: string,
+    stateArgs?: Record<string, unknown>,
   ): Promise<void> {
-    const pathMatch = targetUrl.pathname.match(/^\/([^/]+\/[^/]+)(\/.*)?$/);
-    if (!pathMatch) { log.warn(`[CrossCtx] Cannot parse source from URL: ${targetUrl.href}`); return; }
-    const source = pathMatch[1]!;
-
-    let stateArgs: Record<string, unknown> | undefined;
-    if (targetUrl.searchParams.has("stateArgs")) {
-      try { stateArgs = JSON.parse(targetUrl.searchParams.get("stateArgs")!); } catch (e) { log.warn(`[CrossCtx] Invalid stateArgs JSON:`, e); }
-    }
-
-    const newContextId = targetUrl.searchParams.get("contextId") ?? targetSubdomain;
-    log.info(`[CrossCtx] Panel ${panelId}: context switch ${contextIdToSubdomain(getPanelContextId(panel))} -> ${targetSubdomain} (source: ${source})`);
+    log.info(`[PanelNav] Panel ${panelId}: ${getPanelSource(panel)} -> ${source} (context ${getPanelContextId(panel)} -> ${newContextId})`);
 
     const nextUrl = buildPanelUrl({
       source,
@@ -480,13 +440,20 @@ export class PanelView implements PanelViewLike {
     const oldSource = panel.snapshot.source;
     const oldContextId = panel.snapshot.contextId;
     const oldStateArgs = panel.snapshot.stateArgs;
+    const wasVisible = this.viewManager.isViewVisible(panelId);
     panel.snapshot.source = source;
     panel.snapshot.contextId = newContextId;
     if (stateArgs !== undefined) panel.snapshot.stateArgs = stateArgs;
 
     try {
       await this.panelOrchestrator.updatePanelContext(panelId, newContextId, source, stateArgs);
-      await this.viewManager.navigateView(panelId, nextUrl);
+      if (this.viewManager.hasView(panelId)) {
+        this.destroyView(panelId);
+      }
+      await this.createViewForPanel(panelId, nextUrl, newContextId);
+      if (wasVisible) {
+        this.viewManager.setViewVisible(panelId, true);
+      }
     } catch (err) {
       panel.snapshot.source = oldSource;
       panel.snapshot.contextId = oldContextId;

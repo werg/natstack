@@ -1178,4 +1178,3 @@ export class ViewManager {
     }
   }
 }
-

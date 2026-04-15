@@ -39,7 +39,7 @@ cache:
 # take precedence over these values.
 
 # remote:
-#   url: http://my-server.example.com:3000
+#   url: https://my-server.example.com:3000
 #   token: your-admin-token-here
 
 # ============================================================================

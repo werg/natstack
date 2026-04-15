@@ -14,32 +14,63 @@ Remote mode:
 
 In remote mode, all server-side operations (build, git, workerd, panel HTTP, AI, etc.) run on the remote server. The Electron app acts as a thin shell that renders panels and forwards all RPC calls over a WebSocket connection to the gateway.
 
+Panel URLs are now path-based on the managed host, with storage isolation
+coming from the panel `contextId` mapped to an Electron session partition. That
+means remote mode no longer depends on wildcard DNS for `ctx-...` subdomains.
+
+Remote panel mode does still require a trustworthy browser origin. In practice:
+
+- Use `https://...` for any non-loopback remote server.
+- Plain `http://...` is only supported for loopback hosts such as
+  `localhost`, `*.localhost`, `127.0.0.1`, or `::1`.
+- If you point `NATSTACK_REMOTE_URL` at a non-loopback `http://` origin, the
+  client now fails fast on startup instead of loading panels with a reduced web
+  API surface.
+
 ## Setting Up the Server
 
 ### 1. Start the server in standalone mode
 
 ```bash
-node dist/server/index.js \
+pnpm server -- \
   --workspace my-workspace \
   --host my-server.example.com \
   --serve-panels \
   --init
 ```
 
+In a source checkout, use dev mode when you want `--init` to create the managed
+workspace from the repo's checked-in `workspace/` template instead of a bare
+workspace:
+
+```bash
+pnpm server:dev -- \
+  --workspace my-workspace \
+  --host my-server.example.com \
+  --serve-panels \
+  --init
+```
+
+`pnpm server:dev` sets `NODE_ENV=development` before launching `dist/server.mjs`.
+That matters for local smoke tests from a repo checkout because a freshly
+initialized managed workspace will include `panels/chat` and the other built-in
+units. Without it, first-run `--init` falls back to `workspace-template/` and
+may create a bare workspace if that template is not present.
+
 Use `--help` for a full list of options:
 
 ```bash
-node dist/server/index.js --help
+pnpm server -- --help
 ```
 
 The server will print its gateway URL and admin token on startup:
 
 ```
 natstack-server ready:
-  Gateway:     http://my-server.example.com:38291
+  Gateway:     https://my-server.example.com:38291
   Git:         (via gateway /_git/)
   Workerd:     (via gateway /_w/)
-  RPC:         ws://my-server.example.com:38291/rpc
+  RPC:         wss://my-server.example.com:38291/rpc
   Admin token: a1b2c3d4e5...
   Token file:  /path/to/workspace/state/admin-token
 ```
@@ -112,7 +143,7 @@ store and relaunches for you.
 To serve over HTTPS directly (without a reverse proxy):
 
 ```bash
-node dist/server/index.js \
+pnpm server -- \
   --workspace my-workspace \
   --host my-server.example.com \
   --tls-cert /path/to/cert.pem \
@@ -123,6 +154,10 @@ node dist/server/index.js \
 Both `--tls-cert` and `--tls-key` must be provided together. When TLS is enabled, the gateway serves HTTPS and the RPC endpoint accepts WSS connections.
 
 Alternatively, place a reverse proxy (nginx, caddy) in front and use `--protocol https` to tell NatStack that panel-facing URLs should use HTTPS.
+
+For remote Electron clients on another machine, HTTPS is the normal deployment
+shape. Browser APIs available to panels differ on insecure origins, so
+non-loopback `http://` remotes are intentionally rejected by the client.
 
 ## Connecting the Electron App
 
@@ -193,6 +228,7 @@ forward.
 ### What happens on connect
 
 1. Electron parses the remote URL and validates it (must be http or https)
+   It must also be a trustworthy origin: `https://...`, or loopback `http://...`.
 2. Opens a WebSocket to `ws[s]://<host>:<port>/rpc`
 3. Authenticates with the admin token
 4. Fetches workspace metadata from the server via RPC

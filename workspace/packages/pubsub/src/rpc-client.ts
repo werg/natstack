@@ -245,18 +245,9 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   }
   const methodCallStates = new Map<string, MethodCallState>();
 
-  function randomId(): string {
-    const cryptoObj = (globalThis as unknown as { crypto?: { randomUUID(): string } }).crypto;
-    if (cryptoObj?.randomUUID) return cryptoObj.randomUUID();
-    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-      const r = (Math.random() * 16) | 0;
-      return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
-    });
-  }
-
   // Stable for the lifetime of this client instance. Re-subscribe attempts
   // reuse it; a panel reload creates a new one.
-  const participantSessionId = randomId();
+  const participantSessionId = crypto.randomUUID();
 
   function handleError(error: PubSubError): void {
     for (const handler of errorHandlers) handler(error);
@@ -956,7 +947,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       idempotencyKey?: string;
     },
   ): Promise<{ messageId: string; pubsubId: number | undefined }> {
-    const id = randomId();
+    const id = crypto.randomUUID();
     const messagePayload: Record<string, unknown> = { id, content };
     if (sendOptions?.replyTo) messagePayload["replyTo"] = sendOptions.replyTo;
     if (sendOptions?.contentType) messagePayload["contentType"] = sendOptions.contentType;
@@ -1001,7 +992,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     args?: unknown,
     callOptions?: { timeoutMs?: number },
   ): MethodCallHandle {
-    const callId = randomId();
+    const callId = crypto.randomUUID();
 
     let resolveResult!: (value: MethodResultValue) => void;
     let rejectResult!: (error: Error) => void;

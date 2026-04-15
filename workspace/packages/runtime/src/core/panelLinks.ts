@@ -1,17 +1,18 @@
 /**
  * Link builders for HTTP-based panel navigation.
  *
- * Panels are served at `http://{subdomain}.localhost:{port}/{source}/`.
+ * Panels are served at `https?://{host}:{port}/{source}/`.
  * These builders produce relative paths for same-context navigation or
- * absolute URLs for cross-context navigation (different subdomain).
+ * absolute URLs for cross-context navigation on the current managed host.
  * Query parameters carry options like contextId, stateArgs, etc.
  */
 
 export interface BuildPanelLinkOptions {
   /**
    * Context ID for storage partition sharing.
-   * When provided, buildPanelLink produces an absolute URL with the correct
-   * subdomain for cross-context navigation. Omit for same-context (relative URL).
+   * When provided, buildPanelLink produces an absolute URL on the current
+   * managed host for cross-context navigation. Omit for same-context
+   * navigation (relative URL).
    */
   contextId?: string;
   /** State arguments for the panel (user state, validated against manifest schema) */
@@ -41,8 +42,8 @@ export function contextIdToSubdomain(contextId: string): string {
  * Build a URL for navigating to a panel.
  *
  * - Same-context (no contextId): returns a relative URL (e.g., "/panels/chat/")
- * - Cross-context (with contextId): returns an absolute URL with the target subdomain
- *   (e.g., "http://ctx-abc.localhost:5173/panels/chat/?stateArgs=...")
+ * - Cross-context (with contextId): returns an absolute URL on the current host
+ *   (e.g., "https://natstack.example.com/panels/chat/?contextId=ctx-abc")
  *
  * @param source - Workspace-relative source path (e.g., "panels/editor")
  * @param options - Optional navigation options
@@ -56,7 +57,7 @@ export function contextIdToSubdomain(contextId: string): string {
  *
  * // Cross-context navigation (absolute URL)
  * buildPanelLink("panels/chat", { contextId: "abc-123", stateArgs: { foo: 1 } })
- * // => "http://abc-123.localhost:5173/panels/chat/?stateArgs=..."
+ * // => "https://natstack.example.com/panels/chat/?contextId=abc-123&stateArgs=..."
  * ```
  */
 export function buildPanelLink(source: string, options?: BuildPanelLinkOptions): string {
@@ -71,13 +72,10 @@ export function buildPanelLink(source: string, options?: BuildPanelLinkOptions):
   const query = params.toString();
   const relativePath = `/${encodedPath}/${query ? `?${query}` : ""}`;
 
-  // Cross-context: absolute URL with target subdomain
+  // Cross-context: absolute URL on the current managed host
   if (options?.contextId) {
-    const subdomain = contextIdToSubdomain(options.contextId);
-    // Derive port from current page context (works in both Electron and browser)
-    const port = typeof window !== "undefined" ? window.location.port : "";
-    const portSuffix = port ? `:${port}` : "";
-    return `http://${subdomain}.localhost${portSuffix}${relativePath}`;
+    if (typeof window === "undefined") return relativePath;
+    return `${window.location.origin}${relativePath}`;
   }
 
   return relativePath;

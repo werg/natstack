@@ -96,6 +96,19 @@ describe("parseRemoteStartupMode priority", () => {
     expect(() => mod.parseRemoteStartupMode()).toThrow(/http or https/i);
   });
 
+  it("accepts loopback HTTP origins", () => {
+    process.env["NATSTACK_REMOTE_URL"] = "http://localhost:1455";
+    process.env["NATSTACK_REMOTE_TOKEN"] = "t";
+    const result = mod.parseRemoteStartupMode()!;
+    expect(result.remoteUrl.href).toBe("http://localhost:1455/");
+  });
+
+  it("rejects non-loopback HTTP origins", () => {
+    process.env["NATSTACK_REMOTE_URL"] = "http://server.example.com:1455";
+    process.env["NATSTACK_REMOTE_TOKEN"] = "t";
+    expect(() => mod.parseRemoteStartupMode()).toThrow(/requires HTTPS, or loopback HTTP/i);
+  });
+
   it("returns null if URL or token is partially set", () => {
     process.env["NATSTACK_REMOTE_URL"] = "https://a:1";
     // no token

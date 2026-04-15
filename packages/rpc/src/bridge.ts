@@ -10,11 +10,7 @@ import type {
 } from "./types.js";
 
 function generateRequestId(): string {
-  const cryptoObj = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
-  if (cryptoObj?.randomUUID) {
-    return cryptoObj.randomUUID();
-  }
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return crypto.randomUUID();
 }
 
 function getTimeoutMs(config: RpcBridgeConfig, method: string): number {

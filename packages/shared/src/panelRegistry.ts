@@ -15,6 +15,7 @@
 import { createDevLogger } from "@natstack/dev-log";
 import type { Panel, PanelArtifacts, PanelInfo, PanelSummary } from "./types.js";
 import { getPanelSource, getPanelContextId } from "./panel/accessors.js";
+import { contextIdToPartition } from "./contextIdToPartition.js";
 import { contextIdToSubdomain } from "./contextIdToSubdomain.js";
 import type { PanelRelationshipProvider } from "./panelInterfaces.js";
 
@@ -124,7 +125,7 @@ export class PanelRegistry implements PanelRelationshipProvider {
     const contextId = getPanelContextId(panel);
     return {
       panelId: panel.id,
-      partition: contextId,
+      partition: contextIdToPartition(contextId),
       contextId,
     };
   }

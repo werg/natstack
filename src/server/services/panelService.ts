@@ -55,7 +55,7 @@ export class PanelUrlConfig {
     const wsProto = this.protocol === "https" ? "wss" : "ws";
     this._gatewayPort = port;
     this._gitBaseUrl = `${this.protocol}://${this.externalHost}:${port}/_git`;
-    this._pubsubBaseUrl = `${wsProto}://default.${this.externalHost}:${port}`;
+    this._pubsubBaseUrl = `${wsProto}://${this.externalHost}:${port}`;
   }
 }
 

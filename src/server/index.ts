@@ -160,7 +160,7 @@ Environment variables:
 Remote Electron connection:
   To connect an Electron frontend to this server, set these env vars before
   launching the Electron app:
-    NATSTACK_REMOTE_URL=http://<host>:<gateway-port>
+    NATSTACK_REMOTE_URL=https://<host>:<gateway-port>
     NATSTACK_REMOTE_TOKEN=<admin-token>
 `);
 }

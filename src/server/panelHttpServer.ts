@@ -357,6 +357,18 @@ export class PanelHttpServer {
     const pathname = url.pathname;
     const subdomain = extractSubdomain(req.headers.host ?? "", this.externalHost);
 
+    // ── Static runtime helpers (served on both bare host and legacy subdomains) ──
+    if (pathname === "/__loader.js") {
+      res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "public, max-age=3600" });
+      res.end(CONFIG_LOADER_JS);
+      return;
+    }
+    if (pathname === "/__transport.js") {
+      res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "public, max-age=3600" });
+      res.end(BROWSER_TRANSPORT_JS);
+      return;
+    }
+
     // ── Management API on bare host (no subdomain) ───────────────────────
     if (!subdomain && pathname.startsWith("/api/")) {
       this.handleManagementApiRequest(req, res, url, pathname);
@@ -369,43 +381,26 @@ export class PanelHttpServer {
       return;
     }
 
-    // ── Subdomain routing ────────────────────────────────────────────────
-    if (subdomain) {
-      // Static scripts (no auth required)
-      if (pathname === "/__loader.js") {
-        res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "public, max-age=3600" });
-        res.end(CONFIG_LOADER_JS);
-        return;
-      }
-      if (pathname === "/__transport.js") {
-        res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "public, max-age=3600" });
-        res.end(BROWSER_TRANSPORT_JS);
-        return;
-      }
-
-      const parsed = extractSourcePath(pathname);
-      if (parsed) {
-        // HTML (page load): always resolve through getBuild to ensure freshness.
-        // Sub-resources (JS/CSS/assets): serve from servingCache (keyed by source).
-        const ref = url.searchParams.get("ref") || undefined;
-        const isHtmlRequest = parsed.resource === "/" || parsed.resource === "/index.html";
-        if (isHtmlRequest) {
-          await this.resolveAndServeBuild(res, parsed.source, subdomain, true, ref);
+    const parsed = extractSourcePath(pathname);
+    if (parsed) {
+      const routeLabel = url.searchParams.get("contextId") || subdomain || parsed.source;
+      const ref = url.searchParams.get("ref") || undefined;
+      const isHtmlRequest = parsed.resource === "/" || parsed.resource === "/index.html";
+      if (isHtmlRequest) {
+        await this.resolveAndServeBuild(res, parsed.source, routeLabel, true, ref);
+      } else {
+        const build = this.servingCache.get(parsed.source);
+        if (build) {
+          this.servePanelResource(res, build, parsed.resource);
         } else {
-          // Sub-resources don't carry ?ref= — look up by plain source.
-          // The most recent build (HEAD or ref) stored by resolveAndServeBuild wins.
-          const build = this.servingCache.get(parsed.source);
-          if (build) {
-            this.servePanelResource(res, build, parsed.resource);
-          } else {
-            // Sub-resource arrived before HTML resolved — trigger build, don't wait
-            await this.resolveAndServeBuild(res, parsed.source, subdomain, false, ref);
-          }
+          await this.resolveAndServeBuild(res, parsed.source, routeLabel, false, ref);
         }
-        return;
       }
+      return;
+    }
 
-      // No valid source path on subdomain
+    // ── Legacy subdomain fallback page ─────────────────────────────────────
+    if (subdomain) {
       this.servePanelClosedPage(res, subdomain);
       return;
     }
@@ -546,7 +541,7 @@ export class PanelHttpServer {
   private serveApiPanels(res: import("http").ServerResponse): void {
     const panels = (this.callbacks?.listPanels?.() ?? []).map(p => ({
       ...p,
-      url: `${this.protocol}://${p.subdomain}.${this.externalHost}:${this.port}/${p.source}/`,
+      url: `${this.protocol}://${this.externalHost}:${this.port}/${p.source}/?contextId=${encodeURIComponent(p.contextId)}`,
     }));
 
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -707,11 +702,11 @@ export class PanelHttpServer {
 
     // Active panels: currently running with direct links
     const activeEntries = runningPanels.map(p => {
-        const url = `${this.protocol}://${p.subdomain}.${this.externalHost}:${this.port}/${p.source}/`;
+        const url = `${this.protocol}://${this.externalHost}:${this.port}/${p.source}/?contextId=${encodeURIComponent(p.contextId)}`;
       return `<li>
   <a href="${url}">${escapeHtml(p.title)}</a>
   <span class="badge running">running</span>
-  <small class="sub">${escapeHtml(p.subdomain)}.${this.externalHost}/${escapeHtml(p.source)}</small>
+  <small class="sub">${escapeHtml(p.contextId)} · ${escapeHtml(this.externalHost)}/${escapeHtml(p.source)}</small>
 </li>`;
     });
 
@@ -719,10 +714,10 @@ export class PanelHttpServer {
     const availableEntries = Array.from(this.sourceRegistry.entries())
       .filter(([subdomain]) => !runningSubdomains.has(subdomain))
       .map(([subdomain, { source, name }]) => {
-        const origin = `${this.protocol}://${subdomain}.${this.externalHost}:${this.port}`;
+        const origin = `${this.protocol}://${this.externalHost}:${this.port}`;
         return `<li>
   <a href="${origin}/${escapeHtml(source)}/">${escapeHtml(name)}</a>
-  <small class="sub">${escapeHtml(subdomain)}.${escapeHtml(this.externalHost)}/${escapeHtml(source)}</small>
+  <small class="sub">${escapeHtml(subdomain)} · ${escapeHtml(this.externalHost)}/${escapeHtml(source)}</small>
 </li>`;
       });
 

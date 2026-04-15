@@ -7,6 +7,7 @@
 
 import * as path from "path";
 import * as fs from "fs";
+import { isIP } from "net";
 import { createDevLogger } from "@natstack/dev-log";
 import { isDev } from "./utils.js";
 import { getAppRoot, getCentralConfigDirectory } from "./paths.js";
@@ -30,6 +31,34 @@ export interface RemoteTlsOptions {
 export type StartupMode =
   | { kind: "local"; wsDir: string; workspaceId: string; isEphemeral: boolean }
   | { kind: "remote"; remoteUrl: URL; adminToken: string; tls?: RemoteTlsOptions };
+
+function isLoopbackHostname(hostname: string): boolean {
+  if (hostname === "localhost" || hostname.endsWith(".localhost")) {
+    return true;
+  }
+
+  const normalized = hostname.startsWith("[") && hostname.endsWith("]")
+    ? hostname.slice(1, -1)
+    : hostname;
+
+  if (normalized === "::1") {
+    return true;
+  }
+
+  return isIP(normalized) === 4 && normalized.startsWith("127.");
+}
+
+export function isTrustworthyRemoteOrigin(remoteUrl: URL): boolean {
+  if (remoteUrl.protocol === "https:") {
+    return true;
+  }
+
+  if (remoteUrl.protocol !== "http:") {
+    return false;
+  }
+
+  return isLoopbackHostname(remoteUrl.hostname);
+}
 
 /**
  * Parse remote startup mode from env vars, falling back to config.yml.
@@ -62,6 +91,13 @@ export function parseRemoteStartupMode(): { remoteUrl: URL; adminToken: string; 
 
   if (remoteUrl.protocol !== "http:" && remoteUrl.protocol !== "https:") {
     throw new Error(`Invalid NATSTACK_REMOTE_URL: protocol must be http or https, got "${remoteUrl.protocol}"`);
+  }
+
+  if (!isTrustworthyRemoteOrigin(remoteUrl)) {
+    throw new Error(
+      "Invalid NATSTACK_REMOTE_URL: remote panel mode requires HTTPS, or loopback HTTP " +
+      "(localhost, *.localhost, 127.0.0.1, ::1)"
+    );
   }
 
   const caPath =

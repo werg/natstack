@@ -8,7 +8,6 @@
 import * as path from "path";
 import type { Panel, PanelArtifacts } from "./types.js";
 import { createSnapshot } from "./panel/accessors.js";
-import { contextIdToSubdomain } from "./contextIdToSubdomain.js";
 import { normalizeRelativePanelPath } from "./pathUtils.js";
 
 // =============================================================================
@@ -133,10 +132,10 @@ export function buildPanelUrl(opts: BuildPanelUrlOpts): string {
     return opts.source.slice("browser:".length);
   }
 
-  const protocol = opts.protocol;
-  const host = opts.externalHost;
-  const subdomain = contextIdToSubdomain(opts.contextId);
-  return `${protocol}://${subdomain}.${host}:${opts.panelHttpPort}/${opts.source}/`;
+  const encodedPath = encodeURIComponent(opts.source).replace(/%2F/g, "/");
+  const params = new URLSearchParams();
+  params.set("contextId", opts.contextId);
+  return `${opts.protocol}://${opts.externalHost}:${opts.panelHttpPort}/${encodedPath}/?${params.toString()}`;
 }
 
 /**
