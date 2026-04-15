@@ -19,7 +19,8 @@
  * enforces this, so we must skip `servername` when the host is an IP).
  */
 
-import { createHash } from "crypto";
+import { createHash, X509Certificate } from "crypto";
+import * as fs from "fs";
 import * as tls from "tls";
 import { Agent as HttpsAgent } from "https";
 
@@ -27,6 +28,12 @@ import { Agent as HttpsAgent } from "https";
 export function sha256Fingerprint(der: Buffer): string {
   const hex = createHash("sha256").update(der).digest("hex").toUpperCase();
   return hex.match(/.{2}/g)!.join(":");
+}
+
+/** SHA-256 fingerprint of a PEM-encoded certificate on disk. */
+export function pemFileFingerprint(pemPath: string): string {
+  const cert = new X509Certificate(fs.readFileSync(pemPath));
+  return cert.fingerprint256;
 }
 
 /** True when `host` is an IPv4 or IPv6 literal (SNI-incompatible). */

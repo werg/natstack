@@ -18,6 +18,7 @@ import * as os from "os";
 import * as path from "path";
 import { X509Certificate } from "crypto";
 import { createServerClient } from "./serverClient.js";
+import { pemFileFingerprint } from "./tlsPinning.js";
 
 function hasOpenssl(): boolean {
   try {
@@ -125,6 +126,10 @@ describeIf("ServerClient TLS pinning", () => {
     });
     expect(client.isConnected()).toBe(true);
     await client.close();
+  });
+
+  it("computes the leaf fingerprint from a PEM file", () => {
+    expect(pemFileFingerprint(cert.certPath)).toBe(cert.fingerprint);
   });
 
   it("does not send the HTTP upgrade request when fingerprint mismatches", async () => {

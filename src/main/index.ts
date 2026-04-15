@@ -23,6 +23,7 @@ import { establishServerSession, type SessionConnection } from "./serverSession.
 import { CdpServer } from "./cdpServer.js";
 import { TokenManager } from "@natstack/shared/tokenManager";
 import { EventService } from "@natstack/shared/eventsService";
+import { pemFileFingerprint } from "./tlsPinning.js";
 
 const eventService = new EventService();
 import { ViewManager } from "./viewManager.js";
@@ -95,6 +96,8 @@ if (startupMode.kind === "local") {
   app.setPath("userData", getRemoteUserDataDir());
 }
 
+installRemoteCertificateOverride(startupMode);
+
 const tokenManager = new TokenManager();
 let cdpServer: CdpServer | null = null;
 let panelRegistry: PanelRegistry | null = null;
@@ -109,6 +112,38 @@ let isCleaningUp = false; // Prevent re-entry in will-quit handler
 let autofillManager: import("./autofill/autofillManager.js").AutofillManager | null = null;
 
 log.info(` Starting in main mode`);
+
+function installRemoteCertificateOverride(mode: StartupMode): void {
+  if (mode.kind !== "remote" || mode.remoteUrl.protocol !== "https:") {
+    return;
+  }
+
+  const expectedFingerprint = (
+    mode.tls?.fingerprint ??
+    (mode.tls?.caPath ? pemFileFingerprint(mode.tls.caPath) : undefined)
+  )?.toUpperCase();
+
+  if (!expectedFingerprint) {
+    return;
+  }
+
+  const remoteHost = mode.remoteUrl.hostname;
+  app.on("certificate-error", (event, _webContents, url, _error, certificate, callback) => {
+    try {
+      const target = new URL(url);
+      const sameManagedHost = target.hostname === remoteHost || target.hostname.endsWith(`.${remoteHost}`);
+      if (sameManagedHost && certificate.fingerprint === expectedFingerprint) {
+        event.preventDefault();
+        callback(true);
+        return;
+      }
+    } catch {
+      // Fall through to Chromium default handling.
+    }
+
+    callback(false);
+  });
+}
 
 // =============================================================================
 // Window Creation
