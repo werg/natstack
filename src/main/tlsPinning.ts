@@ -30,10 +30,15 @@ export function sha256Fingerprint(der: Buffer): string {
   return hex.match(/.{2}/g)!.join(":");
 }
 
+/** SHA-256 fingerprint of a PEM-encoded certificate string. */
+export function pemFingerprint(pem: string | Buffer): string {
+  const cert = new X509Certificate(pem);
+  return cert.fingerprint256;
+}
+
 /** SHA-256 fingerprint of a PEM-encoded certificate on disk. */
 export function pemFileFingerprint(pemPath: string): string {
-  const cert = new X509Certificate(fs.readFileSync(pemPath));
-  return cert.fingerprint256;
+  return pemFingerprint(fs.readFileSync(pemPath));
 }
 
 /** True when `host` is an IPv4 or IPv6 literal (SNI-incompatible). */

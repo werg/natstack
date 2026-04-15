@@ -1,4 +1,4 @@
-import { app, dialog, BaseWindow, nativeTheme, session, ipcMain } from "electron";
+import { app, dialog, BaseWindow, nativeTheme, session, ipcMain, type Session } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 // Silence Electron security warnings in dev; panels run in isolated webviews.
@@ -23,7 +23,7 @@ import { establishServerSession, type SessionConnection } from "./serverSession.
 import { CdpServer } from "./cdpServer.js";
 import { TokenManager } from "@natstack/shared/tokenManager";
 import { EventService } from "@natstack/shared/eventsService";
-import { pemFileFingerprint } from "./tlsPinning.js";
+import { pemFileFingerprint, pemFingerprint } from "./tlsPinning.js";
 
 const eventService = new EventService();
 import { ViewManager } from "./viewManager.js";
@@ -128,21 +128,27 @@ function installRemoteCertificateOverride(mode: StartupMode): void {
   }
 
   const remoteHost = mode.remoteUrl.hostname;
-  app.on("certificate-error", (event, _webContents, url, _error, certificate, callback) => {
-    try {
-      const target = new URL(url);
-      const sameManagedHost = target.hostname === remoteHost || target.hostname.endsWith(`.${remoteHost}`);
-      if (sameManagedHost && certificate.fingerprint === expectedFingerprint) {
-        event.preventDefault();
-        callback(true);
+  const installForSession = (targetSession: Session): void => {
+    targetSession.setCertificateVerifyProc((request, callback) => {
+      const sameManagedHost =
+        request.hostname === remoteHost || request.hostname.endsWith(`.${remoteHost}`);
+
+      if (!sameManagedHost) {
+        callback(-3);
         return;
       }
-    } catch {
-      // Fall through to Chromium default handling.
-    }
 
-    callback(false);
-  });
+      try {
+        const actualFingerprint = pemFingerprint(request.certificate.data).toUpperCase();
+        callback(actualFingerprint === expectedFingerprint ? 0 : -2);
+      } catch {
+        callback(-2);
+      }
+    });
+  };
+
+  installForSession(session.defaultSession);
+  app.on("session-created", installForSession);
 }
 
 // =============================================================================
