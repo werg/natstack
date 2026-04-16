@@ -49,6 +49,7 @@ class MobilePanels {
       this.bridgeAdapterInstance = createBridgeAdapter({
         panelManager: core.panelManager,
         registry: core.registry,
+        transport: this.deps.transport,
         callbacks: {
           navigateToPanel: this.deps.navigateToPanel,
         },

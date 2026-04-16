@@ -1,29 +1,31 @@
 /**
- * OAuth deep link handler -- Intercepts natstack://oauth-callback URLs.
+ * OAuth deep link handler — intercepts `natstack://...` URLs.
  *
- * When a panel triggers an OAuth flow (e.g., GitHub, Google), the
- * external browser redirects back to natstack://oauth-callback?...
- * with authorization codes or tokens. This service listens for those
- * deep links and forwards the callback data to the NatStack server
- * via RPC so the server can complete the OAuth exchange.
+ * Two flows share the `natstack://` scheme:
  *
- * URL scheme: natstack://oauth-callback?code=...&state=...
+ *   - `natstack://oauth-callback?...` — Nango-mediated providers
+ *     (Gmail, GitHub, Slack, etc.). The mobile shell forwards the raw
+ *     callback params to the server's `oauth.callback` so the server can
+ *     finish the exchange via Nango. Unchanged by the auth refactor.
+ *
+ *   - `natstack://auth-callback?code=...&state=...` — client-owned AI
+ *     provider flows (OpenAI Codex). The mobile shell does the PKCE
+ *     exchange itself via `@natstack/auth-flow` and ships the resulting
+ *     tokens to the server's `authTokens.persist`. The pending flow is
+ *     looked up by `state` in `authCallbackRegistry`.
  *
  * Setup:
- * - iOS: Configure the `natstack` URL scheme in Info.plist
- * - Android: Configure the intent filter in AndroidManifest.xml
+ *   - iOS: `natstack` URL scheme in Info.plist (already registered)
+ *   - Android: intent filter in AndroidManifest.xml (already registered)
  */
 
 import { Linking } from "react-native";
 import type { ShellClient } from "./shellClient";
+import { consumePendingFlow } from "./authCallbackRegistry";
 
-/** The URL scheme prefix for OAuth callbacks */
-const OAUTH_CALLBACK_PREFIX = "natstack://oauth-callback";
+const NANGO_CALLBACK_PREFIX = "natstack://oauth-callback";
+const CLIENT_AUTH_CALLBACK_PREFIX = "natstack://auth-callback";
 
-/**
- * Parse query parameters from a URL string.
- * Returns a plain object of key-value pairs.
- */
 function parseQueryParams(url: string): Record<string, string> {
   const params: Record<string, string> = {};
   try {
@@ -32,7 +34,6 @@ function parseQueryParams(url: string): Record<string, string> {
       params[key] = value;
     });
   } catch {
-    // If URL constructor fails (e.g., custom scheme), parse manually
     const queryIndex = url.indexOf("?");
     if (queryIndex === -1) return params;
     const queryString = url.slice(queryIndex + 1);
@@ -48,78 +49,78 @@ function parseQueryParams(url: string): Record<string, string> {
 }
 
 /**
- * Set up the OAuth deep link handler.
- *
- * Listens for incoming `natstack://oauth-callback?...` URLs and
- * forwards the callback parameters to the server via RPC.
- *
- * @param shellClient - The connected ShellClient instance
- * @returns A cleanup function to remove the listener
- *
- * Usage:
- *   const cleanup = setupOAuthHandler(shellClient);
- *   // ... later, on unmount:
- *   cleanup();
+ * Set up the OAuth deep link handler. Listens for incoming `natstack://`
+ * URLs and dispatches to the right code path. Returns a cleanup function.
  */
 export function setupOAuthHandler(shellClient: ShellClient): () => void {
   const handleUrl = ({ url }: { url: string }) => {
-    if (!url.startsWith(OAUTH_CALLBACK_PREFIX)) return;
-
-    console.log("[OAuthHandler] Received callback:", url);
-
-    const params = parseQueryParams(url);
-
-    // The server requires { providerKey, connectionId?, code?, state? }.
-    // The auth URL includes provider_key (added in oauthManager.getAuthUrl),
-    // and Nango forwards it through the redirect. Also check providerKey
-    // (camelCase) in case a future redirect uses that form.
-    const providerKey = params["providerKey"] ?? params["provider_key"] ?? "";
-    if (!providerKey) {
-      console.warn("[OAuthHandler] Missing providerKey in callback URL — server may reject");
+    if (url.startsWith(CLIENT_AUTH_CALLBACK_PREFIX)) {
+      handleClientAuthCallback(url);
+      return;
     }
-
-    const callbackData = {
-      providerKey,
-      connectionId: params["connectionId"] ?? params["connection_id"],
-      code: params["code"],
-      state: params["state"],
-    };
-
-    shellClient.transport
-      .call("main", "oauth.callback", callbackData)
-      .then(() => {
-        console.log("[OAuthHandler] Callback forwarded to server");
-      })
-      .catch((error: unknown) => {
-        console.error("[OAuthHandler] Failed to forward callback:", error);
-      });
+    if (url.startsWith(NANGO_CALLBACK_PREFIX)) {
+      handleNangoCallback(url, shellClient);
+      return;
+    }
   };
 
-  // Listen for deep links while the app is running
   const subscription = Linking.addEventListener("url", handleUrl);
 
-  // Also check for a deep link that opened the app (cold start)
+  // Cold-start deep-link.
   void Linking.getInitialURL().then((url: string | null) => {
-    if (url && url.startsWith(OAUTH_CALLBACK_PREFIX)) {
-      handleUrl({ url });
-    }
+    if (url) handleUrl({ url });
   });
 
-  // Return cleanup function
   return () => {
     subscription.remove();
   };
 }
 
-/**
- * Open an OAuth authorization URL in the system browser.
- *
- * Called by panels that need to initiate an OAuth flow. The external
- * browser will handle the OAuth provider's login page and redirect
- * back to natstack://oauth-callback when complete.
- *
- * @param authUrl - The OAuth authorization URL to open
- */
+function handleClientAuthCallback(url: string): void {
+  const params = parseQueryParams(url);
+  const state = params["state"] ?? "";
+  const code = params["code"] ?? "";
+  const error = params["error"];
+
+  const pending = consumePendingFlow(state);
+  if (!pending) {
+    console.warn("[OAuthHandler] No matching pending auth flow for state:", state);
+    return;
+  }
+  if (error) {
+    pending.reject(new Error(`OAuth provider error: ${error}`));
+    return;
+  }
+  if (!code) {
+    pending.reject(new Error("OAuth callback missing code"));
+    return;
+  }
+  pending.resolve({ code, state });
+}
+
+function handleNangoCallback(url: string, shellClient: ShellClient): void {
+  const params = parseQueryParams(url);
+  const providerKey = params["providerKey"] ?? params["provider_key"] ?? "";
+  if (!providerKey) {
+    console.warn("[OAuthHandler] Missing providerKey in Nango callback URL — server may reject");
+  }
+  const callbackData = {
+    providerKey,
+    connectionId: params["connectionId"] ?? params["connection_id"],
+    code: params["code"],
+    state: params["state"],
+  };
+  shellClient.transport
+    .call("main", "oauth.callback", callbackData)
+    .then(() => {
+      console.log("[OAuthHandler] Nango callback forwarded to server");
+    })
+    .catch((error: unknown) => {
+      console.error("[OAuthHandler] Failed to forward Nango callback:", error);
+    });
+}
+
+/** Open an OAuth authorization URL in the system browser (Nango flows). */
 export async function openOAuthUrl(authUrl: string): Promise<void> {
   const canOpen = await Linking.canOpenURL(authUrl);
   if (!canOpen) {

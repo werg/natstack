@@ -684,11 +684,15 @@ async function main() {
       // We'll wire it lazily after panelService starts.
       const server = new RpcServer({ tokenManager, dispatcher, eventService });
       if (ipcChannel) {
-        // IPC mode: server binds its own socket (Electron connects directly)
+        // IPC mode: server binds its own socket (Electron connects directly).
+        // Same socket handles panel WS + workerd HTTP POST back-channel.
         await server.start();
       } else {
-        // Standalone mode: gateway owns the socket, dispatches to us
-        server.initHandlers();
+        // Standalone mode: external WS traffic comes through the TLS gateway
+        // (dispatches to our noServer WSS), while workerd's HTTP POST
+        // back-channel hits a loopback-only listener we own. Split ports so
+        // workers don't have to solve cert/TLS just to call back into us.
+        await server.startLoopbackHttp();
       }
       // Port is a live getter so downstream consumers see updates after gateway starts
       return { server, get port() { return server.getPort() ?? 0; } };
@@ -736,6 +740,10 @@ async function main() {
   }
 
   // WorkerdManager — manages workerd process and worker instances
+  //
+  // Workers POST back to the server via `SERVER_URL` — always the loopback
+  // HTTP listener bound on rpcServer. rpcServer starts before workerdManager
+  // (dep order), so the port is known by the time we read it here.
   {
     let workerdManagerInstance: import("./workerdManager.js").WorkerdManager | null = null;
     let buildSystemForWorkerd: import("./buildV2/index.js").BuildSystemV2 | null = null;
@@ -748,10 +756,16 @@ async function main() {
         const { server: rpcSrvForWorkerd } = resolve<{ server: import("./rpcServer.js").RpcServer }>("rpcServer")!;
         const fsServiceInst = resolve<import("@natstack/shared/fsService").FsService>("fsService")!;
 
+        const loopbackPort = rpcSrvForWorkerd.getLoopbackHttpPort();
+        if (!loopbackPort) {
+          throw new Error("rpcServer loopback HTTP port not bound before workerdManager start");
+        }
+        const serverUrl = `http://127.0.0.1:${loopbackPort}`;
+
         workerdManagerInstance = new WorkerdManager({
           tokenManager,
           fsService: fsServiceInst,
-          getRpcPort: () => rpcSrvForWorkerd.getPort() ?? 0,
+          getServerUrl: () => serverUrl,
           getBuild: (unitPath, ref) => buildSystemForWorkerd!.getBuild(unitPath, ref),
           workspacePath,
           statePath,
@@ -855,35 +869,16 @@ async function main() {
     })));
   }
 
-  // ── Auth service (AI provider tokens: OAuth + env-var fallback) ──
-  // Construct AuthServiceImpl once with an openBrowser dep wired to
-  // Electron's shell.openExternal in IPC mode (via parent-port message,
-  // matching the existing `workspace-relaunch` pattern) or console.log
-  // in standalone mode. The server opens the OAuth browser itself so the
-  // panel UI never sees the auth URL.
+  // ── authTokens service (storage + silent refresh of AI provider creds) ──
+  // OAuth login flow (browser, callback handling, code→token exchange) lives
+  // on the *client* — Electron main on desktop (loopback redirect URI) and
+  // mobile shell (custom URL scheme). Server only persists what the client
+  // delivers and silently refreshes via the refresh-token grant.
   {
-    const { AuthServiceImpl, createAuthService } = await import("./services/authService.js");
-    const { rpcServiceWithRoutes } = await import("./rpcServiceWithRoutes.js");
-    const { getPublicUrl } = await import("./publicUrl.js");
-    const openBrowser: (url: string) => void = ipcChannel
-      ? (url: string) => ipcChannel.postMessage({ type: "open-external", url })
-      : (url: string) => console.log("Open URL:", url);
-    // Initiator-scoped dispatch: route the OAuth URL to only the client
-    // that started the flow. Broadcasting would fan the login URL out to
-    // every connected device, each spawning its own browser tab.
-    const emitOpenExternalTo = (url: string, initiatorCallerId: string) =>
-      eventService.emitTo(initiatorCallerId, "open-external-requested", { url });
-    const authService = new AuthServiceImpl({
-      openBrowser,
-      emitOpenExternalTo,
-      // The gateway (and therefore the public URL) runs in both IPC and
-      // standalone modes, so `getPublicUrl()` always resolves. No fallback.
-      getPublicUrl,
-    });
-    container.register(rpcServiceWithRoutes(
-      createAuthService({ authService }),
-      routeRegistry,
-    ));
+    const { AuthTokensServiceImpl, createAuthTokensService } = await import("./services/authService.js");
+    const { rpcService: rpcSvcForAuth } = await import("@natstack/shared/managedService");
+    const authTokens = new AuthTokensServiceImpl({});
+    container.register(rpcSvcForAuth(createAuthTokensService({ authTokens })));
   }
 
   if (!ipcChannel) {
@@ -1036,8 +1031,10 @@ async function main() {
       panelServiceData.urlConfig.finalizeForGateway(gatewayPort);
     }
 
-    // Restart workerd so DO/worker bindings pick up the real RPC port (they
-    // started with 0 because the gateway hadn't bound yet).
+    // Restart workerd so any deferred DO services (registered after
+    // initial workerd startup) pick up the finalized bindings. The
+    // back-channel URL itself was already correct at initial startup —
+    // rpcServer's loopback HTTP port is bound before workerdManager.
     if (workerdMgr) {
       await workerdMgr.restartAll();
     }

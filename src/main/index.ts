@@ -342,16 +342,6 @@ app.on("ready", async () => {
 
   // Build event handler — receives build:complete events from server
   function handleServerEvent(event: string, payload: unknown) {
-    // event:open-external-requested — emitted by the server when an OAuth
-    // flow needs the user's default browser. The initiating Electron client
-    // opens the URL locally so this works even when the server is remote.
-    if (event === "event:open-external-requested") {
-      const { url } = payload as { url?: string };
-      if (url && /^https?:\/\//i.test(url)) {
-        void import("electron").then(({ shell }) => shell.openExternal(url));
-      }
-      return;
-    }
     if (event !== "build:complete" || !panelRegistry || !panelOrchestrator) return;
     const { source, error } = payload as { source: string; error?: string };
     const allPanels = panelRegistry.listPanels();
@@ -554,6 +544,13 @@ app.on("ready", async () => {
     const { createRemoteCredService } = await import("./services/remoteCredService.js");
     electronContainer.register(rpcService(createRemoteCredService({ startupMode })));
     electronContainer.register(rpcService(createAdblockService({ adBlockManager })));
+    // Client-owned OAuth flow — opens the user's browser, captures the
+    // loopback redirect, exchanges the code, and forwards tokens to the
+    // server's authTokens.persist. With `auth` removed from
+    // SERVER_SERVICE_NAMES, panel calls to `auth.*` land here instead of
+    // the (potentially remote) server.
+    const { createAuthService } = await import("./services/authService.js");
+    electronContainer.register(rpcService(createAuthService({ serverClient: sc })));
 
     // Locally-hosted services
     electronContainer.register(rpcService(createBrowserService({

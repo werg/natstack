@@ -13,7 +13,7 @@
  *     by `wrapToolWithApproval` so the approval-gate can short-circuit them.
  *   - Workspace resources (`AGENTS.md` + skill index) loaded over RPC and
  *     concatenated into the system prompt.
- *   - An `auth.getProviderToken` RPC callback supplied as Agent's `getApiKey`
+ *   - An `authTokens.getProviderToken` RPC callback supplied as Agent's `getApiKey`
  *     hook so per-call OAuth refresh / env-var lookup goes through the
  *     server-side auth service.
  *
@@ -65,7 +65,7 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 const BUILTIN_TOOL_NAMES = ["read", "edit", "write", "grep", "find", "ls"] as const;
 
 /**
- * Detect a "not logged in" error from `auth.getProviderToken`. The auth
+ * Detect a "not logged in" error from `authTokens.getProviderToken`. The auth
  * service throws errors with a `Not logged in to <provider>` message for
  * OAuth providers and `No API key configured for <provider>` for env-var
  * providers. Both are considered the same condition for OAuth fallback.
@@ -98,7 +98,7 @@ function providerDisplayName(providerId: string): string {
 }
 
 export interface PiRunnerOptions {
-  /** RPC caller — used for `workspace.*` resource loading and `auth.getProviderToken`. */
+  /** RPC caller — used for `workspace.*` resource loading and `authTokens.getProviderToken`. */
   rpc: RpcCaller;
   /** Per-context filesystem the file tools operate against. */
   fs: RuntimeFs;
@@ -162,7 +162,7 @@ export class PiRunner {
    *   3. Build the workerd-clean file tools, each wrapped with approval-gate.
    *   4. Resolve the model (`provider:model`) via `pi-ai.getModel`.
    *   5. Construct the Agent with a `getApiKey` callback that delegates to
-   *      `auth.getProviderToken` over RPC.
+   *      `authTokens.getProviderToken` over RPC.
    *   6. Subscribe to Agent events.
    *   7. Fire `session_start` so channel-tools can reconcile its initial roster
    *      and assign the active set to `agent.state.tools`.
@@ -219,7 +219,7 @@ export class PiRunner {
     }
 
     // 5. Construct the Agent. The auth service is the only auth source —
-    //    the DO calls auth.getProviderToken over RPC and the server-side
+    //    the DO calls authTokens.getProviderToken over RPC and the server-side
     //    handler resolves env-var lookup OR OAuth refresh transparently.
     this.agent = new Agent({
       // pi-agent-core 0.66+: initialState only accepts the user-controllable
@@ -258,7 +258,7 @@ export class PiRunner {
    *
    * On not-logged-in:
    *   1. Push an inline_ui Connect card into the chat (fire-and-forget).
-   *   2. Park on `auth.waitForProvider` server-side until ANY auth flow
+   *   2. Park on `authTokens.waitForProvider` server-side until ANY auth flow
    *      completes for this provider — could be the user clicking *this*
    *      panel's card, a sibling panel's card, or the SettingsDialog.
    *   3. Retry the token lookup. The auth service has fresh credentials by
@@ -273,7 +273,7 @@ export class PiRunner {
     try {
       return await this.options.rpc.call<string>(
         "main",
-        "auth.getProviderToken",
+        "authTokens.getProviderToken",
         providerName,
       );
     } catch (err) {
@@ -284,7 +284,7 @@ export class PiRunner {
       // success automatically publishes a retry message to the chat so the
       // agent's turn restarts with valid credentials.
       //
-      // We do NOT block here (e.g., via auth.waitForProvider) because
+      // We do NOT block here (e.g., via authTokens.waitForProvider) because
       // workerd DOs are single-threaded — blocking the turn would prevent
       // the DO from processing ANY incoming events, including the channel
       // broadcasts the inline_ui card needs to arrive at the panel.

@@ -91,6 +91,14 @@ export class RpcServer {
   private wss: WebSocketServer | null = null;
   private httpServer: HttpServer | null = null;
   private port: number | null = null;
+  /**
+   * Loopback port bound for in-process back-channel HTTP POSTs (workerd →
+   * server). In IPC/self-hosting mode this equals `port`. In standalone
+   * mode it's a second, loopback-only listener so the workerd back-channel
+   * doesn't have to route through the external TLS gateway — orthogonal
+   * to whatever protocol the gateway speaks.
+   */
+  private loopbackHttpPort: number | null = null;
   private workerdUrl: string | null = null;
 
   // Connection tracking
@@ -219,6 +227,37 @@ export class RpcServer {
     });
 
     this.port = port;
+    this.loopbackHttpPort = port;
+    return port;
+  }
+
+  /**
+   * Bind a loopback-only HTTP listener for in-process back-channel POSTs
+   * (workerd → server). Call this in gateway mode alongside `initHandlers()`:
+   * the gateway handles panel WS upgrades, this listener handles internal
+   * HTTP POST /rpc from workerd. Does NOT touch `this.port` — that stays
+   * the panel-facing port set by `setPort(gatewayPort)`.
+   */
+  async startLoopbackHttp(): Promise<number> {
+    this.initHandlers();
+    if (this.httpServer) {
+      throw new Error("RpcServer: loopback HTTP listener already bound");
+    }
+    const port = await findServicePort("rpc");
+    this.httpServer = createServer((req, res) => {
+      this.handleHttpRequest(req, res).catch((err) => {
+        console.error("[RpcServer] HTTP request handler error:", err);
+        if (!res.headersSent) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Bad request" }));
+        }
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      this.httpServer!.once("error", reject);
+      this.httpServer!.listen(port, "127.0.0.1", () => resolve());
+    });
+    this.loopbackHttpPort = port;
     return port;
   }
 
@@ -229,6 +268,12 @@ export class RpcServer {
 
   getPort(): number | null {
     return this.port;
+  }
+
+  /** Loopback HTTP port for in-process back-channel POSTs. Distinct from
+   *  `getPort()` in standalone mode. */
+  getLoopbackHttpPort(): number | null {
+    return this.loopbackHttpPort;
   }
 
   private handleConnection(ws: WebSocket): void {

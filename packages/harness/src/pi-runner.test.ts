@@ -98,7 +98,7 @@ function createMockRpc(
   const responses: Record<string, unknown> = {
     "main:workspace.getAgentsMd": "BASE SYSTEM PROMPT",
     "main:workspace.listSkills": [],
-    "main:auth.getProviderToken": "fake-token-abc",
+    "main:authTokens.getProviderToken": "fake-token-abc",
     ...overrides,
   };
   const call = vi.fn(async (targetId: string, method: string) => {
@@ -223,7 +223,7 @@ describe("PiRunner.init", () => {
     await expect(runner.init()).rejects.toThrow(/provider:model/);
   });
 
-  it("getApiKey callback delegates to auth.getProviderToken", async () => {
+  it("getApiKey callback delegates to authTokens.getProviderToken", async () => {
     const options = createOptions();
     const rpcCallSpy = (options.rpc as any).call as ReturnType<typeof vi.fn>;
     const runner = new PiRunner(options);
@@ -234,7 +234,7 @@ describe("PiRunner.init", () => {
     expect(token).toBe("fake-token-abc");
     expect(rpcCallSpy).toHaveBeenCalledWith(
       "main",
-      "auth.getProviderToken",
+      "authTokens.getProviderToken",
       "openai",
     );
   });
@@ -249,7 +249,7 @@ describe("PiRunner.init", () => {
     const call = vi.fn(
       async (targetId: string, method: string, ..._args: unknown[]) => {
         const key = `${targetId}:${method}`;
-        if (key === "main:auth.getProviderToken") {
+        if (key === "main:authTokens.getProviderToken") {
           throw new Error("Not logged in to openai-codex. Use the settings panel to connect.");
         }
         if (key in rpcResponses) return rpcResponses[key];
@@ -275,7 +275,7 @@ describe("PiRunner.init", () => {
     // waitForProvider should NOT have been called (non-blocking).
     expect(call).not.toHaveBeenCalledWith(
       "main",
-      "auth.waitForProvider",
+      "authTokens.waitForProvider",
       expect.anything(),
     );
   });
@@ -285,7 +285,7 @@ describe("PiRunner.init", () => {
     const call = vi.fn(async (_t: string, method: string) => {
       if (method === "workspace.getAgentsMd") return "P";
       if (method === "workspace.listSkills") return [];
-      if (method === "auth.getProviderToken") {
+      if (method === "authTokens.getProviderToken") {
         throw new Error("Network error");
       }
       throw new Error(`Unexpected: ${method}`);
@@ -303,7 +303,7 @@ describe("PiRunner.init", () => {
     expect(ui.requestProviderOAuth).not.toHaveBeenCalled();
     expect(call).not.toHaveBeenCalledWith(
       "main",
-      "auth.waitForProvider",
+      "authTokens.waitForProvider",
       expect.anything(),
     );
   });

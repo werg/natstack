@@ -112,6 +112,7 @@
     "@mariozechner/pi-ai": "^0.66.0",
     "@silvia-odwyer/photon-node": "^0.3.4",
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "@natstack/auth-flow": "workspace:*",
     "@natstack/browser-data": "workspace:*",
     "@natstack/dev-log": "workspace:*",
     "@natstack/env-paths": "workspace:*",
