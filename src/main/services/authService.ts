@@ -35,6 +35,20 @@ const log = createDevLogger("auth");
 /** 10 minutes — long enough for the user to click through a sign-in. */
 const FLOW_TIMEOUT_MS = 10 * 60 * 1000;
 
+/**
+ * OpenAI's Codex OAuth client (`app_EMoamEEZ73f0CkXaXp7hrann`, shared with
+ * pi-ai's CLI) registers exactly one loopback redirect URI:
+ * `http://localhost:1455/auth/callback`. They do NOT honor RFC 8252 §7.3
+ * port flexibility for this client, so we must bind this exact host+port
+ * — anything else gets an `AuthApiFailure / unknown_error` at the
+ * authorize endpoint. If we ever ship our own OpenAI OAuth client we
+ * can revisit (and remove this constraint along with the singleton
+ * port-busy failure mode).
+ */
+const CODEX_LOOPBACK_HOST = "localhost";
+const CODEX_LOOPBACK_PORT = 1455;
+const CODEX_CALLBACK_PATH = "/auth/callback";
+
 interface PendingFlow {
   session: AuthFlowSession;
   resolve: (code: string) => void;
@@ -156,20 +170,23 @@ async function bindLoopbackCallback(): Promise<{
   codePromise: (session: AuthFlowSession) => Promise<string>;
 }> {
   const server = http.createServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => resolve());
-  });
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    server.close();
-    throw new Error("loopback callback server bound to an unexpected address");
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(CODEX_LOOPBACK_PORT, CODEX_LOOPBACK_HOST, () => resolve());
+    });
+  } catch (err) {
+    const code = (err as { code?: string })?.code;
+    if (code === "EADDRINUSE") {
+      throw new Error(
+        `OAuth callback port ${CODEX_LOOPBACK_PORT} is already in use. ` +
+        `Close the other process (or another NatStack/pi-ai sign-in flow) and retry.`,
+      );
+    }
+    throw err;
   }
-  const port = address.port;
-  // Path must be `/auth/callback` to match what OpenAI's Codex OAuth client
-  // (`app_EMoamEEZ73f0CkXaXp7hrann`) has allowlisted for loopback redirects.
-  // The pi-ai upstream uses the same path, just bound to a fixed port.
-  const redirectUri = `http://127.0.0.1:${port}/auth/callback`;
+  const port = CODEX_LOOPBACK_PORT;
+  const redirectUri = `http://${CODEX_LOOPBACK_HOST}:${port}${CODEX_CALLBACK_PATH}`;
 
   function codePromise(session: AuthFlowSession): Promise<string> {
     return new Promise<string>((resolve, reject) => {
@@ -180,7 +197,7 @@ async function bindLoopbackCallback(): Promise<{
 
       const onRequest = (req: http.IncomingMessage, res: http.ServerResponse) => {
         const url = new URL(req.url ?? "/", redirectUri);
-        if (url.pathname !== "/auth/callback") {
+        if (url.pathname !== CODEX_CALLBACK_PATH) {
           res.statusCode = 404;
           res.end("not found");
           return;
