@@ -47,7 +47,12 @@ export async function buildAuthorizeUrl(opts: { redirectUri: string; originator?
   url.searchParams.set("state", state);
   url.searchParams.set("id_token_add_organizations", "true");
   url.searchParams.set("codex_cli_simplified_flow", "true");
-  url.searchParams.set("originator", opts.originator ?? "pi");
+  // Must match a value OpenAI has allowlisted for this client_id. The
+  // official openai/codex Rust CLI uses "codex_cli_rs" as the canonical
+  // value (see codex-rs/login/src/auth/default_client.rs DEFAULT_ORIGINATOR).
+  // Pi-ai's "pi" default is *not* on the list and gets `unknown_error` at
+  // the authorize endpoint.
+  url.searchParams.set("originator", opts.originator ?? "codex_cli_rs");
 
   return {
     authUrl: url.toString(),
