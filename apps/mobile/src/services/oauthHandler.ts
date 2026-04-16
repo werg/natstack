@@ -24,7 +24,7 @@ import type { ShellClient } from "./shellClient";
 import { consumePendingFlow } from "./authCallbackRegistry";
 
 const NANGO_CALLBACK_PREFIX = "natstack://oauth-callback";
-const CLIENT_AUTH_CALLBACK_PREFIX = "natstack://auth-callback";
+const CLIENT_AUTH_CALLBACK_PREFIX = "natstack://auth/callback";
 
 function parseQueryParams(url: string): Record<string, string> {
   const params: Record<string, string> = {};

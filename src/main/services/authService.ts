@@ -166,7 +166,10 @@ async function bindLoopbackCallback(): Promise<{
     throw new Error("loopback callback server bound to an unexpected address");
   }
   const port = address.port;
-  const redirectUri = `http://127.0.0.1:${port}/cb`;
+  // Path must be `/auth/callback` to match what OpenAI's Codex OAuth client
+  // (`app_EMoamEEZ73f0CkXaXp7hrann`) has allowlisted for loopback redirects.
+  // The pi-ai upstream uses the same path, just bound to a fixed port.
+  const redirectUri = `http://127.0.0.1:${port}/auth/callback`;
 
   function codePromise(session: AuthFlowSession): Promise<string> {
     return new Promise<string>((resolve, reject) => {
@@ -177,7 +180,7 @@ async function bindLoopbackCallback(): Promise<{
 
       const onRequest = (req: http.IncomingMessage, res: http.ServerResponse) => {
         const url = new URL(req.url ?? "/", redirectUri);
-        if (url.pathname !== "/cb") {
+        if (url.pathname !== "/auth/callback") {
           res.statusCode = 404;
           res.end("not found");
           return;

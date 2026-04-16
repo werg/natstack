@@ -11,7 +11,10 @@ import { Linking } from "react-native";
 import { openaiCodex, type AuthFlowCredentials } from "@natstack/auth-flow";
 import { registerPendingFlow, dropPendingFlow } from "./authCallbackRegistry";
 
-const REDIRECT_URI = "natstack://auth-callback";
+// Path component must be `/auth/callback` to match OpenAI's Codex OAuth
+// client allowlist; the scheme + host are owned by the mobile app via the
+// custom URL scheme registered in Info.plist / AndroidManifest.xml.
+const REDIRECT_URI = "natstack://auth/callback";
 const FLOW_TIMEOUT_MS = 10 * 60 * 1000;
 
 export async function runOpenaiCodexFlow(): Promise<AuthFlowCredentials> {
