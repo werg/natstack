@@ -3,7 +3,7 @@
 // =============================================================================
 
 // PiRunner — the worker DO instantiates one per channel
-export { PiRunner } from "./pi-runner.js";
+export { PiRunner, isNotLoggedInError, providerDisplayName } from "./pi-runner.js";
 export type { PiRunnerOptions, PiStateSnapshot, ThinkingLevel } from "./pi-runner.js";
 
 // NatStack extension factories — supplied to the runner via PiRunnerOptions

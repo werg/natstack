@@ -34,6 +34,8 @@ import type {
 import { isClientParticipantType } from "@natstack/pubsub";
 import {
   PiRunner,
+  isNotLoggedInError,
+  providerDisplayName,
   type ChannelToolMethod,
   type NatStackUIBridgeCallbacks,
   type AskUserParams,
@@ -370,7 +372,42 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       }
     }
 
+    // Proactive auth check. Two reasons to do this here:
+    //  1. With ephemeral OAuth Connect cards, panel reload erases any
+    //     prior card; the user would be stuck staring at chat history
+    //     with no Connect button until they typed a message. Pushing on
+    //     subscribe keeps the card present across reloads.
+    //  2. On a fresh chat panel (no message sent yet) we can already see
+    //     the configured model needs auth — surfacing the card early
+    //     means the user signs in before composing, not after.
+    void this.maybeEmitOAuthCardOnSubscribe(opts.channelId);
+
     return { ok: result.ok, participantId: result.participantId };
+  }
+
+  /**
+   * Reset the OAuth-card dedupe entry for this channel and probe the
+   * configured model's auth status. If the provider needs OAuth and we
+   * don't have a valid token, push a fresh ephemeral Connect card.
+   */
+  private async maybeEmitOAuthCardOnSubscribe(channelId: string): Promise<void> {
+    const model = this.getModel();
+    const colon = model.indexOf(":");
+    const providerId = colon > 0 ? model.slice(0, colon) : model;
+    // Drop any stale dedupe entry from before the panel reloaded so the
+    // card can re-emit. The set is in-memory; entries from a hibernated
+    // DO are already gone, but a same-process re-subscribe also needs
+    // this to push afresh.
+    this.oauthCardsEmitted.delete(`${channelId}::${providerId}`);
+    try {
+      await this.rpc.call<string>("main", "authTokens.getProviderToken", providerId);
+    } catch (err) {
+      if (!isNotLoggedInError(err)) return; // network blip etc — ignore here, the next turn will surface it
+      this.buildUICallbacks(channelId).requestProviderOAuth(
+        providerId,
+        providerDisplayName(providerId),
+      );
+    }
   }
 
   async unsubscribeChannel(channelId: string): Promise<UnsubscribeResult> {
@@ -882,10 +919,16 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           code: OAUTH_CONNECT_CARD_TSX,
           props: { providerId, displayName },
         });
+        // Push as ephemeral: the card carries TSX source which would
+        // otherwise freeze into chat history. If the underlying flow code
+        // ships a fix in a later release, persisted cards would keep
+        // re-running the broken old TSX on every reload. Ephemeral cards
+        // disappear on panel reload; we proactively re-emit on the next
+        // subscribe (see clearAndCheckOAuthOnSubscribe).
         void channel
           .send(participantId, messageId, content, {
             contentType: "inline_ui",
-            persist: true,
+            persist: false,
           })
           .catch((err) => {
             console.error(`[AgentWorkerBase] Failed to emit OAuth Connect card for ${providerId}:`, err);

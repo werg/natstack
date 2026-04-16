@@ -70,13 +70,13 @@ const BUILTIN_TOOL_NAMES = ["read", "edit", "write", "grep", "find", "ls"] as co
  * OAuth providers and `No API key configured for <provider>` for env-var
  * providers. Both are considered the same condition for OAuth fallback.
  */
-function isNotLoggedInError(err: unknown): boolean {
+export function isNotLoggedInError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   return /not logged in|no api key configured/i.test(err.message);
 }
 
 /** Display name shown in OAuth Connect cards. Falls back to the raw id. */
-function providerDisplayName(providerId: string): string {
+export function providerDisplayName(providerId: string): string {
   switch (providerId) {
     case "openai-codex":
       return "ChatGPT";
