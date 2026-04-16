@@ -121,8 +121,6 @@ export function TitleBar({ title, onNavigateToId, onPanelAction, onArchive }: Ti
             {
               flex: 1,
               minWidth: 0,
-              appRegion: "no-drag",
-              WebkitAppRegion: "no-drag",
               overflow: "hidden",
             } as CSSProperties
           }
@@ -411,7 +409,7 @@ function BreadcrumbBar({
   };
 
   return (
-    <Flex align="center" gap="1" style={{ minWidth: 0, overflow: "hidden" }}>
+    <Flex align="center" gap="1" style={{ minWidth: 0, overflow: "hidden", appRegion: "no-drag", WebkitAppRegion: "no-drag" } as CSSProperties}>
       {/* Ancestors */}
       {hiddenAncestors.length > 0 && (
         <>
