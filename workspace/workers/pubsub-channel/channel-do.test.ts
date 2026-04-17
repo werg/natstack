@@ -212,7 +212,7 @@ describe("PubSubChannel", () => {
       expect(metadata["name"]).toBe("Alice");
     });
 
-    it("fails pending calls when a participant is replaced by a new session", async () => {
+    it("redelivers pending calls when a participant is replaced by a new session", async () => {
       const { instance, sql } = await createTestDO(PubSubChannel, {
         __objectKey: "test-channel",
       });
@@ -239,8 +239,8 @@ describe("PubSubChannel", () => {
         "11111111-1111-4111-8111-111111111111",
         "do:workers/agent-worker:AiChatWorker:agent-1",
         "panel-1",
-        "eval",
-        "{}",
+        "feedback_custom",
+        '{"code":"x"}',
         0,
         Date.now(),
       );
@@ -252,14 +252,32 @@ describe("PubSubChannel", () => {
         __participantSessionId: "session-new",
       });
 
-      expect(sql.exec(`SELECT * FROM pending_calls`).toArray()).toHaveLength(0);
-      expect(mockRpc.call).toHaveBeenCalledWith(
-        "do:workers/agent-worker:AiChatWorker:agent-1",
-        "onCallResult",
-        "11111111-1111-4111-8111-111111111111",
-        { error: "Target panel-1 was replaced by a new session before the call completed" },
-        true,
+      // Drain the per-subscriber emit chain (queueEmit runs on microtasks).
+      for (let i = 0; i < 10; i++) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+
+      // Pending call must be preserved, not cancelled.
+      expect(sql.exec(`SELECT call_id FROM pending_calls`).toArray()).toEqual([
+        { call_id: "11111111-1111-4111-8111-111111111111" },
+      ]);
+      // No synthetic error is delivered to the caller.
+      const errorDeliveries = mockRpc.call.mock.calls.filter(
+        ([, method]) => method === "onCallResult",
       );
+      expect(errorDeliveries).toHaveLength(0);
+      // A method-call is re-emitted to the new panel session.
+      const methodCallEmits = mockRpc.emit.mock.calls.filter(
+        ([, , data]) => (data as any)?.message?.type === "method-call",
+      );
+      expect(methodCallEmits).toHaveLength(1);
+      const emitted = methodCallEmits[0]![2] as { message: { payload: { callId: string; methodName: string; args: unknown }; kind: string }; channelId: string };
+      expect(emitted.channelId).toBe("test-channel");
+      expect(emitted.message.kind).toBe("ephemeral");
+      expect(emitted.message.payload.callId).toBe("11111111-1111-4111-8111-111111111111");
+      expect(emitted.message.payload.methodName).toBe("feedback_custom");
+      expect(emitted.message.payload.args).toEqual({ code: "x" });
+      // The replaced-session leave presence event still fires.
       const leaveMessages = sql.exec(
         `SELECT content FROM messages WHERE type = 'presence' ORDER BY id ASC`,
       ).toArray().map(row => JSON.parse(row["content"] as string));
@@ -330,7 +348,7 @@ describe("PubSubChannel", () => {
   });
 
   describe("method result delivery", () => {
-    it("fails an in-flight rpc tool call when the target reconnects with a new session", async () => {
+    it("redelivers an in-flight rpc tool call when the target reconnects with a new session", async () => {
       const { instance, sql } = await createTestDO(PubSubChannel, {
         __objectKey: "test-channel",
       });
@@ -365,6 +383,7 @@ describe("PubSubChannel", () => {
         { call_id: "44444444-4444-4444-8444-444444444444" },
       ]);
 
+      mockRpc.emit.mockClear();
       await instance.subscribe("panel-1", {
         contextId: "ctx-1",
         transport: "rpc",
@@ -372,13 +391,26 @@ describe("PubSubChannel", () => {
         __participantSessionId: "session-new",
       });
 
-      expect(sql.exec(`SELECT call_id FROM pending_calls`).toArray()).toHaveLength(0);
-      expect(mockRpc.call).toHaveBeenCalledWith(
-        "do:workers/agent-worker:AiChatWorker:agent-1",
-        "onCallResult",
+      // Drain the per-subscriber emit chain (queueEmit runs on microtasks).
+      for (let i = 0; i < 10; i++) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+
+      // Call is preserved, no synthetic error is delivered.
+      expect(sql.exec(`SELECT call_id FROM pending_calls`).toArray()).toEqual([
+        { call_id: "44444444-4444-4444-8444-444444444444" },
+      ]);
+      const errorDeliveries = mockRpc.call.mock.calls.filter(
+        ([, method]) => method === "onCallResult",
+      );
+      expect(errorDeliveries).toHaveLength(0);
+      // Method-call is re-emitted to the new session.
+      const methodCallEmits = mockRpc.emit.mock.calls.filter(
+        ([, , data]) => (data as any)?.message?.type === "method-call",
+      );
+      expect(methodCallEmits).toHaveLength(1);
+      expect((methodCallEmits[0]![2] as any).message.payload.callId).toBe(
         "44444444-4444-4444-8444-444444444444",
-        { error: "Target panel-1 was replaced by a new session before the call completed" },
-        true,
       );
     });
 

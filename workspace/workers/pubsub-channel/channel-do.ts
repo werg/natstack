@@ -259,28 +259,28 @@ export class PubSubChannel extends DurableObjectBase {
     }
 
     // Re-subscribe with the same participant ID: replace the roster entry, but
-    // only fail in-flight calls if the underlying client session changed.
+    // only redeliver in-flight calls if the underlying client session changed.
     const existing = this.sql.exec(
       `SELECT session_id FROM participants WHERE id = ?`, participantId,
     ).toArray();
+    let sessionReplaced = false;
     if (existing.length > 0) {
       const previousSessionId = existing[0]!["session_id"] as string | null;
       const oldMetadata = this.getSenderMetadata(participantId) ?? {};
-      const replaced =
+      sessionReplaced =
         previousSessionId == null ||
         participantSessionId == null ||
         previousSessionId !== participantSessionId;
-      this.publishPresenceEvent(participantId, "leave", oldMetadata, replaced ? "replaced" : "graceful");
+      this.publishPresenceEvent(participantId, "leave", oldMetadata, sessionReplaced ? "replaced" : "graceful");
       this.sql.exec(`DELETE FROM participants WHERE id = ?`, participantId);
       cleanupDeliveryChain(participantId);
-      if (replaced) {
+      if (sessionReplaced) {
         const pendingCountRow = this.sql.exec(
           `SELECT COUNT(*) as cnt FROM pending_calls WHERE target_id = ?`,
           participantId,
         ).toArray();
         const pendingCount = (pendingCountRow[0]?.["cnt"] as number) ?? 0;
         console.log(`[Channel] Participant session replaced: target=${participantId} previousSession=${previousSessionId ?? "unknown"} newSession=${participantSessionId ?? "unknown"} pendingCalls=${pendingCount}`);
-        await this.failPendingCallsTargeting(participantId, "replaced");
       }
     }
 
@@ -345,6 +345,13 @@ export class PubSubChannel extends DurableObjectBase {
     // parent `message` and `ready` lands after the whole replay batch.
     this.sendRosterReplay(participantId);
     this.sendMessageReplay(participantId, sinceId, replayMessageLimit);
+    // Re-emit any still-pending method-calls to the new session. Gated on
+    // session-replacement: a same-session resubscribe already has the
+    // handler in flight (or done), so redelivering would cause a second
+    // execution.
+    if (sessionReplaced) {
+      this.redeliverPendingCallsTo(participantId);
+    }
     sendReady(this.broadcastDeps, participantId, this.sql, this.getStateValue("contextId"), this.getChannelConfig());
 
     // Schedule stale participant cleanup for RPC participants
@@ -479,11 +486,70 @@ export class PubSubChannel extends DurableObjectBase {
   }
 
   /**
+   * Redeliver pending method-calls to a (re)subscribed participant.
+   *
+   * Ephemeral method-call events are fired once from `callMethod` and are not
+   * replayed from the messages table. If the target's session was interrupted
+   * while the call was pending, the call would hang indefinitely — or, under
+   * the previous behavior, be failed on resubscribe. Instead, re-emit every
+   * still-pending call targeting this participant as an ephemeral method-call
+   * event, queued through the same per-subscriber FIFO as roster/message
+   * replay. Delivery is at-least-once over the call's lifetime: a handler may
+   * run twice if it executed on the prior session but the result-publish was
+   * interrupted. All in-tree methods (feedback_form, feedback_custom,
+   * ui_prompt, tool_approval) are idempotent; custom methods with
+   * non-idempotent side effects should dedupe on `callId`.
+   */
+  private redeliverPendingCallsTo(participantId: string): void {
+    const rows = this.sql.exec(
+      `SELECT call_id, caller_id, method, args FROM pending_calls WHERE target_id = ?`,
+      participantId,
+    ).toArray();
+    if (rows.length === 0) return;
+
+    const onFatal = (err: { code?: string }) => {
+      if (err?.code === "TARGET_NOT_REACHABLE" || err?.code === "RECONNECT_GRACE_EXPIRED") {
+        this.sql.exec(`DELETE FROM participants WHERE id = ?`, participantId);
+        cleanupDeliveryChain(participantId);
+      }
+    };
+
+    for (const row of rows) {
+      const callId = row["call_id"] as string;
+      const callerId = row["caller_id"] as string;
+      const methodName = row["method"] as string;
+      const argsRaw = row["args"] as string | null;
+      let args: unknown = undefined;
+      if (argsRaw != null) {
+        try { args = JSON.parse(argsRaw); }
+        catch (err) {
+          console.warn(`[Channel] redeliver: failed to parse args for callId=${callId}:`, err);
+          continue;
+        }
+      }
+      const payload = { callId, providerId: participantId, methodName, args };
+      const senderMetadata = this.getSenderMetadata(callerId);
+      const ts = Date.now();
+      const event: ChannelEvent = {
+        id: 0, messageId: "", type: "method-call",
+        payload, senderId: callerId, senderMetadata, ts, persist: false,
+      };
+      const msg = channelEventToWsJson(event, "ephemeral");
+      void queueEmit(this.broadcastDeps, participantId, {
+        channelId: this.objectKey,
+        message: msg,
+      }, onFatal);
+    }
+    console.log(`[Channel] Redelivered ${rows.length} pending call(s) to ${participantId}`);
+  }
+
+  /**
    * Cancel any pending tool calls targeting a participant that's leaving the
    * channel. Each affected caller gets a synthetic "target left" error result
    * delivered via the normal result path, so the harness's pendingToolResults
    * map fails with a meaningful error rather than hanging until the harness
-   * stall warning fires.
+   * stall warning fires. Called for graceful unsubscribe and stale-session
+   * eviction; session-replace goes through `redeliverPendingCallsTo` instead.
    */
   private async failPendingCallsTargeting(
     targetId: string,

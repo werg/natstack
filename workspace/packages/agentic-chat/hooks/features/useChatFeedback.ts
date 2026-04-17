@@ -104,16 +104,46 @@ export function useChatFeedback({
           "The user will not be able to submit a response. Did you forget to destructure { onSubmit } from props?"
         );
       }
-      const result = await compileComponent<import("react").ComponentType<FeedbackComponentProps>>(args.code);
-      if (!result.success) {
-        updateMethodHistoryEntry(callId, { status: "error", error: result.error, completedAt: Date.now() });
-        throw new Error(result.error);
+      let compiled: Awaited<ReturnType<typeof compileComponent<import("react").ComponentType<FeedbackComponentProps>>>>;
+      try {
+        compiled = await compileComponent<import("react").ComponentType<FeedbackComponentProps>>(args.code);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        compiled = { success: false, error: message };
       }
-      const cacheKey = result.cacheKey!;
+      if (!compiled.success) {
+        const errorMessage = compiled.error ?? "Unknown compile error";
+        updateMethodHistoryEntry(callId, { status: "error", error: errorMessage, completedAt: Date.now() });
+        // Surface the compile failure to the user as a dismissable schema
+        // feedback card. Without this, a bad TSX from the agent renders
+        // nothing on screen and the method result error flows past the user
+        // silently. After the user dismisses, we throw so the caller sees
+        // an error result via handleMethodCallExec's catch path.
+        await new Promise<void>((resolve) => {
+          const feedback: ActiveFeedbackSchema = {
+            type: "schema",
+            callId,
+            title: "feedback_custom failed to compile",
+            fields: [{ key: "__err", type: "readonly", label: "Error", default: errorMessage }],
+            values: {},
+            hideSubmit: true,
+            cancelLabel: "Dismiss",
+            severity: "danger",
+            createdAt: Date.now(),
+            complete: () => {
+              removeFeedback(callId);
+              resolve();
+            },
+          };
+          addFeedback(feedback);
+        });
+        throw new Error(errorMessage);
+      }
+      const cacheKey = compiled.cacheKey!;
       return new Promise<FeedbackResult>((resolve) => {
         let resolved = false;
         const feedback: ActiveFeedbackTsx = {
-          type: "tsx", callId, Component: result.Component!, createdAt: Date.now(), cacheKey, title: args.title,
+          type: "tsx", callId, Component: compiled.Component!, createdAt: Date.now(), cacheKey, title: args.title,
           complete: (feedbackResult: FeedbackResult) => {
             if (resolved) return; // Prevent double-submission
             resolved = true;
