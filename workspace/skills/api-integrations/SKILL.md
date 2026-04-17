@@ -23,7 +23,7 @@ eval({
       console.log("2. In the Nango dashboard, enable the providers you need (Google, GitHub, etc.)");
       console.log("3. Copy your secret key from Settings → Secret Key");
       console.log("4. Add it to ~/.config/natstack/.secrets.yml:");
-      console.log("   nango: sk-your-secret-key-here");
+      console.log("   nango: <your-secret-key>   # UUID from the Nango dashboard");
       console.log("5. Restart the workspace");
     } else {
       console.log("Available providers:", providers.map(p => p.key).join(", "));
@@ -101,14 +101,14 @@ inline_ui({
         <div>Paste your Nango secret key:</div>
         <input
           type="password"
-          placeholder="sk-..."
+          placeholder="e.g. 1a2b3c4d-5e6f-7890-abcd-ef1234567890"
           value={key}
           onChange={e => setKey(e.target.value)}
           style={{ fontFamily: "monospace", padding: 6 }}
         />
         {status === "error" && <div style={{ color: "red" }}>{error}</div>}
         <button
-          disabled={!key.startsWith("sk-") || status === "saving"}
+          disabled={key.trim().length === 0 || status === "saving"}
           onClick={handleSave}
         >{status === "saving" ? "Saving..." : "Save key"}</button>
       </div>
@@ -396,7 +396,7 @@ oauth:
   nangoUrl: https://your-nango-instance.example.com
 ```
 
-The secret key still goes in `~/.config/natstack/.secrets.yml` as `nango: sk-...`.
+The secret key still goes in `~/.config/natstack/.secrets.yml` under `nango:` (Nango secret keys are UUIDs from the dashboard, e.g. `1a2b3c4d-5e6f-...`).
 
 ## Limitations
 

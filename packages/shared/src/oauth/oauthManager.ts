@@ -87,7 +87,7 @@ export class OAuthManager {
     if (!this.isConfigured) {
       throw new Error(
         "OAuth not configured. Add your Nango secret key to ~/.config/natstack/.secrets.yml:\n" +
-        "  nango: sk-your-nango-secret-key\n" +
+        "  nango: <your-secret-key>   # UUID from the Nango dashboard (Settings → Secret Key)\n" +
         "Sign up free at https://app.nango.dev to get a secret key.",
       );
     }

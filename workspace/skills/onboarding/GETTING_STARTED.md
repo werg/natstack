@@ -209,7 +209,7 @@ inline_ui({
         <div><strong>4. Paste it here:</strong></div>
         <input
           type="password"
-          placeholder="sk-..."
+          placeholder="e.g. 1a2b3c4d-5e6f-7890-abcd-ef1234567890"
           value={key}
           onChange={e => setKey(e.target.value)}
           style={{ fontFamily: "monospace", padding: 6 }}
@@ -217,7 +217,7 @@ inline_ui({
         {status === "error" && <div style={{ color: "red" }}>{error}</div>}
         <div style={{ display: "flex", gap: 8 }}>
           <button
-            disabled={!key.startsWith("sk-") || status === "saving"}
+            disabled={key.trim().length === 0 || status === "saving"}
             onClick={handleSave}
           >{status === "saving" ? "Saving..." : "Save key"}</button>
           <button onClick={() => resolve({ skipped: true })}>Skip</button>
