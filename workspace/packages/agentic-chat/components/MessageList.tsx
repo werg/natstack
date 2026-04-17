@@ -486,7 +486,7 @@ export const MessageList = React.memo(function MessageList({
     <Box flexGrow="1" overflow="hidden" style={{ minHeight: 0, position: "relative" }} asChild>
       <Card>
         <ScrollArea
-          ref={scrollRef}
+          ref={(node) => { scrollRef(node); }}
           style={{
             height: "100%",
           }}
