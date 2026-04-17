@@ -9,6 +9,7 @@ import {
   KeyboardAvoidingView,
   ScrollView,
   Platform,
+  Linking,
 } from "react-native";
 import type { StackNavigationProp } from "@react-navigation/stack";
 import { useSetAtom, useAtomValue } from "jotai";
@@ -24,6 +25,24 @@ import {
 import { connectionStatusAtom } from "../state/connectionAtoms";
 import { shellClientAtom, panelTreeAtom } from "../state/shellClientAtom";
 import { themeColorsAtom } from "../state/themeAtoms";
+import { parseConnectDeepLink } from "../services/deepLinkConnect";
+
+function confirmConnectDeepLink(serverUrl: string): Promise<boolean> {
+  // Any installed app can fire a natstack://connect intent. Always confirm
+  // before replacing creds, so a malicious link can't silently hijack the
+  // session even when saved credentials are already present.
+  return new Promise((resolve) => {
+    Alert.alert(
+      "Connect to server?",
+      `A link wants to connect NatStack to:\n\n${serverUrl}\n\nOnly proceed if you trust this link.`,
+      [
+        { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+        { text: "Connect", onPress: () => resolve(true) },
+      ],
+      { cancelable: true, onDismiss: () => resolve(false) },
+    );
+  });
+}
 
 type LoginScreenNavigationProp = StackNavigationProp<RootStackParamList, "Login">;
 
@@ -83,19 +102,54 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
   const connectRef = React.useRef(connectWithCredentials);
   connectRef.current = connectWithCredentials;
 
-  // Try loading saved credentials on mount and auto-connect if available
+  // Try loading saved credentials on mount and auto-connect if available.
+  // Deep-link (natstack://connect?url=&token=) takes precedence but always
+  // requires user confirmation before it overwrites creds — see
+  // confirmConnectDeepLink above for the rationale.
   React.useEffect(() => {
-    void (async () => {
-      const creds = await getCredentials();
-      if (creds) {
-        setServerUrl(creds.serverUrl);
-        setToken(creds.token);
+    let consumedDeepLink = false;
 
-        if (creds.serverUrl && creds.token) {
-          await connectRef.current(creds.serverUrl, creds.token);
+    const applyConnectUrl = async (rawUrl: string): Promise<boolean> => {
+      const result = parseConnectDeepLink(rawUrl);
+      if (result.kind === "error") {
+        if (rawUrl.startsWith("natstack://connect")) {
+          // Surface the reason if someone clearly meant to send a connect link
+          // but got rejected (bad host, missing token, …). Silent-ignore for
+          // other natstack:// paths (oauth-callback etc).
+          Alert.alert("Can't open connect link", result.reason);
         }
+        return false;
+      }
+      const confirmed = await confirmConnectDeepLink(result.serverUrl);
+      if (!confirmed) return false;
+      consumedDeepLink = true;
+      setServerUrl(result.serverUrl);
+      setToken(result.shellToken);
+      await saveCredentials(result.serverUrl, result.shellToken);
+      await connectRef.current(result.serverUrl, result.shellToken);
+      return true;
+    };
+
+    const subscription = Linking.addEventListener("url", (event: { url: string }) => {
+      void applyConnectUrl(event.url);
+    });
+
+    void (async () => {
+      const initialUrl = await Linking.getInitialURL();
+      if (initialUrl && (await applyConnectUrl(initialUrl))) return;
+
+      const creds = await getCredentials();
+      if (!creds || consumedDeepLink) return;
+      setServerUrl(creds.serverUrl);
+      setToken(creds.token);
+      if (creds.serverUrl && creds.token) {
+        await connectRef.current(creds.serverUrl, creds.token);
       }
     })();
+
+    return () => {
+      subscription.remove();
+    };
   }, []);
 
   const handleConnect = async () => {
