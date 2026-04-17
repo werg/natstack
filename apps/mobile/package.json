@@ -24,14 +24,17 @@
     "react": "^19.0.0",
     "react-native": "^0.79.2",
     "react-native-gesture-handler": "^2.25.0",
+    "react-native-get-random-values": "^1.11.0",
     "react-native-haptic-feedback": "^2.3.4",
     "react-native-keychain": "^9.2.2",
     "react-native-reanimated": "^3.17.5",
     "react-native-safe-area-context": "^5.4.0",
     "react-native-screens": "^4.10.0",
+    "react-native-url-polyfill": "^3.0.0",
     "react-native-webview": "^13.13.5"
   },
   "devDependencies": {
+    "@babel/plugin-transform-export-namespace-from": "^7.25.0",
     "@react-native-community/cli": "^18.0.0",
     "@react-native-community/cli-platform-android": "^18.0.0",
     "@react-native/metro-config": "^0.79.2",
