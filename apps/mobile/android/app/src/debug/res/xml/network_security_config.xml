@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-only network security config.
+
+  Overrides the restrictive main/ variant to permit cleartext (HTTP) traffic
+  globally. This file is only packaged in debug builds because it lives under
+  src/debug/ — release builds fall back to src/main/network_security_config.xml
+  which enforces HTTPS except for well-known dev-friendly hosts.
+
+  Rationale: dev servers bind to raw LAN / Tailscale IPs (no TLS cert), and
+  Android's <domain> entries don't support CIDR, so enumerating private ranges
+  isn't viable. Keeping the permissive shape here and gating it to debug source
+  sets is the cleanest way to avoid shipping cleartext-everywhere to release.
+
+  Reference: https://developer.android.com/training/articles/security-config
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
