@@ -389,10 +389,23 @@ async function main() {
   const githubConfig = workspaceConfig.git?.github;
   const tokenManager = new TokenManager();
 
+  // Auto-default devTargetDir: when running from a natstack source checkout,
+  // mirror pushes back to `<appRoot>/workspace` so edits made inside ephemeral
+  // dev workspaces persist into the repo. Explicit config wins (empty string disables).
+  const explicitDevTarget = workspaceConfig.git?.devTargetDir;
+  const templateDir = path.join(appRoot, "workspace");
+  const isSourceRun = fs.existsSync(path.join(templateDir, "meta", "natstack.yml"));
+  const templateDiffersFromActive =
+    templateDir !== workspacePath && !workspacePath.startsWith(templateDir + path.sep);
+  const devTargetDir =
+    explicitDevTarget !== undefined
+      ? (explicitDevTarget || undefined)
+      : (isSourceRun && templateDiffersFromActive ? templateDir : undefined);
+
   const gitServer = new GitServer(tokenManager, {
     port: workspaceConfig.git?.port,
     reposPath: workspacePath,
-    devTargetDir: workspaceConfig.git?.devTargetDir,
+    devTargetDir,
     github: {
       ...githubConfig,
       token: githubConfig?.token ?? process.env["GITHUB_TOKEN"],
