@@ -60,9 +60,6 @@ function makeSink(opts?: { failOn?: (op: ChannelOp) => boolean }): MockSink {
       ops.push(op);
       maybeFail(op);
     },
-    setTyping(on) {
-      ops.push({ kind: "typing", on });
-    },
     async error(msgId, message, code) {
       errors.push({ msgId, message, ...(code ? { code } : {}) });
     },
@@ -394,14 +391,19 @@ describe("piEventToChannelOps — parallel tool calls", () => {
 });
 
 describe("piEventToChannelOps — agent_end", () => {
-  it("emits typing off on a clean stop", () => {
+  // agent_end no longer emits any channel ops; typing lifecycle is owned by
+  // AgentWorkerBase's dispatch state machine (busy flag derived from
+  // running + queue depth). The projector only closes in-flight blocks on
+  // error/abort termination — covered in the stateful suite below.
+
+  it("emits no ops on a clean stop", () => {
     const ops = runTrace([agentEnd("stop")]);
-    expect(ops).toEqual([{ kind: "typing", on: false }]);
+    expect(ops).toEqual([]);
   });
 
-  it("emits typing off even when stopReason absent (legacy traces)", () => {
+  it("emits no ops when stopReason absent (legacy traces)", () => {
     const ops = runTrace([agentEnd()]);
-    expect(ops).toEqual([{ kind: "typing", on: false }]);
+    expect(ops).toEqual([]);
   });
 });
 
@@ -459,8 +461,6 @@ describe("ContentBlockProjector — error/abort auto-close", () => {
     // No text_end — simulate runner failure mid-stream.
     await projector.handleEvent(agentEnd("error"));
 
-    const kinds = sink.ops.map((o) => o.kind);
-    expect(kinds).toContain("typing");
     // The open text block must receive a complete op despite no text_end event.
     const completes = sink.ops.filter((o) => o.kind === "complete");
     expect(completes.map((o) => o.msgId)).toContain("m1");
@@ -491,8 +491,9 @@ describe("ContentBlockProjector — error/abort auto-close", () => {
     sink.ops.length = 0;
     await projector.handleEvent(agentEnd("stop"));
 
-    // Only typing op; no synthetic completes.
-    expect(sink.ops).toEqual([{ kind: "typing", on: false }]);
+    // No ops: projector no longer emits typing, and a clean stop doesn't
+    // trigger the synthetic-complete sweep.
+    expect(sink.ops).toEqual([]);
   });
 });
 
@@ -528,9 +529,8 @@ describe("ContentBlockProjector", () => {
     await projector.closeAll();
 
     const kinds = sink.ops.map((o) => o.kind);
-    // 3 completes, one per open block. No typing op.
+    // 3 completes, one per open block.
     expect(kinds.filter((k) => k === "complete")).toHaveLength(3);
-    expect(kinds).not.toContain("typing");
   });
 
   it("closeAll skips tool calls already in terminal state", async () => {

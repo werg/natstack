@@ -25,7 +25,6 @@ export interface ProjectorSink {
   }): Promise<void>;
   update(msgId: string, content: string, opts?: { append?: boolean }): Promise<void>;
   complete(msgId: string): Promise<void>;
-  setTyping(on: boolean): void;
   /** Best-effort error marker for a specific channel message. Called by the
    *  projector when a preceding op (send/update/complete) fails — the chat
    *  UI renders `ChatMessage.error` inline so users see the failure rather
@@ -42,8 +41,7 @@ export type ChannelOp =
       attachments?: Array<{ data: string; mimeType: string }>;
     }
   | { kind: "update"; msgId: string; content: string; append?: boolean }
-  | { kind: "complete"; msgId: string }
-  | { kind: "typing"; on: boolean };
+  | { kind: "complete"; msgId: string };
 
 interface ToolCallRecord {
   msgId: string;
@@ -168,9 +166,9 @@ export function piEventToChannelOps(
       };
     }
 
-    case "agent_end":
-      return { newState: state, ops: [{ kind: "typing", on: false }] };
-
+    // agent_end is handled by the worker's typing controller (busy-state
+    // machine), not the projector. The projector only closes in-flight
+    // blocks on error termination; see `handleEvent` below.
     default:
       return { newState: state, ops: [] };
   }
@@ -516,9 +514,6 @@ export class ContentBlockProjector {
         return;
       case "complete":
         await this.sink.complete(op.msgId);
-        return;
-      case "typing":
-        this.sink.setTyping(op.on);
         return;
     }
   }

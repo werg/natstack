@@ -409,13 +409,12 @@ export class PiRunner {
   }
 
   /**
-   * Steer the agent mid-stream with a follow-up message. pi-agent-core's
-   * `agent.steer` takes an `AgentMessage`, not a raw string, so we always
-   * build the wrapping message ourselves.
+   * Build a user AgentMessage without submitting it. The caller holds the
+   * reference so it can be passed to `steerMessage` or `runTurnMessage` and
+   * later matched against `message_start` events for absorption tracking.
    */
-  async steer(content: string, images?: ImageContent[]): Promise<void> {
-    if (!this.agent) throw new Error("PiRunner not initialized");
-    const message: AgentMessage = {
+  buildUserMessage(content: string, images?: ImageContent[]): AgentMessage {
+    return {
       role: "user",
       content:
         images && images.length > 0
@@ -423,7 +422,29 @@ export class PiRunner {
           : content,
       timestamp: Date.now(),
     };
-    this.agent.steer(message);
+  }
+
+  /** Queue a prebuilt AgentMessage for mid-stream steering. The caller should
+   *  hold `msg` by reference so it can match against later `message_start`
+   *  events to detect absorption. */
+  steerMessage(msg: AgentMessage): void {
+    if (!this.agent) throw new Error("PiRunner not initialized");
+    this.agent.steer(msg);
+  }
+
+  /** Submit a prebuilt AgentMessage as a fresh turn. Requires the agent to
+   *  be idle; throws if a run is already active. */
+  async runTurnMessage(msg: AgentMessage): Promise<void> {
+    if (!this.agent) throw new Error("PiRunner not initialized");
+    await this.agent.prompt(msg);
+  }
+
+  /** Clear pi-agent-core's internal steering queue. Used by the worker's
+   *  self-healing sweep when re-routing stranded steered messages as fresh
+   *  turns, so they don't get double-ingested by the next loop's line-80
+   *  drain. Safe to call when the agent is idle. */
+  clearSteeringQueue(): void {
+    this.agent?.clearSteeringQueue();
   }
 
   /** Abort the current operation and wait for the loop to drain. */

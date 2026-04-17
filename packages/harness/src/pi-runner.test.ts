@@ -24,6 +24,7 @@ vi.mock("@mariozechner/pi-agent-core", () => {
     public waitForIdle = vi.fn().mockResolvedValue(undefined);
     public prompt = vi.fn().mockResolvedValue(undefined);
     public steer = vi.fn();
+    public clearSteeringQueue = vi.fn();
     // Spies for the property setters: PiRunner assigns to state.tools / state.messages
     // (the real pi-agent-core 0.66+ AgentState exposes them as setter properties).
     public toolsSetSpy = vi.fn();
@@ -444,25 +445,57 @@ describe("PiRunner.runTurn", () => {
   });
 });
 
-describe("PiRunner.steer", () => {
+describe("PiRunner.buildUserMessage", () => {
   it("wraps content + images into an AgentMessage", async () => {
     const runner = new PiRunner(createOptions());
     await runner.init();
     const images = [
       { type: "image" as const, mimeType: "image/jpeg", data: "abc" },
     ];
-    await runner.steer("update", images);
-    const arg = agentInstances[0].steer.mock.calls[0][0];
-    expect(arg.role).toBe("user");
-    expect(Array.isArray(arg.content)).toBe(true);
+    const msg = runner.buildUserMessage("update", images);
+    expect(msg.role).toBe("user");
+    expect(Array.isArray(msg.content)).toBe(true);
+    expect((msg.content as unknown[])[0]).toEqual({ type: "text", text: "update" });
+    expect((msg.content as unknown[])[1]).toEqual(images[0]);
   });
 
   it("uses string content when there are no images", async () => {
     const runner = new PiRunner(createOptions());
     await runner.init();
-    await runner.steer("just words");
-    const arg = agentInstances[0].steer.mock.calls[0][0];
-    expect(arg.content).toBe("just words");
+    const msg = runner.buildUserMessage("just words");
+    expect(msg.content).toBe("just words");
+  });
+});
+
+describe("PiRunner.steerMessage", () => {
+  it("forwards the exact AgentMessage reference to agent.steer", async () => {
+    const runner = new PiRunner(createOptions());
+    await runner.init();
+    const msg = runner.buildUserMessage("follow-up");
+    runner.steerMessage(msg);
+    expect(agentInstances[0].steer).toHaveBeenCalledTimes(1);
+    // Reference equality matters — the dispatcher relies on this for
+    // absorption matching against later message_start events.
+    expect(agentInstances[0].steer.mock.calls[0][0]).toBe(msg);
+  });
+});
+
+describe("PiRunner.runTurnMessage", () => {
+  it("forwards the AgentMessage to agent.prompt", async () => {
+    const runner = new PiRunner(createOptions());
+    await runner.init();
+    const msg = runner.buildUserMessage("start");
+    await runner.runTurnMessage(msg);
+    expect(agentInstances[0].prompt).toHaveBeenCalledWith(msg);
+  });
+});
+
+describe("PiRunner.clearSteeringQueue", () => {
+  it("calls agent.clearSteeringQueue", async () => {
+    const runner = new PiRunner(createOptions());
+    await runner.init();
+    runner.clearSteeringQueue();
+    expect(agentInstances[0].clearSteeringQueue).toHaveBeenCalledTimes(1);
   });
 });
 

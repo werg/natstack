@@ -14,6 +14,11 @@
  * - `ContinuationStore`: pending callId continuations for tool callMethod
  *   and feedback_form / inline UI awaits (Promise resolution from onCallResult)
  * - `ChannelClient`: typed wrapper around channel DO RPC
+ * - `TurnDispatcher` (one per channel): queues user messages, chooses
+ *   runTurn vs steer, self-heals pi-core's steering-queue exit race,
+ *   drives the typing indicator from real busy state
+ * - `ContentBlockProjector` (one per channel): maps Pi content events
+ *   onto channel messages
  *
  * Publishes Pi events as real channel messages via `ContentBlockProjector`
  * (one channel message per Pi content block):
@@ -21,6 +26,12 @@
  * - Thinking blocks stream via send → delta updates (append flag) → complete
  * - Tool calls publish as contentType "toolCall" (ToolCallPayload snapshot)
  * - Tool-result images fold into the tool call's `execution.resultImages`
+ *
+ * Message dispatch flow (normal turn):
+ *   onChannelEvent → refreshRoster → getOrCreateRunner → resizeAttachments
+ *     → runner.buildUserMessage → TurnDispatcher.submit
+ *   TurnDispatcher routes to runTurnMessage (idle) or steerMessage (mid-run);
+ *   typing indicator reflects `running || pending || pendingSteered > 0`.
  */
 
 import { DurableObjectBase, type DurableObjectContext, type DORef } from "@workspace/runtime/worker";
@@ -50,6 +61,7 @@ import { SubscriptionManager } from "./subscription-manager.js";
 import { ContinuationStore } from "./continuation-store.js";
 import { ChannelClient } from "./channel-client.js";
 import { ContentBlockProjector, type ProjectorSink } from "./content-block-projector.js";
+import { TurnDispatcher } from "./turn-dispatcher.js";
 
 const SAFE_TOOL_NAMES_DEFAULT: ReadonlySet<string> = new Set([
   "read",
@@ -365,7 +377,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     if (result.replay) {
       try {
         for (const event of result.replay) {
-          await this.onChannelEvent(opts.channelId, event);
+          // Sequential mode: missed messages run as independent turns rather
+          // than collapsing into a single steered run. Without this, the 2nd
+          // and later replay events would hit `running=true` (set by the 1st
+          // event's drainLoop pre-await) and route to steer.
+          await this.onChannelEvent(opts.channelId, event, { mode: "sequential" });
         }
       } catch (err) {
         console.warn(`[AgentWorkerBase] Replay processing stopped:`, err);
@@ -413,7 +429,13 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   async unsubscribeChannel(channelId: string): Promise<UnsubscribeResult> {
     await this.subscriptions.unsubscribeFromChannel(channelId);
 
-    this.setTyping(channelId, false);
+    // Dispose dispatcher before the runner — unsubscribes its listener
+    // and broadcasts typing off.
+    const dispatcher = this.dispatchers.get(channelId);
+    if (dispatcher) {
+      dispatcher.dispose();
+      this.dispatchers.delete(channelId);
+    }
 
     const entry = this.runners.get(channelId);
     if (entry) {
@@ -639,15 +661,19 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     runner.subscribe((event) => projector.handleEvent(event));
 
     this.runners.set(channelId, { runner });
+    // Dispatcher self-subscribes to runner events for absorption tracking
+    // and sweep. Created here so it exists before the first onChannelEvent
+    // (which expects to hand messages to it).
+    this.getOrCreateDispatcher(channelId, runner, projector);
     return runner;
   }
 
   // ── Per-channel projector (Pi events → channel messages) ───────────────
 
   /** One projector per channel, created lazily when the runner is wired up. */
-  private projectors = new Map<string, ContentBlockProjector>();
+  protected projectors = new Map<string, ContentBlockProjector>();
 
-  private getOrCreateProjector(channelId: string): ContentBlockProjector {
+  protected getOrCreateProjector(channelId: string): ContentBlockProjector {
     const existing = this.projectors.get(channelId);
     if (existing) return existing;
     const projector = new ContentBlockProjector(this.createProjectorSink(channelId));
@@ -685,7 +711,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         const channel = this.createChannelClient(channelId);
         await channel.error(participantId, msgId, message, code);
       },
-      setTyping: (on) => this.setTyping(channelId, on),
     };
   }
 
@@ -725,29 +750,38 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
   }
 
-  // ── Typing indicator ─────────────────────────────────────────────────
+  // ── Dispatch + typing (delegated to TurnDispatcher) ─────────────────────
+  //
+  // One TurnDispatcher per channel. Every incoming user message flows
+  // through `dispatcher.submit`; the dispatcher owns the queue, steer
+  // tracking, self-healing sweep, and typing-indicator broadcasts.
+  // See `turn-dispatcher.ts` for the full state-machine doc.
 
-  /** Track which channels have typing=true so we skip redundant updates. */
-  private typingActive = new Set<string>();
+  protected dispatchers = new Map<string, TurnDispatcher>();
 
-  /** Set typing state via participant metadata. Broadcast ephemerally (no
-   *  message row persisted). Dedup is one-directional: only skip redundant
-   *  true→true; always allow false through to defend against stale state
-   *  after DO hibernation. */
-  private setTyping(channelId: string, typing: boolean): void {
-    if (typing && this.typingActive.has(channelId)) return; // already typing
+  protected getOrCreateDispatcher(
+    channelId: string,
+    runner: PiRunner,
+    projector: ContentBlockProjector,
+  ): TurnDispatcher {
+    const existing = this.dispatchers.get(channelId);
+    if (existing) return existing;
+    const dispatcher = new TurnDispatcher({
+      runner,
+      projector,
+      notifyTyping: (busy) => this.broadcastTyping(channelId, busy),
+    });
+    this.dispatchers.set(channelId, dispatcher);
+    return dispatcher;
+  }
 
-    if (typing) {
-      this.typingActive.add(channelId);
-    } else {
-      this.typingActive.delete(channelId);
-    }
-
+  /** Ephemeral setTypingState broadcast. Fire-and-forget; errors logged. */
+  private broadcastTyping(channelId: string, busy: boolean): void {
     const participantId = this.subscriptions.getParticipantId(channelId);
     if (!participantId) return;
     const channel = this.createChannelClient(channelId);
-    void channel.setTypingState(participantId, typing).catch((err) => {
-      console.warn(`[AgentWorkerBase] setTyping(${typing}) failed for channel=${channelId}:`, err);
+    void channel.setTypingState(participantId, busy).catch((err) => {
+      console.warn(`[AgentWorkerBase] setTypingState(${busy}) failed for channel=${channelId}:`, err);
     });
   }
 
@@ -1047,72 +1081,66 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   // covers the common case: incoming user messages are forwarded to Pi via the
   // per-channel runner. Pi handles the rest.
 
-  async onChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
+  async onChannelEvent(
+    channelId: string,
+    event: ChannelEvent,
+    opts?: { mode?: "auto" | "sequential" },
+  ): Promise<void> {
     if (!this.shouldProcess(event)) return;
 
     const input = this.buildTurnInput(event);
 
-    // Set typing FIRST — before any async work (roster refresh, runner init,
-    // image resizing). The user must see "typing" instantly, even if the runner
-    // takes seconds to initialize.
-    this.setTyping(channelId, true);
+    // Pre-submit setup: roster refresh, runner init, image resize. All
+    // have to happen before we hand the message to the dispatcher so it
+    // can make the steer-vs-runTurn decision and pass a prebuilt
+    // AgentMessage through absorption tracking.
+    await this.refreshRoster(channelId);
+    const runner = await this.getOrCreateRunner(channelId);
+    const projector = this.getOrCreateProjector(channelId);
+    const images = await this.resizeAttachments(channelId, input.attachments);
 
-    try {
-      await this.refreshRoster(channelId);
-      const runner = await this.getOrCreateRunner(channelId);
+    const agentMsg = runner.buildUserMessage(input.content, images);
+    const dispatcher = this.getOrCreateDispatcher(channelId, runner, projector);
+    dispatcher.submit(agentMsg, opts);
+  }
 
-      // Resize user-pasted image attachments via the server-side image service.
-      // Best-effort: on failure fall through to the original bytes.
-      const images: ImageContent[] = [];
-      for (const att of input.attachments ?? []) {
-        if (!att.mimeType?.startsWith("image/")) continue;
-        try {
-          const bytes = Buffer.from(att.data, "base64");
-          const resized = await this.rpc.call<{
-            data: Uint8Array;
-            mimeType: string;
-            wasResized: boolean;
-          }>(
-            "main",
-            "image.resize",
-            bytes,
-            att.mimeType,
-            { maxWidth: 2000, maxHeight: 2000 },
-          );
-          images.push({
-            type: "image",
-            mimeType: resized.mimeType,
-            data: Buffer.from(resized.data).toString("base64"),
-          });
-        } catch (err) {
-          console.warn(
-            `[AgentWorkerBase] image.resize failed for channel=${channelId}; passing original:`,
-            err,
-          );
-          images.push({ type: "image", mimeType: att.mimeType, data: att.data });
-        }
+  /** Resize user-pasted image attachments via the server-side image service.
+   *  Best-effort: on failure, fall through to the original bytes. */
+  private async resizeAttachments(
+    channelId: string,
+    attachments: Attachment[] | undefined,
+  ): Promise<ImageContent[] | undefined> {
+    if (!attachments || attachments.length === 0) return undefined;
+    const images: ImageContent[] = [];
+    for (const att of attachments) {
+      if (!att.mimeType?.startsWith("image/")) continue;
+      try {
+        const bytes = Buffer.from(att.data, "base64");
+        const resized = await this.rpc.call<{
+          data: Uint8Array;
+          mimeType: string;
+          wasResized: boolean;
+        }>(
+          "main",
+          "image.resize",
+          bytes,
+          att.mimeType,
+          { maxWidth: 2000, maxHeight: 2000 },
+        );
+        images.push({
+          type: "image",
+          mimeType: resized.mimeType,
+          data: Buffer.from(resized.data).toString("base64"),
+        });
+      } catch (err) {
+        console.warn(
+          `[AgentWorkerBase] image.resize failed for channel=${channelId}; passing original:`,
+          err,
+        );
+        images.push({ type: "image", mimeType: att.mimeType, data: att.data });
       }
-
-      const imagesArg = images.length > 0 ? images : undefined;
-      if (runner.isStreaming) {
-        await runner.steer(input.content, imagesArg);
-      } else {
-        await runner.runTurn(input.content, imagesArg);
-      }
-    } catch (err) {
-      // Worker-level failure (e.g., runTurn rejecting before pi-agent-core
-      // could emit its own agent_end). Close any in-flight channel messages
-      // so the client doesn't see stuck "pending" text/thinking/toolCall.
-      const projector = this.projectors.get(channelId);
-      if (projector) {
-        try { await projector.closeAll(); }
-        catch (closeErr) {
-          console.warn(`[AgentWorkerBase] projector.closeAll failed for ${channelId}:`, closeErr);
-        }
-      }
-      this.setTyping(channelId, false);
-      throw err;
     }
+    return images.length > 0 ? images : undefined;
   }
 
   // ── Method calls (subclass hook) ─────────────────────────────────────────
@@ -1126,6 +1154,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     for (const [channelId, entry] of this.runners.entries()) {
       const projector = this.projectors.get(channelId);
       if (projector) await projector.closeAll();
+      this.dispatchers.get(channelId)?.reset();
       await entry.runner.interrupt();
     }
   }
@@ -1139,7 +1168,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       // even though the *_end Pi events won't fire post-abort.
       const projector = this.projectors.get(channelId);
       if (projector) await projector.closeAll();
-      this.setTyping(channelId, false);
+      // Drop any pending/steered messages — interrupt means the user wants
+      // everything stopped, not just the current turn. Dispatcher's reset()
+      // also clears pi-core's steering queue.
+      this.dispatchers.get(channelId)?.reset();
       await entry.runner.interrupt();
     }
   }
@@ -1240,7 +1272,14 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const config = configRaw ? JSON.parse(configRaw) : undefined;
 
     this.sql.exec(`DELETE FROM subscriptions`);
-    this.runners.clear(); // No live runners on a fresh clone.
+    // Dispose dispatchers first (releases their runner subscriptions)
+    // before wiping the runner map. On a freshly-cloned DO these maps
+    // are already empty, but this keeps the teardown order correct if
+    // postClone is ever re-entered.
+    for (const dispatcher of this.dispatchers.values()) dispatcher.dispose();
+    this.dispatchers.clear();
+    this.runners.clear();
+    this.projectors.clear();
     this._fsContextBound.clear(); // Re-bind fs context on first resubscribe.
 
     if (contextId) {
