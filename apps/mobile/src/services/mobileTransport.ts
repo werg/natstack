@@ -53,6 +53,7 @@ export class MobileTransport implements RpcBridge {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionalClose = false;
   private _status: ConnectionStatus = "disconnected";
+  private lastCloseInfo: { code?: number; reason?: string } | null = null;
 
   /** Timeout for regular RPC calls (30s) */
   private callTimeoutMs = 30_000;
@@ -65,6 +66,12 @@ export class MobileTransport implements RpcBridge {
 
   get status(): ConnectionStatus {
     return this._status;
+  }
+
+  /** Reason the last WebSocket was closed, if any. Useful for surfacing
+   *  connection errors up to UI layers — RN's onerror carries no detail. */
+  getLastCloseInfo(): { code?: number; reason?: string } | null {
+    return this.lastCloseInfo;
   }
 
   /**
@@ -220,10 +227,12 @@ export class MobileTransport implements RpcBridge {
   private openWebSocket(): void {
     // Convert HTTP(S) URL to WS(S) URL with /rpc path
     const wsUrl = buildWsUrl(this.config.serverUrl);
+    this.lastCloseInfo = null;
+    console.log(`[MobileTransport] Connecting WebSocket to ${wsUrl}`);
     this.ws = new WebSocket(wsUrl);
 
     this.ws.onopen = () => {
-      // Send auth with shell token
+      console.log(`[MobileTransport] WebSocket open, sending auth`);
       this.ws!.send(JSON.stringify({ type: "ws:auth", token: this.config.shellToken }));
     };
 
@@ -236,8 +245,13 @@ export class MobileTransport implements RpcBridge {
       }
     };
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (event: { code?: number; reason?: string }) => {
       this.authenticated = false;
+      // Stash details so waitForConnection can surface a meaningful reason.
+      this.lastCloseInfo = { code: event?.code, reason: event?.reason };
+      console.warn(
+        `[MobileTransport] WebSocket closed code=${event?.code ?? "?"} reason=${event?.reason || "<none>"} url=${wsUrl}`,
+      );
       if (this.intentionalClose) {
         return;
       }
@@ -246,8 +260,11 @@ export class MobileTransport implements RpcBridge {
       this.scheduleReconnect();
     };
 
-    this.ws.onerror = () => {
-      // Error events are followed by close events, reconnection handled there
+    this.ws.onerror = (event: unknown) => {
+      // RN's WebSocket onerror doesn't carry native error details, but logging
+      // confirms we at least reached the error path.
+      const message = (event as { message?: string })?.message;
+      console.warn(`[MobileTransport] WebSocket error${message ? `: ${message}` : ""} url=${wsUrl}`);
     };
   }
 

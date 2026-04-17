@@ -275,7 +275,13 @@ export class ShellClient {
         } else if (status === "disconnected") {
           clearTimeout(timeout);
           unsub();
-          reject(new Error("Connection failed"));
+          const info = this.transport.getLastCloseInfo();
+          const detail = info?.reason
+            ? `${info.reason} (code ${info.code ?? "?"})`
+            : info?.code
+              ? `close code ${info.code}`
+              : `could not reach ${this.serverUrl} — check LAN / firewall / server running`;
+          reject(new Error(`Connection failed: ${detail}`));
         }
       });
     });
