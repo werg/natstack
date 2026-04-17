@@ -39,6 +39,20 @@ const config = {
         return context.resolveRequest(context, localPath, platform);
       }
 
+      // 0a. Shim Node builtins pulled in transitively by @natstack/shared.
+      //     panelManager imports trickle down into panelTypes/panelIdUtils
+      //     which assume a Node runtime. Mobile-safe replacements live in
+      //     src/nodeShims — unused APIs throw if accidentally reached.
+      if (moduleName === "path" || moduleName === "node:path") {
+        return { type: "sourceFile", filePath: path.resolve(projectRoot, "src/nodeShims/path.ts") };
+      }
+      if (moduleName === "fs" || moduleName === "node:fs") {
+        return { type: "sourceFile", filePath: path.resolve(projectRoot, "src/nodeShims/fs.ts") };
+      }
+      if (moduleName === "crypto" || moduleName === "node:crypto") {
+        return { type: "sourceFile", filePath: path.resolve(projectRoot, "src/nodeShims/crypto.ts") };
+      }
+
       // 0b. Resolve @natstack/* packages to their TypeScript source.
       //     These packages export "main": "./dist/index.js" for Node/esbuild,
       //     but dist/ may not exist (it's built by the desktop build pipeline).
