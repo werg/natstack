@@ -755,14 +755,29 @@ ${doBlock}${cases.join("\n")}
       const proc = this.process;
       this.process = null;
       proc.kill("SIGTERM");
-      // Wait for the process to exit so the port is released before respawn
+      // Wait for the process to exit so the port is released before respawn.
+      // `proc.killed` only reports that a signal was *sent*, not that the
+      // process actually died — so track exit observation explicitly.
+      let exited = false;
       await new Promise<void>((resolve) => {
-        const onExit = () => resolve();
+        const onExit = () => { exited = true; resolve(); };
         proc.once("exit", onExit);
-        // Safety timeout — don't block forever if process ignores SIGTERM
         setTimeout(() => { proc.removeListener("exit", onExit); resolve(); }, 3000);
       });
+      if (!exited) {
+        // SIGTERM timed out — force reap so the socket can be reclaimed.
+        try { proc.kill("SIGKILL"); } catch { /* already gone */ }
+        await new Promise<void>((resolve) => {
+          const onExit = () => resolve();
+          proc.once("exit", onExit);
+          setTimeout(() => { proc.removeListener("exit", onExit); resolve(); }, 1000);
+        });
+      }
     }
+    // Release the pinned port so restartWorkerd re-probes via findServicePort.
+    // findServicePort skips EADDRINUSE ports, which sidesteps the race where
+    // the kernel has not finished releasing our previous bind yet.
+    this.port = null;
   }
 
   async restartAll(): Promise<void> {
