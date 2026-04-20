@@ -243,6 +243,8 @@ export async function establishServerSession(args: {
     workerdPort: ports.workerdPort ?? 0,
     workspaceId: wsInfo.config.id,
     workspacePath: wsInfo.path,
+    /** The server's own state directory — lives on the remote filesystem.
+     *  Do NOT use for local I/O; use getRemoteUserDataDir() instead. */
     statePath: wsInfo.statePath,
     workspaceConfig: wsInfo.config,
     serverClient,

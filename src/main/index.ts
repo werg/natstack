@@ -428,7 +428,7 @@ app.on("ready", async () => {
 
     const { createElectronShellCore } = await import("./shellCore/createElectronShellCore.js");
     shellCore = createElectronShellCore({
-      statePath: serverSession.statePath,
+      statePath: startupMode.kind === "remote" ? getRemoteUserDataDir() : serverSession.statePath,
       workspaceId: serverSession.workspaceId,
       workspacePath: serverSession.workspacePath,
       // In remote mode the workspace source tree lives on the server, so the
