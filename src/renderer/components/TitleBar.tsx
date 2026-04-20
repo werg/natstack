@@ -185,14 +185,16 @@ const itemStyle: CSSProperties = {
 };
 
 // Style for sibling group container
-const groupStyle: CSSProperties = {
+const groupStyle = {
   display: "inline-flex",
   alignItems: "center",
   gap: "1px",
   padding: "1px",
   borderRadius: "4px",
   border: "1px solid var(--gray-6)",
-};
+  appRegion: "no-drag",
+  WebkitAppRegion: "no-drag",
+} as CSSProperties;
 
 // Hoverable breadcrumb item with X button on hover
 interface HoverableBreadcrumbItemProps {
@@ -409,7 +411,7 @@ function BreadcrumbBar({
   };
 
   return (
-    <Flex align="center" gap="1" style={{ minWidth: 0, overflow: "hidden", appRegion: "no-drag", WebkitAppRegion: "no-drag" } as CSSProperties}>
+    <Flex align="center" gap="1" style={{ minWidth: 0, overflow: "hidden" } as CSSProperties}>
       {/* Ancestors */}
       {hiddenAncestors.length > 0 && (
         <>
@@ -418,6 +420,7 @@ function BreadcrumbBar({
             variant="ghost"
             aria-label="More ancestors"
             onClick={handleHiddenAncestorsClick}
+            style={{ appRegion: "no-drag", WebkitAppRegion: "no-drag" } as CSSProperties}
           >
             <DotsHorizontalIcon />
           </IconButton>
@@ -466,6 +469,7 @@ function BreadcrumbBar({
             variant="ghost"
             aria-label="More descendants"
             onClick={handleHiddenDescendantsClick}
+            style={{ appRegion: "no-drag", WebkitAppRegion: "no-drag" } as CSSProperties}
           >
             <DotsHorizontalIcon />
           </IconButton>
