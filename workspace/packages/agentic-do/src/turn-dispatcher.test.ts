@@ -32,7 +32,7 @@ interface FakeRunnerState {
    *  deferred that the test resolves/rejects to simulate pi-core completion. */
   runTurnCalls: Array<{
     msg: AgentMessage;
-    deferred: ReturnType<typeof deferred>;
+    deferred: ReturnType<typeof deferred<void>>;
   }>;
   steerCalls: AgentMessage[];
   clearSteerCount: number;
