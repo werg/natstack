@@ -101,6 +101,10 @@ export default function MyForm({ onSubmit, onCancel, onError, chat }) {
 
 The component renders inside a container Card with a header, scroll area, and resize handle. Do NOT wrap your component in a top-level Card. Use `<Flex direction="column" gap="3" p="2">` or similar as root.
 
+### Error Handling
+
+Render-time errors and synchronous throws in event handlers are caught by the host's error boundary. Errors from `chat.publish`, `chat.callMethod`, and `chat.rpc.call` are caught even when awaited without try/catch. **Errors in `async` handlers that `await` other APIs (e.g. `fetch`, `fs.readFile`, third-party libraries) should be wrapped in try/catch** — on failure, call `onError(message)` to signal the failure back to the agent, or surface the error inline and leave `onSubmit`/`onCancel` uncalled so the user can retry.
+
 ### Result
 
 ```typescript

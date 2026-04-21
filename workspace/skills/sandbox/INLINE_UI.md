@@ -23,6 +23,19 @@ Render persistent interactive React components inline in the chat. Components st
 > **Defensive coding rule:** Components always receive `props`, but individual keys may be absent if the caller omitted them. Always default `props` and guard property access:
 > `const items = props?.items ?? []`. For maximum portability, prefer embedding small constant data directly in the component source rather than relying on specific `props` keys.
 
+> **Error handling:** Render-time errors and synchronous throws in event handlers are caught automatically by the host's error boundary. Errors from `chat.publish`, `chat.callMethod`, and `chat.rpc.call` are caught even when awaited without try/catch. **However, errors in `async` handlers that `await` other APIs (e.g. `fetch`, `fs.readFile`, third-party libraries) should be wrapped in try/catch** — surface failures visibly (toast, inline text, disabled state) rather than silently. Example:
+>
+> ```tsx
+> const handleClick = async () => {
+>   try {
+>     const content = await fs.readFile(path, "utf-8");
+>     setContent(content);
+>   } catch (err) {
+>     setError(err instanceof Error ? err.message : String(err));
+>   }
+> };
+> ```
+
 ## Component Contract
 
 Components receive `{ props, chat, scope, scopes }`:

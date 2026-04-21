@@ -28,7 +28,14 @@
 const trackedPromises = new WeakMap<Promise<unknown>, (err: Error) => void>();
 let listenerInstalled = false;
 
-function ensureListener(): void {
+/**
+ * Install the global `unhandledrejection` listener that routes tracked
+ * rejections to their `onError` handler. Idempotent. Exported so callers that
+ * install their own fallback listeners can ensure this one is registered first
+ * (listeners fire in registration order; a later fallback can then check
+ * `event.defaultPrevented` and skip anything already handled here).
+ */
+export function ensureTrackPromiseListener(): void {
   if (listenerInstalled) return;
   listenerInstalled = true;
   window.addEventListener("unhandledrejection", (event: PromiseRejectionEvent) => {
@@ -55,7 +62,7 @@ function ensureListener(): void {
  * If the caller catches normally, nothing extra happens.
  */
 export function trackPromise<T>(promise: Promise<T>, onError: (err: Error) => void): Promise<T> {
-  ensureListener();
+  ensureTrackPromiseListener();
   // Create a derived promise — this is what the caller awaits.
   // The original rejection is "handled" by our .then rejection handler,
   // and we re-throw to create a new rejection on `derived`.
