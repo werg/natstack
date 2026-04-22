@@ -296,9 +296,10 @@ if (!ipcChannel) {
 
 async function main() {
   const { setUserDataPath } = await import("@natstack/env-paths");
-  const { loadCentralEnv, resolveOrCreateWorkspace, loadPersistedAdminToken, savePersistedAdminToken, getAdminTokenPath } = await import("@natstack/shared/workspace/loader");
+  const { loadCentralEnv, resolveOrCreateWorkspace, loadPersistedAdminToken, savePersistedAdminToken, getAdminTokenPath, getCentralConfigPaths } = await import("@natstack/shared/workspace/loader");
   const { CentralDataManager } = await import("@natstack/shared/centralData");
   const { GitServer } = await import("@natstack/git-server");
+  const { createSecretsStore } = await import("@natstack/shared/secrets");
   const { TokenManager } = await import("@natstack/shared/tokenManager");
   const { z } = await import("zod");
   const { ServiceDispatcher } = await import("@natstack/shared/serviceDispatcher");
@@ -388,6 +389,7 @@ async function main() {
 
   const githubConfig = workspaceConfig.git?.github;
   const tokenManager = new TokenManager();
+  let secretsStoreInstance: import("@natstack/shared/secrets").SecretsStore | null = null;
 
   // Auto-default devTargetDir: when running from a natstack source checkout,
   // mirror pushes back to `<appRoot>/workspace` so edits made inside ephemeral
@@ -409,6 +411,7 @@ async function main() {
     github: {
       ...githubConfig,
       token: githubConfig?.token ?? process.env["GITHUB_TOKEN"],
+      getToken: () => secretsStoreInstance?.get("github"),
     },
   });
 
@@ -447,8 +450,24 @@ async function main() {
     async start() { return databaseManager; },
   });
   container.register({
-    name: "gitServer",
+    name: "secretsStore",
     async start() {
+      const { secretsPath } = getCentralConfigPaths();
+      secretsStoreInstance = createSecretsStore({ secretsPath });
+      return secretsStoreInstance;
+    },
+    async stop(instance: import("@natstack/shared/secrets").SecretsStore | null | undefined) {
+      await instance?.close();
+      if (secretsStoreInstance === instance) {
+        secretsStoreInstance = null;
+      }
+    },
+  });
+  container.register({
+    name: "gitServer",
+    dependencies: ["secretsStore"],
+    async start(resolve) {
+      secretsStoreInstance = resolve<import("@natstack/shared/secrets").SecretsStore>("secretsStore")!;
       await gitServer.start();
       return gitServer;
     },
@@ -556,12 +575,25 @@ async function main() {
   // ── Secrets service (API keys with user consent) ──
   {
     const { createSecretsService } = await import("./services/secretsService.js");
-    let panelRegistry: import("@natstack/shared/panelRegistry").PanelRegistry | undefined;
-    try { panelRegistry = container.get<import("@natstack/shared/panelRegistry").PanelRegistry>("panelRegistry"); } catch { /* not available */ }
-    container.register(rpcService(createSecretsService({
-      notificationService: notificationInternal,
-      panelRegistry,
-    })));
+    let secretsDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null = null;
+    container.register({
+      name: "secrets",
+      dependencies: ["secretsStore"],
+      async start(resolve) {
+        let panelRegistry: import("@natstack/shared/panelRegistry").PanelRegistry | undefined;
+        try { panelRegistry = container.get<import("@natstack/shared/panelRegistry").PanelRegistry>("panelRegistry"); } catch { /* not available */ }
+        const secretsStore = resolve<import("@natstack/shared/secrets").SecretsStore>("secretsStore")!;
+        secretsDefinition = createSecretsService({
+          notificationService: notificationInternal,
+          panelRegistry,
+          secretsStore,
+        });
+      },
+      getServiceDefinition() {
+        if (!secretsDefinition) throw new Error("secrets service not initialized");
+        return secretsDefinition;
+      },
+    });
   }
 
   // ── OAuth service (works in both Electron and standalone modes) ──
@@ -571,14 +603,14 @@ async function main() {
     let oauthManager: InstanceType<typeof OAuthManager>;
     container.register({
       name: "oauth",
-      dependencies: ["databaseManager"],
+      dependencies: ["databaseManager", "secretsStore"],
       optionalDependencies: ["panelRegistry"],
-      async start() {
+      async start(resolve) {
         const nangoUrl = workspace.config.oauth?.nangoUrl ?? process.env["NANGO_URL"] ?? "https://api.nango.dev";
-        const nangoSecret = process.env["NANGO_SECRET_KEY"] ?? "";
+        const secretsStore = resolve<import("@natstack/shared/secrets").SecretsStore>("secretsStore")!;
         oauthManager = new OAuthManager({
           nangoUrl,
-          nangoSecretKey: nangoSecret,
+          secrets: secretsStore,
           databaseManager,
         });
       },
@@ -889,9 +921,21 @@ async function main() {
   // delivers and silently refreshes via the refresh-token grant.
   {
     const { AuthTokensServiceImpl, createAuthTokensService } = await import("./services/authService.js");
-    const { rpcService: rpcSvcForAuth } = await import("@natstack/shared/managedService");
-    const authTokens = new AuthTokensServiceImpl({});
-    container.register(rpcSvcForAuth(createAuthTokensService({ authTokens })));
+    let authTokensDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null = null;
+    container.register({
+      name: "authTokens",
+      dependencies: ["secretsStore"],
+      async start(resolve) {
+        const authTokens = new AuthTokensServiceImpl({
+          secretsStore: resolve<import("@natstack/shared/secrets").SecretsStore>("secretsStore")!,
+        });
+        authTokensDefinition = createAuthTokensService({ authTokens });
+      },
+      getServiceDefinition() {
+        if (!authTokensDefinition) throw new Error("authTokens service not initialized");
+        return authTokensDefinition;
+      },
+    });
   }
 
   if (!ipcChannel) {

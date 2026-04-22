@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./*": "./src/*.ts"
+    "./*": "./src/*.ts",
+    "./secrets": "./src/secrets/index.ts",
+    "./secrets/*": "./src/secrets/*.ts"
   },
   "scripts": {
     "build": "echo 'source-only package, no build needed'"

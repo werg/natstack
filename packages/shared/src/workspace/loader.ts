@@ -157,17 +157,20 @@ export function loadCentralConfig(): CentralConfig {
  */
 export function loadSecrets(): Record<string, string> {
   const paths = getCentralConfigPaths();
+  return loadSecretsFromPath(paths.secretsPath);
+}
 
-  if (!fs.existsSync(paths.secretsPath)) {
+export function loadSecretsFromPath(secretsPath: string): Record<string, string> {
+  if (!fs.existsSync(secretsPath)) {
     return {};
   }
 
   try {
-    const content = fs.readFileSync(paths.secretsPath, "utf-8");
+    const content = fs.readFileSync(secretsPath, "utf-8");
     const secrets = YAML.parse(content) as Record<string, string>;
     return secrets ?? {};
   } catch (error) {
-    console.warn(`[Config] Failed to load ${paths.secretsPath}:`, error);
+    console.warn(`[Config] Failed to load ${secretsPath}:`, error);
     return {};
   }
 }
@@ -184,44 +187,10 @@ export function loadCentralEnvFile(): void {
 }
 
 /**
- * Map secrets to standard environment variable names for providers
- */
-function mapSecretsToEnv(secrets: Record<string, string>): void {
-  const providerEnvMap: Record<string, string> = {
-    anthropic: "ANTHROPIC_API_KEY",
-    openai: "OPENAI_API_KEY",
-    google: "GOOGLE_API_KEY",
-    groq: "GROQ_API_KEY",
-    openrouter: "OPENROUTER_API_KEY",
-    mistral: "MISTRAL_API_KEY",
-    together: "TOGETHER_API_KEY",
-    replicate: "REPLICATE_API_KEY",
-    perplexity: "PERPLEXITY_API_KEY",
-    github: "GITHUB_TOKEN", // For transparent GitHub repo cloning
-    nango: "NANGO_SECRET_KEY", // Nango OAuth proxy secret key
-  };
-
-  for (const [provider, secret] of Object.entries(secrets)) {
-    const envVar = providerEnvMap[provider.toLowerCase()];
-    if (envVar && secret) {
-      // Only set if not already set (env file takes precedence over secrets file)
-      if (!process.env[envVar]) {
-        process.env[envVar] = secret;
-      }
-    }
-  }
-}
-
-/**
- * Load all central environment (both .env file and .secrets.yml)
+ * Load central environment from ~/.config/natstack/.env into process.env
  */
 export function loadCentralEnv(): void {
-  // 1. Load .env file first
   loadCentralEnvFile();
-
-  // 2. Load secrets and map to env vars
-  const secrets = loadSecrets();
-  mapSecretsToEnv(secrets);
 }
 
 /**
@@ -229,13 +198,13 @@ export function loadCentralEnv(): void {
  */
 export function saveSecrets(secrets: Record<string, string>): void {
   const paths = getCentralConfigPaths();
+  saveSecretsToPath(paths.secretsPath, secrets);
+}
 
+export function saveSecretsToPath(secretsPath: string, secrets: Record<string, string>): void {
   try {
-    ensureCentralConfigDir();
-    fs.writeFileSync(paths.secretsPath, YAML.stringify(secrets), "utf-8");
-
-    // Update process.env with new secrets
-    mapSecretsToEnv(secrets);
+    fs.mkdirSync(path.dirname(secretsPath), { recursive: true });
+    fs.writeFileSync(secretsPath, YAML.stringify(secrets), "utf-8");
   } catch (error) {
     console.error("[Config] Failed to save secrets:", error);
     throw error;

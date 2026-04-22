@@ -38,6 +38,7 @@ export interface GitWatcherLike {
 export interface GitHubProxyConfig {
   enabled?: boolean;
   token?: string;
+  getToken?: () => string | undefined;
   depth?: number;
 }
 

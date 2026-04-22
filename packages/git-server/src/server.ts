@@ -73,9 +73,15 @@ export class GitServer {
   private devTargetDir: string | null;
 
   // GitHub proxy configuration
-  private githubConfig: Required<GitHubProxyConfig> = {
+  private githubConfig: {
+    enabled: boolean;
+    token?: string;
+    getToken?: () => string | undefined;
+    depth: number;
+  } = {
     enabled: true,
-    token: undefined as unknown as string, // Will be undefined if not provided
+    token: undefined,
+    getToken: undefined,
     depth: 1,
   };
 
@@ -89,10 +95,15 @@ export class GitServer {
     if (config?.github) {
       this.githubConfig = {
         enabled: config.github.enabled ?? true,
-        token: config.github.token as string,
+        token: config.github.token,
+        getToken: config.github.getToken,
         depth: config.github.depth ?? 1,
       };
     }
+  }
+
+  private getGitHubToken(): string | undefined {
+    return this.githubConfig.getToken?.() ?? this.githubConfig.token;
   }
 
   private getTreeManager(): WorkspaceTreeManager {
@@ -233,7 +244,7 @@ export class GitServer {
             }
 
             // Push to upstream GitHub remote (if this is a GitHub-cloned repo)
-            if (isGitHubPath(repo) && this.githubConfig.token) {
+            if (isGitHubPath(repo) && this.getGitHubToken()) {
               this.pushToUpstream(repoDir, branch);
             }
 
@@ -503,7 +514,7 @@ export class GitServer {
    * Runs async — errors are logged but don't block.
    */
   private pushToUpstream(repoDir: string, branch: string): void {
-    const token = this.githubConfig.token;
+    const token = this.getGitHubToken();
     const env: NodeJS.ProcessEnv = { ...process.env };
     if (token) {
       env["GIT_USERNAME"] = token;
@@ -618,7 +629,7 @@ export class GitServer {
     const result = await ensureGitHubRepo({
       targetPath,
       remoteUrl,
-      token: this.githubConfig.token,
+      token: this.getGitHubToken(),
       depth: this.githubConfig.depth,
     });
 
@@ -799,7 +810,7 @@ export class GitServer {
     const result = await ensureGitHubRepo({
       targetPath,
       remoteUrl: toGitHubUrl(spec),
-      token: this.githubConfig.token,
+      token: this.getGitHubToken(),
       depth: 0, // Full clone - shallow clones may not have all refs
     });
 

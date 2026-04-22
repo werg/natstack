@@ -24,7 +24,7 @@ eval({
       console.log("3. Copy your secret key from https://app.nango.dev/dev/environment-settings#backend");
       console.log("4. Add it to ~/.config/natstack/.secrets.yml:");
       console.log("   nango: <your-secret-key>   # UUID from the Nango dashboard");
-      console.log("5. Restart the workspace");
+      console.log("5. Save it to ~/.config/natstack/.secrets.yml");
     } else {
       console.log("Available providers:", providers.map(p => p.key).join(", "));
     }
@@ -93,7 +93,7 @@ inline_ui({
     };
 
     if (status === "saved") return (
-      <div>Nango secret saved. Restart the workspace to activate OAuth.</div>
+      <div>Nango secret saved. OAuth is ready — you can now call oauth.connect(...).</div>
     );
 
     return (

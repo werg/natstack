@@ -12,11 +12,8 @@ import { randomUUID } from "node:crypto";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { CallerKind } from "@natstack/shared/serviceDispatcher";
 import type { NotificationServiceInternal } from "./notificationService.js";
-import {
-  loadSecrets,
-  saveSecrets,
-} from "@natstack/shared/workspace/loader";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
+import type { SecretsStore } from "@natstack/shared/secrets";
 
 /** Mask all but the last 4 characters of a secret value. */
 function maskSecret(value: string): string {
@@ -26,9 +23,10 @@ function maskSecret(value: string): string {
 
 export function createSecretsService(deps: {
   notificationService: NotificationServiceInternal;
+  secretsStore: SecretsStore;
   panelRegistry?: PanelRegistry;
 }): ServiceDefinition {
-  const { notificationService, panelRegistry } = deps;
+  const { notificationService, panelRegistry, secretsStore } = deps;
 
   function getCallerTitle(callerId: string, callerKind: string): string {
     if (callerKind === "panel" && panelRegistry) {
@@ -106,9 +104,7 @@ export function createSecretsService(deps: {
             await requestConsent(callerId, callerKind, "set", key, maskSecret(value));
           }
 
-          const secrets = loadSecrets();
-          secrets[key] = value;
-          saveSecrets(secrets);
+          await secretsStore.set(key, value);
           return { success: true };
         }
 
@@ -119,15 +115,12 @@ export function createSecretsService(deps: {
             await requestConsent(callerId, callerKind, "delete", key);
           }
 
-          const secrets = loadSecrets();
-          delete secrets[key];
-          saveSecrets(secrets);
+          await secretsStore.delete(key);
           return { success: true };
         }
 
         case "listKeys": {
-          const secrets = loadSecrets();
-          return Object.keys(secrets);
+          return secretsStore.list();
         }
 
         default:

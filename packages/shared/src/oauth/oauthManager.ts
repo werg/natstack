@@ -11,13 +11,14 @@
 
 import { createDevLogger } from "@natstack/dev-log";
 import type { DatabaseManager } from "../db/databaseManager.js";
+import type { SecretsStore, Unsubscribe } from "../secrets/secretsStore.js";
 import type { OAuthToken, OAuthConnection, ConsentRecord, NangoConnectionResponse } from "./types.js";
 
 const log = createDevLogger("OAuthManager");
 
 interface OAuthManagerOptions {
   nangoUrl: string;
-  nangoSecretKey: string;
+  secrets: SecretsStore;
   databaseManager: DatabaseManager;
   /** Owner ID used for DatabaseManager handle tracking */
   ownerId?: string;
@@ -31,9 +32,10 @@ interface CachedToken {
 
 export class OAuthManager {
   private nangoUrl: string;
-  private nangoSecretKey: string;
+  private secrets: SecretsStore;
   private databaseManager: DatabaseManager;
   private ownerId: string;
+  private unwatchSecret: Unsubscribe;
 
   // In-memory token cache
   private tokenCache = new Map<string, CachedToken>();
@@ -43,9 +45,16 @@ export class OAuthManager {
 
   constructor(opts: OAuthManagerOptions) {
     this.nangoUrl = opts.nangoUrl.replace(/\/$/, "");
-    this.nangoSecretKey = opts.nangoSecretKey;
+    this.secrets = opts.secrets;
     this.databaseManager = opts.databaseManager;
     this.ownerId = opts.ownerId ?? "oauth-manager";
+    this.unwatchSecret = opts.secrets.watch("nango", () => {
+      this.purgeAllTokens();
+    });
+  }
+
+  private get nangoSecretKey(): string {
+    return this.secrets.get("nango") ?? "";
   }
 
   private ensureDb(): string {
@@ -112,6 +121,12 @@ export class OAuthManager {
       throw new Error(`Nango API error ${res.status}: ${body}`);
     }
     return res;
+  }
+
+  private purgeAllTokens(): void {
+    this.tokenCache.clear();
+    const handle = this.ensureDb();
+    this.databaseManager.run(handle, "DELETE FROM oauth_tokens");
   }
 
   // =========================================================================
@@ -342,6 +357,7 @@ export class OAuthManager {
   // =========================================================================
 
   close(): void {
+    this.unwatchSecret();
     if (this.dbHandle) {
       this.databaseManager.close(this.dbHandle);
       this.dbHandle = null;
