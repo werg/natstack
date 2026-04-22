@@ -1,24 +1,19 @@
 /**
- * auth service (Electron main) — owns the interactive OAuth flow.
+ * auth service (Electron main) — client adapter for the interactive OAuth flow.
  *
  * Panels call `auth.startOAuthLogin('openai-codex')`. With `auth` removed
  * from `SERVER_SERVICE_NAMES`, the routing bridge sends the call here
  * (Electron main) instead of the remote server. We:
  *
- *   1. Bind a one-shot loopback HTTP server on `127.0.0.1:0` (RFC 8252
- *      §7.3 native-app loopback redirect).
- *   2. Build the provider's authorize URL via `@natstack/auth-flow` with
- *      `redirect_uri = http://127.0.0.1:<port>/cb`, PKCE challenge, state.
+ *   1. Bind a loopback callback listener on the client machine.
+ *   2. Ask the server to prepare the OAuth flow and return an auth URL.
  *   3. `shell.openExternal` the URL — opens in the user's default browser.
- *   4. Wait for the redirect; validate state; exchange the code for tokens
- *      via `@natstack/auth-flow` (PKCE verifier travels with us, never
- *      leaves the client).
- *   5. Forward the resulting credentials to the server's `authTokens.persist`.
- *      Server-side workers parked on `authTokens.waitForProvider` unblock
- *      and the chat agent retries its turn.
+ *   4. Wait for the redirect on localhost and forward the callback URL back
+ *      to the server.
+ *   5. The server validates state, exchanges the code, and persists tokens.
  *
  * Status / list / logout queries proxy straight through to the server's
- * `authTokens` service — the server is the source of truth for what's
+ * `auth` service — the server is the source of truth for what's
  * currently stored.
  */
 
@@ -27,7 +22,6 @@ import * as http from "node:http";
 import { URL } from "node:url";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import { createDevLogger } from "@natstack/dev-log";
-import { openaiCodex, type AuthFlowCredentials, type AuthFlowSession } from "@natstack/auth-flow";
 import type { ServerClient } from "../serverClient.js";
 
 const log = createDevLogger("auth");
@@ -49,54 +43,52 @@ const CODEX_LOOPBACK_HOST = "localhost";
 const CODEX_LOOPBACK_PORT = 1455;
 const CODEX_CALLBACK_PATH = "/auth/callback";
 
-interface PendingFlow {
-  session: AuthFlowSession;
-  resolve: (code: string) => void;
-  reject: (err: Error) => void;
-  server: http.Server;
-}
-
-interface ProviderHandle {
-  buildAuthUrl(redirectUri: string): Promise<{ authUrl: string; session: AuthFlowSession }>;
-  exchangeCode(opts: { code: string; verifier: string; redirectUri: string }): Promise<AuthFlowCredentials>;
-}
-
-const PROVIDERS: Record<string, ProviderHandle> = {
-  "openai-codex": {
-    buildAuthUrl: (redirectUri) => openaiCodex.buildAuthorizeUrl({ redirectUri }),
-    exchangeCode: (opts) => openaiCodex.exchangeCode(opts),
-  },
-};
-
 export interface AuthServiceDeps {
   serverClient: ServerClient;
   /** Override `shell.openExternal` for tests. */
   openBrowser?: (url: string) => Promise<void>;
 }
 
+interface ServerAuthProvider {
+  provider: string;
+  displayName: string;
+  kind: "oauth" | "env-var";
+  status: "connected" | "disconnected" | "configured" | "missing";
+  envVar?: string;
+}
+
+interface ClientAuthProvider {
+  id: string;
+  name: string;
+  kind: "oauth" | "env";
+  status: "connected" | "disconnected" | "configured" | "unconfigured";
+  envVar?: string;
+}
+
+function mapProviderStatus(provider: ServerAuthProvider): ClientAuthProvider {
+  return {
+    id: provider.provider,
+    name: provider.displayName,
+    kind: provider.kind === "env-var" ? "env" : "oauth",
+    status: provider.status === "missing" ? "unconfigured" : provider.status,
+    envVar: provider.envVar,
+  };
+}
+
 export function createAuthService(deps: AuthServiceDeps): ServiceDefinition {
-  const inFlight = new Map<string, Promise<{ success: boolean; error?: string }>>();
+  const inFlight = new Map<string, Promise<void>>();
 
-  async function startOAuthLogin(providerId: string): Promise<{ success: boolean; error?: string }> {
-    const handle = PROVIDERS[providerId];
-    if (!handle) return { success: false, error: `OAuth not supported for ${providerId}` };
-
+  async function startOAuthLogin(providerId: string): Promise<void> {
     // Concurrent calls for the same provider share one flow — clicking the
     // Connect card twice shouldn't open two browser tabs.
     const existing = inFlight.get(providerId);
     if (existing) return existing;
 
-    const promise = (async () => {
-      try {
-        const credentials = await runFlow(providerId, handle);
-        await deps.serverClient.call("authTokens", "persist", [providerId, credentials]);
-        return { success: true };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        log.warn(`OAuth flow for ${providerId} failed: ${message}`);
-        return { success: false, error: message };
-      }
-    })().finally(() => {
+    const promise = runFlow(providerId).catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn(`OAuth flow for ${providerId} failed: ${message}`);
+      throw err;
+    }).finally(() => {
       inFlight.delete(providerId);
     });
 
@@ -104,15 +96,19 @@ export function createAuthService(deps: AuthServiceDeps): ServiceDefinition {
     return promise;
   }
 
-  async function runFlow(
-    providerId: string,
-    handle: ProviderHandle,
-  ): Promise<AuthFlowCredentials> {
-    const { server, port, codePromise, redirectUri } = await bindLoopbackCallback();
-    let pending: PendingFlow | null = null;
+  async function listProviders(): Promise<ClientAuthProvider[]> {
+    const providers = await deps.serverClient.call("auth", "listProviders", []) as ServerAuthProvider[];
+    return providers.map(mapProviderStatus);
+  }
+
+  async function runFlow(providerId: string): Promise<void> {
+    const { server, callbackPromise, redirectUri } = await bindLoopbackCallback();
     try {
-      const { authUrl, session } = await handle.buildAuthUrl(redirectUri);
-      pending = { session, resolve: () => {}, reject: () => {}, server };
+      const { authUrl, flowId } = await deps.serverClient.call(
+        "auth",
+        "startOAuthLogin",
+        [providerId, redirectUri],
+      ) as { authUrl: string; flowId: string };
 
       const open = deps.openBrowser ?? (async (url: string) => {
         const { shell } = await import("electron");
@@ -120,16 +116,10 @@ export function createAuthService(deps: AuthServiceDeps): ServiceDefinition {
       });
       await open(authUrl);
 
-      const code = await codePromise(session);
-      return await handle.exchangeCode({
-        code,
-        verifier: session.verifier,
-        redirectUri: session.redirectUri,
-      });
+      const callbackUrl = await callbackPromise();
+      await deps.serverClient.call("auth", "completeOAuthLogin", [flowId, { callbackUrl }]);
     } finally {
       try { server.close(); } catch { /* noop */ }
-      void pending; // suppress unused warning
-      void providerId;
     }
   }
 
@@ -147,9 +137,9 @@ export function createAuthService(deps: AuthServiceDeps): ServiceDefinition {
         case "startOAuthLogin":
           return startOAuthLogin(args[0] as string);
         case "listProviders":
-          return deps.serverClient.call("authTokens", "listProviders", []);
+          return listProviders();
         case "logout":
-          return deps.serverClient.call("authTokens", "logout", [args[0] as string]);
+          return deps.serverClient.call("auth", "logout", [args[0] as string]);
         default:
           throw new Error(`Unknown auth method: ${method}`);
       }
@@ -165,9 +155,8 @@ export function createAuthService(deps: AuthServiceDeps): ServiceDefinition {
  */
 async function bindLoopbackCallback(): Promise<{
   server: http.Server;
-  port: number;
   redirectUri: string;
-  codePromise: (session: AuthFlowSession) => Promise<string>;
+  callbackPromise: () => Promise<string>;
 }> {
   const server = http.createServer();
   try {
@@ -188,7 +177,7 @@ async function bindLoopbackCallback(): Promise<{
   const port = CODEX_LOOPBACK_PORT;
   const redirectUri = `http://${CODEX_LOOPBACK_HOST}:${port}${CODEX_CALLBACK_PATH}`;
 
-  function codePromise(session: AuthFlowSession): Promise<string> {
+  function callbackPromise(): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => {
         cleanup();
@@ -202,8 +191,6 @@ async function bindLoopbackCallback(): Promise<{
           res.end("not found");
           return;
         }
-        const state = url.searchParams.get("state") ?? "";
-        const code = url.searchParams.get("code") ?? "";
         const error = url.searchParams.get("error");
 
         if (error) {
@@ -212,13 +199,7 @@ async function bindLoopbackCallback(): Promise<{
           reject(new Error(`OAuth provider error: ${error}`));
           return;
         }
-        if (state !== session.state) {
-          respondHtml(res, 400, errorPage("State mismatch — possible CSRF; sign-in aborted."));
-          cleanup();
-          reject(new Error("OAuth state mismatch"));
-          return;
-        }
-        if (!code) {
+        if (!url.searchParams.get("code")) {
           respondHtml(res, 400, errorPage("Missing authorization code."));
           cleanup();
           reject(new Error("OAuth callback missing code"));
@@ -227,7 +208,7 @@ async function bindLoopbackCallback(): Promise<{
 
         respondHtml(res, 200, successPage());
         cleanup();
-        resolve(code);
+        resolve(url.toString());
       };
 
       function cleanup() {
@@ -239,7 +220,7 @@ async function bindLoopbackCallback(): Promise<{
     });
   }
 
-  return { server, port, redirectUri, codePromise };
+  return { server, redirectUri, callbackPromise };
 }
 
 function respondHtml(res: http.ServerResponse, status: number, body: string): void {
