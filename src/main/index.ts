@@ -15,11 +15,9 @@ import { setupMenu, setMenuPanelLifecycle, setMenuPanelRegistry, setMenuViewMana
 import { getAppRoot } from "./paths.js";
 import {
   loadCentralEnv,
-  loadSecrets,
   deleteWorkspaceDir,
 } from "@natstack/shared/workspace/loader";
 import { CentralDataManager } from "@natstack/shared/centralData";
-import { projectSecretsToEnv } from "@natstack/shared/secrets";
 import { resolveStartupMode, getRemoteUserDataDir, type StartupMode } from "./startupMode.js";
 import { establishServerSession, type SessionConnection } from "./serverSession.js";
 import { CdpServer } from "./cdpServer.js";
@@ -77,9 +75,8 @@ if (process.env["NATSTACK_DEBUG_PATHS"] === "1") {
 // Configuration Initialization
 // =============================================================================
 
-// Load central environment variables first (.env and .secrets.yml from ~/.config/natstack/)
+// Load central environment variables first (.env from ~/.config/natstack/)
 loadCentralEnv();
-projectSecretsToEnv(loadSecrets());
 
 const centralData = new CentralDataManager();
 let startupMode: StartupMode;

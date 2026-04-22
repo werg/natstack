@@ -1,18 +1,16 @@
 /**
  * authTokens service — server-side OAuth/API-key store for AI providers.
  *
- * After the auth refactor, OAuth login is owned by the *client* (Electron
- * main on desktop, mobile shell on iOS/Android). The server's job is
- * narrower:
+ * After the auth refactor, the server owns token storage and refresh. The
+ * interactive browser/callback transport still runs on the client.
  *
- *   - persist tokens delivered by a client after a successful flow;
+ *   - persist tokens delivered by a client or auth flow service;
  *   - silently refresh expiring tokens (refresh-token grant — no browser);
  *   - hand fresh tokens to in-process AI workers on demand;
  *   - park `waitForProvider` callers until a token becomes available.
  *
- * Browser-opening, loopback HTTP / deep-link callback handling, and
- * authorization-code → token exchange all moved to the clients (see
- * `packages/auth-flow` and `src/main/services/authService.ts`).
+ * Browser-opening and callback capture run on the client. The core auth flow
+ * can still be orchestrated server-side via `authFlowService`.
  *
  * Credentials are persisted at `~/.config/natstack/oauth-tokens.json`
  * (mode 0o600), one entry per provider.

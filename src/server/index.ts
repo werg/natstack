@@ -506,6 +506,7 @@ async function main() {
   const { createDbService } = await import("./services/dbService.js");
   const { createTypecheckService } = await import("./services/typecheckService.js");
   const { createWorkerService } = await import("./services/workerService.js");
+  const { createAuthFlowService } = await import("./services/authFlowService.js");
 
   // Resolve testSetup.ts relative to this module's location
   const serverDir = path.dirname(__filename);
@@ -922,18 +923,29 @@ async function main() {
   {
     const { AuthTokensServiceImpl, createAuthTokensService } = await import("./services/authService.js");
     let authTokensDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null = null;
+    let authFlowDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null = null;
+    let authTokensInstance: import("./services/authService.js").AuthTokensServiceImpl | null = null;
     container.register({
       name: "authTokens",
       dependencies: ["secretsStore"],
       async start(resolve) {
-        const authTokens = new AuthTokensServiceImpl({
+        authTokensInstance = new AuthTokensServiceImpl({
           secretsStore: resolve<import("@natstack/shared/secrets").SecretsStore>("secretsStore")!,
         });
-        authTokensDefinition = createAuthTokensService({ authTokens });
+        authTokensDefinition = createAuthTokensService({ authTokens: authTokensInstance });
+        authFlowDefinition = createAuthFlowService({ authTokens: authTokensInstance });
       },
       getServiceDefinition() {
         if (!authTokensDefinition) throw new Error("authTokens service not initialized");
         return authTokensDefinition;
+      },
+    });
+    container.register({
+      name: "auth",
+      dependencies: ["authTokens"],
+      getServiceDefinition() {
+        if (!authFlowDefinition || !authTokensInstance) throw new Error("auth service not initialized");
+        return authFlowDefinition;
       },
     });
   }
@@ -983,7 +995,7 @@ async function main() {
     const sharedSet = new Set<string>(SERVER_SERVICE_NAMES);
     // Services that live on both Electron and server, are internal lifecycle only,
     // or are standalone-mode-only (not present in IPC/Electron mode)
-    const localOnly = new Set(["events", "browser", "panel", "settings", "push"]);
+    const localOnly = new Set(["events", "browser", "panel", "settings", "push", "auth"]);
     for (const name of dispatcher.getServices()) {
       if (!sharedSet.has(name) && !localOnly.has(name)) {
         console.warn(

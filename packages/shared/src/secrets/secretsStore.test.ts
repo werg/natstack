@@ -179,6 +179,28 @@ describe("SecretsStore", () => {
     }
   });
 
+  it("serializes concurrent writes so updates are not lost", async () => {
+    const store = createSecretsStore({ secretsPath });
+
+    try {
+      await Promise.all([
+        store.set("openai", "sk-openai"),
+        store.set("anthropic", "sk-anthropic"),
+      ]);
+
+      expect(store.get("openai")).toBe("sk-openai");
+      expect(store.get("anthropic")).toBe("sk-anthropic");
+
+      const onDisk = YAML.parse(await fs.readFile(secretsPath, "utf-8")) as Record<string, string>;
+      expect(onDisk).toEqual({
+        anthropic: "sk-anthropic",
+        openai: "sk-openai",
+      });
+    } finally {
+      await store.close();
+    }
+  });
+
   it("require throws an actionable error when a key is missing", async () => {
     const store = createSecretsStore({ secretsPath });
 

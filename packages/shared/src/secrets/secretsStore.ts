@@ -113,6 +113,7 @@ export function createSecretsStore(opts: { secretsPath: string }): SecretsStore 
   let values = normalizeSecrets(loadSecretsFromPath(secretsPath));
   let closed = false;
   let pendingSelfWriteContent: string | null = null;
+  let mutationQueue: Promise<void> = Promise.resolve();
 
   const watchedDirectory = path.dirname(secretsPath);
   const normalizedSecretsPath = path.resolve(secretsPath);
@@ -179,16 +180,24 @@ export function createSecretsStore(opts: { secretsPath: string }): SecretsStore 
     emitChanges(changes);
   };
 
+  const enqueueMutation = <T>(op: () => Promise<T> | T): Promise<T> => {
+    const next = mutationQueue.then(() => op());
+    mutationQueue = next.then(() => undefined, () => undefined);
+    return next;
+  };
+
   const reloadFromDisk = async (): Promise<void> => {
-    if (closed) return;
-    const next = normalizeSecrets(loadSecretsFromPath(secretsPath));
-    const nextContent = serializeSecrets(next);
-    if (pendingSelfWriteContent !== null && nextContent === pendingSelfWriteContent) {
+    await enqueueMutation(() => {
+      if (closed) return;
+      const next = normalizeSecrets(loadSecretsFromPath(secretsPath));
+      const nextContent = serializeSecrets(next);
+      if (pendingSelfWriteContent !== null && nextContent === pendingSelfWriteContent) {
+        pendingSelfWriteContent = null;
+        return;
+      }
       pendingSelfWriteContent = null;
-      return;
-    }
-    pendingSelfWriteContent = null;
-    applyValues(next);
+      applyValues(next);
+    });
   };
 
   const isSecretsFileEvent = (changedPath: string): boolean => path.resolve(changedPath) === normalizedSecretsPath;
@@ -245,20 +254,24 @@ export function createSecretsStore(opts: { secretsPath: string }): SecretsStore 
       };
     },
     async set(key, value) {
-      const canonicalKey = canonicalizeKey(key);
-      const next = cloneSecrets(values);
-      if (next.get(canonicalKey) === value) return;
-      next.set(canonicalKey, value);
-      pendingSelfWriteContent = await writeSecretsAtomically(secretsPath, next);
-      applyValues(next);
+      await enqueueMutation(async () => {
+        const canonicalKey = canonicalizeKey(key);
+        const next = cloneSecrets(values);
+        if (next.get(canonicalKey) === value) return;
+        next.set(canonicalKey, value);
+        pendingSelfWriteContent = await writeSecretsAtomically(secretsPath, next);
+        applyValues(next);
+      });
     },
     async delete(key) {
-      const canonicalKey = canonicalizeKey(key);
-      if (!values.has(canonicalKey)) return;
-      const next = cloneSecrets(values);
-      next.delete(canonicalKey);
-      pendingSelfWriteContent = await writeSecretsAtomically(secretsPath, next);
-      applyValues(next);
+      await enqueueMutation(async () => {
+        const canonicalKey = canonicalizeKey(key);
+        if (!values.has(canonicalKey)) return;
+        const next = cloneSecrets(values);
+        next.delete(canonicalKey);
+        pendingSelfWriteContent = await writeSecretsAtomically(secretsPath, next);
+        applyValues(next);
+      });
     },
     async close() {
       closed = true;
