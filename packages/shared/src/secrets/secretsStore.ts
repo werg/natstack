@@ -118,6 +118,7 @@ export function createSecretsStore(opts: { secretsPath: string }): SecretsStore 
   const normalizedSecretsPath = path.resolve(secretsPath);
   const watcher = chokidar.watch(watchedDirectory, {
     ignoreInitial: true,
+    depth: 0,
     awaitWriteFinish: {
       stabilityThreshold: 50,
       pollInterval: 10,
