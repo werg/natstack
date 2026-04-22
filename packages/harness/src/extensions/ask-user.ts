@@ -6,10 +6,8 @@
  * channel as a feedback_form and awaits the user's answer.
  */
 
-import type {
-  PiExtensionAPI,
-  PiExtensionFactory,
-} from "../pi-extension-api.js";
+import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { PiExtensionAPI, PiExtensionFactory } from "../pi-extension-api.js";
 
 export interface AskUserQuestion {
   question: string;
@@ -26,9 +24,10 @@ export interface AskUserParams {
 export interface AskUserDeps {
   /** Sends the question(s) to the channel and awaits the user's answer. */
   askUser: (
+    toolCallId: string,
     params: AskUserParams,
     signal: AbortSignal | undefined,
-  ) => Promise<string>;
+  ) => Promise<AgentToolResult<any> | string>;
 }
 
 const ASK_USER_PARAMETERS = {
@@ -75,8 +74,13 @@ export function createAskUserExtension(deps: AskUserDeps): PiExtensionFactory {
       description:
         "Ask the user a question (or several) and wait for their response. Use when you need user input that's not available from tools.",
       parameters: ASK_USER_PARAMETERS as never,
-      execute: async (_toolCallId, params, signal) => {
-        const answer = await deps.askUser(params as AskUserParams, signal ?? undefined);
+      execute: async (toolCallId, params, signal) => {
+        const answer = await deps.askUser(
+          toolCallId,
+          params as AskUserParams,
+          signal ?? undefined,
+        );
+        if (isAgentToolResult(answer)) return answer;
         return {
           content: [{ type: "text" as const, text: answer }],
           details: undefined,
@@ -84,4 +88,12 @@ export function createAskUserExtension(deps: AskUserDeps): PiExtensionFactory {
       },
     });
   };
+}
+
+function isAgentToolResult(value: unknown): value is AgentToolResult<any> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Array.isArray((value as { content?: unknown }).content)
+  );
 }

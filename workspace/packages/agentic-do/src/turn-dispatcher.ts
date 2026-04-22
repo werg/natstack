@@ -62,11 +62,17 @@ export interface TurnDispatcherRunner {
   /** Submit a prebuilt AgentMessage as a fresh turn. Requires the agent
    *  to be idle; resolves when the turn finishes (including agent_end). */
   runTurnMessage(msg: AgentMessage): Promise<void>;
+  /** Continue from the current transcript. Requires the last message to be user/toolResult. */
+  continueAgent(): Promise<void>;
   /** Queue a prebuilt AgentMessage for mid-stream steering. */
   steerMessage(msg: AgentMessage): void;
   /** Clear pi-agent-core's internal steering queue. */
   clearSteeringQueue(): void;
 }
+
+type WorkItem =
+  | { kind: "prompt"; msg: AgentMessage }
+  | { kind: "continue" };
 
 export interface TurnDispatcherProjector {
   /** Close every in-flight channel message. Called on runTurn failure to
@@ -84,7 +90,7 @@ export interface TurnDispatcherOptions {
 }
 
 export class TurnDispatcher {
-  private pending: AgentMessage[] = [];
+  private pending: WorkItem[] = [];
   private pendingSteered: AgentMessage[] = [];
   private running = false;
   private draining = false;
@@ -118,10 +124,17 @@ export class TurnDispatcher {
       this.notifyTyping();
       this.opts.runner.steerMessage(msg);
     } else {
-      this.pending.push(msg);
+      this.pending.push({ kind: "prompt", msg });
       this.notifyTyping();
       this.ensureDrain();
     }
+  }
+
+  submitContinue(): void {
+    if (this.disposed) return;
+    this.pending.push({ kind: "continue" });
+    this.notifyTyping();
+    this.ensureDrain();
   }
 
   /** Wipe all pending work and broadcast typing off. Safe to call from
@@ -207,7 +220,7 @@ export class TurnDispatcher {
           // pi-core's internal queue so the next runTurnMessage's line-80
           // drain doesn't double-ingest.
           for (const stranded of this.pendingSteered) {
-            this.pending.push(stranded);
+            this.pending.push({ kind: "prompt", msg: stranded });
           }
           this.pendingSteered = [];
           this.opts.runner.clearSteeringQueue();
@@ -232,16 +245,23 @@ export class TurnDispatcher {
   private async drainLoop(): Promise<void> {
     try {
       while (!this.disposed && this.pending.length > 0) {
-        const msg = this.pending.shift()!;
+        const work = this.pending.shift()!;
         // Flip synchronously before awaiting — this closes the window
         // between here and pi's agent_start emission, so an onSubmit
         // during setup routes to steer, not a second runTurn.
         this.running = true;
         this.notifyTyping();
         try {
-          await this.opts.runner.runTurnMessage(msg);
+          if (work.kind === "continue") {
+            await this.opts.runner.continueAgent();
+          } else {
+            await this.opts.runner.runTurnMessage(work.msg);
+          }
         } catch (err) {
-          this.log.warn("[TurnDispatcher] runTurnMessage failed:", err);
+          this.log.warn(
+            `[TurnDispatcher] ${work.kind === "continue" ? "continueAgent" : "runTurnMessage"} failed:`,
+            err,
+          );
           try {
             await this.opts.projector.closeAll();
           } catch (closeErr) {
@@ -254,7 +274,9 @@ export class TurnDispatcher {
           // Redundant with the agent_end sweep in the common case (pi-core
           // does emit agent_end on most failures), but covers the edge.
           if (this.pendingSteered.length > 0) {
-            for (const stranded of this.pendingSteered) this.pending.push(stranded);
+            for (const stranded of this.pendingSteered) {
+              this.pending.push({ kind: "prompt", msg: stranded });
+            }
             this.pendingSteered = [];
             try { this.opts.runner.clearSteeringQueue(); }
             catch (clearErr) {

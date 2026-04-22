@@ -1,15 +1,15 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   NatStackExtensionUIContext,
-  type NatStackUIBridgeCallbacks,
+  type NatStackScopedUiContext,
 } from "./natstack-extension-context.js";
 
-function createCallbacks(): NatStackUIBridgeCallbacks {
+function createCallbacks(): NatStackScopedUiContext {
   return {
-    showSelect: vi.fn().mockResolvedValue("a"),
-    showConfirm: vi.fn().mockResolvedValue(true),
-    showInput: vi.fn().mockResolvedValue("input value"),
-    showEditor: vi.fn().mockResolvedValue("editor value"),
+    selectForTool: vi.fn().mockResolvedValue("a"),
+    confirmForTool: vi.fn().mockResolvedValue(true),
+    inputForTool: vi.fn().mockResolvedValue("input value"),
+    editorForTool: vi.fn().mockResolvedValue("editor value"),
     notify: vi.fn(),
     setStatus: vi.fn(),
     setWidget: vi.fn(),
@@ -21,34 +21,86 @@ function createCallbacks(): NatStackUIBridgeCallbacks {
 describe("NatStackExtensionUIContext", () => {
   it("forwards select() to showSelect callback", async () => {
     const cbs = createCallbacks();
-    const ctx = new NatStackExtensionUIContext(cbs);
+    const ctx = new NatStackExtensionUIContext(cbs, { toolCallId: "tool-1" });
     const result = await ctx.select("Pick", ["a", "b"]);
-    expect(cbs.showSelect).toHaveBeenCalledWith("Pick", ["a", "b"], undefined);
+    expect(cbs.selectForTool).toHaveBeenCalledWith(
+      "tool-1",
+      "Pick",
+      ["a", "b"],
+      undefined,
+      { toolCallId: "tool-1" },
+    );
     expect(result).toBe("a");
   });
 
   it("forwards confirm() to showConfirm callback", async () => {
     const cbs = createCallbacks();
-    const ctx = new NatStackExtensionUIContext(cbs);
+    const ctx = new NatStackExtensionUIContext(cbs, { toolCallId: "tool-1" });
     const result = await ctx.confirm("Proceed?", "Are you sure?");
-    expect(cbs.showConfirm).toHaveBeenCalledWith("Proceed?", "Are you sure?", undefined);
+    expect(cbs.confirmForTool).toHaveBeenCalledWith(
+      "tool-1",
+      "Proceed?",
+      "Are you sure?",
+      undefined,
+      { toolCallId: "tool-1" },
+    );
     expect(result).toBe(true);
   });
 
   it("forwards input() to showInput callback", async () => {
     const cbs = createCallbacks();
-    const ctx = new NatStackExtensionUIContext(cbs);
+    const ctx = new NatStackExtensionUIContext(cbs, { toolCallId: "tool-1" });
     const result = await ctx.input("Name", "Type here");
-    expect(cbs.showInput).toHaveBeenCalledWith("Name", "Type here", undefined);
+    expect(cbs.inputForTool).toHaveBeenCalledWith(
+      "tool-1",
+      "Name",
+      "Type here",
+      undefined,
+      { toolCallId: "tool-1" },
+    );
     expect(result).toBe("input value");
   });
 
   it("forwards editor() to showEditor callback", async () => {
     const cbs = createCallbacks();
-    const ctx = new NatStackExtensionUIContext(cbs);
+    const ctx = new NatStackExtensionUIContext(cbs, { toolCallId: "tool-1" });
     const result = await ctx.editor("Notes", "prefill");
-    expect(cbs.showEditor).toHaveBeenCalledWith("Notes", "prefill");
+    expect(cbs.editorForTool).toHaveBeenCalledWith(
+      "tool-1",
+      "Notes",
+      "prefill",
+      { toolCallId: "tool-1" },
+    );
     expect(result).toBe("editor value");
+  });
+
+  it("dispatchApproval marks the meta as approval", async () => {
+    const cbs = createCallbacks();
+    const ctx = new NatStackExtensionUIContext(cbs, {
+      toolCallId: "tool-1",
+      toolName: "write",
+      toolInput: { path: "a.txt" },
+    });
+    await ctx.dispatchApproval("Allow tool call?", "Tool: write");
+    expect(cbs.confirmForTool).toHaveBeenCalledWith(
+      "tool-1",
+      "Allow tool call?",
+      "Tool: write",
+      undefined,
+      {
+        toolCallId: "tool-1",
+        toolName: "write",
+        toolInput: { path: "a.txt" },
+        mode: "approval",
+      },
+    );
+  });
+
+  it("throws outside tool_call dispatch for interactive methods", async () => {
+    const ctx = new NatStackExtensionUIContext(createCallbacks());
+    await expect(ctx.confirm("Proceed?", "No tool call")).rejects.toThrow(
+      /outside tool_call dispatch/,
+    );
   });
 
   it("forwards notify() with type", () => {

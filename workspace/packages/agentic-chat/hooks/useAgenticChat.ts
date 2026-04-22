@@ -166,6 +166,8 @@ export function useAgenticChat({
     addMethodHistoryEntry: core.addMethodHistoryEntry,
     updateMethodHistoryEntry: core.updateMethodHistoryEntry,
     chat,
+    clientRef: core.clientRef,
+    connected: core.connected,
   });
 
   const scopeProxy = scopeManagerRef.current?.current ?? {};

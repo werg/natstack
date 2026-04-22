@@ -25,6 +25,7 @@ import {
   type AgentEvent,
   type AgentMessage,
   type AgentTool,
+  type AgentToolResult,
 } from "@mariozechner/pi-agent-core";
 import { getModel as piGetModel, type ImageContent } from "@mariozechner/pi-ai";
 
@@ -55,8 +56,8 @@ import {
   type AskUserParams,
 } from "./extensions/ask-user.js";
 import {
-  NatStackExtensionUIContext,
-  type NatStackUIBridgeCallbacks,
+  DispatchedError,
+  type NatStackScopedUiContext,
 } from "./natstack-extension-context.js";
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -103,22 +104,24 @@ export interface PiRunnerOptions {
   /** Per-context filesystem the file tools operate against. */
   fs: RuntimeFs;
   /** Bridge that turns extension UI primitive calls into channel events. */
-  uiCallbacks: NatStackUIBridgeCallbacks;
+  uiCallbacks: NatStackScopedUiContext;
   /** Returns the current channel roster's tool list. Lazily read on every reconcile. */
   rosterCallback: () => ChannelToolMethod[];
   /** Execute a method on a channel participant, resolved by handle. */
   callMethodCallback: (
+    toolCallId: string,
     participantHandle: string,
     method: string,
     args: unknown,
     signal: AbortSignal | undefined,
     onStreamUpdate?: StreamUpdateCallback,
-  ) => Promise<unknown>;
+  ) => Promise<AgentToolResult<any>>;
   /** Bridge for the ask_user extension. */
   askUserCallback: (
+    toolCallId: string,
     params: AskUserParams,
     signal: AbortSignal | undefined,
-  ) => Promise<string>;
+  ) => Promise<AgentToolResult<any> | string>;
   /** "provider:model" string (e.g. "openai-codex:gpt-5"). */
   model: string;
   /** Default thinking level for new sessions. */
@@ -132,7 +135,7 @@ export interface PiRunnerOptions {
   /** Pre-existing message history for warm restore from SQL. */
   initialMessages?: AgentMessage[];
   /** Called whenever a message_end / agent_end fires so the worker can persist. */
-  onPersist?: (messages: AgentMessage[]) => void;
+  onPersist?: (messages: AgentMessage[]) => Promise<void> | void;
   /** Working directory passed to file tools and the extension runtime. */
   cwd?: string;
 }
@@ -150,6 +153,7 @@ export class PiRunner {
   private listeners: Array<(event: AgentEvent) => void> = [];
   private agentUnsub: (() => void) | null = null;
   private _approvalLevel: ApprovalLevel;
+  private readonly preApprovedCallIds = new Set<string>();
 
   constructor(private readonly options: PiRunnerOptions) {
     this._approvalLevel = options.approvalLevel;
@@ -175,13 +179,12 @@ export class PiRunner {
 
     // 2. Extension runtime + UI bridge + factories.
     this.extensionRuntime = new PiExtensionRuntime(cwd);
-    this.extensionRuntime.bindUI(
-      new NatStackExtensionUIContext(this.options.uiCallbacks),
-    );
+    this.extensionRuntime.bindUI(this.options.uiCallbacks);
     await this.extensionRuntime.loadFactories([
       createApprovalGateExtension({
         getApprovalLevel: () => this._approvalLevel,
         safeToolNames: DEFAULT_SAFE_TOOL_NAMES,
+        preApprovedCallIds: this.preApprovedCallIds,
       }),
       createChannelToolsExtension({
         getRoster: this.options.rosterCallback,
@@ -318,12 +321,18 @@ export class PiRunner {
     const wrapped: AgentTool<any> = {
       ...tool,
       execute: async (toolCallId, params, signal, onUpdate) => {
-        const result = await runner.extensionRuntime!.dispatch("tool_call", {
-          type: "tool_call",
-          toolCallId,
-          toolName: tool.name,
-          input: params,
-        });
+        let result;
+        try {
+          result = await runner.extensionRuntime!.dispatch("tool_call", {
+            type: "tool_call",
+            toolCallId,
+            toolName: tool.name,
+            input: params,
+          });
+        } catch (err) {
+          if (err instanceof DispatchedError) return err.placeholderResult;
+          throw err;
+        }
         if (result?.block) {
           throw new Error(result.reason ?? `Tool "${tool.name}" blocked`);
         }
@@ -367,9 +376,9 @@ export class PiRunner {
     }
     if (event.type === "message_end" || event.type === "agent_end") {
       try {
-        this.options.onPersist?.([...this.agent!.state.messages]);
+        await this.options.onPersist?.([...this.agent!.state.messages]);
       } catch (err) {
-        console.error("[PiRunner] onPersist threw (listeners will still fire):", err);
+        console.error("[PiRunner] onPersist threw:", err);
       }
     }
     for (const listener of this.listeners) {
@@ -445,6 +454,65 @@ export class PiRunner {
    *  drain. Safe to call when the agent is idle. */
   clearSteeringQueue(): void {
     this.agent?.clearSteeringQueue();
+  }
+
+  abortAgent(): void {
+    this.agent?.abort();
+  }
+
+  async continueAgent(): Promise<void> {
+    if (!this.agent) throw new Error("PiRunner not initialized");
+    this.agent.state.messages = this.trimTrailingAbortedAssistant(this.agent.state.messages);
+    await this.agent.continue();
+  }
+
+  replaceHistory(messages: AgentMessage[]): void {
+    if (!this.agent) throw new Error("PiRunner not initialized");
+    this.agent.state.messages = messages;
+  }
+
+  markToolCallPreApproved(toolCallId: string): void {
+    this.preApprovedCallIds.add(toolCallId);
+  }
+
+  async executeToolDirect(
+    toolName: string,
+    toolCallId: string,
+    params: unknown,
+  ): Promise<AgentToolResult<any>> {
+    this.markToolCallPreApproved(toolCallId);
+    const tool = this.computeActiveTools().find((candidate) => candidate.name === toolName);
+    if (!tool) {
+      return {
+        content: [{ type: "text", text: `Tool "${toolName}" not available at resume time` }],
+        details: { __natstack_tool_missing: true },
+      };
+    }
+    return tool.execute(toolCallId, params as never, new AbortController().signal, undefined);
+  }
+
+  trimTrailingAbortedAssistant(messages: AgentMessage[]): AgentMessage[] {
+    if (messages.length === 0) return messages;
+    const last = messages[messages.length - 1] as {
+      role?: string;
+      stopReason?: string;
+      content?: unknown;
+    } | undefined;
+    if (!last || last.role !== "assistant" || last.stopReason !== "aborted") {
+      return messages;
+    }
+    const content = Array.isArray(last.content) ? last.content : [];
+    const hasVisibleContent = content.some((block) => {
+      if (!block || typeof block !== "object") return true;
+      if ((block as { type?: string }).type === "text") {
+        return Boolean((block as { text?: string }).text);
+      }
+      if ((block as { type?: string }).type === "thinking") {
+        return Boolean((block as { thinking?: string }).thinking);
+      }
+      return true;
+    });
+    return hasVisibleContent ? messages : messages.slice(0, -1);
   }
 
   /** Abort the current operation and wait for the loop to drain. */

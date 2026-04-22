@@ -24,8 +24,11 @@ export type {
 } from "./extensions/ask-user.js";
 
 // UI bridge
-export { NatStackExtensionUIContext } from "./natstack-extension-context.js";
-export type { NatStackUIBridgeCallbacks } from "./natstack-extension-context.js";
+export {
+  DispatchedError,
+  NatStackExtensionUIContext,
+} from "./natstack-extension-context.js";
+export type { NatStackScopedUiContext } from "./natstack-extension-context.js";
 
 // NatStack-local Pi extension API + runtime
 export { PiExtensionRuntime } from "./pi-extension-runtime.js";

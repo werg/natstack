@@ -23,6 +23,7 @@ vi.mock("@mariozechner/pi-agent-core", () => {
     public abort = vi.fn();
     public waitForIdle = vi.fn().mockResolvedValue(undefined);
     public prompt = vi.fn().mockResolvedValue(undefined);
+    public continue = vi.fn().mockResolvedValue(undefined);
     public steer = vi.fn();
     public clearSteeringQueue = vi.fn();
     // Spies for the property setters: PiRunner assigns to state.tools / state.messages
@@ -88,7 +89,7 @@ vi.mock("@mariozechner/pi-ai", () => {
 import { PiRunner, type PiRunnerOptions } from "./pi-runner.js";
 import type { RpcCaller } from "./resource-loader.js";
 import type { RuntimeFs } from "./tools/runtime-fs.js";
-import type { NatStackUIBridgeCallbacks } from "./natstack-extension-context.js";
+import type { NatStackScopedUiContext } from "./natstack-extension-context.js";
 import type { ChannelToolMethod } from "./extensions/channel-tools.js";
 
 // ── Test fixtures ───────────────────────────────────────────────────────────
@@ -137,12 +138,12 @@ function createStubFs(): RuntimeFs {
   return stub as RuntimeFs;
 }
 
-function createStubUiCallbacks(): NatStackUIBridgeCallbacks {
+function createStubUiCallbacks(): NatStackScopedUiContext {
   return {
-    showSelect: vi.fn().mockResolvedValue(undefined),
-    showConfirm: vi.fn().mockResolvedValue(true),
-    showInput: vi.fn().mockResolvedValue(undefined),
-    showEditor: vi.fn().mockResolvedValue(undefined),
+    selectForTool: vi.fn().mockResolvedValue(undefined),
+    confirmForTool: vi.fn().mockResolvedValue(true),
+    inputForTool: vi.fn().mockResolvedValue(undefined),
+    editorForTool: vi.fn().mockResolvedValue(undefined),
     notify: vi.fn(),
     setStatus: vi.fn(),
     setWidget: vi.fn(),
@@ -313,8 +314,8 @@ describe("PiRunner.init", () => {
 describe("PiRunner approval-gate tool wrapping", () => {
   it("blocks the wrapped tool's execute when the gate denies", async () => {
     const ui = createStubUiCallbacks();
-    // approvalLevel 0 = ask all; deny via showConfirm.
-    (ui.showConfirm as any).mockResolvedValue(false);
+    // approvalLevel 0 = ask all; deny via confirmForTool.
+    (ui.confirmForTool as any).mockResolvedValue(false);
     const runner = new PiRunner(
       createOptions({ uiCallbacks: ui, approvalLevel: 0 }),
     );
@@ -555,7 +556,7 @@ describe("PiRunner.dispose", () => {
 describe("PiRunner.setApprovalLevel", () => {
   it("updates the level so the closure-bound gate sees the new value", async () => {
     const ui = createStubUiCallbacks();
-    (ui.showConfirm as any).mockResolvedValue(false);
+    (ui.confirmForTool as any).mockResolvedValue(false);
     const runner = new PiRunner(
       createOptions({ uiCallbacks: ui, approvalLevel: 2 }),
     );

@@ -11,6 +11,7 @@ import type {
   MethodExecutionContext,
   FeedbackFormArgs,
   FeedbackCustomArgs,
+  PubSubClient,
 } from "@natstack/pubsub";
 import {
   FeedbackFormArgsSchema,
@@ -25,12 +26,18 @@ import {
 } from "@workspace/tool-ui";
 import { compileComponent } from "@workspace/eval";
 import type { FeedbackComponentProps } from "@workspace/tool-ui";
-import type { ChatSandboxValue, MethodHistoryEntry } from "@workspace/agentic-core";
+import {
+  parseEphemeralEvent,
+  type ChatSandboxValue,
+  type MethodHistoryEntry,
+} from "@workspace/agentic-core";
 
 interface UseChatFeedbackOptions {
   addMethodHistoryEntry: (entry: MethodHistoryEntry) => void;
   updateMethodHistoryEntry: (callId: string, updates: Partial<MethodHistoryEntry>) => void;
   chat: ChatSandboxValue;
+  clientRef: React.MutableRefObject<PubSubClient<any> | null>;
+  connected: boolean;
 }
 
 export interface ChatFeedbackState {
@@ -52,7 +59,9 @@ export interface ChatFeedbackState {
 export function useChatFeedback({
   addMethodHistoryEntry,
   updateMethodHistoryEntry,
-  chat,
+  chat: _chat,
+  clientRef,
+  connected,
 }: UseChatFeedbackOptions): ChatFeedbackState {
   const { activeFeedbacks, addFeedback, removeFeedback, dismissFeedback, handleFeedbackError } = useFeedbackManager();
   const activeFeedbacksRef = useRef(activeFeedbacks);
@@ -166,6 +175,43 @@ export function useChatFeedback({
     handleFeedbackFormCallRef.current = handleFeedbackFormCall;
     handleFeedbackCustomCallRef.current = handleFeedbackCustomCall;
   }, [handleFeedbackFormCall, handleFeedbackCustomCall]);
+
+  useEffect(() => {
+    const client = clientRef.current;
+    if (!client) return;
+    let cancelled = false;
+    const consume = async () => {
+      try {
+        for await (const event of client.events({ includeEphemeral: true })) {
+          if (cancelled) break;
+          const wire = event as {
+            kind?: string;
+            content?: string;
+            contentType?: string;
+            payload?: { content?: string; contentType?: string };
+          };
+          if (wire.kind !== "ephemeral") continue;
+          const payload = parseEphemeralEvent<{ callId: string }>(
+            {
+              content: wire.content ?? wire.payload?.content ?? "",
+              contentType: wire.contentType ?? wire.payload?.contentType,
+            },
+            "natstack-dispatch-cancel",
+          );
+          if (!payload?.callId) continue;
+          const feedback = activeFeedbacksRef.current.get(payload.callId);
+          if (!feedback) continue;
+          feedback.complete({ type: "cancel" });
+        }
+      } catch (err) {
+        if (!cancelled) console.error("[useChatFeedback] dispatch cancel listener failed:", err);
+      }
+    };
+    void consume();
+    return () => {
+      cancelled = true;
+    };
+  }, [clientRef, connected]);
 
   const buildFeedbackMethods = useCallback((): Record<string, MethodDefinition> => {
     const feedbackFormMethodDef: MethodDefinition = {

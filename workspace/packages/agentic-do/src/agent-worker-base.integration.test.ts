@@ -38,6 +38,10 @@ interface FakeRunnerState {
   steerCalls: AgentMessage[];
   buildCalls: Array<{ content: string; images?: unknown }>;
   clearCount: number;
+  continueCount: number;
+  executeToolDirectCalls: Array<{ toolName: string; toolCallId: string; params: unknown }>;
+  executeToolDirectImpl?: (toolName: string, toolCallId: string, params: unknown) => Promise<any>;
+  replaceHistoryCalls: AgentMessage[][];
   emit: (event: AgentEvent) => void;
 }
 
@@ -48,6 +52,9 @@ function makeFakeRunner(): { fake: PiRunner; state: FakeRunnerState } {
     steerCalls: [],
     buildCalls: [],
     clearCount: 0,
+    continueCount: 0,
+    executeToolDirectCalls: [],
+    replaceHistoryCalls: [],
     emit: (event) => {
       for (const l of listeners) l(event);
     },
@@ -76,6 +83,27 @@ function makeFakeRunner(): { fake: PiRunner; state: FakeRunnerState } {
       state.emit({ type: "agent_start" } as AgentEvent);
       state.emit({ type: "message_start", message: msg } as unknown as AgentEvent);
       state.emit({ type: "agent_end", messages: [] } as unknown as AgentEvent);
+    },
+    async continueAgent() {
+      state.continueCount++;
+      state.emit({ type: "agent_start" } as AgentEvent);
+      state.emit({ type: "agent_end", messages: [] } as unknown as AgentEvent);
+    },
+    async executeToolDirect(toolName: string, toolCallId: string, params: unknown) {
+      state.executeToolDirectCalls.push({ toolName, toolCallId, params });
+      if (state.executeToolDirectImpl) {
+        return state.executeToolDirectImpl(toolName, toolCallId, params);
+      }
+      return {
+        content: [{ type: "text", text: "executed" }],
+        details: undefined,
+      };
+    },
+    trimTrailingAbortedAssistant(messages: AgentMessage[]) {
+      return messages;
+    },
+    replaceHistory(messages: AgentMessage[]) {
+      state.replaceHistoryCalls.push(messages);
     },
     steerMessage(msg: AgentMessage) {
       state.steerCalls.push(msg);
@@ -201,7 +229,13 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
 
         const listeners: Array<(event: AgentEvent) => void> = [];
         const state: FakeRunnerState = {
-          runTurnCalls: [], steerCalls: [], buildCalls: [], clearCount: 0,
+          runTurnCalls: [],
+          steerCalls: [],
+          buildCalls: [],
+          clearCount: 0,
+          continueCount: 0,
+          executeToolDirectCalls: [],
+          replaceHistoryCalls: [],
           emit: (event) => { for (const l of listeners) l(event); },
         };
         this.fakeState = state;
@@ -219,6 +253,9 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
           runTurnMessage(msg: AgentMessage): Promise<void> {
             state.runTurnCalls.push(msg);
             return new Promise<void>((resolve) => { self.resolveRun = resolve; });
+          },
+          continueAgent(): Promise<void> {
+            return Promise.resolve();
           },
           steerMessage(msg: AgentMessage) { state.steerCalls.push(msg); },
           clearSteeringQueue() { state.clearCount++; },
@@ -258,7 +295,13 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
 
         const listeners: Array<(event: AgentEvent) => void> = [];
         const state: FakeRunnerState = {
-          runTurnCalls: [], steerCalls: [], buildCalls: [], clearCount: 0,
+          runTurnCalls: [],
+          steerCalls: [],
+          buildCalls: [],
+          clearCount: 0,
+          continueCount: 0,
+          executeToolDirectCalls: [],
+          replaceHistoryCalls: [],
           emit: (event) => { for (const l of listeners) l(event); },
         };
         this.fakeState = state;
@@ -276,6 +319,9 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
           runTurnMessage(msg: AgentMessage): Promise<void> {
             state.runTurnCalls.push(msg);
             return new Promise<void>((resolve) => { self.resolveRuns.push(resolve); });
+          },
+          continueAgent(): Promise<void> {
+            return Promise.resolve();
           },
           steerMessage(msg: AgentMessage) { state.steerCalls.push(msg); },
           clearSteeringQueue() { state.clearCount++; },
@@ -314,5 +360,221 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
 
     expect(s.runTurnCalls).toHaveLength(2);
     expect(s.runTurnCalls[1]!.content).toBe("r2");
+  });
+
+  it("claims approval results once even if onCallResult is delivered twice", async () => {
+    const { instance, sql } = await createTestDO(TestWorker);
+    await (instance as any).getOrCreateRunner("ch-1");
+
+    sql.exec(
+      `INSERT INTO pi_messages (channel_id, idx, content) VALUES (?, ?, ?)`,
+      "ch-1",
+      0,
+      JSON.stringify({
+        role: "toolResult",
+        toolCallId: "tool-1",
+        toolName: "write",
+        content: [{ type: "text", text: "dispatched: approval" }],
+        timestamp: 1,
+        isError: false,
+      }),
+    );
+    sql.exec(
+      `INSERT INTO dispatched_calls (
+         call_id, channel_id, kind, tool_call_id, tool_name, params_json,
+         pending_result_json, pending_is_error, abandoned_reason, resolving_token, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)`,
+      "call-1",
+      "ch-1",
+      "approval",
+      "tool-1",
+      "write",
+      JSON.stringify({ path: "a.txt" }),
+      Date.now(),
+    );
+
+    await Promise.all([
+      instance.onCallResult("call-1", true, false),
+      instance.onCallResult("call-1", true, false),
+    ]);
+
+    expect(instance.fakeState!.executeToolDirectCalls).toHaveLength(1);
+    expect(sql.exec(`SELECT * FROM dispatched_calls WHERE call_id = ?`, "call-1").toArray()).toHaveLength(0);
+    const rows = sql.exec(`SELECT content FROM pi_messages WHERE channel_id = ? ORDER BY idx`, "ch-1").toArray();
+    const messages = rows.map((row) => JSON.parse(row["content"] as string));
+    expect(messages[0]).toMatchObject({
+      role: "toolResult",
+      toolCallId: "tool-1",
+      toolName: "write",
+      isError: false,
+    });
+    expect(messages[0]!.content[0]!.text).toBe("executed");
+  });
+
+  it("converts resume-time approval execution failures into error tool results", async () => {
+    const { instance, sql } = await createTestDO(TestWorker);
+    await (instance as any).getOrCreateRunner("ch-1");
+    instance.fakeState!.executeToolDirectImpl = async () => {
+      throw new Error("boom on resume");
+    };
+
+    sql.exec(
+      `INSERT INTO pi_messages (channel_id, idx, content) VALUES (?, ?, ?)`,
+      "ch-1",
+      0,
+      JSON.stringify({
+        role: "toolResult",
+        toolCallId: "tool-1",
+        toolName: "write",
+        content: [{ type: "text", text: "dispatched: approval" }],
+        timestamp: 1,
+        isError: false,
+      }),
+    );
+    sql.exec(
+      `INSERT INTO dispatched_calls (
+         call_id, channel_id, kind, tool_call_id, tool_name, params_json,
+         pending_result_json, pending_is_error, abandoned_reason, resolving_token, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)`,
+      "call-1",
+      "ch-1",
+      "approval",
+      "tool-1",
+      "write",
+      JSON.stringify({ path: "a.txt" }),
+      Date.now(),
+    );
+
+    await instance.onCallResult("call-1", true, false);
+
+    expect(sql.exec(`SELECT * FROM dispatched_calls WHERE call_id = ?`, "call-1").toArray()).toHaveLength(0);
+    const message = JSON.parse(
+      sql.exec(`SELECT content FROM pi_messages WHERE channel_id = ? AND idx = 0`, "ch-1").one()["content"] as string,
+    );
+    expect(message).toMatchObject({
+      role: "toolResult",
+      toolCallId: "tool-1",
+      isError: true,
+    });
+    expect(message.content[0].text).toContain("boom on resume");
+  });
+
+  it("keeps superseded dispatch rows until the placeholder is persisted, then rewrites them", async () => {
+    const { instance, sql } = await createTestDO(TestWorker);
+    await (instance as any).getOrCreateRunner("ch-1");
+    await (instance as any).recoverDispatchesForChannel("ch-1");
+
+    sql.exec(
+      `INSERT INTO dispatched_calls (
+         call_id, channel_id, kind, tool_call_id, tool_name, params_json,
+         pending_result_json, pending_is_error, abandoned_reason, resolving_token, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)`,
+      "call-1",
+      "ch-1",
+      "ask-user",
+      "tool-1",
+      null,
+      null,
+      Date.now(),
+    );
+
+    await instance.onChannelEvent("ch-1", userMessage("new message"));
+
+    const pending = sql.exec(`SELECT abandoned_reason FROM dispatched_calls WHERE call_id = ?`, "call-1").toArray();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!["abandoned_reason"]).toBe("user-superseded");
+
+    await (instance as any).saveMessages("ch-1", [{
+      role: "toolResult",
+      toolCallId: "tool-1",
+      toolName: "ask_user",
+      content: [{ type: "text", text: "dispatched: ask-user" }],
+      timestamp: 1,
+      isError: false,
+    }]);
+    await (instance as any).drainDeferredDispatchesFor("ch-1");
+
+    expect(sql.exec(`SELECT * FROM dispatched_calls WHERE call_id = ?`, "call-1").toArray()).toHaveLength(0);
+    const message = JSON.parse(
+      sql.exec(`SELECT content FROM pi_messages WHERE channel_id = ? AND idx = 0`, "ch-1").one()["content"] as string,
+    );
+    expect(message).toMatchObject({
+      role: "toolResult",
+      toolCallId: "tool-1",
+      isError: true,
+    });
+    expect(message.content[0].text).toBe("Dispatched call superseded by user message");
+  });
+
+  it("drops restart-orphaned dispatch rows whose placeholders were never persisted", async () => {
+    const { instance, sql } = await createTestDO(TestWorker);
+
+    sql.exec(
+      `INSERT INTO dispatched_calls (
+         call_id, channel_id, kind, tool_call_id, tool_name, params_json,
+         pending_result_json, pending_is_error, abandoned_reason, resolving_token, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)`,
+      "call-1",
+      "ch-1",
+      "ask-user",
+      "tool-1",
+      null,
+      null,
+      Date.now(),
+    );
+
+    await (instance as any).recoverDispatchesForChannel("ch-1");
+
+    expect(sql.exec(`SELECT * FROM dispatched_calls WHERE call_id = ?`, "call-1").toArray()).toHaveLength(0);
+  });
+
+  it("clears stale resolving tokens so buffered dispatch results can drain after restart", async () => {
+    const { instance, sql } = await createTestDO(TestWorker);
+
+    sql.exec(
+      `INSERT INTO pi_messages (channel_id, idx, content) VALUES (?, ?, ?)`,
+      "ch-1",
+      0,
+      JSON.stringify({
+        role: "toolResult",
+        toolCallId: "tool-1",
+        toolName: "ask_user",
+        content: [{ type: "text", text: "dispatched: ask-user" }],
+        timestamp: 1,
+        isError: false,
+      }),
+    );
+    sql.exec(
+      `INSERT INTO dispatched_calls (
+         call_id, channel_id, kind, tool_call_id, tool_name, params_json,
+         pending_result_json, pending_is_error, abandoned_reason, resolving_token, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+      "call-1",
+      "ch-1",
+      "ask-user",
+      "tool-1",
+      null,
+      null,
+      JSON.stringify({ value: "submitted" }),
+      0,
+      "stuck-token",
+      Date.now(),
+    );
+
+    (instance as any).dispatches.clearResolvingTokens();
+    await (instance as any).drainDeferredDispatchesFor("ch-1");
+    await flush();
+
+    expect(sql.exec(`SELECT * FROM dispatched_calls WHERE call_id = ?`, "call-1").toArray()).toHaveLength(0);
+    const message = JSON.parse(
+      sql.exec(`SELECT content FROM pi_messages WHERE channel_id = ? AND idx = 0`, "ch-1").one()["content"] as string,
+    );
+    expect(message).toMatchObject({
+      role: "toolResult",
+      toolCallId: "tool-1",
+      isError: false,
+    });
+    expect(message.content[0].text).toBe("submitted");
+    expect(instance.fakeState!.continueCount).toBe(1);
   });
 });

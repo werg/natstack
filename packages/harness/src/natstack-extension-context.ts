@@ -2,15 +2,9 @@
  * NatStackExtensionUIContext
  *
  * Bridges NatStack's local `PiExtensionUIContext` interface to channel
- * operations. Extensions call `ctx.ui.confirm/select/notify/...` and the
- * bridge forwards each call to a worker-supplied callback that turns the
- * request into a channel feedback_form, ephemeral message, or
- * metadata-update event.
- *
- * Many UI primitives are TUI-only (theme manipulation, custom editors,
- * raw terminal input). Those are no-ops in the headless NatStack context;
- * they are still defined as methods so extensions written for Pi's full
- * surface can target the bridge without compile errors.
+ * operations. Interactive primitives are only valid during a `tool_call`
+ * dispatch, where the runtime binds the active `toolCallId` into a fresh
+ * per-event wrapper. Non-interactive methods remain available for all events.
  */
 
 import type {
@@ -18,69 +12,86 @@ import type {
   PiExtensionUIDialogOptions as ExtensionUIDialogOptions,
   PiExtensionWidgetOptions as ExtensionWidgetOptions,
 } from "./pi-extension-api.js";
+import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 
-export interface NatStackUIBridgeCallbacks {
-  /** Show a single-choice select; return the chosen option's label or undefined if cancelled. */
-  showSelect(
+export class DispatchedError extends Error {
+  constructor(public readonly placeholderResult: AgentToolResult<any>) {
+    super("DISPATCHED");
+  }
+}
+
+export interface NatStackToolDispatchMeta {
+  toolCallId?: string;
+  toolName?: string;
+  toolInput?: unknown;
+  mode?: "approval" | "ui-prompt";
+}
+
+/**
+ * NatStack-internal UI bridge interface. The public Pi UI surface stays
+ * toolCallId-free; the runtime binds the current toolCallId per event.
+ */
+export interface NatStackScopedUiContext {
+  selectForTool(
+    toolCallId: string,
     title: string,
     options: string[],
     opts?: ExtensionUIDialogOptions,
+    meta?: NatStackToolDispatchMeta,
   ): Promise<string | undefined>;
-  /** Show a yes/no confirm; return true for yes. */
-  showConfirm(
+  confirmForTool(
+    toolCallId: string,
     title: string,
     message: string,
     opts?: ExtensionUIDialogOptions,
+    meta?: NatStackToolDispatchMeta,
   ): Promise<boolean>;
-  /** Show a free-text input; return the entered value or undefined if cancelled. */
-  showInput(
+  inputForTool(
+    toolCallId: string,
     title: string,
     placeholder: string | undefined,
     opts?: ExtensionUIDialogOptions,
+    meta?: NatStackToolDispatchMeta,
   ): Promise<string | undefined>;
-  /** Show a multi-line editor; return the entered value or undefined if cancelled. */
-  showEditor(title: string, prefill?: string): Promise<string | undefined>;
-  /** Push a notification to the channel as an ephemeral message. */
+  editorForTool(
+    toolCallId: string,
+    title: string,
+    prefill?: string,
+    meta?: NatStackToolDispatchMeta,
+  ): Promise<string | undefined>;
   notify(message: string, type?: "info" | "warning" | "error"): void;
-  /** Set or clear a status entry by key. */
   setStatus(key: string, text: string | undefined): void;
-  /** Set or clear a widget by key. */
   setWidget(
     key: string,
     content: string[] | undefined,
     opts?: ExtensionWidgetOptions,
   ): void;
-  /** Set the working/loading message shown during streaming. */
   setWorkingMessage(message: string | undefined): void;
-  /**
-   * Push an OAuth Connect affordance into the chat (e.g., when the agent's
-   * model provider is not yet logged in).
-   *
-   * Implementations typically render an inline_ui card with a Connect button
-   * that calls `auth.startOAuthLogin(providerId)` from the panel context.
-   *
-   * Fire-and-forget on the agent side: the actual unblock signal comes from
-   * `auth.waitForProvider`, which the agent worker awaits separately. This
-   * method only needs to **show** the affordance — it does not need to wait
-   * for the user click.
-   *
-   * @param providerId  Pi-AI provider id (e.g. `"openai-codex"`).
-   * @param displayName Human-readable provider name shown in the card.
-   */
   requestProviderOAuth(providerId: string, displayName: string): void;
 }
 
 export class NatStackExtensionUIContext implements PiExtensionUIContext {
-  constructor(private readonly callbacks: NatStackUIBridgeCallbacks) {}
+  constructor(
+    private readonly scopedUi: NatStackScopedUiContext,
+    private readonly dispatchMeta?: NatStackToolDispatchMeta,
+  ) {}
 
-  // ── Interactive primitives ──────────────────────────────────────────────
+  private requireToolDispatch(): Required<Pick<NatStackToolDispatchMeta, "toolCallId">> &
+    NatStackToolDispatchMeta {
+    if (!this.dispatchMeta?.toolCallId) {
+      throw new Error("UI not available outside tool_call dispatch");
+    }
+    return this.dispatchMeta as Required<Pick<NatStackToolDispatchMeta, "toolCallId">> &
+      NatStackToolDispatchMeta;
+  }
 
   async select(
     title: string,
     options: string[],
     opts?: ExtensionUIDialogOptions,
   ): Promise<string | undefined> {
-    return this.callbacks.showSelect(title, options, opts);
+    const meta = this.requireToolDispatch();
+    return this.scopedUi.selectForTool(meta.toolCallId, title, options, opts, meta);
   }
 
   async confirm(
@@ -88,7 +99,13 @@ export class NatStackExtensionUIContext implements PiExtensionUIContext {
     message: string,
     opts?: ExtensionUIDialogOptions,
   ): Promise<boolean> {
-    return this.callbacks.showConfirm(title, message, opts);
+    const meta = this.requireToolDispatch();
+    return this.scopedUi.confirmForTool(meta.toolCallId, title, message, opts, meta);
+  }
+
+  async dispatchApproval(title: string, message: string): Promise<boolean> {
+    const meta = { ...this.requireToolDispatch(), mode: "approval" as const };
+    return this.scopedUi.confirmForTool(meta.toolCallId, title, message, undefined, meta);
   }
 
   async input(
@@ -96,48 +113,42 @@ export class NatStackExtensionUIContext implements PiExtensionUIContext {
     placeholder?: string,
     opts?: ExtensionUIDialogOptions,
   ): Promise<string | undefined> {
-    return this.callbacks.showInput(title, placeholder, opts);
+    const meta = this.requireToolDispatch();
+    return this.scopedUi.inputForTool(
+      meta.toolCallId,
+      title,
+      placeholder,
+      opts,
+      meta,
+    );
   }
 
   async editor(title: string, prefill?: string): Promise<string | undefined> {
-    return this.callbacks.showEditor(title, prefill);
+    const meta = this.requireToolDispatch();
+    return this.scopedUi.editorForTool(meta.toolCallId, title, prefill, meta);
   }
 
   notify(message: string, type?: "info" | "warning" | "error"): void {
-    this.callbacks.notify(message, type);
+    this.scopedUi.notify(message, type);
   }
 
   setStatus(key: string, text: string | undefined): void {
-    this.callbacks.setStatus(key, text);
+    this.scopedUi.setStatus(key, text);
   }
 
   setWorkingMessage(message?: string): void {
-    this.callbacks.setWorkingMessage(message);
+    this.scopedUi.setWorkingMessage(message);
   }
 
-  /**
-   * Push an OAuth Connect card into the chat. PiRunner calls this from inside
-   * its `getApiKey` callback when the model provider has no valid token. The
-   * actual unblock signal comes from `auth.waitForProvider`, not from the
-   * promise returned here — this method is fire-and-forget on the agent side.
-   */
   requestProviderOAuth(providerId: string, displayName: string): void {
-    this.callbacks.requestProviderOAuth(providerId, displayName);
+    this.scopedUi.requestProviderOAuth(providerId, displayName);
   }
 
   setWidget(key: string, content: unknown, options?: ExtensionWidgetOptions): void {
-    // Pi's interface overloads accept either string[] (TUI-friendly) or a
-    // component factory function. In headless mode we only forward the
-    // string-array variant; component factories are TUI-specific and silently
-    // dropped here. The signature is `unknown` to satisfy both overload arms.
     if (Array.isArray(content) || content === undefined) {
-      this.callbacks.setWidget(key, content as string[] | undefined, options);
+      this.scopedUi.setWidget(key, content as string[] | undefined, options);
     }
   }
-
-  // ── No-ops in headless mode ─────────────────────────────────────────────
-  // These are TUI-specific surfaces (terminal, theme, editor component, etc.)
-  // that have no NatStack equivalent. We accept the calls and discard them.
 
   onTerminalInput(): () => void {
     return () => {};
@@ -177,11 +188,6 @@ export class NatStackExtensionUIContext implements PiExtensionUIContext {
     /* TUI-only */
   }
 
-  // ── Theme accessors (return empty defaults) ─────────────────────────────
-
-  // The Theme type is opaque to NatStack; we return a minimal stub object
-  // that satisfies the structural type. Extensions that actually use theme
-  // styling are TUI-only and won't be loaded in headless mode.
   get theme(): never {
     return {} as never;
   }

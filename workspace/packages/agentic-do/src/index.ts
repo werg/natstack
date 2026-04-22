@@ -9,6 +9,10 @@
 export { AgentWorkerBase } from "./agent-worker-base.js";
 export { DOIdentity } from "./identity.js";
 export { SubscriptionManager } from "./subscription-manager.js";
-export { ContinuationStore } from "./continuation-store.js";
-export type { PendingCall } from "./continuation-store.js";
+export { DispatchedCallStore } from "./dispatched-call-store.js";
+export type {
+  DispatchedCall,
+  DispatchedCallKind,
+  StoreDispatchedCallInput,
+} from "./dispatched-call-store.js";
 export { ChannelClient } from "./channel-client.js";

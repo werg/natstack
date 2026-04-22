@@ -4,26 +4,22 @@ import type {
   AgentTool,
   PiExtensionAPI,
   PiExtensionFactory,
-  PiExtensionUIContext,
 } from "./pi-extension-api.js";
+import type { NatStackScopedUiContext } from "./natstack-extension-context.js";
 
 // Minimal stub UI context for tests. Every method is a vi.fn so dispatch
 // works without side-effects.
-function createStubUI(): PiExtensionUIContext {
+function createStubUI(): NatStackScopedUiContext {
   return {
-    select: vi.fn().mockResolvedValue(undefined),
-    confirm: vi.fn().mockResolvedValue(true),
-    input: vi.fn().mockResolvedValue(undefined),
-    editor: vi.fn().mockResolvedValue(undefined),
+    selectForTool: vi.fn().mockResolvedValue(undefined),
+    confirmForTool: vi.fn().mockResolvedValue(true),
+    inputForTool: vi.fn().mockResolvedValue(undefined),
+    editorForTool: vi.fn().mockResolvedValue(undefined),
     notify: vi.fn(),
     setStatus: vi.fn(),
     setWidget: vi.fn(),
     setWorkingMessage: vi.fn(),
-    setHeader: vi.fn(),
-    setFooter: vi.fn(),
-    setTitle: vi.fn(),
-    pasteToEditor: vi.fn(),
-    setEditorText: vi.fn(),
+    requestProviderOAuth: vi.fn(),
   };
 }
 
@@ -215,6 +211,32 @@ describe("PiExtensionRuntime", () => {
       ]);
       await runtime.dispatch("tool_call", { toolName: "bash" });
       expect(observedCwd).toBe("/work/dir");
+    });
+
+    it("binds toolCallId-scoped UI for tool_call events", async () => {
+      const runtime = new PiExtensionRuntime("/tmp");
+      const ui = createStubUI();
+      runtime.bindUI(ui);
+      await runtime.loadFactories([
+        (api) => {
+          api.on("tool_call", async (_event, ctx) => {
+            await ctx.ui.confirm("Proceed?", "Run it");
+          });
+        },
+      ]);
+      await runtime.dispatch("tool_call", {
+        type: "tool_call",
+        toolCallId: "tool-1",
+        toolName: "bash",
+        input: {},
+      });
+      expect(ui.confirmForTool).toHaveBeenCalledWith(
+        "tool-1",
+        "Proceed?",
+        "Run it",
+        undefined,
+        expect.objectContaining({ toolCallId: "tool-1", toolName: "bash" }),
+      );
     });
   });
 

@@ -34,6 +34,7 @@ interface FakeRunnerState {
     msg: AgentMessage;
     deferred: ReturnType<typeof deferred<void>>;
   }>;
+  continueCalls: Array<ReturnType<typeof deferred<void>>>;
   steerCalls: AgentMessage[];
   clearSteerCount: number;
   unsubscribed: boolean;
@@ -43,6 +44,7 @@ function makeRunner(): FakeRunnerState {
   let listener: ((event: AgentEvent) => void) | null = null;
   const state: FakeRunnerState = {
     runTurnCalls: [],
+    continueCalls: [],
     steerCalls: [],
     clearSteerCount: 0,
     unsubscribed: false,
@@ -60,6 +62,11 @@ function makeRunner(): FakeRunnerState {
     runTurnMessage(msg) {
       const d = deferred<void>();
       state.runTurnCalls.push({ msg, deferred: d });
+      return d.promise;
+    },
+    continueAgent() {
+      const d = deferred<void>();
+      state.continueCalls.push(d);
       return d.promise;
     },
     steerMessage(msg) {

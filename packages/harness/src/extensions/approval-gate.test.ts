@@ -33,6 +33,7 @@ describe("createApprovalGateExtension", () => {
     const factory = createApprovalGateExtension({
       getApprovalLevel: () => level,
       safeToolNames: DEFAULT_SAFE_TOOL_NAMES,
+      preApprovedCallIds: new Set(),
     });
     const api = createMockApi();
     factory(api as never);
@@ -51,6 +52,7 @@ describe("createApprovalGateExtension", () => {
     const factory = createApprovalGateExtension({
       getApprovalLevel: () => 1,
       safeToolNames: DEFAULT_SAFE_TOOL_NAMES,
+      preApprovedCallIds: new Set(),
     });
     const api = createMockApi();
     factory(api as never);
@@ -69,6 +71,7 @@ describe("createApprovalGateExtension", () => {
     const factory = createApprovalGateExtension({
       getApprovalLevel: () => 1,
       safeToolNames: DEFAULT_SAFE_TOOL_NAMES,
+      preApprovedCallIds: new Set(),
     });
     const api = createMockApi();
     factory(api as never);
@@ -87,6 +90,7 @@ describe("createApprovalGateExtension", () => {
     const factory = createApprovalGateExtension({
       getApprovalLevel: () => 0,
       safeToolNames: DEFAULT_SAFE_TOOL_NAMES,
+      preApprovedCallIds: new Set(),
     });
     const api = createMockApi();
     factory(api as never);
@@ -101,6 +105,7 @@ describe("createApprovalGateExtension", () => {
     const factory = createApprovalGateExtension({
       getApprovalLevel: () => 0,
       safeToolNames: DEFAULT_SAFE_TOOL_NAMES,
+      preApprovedCallIds: new Set(),
     });
     const api = createMockApi();
     factory(api as never);
@@ -120,6 +125,7 @@ describe("createApprovalGateExtension", () => {
     const factory = createApprovalGateExtension({
       getApprovalLevel: () => 0,
       safeToolNames: DEFAULT_SAFE_TOOL_NAMES,
+      preApprovedCallIds: new Set(),
     });
     const api = createMockApi();
     factory(api as never);
@@ -143,6 +149,7 @@ describe("createApprovalGateExtension", () => {
     const factory = createApprovalGateExtension({
       getApprovalLevel: () => level,
       safeToolNames: DEFAULT_SAFE_TOOL_NAMES,
+      preApprovedCallIds: new Set(),
     });
     const api = createMockApi();
     factory(api as never);

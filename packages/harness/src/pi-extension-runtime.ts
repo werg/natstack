@@ -26,15 +26,18 @@ import type {
   PiExtensionEventResult,
   PiExtensionFactory,
   PiExtensionHandler,
-  PiExtensionUIContext,
   PiToolInfo,
 } from "./pi-extension-api.js";
+import {
+  NatStackExtensionUIContext,
+  type NatStackScopedUiContext,
+} from "./natstack-extension-context.js";
 
 export class PiExtensionRuntime {
   private readonly handlers = new Map<string, PiExtensionHandler[]>();
   private readonly tools = new Map<string, AgentTool<any, any>>();
   private activeToolNames = new Set<string>();
-  private uiContext: PiExtensionUIContext | null = null;
+  private uiContext: NatStackScopedUiContext | null = null;
 
   constructor(private readonly cwd: string) {}
 
@@ -44,7 +47,7 @@ export class PiExtensionRuntime {
    * the UI implementation (e.g. when the worker rotates the channel
    * connection).
    */
-  bindUI(uiContext: PiExtensionUIContext): void {
+  bindUI(uiContext: NatStackScopedUiContext): void {
     this.uiContext = uiContext;
   }
 
@@ -119,7 +122,7 @@ export class PiExtensionRuntime {
   ): Promise<PiExtensionEventResult | null> {
     const handlers = this.handlers.get(eventType);
     if (!handlers || handlers.length === 0) return null;
-    const ctx = this.buildContext();
+    const ctx = this.buildContext(event);
     for (const h of handlers) {
       const result = await h(event, ctx);
       if (result && typeof result === "object" && result.block) {
@@ -143,14 +146,36 @@ export class PiExtensionRuntime {
   }
 
   /** Build a fresh `ExtensionContext` for a single dispatch call. */
-  private buildContext(): PiExtensionContext {
+  private buildContext(event: unknown): PiExtensionContext {
     if (!this.uiContext) {
       throw new Error(
         "PiExtensionRuntime: UI context not bound. Call bindUI() before dispatching events.",
       );
     }
+    const toolCallId =
+      typeof event === "object" &&
+      event !== null &&
+      "toolCallId" in event &&
+      typeof (event as { toolCallId?: unknown }).toolCallId === "string"
+        ? (event as { toolCallId: string }).toolCallId
+        : undefined;
+    const toolName =
+      typeof event === "object" &&
+      event !== null &&
+      "toolName" in event &&
+      typeof (event as { toolName?: unknown }).toolName === "string"
+        ? (event as { toolName: string }).toolName
+        : undefined;
+    const toolInput =
+      typeof event === "object" && event !== null && "input" in event
+        ? (event as { input?: unknown }).input
+        : undefined;
     return {
-      ui: this.uiContext,
+      ui: new NatStackExtensionUIContext(this.uiContext, {
+        toolCallId,
+        toolName,
+        toolInput,
+      }),
       hasUI: true,
       cwd: this.cwd,
     };

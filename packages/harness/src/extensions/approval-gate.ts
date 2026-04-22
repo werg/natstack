@@ -24,6 +24,8 @@ export interface ApprovalGateDeps {
   getApprovalLevel: () => ApprovalLevel;
   /** Tool names that auto-approve at level 1. */
   safeToolNames: ReadonlySet<string>;
+  /** Tool-call ids that should skip approval exactly once on resume. */
+  preApprovedCallIds: Set<string>;
 }
 
 /** Pi built-in tools that are typically considered "safe" (read-only). */
@@ -40,6 +42,7 @@ export function createApprovalGateExtension(
   return (pi: PiExtensionAPI) => {
     pi.on("tool_call", async (rawEvent, ctx) => {
       const event = rawEvent as PiToolCallEvent;
+      if (deps.preApprovedCallIds.delete(event.toolCallId)) return undefined;
       const level = deps.getApprovalLevel();
 
       if (level === 2) return undefined; // full auto
@@ -53,10 +56,18 @@ export function createApprovalGateExtension(
       }
 
       const argsPreview = JSON.stringify(event.input ?? {}).slice(0, 200);
-      const allowed = await ctx.ui.confirm(
-        "Allow tool call?",
-        `Tool: ${event.toolName}\nArgs: ${argsPreview}`,
-      );
+      const approvalUi = ctx.ui as typeof ctx.ui & {
+        dispatchApproval?: (title: string, message: string) => Promise<boolean>;
+      };
+      const allowed = approvalUi.dispatchApproval
+        ? await approvalUi.dispatchApproval(
+            "Allow tool call?",
+            `Tool: ${event.toolName}\nArgs: ${argsPreview}`,
+          )
+        : await ctx.ui.confirm(
+            "Allow tool call?",
+            `Tool: ${event.toolName}\nArgs: ${argsPreview}`,
+          );
 
       return allowed ? undefined : { block: true, reason: "User denied tool call" };
     });

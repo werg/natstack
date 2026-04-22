@@ -11,8 +11,8 @@
  * Composes:
  * - `DOIdentity`: stable DO ref + workerd session id
  * - `SubscriptionManager`: channel membership + replay state
- * - `ContinuationStore`: pending callId continuations for tool callMethod
- *   and feedback_form / inline UI awaits (Promise resolution from onCallResult)
+ * - `DispatchedCallStore`: durable breadcrumb index for interactive dispatches
+ *   that must survive DO hibernation
  * - `ChannelClient`: typed wrapper around channel DO RPC
  * - `TurnDispatcher` (one per channel): queues user messages, chooses
  *   runTurn vs steer, self-heals pi-core's steering-queue exit race,
@@ -48,17 +48,22 @@ import {
   isNotLoggedInError,
   providerDisplayName,
   type ChannelToolMethod,
-  type NatStackUIBridgeCallbacks,
+  type NatStackScopedUiContext,
   type AskUserParams,
   type ApprovalLevel,
   type ThinkingLevel,
+  DispatchedError,
 } from "@natstack/harness";
-import type { AgentEvent, AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentEvent, AgentMessage, AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { ImageContent } from "@mariozechner/pi-ai";
 
 import { DOIdentity } from "./identity.js";
 import { SubscriptionManager } from "./subscription-manager.js";
-import { ContinuationStore } from "./continuation-store.js";
+import {
+  DispatchedCallStore,
+  type DispatchedCall,
+  type DispatchedCallKind,
+} from "./dispatched-call-store.js";
 import { ChannelClient } from "./channel-client.js";
 import { ContentBlockProjector, type ProjectorSink } from "./content-block-projector.js";
 import { TurnDispatcher } from "./turn-dispatcher.js";
@@ -155,18 +160,12 @@ interface RunnerEntry {
   runner: PiRunner;
 }
 
-/** Resolves at the channel boundary when `onCallResult` arrives. */
-interface PendingResolver {
-  resolve: (value: unknown) => void;
-  reject: (err: Error) => void;
-}
-
 export abstract class AgentWorkerBase extends DurableObjectBase {
-  static override schemaVersion = 8;
+  static override schemaVersion = 9;
 
   protected identity: DOIdentity;
   protected subscriptions: SubscriptionManager;
-  protected continuations: ContinuationStore;
+  protected dispatches: DispatchedCallStore;
 
   /** One PiRunner per channel — created lazily on first user message. */
   private runners = new Map<string, RunnerEntry>();
@@ -175,11 +174,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
    *  lifetime. The FsService caller→context map is process-scoped, so we
    *  only need to bind once per DO startup per context. */
   private _fsContextBound = new Set<string>();
-
-  /** In-flight Promise resolvers keyed by callId. Used for tool callMethod
-   *  and UI feedback_form awaits — when the channel routes the result via
-   *  onCallResult, we resolve the corresponding Promise. */
-  private pendingResolvers = new Map<string, PendingResolver>();
 
   /** Streaming callbacks keyed by method callId. When a method-result event
    *  arrives with complete:false, the callback is invoked with the content.
@@ -195,6 +189,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   /** Phase 0D: Transient poison message tracker. Resets on hibernation. */
   private failedEvents = new Map<number, number>();
   private static readonly POISON_MAX_ATTEMPTS = 3;
+  private recoveredChannels = new Set<string>();
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
@@ -211,16 +206,18 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       (channelId) => new ChannelClient(lazyRpc, channelId),
       this.identity,
     );
-    this.continuations = new ContinuationStore(this.sql);
+    this.dispatches = new DispatchedCallStore(this.sql);
 
     this.ensureReady();
+    this.dispatches.clearResolvingTokens();
     this.identity.restore();
   }
 
   protected createTables(): void {
     this.identity.createTables();
     this.subscriptions.createTables();
-    this.continuations.createTables();
+    this.dispatches.createTables();
+    this.sql.exec(`DROP TABLE IF EXISTS pending_calls`);
     // Delivery cursor for event dedup + gap repair.
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS delivery_cursor (
@@ -455,7 +452,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       this.projectors.delete(channelId);
     }
 
-    this.continuations.deleteForChannel(channelId);
+    this.dispatches.deleteForChannel(channelId);
     this.subscriptions.deleteSubscription(channelId);
     this.sql.exec(`DELETE FROM pi_messages WHERE channel_id = ?`, channelId);
     this.sql.exec(`DELETE FROM pi_sessions WHERE channel_id = ?`, channelId);
@@ -578,12 +575,18 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     // providers through to Pi's tool_execution_update event system.
     if (event.type === "method-result") {
       const payload = event.payload as Record<string, unknown> | undefined;
-      if (payload && payload["complete"] === false) {
-        const callId = payload["callId"] as string | undefined;
+      const callId = payload?.["callId"] as string | undefined;
+      if (payload?.["complete"] === false) {
         if (callId) {
           const cb = this.streamCallbacks.get(callId);
           if (cb) cb(payload["content"]);
         }
+      } else if (payload?.["complete"] === true && callId) {
+        await this.onCallResult(
+          callId,
+          payload["content"],
+          payload["isError"] === true,
+        );
       }
       return;
     }
@@ -642,14 +645,26 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       fs: this.fs,
       uiCallbacks: this.buildUICallbacks(channelId),
       rosterCallback: () => this.buildRoster(channelId),
-      callMethodCallback: (handle, method, args, signal, onStreamUpdate) =>
-        this.invokeChannelMethod(channelId, handle, method, args, signal, onStreamUpdate),
-      askUserCallback: (params, signal) => this.askUser(channelId, params, signal),
+      callMethodCallback: (toolCallId, handle, method, args, signal, onStreamUpdate) =>
+        this.invokeChannelMethod(
+          channelId,
+          toolCallId,
+          handle,
+          method,
+          args,
+          signal,
+          onStreamUpdate,
+        ),
+      askUserCallback: (toolCallId, params, signal) =>
+        this.askUser(channelId, toolCallId, params, signal),
       model: this.getModel(),
       thinkingLevel: this.getThinkingLevel(),
       approvalLevel: this.getApprovalLevel(channelId),
       initialMessages,
-      onPersist: (messages) => this.persistMessages(channelId, messages),
+      onPersist: async (messages) => {
+        await this.saveMessages(channelId, messages);
+        await this.drainDeferredDispatchesFor(channelId);
+      },
     });
 
     await runner.init();
@@ -714,39 +729,69 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     };
   }
 
-  /** Persist the current `AgentMessage[]` snapshot for warm restart. Called
-   *  by PiRunner's `onPersist` hook on every `message_end` / `agent_end`.
-   *  Append-only: only new messages are INSERTed. The last existing row is
-   *  always updated because pi-agent-core mutates the last message in-place
-   *  during streaming (partial → final). */
-  private persistMessages(channelId: string, messages: AgentMessage[]): void {
+  private loadMessages(channelId: string): AgentMessage[] {
     const rows = this.sql.exec(
-      `SELECT COUNT(*) as cnt FROM pi_messages WHERE channel_id = ?`, channelId,
+      `SELECT content FROM pi_messages WHERE channel_id = ? ORDER BY idx`,
+      channelId,
     ).toArray();
-    const existingCount = (rows[0]?.["cnt"] as number) ?? 0;
+    return rows.map((row) => JSON.parse(row["content"] as string) as AgentMessage);
+  }
 
-    if (messages.length < existingCount) {
-      // Context window management trimmed messages — remove excess rows.
-      this.sql.exec(
-        `DELETE FROM pi_messages WHERE channel_id = ? AND idx >= ?`,
-        channelId, messages.length,
-      );
-    }
-
-    // Update the last existing row (pi-agent-core mutates last message in-place).
-    if (existingCount > 0 && messages.length >= existingCount) {
-      this.sql.exec(
-        `UPDATE pi_messages SET content = ? WHERE channel_id = ? AND idx = ?`,
-        JSON.stringify(messages[existingCount - 1]), channelId, existingCount - 1,
-      );
-    }
-
-    // Append new messages.
-    for (let i = existingCount; i < messages.length; i++) {
+  private async saveMessages(channelId: string, messages: AgentMessage[]): Promise<void> {
+    this.sql.exec(`DELETE FROM pi_messages WHERE channel_id = ?`, channelId);
+    for (let i = 0; i < messages.length; i++) {
       this.sql.exec(
         `INSERT INTO pi_messages (channel_id, idx, content) VALUES (?, ?, ?)`,
-        channelId, i, JSON.stringify(messages[i]),
+        channelId,
+        i,
+        JSON.stringify(messages[i]),
       );
+    }
+  }
+
+  private async ensureChannelContext(channelId: string): Promise<void> {
+    await this.recoverDispatchesForChannel(channelId);
+    await this.refreshRoster(channelId);
+    await this.getOrCreateRunner(channelId);
+    this.getOrCreateProjector(channelId);
+  }
+
+  private async recoverDispatchesForChannel(channelId: string): Promise<void> {
+    if (this.recoveredChannels.has(channelId)) return;
+
+    const messages = this.loadMessages(channelId);
+    const pending = this.dispatches.listForChannel(channelId);
+    for (const breadcrumb of pending) {
+      if (hasToolResultMessage(messages, breadcrumb.toolCallId)) continue;
+      this.dispatches.deleteOne(breadcrumb.callId);
+      await this.sendDispatchCancel(channelId, breadcrumb.callId, "worker-restart");
+    }
+    this.recoveredChannels.add(channelId);
+  }
+
+  private async drainDeferredDispatchesFor(channelId: string): Promise<void> {
+    const deferred = this.dispatches.listDeferredForChannel(channelId);
+    for (const breadcrumb of deferred) {
+      const messages = this.loadMessages(channelId);
+      if (!hasToolResultMessage(messages, breadcrumb.toolCallId)) continue;
+      const claimed = this.dispatches.tryClaim(breadcrumb.callId);
+      if (!claimed) continue;
+      try {
+        if (claimed.abandonedReason) {
+          await this.finalizeAbandonedDispatch(claimed, messages);
+        } else if (claimed.pendingResultJson) {
+          await this.applyResult(
+            claimed,
+            decodeBufferedDispatchResult(claimed.pendingResultJson),
+            claimed.pendingIsError ?? false,
+          );
+        } else {
+          this.dispatches.releaseClaim(claimed.callId, claimed.resolvingToken);
+        }
+      } catch (err) {
+        this.dispatches.releaseClaim(claimed.callId, claimed.resolvingToken);
+        throw err;
+      }
     }
   }
 
@@ -826,12 +871,14 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   private async invokeChannelMethod(
     channelId: string,
+    toolCallId: string,
     participantHandle: string,
     method: string,
     args: unknown,
     signal: AbortSignal | undefined,
     onStreamUpdate?: (content: unknown) => void,
-  ): Promise<unknown> {
+  ): Promise<AgentToolResult<any>> {
+    if (signal?.aborted) throw new Error("aborted");
     const channel = this.createChannelClient(channelId);
     const participants = await channel.getParticipants();
     const target = participants.find((p) => p.metadata["handle"] === participantHandle);
@@ -843,17 +890,30 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     const callId = crypto.randomUUID();
     if (onStreamUpdate) this.streamCallbacks.set(callId, onStreamUpdate);
-    const promise = this.awaitContinuation(callId, signal);
-    this.continuations.store(callId, channelId, "tool-call", { handle: participantHandle, method });
-    await channel.callMethod(callerId, target.participantId, callId, method, args);
-    return promise;
+    this.dispatches.store({
+      callId,
+      channelId,
+      kind: "tool-call",
+      toolCallId,
+    });
+    try {
+      await channel.callMethod(callerId, target.participantId, callId, method, args);
+    } catch (err) {
+      this.dispatches.deleteOne(callId);
+      this.streamCallbacks.delete(callId);
+      throw err;
+    }
+    (await this.getOrCreateRunner(channelId)).abortAgent();
+    return makeDispatchPlaceholder(toolCallId, callId, "tool-call");
   }
 
   private async askUser(
     channelId: string,
+    toolCallId: string,
     params: AskUserParams,
     signal: AbortSignal | undefined,
-  ): Promise<string> {
+  ): Promise<AgentToolResult<any>> {
+    if (signal?.aborted) throw new Error("aborted");
     const callerId = this.subscriptions.getParticipantId(channelId);
     if (!callerId) throw new Error(`Not subscribed to channel ${channelId}`);
     const channel = this.createChannelClient(channelId);
@@ -868,53 +928,57 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
 
     const callId = crypto.randomUUID();
-    const promise = this.awaitContinuation(callId, signal);
-    this.continuations.store(callId, channelId, "ask-user", {});
-    await channel.callMethod(callerId, panel.participantId, callId, "feedback_form", params);
-    const result = await promise;
-    return typeof result === "string" ? result : JSON.stringify(result);
+    this.dispatches.store({
+      callId,
+      channelId,
+      kind: "ask-user",
+      toolCallId,
+    });
+    try {
+      await channel.callMethod(callerId, panel.participantId, callId, "feedback_form", params);
+    } catch (err) {
+      this.dispatches.deleteOne(callId);
+      throw err;
+    }
+    (await this.getOrCreateRunner(channelId)).abortAgent();
+    return makeDispatchPlaceholder(toolCallId, callId, "ask-user");
   }
 
-  private buildUICallbacks(channelId: string): NatStackUIBridgeCallbacks {
-    const askPanel = async (
-      kind: "select" | "confirm" | "input" | "editor",
-      params: Record<string, unknown>,
-      signal?: AbortSignal,
-    ): Promise<unknown> => {
-      const callerId = this.subscriptions.getParticipantId(channelId);
-      if (!callerId) throw new Error(`Not subscribed to channel ${channelId}`);
-      const channel = this.createChannelClient(channelId);
-      const participants = await channel.getParticipants();
-      const panel = participants.find((p) => {
-        const t = p.metadata["type"] as string | undefined;
-        return t === "panel" || t === "client";
-      });
-      if (!panel) throw new Error(`No panel participant in channel ${channelId}`);
-
-      const callId = crypto.randomUUID();
-      const promise = this.awaitContinuation(callId, signal);
-      this.continuations.store(callId, channelId, "ui-prompt", { kind });
-      await channel.callMethod(callerId, panel.participantId, callId, "ui_prompt", { kind, ...params });
-      return promise;
-    };
-
+  private buildUICallbacks(channelId: string): NatStackScopedUiContext {
     return {
-      showSelect: async (title, options, opts) => {
-        const result = await askPanel("select", { title, options }, opts?.signal);
-        return typeof result === "string" ? result : undefined;
-      },
-      showConfirm: async (title, message, opts) => {
-        const result = await askPanel("confirm", { title, message }, opts?.signal);
-        return result === true || result === "true" || result === "yes";
-      },
-      showInput: async (title, placeholder, opts) => {
-        const result = await askPanel("input", { title, placeholder }, opts?.signal);
-        return typeof result === "string" ? result : undefined;
-      },
-      showEditor: async (title, prefill) => {
-        const result = await askPanel("editor", { title, prefill });
-        return typeof result === "string" ? result : undefined;
-      },
+      selectForTool: async (toolCallId, title, options, opts) =>
+        this.dispatchUiPrompt(
+          channelId,
+          toolCallId,
+          "select",
+          { title, options },
+          opts?.signal,
+        ) as Promise<string | undefined>,
+      confirmForTool: async (toolCallId, title, message, opts, meta) =>
+        this.dispatchUiPrompt(
+          channelId,
+          toolCallId,
+          "confirm",
+          { title, message },
+          opts?.signal,
+          meta,
+        ) as Promise<boolean>,
+      inputForTool: async (toolCallId, title, placeholder, opts) =>
+        this.dispatchUiPrompt(
+          channelId,
+          toolCallId,
+          "input",
+          { title, placeholder },
+          opts?.signal,
+        ) as Promise<string | undefined>,
+      editorForTool: async (toolCallId, title, prefill) =>
+        this.dispatchUiPrompt(
+          channelId,
+          toolCallId,
+          "editor",
+          { title, prefill },
+          undefined,
+        ) as Promise<string | undefined>,
       notify: (message, type) => {
         const participantId = this.subscriptions.getParticipantId(channelId);
         if (!participantId) return;
@@ -972,104 +1036,218 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     };
   }
 
-  // ── Continuation Promise plumbing ───────────────────────────────────────
-  //
-  // No timer-based cleanup of pending continuations. A continuation becomes
-  // orphaned only when the DO hibernates or restarts mid-`await` — the
-  // in-memory resolver is lost, but the SQL row persists. Orphans are
-  // detected off real events:
-  //
-  //   • `onCallResult`: result arrives but no resolver → orphan. Handled
-  //     inline (consume row, notify channel).
-  //   • `onChannelEvent`: a new message arrives for a channel that has
-  //     `pending_calls` rows without resolvers → orphan. Handled inline by
-  //     `sweepOrphanedContinuationsFor(channelId)` before dispatching the
-  //     new turn.
-  //   • Channel unsubscribe: `deleteForChannel` in the subscription teardown.
-  //
-  // User think time is not a failure. An arbitrary timer was — it would fire
-  // while the user was still looking at feedback_custom UIs, cleaning up SQL
-  // rows that the soon-to-arrive response would then fail to find.
-
-  private awaitContinuation(callId: string, signal?: AbortSignal): Promise<unknown> {
-    return new Promise<unknown>((resolve, reject) => {
-      this.pendingResolvers.set(callId, { resolve, reject });
-
-      if (signal) {
-        const onAbort = () => {
-          this.pendingResolvers.delete(callId);
-          this.continuations.deleteOne(callId);
-          reject(new Error("aborted"));
-        };
-        if (signal.aborted) onAbort();
-        else signal.addEventListener("abort", onAbort, { once: true });
-      }
-    });
-  }
-
   async onCallResult(callId: string, result: unknown, isError: boolean): Promise<void> {
     this.streamCallbacks.delete(callId);
-    const pending = this.continuations.consume(callId);
-    if (!pending) {
-      console.warn(`[AgentWorkerBase] onCallResult: no pending call for callId=${callId} (isError=${isError})`);
-      return;
-    }
-    const resolver = this.pendingResolvers.get(callId);
-    if (resolver) {
-      this.pendingResolvers.delete(callId);
-      if (isError) {
-        const err = new Error(typeof result === "string" ? result : JSON.stringify(result));
-        resolver.reject(err);
+    const breadcrumb = this.dispatches.peek(callId);
+    if (!breadcrumb) return;
+    this.dispatches.bufferResult(callId, result, isError);
+
+    const messages = this.loadMessages(breadcrumb.channelId);
+    if (!hasToolResultMessage(messages, breadcrumb.toolCallId)) return;
+
+    const claimed = this.dispatches.tryClaim(callId);
+    if (!claimed) return;
+    try {
+      if (claimed.abandonedReason) {
+        await this.finalizeAbandonedDispatch(claimed, messages);
+      } else if (claimed.pendingResultJson) {
+        await this.applyResult(
+          claimed,
+          decodeBufferedDispatchResult(claimed.pendingResultJson),
+          claimed.pendingIsError ?? false,
+        );
       } else {
-        resolver.resolve(result);
+        this.dispatches.releaseClaim(claimed.callId, claimed.resolvingToken);
+      }
+    } catch (err) {
+      this.dispatches.releaseClaim(claimed.callId, claimed.resolvingToken);
+      throw err;
+    }
+  }
+
+  private async applyResult(
+    breadcrumb: DispatchedCall,
+    result: unknown,
+    isError: boolean,
+  ): Promise<void> {
+    let messages = this.loadMessages(breadcrumb.channelId);
+    const timestamp = Date.now();
+
+    if (breadcrumb.kind === "approval") {
+      if (isError || result === false || result === "deny") {
+        messages = replaceToolResultMessage(messages, breadcrumb.toolCallId, {
+          role: "toolResult",
+          toolCallId: breadcrumb.toolCallId,
+          toolName: breadcrumb.toolName ?? toolNameFromMessages(messages, breadcrumb.toolCallId),
+          content: [{ type: "text", text: "User denied tool call" }],
+          isError: true,
+          timestamp,
+        });
+      } else {
+        await this.ensureChannelContext(breadcrumb.channelId);
+        const runner = this.runners.get(breadcrumb.channelId)!.runner;
+        let execResult: AgentToolResult<any>;
+        try {
+          execResult = await runner.executeToolDirect(
+            breadcrumb.toolName ?? toolNameFromMessages(messages, breadcrumb.toolCallId),
+            breadcrumb.toolCallId,
+            breadcrumb.paramsJson ? JSON.parse(breadcrumb.paramsJson) : {},
+          );
+        } catch (err) {
+          messages = replaceToolResultMessage(messages, breadcrumb.toolCallId, {
+            role: "toolResult",
+            toolCallId: breadcrumb.toolCallId,
+            toolName: breadcrumb.toolName ?? toolNameFromMessages(messages, breadcrumb.toolCallId),
+            content: [{
+              type: "text",
+              text: err instanceof Error ? err.message : String(err),
+            }],
+            details: { __natstack_resume_execution_failed: true },
+            isError: true,
+            timestamp,
+          });
+          await this.finishDispatchResolution(breadcrumb, messages, false);
+          return;
+        }
+        messages = replaceToolResultMessage(messages, breadcrumb.toolCallId, {
+          role: "toolResult",
+          toolCallId: breadcrumb.toolCallId,
+          toolName: breadcrumb.toolName ?? toolNameFromMessages(messages, breadcrumb.toolCallId),
+          content: execResult.content,
+          details: execResult.details,
+          isError: false,
+          timestamp,
+        });
       }
     } else {
-      // Resolver lost — DO restarted while waiting for this result.
-      // The agent turn that was awaiting this is gone. Notify the channel.
-      console.warn(
-        `[AgentWorkerBase] onCallResult: orphaned continuation callId=${callId} channel=${pending.channelId} — DO restarted while waiting`,
-      );
-      this.notifyOrphanedContinuation(pending.channelId);
+      const toolResult = toAgentToolResult(result);
+      messages = replaceToolResultMessage(messages, breadcrumb.toolCallId, {
+        role: "toolResult",
+        toolCallId: breadcrumb.toolCallId,
+        toolName: toolNameFromMessages(messages, breadcrumb.toolCallId),
+        content: toolResult.content,
+        details: toolResult.details,
+        isError,
+        timestamp,
+      });
+    }
+
+    await this.finishDispatchResolution(breadcrumb, messages, true);
+  }
+
+  private async finishDispatchResolution(
+    breadcrumb: DispatchedCall,
+    messages: AgentMessage[],
+    continueWhenClear: boolean,
+  ): Promise<void> {
+    await this.ensureChannelContext(breadcrumb.channelId);
+    const runner = this.runners.get(breadcrumb.channelId)!.runner;
+    messages = runner.trimTrailingAbortedAssistant(messages);
+
+    await this.saveMessages(breadcrumb.channelId, messages);
+    runner.replaceHistory(messages);
+    this.dispatches.deleteClaimed(breadcrumb.callId, breadcrumb.resolvingToken);
+
+    if (continueWhenClear && this.dispatches.listForChannel(breadcrumb.channelId).length === 0) {
+      const projector = this.getOrCreateProjector(breadcrumb.channelId);
+      const dispatcher = this.getOrCreateDispatcher(breadcrumb.channelId, runner, projector);
+      dispatcher.submitContinue();
     }
   }
 
-  // ── Orphaned continuation recovery ─────────────────────────────────────
-  //
-  // Called opportunistically from `onChannelEvent` before dispatching a new
-  // turn. If there are `pending_calls` rows for this channel that lack an
-  // in-memory resolver, the awaiter of those rows is gone (DO hibernated or
-  // restarted). Clean them up and notify once per channel.
+  private async finalizeAbandonedDispatch(
+    breadcrumb: DispatchedCall,
+    messages: AgentMessage[],
+  ): Promise<void> {
+    const nextMessages = replaceToolResultMessage(messages, breadcrumb.toolCallId, {
+      role: "toolResult",
+      toolCallId: breadcrumb.toolCallId,
+      toolName: toolNameFromMessages(messages, breadcrumb.toolCallId),
+      content: [{ type: "text", text: "Dispatched call superseded by user message" }],
+      details: {
+        __natstack_dispatch_abandoned: true,
+        callId: breadcrumb.callId,
+      },
+      isError: true,
+      timestamp: Date.now(),
+    });
+    await this.finishDispatchResolution(breadcrumb, nextMessages, false);
+  }
 
-  private sweepOrphanedContinuationsFor(channelId: string): void {
-    const pending = this.continuations.listForChannel(channelId);
+  private async dispatchUiPrompt(
+    channelId: string,
+    toolCallId: string,
+    kind: "select" | "confirm" | "input" | "editor",
+    params: Record<string, unknown>,
+    signal?: AbortSignal,
+    meta?: { toolName?: string; toolInput?: unknown; mode?: "approval" | "ui-prompt" },
+  ): Promise<unknown> {
+    if (signal?.aborted) throw new Error("aborted");
+    const callerId = this.subscriptions.getParticipantId(channelId);
+    if (!callerId) throw new Error(`Not subscribed to channel ${channelId}`);
+    const channel = this.createChannelClient(channelId);
+    const participants = await channel.getParticipants();
+    const panel = participants.find((p) => {
+      const t = p.metadata["type"] as string | undefined;
+      return t === "panel" || t === "client";
+    });
+    if (!panel) throw new Error(`No panel participant in channel ${channelId}`);
+
+    const callId = crypto.randomUUID();
+    const breadcrumbKind: DispatchedCallKind =
+      meta?.mode === "approval" ? "approval" : "ui-prompt";
+    this.dispatches.store({
+      callId,
+      channelId,
+      kind: breadcrumbKind,
+      toolCallId,
+      toolName: breadcrumbKind === "approval" ? meta?.toolName ?? null : null,
+      paramsJson:
+        breadcrumbKind === "approval"
+          ? JSON.stringify(meta?.toolInput ?? {})
+          : null,
+    });
+    try {
+      await channel.callMethod(
+        callerId,
+        panel.participantId,
+        callId,
+        "ui_prompt",
+        { kind, ...params },
+      );
+    } catch (err) {
+      this.dispatches.deleteOne(callId);
+      throw err;
+    }
+
+    const runner = await this.getOrCreateRunner(channelId);
+    runner.abortAgent();
+    const placeholder = makeDispatchPlaceholder(toolCallId, callId, breadcrumbKind);
+    throw new DispatchedError(placeholder);
+  }
+
+  private async absorbAbandonedDispatches(channelId: string): Promise<void> {
+    const pending = this.dispatches.listForChannel(channelId);
     if (pending.length === 0) return;
 
-    let notified = false;
-    for (const { callId } of pending) {
-      if (this.pendingResolvers.has(callId)) continue;
-      console.warn(
-        `[AgentWorkerBase] sweep: cleaning orphaned continuation callId=${callId} channel=${channelId}`,
-      );
-      this.continuations.deleteOne(callId);
-      if (!notified) {
-        notified = true;
-        this.notifyOrphanedContinuation(channelId);
-      }
+    for (const breadcrumb of pending) {
+      this.dispatches.markAbandoned(breadcrumb.callId, "user-superseded");
+      await this.sendDispatchCancel(channelId, breadcrumb.callId, "user-superseded");
     }
   }
 
-  /** Send a system message to the channel that the agent was interrupted. */
-  private notifyOrphanedContinuation(channelId: string): void {
+  private async sendDispatchCancel(
+    channelId: string,
+    callId: string,
+    reason: "user-superseded" | "worker-restart",
+  ): Promise<void> {
     const participantId = this.subscriptions.getParticipantId(channelId);
     if (!participantId) return;
-    const channel = this.createChannelClient(channelId);
-    const msgId = `interrupted-${crypto.randomUUID()}`;
-    void channel.send(
+    await this.createChannelClient(channelId).sendEphemeralEvent(
       participantId,
-      msgId,
-      "The agent was interrupted while waiting for a response. Please resend your message to continue.",
-      { persist: true },
-    ).then(() => channel.complete(participantId, msgId));
+      "natstack-dispatch-cancel",
+      { callId, reason },
+    );
   }
 
   // ── Default channel event handler ────────────────────────────────────────
@@ -1084,24 +1262,14 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     opts?: { mode?: "auto" | "sequential" },
   ): Promise<void> {
     if (!this.shouldProcess(event)) return;
+    await this.ensureChannelContext(channelId);
+    await this.absorbAbandonedDispatches(channelId);
+    await this.drainDeferredDispatchesFor(channelId);
 
-    // Before dispatching, clean up any continuations whose awaiter is gone.
-    // A new channel event proves the user is active; any SQL `pending_calls`
-    // row without an in-memory resolver was awaited by a turn that died
-    // (hibernation / restart).
-    this.sweepOrphanedContinuationsFor(channelId);
-
-    const input = this.buildTurnInput(event);
-
-    // Pre-submit setup: roster refresh, runner init, image resize. All
-    // have to happen before we hand the message to the dispatcher so it
-    // can make the steer-vs-runTurn decision and pass a prebuilt
-    // AgentMessage through absorption tracking.
-    await this.refreshRoster(channelId);
-    const runner = await this.getOrCreateRunner(channelId);
+    const runner = this.runners.get(channelId)!.runner;
     const projector = this.getOrCreateProjector(channelId);
+    const input = this.buildTurnInput(event);
     const images = await this.resizeAttachments(channelId, input.attachments);
-
     const agentMsg = runner.buildUserMessage(input.content, images);
     const dispatcher = this.getOrCreateDispatcher(channelId, runner, projector);
     dispatcher.submit(agentMsg, opts);
@@ -1215,7 +1383,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     // Clear ephemeral state copied from parent.
     this.sql.exec(`DELETE FROM delivery_cursor`);
-    this.sql.exec(`DELETE FROM pending_calls`);
+    this.sql.exec(`DELETE FROM dispatched_calls`);
 
     // Migrate parent's message history from oldChannelId → newChannelId.
     // Check pi_messages first (normalized), fall back to legacy pi_sessions blob.
@@ -1403,13 +1571,77 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       `SELECT channel_id, idx, LENGTH(content) as content_len FROM pi_messages`,
     ).toArray();
     const piSessionsLegacy = this.sql.exec(`SELECT channel_id, updated_at FROM pi_sessions`).toArray();
-    const pendingCalls = this.sql.exec(`SELECT * FROM pending_calls`).toArray();
+    const dispatchedCalls = this.sql.exec(`SELECT * FROM dispatched_calls`).toArray();
     const deliveryCursors = this.sql.exec(`SELECT * FROM delivery_cursor`).toArray();
-    return { subscriptions, piMessages, piSessionsLegacy, pendingCalls, deliveryCursors };
+    return { subscriptions, piMessages, piSessionsLegacy, dispatchedCalls, deliveryCursors };
   }
 
   // Reference SAFE_TOOL_NAMES_DEFAULT to suppress unused-import warnings;
   // it's exported from the harness package via DEFAULT_SAFE_TOOL_NAMES, but
   // we keep a local reference here for documentation/symmetry.
   protected static readonly _SAFE_TOOL_NAMES_REFERENCE = SAFE_TOOL_NAMES_DEFAULT;
+}
+
+function makeDispatchPlaceholder(
+  toolCallId: string,
+  callId: string,
+  kind: DispatchedCallKind,
+): AgentToolResult<any> {
+  return {
+    content: [{ type: "text", text: `dispatched: ${kind} callId=${callId}` }],
+    details: { __natstack_dispatch: true, callId, kind, toolCallId },
+  };
+}
+
+function hasToolResultMessage(messages: AgentMessage[], toolCallId: string): boolean {
+  return messages.some((message) => (
+    (message as { role?: string; toolCallId?: string }).role === "toolResult" &&
+    (message as { toolCallId?: string }).toolCallId === toolCallId
+  ));
+}
+
+function toolNameFromMessages(messages: AgentMessage[], toolCallId: string): string {
+  const match = messages.find((message) => (
+    (message as { role?: string; toolCallId?: string }).role === "toolResult" &&
+    (message as { toolCallId?: string }).toolCallId === toolCallId
+  )) as { toolName?: string } | undefined;
+  return match?.toolName ?? "unknown";
+}
+
+function replaceToolResultMessage(
+  messages: AgentMessage[],
+  toolCallId: string,
+  replacement: AgentMessage,
+): AgentMessage[] {
+  const index = messages.findIndex((message) => (
+    (message as { role?: string; toolCallId?: string }).role === "toolResult" &&
+    (message as { toolCallId?: string }).toolCallId === toolCallId
+  ));
+  if (index < 0) return messages;
+  const next = messages.slice();
+  next[index] = replacement;
+  return next;
+}
+
+function toAgentToolResult(result: unknown): AgentToolResult<any> {
+  if (
+    typeof result === "object" &&
+    result !== null &&
+    Array.isArray((result as { content?: unknown }).content)
+  ) {
+    return result as AgentToolResult<any>;
+  }
+  const text =
+    typeof result === "string"
+      ? result
+      : JSON.stringify(result) ?? String(result);
+  return {
+    content: [{ type: "text", text }],
+    details: undefined,
+  };
+}
+
+function decodeBufferedDispatchResult(json: string): unknown {
+  const parsed = JSON.parse(json) as { value?: unknown };
+  return parsed.value;
 }

@@ -15,10 +15,8 @@
  * so the extension can re-include them when computing the active set.
  */
 
-import type {
-  PiExtensionAPI,
-  PiExtensionFactory,
-} from "../pi-extension-api.js";
+import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { PiExtensionAPI, PiExtensionFactory } from "../pi-extension-api.js";
 
 /**
  * Tool name validation. We require names to start with a letter, contain
@@ -61,12 +59,13 @@ export interface ChannelToolsDeps {
   getRoster: () => ChannelToolMethod[];
   /** Execute a method on a channel participant, resolved by handle. */
   callMethod: (
+    toolCallId: string,
     participantHandle: string,
     method: string,
     args: unknown,
     signal: AbortSignal | undefined,
     onStreamUpdate?: StreamUpdateCallback,
-  ) => Promise<unknown>;
+  ) => Promise<AgentToolResult<any> | unknown>;
   /** Built-in tool names to keep active alongside roster tools. */
   builtinToolNames: readonly string[];
 }
@@ -121,7 +120,7 @@ export function createChannelToolsExtension(
           // Pi accepts JSON Schema at runtime; the TSchema type annotation is a
           // compile-time hint that erases. Cast through unknown.
           parameters: (captured.parameters ?? { type: "object" }) as never,
-          execute: async (_toolCallId, params, signal, onUpdate) => {
+          execute: async (toolCallId, params, signal, onUpdate) => {
             const current = deps
               .getRoster()
               .find((m) => m.name === captured.name);
@@ -148,14 +147,15 @@ export function createChannelToolsExtension(
                 })
               : undefined;
             const result = await deps.callMethod(
+              toolCallId,
               current.participantHandle,
               captured.name,
               params,
               signal ?? undefined,
               streamCb,
             );
-            const text =
-              typeof result === "string" ? result : JSON.stringify(result);
+            if (isAgentToolResult(result)) return result;
+            const text = typeof result === "string" ? result : JSON.stringify(result);
             return {
               content: [{ type: "text" as const, text }],
               details: undefined,
@@ -176,4 +176,12 @@ export function createChannelToolsExtension(
     pi.on("session_start", async () => reconcile());
     pi.on("turn_start", async () => reconcile());
   };
+}
+
+function isAgentToolResult(value: unknown): value is AgentToolResult<any> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Array.isArray((value as { content?: unknown }).content)
+  );
 }
