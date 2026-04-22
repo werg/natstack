@@ -13,13 +13,6 @@ function generateRequestId(): string {
   return crypto.randomUUID();
 }
 
-function getTimeoutMs(config: RpcBridgeConfig, method: string): number {
-  const defaultTimeout = config.callTimeoutMs ?? 30000;
-  const aiTimeout = config.aiCallTimeoutMs ?? 300000;
-  if (method.startsWith("ai.")) return aiTimeout;
-  return defaultTimeout;
-}
-
 export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
   let exposedMethods: ExposedMethods = {};
 
@@ -28,7 +21,6 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
     {
       resolve: (value: unknown) => void;
       reject: (error: Error) => void;
-      timeout: ReturnType<typeof setTimeout>;
     }
   >();
 
@@ -72,7 +64,6 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
       return;
     }
     pendingRequests.delete(response.requestId);
-    clearTimeout(pending.timeout);
 
     if ("error" in response) {
       const err = new Error(response.error) as NodeJS.ErrnoException;
@@ -126,20 +117,13 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
       };
 
       return new Promise<T>((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          pendingRequests.delete(requestId);
-          reject(new Error(`RPC call to ${targetId}.${method} timed out`));
-        }, getTimeoutMs(config, method));
-
         pendingRequests.set(requestId, {
           resolve: resolve as (value: unknown) => void,
           reject,
-          timeout,
         });
 
         void Promise.resolve(config.transport.send(targetId, request)).catch((err) => {
           pendingRequests.delete(requestId);
-          clearTimeout(timeout);
           reject(err);
         });
       });

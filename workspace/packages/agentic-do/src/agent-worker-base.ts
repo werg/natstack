@@ -973,17 +973,27 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   }
 
   // ── Continuation Promise plumbing ───────────────────────────────────────
-
-  /** Watchdog alarm interval for orphaned continuations (ms). */
-  private static readonly CONTINUATION_WATCHDOG_MS = 60_000;
+  //
+  // No timer-based cleanup of pending continuations. A continuation becomes
+  // orphaned only when the DO hibernates or restarts mid-`await` — the
+  // in-memory resolver is lost, but the SQL row persists. Orphans are
+  // detected off real events:
+  //
+  //   • `onCallResult`: result arrives but no resolver → orphan. Handled
+  //     inline (consume row, notify channel).
+  //   • `onChannelEvent`: a new message arrives for a channel that has
+  //     `pending_calls` rows without resolvers → orphan. Handled inline by
+  //     `sweepOrphanedContinuationsFor(channelId)` before dispatching the
+  //     new turn.
+  //   • Channel unsubscribe: `deleteForChannel` in the subscription teardown.
+  //
+  // User think time is not a failure. An arbitrary timer was — it would fire
+  // while the user was still looking at feedback_custom UIs, cleaning up SQL
+  // rows that the soon-to-arrive response would then fail to find.
 
   private awaitContinuation(callId: string, signal?: AbortSignal): Promise<unknown> {
     return new Promise<unknown>((resolve, reject) => {
       this.pendingResolvers.set(callId, { resolve, reject });
-
-      // Set a watchdog alarm so that if the DO hibernates (losing in-memory
-      // resolvers), the alarm wakes us and we can detect orphaned continuations.
-      this.setAlarm(AgentWorkerBase.CONTINUATION_WATCHDOG_MS);
 
       if (signal) {
         const onAbort = () => {
@@ -1024,39 +1034,26 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   }
 
   // ── Orphaned continuation recovery ─────────────────────────────────────
+  //
+  // Called opportunistically from `onChannelEvent` before dispatching a new
+  // turn. If there are `pending_calls` rows for this channel that lack an
+  // in-memory resolver, the awaiter of those rows is gone (DO hibernated or
+  // restarted). Clean them up and notify once per channel.
 
-  override async alarm(): Promise<void> {
-    await super.alarm();
-    this.recoverOrphanedContinuations();
-  }
+  private sweepOrphanedContinuationsFor(channelId: string): void {
+    const pending = this.continuations.listForChannel(channelId);
+    if (pending.length === 0) return;
 
-  /**
-   * Detect SQL-persisted continuations that have no in-memory resolver.
-   * This happens when the DO hibernated/restarted while the agent was
-   * waiting for a panel response. The agent turn is gone; clean up and
-   * notify.
-   */
-  private recoverOrphanedContinuations(): void {
-    // Query all pending continuations from SQL.
-    const rows = this.sql.exec(
-      `SELECT call_id, channel_id FROM pending_calls`,
-    ).toArray();
-
-    const notifiedChannels = new Set<string>();
-    for (const row of rows) {
-      const callId = row["call_id"] as string;
-      const channelId = row["channel_id"] as string;
-
-      if (!this.pendingResolvers.has(callId)) {
-        // Orphaned: SQL row exists but no in-memory resolver.
-        console.warn(
-          `[AgentWorkerBase] alarm: cleaning orphaned continuation callId=${callId} channel=${channelId}`,
-        );
-        this.continuations.deleteOne(callId);
-        if (!notifiedChannels.has(channelId)) {
-          notifiedChannels.add(channelId);
-          this.notifyOrphanedContinuation(channelId);
-        }
+    let notified = false;
+    for (const { callId } of pending) {
+      if (this.pendingResolvers.has(callId)) continue;
+      console.warn(
+        `[AgentWorkerBase] sweep: cleaning orphaned continuation callId=${callId} channel=${channelId}`,
+      );
+      this.continuations.deleteOne(callId);
+      if (!notified) {
+        notified = true;
+        this.notifyOrphanedContinuation(channelId);
       }
     }
   }
@@ -1087,6 +1084,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     opts?: { mode?: "auto" | "sequential" },
   ): Promise<void> {
     if (!this.shouldProcess(event)) return;
+
+    // Before dispatching, clean up any continuations whose awaiter is gone.
+    // A new channel event proves the user is active; any SQL `pending_calls`
+    // row without an in-memory resolver was awaited by a turn that died
+    // (hibernation / restart).
+    this.sweepOrphanedContinuationsFor(channelId);
 
     const input = this.buildTurnInput(event);
 

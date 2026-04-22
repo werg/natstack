@@ -23,6 +23,7 @@ import { establishServerSession, type SessionConnection } from "./serverSession.
 import { CdpServer } from "./cdpServer.js";
 import { TokenManager } from "@natstack/shared/tokenManager";
 import { EventService } from "@natstack/shared/eventsService";
+import { isValidEventName, type EventName } from "@natstack/shared/events";
 import { pemFileFingerprint, pemFingerprint } from "./tlsPinning.js";
 
 const eventService = new EventService();
@@ -340,29 +341,68 @@ app.on("ready", async () => {
 
   performance.mark("startup:services-registered");
 
-  // Build event handler — receives build:complete events from server
+  // Active shell subscriptions on the server side. The bridging events
+  // service (registered further down) keeps this in sync with what the shell
+  // has asked to receive. On serverClient reconnect the server forgets all
+  // subscriptions (fresh auth → fresh callerId → fresh subscriber), so we
+  // replay this set on every transition to "connected" — see
+  // `replayShellSubscriptionsToServer` below.
+  const shellEventSubscriptions = new Set<EventName>();
+  let serverClientRef: import("./serverClient.js").ServerClient | null = null;
+  const replayShellSubscriptionsToServer = async () => {
+    if (!serverClientRef || shellEventSubscriptions.size === 0) return;
+    const events = [...shellEventSubscriptions];
+    log.info(`[events] replaying ${events.length} shell subscription(s) to server`);
+    await Promise.all(events.map((event) =>
+      serverClientRef!.call("events", "subscribe", [event]).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn(`[events] replay subscribe(${event}) failed: ${msg}`);
+      }),
+    ));
+  };
+
+  // Bridge server→main events. Two distinct sources arrive through this
+  // callback (serverClient.onEvent), and both need handling:
+  //
+  //   1. `build:complete` — broadcast manually via rpcServer.broadcastToControlPlane
+  //      (no "event:" prefix). Has a panel-registry side effect.
+  //
+  //   2. Anything the server's EventService emits. WsSubscriber.send prefixes
+  //      those with "event:" (e.g. "event:notification:show"). Nothing in
+  //      main reads them directly — we re-emit them on main's local
+  //      EventService so local subscribers (shell IpcSubscriber, etc.) see
+  //      them uniformly alongside main-originated events.
   function handleServerEvent(event: string, payload: unknown) {
-    if (event !== "build:complete" || !panelRegistry || !panelOrchestrator) return;
-    const { source, error } = payload as { source: string; error?: string };
-    const allPanels = panelRegistry.listPanels();
-    for (const entry of allPanels) {
-      const panel = panelRegistry.getPanel(entry.panelId);
-      if (panel && getPanelSource(panel) === source) {
-        if (error) {
-          panelRegistry.updateArtifacts(entry.panelId, {
-            buildState: "error",
-            error,
-            buildProgress: error,
-          });
-        } else {
-          panelRegistry.updateArtifacts(entry.panelId, {
-            htmlPath: panelOrchestrator.getPanelUrl(entry.panelId) ?? undefined,
-            buildState: "ready",
-          });
+    if (event === "build:complete" && panelRegistry && panelOrchestrator) {
+      const { source, error } = payload as { source: string; error?: string };
+      const allPanels = panelRegistry.listPanels();
+      for (const entry of allPanels) {
+        const panel = panelRegistry.getPanel(entry.panelId);
+        if (panel && getPanelSource(panel) === source) {
+          if (error) {
+            panelRegistry.updateArtifacts(entry.panelId, {
+              buildState: "error",
+              error,
+              buildProgress: error,
+            });
+          } else {
+            panelRegistry.updateArtifacts(entry.panelId, {
+              htmlPath: panelOrchestrator.getPanelUrl(entry.panelId) ?? undefined,
+              buildState: "ready",
+            });
+          }
         }
       }
+      panelRegistry.notifyPanelTreeUpdate();
+      return;
     }
-    panelRegistry.notifyPanelTreeUpdate();
+
+    if (event.startsWith("event:")) {
+      const bareEvent = event.slice("event:".length);
+      if (isValidEventName(bareEvent)) {
+        (eventService.emit as (e: EventName, d: unknown) => void)(bareEvent, payload);
+      }
+    }
   }
 
   try {
@@ -380,6 +420,7 @@ app.on("ready", async () => {
     });
 
     // Phase 1: Establish server session (spawn or connect)
+    let previousStatus: import("./serverClient.js").ConnectionStatus | null = null;
     serverSession = await establishServerSession({
       mode: startupMode,
       centralData,
@@ -390,8 +431,18 @@ app.on("ready", async () => {
           isRemote: startupMode.kind === "remote",
           remoteHost: startupMode.kind === "remote" ? startupMode.remoteUrl.hostname : undefined,
         });
+        // On every transition into "connected" (including the very first one
+        // and any subsequent reconnect), replay shell subscriptions. The
+        // initial transition is a no-op because the shell hasn't subscribed
+        // to anything yet; subsequent reconnects actually matter because the
+        // server's EventService forgets subscriptions when the old WS closes.
+        if (status === "connected" && previousStatus !== "connected") {
+          void replayShellSubscriptionsToServer();
+        }
+        previousStatus = status;
       },
     });
+    serverClientRef = serverSession.serverClient;
     workspaceId = serverSession.workspaceId;
 
     performance.mark("startup:server-spawned");
@@ -603,7 +654,42 @@ app.on("ready", async () => {
         return def.handler(_ctx, method, args);
       },
     }));
-    electronContainer.register(rpcService(createEventsServiceDefinition(eventService)));
+    // Events service — local subscription on main's EventService plus a
+    // fire-and-forget forward to the server. The forward makes main's
+    // serverClient WS a subscriber on the server's EventService for the same
+    // event, so anything the server emits (notification:show, oauth consent
+    // prompts, etc.) comes back over that WS and is re-emitted on main's
+    // EventService by handleServerEvent. Net effect: the shell sees one
+    // logical event bus across the main/server split.
+    //
+    // We also keep `shellEventSubscriptions` in sync with what the shell
+    // has subscribed to, so that on serverClient reconnect we can replay
+    // the set to the server's freshly-authenticated connection (the old
+    // subscriber dies with the old WS).
+    {
+      const baseEventsService = createEventsServiceDefinition(eventService);
+      electronContainer.register(rpcService({
+        ...baseEventsService,
+        handler: async (ctx, method, args) => {
+          const result = await baseEventsService.handler(ctx, method, args);
+          if (ctx.callerKind !== "shell") return result;
+
+          if (method === "subscribe") {
+            shellEventSubscriptions.add(args[0] as EventName);
+          } else if (method === "unsubscribe") {
+            shellEventSubscriptions.delete(args[0] as EventName);
+          } else if (method === "unsubscribeAll") {
+            shellEventSubscriptions.clear();
+          }
+
+          void sc.call("events", method, args as unknown[]).catch((err: unknown) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            log.warn(`[events] forward ${method} to server failed: ${msg}`);
+          });
+          return result;
+        },
+      }));
+    }
 
     await electronContainer.startAll();
 

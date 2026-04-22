@@ -94,10 +94,6 @@ export interface RpcBridgeConfig {
   selfId: string;
   /** The transport implementation */
   transport: RpcTransport;
-  /** Timeout for RPC calls in milliseconds (default: 30000) */
-  callTimeoutMs?: number;
-  /** Timeout for AI-related calls (default: 300000) */
-  aiCallTimeoutMs?: number;
 }
 
 /**

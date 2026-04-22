@@ -42,7 +42,7 @@ describe("createRpcBridge", () => {
     await expect(callPromise).resolves.toBe("hello world");
   });
 
-  it("call times out after default 30s", async () => {
+  it("pending calls stay pending without a response (no built-in timeout)", async () => {
     vi.useFakeTimers();
     try {
       const transport = createMockTransport();
@@ -50,35 +50,14 @@ describe("createRpcBridge", () => {
 
       const callPromise = bridge.call("target", "slow.method");
 
-      vi.advanceTimersByTime(30000);
+      // Advance well past any historical default timeout — the call must not reject.
+      vi.advanceTimersByTime(600_000);
 
-      await expect(callPromise).rejects.toThrow("timed out");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("ai.* calls use longer 300s timeout", async () => {
-    vi.useFakeTimers();
-    try {
-      const transport = createMockTransport();
-      const bridge = createRpcBridge({ selfId: "test", transport });
-
-      const callPromise = bridge.call("target", "ai.streamText");
-
-      // Should NOT have timed out at 30s
-      vi.advanceTimersByTime(30000);
-      // Verify promise is still pending by racing with a resolved value
-      const result = await Promise.race([
+      const race = await Promise.race([
         callPromise.then(() => "resolved").catch(() => "rejected"),
         Promise.resolve("still-pending"),
       ]);
-      expect(result).toBe("still-pending");
-
-      // Should time out at 300s
-      vi.advanceTimersByTime(270000);
-
-      await expect(callPromise).rejects.toThrow("timed out");
+      expect(race).toBe("still-pending");
     } finally {
       vi.useRealTimers();
     }

@@ -29,8 +29,6 @@ const transport: RpcTransport = {
 const rpc: RpcBridge = createRpcBridge({
   selfId: "shell",
   transport,
-  callTimeoutMs: 30000,
-  aiCallTimeoutMs: 300000,
 });
 
 import type {

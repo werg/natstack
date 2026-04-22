@@ -35,7 +35,6 @@ const transport = {
 const rpc = createRpcBridge({
   selfId: "panel:my-panel",
   transport,
-  callTimeoutMs: 30000,
 });
 
 // 3. Expose methods that others can call
@@ -68,12 +67,15 @@ interface RpcBridgeConfig {
   selfId: string;
   /** Transport implementation for message delivery */
   transport: RpcTransport;
-  /** Timeout for regular RPC calls in ms (default: 30000) */
-  callTimeoutMs?: number;
-  /** Timeout for AI-related calls in ms (default: 300000) */
-  aiCallTimeoutMs?: number;
 }
 ```
+
+Pending calls have no built-in timeout — a call stays pending until the peer
+responds, the transport's `send` rejects, or the caller wraps the returned
+promise with its own deadline. Callers that care about a specific deadline
+(e.g. a health probe) should apply it at the call site; protocol-wide timeouts
+turn correct long-running interactions (user consent prompts, OAuth flows,
+agent/LLM work) into spurious failures.
 
 Returns an `RpcBridge` with these methods:
 
@@ -88,7 +90,7 @@ rpc.exposeMethod("asyncMethod", async (arg: string) => await doWork(arg));
 
 #### `rpc.call<T>(targetId, method, ...args)`
 
-Call a method on another endpoint. Returns a promise that resolves with the result or rejects on error/timeout.
+Call a method on another endpoint. Returns a promise that resolves with the result, rejects if the peer reports an error, or rejects if the transport's `send` fails. It does not time out on its own.
 
 ```typescript
 const result = await rpc.call<User>("panel:auth", "getUser", userId);

@@ -25,7 +25,6 @@ export interface MobileTransportConfig {
 interface PendingCall {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
 }
 
 /**
@@ -54,9 +53,6 @@ export class MobileTransport implements RpcBridge {
   private intentionalClose = false;
   private _status: ConnectionStatus = "disconnected";
   private lastCloseInfo: { code?: number; reason?: string } | null = null;
-
-  /** Timeout for regular RPC calls (30s) */
-  private callTimeoutMs = 30_000;
 
   constructor(config: MobileTransportConfig) {
     this.config = config;
@@ -132,15 +128,9 @@ export class MobileTransport implements RpcBridge {
     const requestId = generateId();
 
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingCalls.delete(requestId);
-        reject(new Error(`RPC call timeout: ${method}`));
-      }, this.callTimeoutMs);
-
       this.pendingCalls.set(requestId, {
         resolve: resolve as (value: unknown) => void,
         reject,
-        timer,
       });
 
       const rpcMsg: RpcMessage = {
@@ -300,7 +290,6 @@ export class MobileTransport implements RpcBridge {
           const pending = this.pendingCalls.get(rpcMsg.requestId);
           if (pending) {
             this.pendingCalls.delete(rpcMsg.requestId);
-            clearTimeout(pending.timer);
             if ("error" in rpcMsg) {
               pending.reject(new Error(rpcMsg.error));
             } else {
@@ -368,7 +357,6 @@ export class MobileTransport implements RpcBridge {
 
   private rejectAllPending(reason: string): void {
     for (const [, pending] of this.pendingCalls) {
-      clearTimeout(pending.timer);
       pending.reject(new Error(reason));
     }
     this.pendingCalls.clear();

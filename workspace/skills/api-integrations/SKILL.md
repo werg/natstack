@@ -21,7 +21,7 @@ eval({
       console.log("To set up OAuth:");
       console.log("1. Sign up at https://app.nango.dev (free)");
       console.log("2. In the Nango dashboard, enable the providers you need (Google, GitHub, etc.)");
-      console.log("3. Copy your secret key from Settings → Secret Key");
+      console.log("3. Copy your secret key from https://app.nango.dev/dev/environment-settings#backend");
       console.log("4. Add it to ~/.config/natstack/.secrets.yml:");
       console.log("   nango: <your-secret-key>   # UUID from the Nango dashboard");
       console.log("5. Restart the workspace");
@@ -57,13 +57,13 @@ eval({
 })
 ```
 
-**If cookies available** — open Nango dashboard in a browser panel (with Playwright for automation):
+**If cookies available** — open the Nango secret key page directly in a browser panel (with Playwright for automation):
 ```
 eval({
   code: `
     import { createBrowserPanel } from "@workspace/runtime";
-    const panel = await createBrowserPanel("https://app.nango.dev");
-    console.log("Opened Nango dashboard — guide user through provider setup");
+    const panel = await createBrowserPanel("https://app.nango.dev/dev/environment-settings#backend");
+    console.log("Opened Nango backend settings — user can copy the secret key");
   `,
   timeout: 10000
 })

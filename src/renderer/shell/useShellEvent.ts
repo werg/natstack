@@ -3,6 +3,12 @@
  *
  * Automatically subscribes when mounted and unsubscribes when unmounted.
  * Events are emitted via RPC from the main process.
+ *
+ * Reference-counted: many components can listen to the same event. The
+ * underlying RPC `events.subscribe` is issued once per event (on 0→1) and
+ * `events.unsubscribe` once per event (on 1→0). Without this, a component
+ * that unmounts would yank the subscription out from under every other
+ * live listener for that event.
  */
 
 import { useEffect, useRef } from "react";
@@ -10,6 +16,26 @@ import { events, onRpcEvent, type EventName, type EventPayloads } from "./client
 
 // Re-export for consumers
 export type { EventPayloads } from "./client.js";
+
+/** Refcount per event name. Shared across all hook instances. */
+const subscriptionRefcounts = new Map<EventName, number>();
+
+function addSubscription(event: EventName): void {
+  const prev = subscriptionRefcounts.get(event) ?? 0;
+  subscriptionRefcounts.set(event, prev + 1);
+  if (prev === 0) void events.subscribe(event);
+}
+
+function removeSubscription(event: EventName): void {
+  const prev = subscriptionRefcounts.get(event) ?? 0;
+  if (prev <= 0) return;
+  if (prev === 1) {
+    subscriptionRefcounts.delete(event);
+    void events.unsubscribe(event);
+  } else {
+    subscriptionRefcounts.set(event, prev - 1);
+  }
+}
 
 /**
  * Subscribe to a shell event from the main process.
@@ -37,19 +63,16 @@ export function useShellEvent<E extends EventName>(
   });
 
   useEffect(() => {
-    // Subscribe to the event
-    void events.subscribe(event);
+    addSubscription(event);
 
-    // Listen for the event via RPC
     const channel = `event:${event}`;
     const cleanup = onRpcEvent(channel, (_fromId, payload) => {
       callbackRef.current(payload as EventPayloads[E]);
     });
 
     return () => {
-      // Clean up listener and unsubscribe
       cleanup();
-      void events.unsubscribe(event);
+      removeSubscription(event);
     };
   }, [event]); // Only depend on event, not callback
 }

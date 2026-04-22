@@ -378,8 +378,28 @@ function ConsentNotification({
         </Flex>
       )}
 
-      {notification.message && !consent && (
-        <Text size="1" color="gray">{notification.message}</Text>
+      {!consent && (notification.message || (notification.actions && notification.actions.length > 0)) && (
+        <Flex align="center" gap="3">
+          {notification.message && (
+            <Text size="1" color="gray" style={{ flex: 1 }}>
+              {notification.message}
+            </Text>
+          )}
+          {notification.actions && notification.actions.length > 0 && (
+            <Flex gap="2" style={{ flexShrink: 0, marginLeft: notification.message ? 0 : "auto" }}>
+              {notification.actions.map((action) => (
+                <Button
+                  key={action.id}
+                  size="1"
+                  variant={action.variant ?? "soft"}
+                  onClick={(e) => { e.stopPropagation(); onAction(notification.id, action.id); }}
+                >
+                  {action.label}
+                </Button>
+              ))}
+            </Flex>
+          )}
+        </Flex>
       )}
     </Flex>
   );
