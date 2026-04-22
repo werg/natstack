@@ -246,9 +246,9 @@ export class OAuthManager {
   async listProviders(): Promise<Array<{ key: string; provider: string }>> {
     if (!this.isConfigured) return [];
     try {
-      const res = await this.nangoFetch("/config");
-      const data = await res.json() as { configs: Array<{ unique_key: string; provider: string }> };
-      return (data.configs ?? []).map(c => ({
+      const res = await this.nangoFetch("/integrations");
+      const data = await res.json() as { data: Array<{ unique_key: string; provider: string }> };
+      return (data.data ?? []).map(c => ({
         key: c.unique_key,
         provider: c.provider,
       }));
