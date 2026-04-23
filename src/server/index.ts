@@ -567,7 +567,7 @@ async function main() {
   const notificationInternal = notificationResult.internal;
   container.register(rpcService(notificationResult.definition));
 
-  // ── Credential service (stub — all methods throw NotImplemented until Wave 4) ──
+  // ── Credential service ──
   {
     const { createCredentialService } = await import("./services/credentialService.js");
     container.register(rpcService(createCredentialService()));
