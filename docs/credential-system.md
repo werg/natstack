@@ -169,6 +169,16 @@ All of the following is prototype and unused. Delete, don't migrate.
 - `workspace/panels/email/index.tsx` (24.6 KB — entirely built around the
   old OAuth consent flow; rewrite from scratch once the new SDK lands)
 - `workspace/panels/email/DESIGN.md` (describes the Nango flow)
+- `src/server/services/secretsService.ts` — dead code; no live
+  callers. The only consumers were the Nango secret lookup
+  (`secrets.get("nango")` in `oauthManager.ts`) and a legacy
+  fallback path in `authService.ts` that prefers env vars in
+  practice. Verified: no UI or panel calls `secrets.setSecret`.
+- `packages/shared/src/secrets/secretsStore.ts` — the store itself.
+- `src/renderer/components/NotificationBar.tsx`'s `type: "consent"`
+  render path. Delete the whole component if nothing non-consent
+  uses it. (Check during Phase 1; the replacement `ConsentDialog`
+  will be added in Phase 5.)
 
 ### Database
 
@@ -178,11 +188,14 @@ All of the following is prototype and unused. Delete, don't migrate.
 
 ### Config / secrets
 
-- Remove `NANGO_SECRET_KEY` handling from
-  `packages/shared/src/secrets/secretsStore.ts`
-- Remove `nango:` YAML key and any `nangoUrl` config support from
-  `workspace/meta/natstack.yml`
+- Delete `~/.config/natstack/.secrets.yml` support entirely — the
+  secrets store goes with the secrets service. New credential
+  tokens live under `~/.natstack/credentials/` per the new design.
 - Remove `NANGO_URL` env var handling from `src/server/index.ts`
+- Remove the `nango:` YAML key and `nangoUrl` config support from
+  `workspace/meta/natstack.yml`
+- Migrate `authService.ts`'s remaining secret fallback to read env
+  vars only; drop the `secretsStore` dependency.
 
 ### Docs
 
@@ -381,9 +394,11 @@ to answer a prompt. The interactive `service-account`, `bot-token`,
 and `github-app-installation` flows are preferred in this mode.
 
 The consent prompt is surfaced by delegating to
-`notificationService.show({ type: "consent:credential", ... })` —
-mirrors how `secretsService` handles approval today. See **Consent UI**
-under Resolved decisions.
+`notificationService.show({ type: "consent:credential", ... })`; a
+new `ConsentDialog` component renders it. See **Consent UI:
+purpose-built dialog** under Resolved decisions and **Consent UI
+redesign** under Extended capabilities for layout and design
+principles.
 
 `src/server/services/egressProxy.ts` — the heart of the new system. See
 next section.
@@ -623,23 +638,28 @@ Land in this order. Each step keeps the tree in a working state.
 24. Extend `workerdManager.ts` per the workerd section above.
 25. Extend `rpcServer.ts` to expose the new `credentials.*` methods
     (`requestConsent`, `beginConsent`, `completeConsent`,
-    `revokeConsent`, `listConsent`, `audit`, `subscribeWebhook`,
+    `listConnections`, `renameConnection`, `revokeConsent`,
+    `listConsent`, `audit`, `subscribeWebhook`,
     `unsubscribeWebhook`).
-26. Wire `credentialService` → `notificationService` for the consent
-    prompt, matching the secrets flow exactly (new `"consent:credential"`
-    type, same `pendingActions` queue, same `NotificationBar`
-    render path). Also wire the **re-consent** notification for
-    refresh failures through the same surface.
+26. Build `src/renderer/components/ConsentDialog.tsx` and its
+    sub-components (`ProviderHeader`, `ScopeList`, `EndpointList`,
+    `AccountPicker`). Wire `credentialService` →
+    `notificationService.show({ type: "consent:credential" | "consent:reconnect", ... })`
+    → `ConsentDialog`. Delete `NotificationBar.tsx`'s consent path
+    (and the whole component if nothing non-consent uses it).
 27. Implement `workspace/packages/runtime/src/worker/credentials.ts`
-    SDK — thin wrapper over the HTTP RPC bridge.
+    SDK — thin wrapper over the HTTP RPC bridge. Supports the
+    role-based API (`requestConsent("github", { role: "source" })`)
+    and the `X-Natstack-Connection` header.
 28. Add the manifest-autodiscovery pass at worker startup, including
-    `endpoints` → capability matcher and `webhooks` → subscription
-    registration.
+    `endpoints` → capability matcher, `webhooks` → subscription
+    registration, and `providers`/`role` → default-connection
+    bindings.
 29. End-to-end test: spawn a worker that calls
     `requestConsent("github")`, then `fetch("https://api.github.com/user")`.
     Verify the response contains the authed user, the
-    NotificationBar displayed an Allow/Deny prompt, and the audit
-    log recorded the call.
+    `ConsentDialog` displayed the scope list + endpoint list +
+    account picker, and the audit log recorded the call.
 30. Test refresh-failure re-consent: force-expire a refresh token,
     verify the worker's next call suspends, triggers the re-consent
     prompt, and transparently retries on approval.
@@ -961,44 +981,50 @@ Alternatives considered and rejected:
 Composio's free tier covers early access; we're not committing to
 them as a permanent dependency, only as a ~2-month bridge.
 
-### Consent UI: follow the secrets service pattern
+### Consent UI: purpose-built dialog, reusing the pending-actions queue
 
-The existing secrets service is the canonical pattern and the
-credential consent UI mirrors it exactly.
+Previously we planned to mirror the secrets service's
+`NotificationBar` strip. That's been revised: the secrets service
+is dead code (see Demolition), and the `NotificationBar` layout is
+inadequate for credential consent — cramped, no room for an
+account picker, wrong visual weight for a security decision.
 
-Reference: `src/server/services/secretsService.ts` and
-`src/server/services/notificationService.ts`.
+The new plan builds a **purpose-built `ConsentDialog` component**
+and keeps only the infrastructure worth salvaging:
 
-The pattern:
+**Kept from `notificationService`:**
 
-1. Worker/panel calls `credentials.requestConsent({ providerId, scopes })`
-   via RPC. It's a **blocking async call** that doesn't return until
-   the user approves or denies, or the 120s timeout expires.
-2. `credentialService` forwards to `notificationService.show(...)`
-   with type `"consent"`, caller attribution (`callerId`, `callerKind`),
-   and a human-readable message ("Panel X wants to connect to
-   GitHub to access ...").
-3. `notificationService` stores `{ resolve, reject, timer }` in its
-   existing `pendingActions` map and broadcasts to the
-   `NotificationBar` in the renderer
-   (`src/renderer/components/NotificationBar.tsx`). Reuses the same
-   violet "consent" styling secrets use.
-4. User clicks **Allow** or **Deny**. UI calls
-   `notification.reportAction(id, actionId)`; `notificationService`
-   resolves the matching promise; `credentialService` proceeds with the
-   flow runner (or throws).
-5. Shell-initiated callers bypass the prompt (same as secrets).
+- The `pendingActions` map + 120s timeout. The queue shape is
+  correct.
+- The `reportAction(id, actionId, payload)` RPC for user response.
 
-Concretely this means `credentialService` depends on
-`notificationService` and does not need its own UI surface. We don't
-add a new component; we add a new notification `type` value ("consent"
-is already used by secrets — may need a subtype like
-`"consent:credential"` to disambiguate button copy).
+**Replaced:**
 
-For mobile, the same `notificationService.pendingActions` queue
-broadcasts to mobile via the existing notification channel; mobile
-renders a native sheet with Allow/Deny that calls `reportAction`.
-Single queue, two UI surfaces, identical semantics.
+- `NotificationBar` consent render path → new `ConsentDialog`
+  component (desktop modal) and `ConsentSheet` (mobile bottom sheet).
+- Notification type `"consent"` (generic) → two specific types
+  `"consent:credential"` and `"consent:reconnect"` with distinct
+  copy and payloads.
+
+**Flow:**
+
+1. Worker/panel calls `credentials.requestConsent({ providerId,
+   scopes, accountHint?, role? })` via RPC. Blocking; returns only
+   on user decision or timeout.
+2. `credentialService` asks `notificationService.show(...)` with
+   type `"consent:credential"`, caller attribution, the scope list
+   with human-readable descriptions, the capability endpoints, and
+   the list of existing connections for the provider.
+3. `ConsentDialog` renders and awaits the user's choice.
+4. User picks an existing account or "Connect new", or clicks
+   Deny. `reportAction` fires; `credentialService` completes the
+   flow runner (for "Connect new"), reuses the existing
+   connection, or throws on deny.
+5. Shell-initiated callers bypass the dialog (same pattern we had
+   for secrets).
+
+See **Consent UI redesign** under Extended capabilities for full
+layout, design principles, and component decomposition.
 
 ## Extended capabilities
 
@@ -1123,6 +1149,268 @@ the public endpoint; the WS delivers events through NAT / firewalls
 without any user setup. Same pattern as ngrok, Cloudflare Tunnel,
 etc., but scoped to webhook delivery.
 
+### Multi-account per provider
+
+A "connection" is a `(providerId, connectionId)` tuple with its own
+token, refresh state, and account identity. A user can have zero,
+one, or many connections per provider:
+
+- Personal GitHub + work GitHub
+- Multiple Slack workspaces (each workspace is a separate OAuth
+  install even for the same human)
+- Personal Gmail + work Workspace Google account
+- Multiple Notion workspaces
+
+**Data model**
+
+Token store path: `~/.natstack/credentials/<providerId>/<connectionId>.json`
+where `connectionId` is a short stable ULID. Each record carries:
+
+```ts
+type Credential = {
+  providerId: string;
+  connectionId: string;
+  connectionLabel: string;         // user-editable: "work", "personal"
+  accountIdentity: {                // populated from provider's whoami
+    email?: string;
+    username?: string;
+    workspaceName?: string;
+    providerUserId: string;         // provider's stable id for dedup
+  };
+  accessToken: string;
+  refreshToken?: string;
+  scopes: string[];
+  expiresAt?: number;
+};
+```
+
+Every provider manifest declares a `whoami` config — an endpoint
+URL + a JSON path to extract identity fields — so `accountIdentity`
+is populated automatically on first auth. `providerUserId` is used
+to detect "user is reconnecting an account they already have"; the
+system reuses the existing `connectionId` rather than creating a
+duplicate.
+
+**RPC surface**
+
+- `requestConsent({ providerId, scopes, accountHint?, role? }) →
+  { connectionId, apiBase }` — if `accountHint` matches exactly one
+  existing connection's `email` / `username` / `workspaceName` /
+  `connectionId`, reuses it. If multiple matches or no match,
+  prompts with the picker UI described below.
+- `listConnections({ providerId? }) → Connection[]` — for settings
+  panels.
+- `renameConnection({ connectionId, label }) → void`.
+- `revokeConsent({ providerId, connectionId? }) → void` —
+  `connectionId` optional; omitted = revoke all connections for
+  that provider.
+
+**Integration manifest: roles**
+
+Integrations that need multiple connections to the same provider
+(a "mirror issues from personal to work GitHub" panel, say)
+declare roles:
+
+```ts
+export const manifest = {
+  providers: [
+    { id: "github", role: "source" },
+    { id: "github", role: "target" },
+  ],
+  scopes: {
+    "github:source": ["repo"],
+    "github:target": ["repo"],
+  },
+  endpoints: {
+    "github:source": [{ url: "https://api.github.com/repos/*/issues", methods: ["GET"] }],
+    "github:target": [{ url: "https://api.github.com/repos/*/issues", methods: ["POST"] }],
+  },
+};
+```
+
+Single-role integrations keep the compact form
+(`providers: ["github"]`); the runtime treats "no role" as the
+implicit `"default"` role.
+
+**Worker SDK**
+
+```ts
+// single-role
+const gh = await requestConsent("github");
+await fetch("https://api.github.com/user");  // proxy uses the granted connection
+
+// multi-role
+const source = await requestConsent("github", { role: "source" });
+const target = await requestConsent("github", { role: "target" });
+await source.fetch("https://api.github.com/repos/.../issues");
+await target.fetch("https://api.github.com/repos/.../issues", { method: "POST" });
+```
+
+`source.fetch` and `target.fetch` are thin wrappers over plain
+`fetch` that stamp an `X-Natstack-Connection: <connectionId>`
+header. The proxy strips the header and uses it to pick the right
+token. Workers can set a default-connection-per-provider at init
+and then use plain `fetch()` for everything.
+
+**Egress proxy: connection routing**
+
+Pipeline step 4 becomes provider + connection routing:
+
+1. Match URL against granted providers' `apiBase`.
+2. If the worker has one connection for that provider → use it.
+3. If multiple → check `X-Natstack-Connection`; if present and
+   valid, use it.
+4. Else → use the worker's declared default for that provider.
+5. Else → 400 with a helpful error naming the available
+   connections.
+
+**Capability keying**
+
+Allowlists are keyed `(workerId, providerId, connectionId, role)` —
+a worker can have read-only on the source account and write on the
+target account independently. Same worker, same provider, different
+capability surface.
+
+**Execution-order impact**
+
+No new phase; threads through existing phases:
+
+- Phase 2: `Credential` type includes `connectionId`,
+  `accountIdentity`, `connectionLabel`; store path uses
+  `<providerId>/<connectionId>.json` from day 1.
+- Phase 3: every first-party manifest declares `whoami`.
+- Phase 4: proxy step 4 implemented as provider + connection
+  routing; capability keying includes `connectionId`.
+- Phase 5: consent dialog renders the account picker; RPC
+  methods above exposed.
+- Phase 6: at least one example integration demonstrates roles
+  (GitHub → GitHub issue mirror is a natural fit).
+
+### Consent UI redesign
+
+The current `NotificationBar` (a fixed-height strip at the top of
+the shell, violet background, one-line message, two buttons) is
+wrong for consent. It's cramped, doesn't scale to account pickers,
+doesn't convey the weight of a security decision, and the layout
+falls apart as soon as there's more than a short title plus a
+single action. It was built for the secrets-approval flow, which is
+itself about to be removed as dead code (see Demolition).
+
+The replacement is a proper **consent dialog** — modal overlay,
+centered on desktop, bottom sheet on mobile. Layout and content:
+
+```
+╔═════════════════════════════════════════════╗
+║                                             ║
+║   ┌─── [Provider logo / gradient] ───┐      ║
+║                                             ║
+║   Connect to GitHub                         ║
+║                                             ║
+║   "Email Panel" wants access to:            ║
+║     • Read your repositories                ║
+║     • Create and comment on issues          ║
+║                                             ║
+║   It will only call these endpoints:        ║
+║     GET  api.github.com/repos/*             ║
+║     POST api.github.com/repos/*/issues      ║
+║                                             ║
+║   Account                                   ║
+║   ○  work      alice@acme.com               ║
+║   ○  personal  @alice                       ║
+║   ●  Connect a new account                  ║
+║                                             ║
+║                    [ Deny ]    [ Connect ]  ║
+║                                             ║
+╚═════════════════════════════════════════════╝
+```
+
+Design principles:
+
+- **Modal, not inline.** Security decisions deserve attention.
+  Dimmed backdrop on desktop; full-screen bottom sheet on mobile.
+  Matches browser permission dialogs and native OS patterns.
+- **Caller attribution in plain language** — "Email Panel wants
+  access to", not an opaque worker id. Uses the panel/worker
+  `displayName` from its manifest.
+- **Scopes shown as human-readable strings**, not OAuth strings.
+  Each provider manifest declares a `scopeDescriptions` table
+  mapping `"repo"` → `"Read your repositories"`. Falls back to the
+  raw scope if not mapped.
+- **Endpoints shown explicitly.** Capability security is visible
+  to the user — they can see the integration isn't asking for full
+  provider access even when the OAuth scope is broad. Collapsible
+  if long ("+ 12 more endpoints").
+- **Account picker prominent, not buried.** Existing connections
+  listed with their labels and identity; "Connect a new account" is
+  always an option. Omitted entirely when the user has zero
+  connections for this provider.
+- **Equal visual weight for Deny and Connect.** No pre-selected
+  button; no tiny-grey "Deny" next to a big-green "Connect". The
+  user must actively choose. Deny is first (reading order:
+  safest-option first on desktop, bottom-first on mobile).
+- **No auto-dismiss, no toast behaviour.** Consent is an explicit
+  decision; the dialog stays until the user chooses.
+- **120-second timeout** before auto-deny, matching the notification
+  queue's timeout. After 60 seconds, a subtle "Request will expire
+  in 60s" indicator appears.
+
+Secondary consent surfaces:
+
+- **Re-consent prompt** (refresh failure, token revoked): same
+  dialog shape, with a clear reconnect-prompt banner at the top
+  ("GitHub access was revoked. Reconnect to continue.") and
+  caller attribution showing which panel/worker triggered it.
+- **Scope escalation** (integration declared new scopes since last
+  approval): same dialog with a diff — "Previously granted: Read
+  repos. Additionally requested: Write issues." Allows accepting
+  the new scopes or denying (which keeps the existing grant
+  intact).
+- **Toast-style confirmation** (non-blocking, low-stakes) for
+  things like "connection renamed" or "audit log exported" — the
+  `NotificationBar` surface could be salvaged for this if we
+  want, but it's optional.
+
+Component layout:
+
+- New component: `src/renderer/components/ConsentDialog.tsx`.
+  Self-contained modal, bound to `notificationService` via the
+  same `pendingActions` queue but consuming entries of type
+  `"consent:credential"` and `"consent:reconnect"`. Calls
+  `notification.reportAction(id, actionId, payload)` with the
+  chosen connection / "new" / deny.
+- Kill `NotificationBar.tsx` outright unless something else on the
+  roadmap needs a persistent notification strip. (The audit system
+  would use a dedicated panel or settings view, not the bar.)
+- Shared primitives: `ProviderHeader`, `ScopeList`, `EndpointList`,
+  `AccountPicker` — reusable in the future connection-management
+  settings view.
+- Mobile: `apps/mobile/src/components/ConsentSheet.tsx` — native
+  bottom sheet wrapping the same primitives, consuming the same
+  notification payloads.
+
+Infrastructure kept from the old pattern:
+
+- `notificationService.pendingActions` queue and 120-second
+  timeout — it's a clean pattern and works.
+- `reportAction` RPC — unchanged API.
+
+Infrastructure removed:
+
+- `secretsService.ts`, `secretsStore.ts`, and the
+  `~/.config/natstack/.secrets.yml` file — see Demolition. The
+  whole secrets-approval flow is dead code now that Nango is
+  going; nothing else uses it.
+- `NotificationBar.tsx`'s `type: "consent"` code path — replaced
+  by `ConsentDialog.tsx`.
+
+**Execution-order impact**
+
+- Phase 5 covers the new `ConsentDialog` component and the RPC
+  payload shape for `consent:credential` / `consent:reconnect`.
+- Phase 5 also removes `NotificationBar`'s consent code path (or
+  the whole component if nothing else needs it).
+- Phase 5b extends `ConsentSheet` to mobile.
+
 ### Test utilities
 
 Shipped as `@natstack/credentials-test-utils`:
@@ -1155,10 +1443,6 @@ fully closed.
 ## Out of scope for this plan
 
 - Migrating existing users off Nango (no existing users).
-- **Multi-account per provider.** First-party API accepts one
-  `connectionId` per provider. Users needing two GitHub accounts on
-  the same natstack install will wait for a later pass. Folding it
-  in later requires an API break, which we're accepting.
 - **Per-tool / per-call consent within a provider.** Capability
   security at the manifest level is coarse (worker X can call these
   endpoints). Per-call confirmation ("confirm sending 47 emails")
