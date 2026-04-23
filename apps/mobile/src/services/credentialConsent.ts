@@ -6,10 +6,8 @@
  * with the server over the existing mobile RPC transport.
  */
 
-import { getDefaultStore } from "jotai";
 import { Linking } from "react-native";
 import type { MobileTransport } from "./mobileTransport";
-import { shellClientAtom } from "../state/shellClientAtom";
 
 const FLOW_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -142,11 +140,6 @@ export async function completeConsent(
 function getCredentialConsentTransport(): Pick<MobileTransport, "call"> {
   if (configuredTransport) {
     return configuredTransport;
-  }
-
-  const shellClient = getDefaultStore().get(shellClientAtom);
-  if (shellClient) {
-    return shellClient.transport;
   }
 
   throw new Error("Credential consent transport is not available");

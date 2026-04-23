@@ -90,7 +90,7 @@ export class PanelStoreAsync implements PanelStore {
     while (currentId) {
       if (visited.has(currentId)) break;
       visited.add(currentId);
-      const parentId = this.records.get(currentId)?.parentId ?? null;
+      const parentId: string | null = this.records.get(currentId)?.parentId ?? null;
       if (!parentId) break;
       this.requireRecord(parentId).panel.selectedChildId = currentId;
       currentId = parentId;
