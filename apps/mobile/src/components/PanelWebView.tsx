@@ -64,13 +64,79 @@ function serializeForInjection(value: unknown): string {
   return JSON.stringify(value ?? null);
 }
 
-function buildBridgeBootstrapScript(panelInit: unknown): string {
+function buildBridgeBootstrapScript(panelInit: unknown, enableDebug: boolean): string {
   return `
     (function () {
       const panelInit = ${serializeForInjection(panelInit)};
       const pending = new Map();
       const listeners = new Map();
       let nextListenerId = 1;
+      const enableDebug = ${enableDebug ? "true" : "false"};
+
+      function postDebug(level, args) {
+        if (!enableDebug) return;
+        try {
+          window.ReactNativeWebView.postMessage(JSON.stringify({
+            __natstackDebug: true,
+            level,
+            args: Array.isArray(args) ? args.map(function (value) {
+              if (value instanceof Error) {
+                return {
+                  type: "error",
+                  name: value.name,
+                  message: value.message,
+                  stack: value.stack || "",
+                };
+              }
+              if (typeof value === "string") return value;
+              try {
+                return JSON.stringify(value);
+              } catch (_) {
+                return String(value);
+              }
+            }) : [],
+          }));
+        } catch (_) {}
+      }
+
+      if (enableDebug) {
+        const originalConsole = globalThis.console || {};
+        const wrapConsoleMethod = function (level) {
+          const original = typeof originalConsole[level] === "function"
+            ? originalConsole[level].bind(originalConsole)
+            : null;
+          return function () {
+            const args = Array.prototype.slice.call(arguments);
+            postDebug(level, args);
+            if (original) {
+              try { original.apply(null, args); } catch (_) {}
+            }
+          };
+        };
+
+        globalThis.console = {
+          ...originalConsole,
+          log: wrapConsoleMethod("log"),
+          info: wrapConsoleMethod("info"),
+          warn: wrapConsoleMethod("warn"),
+          error: wrapConsoleMethod("error"),
+        };
+
+        globalThis.addEventListener("error", function (event) {
+          postDebug("error", [
+            event.message || "Unhandled error",
+            event.error || event.filename || "unknown",
+            event.error && event.error.stack ? event.error.stack : "",
+          ]);
+        });
+
+        globalThis.addEventListener("unhandledrejection", function (event) {
+          const reason = event.reason instanceof Error
+            ? event.reason
+            : (typeof event.reason === "string" ? event.reason : JSON.stringify(event.reason));
+          postDebug("error", ["Unhandled promise rejection", reason]);
+        });
+      }
 
       function resolvePending(id, ok, payload) {
         const entry = pending.get(id);
@@ -241,10 +307,31 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
       try {
         const message = JSON.parse(event.nativeEvent.data) as {
           __natstackBridge?: boolean;
+          __natstackDebug?: boolean;
+          __natstackDomSnapshot?: boolean;
           id?: string;
           method?: string;
           args?: unknown[];
+          level?: "log" | "info" | "warn" | "error";
+          text?: string;
+          childCount?: number;
+          title?: string;
         };
+        if (message.__natstackDebug) {
+          if (!__DEV__) return;
+          const level = message.level ?? "log";
+          const parts = Array.isArray(message.args) ? message.args : [];
+          const text = parts.map((part) => typeof part === "string" ? part : JSON.stringify(part)).join(" ");
+          console[level](`[PanelWebView:${panelId}] ${text}`);
+          return;
+        }
+        if (message.__natstackDomSnapshot) {
+          if (!__DEV__) return;
+          console.log(
+            `[PanelWebView:${panelId}] DOM title=${message.title ?? ""} childCount=${message.childCount ?? 0} text=${message.text ?? ""}`,
+          );
+          return;
+        }
         if (!message.__natstackBridge || !message.id || !message.method) return;
 
         try {
@@ -296,7 +383,32 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
 
     const handleLoadEnd = useCallback(() => {
       setIsLoading(false);
-    }, []);
+      if (!managed || !__DEV__) return;
+      webViewRef.current?.injectJavaScript(`
+        (function () {
+          try {
+            const text = (document.body && document.body.innerText ? document.body.innerText : "")
+              .replace(/\\s+/g, " ")
+              .trim()
+              .slice(0, 500);
+            const childCount = document.body ? document.body.children.length : 0;
+            window.ReactNativeWebView.postMessage(JSON.stringify({
+              __natstackDomSnapshot: true,
+              title: document.title || "",
+              childCount,
+              text,
+            }));
+          } catch (error) {
+            window.ReactNativeWebView.postMessage(JSON.stringify({
+              __natstackDebug: true,
+              level: "error",
+              args: ["DOM snapshot failed", error instanceof Error ? error.message : String(error)],
+            }));
+          }
+          true;
+        })();
+      `);
+    }, [managed]);
 
     if (hasError) {
       return (
@@ -332,7 +444,7 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
           onError={handleError}
           onHttpError={handleHttpError}
           onLoadEnd={handleLoadEnd}
-          injectedJavaScriptBeforeContentLoaded={managed ? buildBridgeBootstrapScript(panelInit) : undefined}
+          injectedJavaScriptBeforeContentLoaded={managed ? buildBridgeBootstrapScript(panelInit, __DEV__) : undefined}
           injectedJavaScript={REFERRER_POLICY_SCRIPT}
           sharedCookiesEnabled={false}
           thirdPartyCookiesEnabled={false}

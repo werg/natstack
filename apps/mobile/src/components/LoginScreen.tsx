@@ -13,7 +13,8 @@ import {
 import type { StackNavigationProp } from "@react-navigation/stack";
 import { useSetAtom, useAtomValue } from "jotai";
 import type { RootStackParamList } from "../navigation/RootNavigator";
-import { saveCredentials, getCredentials } from "../services/auth";
+import { saveCredentials } from "../services/auth";
+import { getConnectionBootstrap } from "../services/connectionBootstrap";
 import { ShellClient } from "../services/shellClient";
 import {
   serverUrlAtom,
@@ -34,6 +35,8 @@ interface LoginScreenProps {
 export function LoginScreen({ navigation }: LoginScreenProps) {
   const [serverUrl, setServerUrl] = React.useState("");
   const [token, setToken] = React.useState("");
+  const [bootstrapPending, setBootstrapPending] = React.useState(true);
+  const [autoConnecting, setAutoConnecting] = React.useState(false);
   const colors = useAtomValue(themeColorsAtom);
 
   const setServerUrlAtom = useSetAtom(serverUrlAtom);
@@ -46,7 +49,11 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
   const authLoading = useAtomValue(authLoadingAtom);
 
   // Reusable connect logic shared by auto-connect and manual button
-  const connectWithCredentials = async (url: string, authToken: string) => {
+  const connectWithCredentials = async (
+    url: string,
+    authToken: string,
+    options?: { showAlert?: boolean },
+  ) => {
     setAuthLoading(true);
     setAuthError(null);
 
@@ -75,7 +82,9 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
       setAuthLoading(false);
       const message = error instanceof Error ? error.message : "Connection failed";
       setAuthError(message);
-      Alert.alert("Connection Failed", message);
+      if (options?.showAlert !== false) {
+        Alert.alert("Connection Failed", message);
+      }
     }
   };
 
@@ -83,19 +92,32 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
   const connectRef = React.useRef(connectWithCredentials);
   connectRef.current = connectWithCredentials;
 
-  // Try loading saved credentials on mount and auto-connect if available
   React.useEffect(() => {
-    void (async () => {
-      const creds = await getCredentials();
-      if (creds) {
-        setServerUrl(creds.serverUrl);
-        setToken(creds.token);
+    let cancelled = false;
 
-        if (creds.serverUrl && creds.token) {
-          await connectRef.current(creds.serverUrl, creds.token);
+    void (async () => {
+      try {
+        const bootstrap = await getConnectionBootstrap();
+        if (!bootstrap || cancelled) return;
+
+        setServerUrl(bootstrap.serverUrl);
+        setToken(bootstrap.token);
+
+        if (bootstrap.autoConnect) {
+          setAutoConnecting(true);
+          await connectRef.current(bootstrap.serverUrl, bootstrap.token, { showAlert: false });
+        }
+      } finally {
+        if (!cancelled) {
+          setBootstrapPending(false);
+          setAutoConnecting(false);
         }
       }
     })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleConnect = async () => {
@@ -112,8 +134,25 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
     }
 
     await saveCredentials(trimmedUrl, trimmedToken);
-    await connectWithCredentials(trimmedUrl, trimmedToken);
+    await connectWithCredentials(trimmedUrl, trimmedToken, { showAlert: true });
   };
+
+  if (bootstrapPending || autoConnecting) {
+    return (
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        style={{ flex: 1, backgroundColor: colors.background }}
+      >
+        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+          <Text style={[styles.title, { color: colors.text }]}>NatStack</Text>
+          <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+            {autoConnecting ? "Connecting to your NatStack server..." : "Loading development connection..."}
+          </Text>
+          <ActivityIndicator color={colors.primary} size="large" />
+        </ScrollView>
+      </KeyboardAvoidingView>
+    );
+  }
 
   return (
     <KeyboardAvoidingView

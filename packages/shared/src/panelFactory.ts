@@ -87,11 +87,14 @@ export function resolveSource(
  * Assemble the full bootstrap config delivered to panels via RPC.
  */
 export function buildBootstrapConfig(opts: BuildBootstrapConfigOpts): unknown {
-  const rpcUrl = new URL(opts.rpcWsUrl);
-  const rpcHost = rpcUrl.hostname;
-  const rpcPort = rpcUrl.port
-    ? Number(rpcUrl.port)
-    : rpcUrl.protocol === "wss:" ? 443 : 80;
+  const rpcMatch = opts.rpcWsUrl.match(/^(wss?):\/\/([^/?#:]+)(?::(\d+))?(?:[/?#]|$)/i);
+  if (!rpcMatch) {
+    throw new Error(`Invalid RPC WebSocket URL: ${opts.rpcWsUrl}`);
+  }
+  const rpcHost = rpcMatch[2]!;
+  const rpcPort = rpcMatch[3]
+    ? Number(rpcMatch[3])
+    : rpcMatch[1]!.toLowerCase() === "wss" ? 443 : 80;
 
   const gitConfig = {
     serverUrl: opts.gitBaseUrl,

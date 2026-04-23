@@ -16,6 +16,7 @@
     "dev": "export NODE_ENV=development && node build.mjs && (pnpm type-check &) && node scripts/run-electron.mjs",
     "start": "node scripts/run-electron.mjs",
     "server": "node dist/server.mjs",
+    "mobile:dev": "node scripts/start-mobile-dev.mjs",
     "server:install": "cd server-native && npm install",
     "pack": "pnpm build:dist && electron-builder --dir",
     "dist": "pnpm build:dist && electron-builder",
