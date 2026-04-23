@@ -580,208 +580,280 @@ Changes to `src/server/workerdManager.ts`:
 4. On instance destruction, revoke the `PROXY_AUTH_TOKEN` from the
    proxy registry.
 
-## Execution order
+## Execution — parallel waves
 
-Land in this order. Each step keeps the tree in a working state.
+The plan is structured as **eight waves** of parallel tasks. Each
+task is bounded enough to hand to one agent; tasks within a wave
+run concurrently; the next wave starts when the previous one lands.
+**Wave 0** (operational prerequisites) runs concurrently with every
+engineering wave — it's non-blocking external work.
 
-### Phase 1 — demolition
+**Merge discipline.** Agents within a wave must own disjoint files.
+Task IDs below include the file or directory each agent owns; no
+two tasks in the same wave touch the same file. When a task needs
+to modify a shared file (e.g. `natstack.yml`, `rpcServer.ts`), it
+is scheduled into a wave where that file isn't otherwise touched,
+or combined with the task that owns it.
 
-1. Delete all files/docs/tables/env listed in **Demolition**.
-2. Leave a single stub `src/server/services/credentialService.ts` with
-   method signatures that throw `NotImplemented`, registered on the RPC
-   server, so the tree compiles.
-3. Verify `rg -i nango` returns zero hits.
-4. Commit: `chore: remove unused nango prototype`.
+**Critical path.** `W1.T10` (TLS interception spike) gates the
+approach of `W4.T2` (egress proxy) and `W4.T5` (worker SDK). If
+the spike comes back negative, Wave 4's proxy + worker SDK
+redesign against `authedFetch(url)` and the consent/capability
+UIs in Wave 5 adjust their payloads accordingly. A contingency
+branch plan is part of the spike deliverable.
 
-### Phase 2 — core engine, no workers yet
+**Wave-exit condition.** Each wave's closing commit requires the
+tree to compile, the existing test suite to pass, and every task's
+individual acceptance criteria to be satisfied. Agents do not
+merge their branches until the wave's integrator confirms.
 
-5. Implement `packages/shared/src/credentials/{types,store,resolver,
-   refresh,registry,consent}.ts`.
-6. Implement `flows/loopbackPkce.ts` and `flows/pat.ts` first — simplest.
-7. Implement `flows/deviceCode.ts`.
-8. Implement `flows/cliPiggyback.ts`.
-9. Implement `flows/composioBridge.ts` — the v0 Google backstop.
-10. Implement `flows/mcpDcr.ts` — most code, depends on the MCP
-    TS SDK (`@modelcontextprotocol/sdk`).
-11. Implement `capability.ts`, `rateLimit.ts`, `retry.ts`,
-    `audit.ts`, `reconsent.ts` as standalone modules with unit
-    tests. They're consumed by the proxy in Phase 4 but self-contained
-    here.
-12. Scaffold `packages/shared/src/credentials/test-utils/` with
-    `mockOAuthServer.ts` and `mockProvider.ts` — used by the unit
-    tests in this phase and published from Phase 10.
-13. Unit tests for each flow against the mock auth server (and a mock
-    Composio endpoint for the bridge).
-14. Commit: `feat(credentials): core engine, flow runners, proxy
-    middlewares`.
+### Wave 0 — Operational prerequisites
 
-### Phase 3 — first-party provider manifests
+Non-engineering / external-track work. Starts immediately and runs
+concurrently with all engineering waves. Outputs feed into specific
+later waves; nothing else blocks on this wave as a whole.
 
-15. Write `providers/{github,google,microsoft,notion,slack}.ts` with
-    real natstack-registered `client_id`s, including `apiBase`
-    patterns, `rateLimits`, and `retry` configs per provider. Get the
-    `client_id`s by:
-    - GitHub: create an OAuth App under the natstack org.
-    - Microsoft: register a multi-tenant Azure AD app.
-    - Notion: register an OAuth integration (for the fallback) + MCP
-      DCR (primary).
-    - Slack: register a distributed Slack app with Socket Mode.
-    - Google: **composio-bridge primary**, BYO `client_secret.json`
-      fallback. Concurrently, start natstack's own Google
-      verification (non-engineering track).
-16. Implement `natstack.yml` override support so self-hosters can
-    supply their own `client_id`/`client_secret` per provider.
-17. Smoke test each manifest via `credentialService.requestConsent`
-    against real providers, CLI only (no workerd yet).
-18. Commit: `feat(credentials): first-party provider manifests`.
+- **W0.T1** GitHub: register natstack OAuth App under the natstack
+  org. Output: `client_id`. Feeds Wave 3 GitHub manifest.
+- **W0.T2** Microsoft: register multi-tenant Azure AD app. Output:
+  `client_id`. Feeds Wave 3 Microsoft manifest.
+- **W0.T3** Slack: register distributed natstack Slack app with
+  Socket Mode. Output: `client_id` + app manifest JSON. Feeds
+  Wave 3 Slack manifest.
+- **W0.T4** Notion: register OAuth integration + verify MCP DCR
+  path. Output: `client_id`. Feeds Wave 3 Notion manifest.
+- **W0.T5** Composio: create tenant, obtain API key for Google
+  bridge. Output: stored credential. Feeds Wave 3 Google manifest.
+- **W0.T6** Google verification: kick off paperwork track —
+  privacy policy, TOS, homepage, trust/security doc, CASA scoping,
+  legal entity confirmation. Output: verification submitted.
+  Completion is out of band; doesn't block v0 launch.
+- **W0.T7** Universal-link domain: register, point DNS at
+  Cloudflare. Output: domain string + DNS confirmation. Feeds
+  Wave 5 and apps/well-known.
+- **W0.T8** Cloudflare Pages project for `apps/well-known`
+  (empty bound project). Feeds Wave 2 well-known build.
+- **W0.T9** Cloudflare Worker project for `apps/webhook-relay`
+  (empty scaffold + wrangler.toml). Feeds Wave 2 relay code.
+- **W0.T10** OAuth client operational runbook:
+  `docs/oauth-client-ops.md` — who holds dashboard credentials
+  per provider, rotation procedure, suspension recovery.
 
-### Phase 4 — egress proxy
+### Wave 1 — Demolition + foundation types + risk spike
 
-19. **Spike**: 1–2 day prototype verifying the CA + workerd
-    trust-store interaction works cleanly. Kill switch for the whole
-    phase if it doesn't — fall back to a worker-side `authedFetch`
-    wrapper in that case.
-20. Implement `src/server/services/egressProxy.ts` as the middleware
-    pipeline described in **Egress proxy** — local CA, per-worker
-    auth, attribution, capability enforcement, provider routing,
-    rate limiting, auth injection, circuit breaker + retry, 401
-    re-consent, audit, egress.
-21. Wire each middleware into the pipeline; each is already
-    implemented as a standalone module in Phase 2.
-22. Tests: fake upstream + fake worker covering every pipeline
-    stage — capability deny, rate-limit throttling, circuit breaker
-    trip, 401 → refresh → retry, 401 → re-consent → retry, audit
-    log entries, no-match passthrough.
-23. Commit: `feat(credentials): host-side egress proxy with
-    capability enforcement, rate limiting, audit`.
+All parallel. Wave-exit: tree compiles with `NotImplemented` stubs,
+`rg -i nango` returns zero hits, spike report committed.
 
-### Phase 5 — workerd wiring + consent UI
+- **W1.T1** Delete Nango OAuth core —
+  `packages/shared/src/oauth/`, `src/server/services/oauthService.ts`,
+  `workspace/packages/runtime/src/shared/oauth.ts`,
+  `workspace/packages/runtime/src/panel/oauth.ts`.
+- **W1.T2** Delete Nango-built integrations —
+  `workspace/packages/integrations/src/{gmail,calendar,index}.ts`,
+  `apps/mobile/src/services/oauthHandler.ts`.
+- **W1.T3** Delete email panel —
+  `workspace/panels/email/{index.tsx,DESIGN.md}`. Leave a
+  `README.md` stub noting it's rebuilt in Wave 6.
+- **W1.T4** Delete secrets service —
+  `src/server/services/secretsService.ts`,
+  `packages/shared/src/secrets/secretsStore.ts`. Migrate
+  `authService.ts`'s fallback to env-vars-only.
+- **W1.T5** Delete Nango config — `NANGO_URL` env handling in
+  `src/server/index.ts`; `nango:` / `nangoUrl` keys and
+  `.secrets.yml` support in `workspace/meta/natstack.yml`.
+- **W1.T6** Drop SQLite tables `oauth_tokens`, `oauth_consent`
+  via migration.
+- **W1.T7** Rewrite Nango-referencing docs — `docs/remote-server.md`
+  (strip Nango section), `workspace/skills/api-integrations/SKILL.md`
+  (full rewrite stub — final rewrite in Wave 6),
+  `workspace/skills/onboarding/{SKILL,GETTING_STARTED}.md`.
+- **W1.T8** Stub `src/server/services/credentialService.ts` with
+  `NotImplemented` method signatures registered on the RPC server.
+- **W1.T9** Author `packages/shared/src/credentials/types.ts` and
+  `packages/shared/src/webhooks/types.ts`. Single task because
+  the type files reference each other.
+- **W1.T10** **TLS interception spike** (critical-path gate).
+  1–2 day prototype: local CA generation via `@peculiar/x509`,
+  injection into workerd's trust store, verified egress request
+  from inside workerd succeeds. Deliverables: prototype code in a
+  throwaway branch, one-page report (go / no-go + fallback plan
+  if no-go).
 
-24. Extend `workerdManager.ts` per the workerd section above.
-25. Extend `rpcServer.ts` to expose the new `credentials.*` methods
-    (`requestConsent`, `beginConsent`, `completeConsent`,
-    `listConnections`, `renameConnection`, `revokeConsent`,
-    `listConsent`, `audit`, `subscribeWebhook`,
-    `unsubscribeWebhook`).
-26. Build `src/renderer/components/ConsentDialog.tsx` and its
-    sub-components (`ProviderHeader`, `ScopeList`, `EndpointList`,
-    `AccountPicker`). Wire `credentialService` →
-    `notificationService.show({ type: "consent:credential" | "consent:reconnect", ... })`
-    → `ConsentDialog`. Delete `NotificationBar.tsx`'s consent path
-    (and the whole component if nothing non-consent uses it).
-27. Implement `workspace/packages/runtime/src/worker/credentials.ts`
-    SDK — thin wrapper over the HTTP RPC bridge. Supports the
-    role-based API (`requestConsent("github", { role: "source" })`)
-    and the `X-Natstack-Connection` header.
-28. Add the manifest-autodiscovery pass at worker startup, including
-    `endpoints` → capability matcher, `webhooks` → subscription
-    registration, and `providers`/`role` → default-connection
-    bindings.
-29. End-to-end test: spawn a worker that calls
-    `requestConsent("github")`, then `fetch("https://api.github.com/user")`.
-    Verify the response contains the authed user, the
-    `ConsentDialog` displayed the scope list + endpoint list +
-    account picker, and the audit log recorded the call.
-30. Test refresh-failure re-consent: force-expire a refresh token,
-    verify the worker's next call suspends, triggers the re-consent
-    prompt, and transparently retries on approval.
-31. Commit: `feat(credentials): workerd integration + worker SDK`.
+### Wave 2 — Foundation modules + infra scaffolds
 
-### Phase 5b — mobile native OAuth
+All parallel. Every task depends only on Wave 1's types. Wave-exit:
+all modules unit-tested standalone, `apps/webhook-relay` and
+`apps/well-known` deployable.
 
-32. **Domain + Cloudflare Pages setup** (infra, can parallel the code
-    steps below):
-    - Register / choose the chosen domain, point its DNS at
-      Cloudflare.
-    - Create `apps/well-known/` in this repo with
-      `apple-app-site-association.template.json`,
-      `assetlinks.template.json`, `config.json`, `build.ts`,
-      `wrangler.toml`.
-    - Create Cloudflare Pages project bound to `apps/well-known/`;
-      verify production URL serves both files with HTTP 200 and
-      `application/json`.
-33. Add `credentials.mobileCallbackDomain` to `natstack.yml` (default:
-    the natstack-owned domain chosen above) and
-    `universalLinkDomain` to `apps/mobile/config.json` (with the
-    wildcard dev pattern alongside the production domain).
-34. Implement `apps/mobile/src/services/credentialConsent.ts` —
-    launches `ASWebAuthenticationSession` / Chrome Custom Tabs,
-    handles universal-link return, relays `{ nonce, code }` to server.
-35. Add mobile-side rendering of the `"consent:credential"`
-    notification (native sheet with Allow / Deny), calling the same
-    `notification.reportAction` RPC as desktop.
-36. End-to-end test: mobile → server RPC → provider consent → code
-    relay → token stored → subsequent mobile-triggered worker call
-    succeeds with auth.
-37. Commit: `feat(credentials): mobile native OAuth`.
+- **W2.T1** `store.ts` — filesystem token store, atomic writes,
+  mtime-watch.
+- **W2.T2** `capability.ts` — URL + method matcher with wildcards.
+- **W2.T3** `rateLimit.ts` — per-connection token bucket,
+  `Retry-After` aware.
+- **W2.T4** `retry.ts` — backoff + circuit breaker (with UI-state
+  hooks for Wave 5).
+- **W2.T5** `audit.ts` — JSONL writer + query API.
+- **W2.T6** `consent.ts` — per-worker grant store (SQLite table
+  `credential_consent`).
+- **W2.T7** `registry.ts` — manifest loader (static + config-driven).
+- **W2.T8** `resolver.ts` — flow chain runner.
+- **W2.T9** `reconsent.ts` — refresh-failure handler.
+- **W2.T10** `refresh.ts` — refresh scheduler (consumes `store` +
+  `resolver` from this wave; slightly later start ok).
+- **W2.T11** `test-utils/mockOAuthServer.ts` and `mockProvider.ts`.
+- **W2.T12** `webhooks/subscription.ts` — subscription record store.
+- **W2.T13** `webhooks/verifier.ts` — per-provider signature
+  verifiers (GitHub, Slack, Stripe, Linear, Notion stubs; filled
+  in by Wave 3 provider manifests).
+- **W2.T14** `apps/webhook-relay/` Cloudflare Worker: public POST
+  endpoint + per-instance WebSocket forwarding. Deployed to Wave
+  0's project.
+- **W2.T15** `apps/well-known/`: templates
+  (`apple-app-site-association.template.json`,
+  `assetlinks.template.json`), `config.json`, `build.ts`,
+  `wrangler.toml`. Deployed to Wave 0's Pages project.
 
-### Phase 6 — rebuild example integrations
+### Wave 3 — Flow runners + first-party provider manifests
 
-38. Rewrite `workspace/packages/integrations/src/gmail.ts` against the
-    new system — pure `fetch` calls, manifest declares Google scopes,
-    `endpoints` capability list, and at least one webhook subscription
-    (Gmail push notifications) to exercise the full surface.
-39. Same for `calendar.ts`. Add a `github.ts` as a second reference,
-    including an `issues` webhook subscription.
-40. Rewrite `workspace/panels/email/index.tsx` from scratch against the
-    new Gmail integration. Keep it minimal.
-41. Rewrite `workspace/skills/api-integrations/SKILL.md` as the
-    canonical guide for adding new integrations.
-42. Commit: `feat(integrations): rebuild gmail/calendar on new system`.
+All parallel. Flow runners + manifests are fully independent per
+file. Wave-exit: smoke tests for every manifest pass against live
+providers via CLI.
 
-### Phase 7 — service accounts + non-interactive mode
+- **W3.T1** `flows/loopbackPkce.ts`.
+- **W3.T2** `flows/deviceCode.ts`.
+- **W3.T3** `flows/pat.ts`.
+- **W3.T4** `flows/cliPiggyback.ts`.
+- **W3.T5** `flows/mcpDcr.ts` (uses `@modelcontextprotocol/sdk`).
+- **W3.T6** `flows/composioBridge.ts`.
+- **W3.T7** `flows/serviceAccount.ts`.
+- **W3.T8** `flows/botToken.ts`.
+- **W3.T9** `flows/githubAppInstallation.ts`.
+- **W3.T10** `flows/index.ts` dispatcher.
+- **W3.T11** `providers/github.ts` (consumes W0.T1 `client_id`).
+- **W3.T12** `providers/microsoft.ts` (consumes W0.T2).
+- **W3.T13** `providers/slack.ts` (consumes W0.T3).
+- **W3.T14** `providers/notion.ts` (consumes W0.T4).
+- **W3.T15** `providers/google.ts` — composio-bridge primary
+  (consumes W0.T5), BYO-`client_secret.json` fallback.
+- **W3.T16** `natstack.yml` override support for
+  `client_id`/`client_secret` per provider.
+- **W3.T17** Smoke-test harness: per-manifest CLI tool that runs
+  each flow against the live provider and reports success.
 
-43. Implement `flows/serviceAccount.ts`, `flows/botToken.ts`,
-    `flows/githubAppInstallation.ts`.
-44. Add `--non-interactive` server flag and
-    `credentials.nonInteractive` config. `credentialService` throws
-    `NonInteractiveConsentRequired` when a prompt would be needed.
-45. Add a config-driven "seed credentials" path: on server start,
-    read `credentials.seeds: [{ providerId, flow, value }]` from
-    `natstack.yml` or env, load into the store. This is how
-    headless deployments inject bot tokens and service-account
-    JSONs without a prompt.
-46. End-to-end test: start server with `--non-interactive`, seed a
-    GitHub bot token via env, run a worker that calls GitHub,
-    verify it succeeds without any prompt and the audit log
-    attributes the call to the bot.
-47. Document the pattern in `docs/non-interactive-deployments.md`.
-48. Commit: `feat(credentials): service accounts and
-    non-interactive mode`.
+### Wave 4 — Service composition
 
-### Phase 8 — webhooks
+Tasks overlap on `rpcServer.ts` and must be serialised there;
+otherwise parallel. Wave-exit: service-level tests pass (worker
+not yet wired).
 
-49. Build `apps/webhook-relay/` — Cloudflare Worker that accepts
-    `POST /webhook/:instanceId/:providerId` and forwards to a
-    long-lived WebSocket connected from the natstack server.
-    Per-instance routing via a short-lived registration token
-    minted when the server starts. No persistent storage in the
-    Worker; events are dropped if no subscriber is connected
-    (at-most-once delivery).
-50. Implement `packages/shared/src/webhooks/{receiver,verifier,router,
-    subscription}.ts`.
-51. Implement `src/server/services/webhookService.ts` and wire to
-    `credentialService.subscribeWebhook`.
-52. Add per-provider signature verifiers to the GitHub, Slack,
-    Stripe, Linear, Notion manifests.
-53. End-to-end test: subscribe a worker to GitHub `issues` events,
-    push a test webhook via GitHub API, verify it's verified,
-    routed, and delivered to the worker's named handler.
-54. Commit: `feat(webhooks): inbound event subsystem`.
+- **W4.T1** `src/server/services/credentialService.ts` —
+  implements all `credentials.*` RPC methods; registered on
+  `rpcServer.ts`. This task owns `rpcServer.ts` edits.
+- **W4.T2** `src/server/services/egressProxy.ts` — the layered
+  middleware pipeline. Branches on W1.T10 spike outcome: TLS
+  interception (preferred) vs. cooperative `authedFetch` fallback.
+- **W4.T3** `src/server/services/auditService.ts`.
+- **W4.T4** `src/server/services/webhookService.ts` — wires
+  `credentialService.subscribeWebhook` to `webhooks/*`.
+- **W4.T5** `workspace/packages/runtime/src/worker/credentials.ts`
+  — worker SDK. Also branches on W1.T10 spike outcome.
 
-### Phase 9 — test utilities and third-party provider story
+### Wave 5 — Workerd wiring + consent UI + mobile
 
-55. Polish `packages/shared/src/credentials/test-utils/` — add
-    `fixtureRecorder.ts`, `mockWebhookRelay.ts`, usage docs.
-56. Publish as `@natstack/credentials-test-utils`.
-57. Publish an example `@natstack/provider-linear` package on the repo
-    as `workspace/examples/provider-linear/` demonstrating the
-    third-party provider manifest shape — including capability
-    declarations, rate limits, and a webhook subscription.
-58. Document the manifest format in
-    `docs/writing-a-provider-manifest.md`.
-59. Commit: `docs: third-party provider authoring guide and test
-    utilities`.
+Parallel. Wave-exit: full desktop + mobile E2E passes from
+`requestConsent` through authed `fetch` through audit log.
+
+- **W5.T1** `src/renderer/components/ConsentDialog.tsx` and
+  sub-components (`ProviderHeader`, `ScopeList`, `EndpointList`,
+  `AccountPicker`).
+- **W5.T2** Delete `src/renderer/components/NotificationBar.tsx`'s
+  consent path (and the whole component if nothing non-consent
+  uses it).
+- **W5.T3** Extend `src/server/workerdManager.ts`:
+  `PROXY_AUTH_TOKEN`, `HTTP_PROXY` / `HTTPS_PROXY` / CA cert env
+  injection, Cap'n Proto `globalOutbound` routing.
+- **W5.T4** Manifest autodiscovery at worker startup:
+  `endpoints` → capability matcher, `webhooks` → subscription
+  registration, `providers` / `role` → default-connection
+  bindings.
+- **W5.T5** `apps/mobile/src/services/credentialConsent.ts` —
+  ASWebAuthenticationSession / Chrome Custom Tabs launcher,
+  universal-link handler, relay to server.
+- **W5.T6** `apps/mobile/src/components/ConsentSheet.tsx` —
+  native bottom-sheet version of ConsentDialog.
+- **W5.T7** iOS entitlements + Android manifest templating from
+  `apps/mobile/config.json`'s `universalLinkDomain` (consumes
+  W0.T7).
+- **W5.T8** Wire `credentials.mobileCallbackDomain` in
+  `natstack.yml`.
+
+### Wave 6 — Integrations + skills
+
+Parallel. Wave-exit: email panel works end-to-end on real Gmail;
+`SKILL.md` is the canonical integration-authoring guide.
+
+- **W6.T1** Rewrite `workspace/packages/integrations/src/gmail.ts`
+  — plain `fetch`, manifest with scopes + endpoints + Gmail push
+  webhook subscription.
+- **W6.T2** Rewrite `workspace/packages/integrations/src/calendar.ts`.
+- **W6.T3** Write `workspace/packages/integrations/src/github.ts`
+  — reference integration including an `issues` webhook.
+- **W6.T4** Multi-role example: github-to-github issue mirror
+  integration demonstrating role-based consent.
+- **W6.T5** Rewrite `workspace/panels/email/index.tsx` from
+  scratch against the new Gmail integration.
+- **W6.T6** Rewrite `workspace/skills/api-integrations/SKILL.md`.
+- **W6.T7** Test-utils polish — `fixtureRecorder.ts`,
+  `mockWebhookRelay.ts`, usage docs.
+- **W6.T8** `docs/non-interactive-deployments.md` — how to
+  bootstrap `credentials.seeds` in CI / systemd / containers.
+
+### Wave 7 — End-to-end tests + publication
+
+Parallel. Wave-exit: every E2E passes in CI; published packages
+tagged and available.
+
+- **W7.T1** E2E: desktop OAuth → token stored → authed fetch →
+  audit recorded → capability enforcement active.
+- **W7.T2** E2E: refresh-failure re-consent loop.
+- **W7.T3** E2E: mobile native OAuth flow end-to-end.
+- **W7.T4** E2E: rate limit + retry + circuit breaker trip +
+  user-visible state + manual reset.
+- **W7.T5** E2E: webhook delivery via relay with signature
+  verification + delivery to worker handler.
+- **W7.T6** E2E: non-interactive mode with seeded service-account
+  credentials; `NonInteractiveConsentRequired` thrown when no
+  seed present.
+- **W7.T7** Publish `@natstack/credentials-test-utils` to npm.
+- **W7.T8** Publish example `@natstack/provider-linear` at
+  `workspace/examples/provider-linear/`.
+- **W7.T9** `docs/writing-a-provider-manifest.md`.
+
+### Sequencing summary
+
+```
+Wave 0 ─────────────────────────────────────────────── (parallel to all)
+       │
+Wave 1 ┴── demolition + types + TLS spike
+       │
+Wave 2 ┴── foundation modules + infra scaffolds
+       │
+Wave 3 ┴── flow runners + first-party manifests
+       │
+Wave 4 ┴── service composition
+       │
+Wave 5 ┴── workerd wiring + consent UI + mobile
+       │
+Wave 6 ┴── integrations + skills
+       │
+Wave 7 ┴── E2E + publication
+```
+
+Approximate parallel-agent count per wave, assuming one agent per
+task: **W0: 10, W1: 10, W2: 15, W3: 17, W4: 5, W5: 8, W6: 8,
+W7: 9**. With 10–15 agents actively working, most waves complete
+in one agent-day; Wave 1's TLS spike and Wave 2's webhook relay
+are the longest individual tasks.
 
 ## Resolved decisions
 
