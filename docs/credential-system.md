@@ -177,8 +177,8 @@ All of the following is prototype and unused. Delete, don't migrate.
 - `packages/shared/src/secrets/secretsStore.ts` — the store itself.
 - `src/renderer/components/NotificationBar.tsx`'s `type: "consent"`
   render path. Delete the whole component if nothing non-consent
-  uses it. (Check during Phase 1; the replacement `ConsentDialog`
-  will be added in Phase 5.)
+  uses it. (Check during Wave 1; the replacement `ConsentDialog`
+  is added in Wave 5.)
 
 ### Database
 
@@ -441,13 +441,16 @@ outbound request:
    Wave 1 spike resolves.** Workerd does not honour Node-style
    `HTTP_PROXY` / `HTTPS_PROXY` env vars; worker `fetch()` flows
    through its own HTTP stack. The likely-correct wiring is a
-   Cap'n Proto `network` service entry pointing at the egress
-   proxy's local port, bound as the worker's `globalOutbound` — so
-   every worker `fetch(url)` is redirected to the proxy, passing
-   the original target URL through a header or path convention the
-   proxy unwraps. TLS termination (if the spike confirms it's
-   viable) happens here via the local CA. See Wave 1 spike and
-   Resolved decisions.
+   Cap'n Proto `ExternalServer` service entry whose `address`
+   points at the egress proxy's local `127.0.0.1:<port>`, bound
+   as the worker's `globalOutbound` — so every worker `fetch(url)`
+   is redirected to the proxy, passing the original target URL
+   through a header or path convention the proxy unwraps. (Note:
+   workerd's `Network` service type is an allow/deny policy with
+   TLS options and no address field; `ExternalServer` is the
+   service type that targets a specific host/port.) TLS
+   termination (if the spike confirms it's viable) happens here
+   via the local CA. See Wave 1 spike and Resolved decisions.
 2. **Attribution**: identify the originating worker from the
    proxy-auth header; look up its consent grants and declared
    integration manifests.
@@ -635,13 +638,16 @@ Changes to `src/server/workerdManager.ts`:
    registry keyed on `workerId`. Inject it into the worker as an
    env var so the proxy can identify the originating worker from an
    authorisation header.
-2. Generate Cap'n Proto config declaring the egress proxy as a
-   `network` service and binding it to this worker's `globalOutbound`.
-   workerd does **not** honour Node-style `HTTP_PROXY` / `HTTPS_PROXY`
-   env vars; `globalOutbound` is the only mechanism that reliably
-   redirects outbound `fetch()` calls. The proxy unwraps the original
-   target URL from a header or path convention chosen during the
-   Wave 1 spike.
+2. Generate Cap'n Proto config declaring the egress proxy as an
+   `ExternalServer` service (with `address` set to the proxy's
+   local `127.0.0.1:<port>`) and binding it to this worker's
+   `globalOutbound`. workerd does **not** honour Node-style
+   `HTTP_PROXY` / `HTTPS_PROXY` env vars; `globalOutbound` is the
+   only mechanism that reliably redirects outbound `fetch()` calls.
+   The proxy unwraps the original target URL from a header or path
+   convention chosen during the Wave 1 spike. workerd's `Network`
+   service type is not appropriate here — it only describes
+   allow/deny/TLS policy, not a destination address.
 3. Inject the local CA cert (path or base64) into the worker's trust
    store via whatever workerd mechanism the spike validates — this
    is itself open, because workerd's BoringSSL trust store isn't
@@ -748,9 +754,12 @@ All parallel. Wave-exit: tree compiles with `NotImplemented` stubs,
   1. A throwaway worker running in workerd calls
      `fetch("https://api.github.com/user")`.
   2. The request reaches a local Node HTTP server bound on a known
-     port, via workerd's `globalOutbound` + `network` service
-     mechanism. Confirm the original target URL is recoverable on
-     the proxy side.
+     port, via workerd's `globalOutbound` bound to an
+     `ExternalServer` service pointing at `127.0.0.1:<port>`.
+     Confirm the original target URL is recoverable on the proxy
+     side. (If `ExternalServer` doesn't carry enough of the
+     request context to recover the target, that's the first
+     place the spike may fail and branch.)
   3. The proxy injects an `Authorization: Bearer <test-token>`
      header, terminates TLS (with a locally-minted CA), forwards to
      `api.github.com`, streams the response back to the worker.
@@ -859,9 +868,10 @@ Parallel. Wave-exit: full desktop + mobile E2E passes from
   uses it).
 - **W5.T3** Extend `src/server/workerdManager.ts`: mint
   `PROXY_AUTH_TOKEN` per worker, declare the egress proxy as a
-  Cap'n Proto `network` service, bind it as `globalOutbound`, and
-  inject the local CA cert via the mechanism the Wave 1 spike
-  validated. No `HTTP_PROXY` env vars — workerd doesn't honour them.
+  Cap'n Proto `ExternalServer` service with `address` set to the
+  proxy's local port, bind it as `globalOutbound`, and inject the
+  local CA cert via the mechanism the Wave 1 spike validated. No
+  `HTTP_PROXY` env vars — workerd doesn't honour them.
 - **W5.T4** Manifest autodiscovery at worker startup:
   `endpoints` → capability matcher, `webhooks` → subscription
   registration, `providers` / `role` → default-connection
@@ -1224,9 +1234,11 @@ for zero-ceremony integration authoring. This is the right call —
 cleaner DX on a surface that third parties will touch, at the cost of
 complexity in one central component maintained by us.
 
-A prototype spike on the CA + workerd trust-store interaction should
-happen at the start of Phase 4 before committing the full proxy
-implementation.
+This is gated by the Wave 1 spike (W1.T10). The spike is broader
+than CA trust alone — it validates the full end-to-end workerd →
+egress-proxy transport (see Execution waves, Wave 1) — and its
+go/no-go determines whether Wave 4 implements TLS interception or
+falls back to a cooperative `authedFetch` wrapper.
 
 ### Google: bundle a Composio bridge for v0, start verification in parallel
 
@@ -1325,21 +1337,45 @@ section summarises their architecture and motivation in one place.
 
 ### Capability-based security
 
-The proxy sees every outbound request. Integrations declare an
-`endpoints` list in their manifest (URL + method allowlist); the
-proxy enforces it. Tokens can be broad while workers get
-principle-of-least-authority — if the Gmail integration only
-declared `GET messages`, a compromised worker can't use the token to
-send email, even though the token has `gmail.modify` scope.
+The proxy sees every outbound request to a matched provider.
+Integrations declare an `endpoints` list in their manifest (URL +
+method allowlist); the proxy enforces it. Tokens can be broad while
+each integration is limited to the specific provider operations its
+manifest declares — if the Gmail integration declared `GET messages`
+only, a compromised worker can't use the token to call
+`messages/send` even though the scope technically permits it.
 
-Lives in `capability.ts`; enforced as middleware step 3 in the proxy
-pipeline. Dev mode warns + allows; production mode denies. Denied
-requests return a structured 403 to the worker naming the violated
-capability. All violations audited.
+Lives in `capability.ts`; enforced as middleware step 3 in the
+proxy pipeline. Dev mode warns + allows; production mode denies.
+Denied requests return a structured 403 to the worker naming the
+violated capability. All violations audited.
 
-This is the highest-leverage feature in the system. It only exists
-because we own the egress boundary — it would not be possible with a
-hosted broker like Nango.
+**What this protects against.** Containment of provider-side
+misuse: a worker with a legitimate Gmail `gmail.modify` token
+can't escalate from reading messages to sending them without
+updating its manifest, which is a code change reviewers see. If
+one of natstack's own integrations is compromised, the blast
+radius on each provider is bounded by what that integration
+declared it would do.
+
+**What this does not protect against.** Exfiltration. Pipeline
+step 11 (no-match passthrough) forwards requests to unmatched
+domains unchanged, so a compromised worker can legitimately fetch
+Gmail data and then POST it to any domain not in any provider's
+`apiBase`. Default-allow egress is a deliberate ergonomics
+choice (integrations can call CDNs, health checks, third-party
+APIs without any declaration) and **capability security does not
+close the exfiltration channel**. A stricter default-deny policy
+remains available as a later hardening upgrade if threat-model
+priorities shift.
+
+This feature exists because we own the egress boundary — it would
+not be possible with a hosted broker like Nango. Within the
+"provider-side misuse" threat surface it's high-leverage; within
+the broader "compromised worker" threat surface, it's one layer
+among several (with others like integration code review, third-
+party provider package signing, and at-rest token encryption all
+explicitly deferred).
 
 ### Refresh-failure re-consent
 
@@ -1565,10 +1601,12 @@ duplicate.
 **RPC surface**
 
 - `requestConsent({ providerId, scopes, accountHint?, role? }) →
-  { connectionId, apiBase }` — if `accountHint` matches exactly one
-  existing connection's `email` / `username` / `workspaceName` /
+  CredentialHandle` — if `accountHint` matches exactly one existing
+  connection's `email` / `username` / `workspaceName` /
   `connectionId`, reuses it. If multiple matches or no match,
-  prompts with the picker UI described below.
+  prompts with the picker UI described below. Return shape matches
+  the Worker SDK section (`{ connectionId, apiBase, fetch }`);
+  both single- and multi-role callers get the same handle.
 - `listConnections({ providerId? }) → Connection[]` — for settings
   panels.
 - `renameConnection({ connectionId, label }) → void`.
@@ -1643,17 +1681,17 @@ capability surface.
 
 **Execution-order impact**
 
-No new phase; threads through existing phases:
+No new wave; threads through existing waves:
 
-- Phase 2: `Credential` type includes `connectionId`,
+- Wave 1: `Credential` type includes `connectionId`,
   `accountIdentity`, `connectionLabel`; store path uses
   `<providerId>/<connectionId>.json` from day 1.
-- Phase 3: every first-party manifest declares `whoami`.
-- Phase 4: proxy step 4 implemented as provider + connection
+- Wave 3: every first-party manifest declares `whoami`.
+- Wave 4: proxy step 4 implemented as provider + connection
   routing; capability keying includes `connectionId`.
-- Phase 5: consent dialog renders the account picker; RPC
+- Wave 5: consent dialog renders the account picker; RPC
   methods above exposed.
-- Phase 6: at least one example integration demonstrates roles
+- Wave 6: at least one example integration demonstrates roles
   (GitHub → GitHub issue mirror is a natural fit).
 
 ### Consent UI redesign
@@ -1781,11 +1819,11 @@ Infrastructure removed:
 
 **Execution-order impact**
 
-- Phase 5 covers the new `ConsentDialog` component and the RPC
+- Wave 5 covers the new `ConsentDialog` component and the RPC
   payload shape for `consent:credential` / `consent:reconnect`.
-- Phase 5 also removes `NotificationBar`'s consent code path (or
+- Wave 5 also removes `NotificationBar`'s consent code path (or
   the whole component if nothing else needs it).
-- Phase 5b extends `ConsentSheet` to mobile.
+- Wave 5 (mobile tasks) extends `ConsentSheet` to mobile.
 
 ### Timeouts
 
@@ -1883,8 +1921,8 @@ providers.
 Implementation reminders:
 
 1. **Self-hoster `client_id` override.** Yes, via `natstack.yml`.
-   Documented in the provider manifest section. Implement in Phase 3
-   step 16.
+   Documented in the provider manifest section. Implement in
+   Wave 3 (step W3.T16).
 
 The universal-link domain is decided in principle (Cloudflare Pages,
 a parameter in both server and mobile config). The actual string is
