@@ -1,11 +1,11 @@
 import type { Credential, FlowConfig } from "./types.js";
 
-export type FlowRunner = (config: FlowConfig) => Promise<Credential | null>;
+export type FlowRunner = (config: FlowConfig, providerId?: string) => Promise<Credential | null>;
 
 export class FlowResolver {
   constructor(private runners: Map<string, FlowRunner>) {}
 
-  async resolve(flows: FlowConfig[]): Promise<Credential> {
+  async resolve(flows: FlowConfig[], providerId?: string): Promise<Credential> {
     for (const flow of flows) {
       const runner = this.runners.get(flow.type);
 
@@ -13,7 +13,9 @@ export class FlowResolver {
         continue;
       }
 
-      const credential = await runner(flow);
+      const credential = providerId === undefined
+        ? await runner(flow)
+        : await runner(flow, providerId);
 
       if (credential) {
         return credential;

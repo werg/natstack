@@ -9,23 +9,16 @@ type RpcResponse = {
   errorCode?: unknown;
 };
 
-type ConsentRpcResult = {
-  connectionId: string;
-  apiBase: string[];
-};
-
 type WorkerGlobals = typeof globalThis & {
   __natstack_rpc?: (payload: RpcCallPayload) => Promise<unknown>;
   __natstackEnv?: Record<string, string>;
 };
-
-const CONNECTION_HEADER = "X-Natstack-Connection";
-
-export type CredentialHandle = {
-  connectionId: string;
-  apiBase: string[];
-  fetch: (url: string, init?: RequestInit) => Promise<Response>;
-};
+import {
+  createCredentialClient,
+  type ConnectionRecord,
+  type CredentialClient,
+  type CredentialHandle,
+} from "../shared/credentials.js";
 
 async function callHostRpc<T>(method: string, ...args: unknown[]): Promise<T> {
   const globals = globalThis as WorkerGlobals;
@@ -70,48 +63,18 @@ async function callHostRpc<T>(method: string, ...args: unknown[]): Promise<T> {
   return body.result as T;
 }
 
-function parseConsentResult(value: unknown): ConsentRpcResult {
-  if (!value || typeof value !== "object") {
-    throw new Error("Invalid credentials.requestConsent response");
-  }
+const client: CredentialClient = createCredentialClient({
+  call<T>(targetId: string, method: string, ...args: unknown[]): Promise<T> {
+    void targetId;
+    return callHostRpc<T>(method, ...args);
+  },
+});
 
-  const result = value as Record<string, unknown>;
-  const connectionId = result["connectionId"];
-  const apiBase = result["apiBase"];
-
-  if (typeof connectionId !== "string") {
-    throw new Error("Invalid credentials.requestConsent response: connectionId must be a string");
-  }
-  if (!Array.isArray(apiBase) || apiBase.some((entry) => typeof entry !== "string")) {
-    throw new Error("Invalid credentials.requestConsent response: apiBase must be a string[]");
-  }
-
-  return {
-    connectionId,
-    apiBase: [...apiBase],
-  };
-}
-
-export async function requestConsent(
+export async function connect(
   providerId: string,
-  opts?: { scopes?: string[]; accountHint?: string; role?: string },
+  opts?: { connectionId?: string },
 ): Promise<CredentialHandle> {
-  const result = parseConsentResult(
-    await callHostRpc("credentials.requestConsent", { providerId, ...opts }),
-  );
-
-  return {
-    connectionId: result.connectionId,
-    apiBase: result.apiBase,
-    fetch: (url: string, init?: RequestInit) => {
-      const headers = new Headers(init?.headers);
-      headers.set(CONNECTION_HEADER, result.connectionId);
-      return fetch(url, {
-        ...init,
-        headers,
-      });
-    },
-  };
+  return client.connect(providerId, opts);
 }
 
 export async function revokeConsent(
@@ -120,3 +83,29 @@ export async function revokeConsent(
 ): Promise<void> {
   await callHostRpc("credentials.revokeConsent", { providerId, connectionId });
 }
+
+export async function listConnections(providerId?: string): Promise<ConnectionRecord[]> {
+  return client.listConnections(providerId);
+}
+
+export async function subscribeWebhook(
+  providerId: string,
+  eventType: string,
+  opts: { handler: string; connectionId?: string },
+): Promise<{ subscriptionId: string; leaseId?: string }> {
+  return client.subscribeWebhook(providerId, eventType, opts);
+}
+
+export async function unsubscribeWebhook(subscriptionId: string): Promise<void> {
+  await client.unsubscribeWebhook(subscriptionId);
+}
+
+export async function listWebhookLeases(filter?: {
+  providerId?: string;
+  eventType?: string;
+  connectionId?: string;
+}) {
+  return client.listWebhookLeases(filter);
+}
+
+export type { CredentialHandle, ConnectionRecord, CredentialClient };

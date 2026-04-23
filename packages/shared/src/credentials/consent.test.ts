@@ -33,25 +33,28 @@ describe("ConsentGrantStore", () => {
     db.close();
   });
 
-  it("grants consent and lists grants for a worker", async () => {
+  it("grants consent and lists repo grants", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
 
     await store.grant({
-      workerId: "worker-1",
+      codeIdentity: "repo-1",
+      codeIdentityType: "repo",
       providerId: "github",
       connectionId: "primary",
       scopes: ["repo", "user:email"],
-      role: "owner",
+      grantedAt: 0,
+      grantedBy: "panel-1",
     });
 
-    await expect(store.list("worker-1")).resolves.toEqual([
+    await expect(store.list("repo-1")).resolves.toEqual([
       {
-        workerId: "worker-1",
+        codeIdentity: "repo-1",
+        codeIdentityType: "repo",
         providerId: "github",
         connectionId: "primary",
         scopes: ["repo", "user:email"],
         grantedAt: 1_700_000_000_000,
-        role: "owner",
+        grantedBy: "panel-1",
       },
     ]);
   });
@@ -60,99 +63,148 @@ describe("ConsentGrantStore", () => {
     const nowSpy = vi.spyOn(Date, "now");
     nowSpy.mockReturnValueOnce(1_700_000_000_000);
     await store.grant({
-      workerId: "worker-1",
+      codeIdentity: "repo-1",
+      codeIdentityType: "repo",
       providerId: "github",
       connectionId: "primary",
       scopes: ["repo"],
-      role: "reader",
+      grantedAt: 0,
+      grantedBy: "panel-1",
     });
 
     nowSpy.mockReturnValueOnce(1_700_000_000_500);
     await store.grant({
-      workerId: "worker-1",
+      codeIdentity: "repo-1",
+      codeIdentityType: "repo",
       providerId: "github",
       connectionId: "primary",
       scopes: ["repo", "user:email"],
-      role: "owner",
+      grantedAt: 0,
+      grantedBy: "panel-2",
     });
 
-    await expect(store.list("worker-1")).resolves.toEqual([
+    await expect(store.list("repo-1")).resolves.toEqual([
       {
-        workerId: "worker-1",
+        codeIdentity: "repo-1",
+        codeIdentityType: "repo",
         providerId: "github",
         connectionId: "primary",
         scopes: ["repo", "user:email"],
         grantedAt: 1_700_000_000_500,
-        role: "owner",
+        grantedBy: "panel-2",
       },
     ]);
   });
 
-  it("revokes a single connection or all provider grants", async () => {
+  it("revokes provider grants for a code identity", async () => {
     await store.grant({
-      workerId: "worker-1",
+      codeIdentity: "repo-1",
+      codeIdentityType: "repo",
       providerId: "github",
       connectionId: "primary",
       scopes: ["repo"],
+      grantedAt: 0,
+      grantedBy: "panel-1",
     });
     await store.grant({
-      workerId: "worker-1",
-      providerId: "github",
-      connectionId: "secondary",
-      scopes: ["repo"],
-    });
-    await store.grant({
-      workerId: "worker-1",
+      codeIdentity: "repo-1",
+      codeIdentityType: "repo",
       providerId: "slack",
       connectionId: "workspace",
       scopes: ["channels:read"],
+      grantedAt: 0,
+      grantedBy: "panel-1",
     });
 
-    await store.revoke("worker-1", "github", "primary");
-    await expect(store.list("worker-1")).resolves.toEqual([
+    await store.revoke("repo-1", "github");
+    await expect(store.list("repo-1")).resolves.toEqual([
       {
-        workerId: "worker-1",
-        providerId: "github",
-        connectionId: "secondary",
-        scopes: ["repo"],
-        grantedAt: expect.any(Number),
-        role: undefined,
-      },
-      {
-        workerId: "worker-1",
+        codeIdentity: "repo-1",
+        codeIdentityType: "repo",
         providerId: "slack",
         connectionId: "workspace",
         scopes: ["channels:read"],
         grantedAt: expect.any(Number),
-        role: undefined,
-      },
-    ]);
-
-    await store.revoke("worker-1", "github");
-    await expect(store.list("worker-1")).resolves.toEqual([
-      {
-        workerId: "worker-1",
-        providerId: "slack",
-        connectionId: "workspace",
-        scopes: ["channels:read"],
-        grantedAt: expect.any(Number),
-        role: undefined,
+        grantedBy: "panel-1",
       },
     ]);
   });
 
-  it("checks whether a grant covers the requested scopes", async () => {
+  it("checks repo and version grants for a provider", async () => {
     await store.grant({
-      workerId: "worker-1",
+      codeIdentity: "hash-1",
+      codeIdentityType: "hash",
       providerId: "github",
-      connectionId: "primary",
+      connectionId: "versioned",
       scopes: ["user:email", "repo", "repo"],
+      grantedAt: 0,
+      grantedBy: "panel-1",
     });
 
-    await expect(store.has("worker-1", "github")).resolves.toBe(true);
-    await expect(store.has("worker-1", "github", ["repo"])).resolves.toBe(true);
-    await expect(store.has("worker-1", "github", ["repo", "user:email"])).resolves.toBe(true);
-    await expect(store.has("worker-1", "github", ["repo", "admin:org"])).resolves.toBe(false);
-    await expect(store.has("worker-1", "slack", ["channels:read"])).resolves.toBe(false);
+    await expect(store.check({
+      repoPath: "repo-1",
+      effectiveVersion: "hash-1",
+      providerId: "github",
+    })).resolves.toEqual({
+      codeIdentity: "hash-1",
+      codeIdentityType: "hash",
+      providerId: "github",
+      connectionId: "versioned",
+      scopes: ["repo", "user:email"],
+      grantedAt: expect.any(Number),
+      grantedBy: "panel-1",
+    });
+
+    await store.grant({
+      codeIdentity: "repo-1",
+      codeIdentityType: "repo",
+      providerId: "github",
+      connectionId: "repo-default",
+      scopes: ["repo"],
+      grantedAt: 0,
+      grantedBy: "panel-2",
+    });
+
+    await expect(store.check({
+      repoPath: "repo-1",
+      effectiveVersion: "hash-1",
+      providerId: "github",
+    })).resolves.toEqual({
+      codeIdentity: "repo-1",
+      codeIdentityType: "repo",
+      providerId: "github",
+      connectionId: "repo-default",
+      scopes: ["repo"],
+      grantedAt: expect.any(Number),
+      grantedBy: "panel-2",
+    });
+  });
+
+  it("supports transient grants", async () => {
+    await store.grant({
+      codeIdentity: "hash-1",
+      codeIdentityType: "hash",
+      providerId: "slack",
+      connectionId: "transient",
+      scopes: ["channels:read"],
+      grantedAt: 0,
+      grantedBy: "panel-1",
+      transient: true,
+    });
+
+    await expect(store.check({
+      repoPath: "repo-1",
+      effectiveVersion: "hash-1",
+      providerId: "slack",
+    })).resolves.toEqual({
+      codeIdentity: "hash-1",
+      codeIdentityType: "hash",
+      providerId: "slack",
+      connectionId: "transient",
+      scopes: ["channels:read"],
+      grantedAt: expect.any(Number),
+      grantedBy: "panel-1",
+      transient: true,
+    });
   });
 });

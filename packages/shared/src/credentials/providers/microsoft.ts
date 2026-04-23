@@ -4,6 +4,11 @@ export const microsoft: ProviderManifest = {
   id: "microsoft",
   displayName: "Microsoft",
   clientId: "PLACEHOLDER_MICROSOFT_CLIENT_ID",
+  authInjection: {
+    type: "header",
+    headerName: "Authorization",
+    valueTemplate: "Bearer {token}",
+  },
   apiBase: [
     "https://graph.microsoft.com",
   ],

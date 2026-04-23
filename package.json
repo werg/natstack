@@ -118,7 +118,6 @@
     "@mariozechner/pi-agent-core": "^0.66.0",
     "@mariozechner/pi-ai": "^0.66.0",
     "@modelcontextprotocol/sdk": "^1.12.1",
-    "@natstack/auth-flow": "workspace:*",
     "@natstack/browser-data": "workspace:*",
     "@natstack/dev-log": "workspace:*",
     "@natstack/env-paths": "workspace:*",

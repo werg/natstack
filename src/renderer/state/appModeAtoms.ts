@@ -1,6 +1,6 @@
 import { atom } from "jotai";
 import type { WorkspaceEntry } from "@natstack/shared/types";
-import { auth, workspace, type AuthProvider } from "../shell/client.js";
+import { credentialFlow, workspace, type CredentialProvider } from "../shell/client.js";
 
 // =============================================================================
 // Workspace State
@@ -102,12 +102,12 @@ export const settingsDialogOpenAtom = atom(false);
 // =============================================================================
 
 /**
- * Cached list of auth providers returned by `auth.listProviders`.
+ * Cached list of credential providers returned by `credentialFlow.listProviders`.
  *
  * Written to by `loadAuthProvidersAtom`. Null until the first load completes,
  * [] if the call returned no providers, populated otherwise.
  */
-export const authProvidersAtom = atom<AuthProvider[] | null>(null);
+export const authProvidersAtom = atom<CredentialProvider[] | null>(null);
 
 /**
  * Whether auth providers are currently being (re)loaded.
@@ -115,17 +115,17 @@ export const authProvidersAtom = atom<AuthProvider[] | null>(null);
 export const authProvidersLoadingAtom = atom(false);
 
 /**
- * Load the provider list from the auth service and write it to
+ * Load the provider list from the credential flow service and write it to
  * `authProvidersAtom`. Errors are logged and leave the atom unchanged so the
  * UI can fall back to whatever it last showed.
  */
 export const loadAuthProvidersAtom = atom(null, async (get, set) => {
   set(authProvidersLoadingAtom, true);
   try {
-    const providers = await auth.listProviders();
+    const providers = await credentialFlow.listProviders();
     set(authProvidersAtom, providers ?? []);
   } catch (error) {
-    console.error("Failed to load auth providers:", error);
+    console.error("Failed to load credential providers:", error);
     // Leave the cached list in place; set to [] if this was the first load.
     const prev = get(authProvidersAtom);
     if (prev === null) set(authProvidersAtom, []);

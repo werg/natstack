@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { WebhookSubscription } from "./types.js";
+import type { WebhookSubscription, WebhookWatchLease } from "./types.js";
 import { WebhookSubscriptionStore, type DbAdapter } from "./subscription.js";
 
 describe("WebhookSubscriptionStore", () => {
@@ -38,11 +38,13 @@ describe("WebhookSubscriptionStore", () => {
     sqlite.close();
   });
 
-  it("adds and lists subscriptions", () => {
-    const created = store.add({
-      workerId: "worker-1",
+  it("creates and lists subscriptions", () => {
+    const created = store.upsertSubscription({
+      callerId: "worker:worker-1",
       providerId: "github",
       eventType: "push",
+      connectionId: "conn-1",
+      handler: "__webhook__.github.push",
       delivery: "https-post",
       secret: "secret-1",
     });
@@ -51,69 +53,140 @@ describe("WebhookSubscriptionStore", () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     );
     expect(created.createdAt).toBeTypeOf("number");
-    expect(store.list()).toEqual([created]);
+    expect(created.updatedAt).toBe(created.createdAt);
+    expect(store.listSubscriptions()).toEqual([created]);
   });
 
-  it("filters subscriptions by worker, provider, and event", () => {
+  it("filters subscriptions by caller, provider, and event", () => {
     const subscriptions: WebhookSubscription[] = [
-      store.add({
-        workerId: "worker-1",
+      store.upsertSubscription({
+        callerId: "worker:worker-1",
         providerId: "github",
         eventType: "push",
+        connectionId: "conn-1",
+        handler: "__webhook__.github.push",
         delivery: "https-post",
         secret: "secret-1",
       }),
-      store.add({
-        workerId: "worker-1",
+      store.upsertSubscription({
+        callerId: "worker:worker-1",
         providerId: "github",
         eventType: "pull_request",
+        connectionId: "conn-1",
+        handler: "__webhook__.github.pull_request",
         delivery: "pubsub-push",
       }),
-      store.add({
-        workerId: "worker-2",
+      store.upsertSubscription({
+        callerId: "worker:worker-2",
         providerId: "slack",
         eventType: "message",
+        connectionId: "conn-2",
+        handler: "__webhook__.slack.message",
         delivery: "https-post",
       }),
     ];
 
-    expect(store.list({ workerId: "worker-1" })).toEqual(subscriptions.slice(0, 2));
-    expect(store.list({ providerId: "github", eventType: "push" })).toEqual([
+    expect(store.listSubscriptions({ callerId: "worker:worker-1" })).toEqual(subscriptions.slice(0, 2));
+    expect(store.listSubscriptions({ providerId: "github", eventType: "push" })).toEqual([
       subscriptions[0],
     ]);
-    expect(store.list({ workerId: "worker-2", providerId: "slack" })).toEqual([
+    expect(store.listSubscriptions({ callerId: "worker:worker-2", providerId: "slack" })).toEqual([
       subscriptions[2],
     ]);
   });
 
-  it("finds subscriptions for an event", () => {
-    const expected = store.add({
-      workerId: "worker-1",
-      providerId: "github",
-      eventType: "push",
-      delivery: "https-post",
+  it("stores and finds watch leases", () => {
+    const lease: WebhookWatchLease = store.upsertLease({
+      leaseId: "lease-1",
+      providerId: "google-workspace",
+      eventType: "message.new",
+      connectionId: "conn-1",
+      delivery: "pubsub-push",
+      watchType: "gmail-watch",
+      identityKey: "user@example.com",
+      cursor: "1234",
+      expiresAt: 1_700_000_000_000,
+      lastRenewedAt: 1_699_999_000_000,
+      state: { topic: "projects/example/topics/gmail" },
     });
 
-    store.add({
-      workerId: "worker-2",
-      providerId: "github",
-      eventType: "pull_request",
-      delivery: "https-post",
-    });
-
-    expect(store.findForEvent("github", "push")).toEqual([expected]);
+    expect(store.getLease("lease-1")).toEqual(lease);
+    expect(store.findLeaseByIdentity("google-workspace", "user@example.com")).toEqual(lease);
+    expect(store.listLeases({ providerId: "google-workspace" })).toEqual([lease]);
   });
 
-  it("removes subscriptions", () => {
-    const created = store.add({
-      workerId: "worker-1",
-      providerId: "github",
-      eventType: "push",
-      delivery: "https-post",
+  it("updates lease delivery state", () => {
+    store.upsertLease({
+      leaseId: "lease-1",
+      providerId: "google-workspace",
+      eventType: "message.new",
+      connectionId: "conn-1",
+      delivery: "pubsub-push",
+      watchType: "gmail-watch",
+      identityKey: "user@example.com",
+      cursor: "1234",
     });
 
-    store.remove(created.subscriptionId);
+    const updated = store.touchLeaseDelivery("lease-1", {
+      cursor: "5678",
+      lastDeliveryAt: 1_700_000_000_000,
+    });
 
-    expect(store.list()).toEqual([]);
+    expect(updated).toMatchObject({
+      leaseId: "lease-1",
+      cursor: "5678",
+      lastDeliveryAt: 1_700_000_000_000,
+    });
+  });
+
+  it("deletes subscriptions and leases independently", () => {
+    const created = store.upsertSubscription({
+      callerId: "worker:worker-1",
+      providerId: "github",
+      eventType: "push",
+      connectionId: "conn-1",
+      handler: "__webhook__.github.push",
+      delivery: "https-post",
+    });
+    store.upsertLease({
+      leaseId: "lease-1",
+      providerId: "github",
+      eventType: "push",
+      connectionId: "conn-1",
+      delivery: "https-post",
+      watchType: "github-webhook",
+    });
+
+    store.deleteSubscription(created.subscriptionId);
+    store.deleteLease("lease-1");
+
+    expect(store.listSubscriptions()).toEqual([]);
+    expect(store.listLeases()).toEqual([]);
+  });
+
+  it("upserts subscriptions by caller, provider, connection, and handler", () => {
+    const first = store.upsertSubscription({
+      callerId: "worker:worker-1",
+      providerId: "google-workspace",
+      eventType: "message.new",
+      connectionId: "conn-1",
+      handler: "__webhook__.gmail.message_new",
+      delivery: "pubsub-push",
+      leaseId: "lease-1",
+    });
+    const second = store.upsertSubscription({
+      callerId: "worker:worker-1",
+      providerId: "google-workspace",
+      eventType: "message.new",
+      connectionId: "conn-1",
+      handler: "__webhook__.gmail.message_new",
+      delivery: "pubsub-push",
+      leaseId: "lease-2",
+    });
+
+    expect(second.subscriptionId).toBe(first.subscriptionId);
+    expect(second.createdAt).toBe(first.createdAt);
+    expect(second.leaseId).toBe("lease-2");
+    expect(store.listSubscriptions()).toHaveLength(1);
   });
 });

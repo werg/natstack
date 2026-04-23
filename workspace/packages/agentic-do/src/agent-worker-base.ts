@@ -45,7 +45,7 @@ import type {
 import { isClientParticipantType } from "@natstack/pubsub";
 import {
   PiRunner,
-  isNotLoggedInError,
+  isEnvVarOnlyProvider,
   providerDisplayName,
   type ChannelToolMethod,
   type NatStackScopedUiContext,
@@ -68,12 +68,7 @@ import { ChannelClient } from "./channel-client.js";
 import { ContentBlockProjector, type ProjectorSink } from "./content-block-projector.js";
 import { TurnDispatcher } from "./turn-dispatcher.js";
 
-const SAFE_TOOL_NAMES_DEFAULT: ReadonlySet<string> = new Set([
-  "read",
-  "ls",
-  "grep",
-  "find",
-]);
+const SAFE_TOOL_NAMES_DEFAULT: ReadonlySet<string> = new Set(["read", "ls", "grep", "find"]);
 
 /**
  * TSX source for the OAuth Connect card pushed into the chat as an inline_ui
@@ -85,7 +80,7 @@ const SAFE_TOOL_NAMES_DEFAULT: ReadonlySet<string> = new Set([
  * `workspace/skills/sandbox/INLINE_UI.md`. The component receives
  * `{ props, chat }` where `chat.rpc.call` is the panel's runtime RPC.
  *
- * The button calls `auth.startOAuthLogin(providerId)` directly. Server-side
+ * The button calls `credentialFlow.connect(providerId)` directly. Server-side
  * idempotency in the auth service handles concurrent / repeated clicks:
  *   - First click → starts the OAuth flow, returns success on completion.
  *   - Concurrent clicks → return the same in-flight Promise.
@@ -105,7 +100,7 @@ export default function OAuthConnectCard({ props, chat }) {
     setStatus("connecting");
     setError(null);
     try {
-      const result = await chat.rpc.call("main", "auth.startOAuthLogin", providerId);
+      const result = await chat.rpc.call("main", "credentialFlow.connect", providerId);
       if (result && result.success) {
         setStatus("connected");
         // Auto-retry: publish a message so the agent's turn restarts with
@@ -150,6 +145,85 @@ export default function OAuthConnectCard({ props, chat }) {
             <Button onClick={handleConnect} variant="soft">Try again</Button>
           </Flex>
         )}
+      </Flex>
+    </Card>
+  );
+}
+`.trim();
+
+const PROVIDER_CONFIG_CARD_TSX = `
+import { Card, Flex, Text } from "@radix-ui/themes";
+
+export default function ProviderConfigCard({ props }) {
+  return (
+    <Card variant="surface" size="2">
+      <Flex direction="column" gap="3">
+        <Text size="2" weight="medium">Configure {props.displayName}</Text>
+        <Text size="1" color="gray">
+          This provider is configured through environment variables on the host.
+          Open the model provider settings and set {props.envVar ?? "the required env var"}.
+        </Text>
+      </Flex>
+    </Card>
+  );
+}
+`.trim();
+
+const CONSENT_GRANT_CARD_TSX = `
+import { useState } from "react";
+import { Button, Card, Flex, Text } from "@radix-ui/themes";
+
+export default function ConsentGrantCard({ props, chat }) {
+  const [status, setStatus] = useState("idle");
+  const [error, setError] = useState(null);
+
+  const grant = async (mode) => {
+    setStatus(mode);
+    setError(null);
+    try {
+      if (mode === "once") {
+        await chat.rpc.call("main", "credentials.grantConsent", {
+          providerId: props.providerId,
+          codeIdentityType: "hash",
+          transient: true,
+        });
+      } else if (mode === "version") {
+        await chat.rpc.call("main", "credentials.grantConsent", {
+          providerId: props.providerId,
+          codeIdentityType: "hash",
+        });
+      } else {
+        await chat.rpc.call("main", "credentials.grantConsent", {
+          providerId: props.providerId,
+          codeIdentityType: "repo",
+        });
+      }
+      chat.publish("message", {
+        content: "Permission granted for " + props.displayName + ". Please continue where you left off."
+      });
+      setStatus("granted");
+    } catch (err) {
+      setStatus("idle");
+      setError(err && err.message ? err.message : String(err));
+    }
+  };
+
+  return (
+    <Card variant="surface" size="2">
+      <Flex direction="column" gap="3">
+        <Flex direction="column" gap="1">
+          <Text size="2" weight="medium">Grant access to {props.displayName}</Text>
+          <Text size="1" color="gray">
+            This code needs permission to use {props.displayName}. Choose how long to trust it.
+          </Text>
+        </Flex>
+        <Flex gap="2" wrap="wrap">
+          <Button disabled={status !== "idle"} onClick={() => grant("once")}>Once</Button>
+          <Button disabled={status !== "idle"} variant="soft" onClick={() => grant("version")}>This version</Button>
+          <Button disabled={status !== "idle"} variant="outline" onClick={() => grant("always")}>Always</Button>
+        </Flex>
+        {status === "granted" && <Text size="1" color="green">Permission granted.</Text>}
+        {error && <Text size="1" color="red">{error}</Text>}
       </Flex>
     </Card>
   );
@@ -399,24 +473,44 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   }
 
   /**
-   * Reset the OAuth-card dedupe entry for this channel and probe the
-   * configured model's auth status. If the provider needs OAuth and we
-   * don't have a valid token, push a fresh ephemeral Connect card.
+   * Reset the provider-card dedupe entries for this channel and probe the
+   * configured model's connection + consent status.
    */
   private async maybeEmitOAuthCardOnSubscribe(channelId: string): Promise<void> {
     const model = this.getModel();
     const colon = model.indexOf(":");
     const providerId = colon > 0 ? model.slice(0, colon) : model;
-    // Drop any stale dedupe entry from before the panel reloaded so the
-    // card can re-emit. The set is in-memory; entries from a hibernated
-    // DO are already gone, but a same-process re-subscribe also needs
-    // this to push afresh.
-    this.oauthCardsEmitted.delete(`${channelId}::${providerId}`);
-    try {
-      await this.rpc.call<string>("main", "authTokens.getProviderToken", providerId);
-    } catch (err) {
-      if (!isNotLoggedInError(err)) return; // network blip etc — ignore here, the next turn will surface it
-      this.buildUICallbacks(channelId).requestProviderOAuth(
+    this.oauthCardsEmitted.delete(`${channelId}::oauth::${providerId}`);
+    this.oauthCardsEmitted.delete(`${channelId}::config::${providerId}`);
+    this.oauthCardsEmitted.delete(`${channelId}::consent::${providerId}`);
+
+    const connections = await this.rpc.call<Array<{ connectionId: string }>>(
+      "main",
+      "credentials.listConnections",
+      { providerId },
+    ).catch(() => []);
+    if (connections.length === 0) {
+      if (isEnvVarOnlyProvider(providerId)) {
+        this.buildUICallbacks(channelId).requestProviderConfig?.(
+          providerId,
+          providerDisplayName(providerId),
+        );
+      } else {
+        this.buildUICallbacks(channelId).requestProviderOAuth(
+          providerId,
+          providerDisplayName(providerId),
+        );
+      }
+      return;
+    }
+
+    const hasConsent = await this.rpc.call<boolean>(
+      "main",
+      "credentials.checkConsent",
+      { providerId },
+    ).catch(() => false);
+    if (!hasConsent) {
+      this.buildUICallbacks(channelId).requestConsentGrant?.(
         providerId,
         providerDisplayName(providerId),
       );
@@ -1006,7 +1100,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       requestProviderOAuth: (providerId, displayName) => {
         const participantId = this.subscriptions.getParticipantId(channelId);
         if (!participantId) return;
-        const key = `${channelId}::${providerId}`;
+        const key = `${channelId}::oauth::${providerId}`;
         if (this.oauthCardsEmitted.has(key)) return;
         this.oauthCardsEmitted.add(key);
 
@@ -1030,6 +1124,58 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           })
           .catch((err) => {
             console.error(`[AgentWorkerBase] Failed to emit OAuth Connect card for ${providerId}:`, err);
+            this.oauthCardsEmitted.delete(key);
+          });
+      },
+      requestProviderConfig: (providerId, displayName) => {
+        const participantId = this.subscriptions.getParticipantId(channelId);
+        if (!participantId) return;
+        const key = `${channelId}::config::${providerId}`;
+        if (this.oauthCardsEmitted.has(key)) return;
+        this.oauthCardsEmitted.add(key);
+
+        const channel = this.createChannelClient(channelId);
+        const messageId = crypto.randomUUID();
+        const content = JSON.stringify({
+          id: `provider-config-${providerId}-${messageId}`,
+          code: PROVIDER_CONFIG_CARD_TSX,
+          props: {
+            providerId,
+            displayName,
+            envVar: `${providerId.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`,
+          },
+        });
+        void channel
+          .send(participantId, messageId, content, {
+            contentType: "inline_ui",
+            persist: false,
+          })
+          .catch((err) => {
+            console.error(`[AgentWorkerBase] Failed to emit provider config card for ${providerId}:`, err);
+            this.oauthCardsEmitted.delete(key);
+          });
+      },
+      requestConsentGrant: (providerId, displayName) => {
+        const participantId = this.subscriptions.getParticipantId(channelId);
+        if (!participantId) return;
+        const key = `${channelId}::consent::${providerId}`;
+        if (this.oauthCardsEmitted.has(key)) return;
+        this.oauthCardsEmitted.add(key);
+
+        const channel = this.createChannelClient(channelId);
+        const messageId = crypto.randomUUID();
+        const content = JSON.stringify({
+          id: `consent-grant-${providerId}-${messageId}`,
+          code: CONSENT_GRANT_CARD_TSX,
+          props: { providerId, displayName },
+        });
+        void channel
+          .send(participantId, messageId, content, {
+            contentType: "inline_ui",
+            persist: false,
+          })
+          .catch((err) => {
+            console.error(`[AgentWorkerBase] Failed to emit consent grant card for ${providerId}:`, err);
             this.oauthCardsEmitted.delete(key);
           });
       },

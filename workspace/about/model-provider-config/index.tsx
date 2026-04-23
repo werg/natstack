@@ -15,10 +15,10 @@ import { rpc } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
 
 interface ProviderStatus {
-  provider: string;
-  kind: "oauth" | "env-var";
-  status: "connected" | "disconnected" | "configured" | "missing";
-  displayName: string;
+  id: string;
+      kind: "oauth" | "env";
+  status: "connected" | "disconnected" | "configured" | "unconfigured";
+  name: string;
   envVar?: string;
 }
 
@@ -28,7 +28,7 @@ function ModelProviderConfigPage() {
   const [connecting, setConnecting] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const list = await rpc.call<ProviderStatus[]>("main", "auth.listProviders");
+    const list = await rpc.call<ProviderStatus[]>("main", "credentialFlow.listProviders");
     setProviders(list);
     setLoading(false);
   }, []);
@@ -42,10 +42,10 @@ function ModelProviderConfigPage() {
     try {
       const result = await rpc.call<{ success: boolean; error?: string }>(
         "main",
-        "auth.startOAuthLogin",
+        "credentialFlow.connect",
         providerId,
       );
-      if (!result.success) {
+      if (result && !result.success) {
         alert(`Login failed: ${result.error ?? "unknown error"}`);
       }
       await refresh();
@@ -58,7 +58,7 @@ function ModelProviderConfigPage() {
 
   const handleDisconnect = async (providerId: string) => {
     try {
-      await rpc.call<void>("main", "auth.logout", providerId);
+      await rpc.call<void>("main", "credentialFlow.disconnect", providerId);
       await refresh();
     } catch (err) {
       alert(`Disconnect failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -74,7 +74,7 @@ function ModelProviderConfigPage() {
   }
 
   const oauthProviders = providers.filter((p) => p.kind === "oauth");
-  const envProviders = providers.filter((p) => p.kind === "env-var");
+  const envProviders = providers.filter((p) => p.kind === "env");
 
   return (
     <div
@@ -108,11 +108,11 @@ function ModelProviderConfigPage() {
         ) : (
           oauthProviders.map((p) => (
             <ProviderRow
-              key={p.provider}
+              key={p.id}
               status={p}
-              connecting={connecting === p.provider}
-              onConnect={() => handleConnect(p.provider)}
-              onDisconnect={() => handleDisconnect(p.provider)}
+              connecting={connecting === p.id}
+              onConnect={() => handleConnect(p.id)}
+              onDisconnect={() => handleDisconnect(p.id)}
             />
           ))
         )}
@@ -127,7 +127,7 @@ function ModelProviderConfigPage() {
             No environment-variable providers available.
           </p>
         ) : (
-          envProviders.map((p) => <EnvProviderRow key={p.provider} status={p} />)
+          envProviders.map((p) => <EnvProviderRow key={p.id} status={p} />)
         )}
       </section>
     </div>
@@ -156,7 +156,7 @@ function ProviderRow({ status, connecting, onConnect, onDisconnect }: ProviderRo
       }}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
-        <div style={{ fontWeight: 500 }}>{status.displayName}</div>
+        <div style={{ fontWeight: 500 }}>{status.name}</div>
         <div style={{ fontSize: "0.875rem" }}>
           {isConnected ? (
             <span style={{ color: "var(--green-11, #2b9348)" }}>✓ Connected</span>
@@ -210,7 +210,7 @@ function EnvProviderRow({ status }: EnvProviderRowProps) {
       }}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
-        <div style={{ fontWeight: 500 }}>{status.displayName}</div>
+        <div style={{ fontWeight: 500 }}>{status.name}</div>
         <div style={{ fontSize: "0.875rem", opacity: 0.75 }}>
           {status.envVar ?? "(no env var)"}:{" "}
           {isConfigured ? (

@@ -3,6 +3,7 @@ import { botToken } from "./botToken.js";
 import { cliPiggyback } from "./cliPiggyback.js";
 import { composioBridge } from "./composioBridge.js";
 import { deviceCode } from "./deviceCode.js";
+import { envVar } from "./envVar.js";
 import { githubAppInstallation } from "./githubAppInstallation.js";
 import { loopbackPkce } from "./loopbackPkce.js";
 import { mcpDcr } from "./mcpDcr.js";
@@ -19,6 +20,7 @@ export const builtinFlows: Map<string, FlowRunner> = new Map([
   ["service-account", serviceAccount],
   ["bot-token", botToken],
   ["github-app-installation", githubAppInstallation],
+  ["env-var", envVar],
 ]);
 
 export {
@@ -26,6 +28,7 @@ export {
   cliPiggyback,
   composioBridge,
   deviceCode,
+  envVar,
   githubAppInstallation,
   loopbackPkce,
   mcpDcr,

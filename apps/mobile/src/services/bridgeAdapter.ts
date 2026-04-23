@@ -30,7 +30,7 @@ export function createBridgeAdapter(deps: {
 }) {
   /**
    * Run the client-owned OAuth flow for a provider, then ship the
-   * resulting credentials to the server's `authTokens.persist`. Concurrent
+   * resulting authorization code back to the server's credentials service. Concurrent
    * calls for the same provider share the in-flight promise so the OS
    * browser is opened at most once per attempt.
    */
@@ -43,8 +43,19 @@ export function createBridgeAdapter(deps: {
 
     const promise = (async () => {
       try {
-        const credentials = await runOpenaiCodexFlow();
-        await deps.transport.call("main", "authTokens.persist", providerId, credentials);
+        const { authorizeUrl, nonce } = await deps.transport.call<{
+          authorizeUrl: string;
+          nonce: string;
+        }>("main", "credentials.beginConsent", {
+          providerId,
+          scopes: [],
+          redirect: "mobile-universal",
+        });
+        const code = await runOpenaiCodexFlow(authorizeUrl, nonce);
+        await deps.transport.call("main", "credentials.completeConsent", {
+          nonce,
+          code,
+        });
         return { success: true };
       } catch (err) {
         return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -60,12 +71,14 @@ export function createBridgeAdapter(deps: {
   return {
     async handle(panelId: string, method: string, args: unknown[]): Promise<unknown> {
       switch (method) {
-        case "auth.startOAuthLogin":
+        case "credentialFlow.connect":
           return startOAuthLogin(args[0] as string);
-        case "auth.listProviders":
-          return deps.transport.call("main", "authTokens.listProviders");
-        case "auth.logout":
-          return deps.transport.call("main", "authTokens.logout", args[0] as string);
+        case "credentialFlow.listProviders":
+          return deps.transport.call("main", "credentials.listProviders");
+        case "credentialFlow.disconnect":
+          return deps.transport.call("main", "credentials.revokeConsent", {
+            providerId: args[0] as string,
+          });
         case "getPanelInit":
           return deps.panelManager.getPanelInit(panelId);
         case "getInfo":

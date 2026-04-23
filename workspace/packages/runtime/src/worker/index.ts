@@ -31,9 +31,9 @@ import type { RpcBridge } from "@natstack/rpc";
 import { createHttpRpcBridge } from "../shared/httpRpcBridge.js";
 import { createDbClient } from "../shared/database.js";
 import { createRpcFs } from "../shared/rpcFs.js";
+import { createCredentialClient, type CredentialClient } from "../shared/credentials.js";
 import { createWorkerdClient, type WorkerdClient } from "../shared/workerd.js";
 import { createWorkspaceClient, type WorkspaceClient } from "../shared/workspace.js";
-import { createOAuthClient, type OAuthClient } from "../shared/oauth.js";
 import { createNotificationClient, type NotificationClient } from "../shared/notifications.js";
 import { createParentHandle } from "../shared/handles.js";
 import { helpfulNamespace } from "../shared/helpfulNamespace.js";
@@ -42,10 +42,12 @@ import type { WorkerEnv } from "./types.js";
 import type { RuntimeFs } from "../types.js";
 
 export type { WorkerEnv, ExecutionContext } from "./types.js";
-export type { OAuthToken, OAuthConnection, OAuthClient, OAuthStartAuthResult, ConsentRecord } from "../shared/oauth.js";
+export type { CredentialClient, CredentialHandle, ConnectionRecord } from "../shared/credentials.js";
 export type { NotificationClient } from "../shared/notifications.js";
 export { DurableObjectBase } from "./durable-base.js";
 export type { DurableObjectContext, SqlStorage, SqlResult, DORef } from "./durable-base.js";
+export { registerManifestWebhooks } from "./webhooks.js";
+export type { RegisteredWebhookHandler, RegisterWebhookOptions } from "./webhooks.js";
 // Note: createTestDO is intentionally NOT exported here — it depends on better-sqlite3
 // which is a Node.js-only dependency that can't be bundled for workerd.
 // Import directly from "@workspace/runtime/src/worker/durable-test-utils" in tests.
@@ -61,7 +63,7 @@ export interface WorkerRuntime {
   readonly fs: RuntimeFs;
   readonly workers: WorkerdClient;
   readonly workspace: WorkspaceClient;
-  readonly oauth: OAuthClient;
+  readonly credentials: CredentialClient;
   readonly notifications: NotificationClient;
   readonly contextId: string;
   readonly gitConfig: null;
@@ -102,6 +104,7 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
   }
 
   const selfId = `worker:${workerId}`;
+  installProxyFetchHeader(env);
   const rpc = createHttpRpcBridge({
     selfId,
     serverUrl,
@@ -112,7 +115,7 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
   const db = createDbClient(rpc);
   const workers = helpfulNamespace("workers", createWorkerdClient(rpc));
   const workspaceApi = helpfulNamespace("workspace", createWorkspaceClient(rpc));
-  const oauth = helpfulNamespace("oauth", createOAuthClient(rpc));
+  const credentials = helpfulNamespace("credentials", createCredentialClient(rpc));
   const notifications = helpfulNamespace("notifications", createNotificationClient(rpc));
 
   const parentId = (env.PARENT_ID as string) || null;
@@ -127,7 +130,7 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     fs,
     workers,
     workspace: workspaceApi,
-    oauth,
+    credentials,
     notifications,
     contextId: env.CONTEXT_ID,
     gitConfig: null,
@@ -153,6 +156,28 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
   cachedWorkerId = workerId;
 
   return runtime;
+}
+
+function installProxyFetchHeader(env: WorkerEnv): void {
+  const globals = globalThis as typeof globalThis & {
+    __natstackProxyFetchInstalled?: boolean;
+    __natstackProxyAuthToken?: string;
+  };
+  globals.__natstackProxyAuthToken = String(env.PROXY_AUTH_TOKEN ?? "");
+  if (globals.__natstackProxyFetchInstalled) {
+    return;
+  }
+
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  globalThis.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = new Request(input, init);
+    const headers = new Headers(request.headers);
+    if (globals.__natstackProxyAuthToken) {
+      headers.set("x-natstack-proxy-auth", globals.__natstackProxyAuthToken);
+    }
+    return originalFetch(new Request(request, { headers }));
+  };
+  globals.__natstackProxyFetchInstalled = true;
 }
 
 /**

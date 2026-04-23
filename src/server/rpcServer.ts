@@ -986,6 +986,10 @@ export class RpcServer {
     );
   }
 
+  async callTarget<T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T> {
+    return this.relayCall("main", targetId, method, args) as Promise<T>;
+  }
+
   private async relayCall(callerId: string, targetId: string, method: string, args: unknown[]): Promise<unknown> {
     const isPanelOrShellTarget = !targetId.startsWith("do:") && !targetId.startsWith("worker:");
     if (isPanelOrShellTarget) {

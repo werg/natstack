@@ -1,3 +1,5 @@
+import { connect, type CredentialHandle } from "../../runtime/src/worker/credentials.js";
+
 const GITHUB_API_BASE = "https://api.github.com";
 const GITHUB_ACCEPT_HEADER = "application/vnd.github+json";
 
@@ -150,19 +152,19 @@ function toQueryParams(params?: object): string {
 }
 
 async function githubFetch<T>(
-  token: string,
   path: string,
   init?: RequestInit,
+  auth?: CredentialHandle,
 ): Promise<T> {
+  const handle = auth ?? await ensureAuth();
   const headers = new Headers(init?.headers);
   headers.set("Accept", GITHUB_ACCEPT_HEADER);
-  headers.set("Authorization", `Bearer ${token}`);
 
   if (init?.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
 
-  const response = await fetch(`${GITHUB_API_BASE}${path}`, {
+  const response = await handle.fetch(`${GITHUB_API_BASE}${path}`, {
     ...init,
     headers,
   });
@@ -177,72 +179,85 @@ async function githubFetch<T>(
   return await response.json() as T;
 }
 
-export async function getUser(token: string): Promise<GitHubUser> {
-  return githubFetch<GitHubUser>(token, "/user");
+let github: CredentialHandle | undefined;
+
+async function ensureAuth(): Promise<CredentialHandle> {
+  if (!github) {
+    github = await connect("github");
+  }
+  return github;
+}
+
+export async function getUser(auth?: CredentialHandle): Promise<GitHubUser> {
+  return githubFetch<GitHubUser>("/user", undefined, auth);
 }
 
 export async function listRepos(
-  token: string,
+  auth?: CredentialHandle,
   opts?: ListReposOptions,
 ): Promise<GitHubRepo[]> {
   return githubFetch<GitHubRepo[]>(
-    token,
     `/user/repos${toQueryParams(opts)}`,
+    undefined,
+    auth,
   );
 }
 
 export async function getRepo(
-  token: string,
   owner: string,
   repo: string,
+  auth?: CredentialHandle,
 ): Promise<GitHubRepo> {
   return githubFetch<GitHubRepo>(
-    token,
     `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+    undefined,
+    auth,
   );
 }
 
 export async function listIssues(
-  token: string,
   owner: string,
   repo: string,
   opts?: ListIssuesOptions,
+  auth?: CredentialHandle,
 ): Promise<GitHubIssue[]> {
   const labels = Array.isArray(opts?.labels) ? opts.labels.join(",") : opts?.labels;
   return githubFetch<GitHubIssue[]>(
-    token,
     `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues${toQueryParams({
       ...opts,
       labels,
     })}`,
+    undefined,
+    auth,
   );
 }
 
 export async function createIssue(
-  token: string,
   owner: string,
   repo: string,
   params: CreateIssueParams,
+  auth?: CredentialHandle,
 ): Promise<GitHubIssue> {
   return githubFetch<GitHubIssue>(
-    token,
     `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues`,
     {
       method: "POST",
       body: JSON.stringify(params),
     },
+    auth,
   );
 }
 
 export async function getIssue(
-  token: string,
   owner: string,
   repo: string,
   number: number,
+  auth?: CredentialHandle,
 ): Promise<GitHubIssue> {
   return githubFetch<GitHubIssue>(
-    token,
     `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}`,
+    undefined,
+    auth,
   );
 }
 

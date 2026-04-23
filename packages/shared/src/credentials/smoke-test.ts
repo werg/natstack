@@ -14,7 +14,7 @@ async function smokeTest(manifest: ProviderManifest): Promise<{ provider: string
     }
 
     try {
-      const credential = await runner(flow);
+      const credential = await runner(flow, manifest.id);
       results.push({
         provider: manifest.id,
         flow: flow.type,

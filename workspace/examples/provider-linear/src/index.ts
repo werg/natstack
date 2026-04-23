@@ -204,9 +204,9 @@ export function onIssueEvent(event: unknown): {
   raw: unknown;
 } {
   const payload = isRecord(event) ? event : null;
-  const actionValue = payload?.action;
+  const actionValue = payload?.["action"];
   const action = typeof actionValue === "string" ? actionValue : null;
-  const issue = payload && "issue" in payload ? payload.issue : null;
+  const issue = payload && "issue" in payload ? payload["issue"] : null;
 
   return {
     type: "Issue",

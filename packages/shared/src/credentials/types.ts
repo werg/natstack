@@ -4,6 +4,7 @@ export interface ProviderManifest {
   clientId?: string;
   apiBase: string[];
   flows: FlowConfig[];
+  authInjection?: AuthInjection;
   scopes?: Record<string, string>;
   scopeDescriptions?: Record<string, string>;
   rateLimits?: RateLimitConfig;
@@ -23,6 +24,14 @@ export interface ProviderManifest {
   };
 }
 
+export interface AuthInjection {
+  type: "header" | "query-param";
+  headerName?: string;
+  valueTemplate?: string;
+  paramName?: string;
+  stripHeaders?: string[];
+}
+
 export interface FlowConfig {
   type:
     | 'loopback-pkce'
@@ -33,7 +42,8 @@ export interface FlowConfig {
     | 'composio-bridge'
     | 'service-account'
     | 'bot-token'
-    | 'github-app-installation';
+    | 'github-app-installation'
+    | "env-var";
   clientId?: string;
   clientSecret?: string;
   authorizeUrl?: string;
@@ -43,6 +53,13 @@ export interface FlowConfig {
   jsonPath?: string;
   probeUrl?: string;
   resource?: string;
+  envVar?: string;
+  extraAuthorizeParams?: Record<string, string>;
+  fixedScope?: string;
+  tokenMetadata?: Record<string, {
+    source: "jwt-claim" | "response-field";
+    path: string;
+  }>;
 }
 
 export interface Credential {
@@ -54,6 +71,7 @@ export interface Credential {
   refreshToken?: string;
   scopes: string[];
   expiresAt?: number;
+  metadata?: Record<string, string>;
 }
 
 export interface AccountIdentity {
@@ -70,12 +88,14 @@ export interface CredentialHandle {
 }
 
 export interface ConsentGrant {
-  workerId: string;
+  codeIdentity: string;
+  codeIdentityType: "repo" | "hash";
   providerId: string;
   connectionId: string;
   scopes: string[];
   grantedAt: number;
-  role?: string;
+  grantedBy: string;
+  transient?: boolean;
 }
 
 export interface RateLimitConfig {
@@ -129,7 +149,7 @@ export interface WebhookBinding {
 export interface WebhookSubscriptionConfig {
   event: string;
   delivery: 'https-post' | 'pubsub-push';
-  verify: string;
+  verify?: string;
   watch?: {
     type: string;
     renewEveryHours?: number;

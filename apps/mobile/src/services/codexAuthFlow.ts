@@ -1,36 +1,33 @@
 /**
  * OpenAI Codex (ChatGPT) login flow — mobile.
  *
- * Mirrors the desktop `src/main/services/authService.ts` flow but uses
- * the OS browser + a custom-URL-scheme deep-link instead of a loopback
- * HTTP server. The deep-link handler in `oauthHandler.ts` resolves the
- * pending entry registered here.
+ * Uses the server-prepared authorize URL, then waits for the browser to
+ * return a custom-URL-scheme deep link containing the authorization code.
  */
 
 import { Linking } from "react-native";
-import { openaiCodex, type AuthFlowCredentials } from "@natstack/auth-flow";
 import { registerPendingFlow, dropPendingFlow } from "./authCallbackRegistry";
 
-// Path component must be `/auth/callback` to match OpenAI's Codex OAuth
-// client allowlist; the scheme + host are owned by the mobile app via the
-// custom URL scheme registered in Info.plist / AndroidManifest.xml.
-const REDIRECT_URI = "natstack://auth/callback";
 const FLOW_TIMEOUT_MS = 10 * 60 * 1000;
 
-export async function runOpenaiCodexFlow(): Promise<AuthFlowCredentials> {
-  const { authUrl, session } = await openaiCodex.buildAuthorizeUrl({ redirectUri: REDIRECT_URI });
+export async function runOpenaiCodexFlow(authorizeUrl: string, expectedState: string): Promise<string> {
+  const authUrl = new URL(authorizeUrl);
+  const state = authUrl.searchParams.get("state");
+  if (!state || state !== expectedState) {
+    throw new Error("OAuth state mismatch");
+  }
 
   const code = await new Promise<string>((resolve, reject) => {
     const timer = setTimeout(() => {
-      dropPendingFlow(session.state);
+      dropPendingFlow(expectedState);
       reject(new Error("OAuth flow timed out after 10 minutes"));
     }, FLOW_TIMEOUT_MS);
 
-    registerPendingFlow(session.state, {
+    registerPendingFlow(expectedState, {
       timer,
       resolve: (params) => {
         clearTimeout(timer);
-        if (params.state !== session.state) {
+        if (params.state !== expectedState) {
           reject(new Error("OAuth state mismatch"));
           return;
         }
@@ -43,15 +40,11 @@ export async function runOpenaiCodexFlow(): Promise<AuthFlowCredentials> {
     });
 
     void Linking.openURL(authUrl).catch((err: unknown) => {
-      dropPendingFlow(session.state);
+      dropPendingFlow(expectedState);
       clearTimeout(timer);
       reject(err instanceof Error ? err : new Error(String(err)));
     });
   });
 
-  return openaiCodex.exchangeCode({
-    code,
-    verifier: session.verifier,
-    redirectUri: session.redirectUri,
-  });
+  return code;
 }

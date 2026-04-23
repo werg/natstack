@@ -4,6 +4,11 @@ export const github: ProviderManifest = {
   id: "github",
   displayName: "GitHub",
   clientId: "PLACEHOLDER_GITHUB_CLIENT_ID",
+  authInjection: {
+    type: "header",
+    headerName: "Authorization",
+    valueTemplate: "Bearer {token}",
+  },
   apiBase: [
     "https://api.github.com",
     "https://uploads.github.com",

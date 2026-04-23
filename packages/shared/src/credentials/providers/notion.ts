@@ -3,6 +3,11 @@ import type { ProviderManifest } from "../types.js";
 export const notion: ProviderManifest = {
   id: "notion",
   displayName: "Notion",
+  authInjection: {
+    type: "header",
+    headerName: "Authorization",
+    valueTemplate: "Bearer {token}",
+  },
   apiBase: [
     "https://api.notion.com",
   ],

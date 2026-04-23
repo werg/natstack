@@ -1,4 +1,4 @@
-import { requestConsent } from "../../runtime/src/worker/credentials.js";
+import { connect } from "../../runtime/src/worker/credentials.js";
 import type { CredentialHandle } from "../../runtime/src/worker/credentials.js";
 
 export const manifest = {
@@ -123,8 +123,8 @@ export async function onSourceIssue(event: SourceIssueEvent): Promise<MirrorIssu
 }
 
 export async function mirrorIssue(params: MirrorIssueParams): Promise<MirrorIssueResult> {
-  const sourceAuth = await requestConsent("github", { role: "source" });
-  const targetAuth = await requestConsent("github", { role: "target" });
+  const sourceAuth = await connect("github");
+  const targetAuth = await connect("github");
 
   const sourceIssue = await getIssue(
     sourceAuth,
@@ -307,16 +307,14 @@ async function githubRequest<T>(
   path: string,
   init: RequestInit,
 ): Promise<T> {
-  const apiBase = getApiBase(auth);
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/vnd.github+json");
-  headers.set("X-Natstack-Connection", auth.connectionId);
 
   if (init.body) {
     headers.set("Content-Type", "application/json");
   }
 
-  const response = await fetch(`${apiBase}${path}`, {
+  const response = await auth.fetch(`${GITHUB_API_FALLBACK}${path}`, {
     ...init,
     headers,
   });
@@ -329,10 +327,6 @@ async function githubRequest<T>(
   }
 
   return await response.json() as T;
-}
-
-function getApiBase(auth: CredentialHandle): string {
-  return auth.apiBase[0] ?? GITHUB_API_FALLBACK;
 }
 
 function buildIssuesPath(owner: string, repo: string): string {

@@ -215,32 +215,22 @@ export const tokens = {
 };
 
 // =============================================================================
-// Auth Service (W1a)
+// Credential Flow Service
 // =============================================================================
 
-/**
- * Provider entry returned by auth.listProviders.
- *
- * Shape is placeholder — the auth service is being built by a parallel track
- * (W1a) and the final shape may differ. Kept minimal so the shell just has
- * enough to render a row and trigger a login/logout.
- */
-export interface AuthProvider {
+export interface CredentialProvider {
   id: string;
   name: string;
-  /** "oauth" providers use startOAuthLogin; "env" providers rely on env vars. */
   kind: "oauth" | "env";
-  /** "connected" | "configured" means the provider is usable. */
   status: "connected" | "configured" | "disconnected" | "unconfigured";
-  /** For env providers, the env var name we look for. */
   envVar?: string;
 }
 
-export const auth = {
-  listProviders: () => rpc.call<AuthProvider[]>("main", "auth.listProviders"),
-  startOAuthLogin: (providerId: string) =>
-    rpc.call<void>("main", "auth.startOAuthLogin", providerId),
-  logout: (providerId: string) => rpc.call<void>("main", "auth.logout", providerId),
+export const credentialFlow = {
+  listProviders: () => rpc.call<CredentialProvider[]>("main", "credentialFlow.listProviders"),
+  connect: (providerId: string) =>
+    rpc.call<{ success: boolean; error?: string }>("main", "credentialFlow.connect", providerId),
+  disconnect: (providerId: string) => rpc.call<void>("main", "credentialFlow.disconnect", providerId),
 };
 
 // =============================================================================

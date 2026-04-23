@@ -4,17 +4,18 @@
  * Lifecycle:
  * 1. Panel calls startSync(connectionId, providerKey, intervalMs)
  * 2. DO stores config in state KV and sets first alarm
- * 3. On alarm: gets OAuth token via RPC, fetches Gmail history via
+ * 3. On alarm: resolves a credential handle via RPC, fetches Gmail history via
  *    native fetch, publishes new-mail events to PubSub via RPC
  * 4. Panel subscribes to PubSub channel for real-time updates
  * 5. Panel calls stopSync() to cancel polling
  *
- * Token acquisition: Uses the shared OAuthClient via the RPC bridge
+ * Token acquisition: Uses the shared credential client via the RPC bridge
  * (inherited from DurableObjectBase).
  */
 
 import { DurableObjectBase } from "@workspace/runtime/worker";
 import type { DurableObjectContext } from "@workspace/runtime/worker";
+import { connect, type CredentialHandle } from "@workspace/runtime/worker/credentials";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -120,19 +121,25 @@ export class EmailSyncWorker extends DurableObjectBase {
     this.setStateValue("sync_status", JSON.stringify(status));
   }
 
-  // --- OAuth token via RPC ---
+  // --- Credential handles ---
 
-  private async getAccessToken(config: SyncConfig): Promise<string> {
-    const token = await this.oauth.getToken(config.providerKey, config.connectionId);
-    return token.accessToken;
+  private credentialHandles = new Map<string, CredentialHandle>();
+
+  private async getCredentialHandle(config: SyncConfig): Promise<CredentialHandle> {
+    const key = `${config.providerKey}:${config.connectionId}`;
+    const existing = this.credentialHandles.get(key);
+    if (existing) {
+      return existing;
+    }
+    const handle = await connect(config.providerKey, { connectionId: config.connectionId });
+    this.credentialHandles.set(key, handle);
+    return handle;
   }
 
   // --- Gmail API (native fetch — DOs have outbound network) ---
 
-  private async gmailFetch<T>(path: string, accessToken: string): Promise<T> {
-    const res = await fetch(`${GMAIL_BASE}${path}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
+  private async gmailFetch<T>(path: string, handle: CredentialHandle): Promise<T> {
+    const res = await handle.fetch(`${GMAIL_BASE}${path}`);
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`Gmail API ${res.status}: ${body}`);
@@ -140,12 +147,12 @@ export class EmailSyncWorker extends DurableObjectBase {
     return res.json() as Promise<T>;
   }
 
-  private async getProfile(accessToken: string): Promise<GmailProfileResponse> {
-    return this.gmailFetch("/profile", accessToken);
+  private async getProfile(handle: CredentialHandle): Promise<GmailProfileResponse> {
+    return this.gmailFetch("/profile", handle);
   }
 
   private async getHistory(
-    accessToken: string,
+    handle: CredentialHandle,
     startHistoryId: string,
   ): Promise<GmailHistoryResponse> {
     // Paginate through all history pages to avoid missing messages
@@ -158,7 +165,7 @@ export class EmailSyncWorker extends DurableObjectBase {
         maxResults: String(MAX_MESSAGES_PER_SYNC),
       });
       if (pageToken) params.set("pageToken", pageToken);
-      const page = await this.gmailFetch<GmailHistoryResponse>(`/history?${params}`, accessToken);
+      const page = await this.gmailFetch<GmailHistoryResponse>(`/history?${params}`, handle);
       combined.historyId = page.historyId;
       if (page.history) {
         combined.history = [...(combined.history ?? []), ...page.history];
@@ -169,12 +176,12 @@ export class EmailSyncWorker extends DurableObjectBase {
   }
 
   private async getMessageMetadata(
-    accessToken: string,
+    handle: CredentialHandle,
     messageId: string,
   ): Promise<GmailMessageMetadata> {
     return this.gmailFetch(
       `/messages/${messageId}?format=metadata&metadataHeaders=Subject&metadataHeaders=From`,
-      accessToken,
+      handle,
     );
   }
 
@@ -220,8 +227,8 @@ export class EmailSyncWorker extends DurableObjectBase {
 
     // Seed historyId from the user's profile so we only get new messages
     try {
-      const token = await this.getAccessToken(config);
-      const profile = await this.getProfile(token);
+      const handle = await this.getCredentialHandle(config);
+      const profile = await this.getProfile(handle);
       config.lastHistoryId = profile.historyId;
     } catch (err) {
       console.warn("[EmailSyncWorker] Could not seed historyId:", err);
@@ -284,11 +291,11 @@ export class EmailSyncWorker extends DurableObjectBase {
   // --- Core sync logic ---
 
   private async doSync(config: SyncConfig): Promise<number> {
-    const accessToken = await this.getAccessToken(config);
+    const handle = await this.getCredentialHandle(config);
 
     // If no historyId yet, seed it from the profile (first sync)
     if (!config.lastHistoryId) {
-      const profile = await this.getProfile(accessToken);
+      const profile = await this.getProfile(handle);
       config.lastHistoryId = profile.historyId;
       this.setConfig(config);
       return 0;
@@ -297,11 +304,11 @@ export class EmailSyncWorker extends DurableObjectBase {
     // Fetch history since last sync
     let history: GmailHistoryResponse;
     try {
-      history = await this.getHistory(accessToken, config.lastHistoryId);
+      history = await this.getHistory(handle, config.lastHistoryId);
     } catch (err) {
       // historyId may be expired (404) — reseed from profile
       if (String(err).includes("404") || String(err).includes("notFound")) {
-        const profile = await this.getProfile(accessToken);
+        const profile = await this.getProfile(handle);
         config.lastHistoryId = profile.historyId;
         this.setConfig(config);
         return 0;
@@ -334,7 +341,7 @@ export class EmailSyncWorker extends DurableObjectBase {
     const messages: Array<{ id: string; threadId: string; subject: string; from: string }> = [];
     for (const id of unseenIds.slice(0, MAX_MESSAGES_PER_SYNC)) {
       try {
-        const msg = await this.getMessageMetadata(accessToken, id);
+        const msg = await this.getMessageMetadata(handle, id);
         const subject = msg.payload.headers.find(h => h.name === "Subject")?.value ?? "(no subject)";
         const from = msg.payload.headers.find(h => h.name === "From")?.value ?? "";
 

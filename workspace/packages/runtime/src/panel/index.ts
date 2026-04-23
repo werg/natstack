@@ -112,10 +112,31 @@ const workspaceClient: WorkspaceClient & { openPanel: typeof _openPanel } =
   Object.assign(workspaceClientBase, { openPanel: _openPanel });
 export const workspace = helpfulNamespace("workspace", workspaceClient);
 
-// OAuth token management
-import { createOAuthClient } from "./oauth.js";
-export type { OAuthToken, OAuthConnection, OAuthClient, OAuthStartAuthResult, ConsentRecord } from "./oauth.js";
-export const oauth = helpfulNamespace("oauth", createOAuthClient(rpc));
+// Credential handles + universal outbound proxying for panel fetch().
+import {
+  connect as connectCredential,
+  initPanelCredentials,
+  listConnections as listCredentialConnections,
+  listWebhookLeases as listCredentialWebhookLeases,
+  revokeConsent as revokeCredentialConsent,
+  subscribeWebhook as subscribeCredentialWebhook,
+  unsubscribeWebhook as unsubscribeCredentialWebhook,
+} from "./credentials.js";
+export type {
+  CredentialHandle,
+  CredentialClient,
+  ConnectionRecord,
+} from "../shared/credentials.js";
+initPanelCredentials(rpc);
+const credentialApi = {
+  connect: connectCredential,
+  revokeConsent: revokeCredentialConsent,
+  listConnections: listCredentialConnections,
+  subscribeWebhook: subscribeCredentialWebhook,
+  unsubscribeWebhook: unsubscribeCredentialWebhook,
+  listWebhookLeases: listCredentialWebhookLeases,
+};
+export const credentials = helpfulNamespace("credentials", credentialApi);
 
 // Shell notifications
 import { createNotificationClient } from "./notifications.js";

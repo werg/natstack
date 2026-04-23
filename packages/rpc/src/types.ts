@@ -153,8 +153,8 @@ export interface RpcBridgeInternal extends RpcBridge {
  * panel calls will be silently misrouted to Electron IPC.
  */
 export const SERVER_SERVICE_NAMES = [
-  "authTokens",
   "build",
+  "credentials",
   "db",
   "fs",
   "git",
@@ -162,7 +162,6 @@ export const SERVER_SERVICE_NAMES = [
   "image",
   "meta",
   "notification",
-  "oauth",
   "secrets",
   "test",
   "tokens",

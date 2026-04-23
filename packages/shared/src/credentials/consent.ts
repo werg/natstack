@@ -2,23 +2,25 @@ import type { ConsentGrant } from "./types.js";
 
 const CREATE_CONSENT_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS credential_consent (
-    worker_id TEXT NOT NULL,
+    code_identity TEXT NOT NULL,
+    code_identity_type TEXT NOT NULL,
     provider_id TEXT NOT NULL,
     connection_id TEXT NOT NULL,
     scopes TEXT NOT NULL DEFAULT '[]',
     granted_at INTEGER NOT NULL,
-    role TEXT,
-    PRIMARY KEY (worker_id, provider_id, connection_id)
+    granted_by TEXT NOT NULL,
+    PRIMARY KEY (code_identity, code_identity_type, provider_id)
   )
 `;
 
 interface ConsentGrantRow {
-  worker_id: string;
+  code_identity: string;
+  code_identity_type: "repo" | "hash";
   provider_id: string;
   connection_id: string;
   scopes: string;
   granted_at: number;
-  role: string | null;
+  granted_by: string;
 }
 
 export interface DatabaseHandle {
@@ -41,114 +43,161 @@ function parseScopes(rawScopes: string): string[] {
 
 function rowToGrant(row: ConsentGrantRow): ConsentGrant {
   return {
-    workerId: row.worker_id,
+    codeIdentity: row.code_identity,
+    codeIdentityType: row.code_identity_type,
     providerId: row.provider_id,
     connectionId: row.connection_id,
     scopes: parseScopes(row.scopes),
     grantedAt: row.granted_at,
-    role: row.role ?? undefined,
+    grantedBy: row.granted_by,
   };
 }
 
 export class ConsentGrantStore {
   private readonly ready: Promise<void>;
+  private readonly transientGrants = new Map<string, ConsentGrant>();
 
   constructor(private readonly db: DatabaseHandle) {
     this.ready = Promise.resolve(this.db.exec(CREATE_CONSENT_TABLE_SQL)).then(() => undefined);
   }
 
-  async grant(grant: Omit<ConsentGrant, "grantedAt">): Promise<void> {
+  async grant(grant: ConsentGrant): Promise<void> {
     await this.ready;
 
-    await this.db.run(
-      `
-        INSERT INTO credential_consent (
-          worker_id,
-          provider_id,
-          connection_id,
-          scopes,
-          granted_at,
-          role
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(worker_id, provider_id, connection_id) DO UPDATE SET
-          scopes = excluded.scopes,
-          granted_at = excluded.granted_at,
-          role = excluded.role
-      `,
-      [
-        grant.workerId,
-        grant.providerId,
-        grant.connectionId,
-        JSON.stringify(normalizeScopes(grant.scopes)),
-        Date.now(),
-        grant.role ?? null,
-      ],
-    );
-  }
+    const normalizedGrant: ConsentGrant = {
+      ...grant,
+      scopes: normalizeScopes(grant.scopes),
+      grantedAt: grant.grantedAt || Date.now(),
+    };
 
-  async revoke(workerId: string, providerId: string, connectionId?: string): Promise<void> {
-    await this.ready;
-
-    if (connectionId) {
-      await this.db.run(
-        `
-          DELETE FROM credential_consent
-          WHERE worker_id = ? AND provider_id = ? AND connection_id = ?
-        `,
-        [workerId, providerId, connectionId],
-      );
+    if (normalizedGrant.transient) {
+      this.transientGrants.set(this.getGrantKey(normalizedGrant), normalizedGrant);
       return;
     }
 
     await this.db.run(
       `
-        DELETE FROM credential_consent
-        WHERE worker_id = ? AND provider_id = ?
+        INSERT INTO credential_consent (
+          code_identity,
+          code_identity_type,
+          provider_id,
+          connection_id,
+          scopes,
+          granted_at,
+          granted_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(code_identity, code_identity_type, provider_id) DO UPDATE SET
+          connection_id = excluded.connection_id,
+          scopes = excluded.scopes,
+          granted_at = excluded.granted_at,
+          granted_by = excluded.granted_by
       `,
-      [workerId, providerId],
+      [
+        normalizedGrant.codeIdentity,
+        normalizedGrant.codeIdentityType,
+        normalizedGrant.providerId,
+        normalizedGrant.connectionId,
+        JSON.stringify(normalizedGrant.scopes),
+        normalizedGrant.grantedAt,
+        normalizedGrant.grantedBy,
+      ],
     );
   }
 
-  async list(workerId: string): Promise<ConsentGrant[]> {
+  async revoke(codeIdentity: string, providerId: string): Promise<void> {
+    await this.ready;
+
+    await this.db.run(
+      `
+        DELETE FROM credential_consent
+        WHERE code_identity = ? AND provider_id = ?
+      `,
+      [codeIdentity, providerId],
+    );
+
+    for (const [key, grant] of Array.from(this.transientGrants.entries())) {
+      if (grant.codeIdentity === codeIdentity && grant.providerId === providerId) {
+        this.transientGrants.delete(key);
+      }
+    }
+  }
+
+  async list(repoPath: string): Promise<ConsentGrant[]> {
     await this.ready;
 
     const rows = await this.db.all<ConsentGrantRow>(
       `
-        SELECT worker_id, provider_id, connection_id, scopes, granted_at, role
+        SELECT code_identity, code_identity_type, provider_id, connection_id, scopes, granted_at, granted_by
         FROM credential_consent
-        WHERE worker_id = ?
+        WHERE code_identity = ? AND code_identity_type = 'repo'
         ORDER BY provider_id, connection_id
       `,
-      [workerId],
+      [repoPath],
     );
 
-    return rows.map(rowToGrant);
+    const transient = Array.from(this.transientGrants.values())
+      .filter((grant) => grant.codeIdentity === repoPath);
+
+    return [...rows.map(rowToGrant), ...transient].sort((left, right) => {
+      const providerCompare = left.providerId.localeCompare(right.providerId);
+      if (providerCompare !== 0) {
+        return providerCompare;
+      }
+      return left.connectionId.localeCompare(right.connectionId);
+    });
   }
 
-  async has(workerId: string, providerId: string, scopes?: string[]): Promise<boolean> {
+  async check(query: {
+    repoPath: string;
+    effectiveVersion: string;
+    providerId: string;
+  }): Promise<ConsentGrant | null> {
     await this.ready;
 
-    const rows = await this.db.all<Pick<ConsentGrantRow, "scopes">>(
+    const repoRows = await this.db.all<ConsentGrantRow>(
       `
-        SELECT scopes
+        SELECT code_identity, code_identity_type, provider_id, connection_id, scopes, granted_at, granted_by
         FROM credential_consent
-        WHERE worker_id = ? AND provider_id = ?
+        WHERE code_identity = ? AND code_identity_type = 'repo' AND provider_id = ?
+        ORDER BY granted_at DESC
       `,
-      [workerId, providerId],
+      [query.repoPath, query.providerId],
     );
-
-    if (rows.length === 0) {
-      return false;
+    if (repoRows[0]) {
+      return rowToGrant(repoRows[0]);
     }
 
-    const requestedScopes = normalizeScopes(scopes ?? []);
-    if (requestedScopes.length === 0) {
-      return true;
+    if (query.effectiveVersion) {
+      const hashRows = await this.db.all<ConsentGrantRow>(
+        `
+          SELECT code_identity, code_identity_type, provider_id, connection_id, scopes, granted_at, granted_by
+          FROM credential_consent
+          WHERE code_identity = ? AND code_identity_type = 'hash' AND provider_id = ?
+          ORDER BY granted_at DESC
+        `,
+        [query.effectiveVersion, query.providerId],
+      );
+      if (hashRows[0]) {
+        return rowToGrant(hashRows[0]);
+      }
     }
 
-    return rows.some((row) => {
-      const grantedScopes = new Set(parseScopes(row.scopes));
-      return requestedScopes.every((scope) => grantedScopes.has(scope));
-    });
+    for (const grant of this.transientGrants.values()) {
+      if (grant.providerId !== query.providerId) {
+        continue;
+      }
+      if (
+        (grant.codeIdentityType === "repo" && grant.codeIdentity === query.repoPath) ||
+        (grant.codeIdentityType === "hash" && grant.codeIdentity === query.effectiveVersion)
+      ) {
+        return grant;
+      }
+    }
+
+    return null;
+  }
+
+  private getGrantKey(grant: Pick<ConsentGrant, "codeIdentity" | "codeIdentityType" | "providerId">): string {
+    return `${grant.codeIdentityType}:${grant.codeIdentity}:${grant.providerId}`;
   }
 }

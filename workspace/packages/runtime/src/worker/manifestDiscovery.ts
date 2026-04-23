@@ -1,5 +1,3 @@
-import type { CredentialHandle } from "./credentials.js";
-
 export interface EndpointDeclaration {
   url: string;
   methods: string[] | "*";
