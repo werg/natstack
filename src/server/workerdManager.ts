@@ -347,8 +347,10 @@ export class WorkerdManager {
       const serviceCallerId = `do-service:${serviceKey}`;
       const serviceToken = this.deps.tokenManager.ensureToken(serviceCallerId, "worker");
 
+      const doProxyAuthToken = crypto.randomBytes(24).toString("base64url");
       const bindings: object[] = [
         { name: "RPC_AUTH_TOKEN", text: serviceToken },
+        { name: "PROXY_AUTH_TOKEN", text: doProxyAuthToken },
         // Source-scoped class identity
         { name: "WORKER_SOURCE", text: doService.source },
         { name: "WORKER_CLASS_NAME", text: className },
@@ -418,8 +420,10 @@ export class WorkerdManager {
       instanceNames.push(name);
 
       // Build bindings array
+      const proxyAuthToken = crypto.randomBytes(24).toString("base64url");
       const bindings: object[] = [
         { name: "RPC_AUTH_TOKEN", text: instance.token },
+        { name: "PROXY_AUTH_TOKEN", text: proxyAuthToken },
         { name: "WORKER_ID", text: instance.name },
         { name: "CONTEXT_ID", text: instance.contextId },
         { name: "SERVER_URL", text: this.deps.getServerUrl() },

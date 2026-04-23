@@ -159,6 +159,7 @@ export interface WorkspaceConfig {
   credentials?: {
     providers?: Record<string, { clientId?: string; clientSecret?: string }>;
     nonInteractive?: boolean;
+    mobileCallbackDomain?: string;
   };
 }
 
