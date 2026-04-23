@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { CredentialStore } from "../../../packages/shared/src/credentials/store.js";
 import { ConsentGrantStore } from "../../../packages/shared/src/credentials/consent.js";
+import { AuditLog } from "../../../packages/shared/src/credentials/audit.js";
 import { ProviderRegistry } from "../../../packages/shared/src/credentials/registry.js";
 import { FlowResolver } from "../../../packages/shared/src/credentials/resolver.js";
 import { builtinFlows } from "../../../packages/shared/src/credentials/flows/index.js";
@@ -27,6 +28,7 @@ interface PendingConsent {
 interface CredentialServiceDeps {
   credentialStore?: CredentialStore;
   consentStore?: ConsentGrantStore;
+  auditLog?: AuditLog;
   providerRegistry?: ProviderRegistry;
   flowResolver?: FlowResolver;
 }
@@ -62,7 +64,7 @@ const revokeConsentParamsSchema = z.object({
   connectionId: z.string().optional(),
 }).strict();
 
-const listConsentParamsSchema = z.object({}).strict();
+const listConsentParamsSchema = z.object({ workerId: z.string().optional() }).strict();
 
 const listConnectionsParamsSchema = z.object({
   providerId: z.string().optional(),
@@ -121,6 +123,8 @@ type WebhookSubscriptionResult = Pick<WebhookSubscription, "subscriptionId">;
 
 export function createCredentialService(deps: CredentialServiceDeps = {}): ServiceDefinition {
   const credentialStore = deps.credentialStore ?? new CredentialStore();
+  const consentStore = deps.consentStore;
+  const auditLog = deps.auditLog;
   const registry = deps.providerRegistry ?? new ProviderRegistry();
   const flowResolver = deps.flowResolver ?? new FlowResolver(builtinFlows);
   const pendingConsents = new Map<string, PendingConsent>();
@@ -159,12 +163,28 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       authorizeUrl.searchParams.set("scope", resolvedScopes);
     }
 
+    let redirectUri = "";
+    switch (params.redirect) {
+      case "server-loopback":
+        redirectUri = "http://127.0.0.1:0/oauth/callback";
+        break;
+      case "client-loopback":
+        redirectUri = "http://127.0.0.1/oauth/callback";
+        break;
+      case "mobile-universal":
+        redirectUri = "natstack://oauth/callback";
+        break;
+    }
+    if (redirectUri) {
+      authorizeUrl.searchParams.set("redirect_uri", redirectUri);
+    }
+
     pendingConsents.set(nonce, {
       nonce,
       providerId: params.providerId,
       scopes: params.scopes,
       codeVerifier,
-      redirectUri: "",
+      redirectUri,
       createdAt: Date.now(),
     });
 
@@ -271,8 +291,11 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     }
   }
 
-  async function listConsent(_params: ListConsentParams): Promise<ConsentGrant[]> {
-    return [];
+  async function listConsent(params: ListConsentParams): Promise<ConsentGrant[]> {
+    if (!consentStore || !params.workerId) {
+      return [];
+    }
+    return consentStore.list(params.workerId);
   }
 
   async function listConnections(params: ListConnectionsParams): Promise<Connection[]> {
@@ -296,8 +319,11 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     await credentialStore.save({ ...credential, connectionLabel: params.label });
   }
 
-  async function audit(_params: AuditParams): Promise<AuditEntry[]> {
-    return [];
+  async function audit(params: AuditParams): Promise<AuditEntry[]> {
+    if (!auditLog) {
+      return [];
+    }
+    return auditLog.query({ filter: params.filter, limit: params.limit, after: params.after });
   }
 
   async function subscribeWebhook(_params: SubscribeWebhookParams): Promise<WebhookSubscriptionResult> {

@@ -1,5 +1,7 @@
 import { createServer, request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import type { IncomingMessage, OutgoingHttpHeaders, Server, ServerResponse } from "node:http";
+import { connect as netConnect } from "node:net";
 import type { AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
 
@@ -213,12 +215,6 @@ export class EgressProxy {
         }
       }
 
-      if (targetUrl.protocol !== "http:") {
-        statusCode = 501;
-        this.respondWithError(res, statusCode, "HTTPS proxying is not implemented yet");
-        return;
-      }
-
       const forwardHeaders = this.buildForwardHeaders(req, targetUrl, authorization?.credential);
       const forwardResult = await this.forwardHttpRequest(req, res, targetUrl, forwardHeaders);
       statusCode = forwardResult.statusCode;
@@ -283,31 +279,59 @@ export class EgressProxy {
     const startedAt = Date.now();
     const attribution = this.attributeRequest(req);
     const authority = req.url ?? "";
+    const [host, portStr] = authority.split(":");
+    const port = parseInt(portStr || "443", 10);
+    let auditStatus = 502;
+    let auditSettled = false;
 
-    socket.write(
-      "HTTP/1.1 501 Not Implemented\r\n" +
-        "Connection: close\r\n" +
-        "Content-Type: text/plain; charset=utf-8\r\n" +
-        "\r\n" +
-        "HTTPS CONNECT tunneling is not implemented yet",
-    );
-    socket.destroy();
+    const appendConnectAudit = async (): Promise<void> => {
+      if (auditSettled) {
+        return;
+      }
+      auditSettled = true;
+      await this.appendAuditEntry({
+        ts: startedAt,
+        workerId: attribution?.workerId ?? "unknown",
+        callerId: attribution?.callerId ?? "unknown",
+        providerId: PASSTHROUGH_PROVIDER_ID,
+        connectionId: PASSTHROUGH_CONNECTION_ID,
+        method: "CONNECT",
+        url: authority ? `https://${authority}` : "CONNECT",
+        status: auditStatus,
+        durationMs: Date.now() - startedAt,
+        bytesIn: 0,
+        bytesOut: 0,
+        scopesUsed: [],
+        retries: 0,
+        breakerState: "closed",
+      });
+    };
 
-    await this.appendAuditEntry({
-      ts: startedAt,
-      workerId: attribution?.workerId ?? "unknown",
-      callerId: attribution?.callerId ?? "unknown",
-      providerId: PASSTHROUGH_PROVIDER_ID,
-      connectionId: PASSTHROUGH_CONNECTION_ID,
-      method: "CONNECT",
-      url: authority ? `https://${authority}` : "CONNECT",
-      status: 501,
-      durationMs: Date.now() - startedAt,
-      bytesIn: 0,
-      bytesOut: 0,
-      scopesUsed: [],
-      retries: 0,
-      breakerState: "closed",
+    const upstream = netConnect(port, host || authority, () => {
+      auditStatus = 200;
+      socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      if (_head.length > 0) {
+        upstream.write(_head);
+      }
+      upstream.pipe(socket);
+      socket.pipe(upstream);
+      void appendConnectAudit();
+    });
+
+    upstream.on("error", () => {
+      if (!socket.destroyed) {
+        socket.write(
+          "HTTP/1.1 502 Bad Gateway\r\n" +
+            "Connection: close\r\n\r\n",
+        );
+        socket.destroy();
+      }
+      void appendConnectAudit();
+    });
+
+    socket.on("error", () => {
+      upstream.destroy();
+      void appendConnectAudit();
     });
   }
 
@@ -424,6 +448,8 @@ export class EgressProxy {
     headers: OutgoingHttpHeaders,
   ): Promise<ForwardResult> {
     return new Promise<ForwardResult>((resolve, reject) => {
+      const requestFn = targetUrl.protocol === "https:" ? httpsRequest : httpRequest;
+      const defaultPort = targetUrl.protocol === "https:" ? 443 : 80;
       let statusCode = 502;
       let bytesIn = 0;
       let bytesOut = 0;
@@ -437,11 +463,11 @@ export class EgressProxy {
         resolve({ statusCode, bytesIn, bytesOut });
       };
 
-      const upstreamRequest = httpRequest(
+      const upstreamRequest = requestFn(
         {
           protocol: targetUrl.protocol,
           hostname: targetUrl.hostname,
-          port: targetUrl.port ? Number(targetUrl.port) : 80,
+          port: targetUrl.port ? Number(targetUrl.port) : defaultPort,
           method: req.method ?? "GET",
           path: `${targetUrl.pathname}${targetUrl.search}`,
           headers,

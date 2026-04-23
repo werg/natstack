@@ -133,7 +133,7 @@ describe("mobile OAuth flow e2e", () => {
     expect(userData.email).toBe("user@example.com");
 
     expect(provider.requests).toHaveLength(1);
-    expect(provider.requests[0]?.headers.authorization).toBe(
+    expect(provider.requests[0]?.headers["authorization"]).toBe(
       `Bearer ${credential.accessToken}`,
     );
   });

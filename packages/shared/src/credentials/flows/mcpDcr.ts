@@ -173,18 +173,18 @@ function buildAccountIdentity(tokenResponse: TokenResponse, resourceUrl: URL): A
   const idToken = getString(tokenResponse.id_token);
   const idTokenPayload = idToken ? decodeJwtPayload(idToken) : null;
 
-  const email = getString(idTokenPayload?.email);
+  const email = getString(idTokenPayload?.["email"]);
   const username =
-    getString(idTokenPayload?.preferred_username) ??
-    getString(idTokenPayload?.username) ??
-    getString(idTokenPayload?.name);
+    getString(idTokenPayload?.["preferred_username"]) ??
+    getString(idTokenPayload?.["username"]) ??
+    getString(idTokenPayload?.["name"]);
   const workspaceName =
-    getString(idTokenPayload?.workspace_name) ??
-    getString(idTokenPayload?.tenant_name) ??
+    getString(idTokenPayload?.["workspace_name"]) ??
+    getString(idTokenPayload?.["tenant_name"]) ??
     resourceUrl.hostname;
   const providerUserId =
-    getString(idTokenPayload?.sub) ??
-    getString(idTokenPayload?.uid) ??
+    getString(idTokenPayload?.["sub"]) ??
+    getString(idTokenPayload?.["uid"]) ??
     resourceUrl.hostname ??
     "mcp-user";
 
@@ -315,20 +315,6 @@ async function waitForAuthorizationCallback(state: string): Promise<Authorizatio
     await closeServer(server);
     return null;
   }
-}
-
-async function runPkceFlow(
-  authorizationEndpoint: string,
-  state: string,
-  clientId: string,
-  resource: string,
-  codeChallenge: string,
-): Promise<AuthorizationCallbackResult | null> {
-  const callbackPromise = waitForAuthorizationCallback(state);
-  const callbackServer = await callbackPromise.then(() => null).catch(() => null);
-  void callbackServer;
-
-  return null;
 }
 
 export async function mcpDcr(config: FlowConfig): Promise<Credential | null> {

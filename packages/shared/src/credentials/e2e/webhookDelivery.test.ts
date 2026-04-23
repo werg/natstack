@@ -126,7 +126,7 @@ describe("webhook delivery e2e", () => {
       eventType: "pull_request",
       event: secondEvent,
     });
-    expect(relay.delivered[0].deliveredAt).toBeTypeOf("number");
-    expect(relay.delivered[1].deliveredAt).toBeTypeOf("number");
+    expect(relay.delivered[0]!.deliveredAt).toBeTypeOf("number");
+    expect(relay.delivered[1]!.deliveredAt).toBeTypeOf("number");
   });
 });

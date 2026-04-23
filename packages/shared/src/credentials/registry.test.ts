@@ -43,14 +43,44 @@ describe("ProviderRegistry", () => {
     expect(registry.list()).toEqual([first, second]);
   });
 
-  it("loadFromConfig logs that the stub is not implemented", async () => {
+  it("applyConfig overrides clientId on manifest and its flows", () => {
     const registry = new ProviderRegistry();
-    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
-
-    await registry.loadFromConfig(["@natstack/provider-github"]);
-
-    expect(infoSpy).toHaveBeenCalledWith("ProviderRegistry.loadFromConfig is not implemented", {
-      packageNames: ["@natstack/provider-github"],
+    const manifest = createManifest({
+      clientId: "PLACEHOLDER",
+      flows: [
+        { type: "device-code", clientId: "PLACEHOLDER", deviceAuthUrl: "https://github.com/login/device/code" },
+        { type: "pat" },
+      ],
     });
+
+    registry.register(manifest);
+    registry.applyConfig({ github: { clientId: "real-client-id" } });
+
+    const updated = registry.get("github")!;
+    expect(updated.clientId).toBe("real-client-id");
+    expect(updated.flows[0]!.clientId).toBe("real-client-id");
+    expect(updated.flows[1]!.clientId).toBeUndefined();
+  });
+
+  it("applyConfig ignores unknown providers", () => {
+    const registry = new ProviderRegistry();
+    registry.applyConfig({ unknown: { clientId: "test" } });
+    expect(registry.list()).toEqual([]);
+  });
+
+  it("applyEnvironment reads NATSTACK_<PROVIDER>_CLIENT_ID", () => {
+    const registry = new ProviderRegistry();
+    registry.register(createManifest({
+      clientId: "PLACEHOLDER",
+      flows: [{ type: "device-code", clientId: "PLACEHOLDER", deviceAuthUrl: "https://github.com/login/device/code" }],
+    }));
+
+    process.env["NATSTACK_GITHUB_CLIENT_ID"] = "env-client-id";
+    try {
+      registry.applyEnvironment();
+      expect(registry.get("github")!.clientId).toBe("env-client-id");
+    } finally {
+      delete process.env["NATSTACK_GITHUB_CLIENT_ID"];
+    }
   });
 });

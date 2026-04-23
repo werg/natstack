@@ -170,7 +170,7 @@ describe("credentials e2e: refresh re-consent loop", () => {
     expect(firstRefreshedCredential.accessToken).not.toBe(initialCredential.accessToken);
     expect(firstRefreshedCredential.refreshToken).toBeTruthy();
     expect(persistedAfterFirstRefresh).toEqual(firstRefreshedCredential);
-    expect(oauthServer.refreshRequestCount).toBe(1);
+    expect(oauthServer!.refreshRequestCount).toBe(1);
 
     let secondRefreshError: Error | undefined;
     let reconsentedCredential: Credential | undefined;
@@ -185,7 +185,7 @@ describe("credentials e2e: refresh re-consent loop", () => {
 
     expect(secondRefreshError).toBeInstanceOf(Error);
     expect(secondRefreshError?.message).toContain("Configured refresh failure threshold reached");
-    expect(oauthServer.refreshRequestCount).toBe(2);
+    expect(oauthServer!.refreshRequestCount).toBe(2);
     expect(reconsentRequests).toEqual([
       {
         providerId,
@@ -227,7 +227,7 @@ describe("credentials e2e: refresh re-consent loop", () => {
     }
 
     expect(recordedRequest.path).toBe("/v1/me");
-    expect(recordedRequest.headers.authorization).toBe(
+    expect(recordedRequest.headers["authorization"]).toBe(
       `Bearer ${reconsentedCredential.accessToken}`,
     );
   });

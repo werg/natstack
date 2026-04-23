@@ -191,17 +191,17 @@ async function exchangeAuthorizationCode(
 }
 
 function buildCredential(config: FlowConfig, tokenResponse: JsonRecord): Credential | null {
-  const accessToken = firstString(tokenResponse.access_token, tokenResponse.accessToken);
+  const accessToken = firstString(tokenResponse['access_token'], tokenResponse['accessToken']);
   if (!accessToken) {
     return null;
   }
 
-  const idToken = firstString(tokenResponse.id_token, tokenResponse.idToken);
+  const idToken = firstString(tokenResponse['id_token'], tokenResponse['idToken']);
   const claimSources = [
-    asRecord(tokenResponse.accountIdentity),
-    asRecord(tokenResponse.account_identity),
-    asRecord(tokenResponse.account),
-    asRecord(tokenResponse.user),
+    asRecord(tokenResponse['accountIdentity']),
+    asRecord(tokenResponse['account_identity']),
+    asRecord(tokenResponse['account']),
+    asRecord(tokenResponse['user']),
     decodeJwtClaims(idToken),
     decodeJwtClaims(accessToken),
   ].filter((value): value is JsonRecord => value !== null);
@@ -209,9 +209,9 @@ function buildCredential(config: FlowConfig, tokenResponse: JsonRecord): Credent
   const accountIdentity = buildAccountIdentity(claimSources);
   const providerId = deriveProviderId(config, tokenResponse, claimSources);
   const connectionId =
-    firstString(tokenResponse.connectionId, tokenResponse.connection_id) ?? accountIdentity.providerUserId;
+    firstString(tokenResponse['connectionId'], tokenResponse['connection_id']) ?? accountIdentity.providerUserId;
   const connectionLabel =
-    firstString(tokenResponse.connectionLabel, tokenResponse.connection_label) ??
+    firstString(tokenResponse['connectionLabel'], tokenResponse['connection_label']) ??
     accountIdentity.email ??
     accountIdentity.username ??
     accountIdentity.workspaceName ??
@@ -223,7 +223,7 @@ function buildCredential(config: FlowConfig, tokenResponse: JsonRecord): Credent
     connectionLabel,
     accountIdentity,
     accessToken,
-    refreshToken: firstString(tokenResponse.refresh_token, tokenResponse.refreshToken) ?? undefined,
+    refreshToken: firstString(tokenResponse['refresh_token'], tokenResponse['refreshToken']) ?? undefined,
     scopes: parseScopes(tokenResponse),
     expiresAt: parseExpiresAt(tokenResponse) ?? undefined,
   };
@@ -248,7 +248,7 @@ function buildAccountIdentity(claimSources: JsonRecord[]): AccountIdentity {
 
 function deriveProviderId(config: FlowConfig, tokenResponse: JsonRecord, claimSources: JsonRecord[]): string {
   return (
-    normalizeProviderId(firstString(tokenResponse.providerId, tokenResponse.provider_id)) ??
+    normalizeProviderId(firstString(tokenResponse['providerId'], tokenResponse['provider_id'])) ??
     normalizeProviderId(firstStringFromRecords(claimSources, ['providerId', 'provider_id', 'iss', 'issuer'])) ??
     normalizeProviderId(config.resource) ??
     normalizeProviderId(config.authorizeUrl) ??
@@ -272,7 +272,7 @@ function normalizeProviderId(value: string | null | undefined): string | null {
 }
 
 function parseScopes(tokenResponse: JsonRecord): string[] {
-  const scopeValue = tokenResponse.scope ?? tokenResponse.scopes;
+  const scopeValue = tokenResponse['scope'] ?? tokenResponse['scopes'];
 
   if (typeof scopeValue === 'string') {
     return scopeValue
@@ -289,12 +289,12 @@ function parseScopes(tokenResponse: JsonRecord): string[] {
 }
 
 function parseExpiresAt(tokenResponse: JsonRecord): number | null {
-  const expiresAt = toNumber(tokenResponse.expires_at ?? tokenResponse.expiresAt);
+  const expiresAt = toNumber(tokenResponse['expires_at'] ?? tokenResponse['expiresAt']);
   if (expiresAt !== null) {
     return expiresAt;
   }
 
-  const expiresIn = toNumber(tokenResponse.expires_in ?? tokenResponse.expiresIn);
+  const expiresIn = toNumber(tokenResponse['expires_in'] ?? tokenResponse['expiresIn']);
   if (expiresIn === null) {
     return null;
   }
@@ -388,7 +388,8 @@ async function closeServer(server: Server): Promise<void> {
 async function openAuthorizationUrl(url: string): Promise<void> {
   try {
     const openModule = await import('open');
-    await openModule.default(url);
+    const openFn = openModule.default ?? openModule;
+    await (openFn as (target: string) => Promise<unknown>)(url);
   } catch {
     console.warn(`Open this URL to continue authentication: ${url}`);
   }

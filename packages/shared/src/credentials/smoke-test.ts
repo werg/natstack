@@ -1,7 +1,6 @@
 #!/usr/bin/env tsx
 import { builtinProviders } from "./providers/index.js";
 import { builtinFlows } from "./flows/index.js";
-import { FlowResolver } from "./resolver.js";
 import type { ProviderManifest } from "./types.js";
 
 async function smokeTest(manifest: ProviderManifest): Promise<{ provider: string; flow: string; ok: boolean; error?: string }[]> {
@@ -62,19 +61,35 @@ async function main(): Promise<void> {
       console.log(`   Whoami: ${provider.whoami.url}`);
     }
 
-    const resolver = new FlowResolver(builtinFlows);
-    try {
-      console.log("   Resolver: flows registered ✓");
-    } catch (err) {
-      console.log(`   Resolver: FAIL — ${err instanceof Error ? err.message : err}`);
+    if (!provider.flows.length) {
+      console.log("   ⚠ No flows configured");
+      totalFailed++;
+    } else {
+      totalPassed++;
+    }
+
+    if (!provider.apiBase.length) {
+      console.log("   ⚠ No API base URLs");
+      totalFailed++;
+    }
+
+    if (process.argv.includes("--interactive")) {
+      const results = await smokeTest(provider);
+      for (const result of results) {
+        if (result.ok) {
+          console.log(`   ✓ ${result.flow}`);
+          totalPassed++;
+        } else {
+          console.log(`   ✗ ${result.flow}: ${result.error}`);
+          totalFailed++;
+        }
+      }
     }
 
     console.log("");
   }
 
-  console.log("Manifest validation complete.");
-  console.log("Note: Live flow testing requires interactive user consent.");
-  console.log("Run with --interactive to test flows against live providers.");
+  console.log(`\nResults: ${totalPassed} passed, ${totalFailed} failed`);
 }
 
 main().catch((err) => {

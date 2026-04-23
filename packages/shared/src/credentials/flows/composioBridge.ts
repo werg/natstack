@@ -7,7 +7,7 @@ export async function composioBridge(config: FlowConfig): Promise<Credential | n
     return null;
   }
 
-  let ComposioToolset: any;
+  let ComposioToolset: (new (...args: unknown[]) => unknown) | undefined;
   try {
     const moduleName = "composio-core";
     const mod = await import(/* webpackIgnore: true */ moduleName);
@@ -21,7 +21,23 @@ export async function composioBridge(config: FlowConfig): Promise<Credential | n
   }
 
   try {
-    const client = new ComposioToolset({ apiKey });
+    const client = new ComposioToolset({ apiKey }) as {
+      getEntity?: (entityId: string) => {
+        initiateConnection?: (provider: string) => Promise<{ redirectUrl?: string } | null> | { redirectUrl?: string } | null;
+        getConnection?: (provider: string) => Promise<{
+          status?: string;
+          id?: string;
+          connectionParams?: {
+            access_token?: string;
+            token?: string;
+            email?: string;
+            sub?: string;
+            refresh_token?: string;
+            expires_at?: number | string;
+          };
+        } | null>;
+      } | null;
+    };
     const entityId = `natstack-${randomUUID().slice(0, 8)}`;
 
     const entity = client.getEntity?.(entityId);

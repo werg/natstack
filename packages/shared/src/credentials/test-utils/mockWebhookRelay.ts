@@ -41,11 +41,12 @@ export class MockWebhookRelay {
     body: string;
   }): Promise<void> {
     const event: WebhookEvent = {
-      id: `mock-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      providerId: payload.providerId,
-      eventType: payload.eventType,
+      provider: payload.providerId,
+      connectionId: `mock-${Date.now()}`,
+      event: payload.eventType,
+      delivery: "https-post",
+      payload: payload.body,
       headers: payload.headers,
-      body: payload.body,
       receivedAt: Date.now(),
     };
     await this.inject(payload.eventType, event);

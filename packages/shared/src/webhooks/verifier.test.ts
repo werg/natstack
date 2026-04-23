@@ -24,13 +24,33 @@ describe("githubHmacSha256", () => {
   });
 });
 
+describe("slackSignatureV0", () => {
+  const payload = '{"text":"hello"}';
+  const secret = "slack-signing-secret";
+  const timestamp = "1531420618";
+
+  it("verifies a valid Slack v0 signature", () => {
+    const crypto = require("node:crypto");
+    const baseString = `v0:${timestamp}:${payload}`;
+    const sig = `v0=${crypto.createHmac("sha256", secret).update(baseString).digest("hex")}`;
+
+    expect(
+      slackSignatureV0(payload, { "x-slack-signature": sig, "x-slack-request-timestamp": timestamp }, secret),
+    ).toBe(true);
+  });
+
+  it("rejects when headers are missing", () => {
+    expect(slackSignatureV0(payload, {}, secret)).toBe(false);
+  });
+});
+
 describe("WebhookVerifierRegistry", () => {
   it("registers and uses verifiers by name", () => {
     const registry = new WebhookVerifierRegistry();
     registry.register("slack", slackSignatureV0);
 
     expect(registry.get("slack")).toBe(slackSignatureV0);
-    expect(registry.verify("slack", "payload", {}, "secret")).toBe(true);
+    expect(registry.verify("slack", "payload", {}, "secret")).toBe(false);
     expect(registry.verify("missing", "payload", {}, "secret")).toBe(false);
   });
 });

@@ -56,9 +56,9 @@ function createAppJwt(appId: string, privateKey: string): string {
 }
 
 export async function githubAppInstallation(config: FlowConfig): Promise<Credential | null> {
-  const appId = process.env.GITHUB_APP_ID?.trim();
-  const privateKeyValue = process.env.GITHUB_APP_PRIVATE_KEY?.trim();
-  const installationId = process.env.GITHUB_APP_INSTALLATION_ID?.trim();
+  const appId = process.env["GITHUB_APP_ID"]?.trim();
+  const privateKeyValue = process.env["GITHUB_APP_PRIVATE_KEY"]?.trim();
+  const installationId = process.env["GITHUB_APP_INSTALLATION_ID"]?.trim();
 
   if (!appId || !privateKeyValue || !installationId) {
     return null;

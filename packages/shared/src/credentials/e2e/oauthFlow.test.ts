@@ -195,7 +195,7 @@ describe("OAuth flow e2e", () => {
       method: "GET",
       path: "/v1/me",
     });
-    expect(provider.requests[0]?.headers.authorization).toBe(`Bearer ${credential.accessToken}`);
+    expect(provider.requests[0]?.headers["authorization"]).toBe(`Bearer ${credential.accessToken}`);
 
     const auditEntry: AuditEntry = {
       ts: Date.now(),
