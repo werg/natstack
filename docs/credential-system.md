@@ -222,6 +222,11 @@ and verify zero hits.
   a manifest-supplied probe endpoint.
 - `flows/cliPiggyback.ts` — runs a configured command (`gh auth token`,
   `gcloud auth print-access-token`, etc.), parses stdout or a JSON path.
+- `flows/composioBridge.ts` — v0-only bridge: delegates OAuth to
+  Composio's verified provider apps, retrieves the resulting access
+  token, stores it in our native credential store. Used by the Google
+  manifest until our own Google verification completes; usable by any
+  future provider where we can't ship our own verified client in time.
 - `flows/index.ts` — dispatcher keyed on `flow.type`.
 - `resolver.ts` — runs a manifest's `flows` list in order, returns the
   first success. Used on initial consent and on refresh failure.
@@ -243,12 +248,17 @@ and verify zero hits.
 - `github.ts` — device-code primary, loopback-PKCE fallback, PAT fallback,
   `gh auth token` piggyback. `apiBase: ["https://api.github.com",
   "https://uploads.github.com"]`.
-- `google.ts` — loopback-PKCE primary, device-code fallback, BYO
-  `client_secret.json` fallback (Hermes pattern — for v0 before Google
-  verification completes). `apiBase: ["https://gmail.googleapis.com",
-  "https://www.googleapis.com", "https://oauth2.googleapis.com"]`. Scopes
-  split by Google product (mail, calendar, drive) so consent stays
-  minimal.
+- `google.ts` — **composio-bridge primary for v0** (see Google
+  section under Resolved decisions), with loopback-PKCE and
+  device-code as switched-on-verification-completes alternates, and
+  BYO `client_secret.json` as a final fallback for users who don't
+  want the Composio dependency. `apiBase:
+  ["https://gmail.googleapis.com", "https://www.googleapis.com",
+  "https://oauth2.googleapis.com"]`. Scopes split by Google product
+  (mail, calendar, drive) so consent stays minimal. When natstack's
+  own Google verification completes, the primary flow becomes
+  `loopback-pkce` via a single manifest edit; no integration code
+  changes.
 - `microsoft.ts` — device-code primary, loopback-PKCE fallback,
   `az account get-access-token` piggyback. Multi-tenant app.
 - `notion.ts` — MCP+DCR primary (`resource:
@@ -266,18 +276,31 @@ source, checked into the repo. Self-hosters can override per-provider via
 ### Host services
 
 `src/server/services/credentialService.ts` — replaces the old
-`oauthService.ts`. RPC methods exposed to workers via the existing
-`/rpc` endpoint:
+`oauthService.ts`. RPC methods exposed to workers and UIs via the
+existing `/rpc` endpoint:
 
 - `credentials.requestConsent({ providerId, scopes }) → { connectionId,
-  apiBase }` — idempotent per worker; if already granted, returns
+  apiBase }` — idempotent per caller; if already granted, returns
   existing connection. If not, runs the manifest's flow chain
   synchronously, blocking until the user completes consent (with a
-  timeout). Does **not** return the token.
+  timeout). Does **not** return the token. Used by desktop flows and
+  by workers.
+- `credentials.beginConsent({ providerId, scopes, redirect: "mobile" }) →
+  { nonce, authorizeUrl }` — used by mobile; server mints a PKCE
+  challenge and holds the verifier, returns the authorize URL with a
+  universal-link callback.
+- `credentials.completeConsent({ nonce, code }) → { connectionId }` —
+  mobile relays the authorization code back; server exchanges it for
+  tokens and stores them.
 - `credentials.revokeConsent({ providerId }) → void`
 - `credentials.listConsent({}) → ConsentGrant[]` — for UI/debug.
 
 No `getToken` RPC. Tokens never leave the host.
+
+The consent prompt is surfaced by delegating to
+`notificationService.show({ type: "consent:credential", ... })` —
+mirrors how `secretsService` handles approval today. See **Consent UI**
+under Resolved decisions.
 
 `src/server/services/egressProxy.ts` — the heart of the new system. See
 next section.
@@ -401,103 +424,284 @@ Land in this order. Each step keeps the tree in a working state.
 6. Implement `flows/loopbackPkce.ts` and `flows/pat.ts` first — simplest.
 7. Implement `flows/deviceCode.ts`.
 8. Implement `flows/cliPiggyback.ts`.
-9. Implement `flows/mcpDcr.ts` last — most code, depends on the MCP
-   TS SDK (`@modelcontextprotocol/sdk`).
-10. Unit tests for each flow against a mock auth server.
-11. Commit: `feat(credentials): core engine and flow runners`.
+9. Implement `flows/composioBridge.ts` — the v0 Google backstop.
+10. Implement `flows/mcpDcr.ts` last — most code, depends on the MCP
+    TS SDK (`@modelcontextprotocol/sdk`).
+11. Unit tests for each flow against a mock auth server (and a mock
+    Composio endpoint for the bridge).
+12. Commit: `feat(credentials): core engine and flow runners`.
 
 ### Phase 3 — first-party provider manifests
 
-12. Write `providers/{github,google,microsoft,notion,slack}.ts` with
+13. Write `providers/{github,google,microsoft,notion,slack}.ts` with
     real natstack-registered `client_id`s. Get the `client_id`s by:
     - GitHub: create an OAuth App under the natstack org.
     - Microsoft: register a multi-tenant Azure AD app.
     - Notion: register an OAuth integration (for the fallback) + MCP
       DCR (primary).
     - Slack: register a distributed Slack app with Socket Mode.
-    - Google: defer — ship with `byoClientSecret` only for v0.
-13. Smoke test each manifest via `credentialService.requestConsent`
+    - Google: **composio-bridge primary**, BYO `client_secret.json`
+      fallback. Concurrently, start natstack's own Google
+      verification (non-engineering track).
+14. Implement `natstack.yml` override support so self-hosters can
+    supply their own `client_id`/`client_secret` per provider.
+15. Smoke test each manifest via `credentialService.requestConsent`
     against real providers, CLI only (no workerd yet).
-14. Commit: `feat(credentials): first-party provider manifests`.
+16. Commit: `feat(credentials): first-party provider manifests`.
 
 ### Phase 4 — egress proxy
 
-15. Implement `src/server/services/egressProxy.ts` with a local CA
+17. **Spike**: 1–2 day prototype verifying the CA + workerd
+    trust-store interaction works cleanly. Kill switch for the whole
+    phase if it doesn't — fall back to a worker-side `authedFetch`
+    wrapper in that case.
+18. Implement `src/server/services/egressProxy.ts` with a local CA
     (`@peculiar/x509`), per-worker auth, URL pattern matching, and
     header injection.
-16. Implement 401 → refresh → retry path.
-17. Add proxy-side audit logging.
-18. Tests: fake upstream + fake worker, verify headers injected,
+19. Implement 401 → refresh → retry path.
+20. Add proxy-side audit logging.
+21. Tests: fake upstream + fake worker, verify headers injected,
     401 retries, no-match passthrough.
-19. Commit: `feat(credentials): host-side egress proxy`.
+22. Commit: `feat(credentials): host-side egress proxy`.
 
-### Phase 5 — workerd wiring
+### Phase 5 — workerd wiring + consent UI
 
-20. Extend `workerdManager.ts` per the workerd section above.
-21. Extend `rpcServer.ts` to expose the new `credentials.*` methods.
-22. Implement `workspace/packages/runtime/src/worker/credentials.ts`
+23. Extend `workerdManager.ts` per the workerd section above.
+24. Extend `rpcServer.ts` to expose the new `credentials.*` methods.
+25. Wire `credentialService` → `notificationService` for the consent
+    prompt, matching the secrets flow exactly (new `"consent:credential"`
+    type or similar, same `pendingActions` queue, same `NotificationBar`
+    render path).
+26. Implement `workspace/packages/runtime/src/worker/credentials.ts`
     SDK — thin wrapper over the HTTP RPC bridge.
-23. Add the manifest-autodiscovery pass at worker startup.
-24. End-to-end test: spawn a worker that calls
+27. Add the manifest-autodiscovery pass at worker startup.
+28. End-to-end test: spawn a worker that calls
     `requestConsent("github")`, then `fetch("https://api.github.com/user")`.
-    Verify the response contains the authed user.
-25. Commit: `feat(credentials): workerd integration + worker SDK`.
+    Verify the response contains the authed user and that the
+    NotificationBar displayed an Allow/Deny prompt.
+29. Commit: `feat(credentials): workerd integration + worker SDK`.
+
+### Phase 5b — mobile native OAuth
+
+30. Set up the natstack-owned domain serving `.well-known/
+    apple-app-site-association` and `.well-known/assetlinks.json`.
+    (Non-engineering infra task; can run in parallel with the steps
+    below.)
+31. Implement `apps/mobile/src/services/credentialConsent.ts` —
+    launches `ASWebAuthenticationSession` / Chrome Custom Tabs,
+    handles universal-link return, relays `{ nonce, code }` to server.
+32. Add mobile-side rendering of the `"consent:credential"`
+    notification (native sheet with Allow / Deny), calling the same
+    `notification.reportAction` RPC as desktop.
+33. End-to-end test: mobile → server RPC → provider consent → code
+    relay → token stored → subsequent mobile-triggered worker call
+    succeeds with auth.
+34. Commit: `feat(credentials): mobile native OAuth`.
 
 ### Phase 6 — rebuild example integrations
 
-26. Rewrite `workspace/packages/integrations/src/gmail.ts` against the
+35. Rewrite `workspace/packages/integrations/src/gmail.ts` against the
     new system — pure `fetch` calls, manifest declares Google scopes.
-27. Same for `calendar.ts`. Add a `github.ts` as a second reference.
-28. Rewrite `workspace/panels/email/index.tsx` from scratch against the
+36. Same for `calendar.ts`. Add a `github.ts` as a second reference.
+37. Rewrite `workspace/panels/email/index.tsx` from scratch against the
     new Gmail integration. Keep it minimal.
-29. Rewrite `workspace/skills/api-integrations/SKILL.md` as the
+38. Rewrite `workspace/skills/api-integrations/SKILL.md` as the
     canonical guide for adding new integrations.
-30. Commit: `feat(integrations): rebuild gmail/calendar on new system`.
+39. Commit: `feat(integrations): rebuild gmail/calendar on new system`.
 
 ### Phase 7 — third-party provider story
 
-31. Publish an example `@natstack/provider-linear` package on the repo
+40. Publish an example `@natstack/provider-linear` package on the repo
     as `workspace/examples/provider-linear/` demonstrating the
     third-party provider manifest shape.
-32. Document the manifest format in
+41. Document the manifest format in
     `docs/writing-a-provider-manifest.md`.
-33. Commit: `docs: third-party provider authoring guide`.
+42. Commit: `docs: third-party provider authoring guide`.
 
-## Open decisions
+## Resolved decisions
 
-1. **Mobile auth** (`apps/mobile/src/services/oauthHandler.ts` is gone
-   after Phase 1). Three options:
-   - (a) Mobile is a thin client to a desktop natstack host; no
-     standalone mobile auth. Simplest. Works for dev.
-   - (b) Native OAuth via ASWebAuthenticationSession (iOS) / Chrome
-     Custom Tabs (Android) with a custom URL scheme or universal
-     link callback. Real production path.
-   - (c) Punt — mobile gets PAT-only for v0.
-   Recommendation: (c) for v0, (b) when mobile ships to real users.
+These were open during the design discussion and are now committed.
 
-2. **Self-hoster OAuth client override**. Do we let a self-hoster
-   override the natstack `client_id` with their own per provider?
-   Recommendation: yes, via `natstack.yml` — cheap to support,
-   gives the escape hatch to self-hosters who don't want their
-   OAuth activity tied to the natstack org.
+### Mobile: native OAuth, server-held tokens
 
-3. **TLS interception in the egress proxy**. Plan commits to it.
-   Alternative: require integrations to call
-   `authedFetch(providerId, url)` instead of plain `fetch`, and put
-   auth injection in user-space. Cleaner, no CA dance; costs the
-   "integrations just use fetch" property. Recommendation: stick
-   with TLS interception — the zero-ceremony `fetch` story is worth
-   it and the CA is fully local.
+Mobile uses **native OAuth**: `ASWebAuthenticationSession` on iOS and
+Chrome Custom Tabs on Android. The callback is a universal link / app
+link back to the natstack mobile app.
 
-4. **Google verification**. Phase 3 defers this. Someone needs to
-   actually start the verification process now so we're not blocked
-   on it for 2+ months later.
+Crucially, the mobile app is not the OAuth client from the provider's
+perspective — the **server is**, mobile is just the user-interaction
+surface. Flow:
 
-5. **Credential consent UI**. Where does the "approve github access"
-   prompt render? Desktop app shell chrome? A browser tab the proxy
-   opens? The panel that triggered it? Recommendation: a dedicated
-   consent overlay in the shell, matching how other native apps do
-   it. Not blocking — can use CLI prompt for dev until UI lands.
+1. Mobile UI (settings or at-first-use) calls server RPC
+   `credentials.beginConsent({ providerId, scopes, redirect: "mobile" })`.
+   Server stores a `{ nonce → providerId, scopes }` record, returns the
+   authorize URL with the universal-link callback and the PKCE
+   `code_challenge`. Server keeps the `code_verifier`.
+2. Mobile opens the URL in the system OAuth session.
+3. User approves; provider redirects to the universal link with `code`
+   and `state=nonce`.
+4. Mobile relays `{ nonce, code }` to server via RPC
+   `credentials.completeConsent({ nonce, code })`.
+5. Server exchanges the code for tokens using its held verifier, stores
+   the token in the shared credential store. Mobile never sees it.
+
+Implications:
+
+- **Tokens live exclusively on the server, shared by desktop and
+  mobile.** The credential store is authoritative. Both surfaces ask
+  the same server for consent and both surfaces' egress requests flow
+  through the same egress proxy. This directly solves "can desktop and
+  mobile share auth state" — they share it by construction.
+- **Mobile has no local token store**, no CA, no egress proxy. When
+  mobile needs to call a provider API it either (a) invokes a worker
+  on the server and lets the server's workerd run the request, or (b)
+  calls a thin server RPC that proxies the outbound request on its
+  behalf. For v0, everything goes through (a) — mobile is a UI shell,
+  all integration work happens in workers on the server.
+- **Requires the server to be reachable** from mobile (LAN, Tailscale,
+  or a natstack-managed tunnel). There is no offline-mobile mode in
+  v0. This is acceptable because natstack is a local-first tool where
+  the server is the user's own machine.
+- The universal-link callback requires one tiny piece of hosted infra:
+  an `apple-app-site-association` file and an Android Asset Links
+  file served from a natstack-owned domain. Static JSON; one-time
+  setup.
+
+New pieces this adds to the plan:
+
+- `credentials.beginConsent` and `credentials.completeConsent` RPCs
+  (mobile does not run flow runners itself; the server mints the URL
+  and consumes the code).
+- `apps/mobile/src/services/credentialConsent.ts` — launches the
+  system OAuth session, handles the universal-link return, relays
+  to server. ~150 LOC per platform.
+- Host static files for universal-link association (deploy once,
+  separate repo/infra task).
+
+### Credentials stored server-side, shared across surfaces
+
+Already implied by the mobile decision but worth making explicit: the
+credential store at `~/.natstack/credentials/` on the server is the
+sole source of truth. Desktop UI, mobile UI, workers, and panels all
+consult the same store via server RPCs. There is no desktop-local or
+mobile-local token cache; no sync protocol is required because there
+is only one store.
+
+This is not a problem for our topology: natstack is local-first, so
+"server-side" means "on the user's desktop machine." It's a problem
+only for users who want full-offline mobile access, which is out of
+scope for v0.
+
+### Egress proxy: TLS interception, plain `fetch()` for authors
+
+Committed. The egress proxy terminates TLS with a per-install local
+CA, matches outbound request URLs against manifest `apiBase` patterns,
+and injects `Authorization` headers. Integration authors call plain
+`fetch("https://api.github.com/...")` and get authenticated requests
+automatically.
+
+Trade-off accepted: ~300–500 LOC of certificate machinery in exchange
+for zero-ceremony integration authoring. This is the right call —
+cleaner DX on a surface that third parties will touch, at the cost of
+complexity in one central component maintained by us.
+
+A prototype spike on the CA + workerd trust-store interaction should
+happen at the start of Phase 4 before committing the full proxy
+implementation.
+
+### Google: bundle a Composio bridge for v0, start verification in parallel
+
+Google access is a product requirement and we can't wait 2+ months on
+verification. Strategy:
+
+- **Start Google verification now**, as a parallel non-engineering
+  track. Register the natstack Google OAuth client, complete the OAuth
+  consent screen configuration, fill out the verification form, queue
+  the security assessment for restricted scopes (Gmail/Drive). Treat
+  this as a blocker for the "final" state, not for v0 launch.
+- **Bundle Composio as the interim Google backend.** Composio has
+  verified Google OAuth apps for Gmail, Calendar, and Drive, a
+  JS/TS SDK (`composio-core`), and a connector-bridge model that hands
+  us real Google access tokens. We add one new flow type —
+  `composio-bridge` — to `packages/shared/src/credentials/flows/`. The
+  Google manifest's primary flow becomes `composio-bridge`; when
+  verification completes, we swap it to `loopback-pkce` with
+  natstack's own `client_id` in a single manifest edit. No integration
+  code changes.
+- **BYO `client_secret.json`** stays as a fallback for users who don't
+  want the Composio dependency.
+
+The `composio-bridge` flow runner is ~150 LOC — call Composio's
+`createConnection(userId, "google")`, open the returned URL for user
+consent, call `getConnection` to retrieve the access token, store it
+in our credential store as if we'd run the OAuth ourselves. From that
+point the egress proxy handles the token like any other.
+
+Alternatives considered and rejected:
+
+- **Arcade AI** — similar model, Apache-2.0, but JS SDK less mature
+  than Composio's.
+- **Ship the unverified-app scary-warning flow with our own Google
+  client** — 100-user hard cap until verification, plus every user
+  sees a "this app isn't verified" screen. Too hostile for v0.
+- **Run our own OAuth relay** for Google specifically — essentially
+  rebuilding Nango for one provider. Defeats the point.
+
+Composio's free tier covers early access; we're not committing to
+them as a permanent dependency, only as a ~2-month bridge.
+
+### Consent UI: follow the secrets service pattern
+
+The existing secrets service is the canonical pattern and the
+credential consent UI mirrors it exactly.
+
+Reference: `src/server/services/secretsService.ts` and
+`src/server/services/notificationService.ts`.
+
+The pattern:
+
+1. Worker/panel calls `credentials.requestConsent({ providerId, scopes })`
+   via RPC. It's a **blocking async call** that doesn't return until
+   the user approves or denies, or the 120s timeout expires.
+2. `credentialService` forwards to `notificationService.show(...)`
+   with type `"consent"`, caller attribution (`callerId`, `callerKind`),
+   and a human-readable message ("Panel X wants to connect to
+   GitHub to access ...").
+3. `notificationService` stores `{ resolve, reject, timer }` in its
+   existing `pendingActions` map and broadcasts to the
+   `NotificationBar` in the renderer
+   (`src/renderer/components/NotificationBar.tsx`). Reuses the same
+   violet "consent" styling secrets use.
+4. User clicks **Allow** or **Deny**. UI calls
+   `notification.reportAction(id, actionId)`; `notificationService`
+   resolves the matching promise; `credentialService` proceeds with the
+   flow runner (or throws).
+5. Shell-initiated callers bypass the prompt (same as secrets).
+
+Concretely this means `credentialService` depends on
+`notificationService` and does not need its own UI surface. We don't
+add a new component; we add a new notification `type` value ("consent"
+is already used by secrets — may need a subtype like
+`"consent:credential"` to disambiguate button copy).
+
+For mobile, the same `notificationService.pendingActions` queue
+broadcasts to mobile via the existing notification channel; mobile
+renders a native sheet with Allow/Deny that calls `reportAction`.
+Single queue, two UI surfaces, identical semantics.
+
+## Remaining open items
+
+Only two things are genuinely unresolved and need attention:
+
+1. **Self-hoster `client_id` override.** Previously open, now decided:
+   yes, via `natstack.yml`. Documented in the provider manifest
+   section. Left here only as a reminder to implement it in Phase 3.
+
+2. **Universal-link domain for mobile OAuth callback.** We need a
+   natstack-owned domain serving the iOS AASA file and Android Asset
+   Links JSON. This is infra, not code, and should be set up before
+   Phase 5 concludes. Open question: which domain, who owns the DNS,
+   hosting (Vercel / Cloudflare Pages / GitHub Pages).
 
 ## Out of scope for this plan
 
@@ -508,4 +712,11 @@ Land in this order. Each step keeps the tree in a working state.
 - Token sharing across multiple natstack hosts on the same machine
   (single-user assumption; mtime-watch handles concurrent refreshes
   within one machine).
+- **Offline mobile access to provider APIs.** Mobile requires
+  network reachability to the server because tokens live exclusively
+  server-side. Acceptable for v0.
 - Secrets rotation automation.
+- Long-term dependency on Composio. Once natstack's Google
+  verification completes, the `composio-bridge` flow type stays in
+  core for potential reuse with other providers but is no longer on
+  the critical path.
