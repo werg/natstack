@@ -227,7 +227,33 @@ and verify zero hits.
   token, stores it in our native credential store. Used by the Google
   manifest until our own Google verification completes; usable by any
   future provider where we can't ship our own verified client in time.
+- `flows/serviceAccount.ts` — non-interactive: loads a provider
+  service-account credential blob (Google service-account JSON,
+  AWS IAM credentials, etc.), handles its own refresh. For headless
+  deployments. See **Service accounts / non-interactive mode**.
+- `flows/botToken.ts` — non-interactive: long-lived bot tokens (Slack
+  `xoxb-`, Discord bot tokens, Telegram `@BotFather` tokens). Stored
+  as-is; no refresh.
+- `flows/githubAppInstallation.ts` — non-interactive: GitHub App
+  installation tokens generated from a private key. Handles
+  short-lived installation token minting and refresh.
 - `flows/index.ts` — dispatcher keyed on `flow.type`.
+- `capability.ts` — URL + method matcher. Given a request
+  (worker + url + method) and the worker's granted consent records,
+  decides: allow, deny, or warn. The enforcement point for
+  capability-based security.
+- `rateLimit.ts` — per-provider, per-connection token bucket honouring
+  manifest-declared limits and `Retry-After` headers.
+- `retry.ts` — exponential backoff, max-attempt caps, per-worker
+  circuit breaker. Wraps outbound requests inside the proxy.
+- `audit.ts` — structured append-only log at
+  `~/.natstack/logs/credentials-audit-YYYY-MM-DD.jsonl`, rotated
+  daily, size-capped. Exposes a query API consumed by a
+  `credentials.audit` RPC.
+- `reconsent.ts` — handles refresh failure. On a 401 after refresh
+  attempt, triggers `notificationService` for re-consent,
+  suspends the in-flight request, retries once re-consent
+  completes. Transparent to the integration.
 - `resolver.ts` — runs a manifest's `flows` list in order, returns the
   first success. Used on initial consent and on refresh failure.
 - `refresh.ts` — scheduler; reads `expires_at`, refreshes N seconds before
@@ -275,6 +301,46 @@ source, checked into the repo. Self-hosters can override per-provider via
 
 ### Host services
 
+Additionally, a sibling package:
+
+`packages/shared/src/webhooks/`
+
+- `types.ts` — `WebhookSubscription`, `WebhookEvent`,
+  `WebhookVerifier`.
+- `receiver.ts` — long-lived WebSocket client that connects to the
+  natstack webhook relay (see below) and accepts events forwarded
+  from the public HTTPS endpoint.
+- `verifier.ts` — per-provider HMAC / signature verification. GitHub
+  `X-Hub-Signature-256`, Slack `v0=...`, Stripe `Stripe-Signature`,
+  etc. Pluggable via provider manifest's `webhooks.verify` field.
+- `router.ts` — dispatches verified events to the right worker /
+  integration based on subscription records.
+- `subscription.ts` — stores `{ workerId, providerId, eventType,
+  secret }` records in SQLite; reconciles with provider-side
+  registration (for providers where the subscription itself needs
+  API calls, e.g. GitHub webhooks via the repos API).
+
+A separate `apps/webhook-relay/` Cloudflare Worker provides the
+public HTTPS endpoint. See **Webhooks** under Extended capabilities.
+
+### Test utilities
+
+`packages/shared/src/credentials/test-utils/`
+
+- `mockOAuthServer.ts` — in-memory OAuth 2.1 + PKCE server,
+  configurable to simulate device code, loopback PKCE, DCR, refresh
+  rotation, refresh failure. Runs on a random port.
+- `mockProvider.ts` — fake provider API accepting any Bearer token,
+  with deterministic responses driven by fixtures.
+- `fixtureRecorder.ts` — VCR-style HTTP recorder: record real
+  interactions against a real provider once, replay deterministically
+  in tests.
+- `mockWebhookRelay.ts` — in-process webhook event injector for
+  testing event-driven integrations without the real relay.
+
+Published as `@natstack/credentials-test-utils` so third-party
+provider authors can use the same harness we do.
+
 `src/server/services/credentialService.ts` — replaces the old
 `oauthService.ts`. RPC methods exposed to workers and UIs via the
 existing `/rpc` endpoint:
@@ -294,8 +360,25 @@ existing `/rpc` endpoint:
   tokens and stores them.
 - `credentials.revokeConsent({ providerId }) → void`
 - `credentials.listConsent({}) → ConsentGrant[]` — for UI/debug.
+- `credentials.audit({ filter?, limit?, after? }) → AuditEntry[]` —
+  queries the audit log. Honours per-caller scoping (a panel can
+  only see its own worker's entries; shell callers see everything).
+- `credentials.subscribeWebhook({ providerId, eventType, workerId })
+  → { subscriptionId }` — registers a webhook subscription; handles
+  both natstack-side routing and (where applicable) provider-side
+  webhook registration via the provider's API.
+- `credentials.unsubscribeWebhook({ subscriptionId }) → void`
 
 No `getToken` RPC. Tokens never leave the host.
+
+**Non-interactive mode.** When the server is started with
+`--non-interactive` (or `credentials.nonInteractive: true` in
+`natstack.yml`), `requestConsent` and `beginConsent` throw
+`NonInteractiveConsentRequired` if no valid credential is already
+present for the requested provider + scopes. Intended for CI,
+scheduled jobs, and server-side deployments where there's no human
+to answer a prompt. The interactive `service-account`, `bot-token`,
+and `github-app-installation` flows are preferred in this mode.
 
 The consent prompt is surfaced by delegating to
 `notificationService.show({ type: "consent:credential", ... })` —
@@ -311,21 +394,49 @@ A local HTTP forward proxy on `127.0.0.1:<random-port>`, started alongside
 `workerdManager`. Per-worker authentication via a proxy-auth token minted
 when the worker is spawned (parallel to the existing `RPC_AUTH_TOKEN`).
 
-Responsibilities:
+Responsibilities, executed as a layered middleware pipeline per
+outbound request:
 
-1. Receive outbound HTTP(S) requests from workers via `HTTP_PROXY` /
-   `HTTPS_PROXY`-style routing (workerd supports outbound proxy config).
-2. Identify the originating worker from the proxy-auth header.
-3. Look up the worker's consent grants.
-4. Match the request URL host against the `apiBase` patterns of every
-   granted provider manifest.
-5. On match: inject `Authorization: Bearer <token>`, forward the request,
-   stream the response back.
-6. On 401 from upstream: trigger refresh via `refresh.ts`, retry the
-   request once, stream result.
-7. On no match: forward unchanged. The proxy is permissive by default —
-   unauthenticated public endpoints still work.
-8. Log every request with the injected provider, for audit.
+1. **Ingress**: receive outbound HTTP(S) requests from workers via
+   `HTTP_PROXY` / `HTTPS_PROXY`-style routing (workerd supports
+   outbound proxy config). Terminate TLS using the local CA (see
+   Resolved decisions).
+2. **Attribution**: identify the originating worker from the
+   proxy-auth header; look up its consent grants and declared
+   integration manifests.
+3. **Capability enforcement** (`capability.ts`): match request URL +
+   method against the worker's granted `endpoints` declarations.
+   On miss: deny (configurable to `warn` in dev). Denied requests
+   never leave the host; they return a structured 403 body to the
+   worker with the violated capability. See **Capability-based
+   security**.
+4. **Provider routing**: match request URL host against the `apiBase`
+   patterns of every granted provider manifest.
+5. **Rate limiting** (`rateLimit.ts`): consume a token from the
+   per-connection bucket defined by the manifest's
+   `rateLimits`. If exhausted, either delay up to a configurable
+   cap or fail fast with 429. Honours `Retry-After` headers from
+   prior upstream 429s.
+6. **Auth injection**: inject `Authorization: Bearer <token>` using
+   the current access token from the store. Re-check expiry; if
+   within 60s of expiry, refresh synchronously before forwarding.
+7. **Circuit breaker + retry** (`retry.ts`): forward the request; on
+   5xx, retry with exponential backoff up to a manifest-configured
+   cap. N consecutive failures within a rolling window trip the
+   breaker for a cooldown period; further requests fail fast.
+8. **401 handling** (`reconsent.ts`): on 401 after refresh attempt,
+   trigger re-consent via `notificationService`, suspend the
+   in-flight request, retry once consent is re-granted.
+9. **Audit** (`audit.ts`): append a structured record to the audit
+   log: `{ ts, workerId, callerId, providerId, connectionId, method,
+   url, status, durationMs, bytesIn, bytesOut, scopesUsed,
+   capabilityViolation?, retries, breakerState }`. Daily rotation,
+   size cap.
+10. **Egress**: stream the response back to the worker.
+11. **No-match passthrough**: if the request doesn't match any
+    granted provider's `apiBase`, forward unchanged (no auth
+    injection, no capability enforcement). Public unauthenticated
+    endpoints still work. Still audited.
 
 Implementation notes:
 
@@ -364,25 +475,53 @@ Delete the old `workspace/packages/runtime/src/shared/oauth.ts` and
 
 ### Integration manifest
 
-Add a convention (not a new runtime system) for integrations to declare
-required providers. Integration modules export a `manifest` const:
+Integrations declare required providers, scopes, the specific endpoints
+they will call, and any webhook subscriptions they need.
 
 ```ts
 export const manifest = {
   providers: ["github"],
   scopes: { github: ["repo", "read:user"] },
+  endpoints: {
+    github: [
+      { url: "https://api.github.com/user",         methods: ["GET"] },
+      { url: "https://api.github.com/repos/*",      methods: ["GET"] },
+      { url: "https://api.github.com/repos/*/issues", methods: ["GET", "POST"] },
+    ],
+  },
+  webhooks: {
+    github: [
+      { event: "issues",        deliver: "onIssue" },
+      { event: "pull_request",  deliver: "onPullRequest" },
+    ],
+  },
 };
 ```
 
+The `endpoints` list is the capability declaration — it drives the
+proxy's allowlist for this worker. URLs support `*` wildcards for path
+segments (strict — `*` does not cross `/`). Methods are an explicit
+array; no "all methods" shortcut. Integrations that genuinely need the
+full provider surface declare a single `{ url: "https://api.github.com/**", methods: "*" }`
+pattern but this is lint-warned in review.
+
 At worker-startup, the runtime auto-discovers these exports (walk the
-module graph from the entry point, collect `manifest` exports) and calls
-`requestConsent` for each before the integration code runs. This gives
-users one batched consent prompt per worker, not one per API call.
+module graph from the entry point, collect `manifest` exports) and:
+
+1. Unions the `providers`/`scopes` across all integrations and issues
+   a single batched consent prompt per worker.
+2. Unions the `endpoints` declarations into the capability matcher's
+   allowlist for this worker.
+3. Registers `webhooks` subscriptions via
+   `credentials.subscribeWebhook` and wires incoming events to the
+   named `deliver` exports.
 
 If an integration forgets to declare a provider and tries to call its
-API at runtime, the proxy will still work but consent won't have been
-granted ahead of time — first fetch triggers a late consent prompt.
-Warn in logs; don't block.
+API at runtime, the proxy will still work (provider manifests permit)
+but capability enforcement will deny it — a useful production safety
+net. Dev mode logs the violation and allows the request so authors can
+iterate without constantly editing the manifest; set
+`capabilityMode: "enforce"` in `natstack.yml` for production.
 
 ## Workerd integration
 
@@ -425,16 +564,26 @@ Land in this order. Each step keeps the tree in a working state.
 7. Implement `flows/deviceCode.ts`.
 8. Implement `flows/cliPiggyback.ts`.
 9. Implement `flows/composioBridge.ts` — the v0 Google backstop.
-10. Implement `flows/mcpDcr.ts` last — most code, depends on the MCP
+10. Implement `flows/mcpDcr.ts` — most code, depends on the MCP
     TS SDK (`@modelcontextprotocol/sdk`).
-11. Unit tests for each flow against a mock auth server (and a mock
+11. Implement `capability.ts`, `rateLimit.ts`, `retry.ts`,
+    `audit.ts`, `reconsent.ts` as standalone modules with unit
+    tests. They're consumed by the proxy in Phase 4 but self-contained
+    here.
+12. Scaffold `packages/shared/src/credentials/test-utils/` with
+    `mockOAuthServer.ts` and `mockProvider.ts` — used by the unit
+    tests in this phase and published from Phase 10.
+13. Unit tests for each flow against the mock auth server (and a mock
     Composio endpoint for the bridge).
-12. Commit: `feat(credentials): core engine and flow runners`.
+14. Commit: `feat(credentials): core engine, flow runners, proxy
+    middlewares`.
 
 ### Phase 3 — first-party provider manifests
 
-13. Write `providers/{github,google,microsoft,notion,slack}.ts` with
-    real natstack-registered `client_id`s. Get the `client_id`s by:
+15. Write `providers/{github,google,microsoft,notion,slack}.ts` with
+    real natstack-registered `client_id`s, including `apiBase`
+    patterns, `rateLimits`, and `retry` configs per provider. Get the
+    `client_id`s by:
     - GitHub: create an OAuth App under the natstack org.
     - Microsoft: register a multi-tenant Azure AD app.
     - Notion: register an OAuth integration (for the fallback) + MCP
@@ -443,47 +592,62 @@ Land in this order. Each step keeps the tree in a working state.
     - Google: **composio-bridge primary**, BYO `client_secret.json`
       fallback. Concurrently, start natstack's own Google
       verification (non-engineering track).
-14. Implement `natstack.yml` override support so self-hosters can
+16. Implement `natstack.yml` override support so self-hosters can
     supply their own `client_id`/`client_secret` per provider.
-15. Smoke test each manifest via `credentialService.requestConsent`
+17. Smoke test each manifest via `credentialService.requestConsent`
     against real providers, CLI only (no workerd yet).
-16. Commit: `feat(credentials): first-party provider manifests`.
+18. Commit: `feat(credentials): first-party provider manifests`.
 
 ### Phase 4 — egress proxy
 
-17. **Spike**: 1–2 day prototype verifying the CA + workerd
+19. **Spike**: 1–2 day prototype verifying the CA + workerd
     trust-store interaction works cleanly. Kill switch for the whole
     phase if it doesn't — fall back to a worker-side `authedFetch`
     wrapper in that case.
-18. Implement `src/server/services/egressProxy.ts` with a local CA
-    (`@peculiar/x509`), per-worker auth, URL pattern matching, and
-    header injection.
-19. Implement 401 → refresh → retry path.
-20. Add proxy-side audit logging.
-21. Tests: fake upstream + fake worker, verify headers injected,
-    401 retries, no-match passthrough.
-22. Commit: `feat(credentials): host-side egress proxy`.
+20. Implement `src/server/services/egressProxy.ts` as the middleware
+    pipeline described in **Egress proxy** — local CA, per-worker
+    auth, attribution, capability enforcement, provider routing,
+    rate limiting, auth injection, circuit breaker + retry, 401
+    re-consent, audit, egress.
+21. Wire each middleware into the pipeline; each is already
+    implemented as a standalone module in Phase 2.
+22. Tests: fake upstream + fake worker covering every pipeline
+    stage — capability deny, rate-limit throttling, circuit breaker
+    trip, 401 → refresh → retry, 401 → re-consent → retry, audit
+    log entries, no-match passthrough.
+23. Commit: `feat(credentials): host-side egress proxy with
+    capability enforcement, rate limiting, audit`.
 
 ### Phase 5 — workerd wiring + consent UI
 
-23. Extend `workerdManager.ts` per the workerd section above.
-24. Extend `rpcServer.ts` to expose the new `credentials.*` methods.
-25. Wire `credentialService` → `notificationService` for the consent
+24. Extend `workerdManager.ts` per the workerd section above.
+25. Extend `rpcServer.ts` to expose the new `credentials.*` methods
+    (`requestConsent`, `beginConsent`, `completeConsent`,
+    `revokeConsent`, `listConsent`, `audit`, `subscribeWebhook`,
+    `unsubscribeWebhook`).
+26. Wire `credentialService` → `notificationService` for the consent
     prompt, matching the secrets flow exactly (new `"consent:credential"`
-    type or similar, same `pendingActions` queue, same `NotificationBar`
-    render path).
-26. Implement `workspace/packages/runtime/src/worker/credentials.ts`
+    type, same `pendingActions` queue, same `NotificationBar`
+    render path). Also wire the **re-consent** notification for
+    refresh failures through the same surface.
+27. Implement `workspace/packages/runtime/src/worker/credentials.ts`
     SDK — thin wrapper over the HTTP RPC bridge.
-27. Add the manifest-autodiscovery pass at worker startup.
-28. End-to-end test: spawn a worker that calls
+28. Add the manifest-autodiscovery pass at worker startup, including
+    `endpoints` → capability matcher and `webhooks` → subscription
+    registration.
+29. End-to-end test: spawn a worker that calls
     `requestConsent("github")`, then `fetch("https://api.github.com/user")`.
-    Verify the response contains the authed user and that the
-    NotificationBar displayed an Allow/Deny prompt.
-29. Commit: `feat(credentials): workerd integration + worker SDK`.
+    Verify the response contains the authed user, the
+    NotificationBar displayed an Allow/Deny prompt, and the audit
+    log recorded the call.
+30. Test refresh-failure re-consent: force-expire a refresh token,
+    verify the worker's next call suspends, triggers the re-consent
+    prompt, and transparently retries on approval.
+31. Commit: `feat(credentials): workerd integration + worker SDK`.
 
 ### Phase 5b — mobile native OAuth
 
-30. **Domain + Cloudflare Pages setup** (infra, can parallel the code
+32. **Domain + Cloudflare Pages setup** (infra, can parallel the code
     steps below):
     - Register / choose the chosen domain, point its DNS at
       Cloudflare.
@@ -494,40 +658,88 @@ Land in this order. Each step keeps the tree in a working state.
     - Create Cloudflare Pages project bound to `apps/well-known/`;
       verify production URL serves both files with HTTP 200 and
       `application/json`.
-31. Add `credentials.mobileCallbackDomain` to `natstack.yml` (default:
+33. Add `credentials.mobileCallbackDomain` to `natstack.yml` (default:
     the natstack-owned domain chosen above) and
     `universalLinkDomain` to `apps/mobile/config.json` (with the
     wildcard dev pattern alongside the production domain).
-32. Implement `apps/mobile/src/services/credentialConsent.ts` —
+34. Implement `apps/mobile/src/services/credentialConsent.ts` —
     launches `ASWebAuthenticationSession` / Chrome Custom Tabs,
     handles universal-link return, relays `{ nonce, code }` to server.
-33. Add mobile-side rendering of the `"consent:credential"`
+35. Add mobile-side rendering of the `"consent:credential"`
     notification (native sheet with Allow / Deny), calling the same
     `notification.reportAction` RPC as desktop.
-34. End-to-end test: mobile → server RPC → provider consent → code
+36. End-to-end test: mobile → server RPC → provider consent → code
     relay → token stored → subsequent mobile-triggered worker call
     succeeds with auth.
-35. Commit: `feat(credentials): mobile native OAuth`.
+37. Commit: `feat(credentials): mobile native OAuth`.
 
 ### Phase 6 — rebuild example integrations
 
-36. Rewrite `workspace/packages/integrations/src/gmail.ts` against the
-    new system — pure `fetch` calls, manifest declares Google scopes.
-37. Same for `calendar.ts`. Add a `github.ts` as a second reference.
-38. Rewrite `workspace/panels/email/index.tsx` from scratch against the
+38. Rewrite `workspace/packages/integrations/src/gmail.ts` against the
+    new system — pure `fetch` calls, manifest declares Google scopes,
+    `endpoints` capability list, and at least one webhook subscription
+    (Gmail push notifications) to exercise the full surface.
+39. Same for `calendar.ts`. Add a `github.ts` as a second reference,
+    including an `issues` webhook subscription.
+40. Rewrite `workspace/panels/email/index.tsx` from scratch against the
     new Gmail integration. Keep it minimal.
-39. Rewrite `workspace/skills/api-integrations/SKILL.md` as the
+41. Rewrite `workspace/skills/api-integrations/SKILL.md` as the
     canonical guide for adding new integrations.
-40. Commit: `feat(integrations): rebuild gmail/calendar on new system`.
+42. Commit: `feat(integrations): rebuild gmail/calendar on new system`.
 
-### Phase 7 — third-party provider story
+### Phase 7 — service accounts + non-interactive mode
 
-41. Publish an example `@natstack/provider-linear` package on the repo
+43. Implement `flows/serviceAccount.ts`, `flows/botToken.ts`,
+    `flows/githubAppInstallation.ts`.
+44. Add `--non-interactive` server flag and
+    `credentials.nonInteractive` config. `credentialService` throws
+    `NonInteractiveConsentRequired` when a prompt would be needed.
+45. Add a config-driven "seed credentials" path: on server start,
+    read `credentials.seeds: [{ providerId, flow, value }]` from
+    `natstack.yml` or env, load into the store. This is how
+    headless deployments inject bot tokens and service-account
+    JSONs without a prompt.
+46. End-to-end test: start server with `--non-interactive`, seed a
+    GitHub bot token via env, run a worker that calls GitHub,
+    verify it succeeds without any prompt and the audit log
+    attributes the call to the bot.
+47. Document the pattern in `docs/non-interactive-deployments.md`.
+48. Commit: `feat(credentials): service accounts and
+    non-interactive mode`.
+
+### Phase 8 — webhooks
+
+49. Build `apps/webhook-relay/` — Cloudflare Worker that accepts
+    `POST /webhook/:instanceId/:providerId` and forwards to a
+    long-lived WebSocket connected from the natstack server.
+    Per-instance routing via a short-lived registration token
+    minted when the server starts. No persistent storage in the
+    Worker; events are dropped if no subscriber is connected
+    (at-most-once delivery).
+50. Implement `packages/shared/src/webhooks/{receiver,verifier,router,
+    subscription}.ts`.
+51. Implement `src/server/services/webhookService.ts` and wire to
+    `credentialService.subscribeWebhook`.
+52. Add per-provider signature verifiers to the GitHub, Slack,
+    Stripe, Linear, Notion manifests.
+53. End-to-end test: subscribe a worker to GitHub `issues` events,
+    push a test webhook via GitHub API, verify it's verified,
+    routed, and delivered to the worker's named handler.
+54. Commit: `feat(webhooks): inbound event subsystem`.
+
+### Phase 9 — test utilities and third-party provider story
+
+55. Polish `packages/shared/src/credentials/test-utils/` — add
+    `fixtureRecorder.ts`, `mockWebhookRelay.ts`, usage docs.
+56. Publish as `@natstack/credentials-test-utils`.
+57. Publish an example `@natstack/provider-linear` package on the repo
     as `workspace/examples/provider-linear/` demonstrating the
-    third-party provider manifest shape.
-42. Document the manifest format in
+    third-party provider manifest shape — including capability
+    declarations, rate limits, and a webhook subscription.
+58. Document the manifest format in
     `docs/writing-a-provider-manifest.md`.
-43. Commit: `docs: third-party provider authoring guide`.
+59. Commit: `docs: third-party provider authoring guide and test
+    utilities`.
 
 ## Resolved decisions
 
@@ -788,13 +1000,151 @@ broadcasts to mobile via the existing notification channel; mobile
 renders a native sheet with Allow/Deny that calls `reportAction`.
 Single queue, two UI surfaces, identical semantics.
 
+## Extended capabilities
+
+Seven capabilities beyond "replace Nango" that turn this into a
+production-robust system. All folded into the phases above; this
+section summarises their architecture and motivation in one place.
+
+### Capability-based security
+
+The proxy sees every outbound request. Integrations declare an
+`endpoints` list in their manifest (URL + method allowlist); the
+proxy enforces it. Tokens can be broad while workers get
+principle-of-least-authority — if the Gmail integration only
+declared `GET messages`, a compromised worker can't use the token to
+send email, even though the token has `gmail.modify` scope.
+
+Lives in `capability.ts`; enforced as middleware step 3 in the proxy
+pipeline. Dev mode warns + allows; production mode denies. Denied
+requests return a structured 403 to the worker naming the violated
+capability. All violations audited.
+
+This is the highest-leverage feature in the system. It only exists
+because we own the egress boundary — it would not be possible with a
+hosted broker like Nango.
+
+### Refresh-failure re-consent
+
+When a refresh token is revoked (user disconnected from the
+provider's side), the next request would normally fail with a
+stale-token 401. Instead: the proxy detects the failed refresh,
+suspends the in-flight request, triggers a `"consent:credential"`
+notification via `notificationService` ("GitHub access has been
+revoked; reconnect?"), and transparently retries the original
+request once the user re-authorises. Integration code sees no
+disruption beyond latency.
+
+Lives in `reconsent.ts`, wired at step 8 of the proxy pipeline.
+Reuses the same notification queue as initial consent — one UX
+surface, two triggers.
+
+### Audit + observability
+
+Every authed outbound request appends a structured record to
+`~/.natstack/logs/credentials-audit-YYYY-MM-DD.jsonl`:
+
+```
+{ ts, workerId, callerId, providerId, connectionId, method, url,
+  status, durationMs, bytesIn, bytesOut, scopesUsed,
+  capabilityViolation?, retries, breakerState }
+```
+
+Daily rotation, size cap. Queryable via `credentials.audit` RPC with
+per-caller scoping (a panel sees its own worker's entries; shell
+sees everything). Enables a future UI ("what did natstack do with my
+GitHub access today"), anomaly alerts, and debugging. High
+user-trust value for a system holding broad tokens.
+
+### Rate limiting, retry, circuit breaking
+
+Three concerns, one layered middleware. Each provider manifest
+declares `rateLimits` and `retry` policies; the proxy enforces them:
+
+- **Rate limit**: per-connection token bucket; honours `Retry-After`
+  headers from 429 responses; configurable to delay-up-to-cap vs
+  fail-fast.
+- **Retry**: exponential backoff on 5xx, bounded attempts.
+- **Circuit breaker**: N consecutive failures in a rolling window →
+  trip breaker for cooldown period → fail fast instead of piling on
+  a downed provider.
+
+Lives in `rateLimit.ts` and `retry.ts`, proxy steps 5 and 7.
+Integration authors get provider-appropriate resilience without
+writing any of it themselves.
+
+### Service accounts / non-interactive mode
+
+Required for production: CI, scheduled jobs, server-side deployments.
+
+Three new non-interactive flow types:
+
+- `service-account` — Google service account JSON, AWS IAM creds,
+  similar. Self-refreshing.
+- `bot-token` — Slack `xoxb-`, Discord bot tokens, Telegram tokens.
+  Long-lived, no refresh.
+- `github-app-installation` — GitHub App installation tokens minted
+  from a private key. Short-lived, auto-refreshed.
+
+Paired with a `--non-interactive` server mode where `requestConsent`
+throws rather than prompts if no valid credential exists. A
+`credentials.seeds` config lets headless deployments load bot
+tokens and service-account JSONs at server start. Enables running
+natstack unattended without compromising the interactive UX for
+desktop users.
+
+### Webhooks as first-class
+
+Provider manifests declare supported webhook events and
+signature-verification recipes. Integration manifests subscribe to
+specific events and name a handler export. The runtime:
+
+1. Registers a natstack-server-side subscription record.
+2. For providers where webhook registration requires API calls
+   (GitHub, Stripe, Linear), calls the provider's API to create the
+   webhook pointing at a stable per-instance URL on
+   `apps/webhook-relay/` (Cloudflare Worker).
+3. Opens a long-lived WebSocket from the natstack server to the
+   relay, keyed on a per-instance registration token.
+4. When the relay receives a POST at
+   `/webhook/:instanceId/:providerId`, forwards the body + headers
+   over the WS.
+5. `webhooks/verifier.ts` verifies the signature using the stored
+   secret; `router.ts` dispatches to the worker's handler.
+
+The relay is a tiny Cloudflare Worker with no persistent storage.
+Events are dropped if no subscriber is connected (at-most-once
+delivery). Upgrading to at-least-once via a Cloudflare Queue is a
+later concern.
+
+Why the WebSocket tunnel: natstack is local-first; the user's
+server doesn't have a public HTTPS endpoint. The relay provides
+the public endpoint; the WS delivers events through NAT / firewalls
+without any user setup. Same pattern as ngrok, Cloudflare Tunnel,
+etc., but scoped to webhook delivery.
+
+### Test utilities
+
+Shipped as `@natstack/credentials-test-utils`:
+
+- Mock OAuth 2.1 server (in-memory, configurable to simulate any
+  flow including failures, rotation, revocation).
+- Mock provider API accepting any token with fixture-driven
+  responses.
+- VCR-style HTTP fixture recorder for real-provider test setup.
+- Mock webhook relay for in-process event injection.
+
+Used by our own tests and published so third-party provider authors
+can write credible integration tests without hitting live
+providers.
+
 ## Remaining open items
 
 Just one implementation reminder:
 
 1. **Self-hoster `client_id` override.** Yes, via `natstack.yml`.
    Documented in the provider manifest section. Implement in Phase 3
-   step 14.
+   step 16.
 
 The universal-link domain is decided in principle (Cloudflare Pages,
 a parameter in both server and mobile config). The actual string is
@@ -805,17 +1155,30 @@ fully closed.
 ## Out of scope for this plan
 
 - Migrating existing users off Nango (no existing users).
-- Fine-grained per-tool consent within a provider (e.g. "this tool
-  can only read email, not send"). The manifest's `scopes` split
-  gives us coarse control; per-tool attenuation is a later pass.
-- Token sharing across multiple natstack hosts on the same machine
-  (single-user assumption; mtime-watch handles concurrent refreshes
-  within one machine).
-- **Offline mobile access to provider APIs.** Mobile requires
-  network reachability to the server because tokens live exclusively
-  server-side. Acceptable for v0.
-- Secrets rotation automation.
-- Long-term dependency on Composio. Once natstack's Google
-  verification completes, the `composio-bridge` flow type stays in
-  core for potential reuse with other providers but is no longer on
-  the critical path.
+- **Multi-account per provider.** First-party API accepts one
+  `connectionId` per provider. Users needing two GitHub accounts on
+  the same natstack install will wait for a later pass. Folding it
+  in later requires an API break, which we're accepting.
+- **Per-tool / per-call consent within a provider.** Capability
+  security at the manifest level is coarse (worker X can call these
+  endpoints). Per-call confirmation ("confirm sending 47 emails")
+  is a product feature that builds on top of this, not part of it.
+- **Token at-rest encryption via OS keychain.** `0o600` JSON files
+  only. Acceptable given the local-first threat model; worth
+  revisiting if we add backup/sync.
+- **Multi-device credential sync.** Tailscale federation,
+  encrypted-relay sync, and natstack-cloud are all explicit
+  non-goals for v0. Mobile shares via the server; anything else is
+  out.
+- **Bidirectional MCP integration.** `flows/mcpDcr.ts` handles MCP
+  as an auth pattern. Consuming arbitrary MCP servers' tools and
+  exposing natstack as an MCP server are both later work.
+- **OpenAPI auto-import for provider capabilities.** Hand-written
+  manifests for v0. OpenAPI generation is a DX win for later.
+- **Federation / IdP integration.** Enterprise feature; not v0.
+- **Offline mobile access.** Mobile requires network reachability
+  to the server.
+- **Secrets rotation automation.** Manual rotation only.
+- **Long-term dependency on Composio.** Once natstack's Google
+  verification completes, the `composio-bridge` flow stays in core
+  for potential reuse but is no longer on the critical path.
