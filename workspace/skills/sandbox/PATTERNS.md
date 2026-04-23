@@ -148,29 +148,29 @@ The general pattern for any OAuth-protected API: connect once, then use the offi
 ```
 eval({
   code: `
-    import { oauth } from "@workspace/runtime";
-    import { Client } from "@notionhq/client";
+    import { credentials } from "@workspace/runtime";
 
-    // Connect if needed (one-time — triggers consent + browser sign-in)
-    const conn = await oauth.getConnection("notion");
-    if (!conn.connected) await oauth.connect("notion");
-
-    // Use the official SDK with the OAuth token
-    const token = await oauth.getToken("notion");
-    const notion = new Client({ auth: token.accessToken });
-    const results = await notion.search({ query: "meeting notes" });
-    for (const page of results.results) {
+    const notion = await credentials.connect("notion");
+    const response = await notion.fetch("https://api.notion.com/v1/search", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+      },
+      body: JSON.stringify({ query: "meeting notes" }),
+    });
+    const results = await response.json();
+    for (const page of results.results ?? []) {
       if (page.object === "page") {
         console.log("-", page.properties?.Name?.title?.[0]?.text?.content ?? page.id);
       }
     }
   `,
-  imports: { "@notionhq/client": "npm:^2.2.0" },
   timeout: 60000
 })
 ```
 
-Works with any configured OAuth provider. Check `await oauth.listProviders()` to see what's available.
+Works with any configured provider. Check `await credentials.listConnections()` to see what's available.
 
 ## Import Cookies from Chrome
 

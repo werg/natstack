@@ -72,26 +72,24 @@ Then ask the user which browser/profile to import from and which data types they
 - [BOOKMARKS.md](../browser-import/BOOKMARKS.md) — bookmark browsing
 - [WORKFLOWS.md](../browser-import/WORKFLOWS.md) — end-to-end recipes
 
-## Step 3: Set Up API Integrations (OAuth)
+## Step 3: Set Up API Integrations (Credentials)
 
-API integrations are being rewritten against the new credential system. See `docs/credential-system.md` for the current plan. This step will be updated once the new credential SDK lands (Wave 6).
+API integrations use the credential system. See `docs/credential-system.md` for the current architecture and provider setup details.
 
 **Check if already configured:**
 
 ```
 eval({ code: `
-  import { oauth } from "@workspace/runtime";
-  const providers = await oauth.listProviders();
-  if (providers.length > 0) {
-    console.log("OAuth is configured. Available providers:", providers.map(p => p.key).join(", "));
-    const connections = await oauth.listConnections();
-    if (connections.length > 0) {
-      console.log("Active connections:", connections.map(c => c.provider).join(", "));
-    }
+  import { credentials } from "@workspace/runtime";
+  const githubConnections = await credentials.listConnections("github");
+  const googleConnections = await credentials.listConnections("google-workspace");
+  const connections = [...githubConnections, ...googleConnections];
+  if (connections.length > 0) {
+    console.log("Configured connections:", connections.map(c => c.providerId + ":" + c.connectionId).join(", "));
   } else {
-    console.log("OAuth is not configured yet.");
+    console.log("No GitHub or Google Workspace credentials are configured yet.");
   }
-  return { configured: providers.length > 0, providers };
+  return { configured: connections.length > 0, connections };
 `, timeout: 10000 })
 ```
 

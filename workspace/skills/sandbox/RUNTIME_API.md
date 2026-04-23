@@ -70,7 +70,7 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `openPanel` | value |  |  |
 | `adblock` | namespace | `getStats`, `isActive`, `getStatsForPanel`, `isEnabledForPanel`, `setEnabledForPanel`, `resetStatsForPanel`, `getPanelUrl`, `addToWhitelist`, `removeFromWhitelist` |  |
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo`, `openPanel` |  |
-| `oauth` | namespace | `getToken`, `getConnection`, `listConnections`, `listProviders`, `connect`, `requestConsent`, `startAuth`, `waitForConnection`, `disconnect`, `listConsents` |  |
+| `credentials` | namespace | `connect`, `revokeConsent`, `listConnections`, `subscribeWebhook`, `unsubscribeWebhook`, `listWebhookLeases` |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
 <!-- END GENERATED: panel-runtime-surface -->
 
@@ -401,56 +401,59 @@ import { rpc } from "@workspace/runtime";
 const result = await rpc.call("main", "test.run", contextId, "panels/my-app");
 ```
 
-## OAuth (`oauth`)
+## Credentials (`credentials`)
 
 ```typescript
-import { oauth } from "@workspace/runtime";
+import { credentials } from "@workspace/runtime";
 ```
 
-Manage OAuth connections. Handles token refresh, consent prompts, and browser sign-in automatically.
+Resolve provider connections into host-side credential handles. Raw tokens do not enter runtime code; authenticated requests go through `handle.fetch(...)` and the server-side egress proxy injects auth.
 
-**Setup:** The OAuth system is being rewritten against the new credential system. See `docs/credential-system.md` for the current plan. Use the `api-integrations` skill for setup guidance.
+**Setup:** Use the model-provider settings page for AI providers and the credential consent flow for third-party integrations. See `docs/credential-system.md` for the architecture.
 
 | Method | Description |
 |--------|-------------|
-| `listProviders()` | List configured providers → `[{ key, provider }]` |
-| `listConnections()` | List active connections → `OAuthConnection[]` |
-| `getConnection(providerKey, connectionId?)` | Check connection status → `OAuthConnection` |
-| `getToken(providerKey, connectionId?)` | Get access token (auto-refreshes) → `{ accessToken, expiresAt, scopes }` |
-| `requestConsent(providerKey, { scopes? })` | Request user consent (shows notification in shell) → `{ consented }` |
-| `startAuth(providerKey, connectionId?, { openIn? })` | Sync cookies + open sign-in (`openIn`: `"panel"` (default) or `"external"`) → `{ authUrl }` |
-| `waitForConnection(providerKey, connectionId?, timeoutMs?)` | Poll until connected → `OAuthConnection` |
-| `connect(providerKey, connectionId?, { scopes?, openIn? })` | All-in-one: consent + auth + wait → `OAuthConnection` |
-| `disconnect(providerKey, connectionId?)` | Revoke connection |
-| `listConsents()` | List consent records for this caller → `ConsentRecord[]` |
+| `listConnections(providerId?)` | List available connections → `ConnectionRecord[]` |
+| `connect(providerId, { connectionId? })` | Resolve a usable connection for this caller → `CredentialHandle` |
 
-`OAuthConnection`: `{ id, provider, email?, connected, lastRefreshed? }`.
-`ConsentRecord`: `{ callerId, provider, scopes, grantedAt }`.
+`ConnectionRecord`: `{ providerId, connectionId, connectionLabel, accountIdentity, scopes, expiresAt?, metadata? }`.
+`CredentialHandle`: `{ connectionId, providerId, fetch(url, init?) }`.
 
 **Quick connect pattern:**
 ```typescript
-const conn = await oauth.getConnection("notion");
-if (!conn.connected) {
-  await oauth.requestConsent("notion", { scopes: ["database:read"] });
-  await oauth.startAuth("notion");
-  await oauth.waitForConnection("notion");
-}
-const token = await oauth.getToken("notion");
+const notion = await credentials.connect("notion");
+const response = await notion.fetch("https://api.notion.com/v1/search", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Notion-Version": "2022-06-28",
+  },
+  body: JSON.stringify({ query: "meeting notes" }),
+});
+const data = await response.json();
 ```
+
+`oauth.getToken()` is deprecated and intentionally unavailable.
 
 ## Integrations (`@workspace/integrations`)
 
 Pre-built API clients that wrap OAuth + fetch. See `api-integrations` skill for the full spectrum from quick experiments to custom libraries.
 
-For APIs without a pre-built integration, use `oauth.getToken()` + the official npm SDK directly:
+For APIs without a pre-built integration, connect once and use `handle.fetch()` against the provider's HTTP API:
 
 ```typescript
-import { oauth } from "@workspace/runtime";
-import { Client } from "@notionhq/client";  // npm SDK, installed via imports param
+import { credentials } from "@workspace/runtime";
 
-const token = await oauth.getToken("notion");
-const notion = new Client({ auth: token.accessToken });
-const results = await notion.search({ query: "my tasks" });
+const notion = await credentials.connect("notion");
+const response = await notion.fetch("https://api.notion.com/v1/search", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Notion-Version": "2022-06-28",
+  },
+  body: JSON.stringify({ query: "my tasks" }),
+});
+const results = await response.json();
 ```
 
 Pre-built wrappers for Gmail and Calendar:
