@@ -2,6 +2,123 @@
 
 Status: Plan. Nothing in this doc is implemented yet.
 
+## Background
+
+### The Nango problem
+
+We prototyped third-party API access via [Nango](https://www.nango.dev/),
+a hosted OAuth broker. In practice it was a poor fit:
+
+- **Hosted-UI configuration.** Every provider integration has to be
+  configured by hand in the Nango dashboard — OAuth app registration,
+  redirect URIs, secret key rotation, per-deployment plumbing. That
+  directly contradicts how we want to develop natstack: programmatically,
+  from code checked into this repo.
+- **Per-operator friction.** Each self-hoster would have to repeat the
+  Nango dashboard dance for every provider. There's no way to ship
+  "works out of the box" with a downloaded natstack binary.
+- **Runtime mismatch.** Nango is a hosted service you proxy through;
+  we're a local-first JS runtime where the natural idiom is
+  `npm install @octokit/rest` and call it. A hosted broker is the wrong
+  shape.
+
+The existing Nango code is prototype only. Nothing in production depends
+on it, so we can delete rather than migrate.
+
+### What we looked at
+
+To ground the replacement design we surveyed how three adjacent agent
+frameworks organise third-party API integration:
+
+- **OpenClaw** (`openclaw/openclaw`, Node/TS). Explicitly rejects a
+  hosted broker. Default auth is **loopback PKCE** — the agent itself is
+  the OAuth client, callback lands on `127.0.0.1:1455`. Falls back to
+  **device-code** flow and **CLI piggyback** (reuses existing `claude` or
+  `gogcli` creds). Plugins are TS ESM modules with a JSON-Schema
+  manifest; credentials live in `~/.openclaw/` as file-locked JSON.
+  Closest to what we want.
+- **Hermes Agent** (`NousResearch/hermes-agent`, Python). Four different
+  auth patterns chosen per-integration: bot-token paste for messaging
+  platforms, `gh auth token` scraping for GitHub, user-registered Google
+  OAuth client with localhost PKCE, **and full OAuth 2.1 + Dynamic
+  Client Registration** for MCP servers. The MCP + DCR path is the
+  single cleanest "no app registration at all" pattern in the ecosystem.
+- **NanoClaw** (`qwibitai/nanoclaw`, Bun/TS). BYO-token for everything;
+  integrations ship as npm packages pulled in by a Claude Code skill
+  that appends a one-line import. Introduces a local "Agent Vault"
+  proxy that injects credentials so the agent process never holds raw
+  keys — the pattern we're stealing for our egress proxy.
+
+### What we learned
+
+Four ideas translated directly into this plan:
+
+1. **Ship one public OAuth client per provider, `client_id` in the
+   repo.** This is how `gh`, `gcloud`, `az`, VS Code, and Claude Code
+   all work. It is nothing like Nango's "register per deployment in a
+   dashboard" model. Users get a zero-ceremony consent screen; operators
+   do nothing. The one real cost is **provider verification** (mainly
+   Google's sensitive-scope review) which we defer by allowing BYO
+   `client_secret.json` as a v0 fallback.
+2. **Loopback PKCE + device code as the default OAuth flows.**
+   No hosted callback endpoint needed. OpenClaw proves this works for a
+   local-first Node runtime.
+3. **MCP + DCR for the long tail.** For any SaaS with an MCP server on
+   Cloudflare's `workers-oauth-provider`, WorkOS AuthKit, Stytch, etc.
+   (Notion, Linear, Asana, Atlassian, Sentry, Stripe…) Dynamic Client
+   Registration means **zero OAuth app registration** — the server mints
+   a `client_id` on demand. We inherit the entire MCP ecosystem by
+   implementing the flow once.
+4. **Credentials injected at the egress boundary, not handed to the
+   worker.** NanoClaw's pattern: a local proxy stamps `Authorization`
+   headers on outbound requests so the agent sandbox never sees tokens.
+   This is a real security win and it lets integration authors call
+   plain `fetch()` without a provider-specific client.
+
+### Decisions
+
+Explicit choices made during the design discussion, recorded here so
+future readers don't have to reconstruct the reasoning:
+
+- **Option A over B and C as the default.** We considered three
+  approaches for the big providers: (A) pre-registered natstack-owned
+  public OAuth clients, (B) personal access tokens, (C) CLI piggyback
+  on locally-installed `gh` / `gcloud` / `az`. A is chosen as the
+  default because it gives zero-ceremony onboarding for non-dev users.
+  B and C remain in every manifest's `flows` list as fallbacks — Option
+  A is the default, not the only path.
+- **Per-provider strategy:**
+  - GitHub → device flow primary (no callback needed), PAT + `gh`
+    piggyback as fallbacks.
+  - Microsoft → device flow, `az` piggyback. Cleanest of the big four.
+  - Google → loopback PKCE with BYO `client_secret.json` for v0 to
+    avoid Google's multi-month sensitive-scope verification. Migrate to
+    a verified natstack Google client later.
+  - Slack → distributed natstack Slack app with Socket Mode primary,
+    manifest-guided self-install fallback. No device flow exists for
+    Slack.
+  - Notion → MCP + DCR primary, internal-integration-token fallback.
+    We get Notion essentially for free.
+- **Mechanisms in core, providers as data.** The core knows about five
+  flow types (loopback PKCE, device code, MCP DCR, PAT, CLI piggyback).
+  Providers are manifests — pure data — so adding a new provider is
+  never a core change. Adding a new *flow type* is a core change but
+  should be rare.
+- **Host-side egress proxy, not a worker-side `authedFetch` wrapper.**
+  The worker SDK surface is deliberately tiny (`requestConsent`,
+  `revokeConsent`) and integrations use plain `fetch()`. The proxy
+  matches request hosts against manifest `apiBase` patterns and stamps
+  `Authorization` headers. Tokens never cross into the worker sandbox.
+- **TLS interception via a local CA** in the egress proxy. The only way
+  to stamp headers on HTTPS without cooperation from the worker SDK.
+  The CA is minted locally per-install and injected into workerd's
+  trust store. We accept the extra complexity to preserve the
+  zero-ceremony `fetch()` story.
+- **Third-party providers as npm packages.** Anyone can publish
+  `@someone/natstack-provider-foo` with their own `client_id` and a
+  manifest; users install it and it registers on startup. No core PR,
+  no hosted registration, no natstack involvement.
+
 ## Goal
 
 Replace the unused Nango prototype with a code-first, JS-native credential
