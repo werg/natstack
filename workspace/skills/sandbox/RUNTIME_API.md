@@ -409,7 +409,7 @@ import { oauth } from "@workspace/runtime";
 
 Manage OAuth connections. Handles token refresh, consent prompts, and browser sign-in automatically.
 
-**Setup:** Requires a Nango secret key in `~/.config/natstack/.secrets.yml` under `nango:` (a UUID from the Nango dashboard's Settings → Secret Key). Sign up free at https://app.nango.dev, then configure providers in the Nango dashboard. Use the `api-integrations` skill for full setup guidance.
+**Setup:** The OAuth system is being rewritten against the new credential system. See `docs/credential-system.md` for the current plan. Use the `api-integrations` skill for setup guidance.
 
 | Method | Description |
 |--------|-------------|

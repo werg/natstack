@@ -25,7 +25,6 @@ import type {
   OAuthProviderInterface,
 } from "@mariozechner/pi-ai";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
-import type { SecretsStore } from "@natstack/shared/secrets";
 import { CodexTokenProvider } from "./oauthProviders/codexTokenProvider.js";
 
 const OAUTH_TOKENS_PATH = path.join(homedir(), ".config", "natstack", "oauth-tokens.json");
@@ -63,8 +62,6 @@ export interface AuthTokensServiceDeps {
   tokensPath?: string;
   /** Injection points for tests — swap the default provider instances. */
   providerOverrides?: Record<string, OAuthProviderInterface>;
-  /** Shared secrets store for live API-key reads from .secrets.yml. */
-  secretsStore?: SecretsStore;
 }
 
 interface ProviderWaiter {
@@ -95,11 +92,8 @@ export class AuthTokensServiceImpl {
   private readonly tokensPath: string;
   private readonly oauthProviders: Record<string, OAuthProviderRegistration> = {};
   private readonly waiters = new Map<string, Set<ProviderWaiter>>();
-  private readonly secretsStore: SecretsStore | undefined;
-
   constructor(private readonly deps: AuthTokensServiceDeps) {
     this.tokensPath = deps.tokensPath ?? OAUTH_TOKENS_PATH;
-    this.secretsStore = deps.secretsStore;
 
     this.oauthProviders["openai-codex"] = {
       displayName: "OpenAI Codex (ChatGPT subscription)",
@@ -119,7 +113,7 @@ export class AuthTokensServiceImpl {
   private resolveApiKey(providerId: string): string | undefined {
     const envVar = ENV_API_KEY_PROVIDERS[providerId];
     if (!envVar) return undefined;
-    return this.secretsStore?.get(providerId) ?? process.env[envVar];
+    return process.env[envVar];
   }
 
   private async load(): Promise<void> {

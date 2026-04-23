@@ -299,8 +299,6 @@ server is remote:
   the gateway's `/_r/` primitive (see [routes.md](./routes.md)). Unlike pi-ai's
   bundled flow (which hardcodes `http://localhost:1455`), ours works with any
   publicly-reachable redirect URI.
-- **Nango** integrations are unaffected — Nango hosts its own callback.
-
 ## Ops & resilience
 
 ### Backup
@@ -311,7 +309,7 @@ The server machine owns all state. Back these up:
 |---|---|
 | `~/.config/natstack/admin-token` | Stable admin token (restore = keep old clients connectable) |
 | `~/.config/natstack/config.yml` | Models / cache config |
-| `~/.config/natstack/.secrets.yml` | Nango secret key, API keys |
+| `~/.config/natstack/.secrets.yml` | API keys |
 | `~/.config/natstack/oauth-tokens.json` | Provider OAuth credentials (user-resealable, but convenient) |
 | `~/.config/natstack/workspaces/<name>/source/` | Workspace content (panels, agents, configs) — git-repo'd, also push elsewhere |
 | `~/.config/natstack/workspaces/<name>/state/` | DO storage, panel persistence, build cache. The `.databases/workerd-do/` subdir is the critical piece — SQLite files per DO. |

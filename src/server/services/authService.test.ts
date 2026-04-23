@@ -14,7 +14,6 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { OAuthCredentials, OAuthLoginCallbacks, OAuthProviderInterface } from "@mariozechner/pi-ai";
-import { createInMemorySecretsStore } from "@natstack/shared/secrets/testing";
 import { AuthTokensServiceImpl } from "./authService.js";
 
 function makeMockProvider(): {
@@ -60,11 +59,10 @@ describe("AuthTokensServiceImpl", () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
-  function makeService(providerOverride?: OAuthProviderInterface, secrets: Record<string, string> = {}) {
+  function makeService(providerOverride?: OAuthProviderInterface) {
     return new AuthTokensServiceImpl({
       tokensPath,
       providerOverrides: providerOverride ? { "openai-codex": providerOverride } : undefined,
-      secretsStore: createInMemorySecretsStore(secrets),
     });
   }
 
@@ -85,15 +83,6 @@ describe("AuthTokensServiceImpl", () => {
       const svc = makeService();
       await expect(svc.getProviderToken("anthropic")).resolves.toBe("sk-anthropic-test");
       await expect(svc.getProviderToken("openai")).resolves.toBe("sk-openai-test");
-    });
-
-    it("reads env-var providers from the secrets store without needing process.env", async () => {
-      const svc = makeService(undefined, {
-        anthropic: "sk-anthropic-secret",
-        openai: "sk-openai-secret",
-      });
-      await expect(svc.getProviderToken("anthropic")).resolves.toBe("sk-anthropic-secret");
-      await expect(svc.getProviderToken("openai")).resolves.toBe("sk-openai-secret");
     });
 
     it("throws a descriptive error when env-var provider is missing its env var", async () => {
@@ -182,7 +171,8 @@ describe("AuthTokensServiceImpl", () => {
 
   describe("listProviders", () => {
     it("returns both OAuth and env-var sources with correct status", async () => {
-      const svc = makeService(undefined, { anthropic: "sk-anthropic-test" });
+      process.env["ANTHROPIC_API_KEY"] = "sk-anthropic-test";
+      const svc = makeService();
       const providers = await svc.listProviders();
 
       const oauthCodex = providers.find(p => p.provider === "openai-codex");

@@ -73,9 +73,9 @@ Environment variable alternatives: `NATSTACK_REMOTE_CA`, `NATSTACK_REMOTE_FINGER
 
 ## 4. OAuth from a remote client
 
-When you trigger an OAuth flow (e.g. connecting an AI provider or Nango integration) from a remotely-connected client, the server broadcasts an `open-external-requested` event with the auth URL. **The client that started the flow** opens that URL in its local browser — desktop uses `shell.openExternal`, mobile uses `Linking.openURL`. The server itself no longer needs a browser.
+When you trigger an OAuth flow (e.g. connecting an AI provider) from a remotely-connected client, the server dispatches an `open-external-requested` event to the initiating client with the auth URL. **The client that started the flow** opens that URL in its local browser — desktop uses `shell.openExternal`, mobile uses `Linking.openURL`. The server itself no longer needs a browser.
 
-Nango's OAuth callback still hits the Nango service, which calls back to the server. For this to work your server's URL must be reachable from the internet (or you need a tunnel like Cloudflare Tunnel / Tailscale funnel). See `docs/REMOTE_SERVER.md` for concrete proxy recipes.
+The OAuth callback redirects back to the server. For this to work your server's URL must be reachable from the internet (or you need a tunnel like Cloudflare Tunnel / Tailscale funnel). Set `--public-url` so the server builds the correct `redirect_uri`. See `docs/remote-server.md` for concrete proxy recipes.
 
 ## 5. Verifying the connection
 
@@ -101,7 +101,7 @@ Clicking the badge opens the settings dialog.
 |---|---|
 | Workspaces (`~/.config/natstack/workspaces/`) | Encrypted remote credentials (`~/.config/natstack/remote-credentials.json`) |
 | OAuth tokens (`oauth-tokens.json`) | Theme / local UI preferences |
-| Nango secret, other API keys (`.secrets.yml`) | Electron userData cache for remote mode (`~/.config/natstack/remote-state/`) |
+| API keys (`.secrets.yml`) | Electron userData cache for remote mode (`~/.config/natstack/remote-state/`) |
 | Durable Object state (`.databases/workerd-do/`) | |
 | Agent/worker execution | |
 

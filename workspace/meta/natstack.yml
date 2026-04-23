@@ -91,10 +91,3 @@ git:
   # Uncomment to override (or set to an empty string to disable the default):
   # devTargetDir: /absolute/path/to/template
 
-# OAuth configuration (optional)
-# Uses Nango Cloud (https://api.nango.dev) by default.
-# Add your Nango secret key to ~/.config/natstack/.secrets.yml:
-#   nango: <your-secret-key>   # UUID from the Nango dashboard (Settings → Secret Key)
-# To use a self-hosted Nango instance, uncomment:
-# oauth:
-#   nangoUrl: https://your-nango-instance.example.com
