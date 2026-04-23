@@ -14,7 +14,8 @@ import {
 import type { StackNavigationProp } from "@react-navigation/stack";
 import { useSetAtom, useAtomValue } from "jotai";
 import type { RootStackParamList } from "../navigation/RootNavigator";
-import { saveCredentials, getCredentials } from "../services/auth";
+import { saveCredentials } from "../services/auth";
+import { getConnectionBootstrap } from "../services/connectionBootstrap";
 import { ShellClient } from "../services/shellClient";
 import {
   serverUrlAtom,
@@ -53,6 +54,8 @@ interface LoginScreenProps {
 export function LoginScreen({ navigation }: LoginScreenProps) {
   const [serverUrl, setServerUrl] = React.useState("");
   const [token, setToken] = React.useState("");
+  const [bootstrapPending, setBootstrapPending] = React.useState(true);
+  const [autoConnecting, setAutoConnecting] = React.useState(false);
   const colors = useAtomValue(themeColorsAtom);
 
   const setServerUrlAtom = useSetAtom(serverUrlAtom);
@@ -65,7 +68,11 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
   const authLoading = useAtomValue(authLoadingAtom);
 
   // Reusable connect logic shared by auto-connect and manual button
-  const connectWithCredentials = async (url: string, authToken: string) => {
+  const connectWithCredentials = async (
+    url: string,
+    authToken: string,
+    options?: { showAlert?: boolean },
+  ) => {
     setAuthLoading(true);
     setAuthError(null);
 
@@ -94,7 +101,9 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
       setAuthLoading(false);
       const message = error instanceof Error ? error.message : "Connection failed";
       setAuthError(message);
-      Alert.alert("Connection Failed", message);
+      if (options?.showAlert !== false) {
+        Alert.alert("Connection Failed", message);
+      }
     }
   };
 
@@ -102,20 +111,14 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
   const connectRef = React.useRef(connectWithCredentials);
   connectRef.current = connectWithCredentials;
 
-  // Try loading saved credentials on mount and auto-connect if available.
-  // Deep-link (natstack://connect?url=&token=) takes precedence but always
-  // requires user confirmation before it overwrites creds — see
-  // confirmConnectDeepLink above for the rationale.
   React.useEffect(() => {
+    let cancelled = false;
     let consumedDeepLink = false;
 
     const applyConnectUrl = async (rawUrl: string): Promise<boolean> => {
       const result = parseConnectDeepLink(rawUrl);
       if (result.kind === "error") {
         if (rawUrl.startsWith("natstack://connect")) {
-          // Surface the reason if someone clearly meant to send a connect link
-          // but got rejected (bad host, missing token, …). Silent-ignore for
-          // other natstack:// paths (oauth-callback etc).
           Alert.alert("Can't open connect link", result.reason);
         }
         return false;
@@ -126,7 +129,7 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
       setServerUrl(result.serverUrl);
       setToken(result.shellToken);
       await saveCredentials(result.serverUrl, result.shellToken);
-      await connectRef.current(result.serverUrl, result.shellToken);
+      await connectRef.current(result.serverUrl, result.shellToken, { showAlert: true });
       return true;
     };
 
@@ -135,19 +138,31 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
     });
 
     void (async () => {
-      const initialUrl = await Linking.getInitialURL();
-      if (initialUrl && (await applyConnectUrl(initialUrl))) return;
+      try {
+        const initialUrl = await Linking.getInitialURL();
+        if (initialUrl && (await applyConnectUrl(initialUrl))) return;
+        if (consumedDeepLink || cancelled) return;
 
-      const creds = await getCredentials();
-      if (!creds || consumedDeepLink) return;
-      setServerUrl(creds.serverUrl);
-      setToken(creds.token);
-      if (creds.serverUrl && creds.token) {
-        await connectRef.current(creds.serverUrl, creds.token);
+        const bootstrap = await getConnectionBootstrap();
+        if (!bootstrap || cancelled) return;
+
+        setServerUrl(bootstrap.serverUrl);
+        setToken(bootstrap.token);
+
+        if (bootstrap.autoConnect) {
+          setAutoConnecting(true);
+          await connectRef.current(bootstrap.serverUrl, bootstrap.token, { showAlert: false });
+        }
+      } finally {
+        if (!cancelled) {
+          setBootstrapPending(false);
+          setAutoConnecting(false);
+        }
       }
     })();
 
     return () => {
+      cancelled = true;
       subscription.remove();
     };
   }, []);
@@ -166,8 +181,25 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
     }
 
     await saveCredentials(trimmedUrl, trimmedToken);
-    await connectWithCredentials(trimmedUrl, trimmedToken);
+    await connectWithCredentials(trimmedUrl, trimmedToken, { showAlert: true });
   };
+
+  if (bootstrapPending || autoConnecting) {
+    return (
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        style={{ flex: 1, backgroundColor: colors.background }}
+      >
+        <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+          <Text style={[styles.title, { color: colors.text }]}>NatStack</Text>
+          <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+            {autoConnecting ? "Connecting to your NatStack server..." : "Loading development connection..."}
+          </Text>
+          <ActivityIndicator color={colors.primary} size="large" />
+        </ScrollView>
+      </KeyboardAvoidingView>
+    );
+  }
 
   return (
     <KeyboardAvoidingView

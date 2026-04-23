@@ -16,6 +16,15 @@ const monorepoRoot = path.resolve(projectRoot, "..", "..");
  *    which @react-native/babel-plugin-codegen in RN 0.79 can't parse.
  *    The pre-built lib/ output works correctly with old architecture.
  */
+const nodeBuiltinPolyfills = {
+  path: require.resolve("path-browserify"),
+  crypto: path.resolve(projectRoot, "src", "polyfills", "crypto.js"),
+  fs: path.resolve(projectRoot, "src", "polyfills", "fs.js"),
+  "node:crypto": path.resolve(projectRoot, "src", "polyfills", "crypto.js"),
+  "node:path": require.resolve("path-browserify"),
+  "node:fs": path.resolve(projectRoot, "src", "polyfills", "fs.js"),
+};
+
 const config = {
   watchFolders: [
     // Allow Metro to resolve workspace packages
@@ -32,11 +41,20 @@ const config = {
     ],
 
     resolveRequest: (context, moduleName, platform) => {
-      // 0. Force react/react-native to resolve from mobile's node_modules
-      //    (prevents hoisted root version from shadowing mobile's pinned version)
+      // Node.js built-in polyfills for shared code running in React Native
+      if (nodeBuiltinPolyfills[moduleName]) {
+        return { type: "sourceFile", filePath: nodeBuiltinPolyfills[moduleName] };
+      }
+      // 0. Ensure a single copy of react is used (local if installed, else hoisted root)
       if (moduleName === "react" || moduleName === "react/jsx-runtime" || moduleName === "react/jsx-dev-runtime") {
         const localPath = path.resolve(projectRoot, "node_modules", moduleName);
-        return context.resolveRequest(context, localPath, platform);
+        try {
+          require.resolve(localPath);
+          return context.resolveRequest(context, localPath, platform);
+        } catch {
+          const rootPath = path.resolve(monorepoRoot, "node_modules", moduleName);
+          return context.resolveRequest(context, rootPath, platform);
+        }
       }
 
       // 0a. Shim Node builtins pulled in transitively by @natstack/shared.
@@ -77,9 +95,11 @@ const config = {
       //     @react-native/babel-plugin-codegen in RN 0.79 cannot parse.
       //     The lib/commonjs/ output is already compiled and works correctly.
       if (moduleName === "react-native-screens") {
-        const prebuilt = path.resolve(
-          projectRoot, "node_modules", "react-native-screens", "lib", "commonjs", "index.js",
-        );
+        const localBase = path.resolve(projectRoot, "node_modules", "react-native-screens");
+        const rootBase = path.resolve(monorepoRoot, "node_modules", "react-native-screens");
+        const fs = require("fs");
+        const base = fs.existsSync(localBase) ? localBase : rootBase;
+        const prebuilt = path.resolve(base, "lib", "commonjs", "index.js");
         return { type: "sourceFile", filePath: prebuilt };
       }
 

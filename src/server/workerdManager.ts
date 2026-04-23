@@ -12,8 +12,10 @@
 import { spawn, type ChildProcess } from "child_process";
 import * as crypto from "crypto";
 import * as fs from "fs";
+import { createRequire } from "module";
 import * as path from "path";
 import * as os from "os";
+import { pathToFileURL } from "url";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { FsService } from "@natstack/shared/fsService";
 import type { BuildResult } from "./buildV2/buildStore.js";
@@ -21,6 +23,16 @@ import type { RouteRegistry, ManifestRouteDecl } from "./routeRegistry.js";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("WorkerdManager");
+declare const __filename: string | undefined;
+
+const requireFromUrl: string =
+  (typeof import.meta !== "undefined" && import.meta.url)
+    ? import.meta.url
+    : (typeof __filename !== "undefined" && __filename)
+      ? pathToFileURL(__filename).href
+      : pathToFileURL(process.cwd() + "/").href;
+
+const require = createRequire(requireFromUrl);
 
 /**
  * Replicate workerd's idFromName() → SQLite filename derivation.
@@ -149,10 +161,41 @@ export class WorkerdManager {
   private findWorkerdBinary(): string {
     if (this.workerdBinary) return this.workerdBinary;
 
-    // Try node_modules/.bin/workerd first
+    const maybeExeExtension = process.platform === "win32" ? ".exe" : "";
+    const platformPackages: Record<string, string> = {
+      "darwin arm64 LE": "@cloudflare/workerd-darwin-arm64",
+      "darwin x64 LE": "@cloudflare/workerd-darwin-64",
+      "linux arm64 LE": "@cloudflare/workerd-linux-arm64",
+      "linux x64 LE": "@cloudflare/workerd-linux-64",
+      "win32 x64 LE": "@cloudflare/workerd-windows-64",
+    };
+    const platformKey = `${process.platform} ${os.arch()} ${os.endianness()}`;
+    const platformPackage = platformPackages[platformKey];
+
+    if (platformPackage) {
+      try {
+        const resolved = require.resolve(`${platformPackage}/bin/workerd${maybeExeExtension}`);
+        this.workerdBinary = resolved;
+        return resolved;
+      } catch {
+        // Fall through to local candidate paths and PATH lookup below.
+      }
+    }
+
+    // Avoid the `node_modules/.bin/workerd` shim: it shells out to the real
+    // binary with execFileSync(), which leaves the actual child process outside
+    // our process tree and breaks restart/shutdown determinism.
     const candidates = [
-      path.join(process.cwd(), "node_modules", ".bin", "workerd"),
-      path.join(__dirname, "..", "..", "node_modules", ".bin", "workerd"),
+      path.join(process.cwd(), "node_modules", "@cloudflare", "workerd-linux-64", "bin", `workerd${maybeExeExtension}`),
+      path.join(process.cwd(), "node_modules", "@cloudflare", "workerd-linux-arm64", "bin", `workerd${maybeExeExtension}`),
+      path.join(process.cwd(), "node_modules", "@cloudflare", "workerd-darwin-64", "bin", `workerd${maybeExeExtension}`),
+      path.join(process.cwd(), "node_modules", "@cloudflare", "workerd-darwin-arm64", "bin", `workerd${maybeExeExtension}`),
+      path.join(process.cwd(), "node_modules", "@cloudflare", "workerd-windows-64", "bin", `workerd${maybeExeExtension}`),
+      path.join(__dirname, "..", "..", "node_modules", "@cloudflare", "workerd-linux-64", "bin", `workerd${maybeExeExtension}`),
+      path.join(__dirname, "..", "..", "node_modules", "@cloudflare", "workerd-linux-arm64", "bin", `workerd${maybeExeExtension}`),
+      path.join(__dirname, "..", "..", "node_modules", "@cloudflare", "workerd-darwin-64", "bin", `workerd${maybeExeExtension}`),
+      path.join(__dirname, "..", "..", "node_modules", "@cloudflare", "workerd-darwin-arm64", "bin", `workerd${maybeExeExtension}`),
+      path.join(__dirname, "..", "..", "node_modules", "@cloudflare", "workerd-windows-64", "bin", `workerd${maybeExeExtension}`),
     ];
 
     for (const candidate of candidates) {

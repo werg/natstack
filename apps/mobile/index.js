@@ -1,3 +1,8 @@
+// Polyfill process.cwd for path-browserify and other Node.js compat code
+if (typeof process !== "undefined" && !process.cwd) {
+  process.cwd = () => "/";
+}
+
 // Polyfill globalThis.crypto.getRandomValues — used by the node:crypto shim
 // (src/nodeShims/crypto.ts) and by any workspace code that reaches for web
 // crypto. Must load before anything that may call crypto.randomBytes.

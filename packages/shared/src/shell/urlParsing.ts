@@ -13,6 +13,45 @@ export interface ParsedPanelUrl {
   stateArgs?: Record<string, unknown>;
 }
 
+interface ParsedUrlLike {
+  hostname: string;
+  pathname: string;
+  queryParams: Map<string, string>;
+}
+
+function parseUrlLike(url: string): ParsedUrlLike | null {
+  const match = url.match(/^(https?):\/\/([^/?#]+)([^?#]*)?(?:\?([^#]*))?(?:#.*)?$/i);
+  if (!match) return null;
+
+  const host = match[2] ?? "";
+  const hostname = host.replace(/:\d+$/, "").toLowerCase();
+  if (!hostname) return null;
+
+  const pathname = match[3] && match[3].length > 0 ? match[3] : "/";
+  const rawQuery = match[4] ?? "";
+  const queryParams = new Map<string, string>();
+
+  for (const part of rawQuery.split("&")) {
+    if (!part) continue;
+    const separatorIndex = part.indexOf("=");
+    const rawKey = separatorIndex === -1 ? part : part.slice(0, separatorIndex);
+    const rawValue = separatorIndex === -1 ? "" : part.slice(separatorIndex + 1);
+    try {
+      const key = decodeURIComponent(rawKey.replace(/\+/g, " "));
+      const value = decodeURIComponent(rawValue.replace(/\+/g, " "));
+      queryParams.set(key, value);
+    } catch {
+      return null;
+    }
+  }
+
+  return {
+    hostname,
+    pathname,
+    queryParams,
+  };
+}
+
 /**
  * Check if a URL targets a managed host (with or without explicit port).
  *
@@ -20,12 +59,9 @@ export interface ParsedPanelUrl {
  * @param externalHost - The managed host domain (e.g. "natstack.example.com")
  */
 export function isManagedHost(url: string, externalHost: string): boolean {
-  try {
-    const u = new URL(url);
-    return u.hostname.endsWith(`.${externalHost}`) || u.hostname === externalHost;
-  } catch {
-    return false;
-  }
+  const parsed = parseUrlLike(url);
+  if (!parsed) return false;
+  return parsed.hostname.endsWith(`.${externalHost}`) || parsed.hostname === externalHost;
 }
 
 /**
@@ -36,35 +72,39 @@ export function isManagedHost(url: string, externalHost: string): boolean {
  * @param externalHost - The managed host domain (e.g. "natstack.example.com")
  */
 export function parsePanelUrl(url: string, externalHost: string): ParsedPanelUrl | null {
-  try {
-    const u = new URL(url);
-    if (!u.hostname.endsWith(`.${externalHost}`) && u.hostname !== externalHost) return null;
+  const parsed = parseUrlLike(url);
+  if (!parsed) return null;
+  if (!parsed.hostname.endsWith(`.${externalHost}`) && parsed.hostname !== externalHost) return null;
 
-    const match = u.pathname.match(/^\/([^/]+\/[^/]+)(\/.*)?$/);
-    if (!match) return null;
-    const source = match[1]!;
-    if ((match[2] || "/") !== "/") return null;
-    if (u.searchParams.has("_bk") || u.searchParams.has("pid") || u.searchParams.has("_fresh")) return null;
-
-    return {
-      source,
-      contextId: u.searchParams.get("contextId") ?? undefined,
-      options: {
-        contextId: u.searchParams.get("contextId") ?? undefined,
-        name: u.searchParams.get("name") ?? undefined,
-        focus: u.searchParams.get("focus") === "true" || undefined,
-      },
-      stateArgs: u.searchParams.has("stateArgs")
-        ? (() => {
-            try {
-              return JSON.parse(u.searchParams.get("stateArgs")!) as Record<string, unknown>;
-            } catch {
-              return undefined;
-            }
-          })()
-        : undefined,
-    };
-  } catch {
+  const match = parsed.pathname.match(/^\/([^/]+\/[^/]+)(\/.*)?$/);
+  if (!match) return null;
+  const source = match[1]!;
+  if ((match[2] || "/") !== "/") return null;
+  if (parsed.queryParams.has("_bk") || parsed.queryParams.has("pid") || parsed.queryParams.has("_fresh")) {
     return null;
   }
+
+  const contextId = parsed.queryParams.get("contextId");
+  const name = parsed.queryParams.get("name");
+  const focus = parsed.queryParams.get("focus");
+  const rawStateArgs = parsed.queryParams.get("stateArgs");
+
+  return {
+    source,
+    contextId: contextId ?? undefined,
+    options: {
+      contextId: contextId ?? undefined,
+      name: name ?? undefined,
+      focus: focus === "true" || undefined,
+    },
+    stateArgs: rawStateArgs != null
+      ? (() => {
+          try {
+            return JSON.parse(rawStateArgs) as Record<string, unknown>;
+          } catch {
+            return undefined;
+          }
+        })()
+      : undefined,
+  };
 }

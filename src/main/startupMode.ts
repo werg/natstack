@@ -13,9 +13,9 @@ import { isDev } from "./utils.js";
 import { getAppRoot, getCentralConfigDirectory } from "./paths.js";
 import {
   resolveWorkspaceName,
-  resolveOrCreateWorkspace,
   loadCentralConfig,
 } from "@natstack/shared/workspace/loader";
+import { resolveLocalWorkspaceStartup } from "@natstack/shared/workspace/startup";
 import type { CentralDataManager } from "@natstack/shared/centralData";
 import { loadRemoteCredentials } from "./remoteCredentialStore.js";
 
@@ -151,33 +151,17 @@ export function resolveStartupMode(centralData: CentralDataManager): StartupMode
   // Local mode: resolve workspace from disk
   const wsName = resolveWorkspaceName();
   const appRoot = getAppRoot();
-
-  if (wsName) {
-    const resolved = resolveOrCreateWorkspace({ name: wsName, appRoot });
-    centralData.addWorkspace(wsName);
-    log.info(`[Workspace] Loaded: ${resolved.wsDir} (id: ${resolved.workspace.config.id})`);
-    return { kind: "local", wsDir: resolved.wsDir, workspaceId: resolved.workspace.config.id, isEphemeral: false };
-  }
-
-  if (isDev()) {
-    const { randomBytes } = require("crypto") as typeof import("crypto");
-    const devName = `dev-${randomBytes(4).toString("hex")}`;
-    const resolved = resolveOrCreateWorkspace({ name: devName, appRoot, init: true });
-    centralData.addWorkspace(devName);
-    log.info(`[Workspace] Loaded: ${resolved.wsDir} (id: ${resolved.workspace.config.id})`);
-    return { kind: "local", wsDir: resolved.wsDir, workspaceId: resolved.workspace.config.id, isEphemeral: true };
-  }
-
-  const last = centralData.getLastOpenedWorkspace();
-  if (last) {
-    const resolved = resolveOrCreateWorkspace({ name: last.name, appRoot });
-    centralData.touchWorkspace(last.name);
-    log.info(`[Workspace] Loaded: ${resolved.wsDir} (id: ${resolved.workspace.config.id})`);
-    return { kind: "local", wsDir: resolved.wsDir, workspaceId: resolved.workspace.config.id, isEphemeral: false };
-  }
-
-  const resolved = resolveOrCreateWorkspace({ name: "default", appRoot, init: true });
-  centralData.addWorkspace("default");
-  log.info(`[Workspace] Loaded: ${resolved.wsDir} (id: ${resolved.workspace.config.id})`);
-  return { kind: "local", wsDir: resolved.wsDir, workspaceId: resolved.workspace.config.id, isEphemeral: false };
+  const startup = resolveLocalWorkspaceStartup({
+    appRoot,
+    centralData,
+    name: wsName ?? undefined,
+    isDev: isDev(),
+  });
+  log.info(`[Workspace] Loaded: ${startup.resolved.wsDir} (id: ${startup.resolved.workspace.config.id})`);
+  return {
+    kind: "local",
+    wsDir: startup.resolved.wsDir,
+    workspaceId: startup.resolved.workspace.config.id,
+    isEphemeral: startup.isEphemeral,
+  };
 }

@@ -106,6 +106,8 @@ interface CliArgs {
   workspaceDir?: string;
   appRoot?: string;
   logLevel?: string;
+  readyFile?: string;
+  ephemeral?: boolean;
   servePanels?: boolean;
   panelPort?: number;
   init?: boolean;
@@ -130,6 +132,8 @@ Options:
   --workspace <name>       Workspace name to resolve (default: last-opened or "default")
   --workspace-dir <path>   Explicit workspace directory path
   --app-root <path>        Application root directory (default: cwd)
+  --ready-file <path>      Write structured readiness JSON to this file
+  --ephemeral              Use a disposable dev workspace (deleted on shutdown)
   --host <hostname>        External hostname (also sets bind to 0.0.0.0)
   --bind-host <addr>       Explicit bind address (default: 127.0.0.1, or 0.0.0.0 with --host)
   --protocol <http|https>  Protocol for panel-facing URLs (default: http)
@@ -167,9 +171,9 @@ Remote Electron connection:
 
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {};
-  const known = new Set(["workspace", "workspace-dir", "app-root", "log-level", "serve-panels", "panel-port", "init", "host", "bind-host", "protocol", "tls-cert", "tls-key", "print-token", "public-url", "help"]);
+  const known = new Set(["workspace", "workspace-dir", "app-root", "ready-file", "ephemeral", "log-level", "serve-panels", "panel-port", "init", "host", "bind-host", "protocol", "tls-cert", "tls-key", "print-token", "public-url", "help"]);
   /** Flags that don't take a value */
-  const booleanFlags = new Set(["serve-panels", "init", "print-token", "help"]);
+  const booleanFlags = new Set(["serve-panels", "ephemeral", "init", "print-token", "help"]);
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -216,11 +220,17 @@ function parseArgs(argv: string[]): CliArgs {
       case "app-root":
         args.appRoot = value;
         break;
+      case "ready-file":
+        args.readyFile = value;
+        break;
       case "log-level":
         args.logLevel = value;
         break;
       case "serve-panels":
         args.servePanels = true;
+        break;
+      case "ephemeral":
+        args.ephemeral = true;
         break;
       case "init":
         args.init = true;
@@ -296,7 +306,8 @@ if (!ipcChannel) {
 
 async function main() {
   const { setUserDataPath } = await import("@natstack/env-paths");
-  const { loadCentralEnv, resolveOrCreateWorkspace, loadPersistedAdminToken, savePersistedAdminToken, getAdminTokenPath, getCentralConfigPaths } = await import("@natstack/shared/workspace/loader");
+  const { loadCentralEnv, deleteWorkspaceDir, loadPersistedAdminToken, savePersistedAdminToken, getAdminTokenPath, getCentralConfigPaths } = await import("@natstack/shared/workspace/loader");
+  const { resolveLocalWorkspaceStartup } = await import("@natstack/shared/workspace/startup");
   const { CentralDataManager } = await import("@natstack/shared/centralData");
   const { GitServer } = await import("@natstack/git-server");
   const { createSecretsStore } = await import("@natstack/shared/secrets");
@@ -316,7 +327,7 @@ async function main() {
   // ===========================================================================
   // Workspace resolution
   // ===========================================================================
-  // Shared resolution via resolveOrCreateWorkspace():
+  // Shared resolution via resolveLocalWorkspaceStartup():
   //   --workspace-dir <path>   → explicit managed workspace root
   //   --workspace <name>       → resolve by name via getWorkspaceDir()
   //   NATSTACK_WORKSPACE_DIR   → env var (set by Electron parent or user)
@@ -330,26 +341,22 @@ async function main() {
   const wsDir = args.workspaceDir ?? process.env["NATSTACK_WORKSPACE_DIR"];
   const wsName = args.workspaceName ?? process.env["NATSTACK_WORKSPACE"];
 
-  function resolveOpts(): import("@natstack/shared/workspace/loader").ResolveWorkspaceOpts {
-    if (wsDir) return { wsDir, appRoot, init: args.init };
-    if (wsName) return { name: wsName, appRoot, init: args.init };
-    if (centralData) {
-      // Standalone with no workspace specified — use last-opened or "default"
-      const last = centralData.getLastOpenedWorkspace();
-      return last
-        ? { name: last.name, appRoot }
-        : { name: "default", appRoot, init: true };
-    }
-    // IPC mode with no workspace — fatal
-    ipcChannel!.postMessage({ type: "error", message: "No workspace specified (set NATSTACK_WORKSPACE_DIR)" });
-    process.exit(1);
-  }
-
   let workspace: import("@natstack/shared/workspace/types").Workspace;
+  let workspaceName: string;
+  let workspaceIsEphemeral = false;
   try {
-    const resolved = resolveOrCreateWorkspace(resolveOpts());
-    workspace = resolved.workspace;
-    centralData?.addWorkspace(resolved.name);
+    const startup = resolveLocalWorkspaceStartup({
+      appRoot,
+      centralData,
+      wsDir,
+      name: wsName,
+      init: args.init,
+      isDev: !!args.ephemeral,
+      requireExplicitSelection: !!ipcChannel,
+    });
+    workspace = startup.resolved.workspace;
+    workspaceName = startup.resolved.name;
+    workspaceIsEphemeral = startup.isEphemeral;
   } catch (error) {
     const msg = `Workspace resolution failed: ${error}`;
     if (ipcChannel) {
@@ -1147,6 +1154,7 @@ async function main() {
     const proto = isTls ? "https" : "http";
     const wsProto = isTls ? "wss" : "ws";
     console.log("natstack-server ready:");
+    console.log(`  Workspace:   ${workspaceName}${workspaceIsEphemeral ? " (ephemeral dev)" : ""}`);
     console.log(`  Gateway:     ${proto}://${hostConfig.externalHost}:${gatewayPort}`);
     console.log(`  Git:         (via gateway /_git/)`);
     console.log(`  Workerd:     (via gateway /_w/)`);
@@ -1168,6 +1176,31 @@ async function main() {
     // privilege level for browser chrome operations.
     const shellToken = tokenManager.ensureToken("remote-shell", "shell");
     console.log(`  Shell token: ${shellToken}`);
+
+    if (args.readyFile) {
+      const readyPayload = {
+        workspaceName,
+        workspaceId: workspace.config.id,
+        workspaceDir: workspacePath,
+        isEphemeral: workspaceIsEphemeral,
+        gatewayUrl: `${proto}://${hostConfig.externalHost}:${gatewayPort}`,
+        rpcUrl: `${wsProto}://${hostConfig.externalHost}:${gatewayPort}/rpc`,
+        gitUrl: `${proto}://${hostConfig.externalHost}:${gatewayPort}/_git/`,
+        workerdUrl: `${proto}://${hostConfig.externalHost}:${gatewayPort}/_w/`,
+        adminToken,
+        shellToken,
+        tokenFilePath,
+        gatewayPort,
+        panelPort: panelHttpPort ?? 0,
+        workerdPort: workerdMgr?.getPort() ?? 0,
+      };
+      try {
+        fs.mkdirSync(path.dirname(args.readyFile), { recursive: true });
+        fs.writeFileSync(args.readyFile, `${JSON.stringify(readyPayload, null, 2)}\n`, "utf8");
+      } catch (error) {
+        console.warn("[Server] Failed to write ready file:", error);
+      }
+    }
 
     if (args.printToken) {
       // Machine-readable token output on its own line for scripting
@@ -1195,6 +1228,15 @@ async function main() {
       .then(() => console.log("[Server] All services stopped"))
       .catch((e) => console.error("[Server] Service shutdown error:", e))
       .finally(() => {
+        if (!ipcChannel && workspaceIsEphemeral && centralData) {
+          try {
+            deleteWorkspaceDir(workspaceName);
+            centralData.removeWorkspace(workspaceName);
+            console.log(`[Server] Deleted ephemeral workspace "${workspaceName}"`);
+          } catch (error) {
+            console.error("[Server] Failed to delete ephemeral workspace:", error);
+          }
+        }
         clearTimeout(forceExit);
         console.log("[Server] Shutdown complete");
         process.exit(0);

@@ -1,8 +1,33 @@
 pluginManagement {
-    includeBuild(new File(rootDir, "../node_modules/@react-native/gradle-plugin").canonicalPath)
+    File current = rootDir
+    File reactNativeGradlePluginDir = null
+    while (current != null && reactNativeGradlePluginDir == null) {
+        File candidate = new File(current, "node_modules/@react-native/gradle-plugin")
+        if (candidate.exists()) {
+            reactNativeGradlePluginDir = candidate.canonicalFile
+        }
+        current = current.parentFile
+    }
+    if (reactNativeGradlePluginDir == null) {
+        throw new GradleException("Could not find node_modules/@react-native/gradle-plugin from ${rootDir}")
+    }
+    includeBuild(reactNativeGradlePluginDir.canonicalPath)
 }
 plugins {
     id("com.facebook.react.settings")
+}
+
+File current = rootDir
+File reactNativeGradlePluginDir = null
+while (current != null && reactNativeGradlePluginDir == null) {
+    File candidate = new File(current, "node_modules/@react-native/gradle-plugin")
+    if (candidate.exists()) {
+        reactNativeGradlePluginDir = candidate.canonicalFile
+    }
+    current = current.parentFile
+}
+if (reactNativeGradlePluginDir == null) {
+    throw new GradleException("Could not find node_modules/@react-native/gradle-plugin from ${rootDir}")
 }
 
 extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
@@ -11,7 +36,7 @@ extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
 
 // Also include as a regular composite build for classpath dependency substitution
 // (pluginManagement.includeBuild only registers plugins, not buildscript dependencies)
-includeBuild(new File(rootDir, "../node_modules/@react-native/gradle-plugin").canonicalPath)
+includeBuild(reactNativeGradlePluginDir.canonicalPath)
 
 rootProject.name = 'NatStack'
 include ':app'
