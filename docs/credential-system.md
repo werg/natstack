@@ -883,21 +883,22 @@ Parallel. Wave-exit: email panel works end-to-end on real Gmail;
 `SKILL.md` is the canonical integration-authoring guide.
 
 - **W6.T1** Rewrite `workspace/packages/integrations/src/gmail.ts`
-  — plain `fetch`, manifest with scopes + endpoints. **No webhook
-  subscription** in this integration: Gmail push is delivered via
-  Google Cloud Pub/Sub (requires a Pub/Sub topic, a push
-  subscription, grant to `gmail-api-push@system.gserviceaccount.com`,
-  and periodic `users.watch` renewal every 7 days). That is a
-  distinct subsystem from the generic webhook relay and is deferred
-  (see Out of scope). Polling-based refresh is the v0 story for
-  Gmail.
+  — plain `fetch`, manifest with scopes + endpoints. **Polling-primary
+  design**: a background loop on the natstack server calls
+  `users.history.list` at a configurable interval (default 30s per
+  connection) and dispatches deltas to the worker's `onNewMessage`
+  handler. Architect the handler entry point to be agnostic of
+  delivery shape — the W8 push wave will wire Pub/Sub events into
+  the same handler without integration-code changes. Reserve the
+  `webhooks.gmail` manifest field but don't register the
+  subscription yet.
 - **W6.T2** Rewrite `workspace/packages/integrations/src/calendar.ts`.
-  Similar to Gmail: no webhook subscription (Calendar push also
-  uses a different channel mechanism); polling only.
+  Same polling-primary design with `events.list?syncToken=...` as
+  the delta mechanism; push wiring deferred to W8.
 - **W6.T3** Write `workspace/packages/integrations/src/github.ts`
   — the **reference webhook integration**, including an `issues`
-  subscription that exercises the generic relay end-to-end (HTTPS
-  POST + HMAC signature + routing to a named handler).
+  subscription that exercises the generic HTTPS-POST relay
+  end-to-end (HMAC signature + routing to a named handler).
 - **W6.T4** Multi-role example: github-to-github issue mirror
   integration demonstrating role-based consent.
 - **W6.T5** Rewrite `workspace/panels/email/index.tsx` from
@@ -929,6 +930,62 @@ tagged and available.
   `workspace/examples/provider-linear/`.
 - **W7.T9** `docs/writing-a-provider-manifest.md`.
 
+### Wave 8 — Gmail / Calendar push (v0.1)
+
+Ships after v0 launch as an additive enhancement. Polling from
+Wave 6 continues to work unmodified; push wires into the same
+worker-side handler signatures. Parallel within the wave.
+
+Prerequisite (operational, can run during earlier waves):
+
+- **W8.T0** GCP project + shared Pub/Sub topic + push subscription
+  pointed at the relay's `/pubsub/:providerId` endpoint. Grant
+  `gmail-api-push@system.gserviceaccount.com` the `pubsub.publisher`
+  role on the topic. Owned by the same infra owner as the
+  well-known domain.
+
+Engineering tasks:
+
+- **W8.T1** Extend `apps/webhook-relay/`:
+  `POST /pubsub/:providerId` endpoint that verifies Google's JWT
+  (`aud` = configured endpoint, `email` = provider-specific sender
+  like `gmail-api-push@system.gserviceaccount.com`), unwraps the
+  Pub/Sub envelope, reads the identity key from the payload, looks
+  up the owning natstack instance in Workers KV, forwards over WS.
+- **W8.T2** Cloudflare Workers KV binding + routing layer:
+  `(providerId, identityKey) → instanceId` with 24h TTL. natstack
+  server registers mappings on connection grant and re-registers
+  on a daily refresh.
+- **W8.T3** `packages/shared/src/webhooks/watchLifecycle.ts` —
+  scheduler that calls the provider's `watch()` (Gmail
+  `users.watch`, Calendar `events.watch`) on consent grant, on
+  server startup for existing connections, and every
+  `renewEveryHours` thereafter. Records `historyId` / `syncToken`
+  per connection for delta fetches.
+- **W8.T4** Extend `packages/shared/src/webhooks/verifier.ts` with
+  `google-jwt` verifier. Pluggable via manifest `verify` field,
+  same dispatch mechanism as HMAC verifiers.
+- **W8.T5** Extend `packages/shared/src/webhooks/types.ts` +
+  `router.ts` to handle the `pubsub-push` delivery shape.
+  Worker-side handler signature unchanged.
+- **W8.T6** Update `providers/google.ts` manifest to declare
+  `pubsub-push` subscriptions for Gmail `message.new` and
+  Calendar `events.changed` (previously a reserved field with no
+  implementation).
+- **W8.T7** In `workspace/packages/integrations/src/gmail.ts` and
+  `calendar.ts`: add the hybrid polling / push override logic.
+  Polling loop stands down to a slow heartbeat when push has
+  delivered in the last N minutes; re-engages when push is silent
+  past the heartbeat window. Worker-side `onNewMessage` /
+  `onEventsChanged` handlers unchanged.
+- **W8.T8** E2E test: grant Gmail consent → confirm `users.watch`
+  is called → send a test email → confirm push event arrives at
+  worker handler within ~10s → verify polling heartbeat stays
+  quiet while push is active → kill push path → verify polling
+  re-engages automatically.
+- **W8.T9** Commit: `feat(webhooks): Pub/Sub push delivery for
+  Gmail and Calendar`.
+
 ### Sequencing summary
 
 ```
@@ -946,14 +1003,17 @@ Wave 5 ┴── workerd wiring + consent UI + mobile
        │
 Wave 6 ┴── integrations + skills
        │
-Wave 7 ┴── E2E + publication
+Wave 7 ┴── E2E + publication (v0 launch)
+       │
+Wave 8 ┴── Gmail/Calendar Pub/Sub push (v0.1)
 ```
 
 Approximate parallel-agent count per wave, assuming one agent per
 task: **W0: 10, W1: 10, W2: 15, W3: 17, W4: 5, W5: 8, W6: 8,
-W7: 9**. With 10–15 agents actively working, most waves complete
-in one agent-day; Wave 1's TLS spike and Wave 2's webhook relay
-are the longest individual tasks.
+W7: 9, W8: 9**. With 10–15 agents actively working, most waves
+complete in one agent-day; Wave 1's TLS spike, Wave 2's webhook
+relay, and Wave 8's push-integration testing are the longest
+individual tasks.
 
 ## Resolved decisions
 
@@ -1352,31 +1412,93 @@ desktop users.
 
 ### Webhooks as first-class
 
-Provider manifests declare supported webhook events and
-signature-verification recipes. Integration manifests subscribe to
-specific events and name a handler export. The runtime:
+Provider manifests declare supported webhook events, their
+**delivery shape**, and a verification recipe. Integration manifests
+subscribe to specific events and name a handler export. The runtime
+normalises all delivery shapes into a single event payload for
+worker-side handlers — integration authors don't see the transport
+differences.
 
-1. Registers a natstack-server-side subscription record.
-2. For providers where webhook registration requires API calls
-   (GitHub, Stripe, Linear), calls the provider's API to create the
-   webhook pointing at a stable per-instance URL on
-   `apps/webhook-relay/` (Cloudflare Worker).
-3. Opens a long-lived WebSocket from the natstack server to the
-   relay, keyed on a per-instance registration token.
-4. When the relay receives a POST at
-   `/webhook/:instanceId/:providerId`, forwards the body + headers
-   over the WS.
-5. `webhooks/verifier.ts` verifies the signature using the stored
-   secret; `router.ts` dispatches to the worker's handler.
+**Two delivery shapes in v0.1+ scope:**
 
-The relay is a tiny Cloudflare Worker with no persistent storage.
-Events are dropped if no subscriber is connected (at-most-once
-delivery). Upgrading to at-least-once via a Cloudflare Queue is a
+| Delivery | Transport | Verification | Providers |
+|---|---|---|---|
+| `https-post` | Provider POSTs to relay's `/webhook/:instanceId/:providerId`; relay forwards over WS tunnel | HMAC (per-provider scheme — `X-Hub-Signature-256`, `v0=...`, `Stripe-Signature`, etc.) | GitHub, Slack, Stripe, Linear, Notion, most SaaS |
+| `pubsub-push` | Provider publishes to natstack's Google Cloud Pub/Sub topic; push subscription hits relay's `/pubsub/:providerId`; relay routes by payload identity | Google-signed JWT in `Authorization` header; `aud` matches endpoint, `email` matches `gmail-api-push@system.gserviceaccount.com` | Gmail, Google Calendar |
+
+Each subscription carries a `delivery` field:
+
+```ts
+// provider manifest
+webhooks: {
+  subscriptions: [
+    { event: "issues",        delivery: "https-post",  verify: "github-hmac-sha256" },
+    { event: "message.new",   delivery: "pubsub-push", verify: "google-jwt",
+      watch: { type: "gmail.users.watch", renewEveryHours: 72 } },
+  ],
+}
+
+// integration manifest
+webhooks: {
+  github: [{ event: "issues",       deliver: "onIssue" }],
+  gmail:  [{ event: "message.new",  deliver: "onNewMessage" }],
+}
+```
+
+**Worker-side handlers** see a unified event shape regardless of
+delivery:
+
+```ts
+export async function onNewMessage(event: WebhookEvent) {
+  // event.provider, event.connectionId, event.payload (decoded)
+  // Gmail-specific payload: { emailAddress, historyId }
+  // For push-delivered events the integration is responsible for
+  // calling users.history.list to get the actual delta.
+}
+```
+
+**HTTPS-POST flow** (the existing v0 design):
+
+1. Register a subscription on the natstack server.
+2. For providers where subscription requires API calls (GitHub,
+   Stripe, Linear), call the provider's API to create the webhook
+   pointing at a stable per-instance URL on the relay.
+3. Long-lived WebSocket from the natstack server to the relay,
+   keyed on a per-instance registration token.
+4. Relay receives `POST /webhook/:instanceId/:providerId`, verifies
+   HMAC, forwards body + headers over WS.
+5. `router.ts` dispatches to the worker's handler.
+
+**Pub/Sub-push flow** (v0.1 addition — see dedicated wave):
+
+1. On consent grant for a provider with `pubsub-push` subscriptions,
+   the `watch` lifecycle manager calls the provider's `watch()` API
+   using the granted token, pointing at natstack's shared Pub/Sub
+   topic. Records the returned `historyId` and `expiration`.
+2. Scheduler renews via `watch()` every `renewEveryHours` (default
+   72h for Gmail's 168h-max window) for every active connection.
+3. Provider change → provider publishes `{ emailAddress | resourceId,
+   historyId }` to the topic.
+4. Pub/Sub push subscription delivers the wrapped event to relay's
+   `/pubsub/:providerId`. Relay verifies Google's JWT, reads the
+   identity from the payload, looks up the owning natstack instance
+   in Cloudflare Workers KV (24h-TTL mapping
+   `(providerId, identityKey) → instanceId`), forwards over WS.
+5. `router.ts` dispatches to the worker's handler; the handler
+   calls the provider's delta API (`gmail.users.history.list`,
+   `calendar.events.list?syncToken=...`) to fetch what actually
+   changed.
+
+The relay is a Cloudflare Worker with two pieces of state: the WS
+connection registry (in-memory per-Worker) and the identity → instance
+KV mapping (for Pub/Sub routing only; HTTPS-POST still uses the
+URL path). No persistent event storage; at-most-once delivery for
+both shapes. Upgrading to at-least-once via Cloudflare Queue is a
 later concern.
 
 Why the WebSocket tunnel: natstack is local-first; the user's
-server doesn't have a public HTTPS endpoint. The relay provides
-the public endpoint; the WS delivers events through NAT / firewalls
+server doesn't have a public HTTPS endpoint. The relay provides the
+public endpoint; the WS delivers events through NAT / firewalls
 without any user setup. Same pattern as ngrok, Cloudflare Tunnel,
 etc., but scoped to webhook delivery.
 
@@ -1388,6 +1510,15 @@ disconnected state ("webhook delivery paused — reconnecting") so
 the user sees the state instead of silently missing events. The
 whole point of the tunnel is delivery; a timer that terminates it
 defeats the purpose.
+
+**Push as enhancement, not replacement.** Gmail and Calendar
+integrations always have a **polling fallback** running underneath.
+When push is active (recent event seen within last N minutes), the
+polling loop stands down to a slow heartbeat. When push is silent
+past the heartbeat window (e.g. `watch()` expired and renewal
+failed, or the Pub/Sub topic misrouted), polling automatically
+re-engages. Users never notice push failure; latency goes up,
+that's it.
 
 ### Multi-account per provider
 
@@ -1749,7 +1880,7 @@ providers.
 
 ## Remaining open items
 
-Just one implementation reminder:
+Implementation reminders:
 
 1. **Self-hoster `client_id` override.** Yes, via `natstack.yml`.
    Documented in the provider manifest section. Implement in Phase 3
@@ -1760,6 +1891,17 @@ a parameter in both server and mobile config). The actual string is
 chosen today; once it lands in `apps/well-known/config.json` and
 `natstack.yml`'s `credentials.mobileCallbackDomain`, this item is
 fully closed.
+
+## Scheduled for v0.1 (post-launch enhancements)
+
+Work that has a defined architecture in this plan but ships after
+v0 launch:
+
+- **Gmail + Calendar Pub/Sub push** — Wave 8. GCP project, shared
+  Pub/Sub topic, push-subscription endpoint on the relay, `watch()`
+  lifecycle manager, Google-JWT verifier, hybrid polling / push
+  override in the integrations. Landing as an additive enhancement;
+  the v0 polling path continues working unchanged.
 
 ## Out of scope for this plan
 
@@ -1780,14 +1922,6 @@ fully closed.
   exposing natstack as an MCP server are both later work.
 - **OpenAPI auto-import for provider capabilities.** Hand-written
   manifests for v0. OpenAPI generation is a DX win for later.
-- **Pub/Sub-delivered provider events** (Gmail push, Calendar push,
-  Cloud event-arc, etc.). The generic webhook relay handles plain
-  HTTPS-POST webhooks with HMAC signatures. Providers that deliver
-  via Google Cloud Pub/Sub or similar message-bus topologies need
-  dedicated topic/subscription plumbing (Pub/Sub push subscription
-  endpoints, publish-permission grants, periodic `users.watch`
-  renewal) which isn't in scope for v0. Gmail and Calendar
-  integrations use polling in v0.
 - **Federation / IdP integration.** Enterprise feature; not v0.
 - **Offline mobile access.** Mobile requires network reachability
   to the server.
