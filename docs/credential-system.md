@@ -371,20 +371,30 @@ provider authors can use the same harness we do.
 `oauthService.ts`. RPC methods exposed to workers and UIs via the
 existing `/rpc` endpoint:
 
-- `credentials.requestConsent({ providerId, scopes }) → { connectionId,
-  apiBase }` — idempotent per caller; if already granted, returns
-  existing connection. If not, runs the manifest's flow chain
-  synchronously, blocking until the user explicitly approves, denies,
-  or cancels. No automatic timeout — users take as long as they
-  take (see **Timeouts**). Does **not** return the token. Used by
-  desktop flows and by workers.
-- `credentials.beginConsent({ providerId, scopes, redirect: "mobile" }) →
-  { nonce, authorizeUrl }` — used by mobile; server mints a PKCE
-  challenge and holds the verifier, returns the authorize URL with a
-  universal-link callback.
-- `credentials.completeConsent({ nonce, code }) → { connectionId }` —
-  mobile relays the authorization code back; server exchanges it for
-  tokens and stores them.
+- `credentials.beginConsent({ providerId, scopes, accountHint?,
+  role?, redirect }) → { nonce, authorizeUrl }` — the **universal**
+  browser-OAuth entry point. Server mints a PKCE challenge, holds
+  the verifier, returns the authorize URL. `redirect` is one of:
+  - `"server-loopback"` — optimisation for the local-Electron-on-
+    same-host case. Server binds `127.0.0.1:<random>` and waits for
+    the provider callback itself.
+  - `"client-loopback"` — the initiating client binds its own local
+    loopback port and captures the callback; used whenever the
+    server is remote (VPS, LAN host, Tailscale) and the user's
+    browser can't reach the server's `127.0.0.1`.
+  - `"mobile-universal"` — universal/app link back to the mobile
+    app (see Mobile).
+- `credentials.completeConsent({ nonce, code }) → { connectionId,
+  apiBase }` — the client relays the captured authorization code;
+  server exchanges it using the held verifier and stores the
+  resulting tokens. Returns the handle (see SDK contract).
+- `credentials.requestConsent({ providerId, scopes, accountHint?,
+  role? }) → CredentialHandle` — convenience for the
+  `"server-loopback"` case: calls `beginConsent` with that redirect,
+  opens the browser on the server, and waits for its own callback
+  listener to complete. Equivalent to calling `beginConsent` +
+  `completeConsent` for server-colocated flows. Blocks until the
+  user approves, denies, or cancels. Does **not** return the token.
 - `credentials.revokeConsent({ providerId }) → void`
 - `credentials.listConsent({}) → ConsentGrant[]` — for UI/debug.
 - `credentials.audit({ filter?, limit?, after? }) → AuditEntry[]` —
@@ -426,10 +436,18 @@ when the worker is spawned (parallel to the existing `RPC_AUTH_TOKEN`).
 Responsibilities, executed as a layered middleware pipeline per
 outbound request:
 
-1. **Ingress**: receive outbound HTTP(S) requests from workers via
-   `HTTP_PROXY` / `HTTPS_PROXY`-style routing (workerd supports
-   outbound proxy config). Terminate TLS using the local CA (see
-   Resolved decisions).
+1. **Ingress**: receive outbound HTTP(S) requests from workers.
+   **The transport mechanism is a critical open question that the
+   Wave 1 spike resolves.** Workerd does not honour Node-style
+   `HTTP_PROXY` / `HTTPS_PROXY` env vars; worker `fetch()` flows
+   through its own HTTP stack. The likely-correct wiring is a
+   Cap'n Proto `network` service entry pointing at the egress
+   proxy's local port, bound as the worker's `globalOutbound` — so
+   every worker `fetch(url)` is redirected to the proxy, passing
+   the original target URL through a header or path convention the
+   proxy unwraps. TLS termination (if the spike confirms it's
+   viable) happens here via the local CA. See Wave 1 spike and
+   Resolved decisions.
 2. **Attribution**: identify the originating worker from the
    proxy-auth header; look up its consent grants and declared
    integration manifests.
@@ -470,10 +488,17 @@ outbound request:
    capabilityViolation?, retries, breakerState }`. Daily rotation,
    size cap.
 10. **Egress**: stream the response back to the worker.
-11. **No-match passthrough**: if the request doesn't match any
-    granted provider's `apiBase`, forward unchanged (no auth
-    injection, no capability enforcement). Public unauthenticated
-    endpoints still work. Still audited.
+11. **No-match passthrough** (default-allow for unmatched
+    destinations): if the request doesn't match any granted
+    provider's `apiBase`, forward unchanged — no auth injection,
+    no capability enforcement, still audited. Public
+    unauthenticated endpoints continue to work from workers
+    without any manifest declaration. This is an **explicit
+    decision**: we prioritise integration ergonomics (third-party
+    API calls, library CDN fetches, health checks to arbitrary
+    hosts) over exfiltration protection. A stricter default-deny
+    policy is noted in Out of scope as a potential hardening
+    upgrade if operational data justifies it.
 
 Implementation notes:
 
@@ -495,17 +520,58 @@ Implementation notes:
 `workspace/packages/runtime/src/worker/credentials.ts`:
 
 ```ts
+type CredentialHandle = {
+  connectionId: string;
+  apiBase: string[];
+  // Authenticated fetch that stamps the X-Natstack-Connection
+  // header for this specific connection. Use this when the worker
+  // has multiple connections for the same provider (multi-role
+  // integrations) or when you want explicit disambiguation.
+  fetch: (url: string, init?: RequestInit) => Promise<Response>;
+};
+
 export async function requestConsent(
   providerId: string,
-  scopes?: string[],
-): Promise<{ connectionId: string; apiBase: string[] }>;
+  opts?: { scopes?: string[]; accountHint?: string; role?: string },
+): Promise<CredentialHandle>;
 
-export async function revokeConsent(providerId: string): Promise<void>;
+export async function revokeConsent(
+  providerId: string,
+  connectionId?: string,
+): Promise<void>;
 ```
 
-That is the entire public surface. There is no `getToken`, no
-`authedFetch`, no provider-specific client. Integrations use plain
-`fetch("https://api.github.com/...")` and the proxy handles auth.
+**Uniform return shape.** Every `requestConsent` call returns a
+`CredentialHandle`. Single-role callers get the same shape as
+multi-role callers — no special cases, no branching based on
+whether roles are declared. This was inconsistent in earlier
+drafts (`{ connectionId, apiBase }` vs. `{ .fetch() }`); resolved
+to the shape above.
+
+**Plain `fetch()` still works** when the worker has a single
+connection for a provider, because the manifest-autodiscovery pass
+at worker startup declares a default connection per (provider,
+role) tuple. The egress proxy uses the default when no
+`X-Natstack-Connection` header is present. So:
+
+```ts
+// Single-role integration
+const gh = await requestConsent("github");
+await fetch("https://api.github.com/user");       // works; default connection
+await gh.fetch("https://api.github.com/user");    // also works; explicit connection
+
+// Multi-role integration
+const source = await requestConsent("github", { role: "source" });
+const target = await requestConsent("github", { role: "target" });
+await source.fetch(".../issues");                  // stamps source connectionId
+await target.fetch(".../issues", { method: "POST" });
+// Plain fetch() is ambiguous here and returns 400 with a helpful error.
+```
+
+There is no `getToken`. There is no `authedFetch`. The only
+difference between plain `fetch()` and `handle.fetch()` is that
+the handle disambiguates when a worker has multiple connections
+for the same provider.
 
 Delete the old `workspace/packages/runtime/src/shared/oauth.ts` and
 `panel/oauth.ts`.
@@ -566,19 +632,22 @@ Changes to `src/server/workerdManager.ts`:
 
 1. On instance creation, mint a `PROXY_AUTH_TOKEN` (new, parallel to
    `RPC_AUTH_TOKEN`) and store it in the egress proxy's worker
-   registry keyed on `workerId`.
-2. Inject four new env vars into every worker:
-   - `HTTP_PROXY=http://127.0.0.1:<proxyPort>`
-   - `HTTPS_PROXY=http://127.0.0.1:<proxyPort>`
-   - `NATSTACK_PROXY_AUTH=<token>`
-   - `NATSTACK_CA_CERT=<path or base64>` — the local CA cert the proxy
-     signs with, installed into the worker's trust store.
-3. Generate Cap'n Proto config with `globalOutbound` pointing at the
-   proxy service binding, so all fetch egress from the worker routes
-   through it even if user code ignores the env vars. This is the
-   workerd-native way; env vars are belt-and-braces.
+   registry keyed on `workerId`. Inject it into the worker as an
+   env var so the proxy can identify the originating worker from an
+   authorisation header.
+2. Generate Cap'n Proto config declaring the egress proxy as a
+   `network` service and binding it to this worker's `globalOutbound`.
+   workerd does **not** honour Node-style `HTTP_PROXY` / `HTTPS_PROXY`
+   env vars; `globalOutbound` is the only mechanism that reliably
+   redirects outbound `fetch()` calls. The proxy unwraps the original
+   target URL from a header or path convention chosen during the
+   Wave 1 spike.
+3. Inject the local CA cert (path or base64) into the worker's trust
+   store via whatever workerd mechanism the spike validates — this
+   is itself open, because workerd's BoringSSL trust store isn't
+   configurable the same way Node's `NODE_EXTRA_CA_CERTS` is.
 4. On instance destruction, revoke the `PROXY_AUTH_TOKEN` from the
-   proxy registry.
+   proxy registry and tear down the service binding.
 
 ## Execution — parallel waves
 
@@ -672,12 +741,31 @@ All parallel. Wave-exit: tree compiles with `NotImplemented` stubs,
 - **W1.T9** Author `packages/shared/src/credentials/types.ts` and
   `packages/shared/src/webhooks/types.ts`. Single task because
   the type files reference each other.
-- **W1.T10** **TLS interception spike** (critical-path gate).
-  1–2 day prototype: local CA generation via `@peculiar/x509`,
-  injection into workerd's trust store, verified egress request
-  from inside workerd succeeds. Deliverables: prototype code in a
-  throwaway branch, one-page report (go / no-go + fallback plan
-  if no-go).
+- **W1.T10** **Workerd egress + TLS spike** (critical-path gate).
+  **Scope broadened** from the original "CA trust-store" check to a
+  full end-to-end transport validation. 2–3 days. Concrete
+  milestones:
+  1. A throwaway worker running in workerd calls
+     `fetch("https://api.github.com/user")`.
+  2. The request reaches a local Node HTTP server bound on a known
+     port, via workerd's `globalOutbound` + `network` service
+     mechanism. Confirm the original target URL is recoverable on
+     the proxy side.
+  3. The proxy injects an `Authorization: Bearer <test-token>`
+     header, terminates TLS (with a locally-minted CA), forwards to
+     `api.github.com`, streams the response back to the worker.
+  4. The worker sees the response body correctly; TLS verification
+     passes from the worker's perspective.
+  5. Repeat (3) with a client library known to pin certificates
+     (e.g. `@octokit/rest` from inside the worker) to surface any
+     pinning failures early.
+
+  Deliverables: prototype code on a throwaway branch, one-page
+  report with go / no-go and, if no-go, a concrete fallback plan
+  (cooperative worker-side `authedFetch(url)` wrapper, no TLS
+  interception, no CA, integrations lose the "plain fetch" property).
+  The fallback plan branches Wave 4 and 5 designs; the branch must
+  be documented before Wave 2 starts.
 
 ### Wave 2 — Foundation modules + infra scaffolds
 
@@ -769,9 +857,11 @@ Parallel. Wave-exit: full desktop + mobile E2E passes from
 - **W5.T2** Delete `src/renderer/components/NotificationBar.tsx`'s
   consent path (and the whole component if nothing non-consent
   uses it).
-- **W5.T3** Extend `src/server/workerdManager.ts`:
-  `PROXY_AUTH_TOKEN`, `HTTP_PROXY` / `HTTPS_PROXY` / CA cert env
-  injection, Cap'n Proto `globalOutbound` routing.
+- **W5.T3** Extend `src/server/workerdManager.ts`: mint
+  `PROXY_AUTH_TOKEN` per worker, declare the egress proxy as a
+  Cap'n Proto `network` service, bind it as `globalOutbound`, and
+  inject the local CA cert via the mechanism the Wave 1 spike
+  validated. No `HTTP_PROXY` env vars — workerd doesn't honour them.
 - **W5.T4** Manifest autodiscovery at worker startup:
   `endpoints` → capability matcher, `webhooks` → subscription
   registration, `providers` / `role` → default-connection
@@ -793,11 +883,21 @@ Parallel. Wave-exit: email panel works end-to-end on real Gmail;
 `SKILL.md` is the canonical integration-authoring guide.
 
 - **W6.T1** Rewrite `workspace/packages/integrations/src/gmail.ts`
-  — plain `fetch`, manifest with scopes + endpoints + Gmail push
-  webhook subscription.
+  — plain `fetch`, manifest with scopes + endpoints. **No webhook
+  subscription** in this integration: Gmail push is delivered via
+  Google Cloud Pub/Sub (requires a Pub/Sub topic, a push
+  subscription, grant to `gmail-api-push@system.gserviceaccount.com`,
+  and periodic `users.watch` renewal every 7 days). That is a
+  distinct subsystem from the generic webhook relay and is deferred
+  (see Out of scope). Polling-based refresh is the v0 story for
+  Gmail.
 - **W6.T2** Rewrite `workspace/packages/integrations/src/calendar.ts`.
+  Similar to Gmail: no webhook subscription (Calendar push also
+  uses a different channel mechanism); polling only.
 - **W6.T3** Write `workspace/packages/integrations/src/github.ts`
-  — reference integration including an `issues` webhook.
+  — the **reference webhook integration**, including an `issues`
+  subscription that exercises the generic relay end-to-end (HTTPS
+  POST + HMAC signature + routing to a named handler).
 - **W6.T4** Multi-role example: github-to-github issue mirror
   integration demonstrating role-based consent.
 - **W6.T5** Rewrite `workspace/panels/email/index.tsx` from
@@ -859,33 +959,62 @@ are the longest individual tasks.
 
 These were open during the design discussion and are now committed.
 
-### Mobile: native OAuth, server-held tokens
+### OAuth redirect topology: local, remote, and mobile
 
-Mobile uses **native OAuth**: `ASWebAuthenticationSession` on iOS and
-Chrome Custom Tabs on Android. The callback is a universal link / app
-link back to the natstack mobile app.
+The server never acts as the OAuth client from the provider's
+perspective in any remote or mobile deployment — it holds the PKCE
+verifier but the **client surface captures the callback**. The
+server-binds-loopback path only works when the user's browser and
+the server are on the same machine.
 
-Crucially, the mobile app is not the OAuth client from the provider's
-perspective — the **server is**, mobile is just the user-interaction
-surface. Flow:
+Three topologies, one RPC shape (`beginConsent` / `completeConsent`):
 
-1. Mobile UI (settings or at-first-use) calls server RPC
-   `credentials.beginConsent({ providerId, scopes, redirect: "mobile" })`.
-   Server stores a `{ nonce → providerId, scopes }` record, returns the
-   authorize URL with the universal-link callback and the PKCE
-   `code_challenge`. Server keeps the `code_verifier`. The record
-   is held for the lifetime of the associated consent dialog on
-   the server — no time-based expiry. If memory pressure is ever a
-   concern, the server LRU-evicts at a generous cap (100
-   outstanding verifiers) rather than evicting by clock. Slow
-   users never silently lose their flow.
-2. Mobile opens the URL in the system OAuth session.
-3. User approves; provider redirects to the universal link with `code`
-   and `state=nonce`.
-4. Mobile relays `{ nonce, code }` to server via RPC
-   `credentials.completeConsent({ nonce, code })`.
-5. Server exchanges the code for tokens using its held verifier, stores
-   the token in the shared credential store. Mobile never sees it.
+| Topology | `redirect` | Who captures the callback |
+|---|---|---|
+| Local Electron on same host as server | `server-loopback` | Server (`127.0.0.1:<random>`) |
+| Remote server (VPS / LAN / Tailscale), any client | `client-loopback` | Client binds its own loopback port |
+| Mobile (iOS / Android) | `mobile-universal` | Mobile app via universal link |
+
+**Client-loopback flow** (the general case for any remote server,
+including a remote Electron client connecting over network):
+
+1. Client calls `credentials.beginConsent({ providerId, scopes,
+   redirect: "client-loopback" })`. Server mints PKCE challenge,
+   stores a `{ nonce → providerId, scopes, verifier }` record,
+   returns the authorize URL with a `redirect_uri` the client
+   intends to bind.
+2. Client binds `127.0.0.1:<random>` locally (its own loopback,
+   reachable by its own browser) and opens the authorize URL.
+3. Provider redirects to the client's loopback; client captures
+   `{ nonce, code }`.
+4. Client calls `credentials.completeConsent({ nonce, code })`.
+5. Server exchanges the code using the held verifier, stores the
+   token. Client's loopback listener closes.
+
+**Mobile flow** (the `"mobile-universal"` variant):
+
+1. Mobile UI calls `credentials.beginConsent({ ..., redirect:
+   "mobile-universal" })`. Server returns authorize URL with the
+   universal-link callback.
+2. Mobile opens the URL in `ASWebAuthenticationSession` / Chrome
+   Custom Tabs.
+3. User approves; provider redirects to the universal link.
+4. Mobile relays `{ nonce, code }` via `completeConsent`.
+5. Server exchanges and stores.
+
+**Local-same-host flow** (the `"server-loopback"` variant — kept as
+an optimisation, surfaced via the convenience `requestConsent`):
+
+1. Server binds its own `127.0.0.1:<random>`.
+2. Opens the browser from the server process (which is on the same
+   machine as the user's browser).
+3. Captures the callback directly; no client relay needed.
+
+The `{ nonce → verifier }` record is held for the lifetime of the
+associated consent dialog on the server — no time-based expiry.
+LRU-evict at 100 outstanding records as a memory safety net (see
+**Timeouts** for cleanup details on renderer crash, disconnect,
+abandoned flows).
 
 Implications:
 
@@ -1343,25 +1472,24 @@ Single-role integrations keep the compact form
 (`providers: ["github"]`); the runtime treats "no role" as the
 implicit `"default"` role.
 
-**Worker SDK**
+**Worker SDK (see earlier Worker SDK section for the full type).**
+Every `requestConsent` call returns a `CredentialHandle` — single-
+and multi-role callers use the same API:
 
 ```ts
-// single-role
+// single-role — plain fetch works because there's one default connection
 const gh = await requestConsent("github");
-await fetch("https://api.github.com/user");  // proxy uses the granted connection
+await fetch("https://api.github.com/user");
 
-// multi-role
+// multi-role — plain fetch is ambiguous; use the handle's .fetch
 const source = await requestConsent("github", { role: "source" });
 const target = await requestConsent("github", { role: "target" });
 await source.fetch("https://api.github.com/repos/.../issues");
 await target.fetch("https://api.github.com/repos/.../issues", { method: "POST" });
 ```
 
-`source.fetch` and `target.fetch` are thin wrappers over plain
-`fetch` that stamp an `X-Natstack-Connection: <connectionId>`
-header. The proxy strips the header and uses it to pick the right
-token. Workers can set a default-connection-per-provider at init
-and then use plain `fetch()` for everything.
+`handle.fetch` stamps an `X-Natstack-Connection: <connectionId>`
+header that the proxy strips and uses for token routing.
 
 **Egress proxy: connection routing**
 
@@ -1558,18 +1686,51 @@ the timer matters.
 **Explicitly no timeout on:**
 
 - The consent dialog (`consent:credential`, `consent:reconnect`).
-- The loopback PKCE callback listener (lifecycle tied to the
-  dialog, not a timer).
-- The mobile `beginConsent` nonce → verifier hold (LRU-evicted at
-  capacity if ever necessary, not time-evicted).
+- The loopback / client-loopback / mobile-universal callback
+  listeners (lifecycles tied to the dialog, not a timer).
+- The server-held `{ nonce → verifier }` record.
 - The `notificationService.pendingActions` entries of type
   `consent:credential` or `consent:reconnect`.
+
+**Cleanup semantics for abandoned state.** No user-facing timer
+does not mean no cleanup. Every resource listed above is cleaned up
+through explicit lifecycle events, not clocks:
+
+1. **Connection-bound.** Each pending consent is associated with the
+   RPC connection of its initiating caller (worker, panel, CLI,
+   mobile, remote Electron). When that connection drops — worker
+   exits, panel unmounts, renderer crashes, mobile app is killed,
+   network disconnects — the server cancels the pending consent,
+   rejects the awaiting promise with a clear error, closes any
+   bound loopback listener, releases the verifier, and dismisses
+   the dialog on any other surface currently showing it.
+2. **Explicit dismissal.** Any surface (desktop shell, mobile
+   sheet, CLI) can call `notification.dismiss(id)` to cancel a
+   pending consent unilaterally; same cleanup path as (1).
+3. **Server restart.** All in-memory pending consents are dropped
+   on shutdown. Listeners are closed as the process exits; verifiers
+   are lost; the next worker request starts a fresh consent. No
+   persistence across restarts — consents are ephemeral by design.
+4. **Safety-net reaper.** A background sweep runs every hour and
+   GCs any pending consent, loopback listener, or verifier older
+   than **24 hours** regardless of connection state. This exists
+   to catch pathological leaks (a client that neither closes
+   cleanly nor reconnects); it is **not** the primary cleanup
+   path and 24 hours is long enough that legitimate slow users
+   are never affected. The reaper logs every reap to the audit log
+   so leaks are visible.
+
+Connection-bound cleanup uses the existing RPC transport's
+connection-close hooks (the HTTP RPC bridge already fires on
+disconnect for request cancellation) — the credential system
+subscribes to those events for its own pending-state GC.
 
 **Configuration.** All timers above are expressible in
 `natstack.yml` under a `credentials.timers` section with the same
 names, for self-hosters who need to tune for their specific
-provider load or network conditions. Sensible defaults ship in
-code.
+provider load or network conditions. The 24-hour safety-net reaper
+is also configurable (`credentials.timers.consentReaperHours`,
+default 24); set to 0 to disable entirely.
 
 ### Test utilities
 
@@ -1619,6 +1780,14 @@ fully closed.
   exposing natstack as an MCP server are both later work.
 - **OpenAPI auto-import for provider capabilities.** Hand-written
   manifests for v0. OpenAPI generation is a DX win for later.
+- **Pub/Sub-delivered provider events** (Gmail push, Calendar push,
+  Cloud event-arc, etc.). The generic webhook relay handles plain
+  HTTPS-POST webhooks with HMAC signatures. Providers that deliver
+  via Google Cloud Pub/Sub or similar message-bus topologies need
+  dedicated topic/subscription plumbing (Pub/Sub push subscription
+  endpoints, publish-permission grants, periodic `users.watch`
+  renewal) which isn't in scope for v0. Gmail and Calendar
+  integrations use polling in v0.
 - **Federation / IdP integration.** Enterprise feature; not v0.
 - **Offline mobile access.** Mobile requires network reachability
   to the server.
