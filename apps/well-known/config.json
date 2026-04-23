@@ -1,0 +1,10 @@
+{
+  "apple": {
+    "teamId": "XXXXXXXXXX",
+    "bundleId": "com.natstack.app"
+  },
+  "android": {
+    "packageName": "com.natstack.app",
+    "sha256CertFingerprints": ["TODO:REPLACE_WITH_ACTUAL_FINGERPRINT"]
+  }
+}
