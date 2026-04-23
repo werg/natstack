@@ -225,7 +225,12 @@ and verify zero hits.
   natstack instances, CLI refreshes) pick up changes without restart. No
   SQLite, no keychain dependency.
 - `flows/loopbackPkce.ts` — binds `127.0.0.1:<random>`, opens browser,
-  captures code, exchanges for token.
+  captures code, exchanges for token. The listener's lifecycle is
+  tied to the consent dialog, not a timer: it stays bound as long
+  as the dialog is open, and the port is released when the user
+  completes the flow or cancels the dialog. No automatic timeout —
+  slow users (2FA, password managers, account pickers) never lose
+  their flow to an arbitrary clock.
 - `flows/deviceCode.ts` — initiates device flow, displays user code,
   polls token endpoint with backoff.
 - `flows/mcpDcr.ts` — full MCP authorization flow: resource metadata →
@@ -269,9 +274,17 @@ and verify zero hits.
   completes. Transparent to the integration.
 - `resolver.ts` — runs a manifest's `flows` list in order, returns the
   first success. Used on initial consent and on refresh failure.
-- `refresh.ts` — scheduler; reads `expires_at`, refreshes N seconds before
-  expiry, coalesces concurrent refresh requests, falls back through the
-  resolver chain on failure.
+- `refresh.ts` — scheduler; reads `expires_at`, refreshes ahead of
+  expiry using the per-provider manifest `refreshBufferSeconds`
+  (default 60s; overridable per provider because some providers'
+  refresh endpoints are slow under load). Coalesces concurrent
+  refresh requests. Falls back through the resolver chain on
+  failure. **Synchronous-with-request refresh** is also
+  unconditionally supported as a fallback: if a request reaches
+  the proxy with an already-expired token (proactive refresh
+  missed its window, clock skew, etc.), the proxy refreshes
+  synchronously before forwarding. Proactive refresh is
+  optimisation, not correctness.
 - `registry.ts` — loads provider manifests. First-party manifests imported
   statically; third-party manifests loaded from a configured list in
   `natstack.yml` (`providers: ["@someone/natstack-provider-asana"]`).
@@ -361,9 +374,10 @@ existing `/rpc` endpoint:
 - `credentials.requestConsent({ providerId, scopes }) → { connectionId,
   apiBase }` — idempotent per caller; if already granted, returns
   existing connection. If not, runs the manifest's flow chain
-  synchronously, blocking until the user completes consent (with a
-  timeout). Does **not** return the token. Used by desktop flows and
-  by workers.
+  synchronously, blocking until the user explicitly approves, denies,
+  or cancels. No automatic timeout — users take as long as they
+  take (see **Timeouts**). Does **not** return the token. Used by
+  desktop flows and by workers.
 - `credentials.beginConsent({ providerId, scopes, redirect: "mobile" }) →
   { nonce, authorizeUrl }` — used by mobile; server mints a PKCE
   challenge and holds the verifier, returns the authorize URL with a
@@ -433,12 +447,20 @@ outbound request:
    cap or fail fast with 429. Honours `Retry-After` headers from
    prior upstream 429s.
 6. **Auth injection**: inject `Authorization: Bearer <token>` using
-   the current access token from the store. Re-check expiry; if
-   within 60s of expiry, refresh synchronously before forwarding.
-7. **Circuit breaker + retry** (`retry.ts`): forward the request; on
-   5xx, retry with exponential backoff up to a manifest-configured
-   cap. N consecutive failures within a rolling window trip the
-   breaker for a cooldown period; further requests fail fast.
+   the current access token from the store. Re-check expiry using
+   the provider manifest's `refreshBufferSeconds` (default 60s) —
+   refresh synchronously before forwarding if within the buffer or
+   already expired. Synchronous refresh is unconditional; it runs
+   even when proactive refresh was supposed to have handled it.
+7. **Circuit breaker + retry** (`retry.ts`): forward the request.
+   On 5xx/network errors, retry with exponential backoff up to a
+   manifest-configured cap (conservative default: 2 retries;
+   idempotent methods only). A trip of the circuit breaker requires
+   sustained failure — not a 30-second blip — and its state is
+   **observable and user-resettable** in the UI (a banner in the
+   relevant panel showing "GitHub appears down, retrying" with a
+   "Try now" action). Tuning defaults in the manifest lean heavily
+   toward "keep trying" rather than "give up."
 8. **401 handling** (`reconsent.ts`): on 401 after refresh attempt,
    trigger re-consent via `notificationService`, suspend the
    in-flight request, retry once consent is re-granted.
@@ -779,7 +801,12 @@ surface. Flow:
    `credentials.beginConsent({ providerId, scopes, redirect: "mobile" })`.
    Server stores a `{ nonce → providerId, scopes }` record, returns the
    authorize URL with the universal-link callback and the PKCE
-   `code_challenge`. Server keeps the `code_verifier`.
+   `code_challenge`. Server keeps the `code_verifier`. The record
+   is held for the lifetime of the associated consent dialog on
+   the server — no time-based expiry. If memory pressure is ever a
+   concern, the server LRU-evicts at a generous cap (100
+   outstanding verifiers) rather than evicting by clock. Slow
+   users never silently lose their flow.
 2. Mobile opens the URL in the system OAuth session.
 3. User approves; provider redirects to the universal link with `code`
    and `state=nonce`.
@@ -994,8 +1021,10 @@ and keeps only the infrastructure worth salvaging:
 
 **Kept from `notificationService`:**
 
-- The `pendingActions` map + 120s timeout. The queue shape is
-  correct.
+- The `pendingActions` map. The queue shape is correct. But **the
+  120s auto-deny is dropped** for credential-consent entries —
+  user decisions don't expire on a timer. Non-consent entry types
+  may retain their own timeouts if appropriate.
 - The `reportAction(id, actionId, payload)` RPC for user response.
 
 **Replaced:**
@@ -1010,7 +1039,8 @@ and keeps only the infrastructure worth salvaging:
 
 1. Worker/panel calls `credentials.requestConsent({ providerId,
    scopes, accountHint?, role? })` via RPC. Blocking; returns only
-   on user decision or timeout.
+   on the user's explicit approve / deny / cancel. No automatic
+   timeout (see **Timeouts**).
 2. `credentialService` asks `notificationService.show(...)` with
    type `"consent:credential"`, caller attribution, the scope list
    with human-readable descriptions, the capability endpoints, and
@@ -1148,6 +1178,15 @@ server doesn't have a public HTTPS endpoint. The relay provides
 the public endpoint; the WS delivers events through NAT / firewalls
 without any user setup. Same pattern as ngrok, Cloudflare Tunnel,
 etc., but scoped to webhook delivery.
+
+**Reconnect policy.** Natstack reconnects to the relay with
+exponential backoff capped at 30s. It **never gives up**. If the
+relay is down or the user's network is unreachable, reconnect
+attempts continue until they succeed. The UI surfaces the
+disconnected state ("webhook delivery paused — reconnecting") so
+the user sees the state instead of silently missing events. The
+whole point of the tunnel is delivery; a timer that terminates it
+defeats the purpose.
 
 ### Multi-account per provider
 
@@ -1348,11 +1387,14 @@ Design principles:
   button; no tiny-grey "Deny" next to a big-green "Connect". The
   user must actively choose. Deny is first (reading order:
   safest-option first on desktop, bottom-first on mobile).
-- **No auto-dismiss, no toast behaviour.** Consent is an explicit
-  decision; the dialog stays until the user chooses.
-- **120-second timeout** before auto-deny, matching the notification
-  queue's timeout. After 60 seconds, a subtle "Request will expire
-  in 60s" indicator appears.
+- **No auto-dismiss, no auto-deny, no timer.** Consent is an
+  explicit decision; the dialog stays until the user chooses.
+  OAuth flows routinely take minutes — password managers, 2FA
+  apps, account pickers, re-logins. A user who walks away for
+  coffee must come back to the same dialog, not to a silently
+  failed integration. The server-side loopback PKCE listener and
+  the mobile `beginConsent` nonce are tied to the dialog's
+  lifecycle, not to a wall clock.
 
 Secondary consent surfaces:
 
@@ -1390,8 +1432,11 @@ Component layout:
 
 Infrastructure kept from the old pattern:
 
-- `notificationService.pendingActions` queue and 120-second
-  timeout — it's a clean pattern and works.
+- `notificationService.pendingActions` queue — the routing shape
+  is right. But **the 120s default timeout is dropped for
+  `consent:credential` and `consent:reconnect` types**: user
+  decisions have no clock. Non-consent notification types that
+  used the queue can keep their own timeouts if they want.
 - `reportAction` RPC — unchanged API.
 
 Infrastructure removed:
@@ -1410,6 +1455,49 @@ Infrastructure removed:
 - Phase 5 also removes `NotificationBar`'s consent code path (or
   the whole component if nothing else needs it).
 - Phase 5b extends `ConsentSheet` to mobile.
+
+### Timeouts
+
+Timeouts are a recurring source of user-visible failures when
+applied over-eagerly. The plan deliberately **has no user-facing
+timeouts**; every timer in the system is an internal tuning knob,
+and every one of them is listed in one place so nothing sneaks in
+later.
+
+**Principle.** If a timer expiry could surface to the user as "it
+broke and I don't know why", the timer is wrong. User actions
+(consent, re-consent, mobile OAuth return) have no clock. Machine
+actions have timers only where a timer is strictly better than the
+alternative, and always with a user-facing status indication when
+the timer matters.
+
+**Complete list of timers in the system:**
+
+| Timer | Default | Source of truth | Rationale |
+|---|---|---|---|
+| Token refresh buffer | 60s | per-provider manifest `refreshBufferSeconds` | Proactive refresh; synchronous-with-request refresh is always supported as fallback. |
+| Device-code polling interval | Provider-specified | Provider's token-endpoint response | Standard OAuth device-flow. |
+| Egress proxy retry backoff | 2 retries, exponential | per-provider manifest `retry` | Conservative; idempotent methods only. Caller may retry. |
+| Egress proxy rate-limit delay | per-provider manifest `rateLimits` | Manifest | Per-request choice of delay-up-to-cap vs fail-fast. |
+| Circuit breaker trip window | 20 failures in 60s | per-provider manifest | Tuned so brief provider blips don't trip it. UI-visible, user-resettable. |
+| Circuit breaker cooldown | 30s, exponentially growing per re-trip | Manifest | Surfaced in UI; "Try now" action always available. |
+| Webhook tunnel reconnect backoff | exp, cap 30s | Core | No give-up; reconnects forever; UI shows state. |
+
+**Explicitly no timeout on:**
+
+- The consent dialog (`consent:credential`, `consent:reconnect`).
+- The loopback PKCE callback listener (lifecycle tied to the
+  dialog, not a timer).
+- The mobile `beginConsent` nonce → verifier hold (LRU-evicted at
+  capacity if ever necessary, not time-evicted).
+- The `notificationService.pendingActions` entries of type
+  `consent:credential` or `consent:reconnect`.
+
+**Configuration.** All timers above are expressible in
+`natstack.yml` under a `credentials.timers` section with the same
+names, for self-hosters who need to tune for their specific
+provider load or network conditions. Sensible defaults ship in
+code.
 
 ### Test utilities
 
