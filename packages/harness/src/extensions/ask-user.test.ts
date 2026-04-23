@@ -46,7 +46,7 @@ describe("createAskUserExtension", () => {
     const params: AskUserParams = { question: "Should I proceed?" };
     const result = await tool.execute("call-1", params, undefined);
 
-    expect(askUser).toHaveBeenCalledWith(params, undefined);
+    expect(askUser).toHaveBeenCalledWith("call-1", params, undefined);
     expect(result.content[0]!.text).toBe("Yes, do it");
   });
 
@@ -67,7 +67,7 @@ describe("createAskUserExtension", () => {
     const tool = api.getRegistered().get("ask_user")!;
     await tool.execute("call-1", params, undefined);
 
-    expect(askUser).toHaveBeenCalledWith(params, undefined);
+    expect(askUser).toHaveBeenCalledWith("call-1", params, undefined);
   });
 
   it("propagates the abort signal", async () => {
@@ -80,6 +80,6 @@ describe("createAskUserExtension", () => {
     const tool = api.getRegistered().get("ask_user")!;
     await tool.execute("call-1", { question: "?" }, ctrl.signal);
 
-    expect(askUser).toHaveBeenCalledWith({ question: "?" }, ctrl.signal);
+    expect(askUser).toHaveBeenCalledWith("call-1", { question: "?" }, ctrl.signal);
   });
 });

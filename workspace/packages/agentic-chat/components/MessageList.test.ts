@@ -2,7 +2,35 @@
 
 import React from "react";
 import { render, screen } from "@testing-library/react";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+
+const hookState = vi.hoisted(() => {
+  const scrollElement = {
+    scrollTop: 0,
+    scrollHeight: 0,
+    clientHeight: 0,
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  const contentElement = {};
+  const scrollRef = Object.assign((_node: unknown) => {}, { current: scrollElement });
+  const contentRef = Object.assign((_node: unknown) => {}, { current: contentElement });
+  return {
+    scrollRef,
+    contentRef,
+    scrollToBottom: vi.fn(() => true),
+  };
+});
+
+vi.mock("use-stick-to-bottom", () => ({
+  useStickToBottom: () => ({
+    scrollRef: hookState.scrollRef,
+    contentRef: hookState.contentRef,
+    scrollToBottom: hookState.scrollToBottom,
+    isAtBottom: true,
+  }),
+}));
+
 import { MessageList } from "./MessageList.js";
 
 function makeMessage(overrides: Record<string, unknown>) {
