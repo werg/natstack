@@ -483,40 +483,51 @@ Land in this order. Each step keeps the tree in a working state.
 
 ### Phase 5b — mobile native OAuth
 
-30. Set up the natstack-owned domain serving `.well-known/
-    apple-app-site-association` and `.well-known/assetlinks.json`.
-    (Non-engineering infra task; can run in parallel with the steps
-    below.)
-31. Implement `apps/mobile/src/services/credentialConsent.ts` —
+30. **Domain + Cloudflare Pages setup** (infra, can parallel the code
+    steps below):
+    - Register / choose the chosen domain, point its DNS at
+      Cloudflare.
+    - Create `apps/well-known/` in this repo with
+      `apple-app-site-association.template.json`,
+      `assetlinks.template.json`, `config.json`, `build.ts`,
+      `wrangler.toml`.
+    - Create Cloudflare Pages project bound to `apps/well-known/`;
+      verify production URL serves both files with HTTP 200 and
+      `application/json`.
+31. Add `credentials.mobileCallbackDomain` to `natstack.yml` (default:
+    the natstack-owned domain chosen above) and
+    `universalLinkDomain` to `apps/mobile/config.json` (with the
+    wildcard dev pattern alongside the production domain).
+32. Implement `apps/mobile/src/services/credentialConsent.ts` —
     launches `ASWebAuthenticationSession` / Chrome Custom Tabs,
     handles universal-link return, relays `{ nonce, code }` to server.
-32. Add mobile-side rendering of the `"consent:credential"`
+33. Add mobile-side rendering of the `"consent:credential"`
     notification (native sheet with Allow / Deny), calling the same
     `notification.reportAction` RPC as desktop.
-33. End-to-end test: mobile → server RPC → provider consent → code
+34. End-to-end test: mobile → server RPC → provider consent → code
     relay → token stored → subsequent mobile-triggered worker call
     succeeds with auth.
-34. Commit: `feat(credentials): mobile native OAuth`.
+35. Commit: `feat(credentials): mobile native OAuth`.
 
 ### Phase 6 — rebuild example integrations
 
-35. Rewrite `workspace/packages/integrations/src/gmail.ts` against the
+36. Rewrite `workspace/packages/integrations/src/gmail.ts` against the
     new system — pure `fetch` calls, manifest declares Google scopes.
-36. Same for `calendar.ts`. Add a `github.ts` as a second reference.
-37. Rewrite `workspace/panels/email/index.tsx` from scratch against the
+37. Same for `calendar.ts`. Add a `github.ts` as a second reference.
+38. Rewrite `workspace/panels/email/index.tsx` from scratch against the
     new Gmail integration. Keep it minimal.
-38. Rewrite `workspace/skills/api-integrations/SKILL.md` as the
+39. Rewrite `workspace/skills/api-integrations/SKILL.md` as the
     canonical guide for adding new integrations.
-39. Commit: `feat(integrations): rebuild gmail/calendar on new system`.
+40. Commit: `feat(integrations): rebuild gmail/calendar on new system`.
 
 ### Phase 7 — third-party provider story
 
-40. Publish an example `@natstack/provider-linear` package on the repo
+41. Publish an example `@natstack/provider-linear` package on the repo
     as `workspace/examples/provider-linear/` demonstrating the
     third-party provider manifest shape.
-41. Document the manifest format in
+42. Document the manifest format in
     `docs/writing-a-provider-manifest.md`.
-42. Commit: `docs: third-party provider authoring guide`.
+43. Commit: `docs: third-party provider authoring guide`.
 
 ## Resolved decisions
 
@@ -564,8 +575,9 @@ Implications:
   the server is the user's own machine.
 - The universal-link callback requires one tiny piece of hosted infra:
   an `apple-app-site-association` file and an Android Asset Links
-  file served from a natstack-owned domain. Static JSON; one-time
-  setup.
+  file served from a natstack-owned domain. Hosted on **Cloudflare
+  Pages** from `apps/well-known/` in this repo. See **Universal-link
+  domain infra** below.
 
 New pieces this adds to the plan:
 
@@ -577,6 +589,93 @@ New pieces this adds to the plan:
   to server. ~150 LOC per platform.
 - Host static files for universal-link association (deploy once,
   separate repo/infra task).
+
+### Universal-link domain infra
+
+Hosted on **Cloudflare Pages**. The domain is chosen today and treated
+as **a configuration parameter**, not a hardcoded string — both in
+source code and in build config — so we can rotate or self-hoster-override
+without code changes.
+
+**What gets hosted**
+
+Two static files at the domain root:
+
+- `/.well-known/apple-app-site-association`
+- `/.well-known/assetlinks.json`
+
+Both templated from source at build time so Team ID, bundle ID,
+package name, and cert fingerprints come from config rather than being
+hand-edited.
+
+**Repo layout**
+
+New top-level folder `apps/well-known/` containing:
+
+- `src/apple-app-site-association.template.json`
+- `src/assetlinks.template.json`
+- `build.ts` — reads `apps/well-known/config.json` (the current values
+  of Team ID, bundle ID, package name, signing-cert SHA-256s), renders
+  the templates to `dist/.well-known/*`.
+- `wrangler.toml` — Cloudflare Pages project config.
+- `README.md` — how to update cert fingerprints, domain, etc.
+
+Cloudflare Pages deploys `dist/` on every push to main. The files are
+~300 bytes total; deploy is instant.
+
+**Parameterising the domain**
+
+The domain appears in four places. Each reads from a single source of
+truth.
+
+| Place | How the domain is injected |
+|---|---|
+| Server-side OAuth redirect URL construction | `natstack.yml` field `credentials.mobileCallbackDomain` → read by `credentialService` when building authorize URLs |
+| iOS entitlements (`applinks:<domain>`) | Build-time constant in `apps/mobile/ios/` generated from `apps/mobile/config.json` field `universalLinkDomain` |
+| Android manifest (`android:host="<domain>"`) | Same build-time constant, consumed by Android manifest template |
+| Each provider's OAuth client redirect URI allowlist | Operational — set once per provider when the OAuth client is registered, documented in `apps/well-known/README.md` |
+
+The mobile app supports **multiple domains** in its entitlements list
+so natstack-cloud builds and self-hoster-custom builds can coexist
+without rebuilds. Default entitlement includes:
+
+- The natstack-owned production domain (set today)
+- A `*.natstack.dev` wildcard pattern for dev/preview builds
+
+Self-hosters who want a fully custom domain rebuild the mobile app —
+they're self-hosting anyway, so a rebuild is already in their workflow.
+
+**Choosing the domain today**
+
+Requirements:
+- Must be a domain we own (Apple/Google verify via the `.well-known`
+  files).
+- Stable — changing it later means re-registering redirect URIs with
+  every provider. Pick once.
+- HTTPS with a valid cert (Cloudflare Pages provides this automatically).
+
+Candidate forms (to be finalised by whoever picks the domain today):
+- `links.natstack.io` — subdomain of the main domain, clean
+- `natstack.link` / `natstack.app` / `natstack.dev` — dedicated domain
+- A path on the main domain, e.g. `natstack.io/app/` — works but
+  pollutes the main site's URL space
+
+Recommendation: subdomain on whatever primary domain natstack already
+owns. If none exists yet, registering a new `.app` or `.link` domain
+is fine; they're cheap.
+
+**Operational ownership**
+
+- DNS: one CNAME record pointing the chosen domain at Cloudflare Pages.
+- Monitoring: a simple healthcheck hitting
+  `GET /.well-known/apple-app-site-association` and expecting 200 +
+  `application/json`. Any uptime monitor (UptimeRobot, Cloudflare
+  Health Checks) is enough. Failure impact: new mobile installs can't
+  complete OAuth until it's back. Existing installs are unaffected
+  because iOS caches the AASA.
+- Updates: when signing cert fingerprints rotate or a new mobile
+  platform is added, PR to `apps/well-known/config.json`, merge,
+  Cloudflare auto-deploys.
 
 ### Credentials stored server-side, shared across surfaces
 
@@ -691,17 +790,17 @@ Single queue, two UI surfaces, identical semantics.
 
 ## Remaining open items
 
-Only two things are genuinely unresolved and need attention:
+Just one implementation reminder:
 
-1. **Self-hoster `client_id` override.** Previously open, now decided:
-   yes, via `natstack.yml`. Documented in the provider manifest
-   section. Left here only as a reminder to implement it in Phase 3.
+1. **Self-hoster `client_id` override.** Yes, via `natstack.yml`.
+   Documented in the provider manifest section. Implement in Phase 3
+   step 14.
 
-2. **Universal-link domain for mobile OAuth callback.** We need a
-   natstack-owned domain serving the iOS AASA file and Android Asset
-   Links JSON. This is infra, not code, and should be set up before
-   Phase 5 concludes. Open question: which domain, who owns the DNS,
-   hosting (Vercel / Cloudflare Pages / GitHub Pages).
+The universal-link domain is decided in principle (Cloudflare Pages,
+a parameter in both server and mobile config). The actual string is
+chosen today; once it lands in `apps/well-known/config.json` and
+`natstack.yml`'s `credentials.mobileCallbackDomain`, this item is
+fully closed.
 
 ## Out of scope for this plan
 
