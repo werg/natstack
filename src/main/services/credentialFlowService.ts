@@ -1,20 +1,6 @@
 /**
- * auth service (Electron main) — client adapter for the interactive OAuth flow.
- *
- * Panels call `auth.startOAuthLogin('openai-codex')`. With `auth` removed
- * from `SERVER_SERVICE_NAMES`, the routing bridge sends the call here
- * (Electron main) instead of the remote server. We:
- *
- *   1. Bind a loopback callback listener on the client machine.
- *   2. Ask the server to prepare the OAuth flow and return an auth URL.
- *   3. `shell.openExternal` the URL — opens in the user's default browser.
- *   4. Wait for the redirect on localhost and forward the callback URL back
- *      to the server.
- *   5. The server validates state, exchanges the code, and persists tokens.
- *
- * Status / list / logout queries proxy straight through to the server's
- * `auth` service — the server is the source of truth for what's
- * currently stored.
+ * credential flow service (Electron main) — client-owned browser callback flow
+ * for providers whose consent must be completed on the client machine.
  */
 
 import { z } from "zod";
@@ -24,32 +10,32 @@ import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import { createDevLogger } from "@natstack/dev-log";
 import type { ServerClient } from "../serverClient.js";
 
-const log = createDevLogger("auth");
+const log = createDevLogger("credential-flow");
 
-/** 10 minutes — long enough for the user to click through a sign-in. */
 const FLOW_TIMEOUT_MS = 10 * 60 * 1000;
 
-/**
- * OpenAI's Codex OAuth client (`app_EMoamEEZ73f0CkXaXp7hrann`, shared with
- * pi-ai's CLI) registers exactly one loopback redirect URI:
- * `http://localhost:1455/auth/callback`. They do NOT honor RFC 8252 §7.3
- * port flexibility for this client, so we must bind this exact host+port
- * — anything else gets an `AuthApiFailure / unknown_error` at the
- * authorize endpoint. If we ever ship our own OpenAI OAuth client we
- * can revisit (and remove this constraint along with the singleton
- * port-busy failure mode).
- */
 const CODEX_LOOPBACK_HOST = "localhost";
 const CODEX_LOOPBACK_PORT = 1455;
 const CODEX_CALLBACK_PATH = "/auth/callback";
+const DEFAULT_LOOPBACK_HOST = "127.0.0.1";
+const DEFAULT_CALLBACK_PATH = "/oauth/callback";
+const AI_PROVIDER_IDS = new Set([
+  "anthropic",
+  "openai",
+  "openai-codex",
+  "google",
+  "groq",
+  "mistral",
+  "openrouter",
+]);
 
-export interface AuthServiceDeps {
+export interface CredentialFlowServiceDeps {
   serverClient: ServerClient;
-  /** Override `shell.openExternal` for tests. */
   openBrowser?: (url: string) => Promise<void>;
+  resolveLoopbackBinding?: (providerId: string) => LoopbackBinding;
 }
 
-interface ServerAuthProvider {
+interface ServerCredentialProvider {
   provider: string;
   displayName: string;
   kind: "oauth" | "env-var";
@@ -57,7 +43,13 @@ interface ServerAuthProvider {
   envVar?: string;
 }
 
-interface ClientAuthProvider {
+interface LoopbackBinding {
+  host: string;
+  port: number;
+  callbackPath: string;
+}
+
+export interface CredentialProviderStatus {
   id: string;
   name: string;
   kind: "oauth" | "env";
@@ -65,7 +57,7 @@ interface ClientAuthProvider {
   envVar?: string;
 }
 
-function mapProviderStatus(provider: ServerAuthProvider): ClientAuthProvider {
+function mapProviderStatus(provider: ServerCredentialProvider): CredentialProviderStatus {
   return {
     id: provider.provider,
     name: provider.displayName,
@@ -75,19 +67,19 @@ function mapProviderStatus(provider: ServerAuthProvider): ClientAuthProvider {
   };
 }
 
-export function createAuthService(deps: AuthServiceDeps): ServiceDefinition {
-  const inFlight = new Map<string, Promise<void>>();
+export function createCredentialFlowService(deps: CredentialFlowServiceDeps): ServiceDefinition {
+  const inFlight = new Map<string, Promise<{ success: boolean; error?: string }>>();
 
-  async function startOAuthLogin(providerId: string): Promise<void> {
-    // Concurrent calls for the same provider share one flow — clicking the
-    // Connect card twice shouldn't open two browser tabs.
+  async function connect(providerId: string): Promise<{ success: boolean; error?: string }> {
     const existing = inFlight.get(providerId);
-    if (existing) return existing;
+    if (existing) {
+      return existing;
+    }
 
-    const promise = runFlow(providerId).catch((err) => {
+    const promise = runFlow(providerId).then(() => ({ success: true } as const)).catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
-      log.warn(`OAuth flow for ${providerId} failed: ${message}`);
-      throw err;
+      log.warn(`Credential flow for ${providerId} failed: ${message}`);
+      return { success: false, error: message };
     }).finally(() => {
       inFlight.delete(providerId);
     });
@@ -96,77 +88,92 @@ export function createAuthService(deps: AuthServiceDeps): ServiceDefinition {
     return promise;
   }
 
-  async function listProviders(): Promise<ClientAuthProvider[]> {
-    const providers = await deps.serverClient.call("auth", "listProviders", []) as ServerAuthProvider[];
-    return providers.map(mapProviderStatus);
+  async function listProviders(): Promise<CredentialProviderStatus[]> {
+    const providers = await deps.serverClient.call("credentials", "listProviders", []) as ServerCredentialProvider[];
+    return providers
+      .filter((provider) => AI_PROVIDER_IDS.has(provider.provider))
+      .map(mapProviderStatus);
+  }
+
+  async function disconnect(providerId: string): Promise<void> {
+    await deps.serverClient.call("credentials", "revokeConsent", [{ providerId }]);
   }
 
   async function runFlow(providerId: string): Promise<void> {
-    const { server, callbackPromise, redirectUri } = await bindLoopbackCallback();
+    const { server, callbackPromise, redirectUri } = await bindLoopbackCallback(
+      providerId,
+      deps.resolveLoopbackBinding,
+    );
     try {
-      const { authUrl, flowId } = await deps.serverClient.call(
-        "auth",
-        "startOAuthLogin",
-        [providerId, redirectUri],
-      ) as { authUrl: string; flowId: string };
+      const { authorizeUrl, nonce } = await deps.serverClient.call(
+        "credentials",
+        "beginConsent",
+        [{ providerId, scopes: [], redirect: "client-loopback", redirectUri }],
+      ) as { authorizeUrl: string; nonce: string };
 
+      const waitForCallback = callbackPromise();
       const open = deps.openBrowser ?? (async (url: string) => {
         const { shell } = await import("electron");
         await shell.openExternal(url);
       });
-      await open(authUrl);
+      await open(authorizeUrl);
 
-      const callbackUrl = await callbackPromise();
-      await deps.serverClient.call("auth", "completeOAuthLogin", [flowId, { callbackUrl }]);
+      const callbackUrl = await waitForCallback;
+      const callback = new URL(callbackUrl);
+      const code = callback.searchParams.get("code");
+      if (!code) {
+        throw new Error("OAuth callback missing code");
+      }
+      await deps.serverClient.call("credentials", "completeConsent", [{ nonce, code }]);
     } finally {
       try { server.close(); } catch { /* noop */ }
     }
   }
 
   return {
-    name: "auth",
-    description: "Interactive OAuth login flow (client-owned)",
+    name: "credentialFlow",
+    description: "Client-owned browser callback flow for provider credentials",
     policy: { allowed: ["shell", "panel", "worker"] },
     methods: {
-      startOAuthLogin: { args: z.tuple([z.string()]) },
       listProviders: { args: z.tuple([]) },
-      logout: { args: z.tuple([z.string()]) },
+      connect: { args: z.tuple([z.string()]) },
+      disconnect: { args: z.tuple([z.string()]) },
     },
     handler: async (_ctx, method, args) => {
       switch (method) {
-        case "startOAuthLogin":
-          return startOAuthLogin(args[0] as string);
         case "listProviders":
           return listProviders();
-        case "logout":
-          return deps.serverClient.call("auth", "logout", [args[0] as string]);
+        case "connect":
+          return connect(args[0] as string);
+        case "disconnect":
+          return disconnect(args[0] as string);
         default:
-          throw new Error(`Unknown auth method: ${method}`);
+          throw new Error(`Unknown credentialFlow method: ${method}`);
       }
     },
   };
 }
 
-/**
- * Bind an ephemeral loopback HTTP server. Returns the listen port plus a
- * function that, given an `AuthFlowSession`, awaits the matching redirect
- * (validates `state`, extracts `code`, renders a tiny success/error page,
- * shuts the server down).
- */
-async function bindLoopbackCallback(): Promise<{
+async function bindLoopbackCallback(
+  providerId: string,
+  resolveLoopbackBinding?: (providerId: string) => LoopbackBinding,
+): Promise<{
   server: http.Server;
   redirectUri: string;
   callbackPromise: () => Promise<string>;
 }> {
   const server = http.createServer();
+  const binding = resolveLoopbackBinding?.(providerId) ?? getLoopbackBinding(providerId);
+  const isCodex = providerId === "openai-codex";
+  const { host, port, callbackPath } = binding;
   try {
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
-      server.listen(CODEX_LOOPBACK_PORT, CODEX_LOOPBACK_HOST, () => resolve());
+      server.listen(port, host, () => resolve());
     });
   } catch (err) {
     const code = (err as { code?: string })?.code;
-    if (code === "EADDRINUSE") {
+    if (code === "EADDRINUSE" && isCodex) {
       throw new Error(
         `OAuth callback port ${CODEX_LOOPBACK_PORT} is already in use. ` +
         `Close the other process (or another NatStack/pi-ai sign-in flow) and retry.`,
@@ -174,8 +181,11 @@ async function bindLoopbackCallback(): Promise<{
     }
     throw err;
   }
-  const port = CODEX_LOOPBACK_PORT;
-  const redirectUri = `http://${CODEX_LOOPBACK_HOST}:${port}${CODEX_CALLBACK_PATH}`;
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Failed to bind loopback OAuth callback server");
+  }
+  const redirectUri = `http://${host}:${address.port}${callbackPath}`;
 
   function callbackPromise(): Promise<string> {
     return new Promise<string>((resolve, reject) => {
@@ -186,17 +196,21 @@ async function bindLoopbackCallback(): Promise<{
 
       const onRequest = (req: http.IncomingMessage, res: http.ServerResponse) => {
         const url = new URL(req.url ?? "/", redirectUri);
-        if (url.pathname !== CODEX_CALLBACK_PATH) {
+        if (url.pathname !== callbackPath) {
           res.statusCode = 404;
           res.end("not found");
           return;
         }
         const error = url.searchParams.get("error");
+        const errorDescription = url.searchParams.get("error_description");
 
         if (error) {
-          respondHtml(res, 400, errorPage(`Provider returned an error: ${error}`));
+          const message = errorDescription
+            ? `Provider returned an error: ${error} (${errorDescription})`
+            : `Provider returned an error: ${error}`;
+          respondHtml(res, 400, errorPage(message));
           cleanup();
-          reject(new Error(`OAuth provider error: ${error}`));
+          reject(new Error(message));
           return;
         }
         if (!url.searchParams.get("code")) {
@@ -221,6 +235,22 @@ async function bindLoopbackCallback(): Promise<{
   }
 
   return { server, redirectUri, callbackPromise };
+}
+
+function getLoopbackBinding(providerId: string): LoopbackBinding {
+  if (providerId === "openai-codex") {
+    return {
+      host: CODEX_LOOPBACK_HOST,
+      port: CODEX_LOOPBACK_PORT,
+      callbackPath: CODEX_CALLBACK_PATH,
+    };
+  }
+
+  return {
+    host: DEFAULT_LOOPBACK_HOST,
+    port: 0,
+    callbackPath: DEFAULT_CALLBACK_PATH,
+  };
 }
 
 function respondHtml(res: http.ServerResponse, status: number, body: string): void {

@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import type { Credential, FlowConfig } from "../types.js";
 
-export type FlowRunner = (config: FlowConfig) => Promise<Credential | null>;
+export type FlowRunner = (config: FlowConfig, providerId?: string) => Promise<Credential | null>;
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_TOKEN_LIFETIME_SECONDS = 3600;

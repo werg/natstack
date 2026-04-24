@@ -1,12 +1,12 @@
-import { requestConsent, type CredentialHandle } from "@workspace/runtime/worker/credentials";
+import { connect, type CredentialHandle } from "@workspace/runtime/panel/credentials";
 
 export const manifest = {
-  providers: ["google"],
+  providers: ["google-workspace"],
   scopes: {
-    google: ["gmail_readonly", "gmail_send"],
+    "google-workspace": ["gmail_readonly", "gmail_send"],
   },
   endpoints: {
-    google: [
+    "google-workspace": [
       { url: "https://gmail.googleapis.com/gmail/v1/users/me/messages", methods: ["GET"] },
       { url: "https://gmail.googleapis.com/gmail/v1/users/me/messages/*", methods: ["GET"] },
       { url: "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", methods: ["POST"] },
@@ -37,15 +37,13 @@ interface GmailProfile {
 
 const GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
 
-let google: CredentialHandle | undefined;
+let googleWorkspace: CredentialHandle | undefined;
 
 async function ensureAuth(): Promise<CredentialHandle> {
-  if (!google) {
-    google = await requestConsent("google", {
-      scopes: ["gmail_readonly", "gmail_send"],
-    });
+  if (!googleWorkspace) {
+    googleWorkspace = await connect("google-workspace");
   }
-  return google;
+  return googleWorkspace;
 }
 
 export async function getProfile(): Promise<GmailProfile> {

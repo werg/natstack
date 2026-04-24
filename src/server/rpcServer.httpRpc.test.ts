@@ -29,7 +29,7 @@ function createTestSetup() {
       return { ok: true };
     }),
     getPolicy: vi.fn((service: string) => {
-      if (service === "oauth") return { allowed: ["shell", "panel", "worker"] as CallerKind[] };
+      if (service === "credentials") return { allowed: ["shell", "panel", "worker"] as CallerKind[] };
       if (service === "harness") return { allowed: ["harness", "server", "worker"] as CallerKind[] };
       if (service === "build") return { allowed: ["panel", "shell", "server", "worker"] as CallerKind[] };
       return undefined;
@@ -90,7 +90,7 @@ describe("RpcServer HTTP POST /rpc", () => {
       const res = await fetch(`http://127.0.0.1:${port}/rpc`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ method: "oauth.getToken", args: [] }),
+        body: JSON.stringify({ method: "credentials.listProviders", args: [] }),
       });
       expect(res.status).toBe(401);
       const body = await res.json() as { error: string };
@@ -99,7 +99,7 @@ describe("RpcServer HTTP POST /rpc", () => {
 
     it("rejects invalid token", async () => {
       const { status, body } = await postRpc(port, "invalid-token-xxx", {
-        method: "oauth.getToken",
+        method: "credentials.listProviders",
         args: [],
       });
       expect(status).toBe(401);
@@ -117,7 +117,7 @@ describe("RpcServer HTTP POST /rpc", () => {
 
     it("accepts worker token", async () => {
       const { status, body } = await postRpc(port, setup.workerToken, {
-        method: "oauth.listProviders",
+        method: "credentials.listProviders",
         args: [],
       });
       expect(status).toBe(200);
@@ -129,30 +129,30 @@ describe("RpcServer HTTP POST /rpc", () => {
 
   describe("service dispatch", () => {
     it("dispatches to correct service and method", async () => {
-      setup.dispatchResults.set("oauth.listProviders", [{ key: "google", provider: "google" }]);
+      setup.dispatchResults.set("credentials.listProviders", [{ provider: "google", displayName: "Google" }]);
 
       const { body } = await postRpc(port, setup.workerToken, {
-        method: "oauth.listProviders",
+        method: "credentials.listProviders",
         args: [],
       });
 
-      expect(body["result"]).toEqual([{ key: "google", provider: "google" }]);
-      expect(setup.dispatched[0]!.service).toBe("oauth");
+      expect(body["result"]).toEqual([{ provider: "google", displayName: "Google" }]);
+      expect(setup.dispatched[0]!.service).toBe("credentials");
       expect(setup.dispatched[0]!.method).toBe("listProviders");
     });
 
     it("passes args to dispatcher", async () => {
       await postRpc(port, setup.workerToken, {
-        method: "oauth.getToken",
-        args: ["google-mail", "conn-1"],
+        method: "credentials.resolveConnection",
+        args: [{ providerId: "google-mail", connectionId: "conn-1" }],
       });
 
-      expect(setup.dispatched[0]!.args).toEqual(["google-mail", "conn-1"]);
+      expect(setup.dispatched[0]!.args).toEqual([{ providerId: "google-mail", connectionId: "conn-1" }]);
     });
 
     it("builds correct ServiceContext from worker token", async () => {
       await postRpc(port, setup.workerToken, {
-        method: "oauth.listProviders",
+        method: "credentials.listProviders",
         args: [],
       });
 
@@ -178,8 +178,8 @@ describe("RpcServer HTTP POST /rpc", () => {
       (setup.dispatcher.dispatch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("token expired"));
 
       const { status, body } = await postRpc(port, setup.workerToken, {
-        method: "oauth.getToken",
-        args: ["google-mail", "conn-1"],
+        method: "credentials.resolveConnection",
+        args: [{ providerId: "google-mail", connectionId: "conn-1" }],
       });
 
       // HTTP 200, error in body (RPC convention)
@@ -201,9 +201,9 @@ describe("RpcServer HTTP POST /rpc", () => {
       expect(setup.dispatched).toHaveLength(0);
     });
 
-    it("allows worker calling oauth service", async () => {
+    it("allows worker calling credentials service", async () => {
       await postRpc(port, setup.workerToken, {
-        method: "oauth.listProviders",
+        method: "credentials.listProviders",
         args: [],
       });
 
@@ -252,7 +252,7 @@ describe("RpcServer HTTP POST /rpc", () => {
     it("treats targetId=main as direct dispatch", async () => {
       await postRpc(port, setup.workerToken, {
         targetId: "main",
-        method: "oauth.listProviders",
+        method: "credentials.listProviders",
         args: [],
       });
 

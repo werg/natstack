@@ -20,7 +20,7 @@ export class AiChatWorker extends AgentWorkerBase {
 
   /** Default to OpenAI Codex / gpt-5.4 — the strongest non-codex variant in
    *  pi-ai 0.66's openai-codex registry. The auth service supplies an OAuth
-   *  token at Agent call time via `auth.getProviderToken("openai-codex")`. */
+   *  credential readiness at Agent call time; egress auth is injected by the proxy. */
   protected override getModel(): string {
     return "openai-codex:gpt-5.4";
   }

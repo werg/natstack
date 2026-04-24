@@ -13,6 +13,7 @@ import type { Workspace, WorkspaceConfig } from "@natstack/shared/workspace/type
 import type { GitServer } from "@natstack/git-server";
 import type { CentralDataManager } from "@natstack/shared/centralData";
 import type { HostConfig } from "@natstack/shared/hostConfig";
+import type { CodeIdentityResolver } from "./services/codeIdentityResolver.js";
 
 export interface CommonDeps {
   container: ServiceContainer;
@@ -30,6 +31,8 @@ export interface CommonDeps {
   requestRelaunch?: (name: string) => void;
   /** IPC proxy: fetch workspace list from Electron main when centralData is null. */
   requestWorkspaceList?: () => Promise<unknown[]>;
+  codeIdentityResolver?: Pick<CodeIdentityResolver, "upsertCallerIdentity" | "unregisterCaller">;
+  getEffectiveVersion?: (source: string) => Promise<string | undefined>;
 }
 
 export async function registerPanelServices(deps: CommonDeps): Promise<void> {
@@ -88,6 +91,8 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
             getRpcPort,
             workerdPort: wkrdPort,
             urlConfig,
+            codeIdentityResolver: deps.codeIdentityResolver,
+            getEffectiveVersion: deps.getEffectiveVersion,
           }),
         };
       },

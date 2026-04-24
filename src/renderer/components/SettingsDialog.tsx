@@ -21,14 +21,14 @@ import {
   loadAuthProvidersAtom,
 } from "../state/appModeAtoms";
 import { useShellOverlay } from "../shell/useShellOverlay";
-import { auth, type AuthProvider } from "../shell/client";
+import { credentialFlow, type CredentialProvider } from "../shell/client";
 
 interface SettingsDialogProps {
   /** If true, dialog cannot be dismissed (used for initial setup) */
   isSetupMode?: boolean;
 }
 
-function isProviderReady(p: AuthProvider): boolean {
+function isProviderReady(p: CredentialProvider): boolean {
   return p.status === "connected" || p.status === "configured";
 }
 
@@ -169,7 +169,7 @@ export function SettingsDialog({ isSetupMode = false }: SettingsDialogProps) {
 }
 
 interface OAuthProviderRowProps {
-  provider: AuthProvider;
+  provider: CredentialProvider;
   onChanged: () => void;
 }
 
@@ -180,10 +180,10 @@ function OAuthProviderRow({ provider, onChanged }: OAuthProviderRowProps) {
   const handleConnect = async () => {
     setIsBusy(true);
     try {
-      await auth.startOAuthLogin(provider.id);
+      await credentialFlow.connect(provider.id);
       onChanged();
     } catch (error) {
-      console.error(`Failed to start OAuth login for ${provider.id}:`, error);
+      console.error(`Failed to connect provider ${provider.id}:`, error);
     } finally {
       setIsBusy(false);
     }
@@ -192,10 +192,10 @@ function OAuthProviderRow({ provider, onChanged }: OAuthProviderRowProps) {
   const handleLogout = async () => {
     setIsBusy(true);
     try {
-      await auth.logout(provider.id);
+      await credentialFlow.disconnect(provider.id);
       onChanged();
     } catch (error) {
-      console.error(`Failed to log out of ${provider.id}:`, error);
+      console.error(`Failed to disconnect provider ${provider.id}:`, error);
     } finally {
       setIsBusy(false);
     }
@@ -245,7 +245,7 @@ function OAuthProviderRow({ provider, onChanged }: OAuthProviderRowProps) {
 }
 
 interface EnvProviderRowProps {
-  provider: AuthProvider;
+  provider: CredentialProvider;
 }
 
 function EnvProviderRow({ provider }: EnvProviderRowProps) {

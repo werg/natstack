@@ -92,7 +92,7 @@ function main() {
 
   const child = spawn(
     process.execPath,
-    ["dist/server.mjs", "--host", host, "--serve-panels", "--init"],
+    ["dist/server.mjs", "--host", host, "--serve-panels", "--init", "--print-token"],
     {
       cwd: repoRoot,
       stdio: ["inherit", "pipe", "inherit"],
@@ -116,7 +116,7 @@ function main() {
 
       const gMatch = line.match(/Gateway:\s+(\S+)/);
       if (gMatch) gatewayUrl = gMatch[1];
-      const tMatch = line.match(/Shell token:\s+([A-Za-z0-9_-]+)/);
+      const tMatch = line.match(/(?:NATSTACK_SHELL_TOKEN=|Shell token:\s+)([A-Za-z0-9_-]+)/);
       if (tMatch) shellToken = tMatch[1];
 
       if (!bannerPrinted && gatewayUrl && shellToken) {

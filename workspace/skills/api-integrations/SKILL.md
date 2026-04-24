@@ -39,16 +39,14 @@ export const manifest = {
 ### 2. Request Consent
 
 ```typescript
-import { requestConsent } from "@workspace/runtime/worker/credentials";
+import { connect } from "@workspace/runtime/worker/credentials";
 
-const github = await requestConsent("github", {
-  scopes: ["repo"],
-});
+const github = await connect("github");
 ```
 
 This triggers a consent dialog. The returned `CredentialHandle` provides:
 - `connectionId` — identifies this connection
-- `apiBase` — allowed API base URLs
+- `providerId` — the provider backing this handle
 - `fetch()` — authenticated fetch that stamps the connection header
 
 ### 3. Call APIs
@@ -78,6 +76,16 @@ export function onIssue(event: WebhookEvent) {
 }
 ```
 
+At worker startup, expose and subscribe those handlers in one step:
+
+```typescript
+import { createWorkerRuntime, handleWorkerRpc, registerManifestWebhooks } from "@workspace/runtime/worker";
+import * as github from "@workspace/integrations/github";
+
+const runtime = createWorkerRuntime(env);
+await registerManifestWebhooks(runtime, { github });
+```
+
 ### Multi-Role Example
 
 For integrations that need multiple accounts of the same provider:
@@ -91,8 +99,8 @@ export const manifest = {
   // ...
 };
 
-const source = await requestConsent("github", { role: "source" });
-const target = await requestConsent("github", { role: "target" });
+const source = await connect("github", { connectionId: "source" });
+const target = await connect("github", { connectionId: "target" });
 
 // Each handle authenticates as a different GitHub account
 const issues = await source.fetch("https://api.github.com/repos/org/repo/issues");

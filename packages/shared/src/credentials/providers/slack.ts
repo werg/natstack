@@ -4,6 +4,11 @@ export const slack: ProviderManifest = {
   id: "slack",
   displayName: "Slack",
   clientId: "PLACEHOLDER_SLACK_CLIENT_ID",
+  authInjection: {
+    type: "header",
+    headerName: "Authorization",
+    valueTemplate: "Bearer {token}",
+  },
   apiBase: [
     "https://slack.com/api",
   ],

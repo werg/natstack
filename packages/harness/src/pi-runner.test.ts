@@ -100,7 +100,8 @@ function createMockRpc(
   const responses: Record<string, unknown> = {
     "main:workspace.getAgentsMd": "BASE SYSTEM PROMPT",
     "main:workspace.listSkills": [],
-    "main:authTokens.getProviderToken": "fake-token-abc",
+    "main:credentials.listConnections": [{ connectionId: "conn-1" }],
+    "main:credentials.checkConsent": true,
     ...overrides,
   };
   const call = vi.fn(async (targetId: string, method: string) => {
@@ -225,7 +226,7 @@ describe("PiRunner.init", () => {
     await expect(runner.init()).rejects.toThrow(/provider:model/);
   });
 
-  it("getApiKey callback delegates to authTokens.getProviderToken", async () => {
+  it("getApiKey callback verifies credentials and returns the proxy sentinel", async () => {
     const options = createOptions();
     const rpcCallSpy = (options.rpc as any).call as ReturnType<typeof vi.fn>;
     const runner = new PiRunner(options);
@@ -233,11 +234,16 @@ describe("PiRunner.init", () => {
 
     const agent = agentInstances[0];
     const token = await agent.getApiKey("openai");
-    expect(token).toBe("fake-token-abc");
+    expect(token).toBe("natstack-proxy");
     expect(rpcCallSpy).toHaveBeenCalledWith(
       "main",
-      "authTokens.getProviderToken",
-      "openai",
+      "credentials.listConnections",
+      { providerId: "openai" },
+    );
+    expect(rpcCallSpy).toHaveBeenCalledWith(
+      "main",
+      "credentials.checkConsent",
+      { providerId: "openai" },
     );
   });
 
@@ -247,13 +253,11 @@ describe("PiRunner.init", () => {
     const rpcResponses: Record<string, unknown> = {
       "main:workspace.getAgentsMd": "BASE PROMPT",
       "main:workspace.listSkills": [],
+      "main:credentials.listConnections": [],
     };
     const call = vi.fn(
       async (targetId: string, method: string, ..._args: unknown[]) => {
         const key = `${targetId}:${method}`;
-        if (key === "main:authTokens.getProviderToken") {
-          throw new Error("Not logged in to openai-codex. Use the settings panel to connect.");
-        }
         if (key in rpcResponses) return rpcResponses[key];
         throw new Error(`Unexpected RPC call: ${key}`);
       },
@@ -274,20 +278,17 @@ describe("PiRunner.init", () => {
       "openai-codex",
       "ChatGPT",
     );
-    // waitForProvider should NOT have been called (non-blocking).
-    expect(call).not.toHaveBeenCalledWith(
-      "main",
-      "authTokens.waitForProvider",
-      expect.anything(),
-    );
   });
 
-  it("OAuth fallback: rethrows non-auth errors without showing the card", async () => {
+  it("credential readiness rethrows lookup errors without showing the card", async () => {
     const ui = createStubUiCallbacks();
-    const call = vi.fn(async (_t: string, method: string) => {
+    const call = vi.fn(async (_t: string, method: string, ...args: unknown[]) => {
       if (method === "workspace.getAgentsMd") return "P";
       if (method === "workspace.listSkills") return [];
-      if (method === "authTokens.getProviderToken") {
+      if (
+        method === "credentials.listConnections" &&
+        (args[0] as { providerId?: string } | undefined)?.providerId === "openai-codex"
+      ) {
         throw new Error("Network error");
       }
       throw new Error(`Unexpected: ${method}`);
@@ -301,13 +302,8 @@ describe("PiRunner.init", () => {
 
     const agent = agentInstances[0];
     await expect(agent.getApiKey("openai-codex")).rejects.toThrow(/Network error/);
-    // Should NOT have shown the card or called waitForProvider.
+    // Should NOT have shown the card.
     expect(ui.requestProviderOAuth).not.toHaveBeenCalled();
-    expect(call).not.toHaveBeenCalledWith(
-      "main",
-      "authTokens.waitForProvider",
-      expect.anything(),
-    );
   });
 });
 

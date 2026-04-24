@@ -157,9 +157,10 @@ All of the following is prototype and unused. Delete, don't migrate.
 ### Code
 
 - `packages/shared/src/oauth/oauthManager.ts`
-- `src/server/services/oauthService.ts`
-- `workspace/packages/runtime/src/shared/oauth.ts`
-- `workspace/packages/runtime/src/panel/oauth.ts`
+- `src/server/services/credentialService.ts`
+- `src/main/services/credentialFlowService.ts`
+- `workspace/packages/runtime/src/shared/credentials.ts`
+- `workspace/packages/runtime/src/panel/credentials.ts`
 - `workspace/packages/integrations/src/gmail.ts`
 - `workspace/packages/integrations/src/calendar.ts`
 - `workspace/packages/integrations/src/index.ts` (re-exports of the above;
@@ -367,8 +368,8 @@ public HTTPS endpoint. See **Webhooks** under Extended capabilities.
 Published as `@natstack/credentials-test-utils` so third-party
 provider authors can use the same harness we do.
 
-`src/server/services/credentialService.ts` — replaces the old
-`oauthService.ts`. RPC methods exposed to workers and UIs via the
+`src/server/services/credentialService.ts` — the current server-side
+credential entry point. RPC methods exposed to workers and UIs via the
 existing `/rpc` endpoint:
 
 - `credentials.beginConsent({ providerId, scopes, accountHint?,
@@ -576,8 +577,8 @@ difference between plain `fetch()` and `handle.fetch()` is that
 the handle disambiguates when a worker has multiple connections
 for the same provider.
 
-Delete the old `workspace/packages/runtime/src/shared/oauth.ts` and
-`panel/oauth.ts`.
+Delete the old runtime OAuth wrapper modules; the runtime surface is
+`credentials.connect(...)` plus `CredentialHandle.fetch(...)`.
 
 ### Integration manifest
 
@@ -720,9 +721,10 @@ All parallel. Wave-exit: tree compiles with `NotImplemented` stubs,
 `rg -i nango` returns zero hits, spike report committed.
 
 - **W1.T1** Delete Nango OAuth core —
-  `packages/shared/src/oauth/`, `src/server/services/oauthService.ts`,
-  `workspace/packages/runtime/src/shared/oauth.ts`,
-  `workspace/packages/runtime/src/panel/oauth.ts`.
+  `packages/shared/src/oauth/`, the old OAuth-specific server glue,
+  and the legacy runtime OAuth wrappers that were replaced by
+  `credentialService.ts`, `credentialFlowService.ts`, and the runtime
+  `credentials` modules.
 - **W1.T2** Delete Nango-built integrations —
   `workspace/packages/integrations/src/{gmail,calendar,index}.ts`,
   `apps/mobile/src/services/oauthHandler.ts`.

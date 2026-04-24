@@ -486,7 +486,6 @@ export class RpcServer {
         this.handleToolResult(msg.callId, msg.result as ToolExecutionResult);
         break;
       case "ws:route":
-      case "ws:panel-rpc":
         this.handleRoute(client, msg.targetId, msg.message);
         break;
       case "ws:auth":
@@ -942,9 +941,11 @@ export class RpcServer {
       const result = await this.handleHttpRpc(callerId, callerKind, body);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ result }));
-    } catch (err: any) {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const errorCode = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: err.message, errorCode: err.code }));
+      res.end(JSON.stringify({ error: message, ...(errorCode ? { errorCode } : {}) }));
     }
   }
 
@@ -1060,6 +1061,10 @@ export class RpcServer {
     throw new Error(
       `Invariant violated: reconnect waiter resolved for ${targetId} but no client found`,
     );
+  }
+
+  async callTarget<T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T> {
+    return this.relayCall("main", targetId, method, args) as Promise<T>;
   }
 
   private async relayCall(callerId: string, targetId: string, method: string, args: unknown[]): Promise<unknown> {

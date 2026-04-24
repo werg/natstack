@@ -64,16 +64,18 @@ src/server/buildV2/
 
 ### Package Graph (`packageGraph.ts`)
 
-Scans four workspace directories:
+Scans six workspace directories:
 
 | Directory | Kind | Scope |
 |-----------|------|-------|
 | `workspace/packages/` | `package` | `@workspace/*` |
 | `workspace/panels/` | `panel` | `@workspace-panels/*` |
 | `workspace/about/` | `panel` | `@workspace-about/*` |
-| `workspace/agents/` | `agent` | `@workspace-agents/*` |
+| `workspace/workers/` | `worker` | `@workspace-workers/*` |
+| `workspace/skills/` | `package` | `@workspace-skills/*` |
+| `workspace/templates/` | `template` | — |
 
-Each unit's `package.json` is read. Dependencies matching any workspace scope (`@workspace/`, `@workspace-panels/`, `@workspace-about/`, `@workspace-agents/`) become internal edges in the DAG. Both `dependencies` and `peerDependencies` are included (peers first, so regular deps override on conflict).
+Each unit's `package.json` is read. Dependencies matching any workspace scope (`@workspace/`, `@workspace-panels/`, `@workspace-about/`, `@workspace-workers/`, `@workspace-skills/`) become internal edges in the DAG. Both `dependencies` and `peerDependencies` are included (peers first, so regular deps override on conflict).
 
 The graph supports **dependency ref specs** — internal deps can pin to specific branches, refs, or commits:
 

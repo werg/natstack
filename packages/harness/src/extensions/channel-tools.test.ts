@@ -160,7 +160,7 @@ describe("createChannelToolsExtension", () => {
     const tool = api.getRegistered().get("eval")!;
     const result = await tool.execute("call-1", { code: "1+1" }, undefined);
 
-    expect(callMethod).toHaveBeenCalledWith("sandbox", "eval", { code: "1+1" }, undefined, undefined);
+    expect(callMethod).toHaveBeenCalledWith("call-1", "sandbox", "eval", { code: "1+1" }, undefined, undefined);
     expect(result.content[0]!.text).toBe(JSON.stringify({ ok: true }));
   });
 

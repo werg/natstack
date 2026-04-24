@@ -15,6 +15,10 @@ export class ProviderRegistry {
     return [...this.manifests.values()];
   }
 
+  matchUrl(targetUrl: URL): ProviderManifest | undefined {
+    return this.list().find((manifest) => matchesProvider(targetUrl, manifest));
+  }
+
   applyConfig(providerConfigs: Record<string, { clientId?: string; clientSecret?: string }>): void {
     for (const [providerId, overrides] of Object.entries(providerConfigs)) {
       const manifest = this.manifests.get(providerId);
@@ -46,7 +50,7 @@ export class ProviderRegistry {
 
   applyEnvironment(): void {
     for (const [providerId, manifest] of this.manifests) {
-      const envPrefix = `NATSTACK_${providerId.toUpperCase()}`;
+      const envPrefix = `NATSTACK_${providerId.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
       const envClientId = process.env[`${envPrefix}_CLIENT_ID`];
       const envClientSecret = process.env[`${envPrefix}_CLIENT_SECRET`];
 
@@ -55,4 +59,31 @@ export class ProviderRegistry {
       }
     }
   }
+}
+
+function matchesProvider(targetUrl: URL, manifest: ProviderManifest): boolean {
+  return manifest.apiBase.some((apiBase) => {
+    try {
+      const baseUrl = new URL(apiBase);
+      const normalizedBasePath = trimTrailingSlash(baseUrl.pathname);
+      const normalizedTargetPath = trimTrailingSlash(targetUrl.pathname);
+      const hostMatches = baseUrl.host === targetUrl.host;
+      const pathMatches =
+        normalizedBasePath === "" ||
+        normalizedBasePath === "/" ||
+        normalizedTargetPath === normalizedBasePath ||
+        normalizedTargetPath.startsWith(`${normalizedBasePath}/`);
+
+      return hostMatches && pathMatches;
+    } catch {
+      return apiBase === targetUrl.host || targetUrl.toString().startsWith(apiBase);
+    }
+  });
+}
+
+function trimTrailingSlash(value: string): string {
+  if (value.length <= 1) {
+    return value;
+  }
+  return value.endsWith("/") ? value.slice(0, -1) : value;
 }

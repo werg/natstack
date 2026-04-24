@@ -632,13 +632,13 @@ app.on("ready", async () => {
     const { createRemoteCredService } = await import("./services/remoteCredService.js");
     electronContainer.register(rpcService(createRemoteCredService({ startupMode })));
     electronContainer.register(rpcService(createAdblockService({ adBlockManager })));
-    // Client-owned OAuth flow — opens the user's browser, captures the
-    // loopback redirect, exchanges the code, and forwards tokens to the
-    // server's authTokens.persist. With `auth` removed from
-    // SERVER_SERVICE_NAMES, panel calls to `auth.*` land here instead of
-    // the (potentially remote) server.
-    const { createAuthService } = await import("./services/authService.js");
-    electronContainer.register(rpcService(createAuthService({ serverClient: sc })));
+    // Client-owned provider browser flow — opens the user's browser,
+    // captures the loopback redirect, and forwards the authorization code
+    // to the server's credentials service. `credentialFlow` is intentionally
+    // main-local: the server cannot complete a browser callback on behalf of
+    // the client machine.
+    const { createCredentialFlowService } = await import("./services/credentialFlowService.js");
+    electronContainer.register(rpcService(createCredentialFlowService({ serverClient: sc })));
 
     // Locally-hosted services
     electronContainer.register(rpcService(createBrowserService({

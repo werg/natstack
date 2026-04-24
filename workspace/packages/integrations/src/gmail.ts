@@ -1,13 +1,17 @@
+import { connect, type CredentialHandle } from "../../runtime/src/worker/credentials.js"
+import { hasRecentPushDelivery } from "./pushState.js"
+
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 const DEFAULT_POLL_INTERVAL_MS = 60_000
+const DEFAULT_PUSH_QUIET_WINDOW_MS = 5 * 60_000
 
 export const manifest = {
-  providers: ["google"],
+  providers: ["google-workspace"],
   scopes: {
-    google: ["gmail_readonly", "gmail_send"],
+    "google-workspace": ["gmail_readonly", "gmail_send"],
   },
   endpoints: {
-    google: [
+    "google-workspace": [
       { url: "https://gmail.googleapis.com/gmail/v1/users/me/messages", methods: ["GET"] },
       { url: "https://gmail.googleapis.com/gmail/v1/users/me/messages/*", methods: ["GET"] },
       { url: "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", methods: ["POST"] },
@@ -17,7 +21,7 @@ export const manifest = {
     ],
   },
   webhooks: {
-    google: [
+    "google-workspace": [
       { event: "message.new", deliver: "onNewMessage" },
     ],
   },
@@ -146,6 +150,8 @@ export interface GmailNewMessageEvent {
 export interface StartPollingOptions {
   historyId?: string
   intervalMs?: number
+  standDownWhenPushActive?: boolean
+  pushQuietWindowMs?: number
   onNewMessages?: (event: GmailNewMessageEvent) => void | Promise<void>
   onError?: (error: unknown) => void | Promise<void>
 }
@@ -191,6 +197,33 @@ async function gmailFetch<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   const response = await fetch(`${GMAIL_API_BASE}${path}`, {
+    ...init,
+    headers,
+  })
+
+  if (!response.ok) {
+    const bodyText = await response.text()
+    throw new Error(
+      `Gmail API request failed: ${response.status} ${response.statusText}${bodyText ? ` - ${bodyText}` : ""}`,
+    )
+  }
+
+  return await response.json() as T
+}
+
+async function gmailFetchWithHandle<T>(
+  handle: CredentialHandle,
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
+  const headers = new Headers(init?.headers)
+  headers.set("Accept", "application/json")
+
+  if (init?.body && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json")
+  }
+
+  const response = await handle.fetch(`${GMAIL_API_BASE}${path}`, {
     ...init,
     headers,
   })
@@ -275,6 +308,66 @@ function extractNewMessageIds(history: GmailHistoryResponse): string[] {
 function isExpiredHistoryCursor(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
   return message.includes("404") || message.includes("notFound")
+}
+
+let googleWorkspace: CredentialHandle | undefined
+
+async function ensureAuth(): Promise<CredentialHandle> {
+  if (!googleWorkspace) {
+    googleWorkspace = await connect("google-workspace")
+  }
+  return googleWorkspace
+}
+
+async function getProfileWithHandle(handle: CredentialHandle): Promise<GmailProfile> {
+  return gmailFetchWithHandle<GmailProfile>(handle, "/profile")
+}
+
+async function getMessageWithHandle(handle: CredentialHandle, messageId: string): Promise<GmailMessage> {
+  return gmailFetchWithHandle<GmailMessage>(handle, `/messages/${encodeURIComponent(messageId)}`)
+}
+
+async function listHistoryWithHandle(
+  handle: CredentialHandle,
+  opts: ListHistoryOptions,
+): Promise<GmailHistoryResponse> {
+  let pageToken: string | undefined
+  const combined: GmailHistoryResponse = { historyId: opts.startHistoryId }
+
+  do {
+    const page = await gmailFetchWithHandle<GmailHistoryResponse>(
+      handle,
+      `/history${toQueryParams({
+        startHistoryId: opts.startHistoryId,
+        maxResults: opts.maxResults,
+        labelId: opts.labelId,
+        historyTypes: opts.historyTypes,
+        pageToken,
+      })}`,
+    )
+
+    combined.historyId = page.historyId
+    combined.history = [...(combined.history ?? []), ...(page.history ?? [])]
+    pageToken = page.nextPageToken
+  } while (pageToken)
+
+  return combined
+}
+
+function isWebhookEvent(value: unknown): value is {
+  connectionId: string
+  event: string
+  provider: string
+  cursor?: string
+  previousCursor?: string
+} {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      typeof (value as { connectionId?: unknown }).connectionId === "string" &&
+      typeof (value as { event?: unknown }).event === "string" &&
+      typeof (value as { provider?: unknown }).provider === "string",
+  )
 }
 
 export async function listMessages(opts?: ListMessagesOptions): Promise<ListMessagesResult> {
@@ -364,12 +457,28 @@ export function startPolling(opts: StartPollingOptions = {}): () => void {
     inFlight = true
 
     try {
-      if (!historyId) {
-        historyId = (await getProfile()).historyId
+      const handle = await ensureAuth()
+      if (
+        opts.standDownWhenPushActive !== false &&
+        await hasRecentPushDelivery(
+          "google-workspace",
+          "message.new",
+          handle.connectionId,
+          opts.pushQuietWindowMs ?? DEFAULT_PUSH_QUIET_WINDOW_MS,
+        )
+      ) {
+        if (!historyId) {
+          historyId = (await getProfileWithHandle(handle)).historyId
+        }
         return
       }
 
-      const history = await listHistory({
+      if (!historyId) {
+        historyId = (await getProfileWithHandle(handle)).historyId
+        return
+      }
+
+      const history = await listHistoryWithHandle(handle, {
         startHistoryId: historyId,
         historyTypes: ["messageAdded"],
       })
@@ -382,7 +491,7 @@ export function startPolling(opts: StartPollingOptions = {}): () => void {
         return
       }
 
-      const messages = await Promise.all(messageIds.map((id) => getMessage(id)))
+      const messages = await Promise.all(messageIds.map((id) => getMessageWithHandle(handle, id)))
       const event: GmailNewMessageEvent = {
         type: "message.new",
         historyId,
@@ -395,7 +504,7 @@ export function startPolling(opts: StartPollingOptions = {}): () => void {
     } catch (error) {
       if (isExpiredHistoryCursor(error)) {
         try {
-          historyId = (await getProfile()).historyId
+          historyId = (await getProfileWithHandle(await ensureAuth())).historyId
         } catch (profileError) {
           await opts.onError?.(profileError)
         }
@@ -419,8 +528,32 @@ export function startPolling(opts: StartPollingOptions = {}): () => void {
   }
 }
 
-export async function onNewMessage(_event: GmailNewMessageEvent): Promise<void> {
-  // Placeholder hook for runtime webhook delivery or caller-provided overrides.
+export async function onNewMessage(_event: GmailNewMessageEvent | unknown): Promise<GmailNewMessageEvent | void> {
+  if (!isWebhookEvent(_event)) {
+    return
+  }
+
+  const historyId = _event.cursor
+  const previousHistoryId = _event.previousCursor
+  if (!historyId || !previousHistoryId) {
+    return
+  }
+
+  const handle = await connect("google-workspace", { connectionId: _event.connectionId })
+  const history = await listHistoryWithHandle(handle, {
+    startHistoryId: previousHistoryId,
+    historyTypes: ["messageAdded"],
+  })
+  const messageIds = extractNewMessageIds(history)
+  const messages = await Promise.all(messageIds.map((id) => getMessageWithHandle(handle, id)))
+
+  return {
+    type: "message.new",
+    historyId,
+    previousHistoryId,
+    messages,
+    rawHistory: history,
+  }
 }
 
 export async function search(

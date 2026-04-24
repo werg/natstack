@@ -1,16 +1,25 @@
+import { connect, type CredentialHandle } from "../../runtime/src/worker/credentials.js";
+import { hasRecentPushDelivery } from "./pushState.js";
+
 const GOOGLE_CALENDAR_BASE_URL = "https://www.googleapis.com/calendar/v3";
+const DEFAULT_PUSH_QUIET_WINDOW_MS = 5 * 60_000;
 
 export const manifest = {
-  providers: ["google"],
+  providers: ["google-workspace"],
   scopes: {
-    google: ["calendar_readonly", "calendar_events"],
+    "google-workspace": ["calendar_readonly", "calendar_events"],
   },
   endpoints: {
-    google: [
+    "google-workspace": [
       { url: "https://www.googleapis.com/calendar/v3/calendars/*", methods: ["GET"] },
       { url: "https://www.googleapis.com/calendar/v3/calendars/*/events", methods: ["GET", "POST"] },
       { url: "https://www.googleapis.com/calendar/v3/calendars/*/events/*", methods: ["GET", "PUT", "DELETE"] },
       { url: "https://www.googleapis.com/calendar/v3/users/me/calendarList", methods: ["GET"] },
+    ],
+  },
+  webhooks: {
+    "google-workspace": [
+      { event: "events.changed", deliver: "onEventsChanged" },
     ],
   },
 } as const;
@@ -70,10 +79,11 @@ export interface ListEventsResult {
 }
 
 export interface StartPollingOptions {
-  accessToken: string;
   calendarId: string;
   syncToken?: string;
   intervalMs?: number;
+  standDownWhenPushActive?: boolean;
+  pushQuietWindowMs?: number;
   timeMin?: string | Date;
   timeMax?: string | Date;
   maxResults?: number;
@@ -82,6 +92,15 @@ export interface StartPollingOptions {
   orderBy?: "startTime" | "updated";
   onEventChange: (event: CalendarEvent) => void | Promise<void>;
   onError?: (error: Error) => void | Promise<void>;
+}
+
+let googleWorkspace: CredentialHandle | undefined;
+
+async function ensureAuth(): Promise<CredentialHandle> {
+  if (!googleWorkspace) {
+    googleWorkspace = await connect("google-workspace");
+  }
+  return googleWorkspace;
 }
 
 class GoogleCalendarApiError extends Error {
@@ -148,19 +167,18 @@ function buildEventsQuery(options: ListEventsOptions = {}): string {
 }
 
 async function calendarFetch<T>(
-  accessToken: string,
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
+  const handle = await ensureAuth();
   const headers = new Headers(init.headers);
-  headers.set("Authorization", `Bearer ${accessToken}`);
   headers.set("Accept", "application/json");
 
   if (init.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
 
-  const response = await fetch(`${GOOGLE_CALENDAR_BASE_URL}${path}`, {
+  const response = await handle.fetch(`${GOOGLE_CALENDAR_BASE_URL}${path}`, {
     ...init,
     headers,
   });
@@ -176,14 +194,13 @@ async function calendarFetch<T>(
   return (await response.json()) as T;
 }
 
-export async function listCalendars(accessToken: string): Promise<CalendarListEntry[]> {
+export async function listCalendars(): Promise<CalendarListEntry[]> {
   const calendars: CalendarListEntry[] = [];
   let pageToken: string | undefined;
 
   do {
     const query = pageToken ? `?${new URLSearchParams({ pageToken }).toString()}` : "";
     const page = await calendarFetch<CalendarListResponse>(
-      accessToken,
       `/users/me/calendarList${query}`,
     );
 
@@ -195,7 +212,6 @@ export async function listCalendars(accessToken: string): Promise<CalendarListEn
 }
 
 export async function listEvents(
-  accessToken: string,
   calendarId: string,
   options: ListEventsOptions = {},
 ): Promise<ListEventsResult> {
@@ -211,7 +227,6 @@ export async function listEvents(
 
     const query = params.toString();
     const page = await calendarFetch<EventsListResponse>(
-      accessToken,
       `/calendars/${encodePathSegment(calendarId)}/events${query ? `?${query}` : ""}`,
     );
 
@@ -226,23 +241,19 @@ export async function listEvents(
 }
 
 export async function getEvent(
-  accessToken: string,
   calendarId: string,
   eventId: string,
 ): Promise<CalendarEvent> {
   return calendarFetch<CalendarEvent>(
-    accessToken,
     `/calendars/${encodePathSegment(calendarId)}/events/${encodePathSegment(eventId)}`,
   );
 }
 
 export async function createEvent(
-  accessToken: string,
   calendarId: string,
   event: CalendarEvent,
 ): Promise<CalendarEvent> {
   return calendarFetch<CalendarEvent>(
-    accessToken,
     `/calendars/${encodePathSegment(calendarId)}/events`,
     {
       method: "POST",
@@ -252,13 +263,11 @@ export async function createEvent(
 }
 
 export async function updateEvent(
-  accessToken: string,
   calendarId: string,
   eventId: string,
   event: CalendarEvent,
 ): Promise<CalendarEvent> {
   return calendarFetch<CalendarEvent>(
-    accessToken,
     `/calendars/${encodePathSegment(calendarId)}/events/${encodePathSegment(eventId)}`,
     {
       method: "PUT",
@@ -268,12 +277,10 @@ export async function updateEvent(
 }
 
 export async function deleteEvent(
-  accessToken: string,
   calendarId: string,
   eventId: string,
 ): Promise<void> {
   await calendarFetch<void>(
-    accessToken,
     `/calendars/${encodePathSegment(calendarId)}/events/${encodePathSegment(eventId)}`,
     {
       method: "DELETE",
@@ -299,7 +306,21 @@ export function startPolling(options: StartPollingOptions): () => void {
 
   const poll = async () => {
     try {
-      const result = await listEvents(options.accessToken, options.calendarId, syncToken
+      const handle = await ensureAuth();
+      if (
+        options.standDownWhenPushActive !== false &&
+        syncToken &&
+        await hasRecentPushDelivery(
+          "google-workspace",
+          "events.changed",
+          handle.connectionId,
+          options.pushQuietWindowMs ?? DEFAULT_PUSH_QUIET_WINDOW_MS,
+        )
+      ) {
+        return;
+      }
+
+      const result = await listEvents(options.calendarId, syncToken
         ? {
             syncToken,
             maxResults: options.maxResults,
@@ -342,3 +363,44 @@ export function startPolling(options: StartPollingOptions): () => void {
     }
   };
 }
+
+export async function onEventsChanged(event: unknown): Promise<{
+  type: "events.changed";
+  connectionId: string;
+  resourceId: string | null;
+  raw: unknown;
+} | void> {
+  if (!isWebhookEvent(event)) {
+    return;
+  }
+
+  return {
+    type: "events.changed",
+    connectionId: event.connectionId,
+    resourceId: event.headers?.["x-goog-resource-id"] ?? null,
+    raw: event,
+  };
+}
+
+function isWebhookEvent(value: unknown): value is {
+  connectionId: string;
+  headers?: Record<string, string>;
+} {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      typeof (value as { connectionId?: unknown }).connectionId === "string",
+  );
+}
+
+export const calendar = {
+  manifest,
+  listCalendars,
+  listEvents,
+  getEvent,
+  createEvent,
+  updateEvent,
+  deleteEvent,
+  startPolling,
+  onEventsChanged,
+} as const;

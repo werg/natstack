@@ -388,6 +388,80 @@ async function main() {
 
   const githubConfig = workspaceConfig.git?.github;
   const tokenManager = new TokenManager();
+  const { CredentialStore } = await import("../../packages/shared/src/credentials/store.js");
+  const { ConsentGrantStore } = await import("../../packages/shared/src/credentials/consent.js");
+  const { AuditLog } = await import("../../packages/shared/src/credentials/audit.js");
+  const { ProviderRegistry } = await import("../../packages/shared/src/credentials/registry.js");
+  const { builtinProviders } = await import("../../packages/shared/src/credentials/providers/index.js");
+  const { WebhookSubscriptionStore } = await import("../../packages/shared/src/webhooks/subscription.js");
+  const { CodeIdentityResolver } = await import("./services/codeIdentityResolver.js");
+  const { createEgressProxy } = await import("./services/egressProxy.js");
+  const { EgressRateLimiterAdapter } = await import("./services/egressRateLimiterAdapter.js");
+  const { EgressCircuitBreakerAdapter } = await import("./services/egressCircuitBreakerAdapter.js");
+  const BetterSqlite = (await import("better-sqlite3")).default;
+
+  const credentialStore = new CredentialStore();
+  const providerRegistry = new ProviderRegistry();
+  for (const manifest of builtinProviders) {
+    providerRegistry.register(manifest);
+  }
+  providerRegistry.applyEnvironment();
+  const consentDb = new BetterSqlite(path.join(statePath, "credentials-consent.sqlite"));
+  const consentStore = new ConsentGrantStore({
+    run(sql: string, params: readonly unknown[] = []) {
+      consentDb.prepare(sql).run(...params);
+    },
+    all<T>(sql: string, params: readonly unknown[] = []) {
+      return consentDb.prepare(sql).all(...params) as T[];
+    },
+    exec(sql: string) {
+      consentDb.exec(sql);
+    },
+  });
+  const auditLog = new AuditLog({ logDir: path.join(statePath, "credentials-audit") });
+  const codeIdentityResolver = new CodeIdentityResolver();
+  const webhookDb = new BetterSqlite(path.join(statePath, "webhooks.sqlite"));
+  const webhookStore = new WebhookSubscriptionStore({
+    run(sql: string, params: unknown[] = []) {
+      webhookDb.prepare(sql).run(...params);
+    },
+    all<T>(sql: string, params: unknown[] = []) {
+      return webhookDb.prepare(sql).all(...params) as T[];
+    },
+    exec(sql: string) {
+      webhookDb.exec(sql);
+    },
+  });
+  webhookStore.init();
+  const { WebhookWatchManager } = await import("./services/webhookWatchManager.js");
+  const webhookWatchManager = new WebhookWatchManager({
+    credentialStore,
+    providerRegistry,
+    webhookStore,
+    relayBaseUrl: process.env["NATSTACK_WEBHOOK_RELAY_URL"],
+  });
+  const { WebhookDeliveryService } = await import("./services/webhookDeliveryService.js");
+  let rpcServerForWebhooks: import("./rpcServer.js").RpcServer | null = null;
+  const webhookDeliveryService = new WebhookDeliveryService({
+    webhookStore,
+    webhookWatchManager,
+    deliverToCaller: async (callerId, handler, event) => {
+      if (!rpcServerForWebhooks) {
+        throw new Error("RPC server is not ready for webhook delivery");
+      }
+      await rpcServerForWebhooks.callTarget(callerId, handler, event);
+    },
+  });
+  const egressProxy = createEgressProxy({
+    credentialStore,
+    consentStore,
+    providerRegistry,
+    auditLog,
+    rateLimiter: new EgressRateLimiterAdapter(),
+    circuitBreaker: new EgressCircuitBreakerAdapter(),
+    codeIdentityResolver,
+  });
+  const egressProxyPort = await egressProxy.start();
 
   // Auto-default devTargetDir: when running from a natstack source checkout,
   // mirror pushes back to `<appRoot>/workspace` so edits made inside ephemeral
@@ -421,19 +495,6 @@ async function main() {
   });
 
   const databaseManager = new DatabaseManager(statePath);
-
-  // One-time cleanup: drop orphaned Nango-era tables from the "oauth" database.
-  {
-    const oauthDbPath = path.join(statePath, ".databases", "oauth.db");
-    if (fs.existsSync(oauthDbPath)) {
-      try {
-        const handle = databaseManager.open("cleanup", "oauth");
-        databaseManager.exec(handle, "DROP TABLE IF EXISTS oauth_tokens");
-        databaseManager.exec(handle, "DROP TABLE IF EXISTS oauth_consent");
-        databaseManager.close(handle);
-      } catch { /* non-fatal */ }
-    }
-  }
 
   // ===========================================================================
   // Unified ServiceContainer — lifecycle + RPC services in one container
@@ -500,7 +561,6 @@ async function main() {
   const { createDbService } = await import("./services/dbService.js");
   const { createTypecheckService } = await import("./services/typecheckService.js");
   const { createWorkerService } = await import("./services/workerService.js");
-  const { createAuthFlowService } = await import("./services/authFlowService.js");
 
   // Resolve testSetup.ts relative to this module's location
   const serverDir = path.dirname(__filename);
@@ -570,7 +630,28 @@ async function main() {
   // ── Credential service ──
   {
     const { createCredentialService } = await import("./services/credentialService.js");
-    container.register(rpcService(createCredentialService()));
+    container.register(rpcService(createCredentialService({
+      credentialStore,
+      consentStore,
+      auditLog,
+      providerRegistry,
+      egressProxy,
+      codeIdentityResolver,
+      webhookStore,
+      webhookWatchManager,
+    })));
+  }
+
+  // ── Webhook ingress + watch inspection ──
+  {
+    const { rpcServiceWithRoutes } = await import("./rpcServiceWithRoutes.js");
+    const { createCredentialWebhooksService } = await import("./services/credentialWebhooksService.js");
+    container.register(
+      rpcServiceWithRoutes(
+        createCredentialWebhooksService(webhookStore, webhookWatchManager, webhookDeliveryService),
+        routeRegistry,
+      ),
+    );
   }
 
   // ── DODispatch (source-scoped HTTP dispatch to Durable Objects) ──
@@ -668,6 +749,7 @@ async function main() {
       // RpcServer needs a panelManager for panel-to-panel RPC auth.
       // We'll wire it lazily after panelService starts.
       const server = new RpcServer({ tokenManager, dispatcher, eventService });
+      rpcServerForWebhooks = server;
       if (ipcChannel) {
         // IPC mode: server binds its own socket (Electron connects directly).
         // Same socket handles panel WS + workerd HTTP POST back-channel.
@@ -760,6 +842,9 @@ async function main() {
             const manifest = node?.manifest as import("@natstack/shared/types").PackageManifest | undefined;
             return manifest?.routes ?? [];
           },
+          getProxyPort: () => egressProxyPort,
+          codeIdentityResolver,
+          cleanupWebhookSubscriptions: (callerId) => webhookDeliveryService.cleanupCaller(callerId),
         });
 
         // Wire push trigger to restart workers on source rebuild.
@@ -838,7 +923,28 @@ async function main() {
         return resp?.workspaces ?? [];
       }
     : undefined;
-  const commonDeps = { container, dispatcher, tokenManager, workspace, workspacePath, workspaceConfig, gitServer, adminToken, centralData: centralData ?? null, args, hostConfig, isIpcMode: !!ipcChannel, eventService, requestRelaunch, requestWorkspaceList };
+  const commonDeps = {
+    container,
+    dispatcher,
+    tokenManager,
+    workspace,
+    workspacePath,
+    workspaceConfig,
+    gitServer,
+    adminToken,
+    centralData: centralData ?? null,
+    args,
+    hostConfig,
+    isIpcMode: !!ipcChannel,
+    eventService,
+    requestRelaunch,
+    requestWorkspaceList,
+    codeIdentityResolver,
+    getEffectiveVersion: async (source: string) => {
+      const buildSystem = container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
+      return buildSystem?.getEffectiveVersion(source) ?? undefined;
+    },
+  };
   await registerPanelServices(commonDeps);
 
   {
@@ -852,38 +958,6 @@ async function main() {
         workerRuntime: workerRuntimeSurface,
       },
     })));
-  }
-
-  // ── authTokens service (storage + silent refresh of AI provider creds) ──
-  // OAuth login flow (browser, callback handling, code→token exchange) lives
-  // on the *client* — Electron main on desktop (loopback redirect URI) and
-  // mobile shell (custom URL scheme). Server only persists what the client
-  // delivers and silently refreshes via the refresh-token grant.
-  {
-    const { AuthTokensServiceImpl, createAuthTokensService } = await import("./services/authService.js");
-    let authTokensDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null = null;
-    let authFlowDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null = null;
-    let authTokensInstance: import("./services/authService.js").AuthTokensServiceImpl | null = null;
-    container.register({
-      name: "authTokens",
-      async start() {
-        authTokensInstance = new AuthTokensServiceImpl({});
-        authTokensDefinition = createAuthTokensService({ authTokens: authTokensInstance });
-        authFlowDefinition = createAuthFlowService({ authTokens: authTokensInstance });
-      },
-      getServiceDefinition() {
-        if (!authTokensDefinition) throw new Error("authTokens service not initialized");
-        return authTokensDefinition;
-      },
-    });
-    container.register({
-      name: "auth",
-      dependencies: ["authTokens"],
-      getServiceDefinition() {
-        if (!authFlowDefinition || !authTokensInstance) throw new Error("auth service not initialized");
-        return authFlowDefinition;
-      },
-    });
   }
 
   if (!ipcChannel) {
@@ -1025,6 +1099,7 @@ async function main() {
       gatewayPort,
     });
   }
+  await webhookWatchManager.reconcileLeases();
 
   if (!ipcChannel) {
     // Standalone: gateway IS the RPC ingress — propagate its port so
@@ -1050,7 +1125,6 @@ async function main() {
       type: "ready",
       rpcPort,
       gitPort: gitServer.getPort(),
-      pubsubPort: 0, // deprecated — channel DOs replace PubSub server
       workerdPort: workerdMgr?.getPort() ?? 0,
       panelHttpPort: panelHttpPort ?? 0,
       gatewayPort,
@@ -1093,21 +1167,19 @@ async function main() {
     const sourceLabel =
       tokenSource === "env" ? " (from NATSTACK_ADMIN_TOKEN)"
       : tokenSource === "persisted" ? " (persisted)"
-      : " (newly generated — copy this into your client; it will survive restarts)";
-    console.log(`  Admin token: ${adminToken}${sourceLabel}`);
-    console.log(`  Token file:  ${tokenFilePath}`);
+      : " (newly generated)";
+    console.log(`  Token file:  ${tokenFilePath}${sourceLabel}`);
     if (tokenSource !== "env") {
       console.log(`  Persisted:   ${getAdminTokenPath()}`);
     }
     // Mint a shell token for mobile/remote shell clients.
     // Shell tokens give callerKind "shell" (not "server"), which is the correct
     // privilege level for browser chrome operations.
-    const shellToken = tokenManager.ensureToken("remote-shell", "shell");
-    console.log(`  Shell token: ${shellToken}`);
+    tokenManager.ensureToken("remote-shell", "shell");
 
     if (args.printToken) {
-      // Machine-readable token output on its own line for scripting
       console.log(`\nNATSTACK_ADMIN_TOKEN=${adminToken}`);
+      console.log(`NATSTACK_SHELL_TOKEN=${tokenManager.getToken("remote-shell")}`);
     }
   }
 
