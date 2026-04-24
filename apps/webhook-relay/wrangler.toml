@@ -1,6 +1,42 @@
 name = "natstack-webhook-relay"
 main = "src/index.ts"
-compatibility_date = "2024-01-01"
+# Recent compatibility date — Web Crypto subtle API + standard fetch.
+compatibility_date = "2024-11-15"
+
+# Deploy as its own Worker (do NOT co-locate with apps/well-known/, which
+# is a static-site Worker bound to a different route).
+#
+#   cd apps/webhook-relay
+#   wrangler deploy
+#
+# After deploy you must:
+#   wrangler kv:namespace create EVENTS_KV
+#   wrangler kv:namespace create NONCES_KV
+#   wrangler kv:namespace create TENANTS_KV
+# and paste the resulting `id` values into the [[kv_namespaces]] blocks
+# below. The placeholder REPLACE_ME values will be rejected by wrangler
+# at deploy-time.
+#
+# Secrets (NEVER put these in this file — use `wrangler secret put`):
+#   wrangler secret put ADMIN_BOOTSTRAP_SECRET
+#     # Required to call POST /admin/tenant/:tenantId/init.
+#
+# account_id and route/zone bindings are environment-specific. Set them
+# under your own [env.<name>] block or via `CLOUDFLARE_ACCOUNT_ID` env.
+# account_id = "# REPLACE_ME"
+# route      = "# REPLACE_ME"
 
 [vars]
-ENVIRONMENT = "production"
+LOG_LEVEL = "info"
+
+[[kv_namespaces]]
+binding = "EVENTS_KV"
+id = "# REPLACE_ME"
+
+[[kv_namespaces]]
+binding = "NONCES_KV"
+id = "# REPLACE_ME"
+
+[[kv_namespaces]]
+binding = "TENANTS_KV"
+id = "# REPLACE_ME"
