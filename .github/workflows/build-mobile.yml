@@ -78,10 +78,14 @@ jobs:
         id: signing
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
+          # We deliberately only write the keystore file and the
+          # NON-SECRET RELEASE_STORE_FILE / RELEASE_KEY_ALIAS pointers to
+          # gradle.properties. The two passwords are passed to Gradle via
+          # ORG_GRADLE_PROJECT_* env vars on the build step itself, so
+          # they never hit disk and cannot be read by a subsequent
+          # compromised step (e.g. a tag-moved upload action) that
+          # inherits the workspace.
           if [ -z "$KEYSTORE_BASE64" ]; then
             echo "has_keystore=false" >> "$GITHUB_OUTPUT"
             echo "No release keystore configured, will build debug APK"
@@ -89,12 +93,24 @@ jobs:
             echo "has_keystore=true" >> "$GITHUB_OUTPUT"
             echo "$KEYSTORE_BASE64" | base64 -d > apps/mobile/android/app/release.keystore
             echo "RELEASE_STORE_FILE=release.keystore" >> apps/mobile/android/gradle.properties
-            echo "RELEASE_STORE_PASSWORD=$KEYSTORE_PASSWORD" >> apps/mobile/android/gradle.properties
-            echo "RELEASE_KEY_ALIAS=$KEY_ALIAS" >> apps/mobile/android/gradle.properties
-            echo "RELEASE_KEY_PASSWORD=$KEY_PASSWORD" >> apps/mobile/android/gradle.properties
+            echo "RELEASE_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" >> apps/mobile/android/gradle.properties
           fi
 
       - name: Build release APK
+        # Passwords are injected via ORG_GRADLE_PROJECT_* so Gradle picks
+        # them up as project properties (`RELEASE_STORE_PASSWORD`,
+        # `RELEASE_KEY_PASSWORD`) without touching gradle.properties.
+        # TODO(security-audit-agent-5): apps/mobile/android/app/build.gradle
+        # currently reads `RELEASE_STORE_PASSWORD` / `RELEASE_KEY_PASSWORD`
+        # via `project.hasProperty(...)`. ORG_GRADLE_PROJECT_<name> env
+        # vars surface as project properties in Gradle, so the existing
+        # build script keeps working unchanged. If the script is ever
+        # refactored to read from `gradle.properties` directly via
+        # `Properties().load(file(...))`, this env-passing approach will
+        # break — keep the two paths in sync.
+        env:
+          ORG_GRADLE_PROJECT_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         working-directory: apps/mobile/android
         run: ./gradlew assembleRelease --no-daemon
 
@@ -107,7 +123,12 @@ jobs:
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/mobile-v')
-        uses: softprops/action-gh-release@v2
+        # Pinned to a commit SHA (resolved from the v2 tag at audit time,
+        # = v2.6.2) so a force-moved major tag cannot silently swap in
+        # malicious action code that would have access to GITHUB_TOKEN
+        # (contents: write) and could tamper with the release artifact.
+        # Refresh via Dependabot.
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: apps/mobile/android/app/build/outputs/apk/release/*.apk
           generate_release_notes: true

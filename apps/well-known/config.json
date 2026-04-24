@@ -1,10 +1,12 @@
 {
   "apple": {
-    "teamId": "XXXXXXXXXX",
-    "bundleId": "com.natstack.app"
+    "_comment_teamId": "TODO(security-audit-wave3-agent-c): user must fill the 10-character Apple Developer Team ID. Find it at https://developer.apple.com/account -> Membership -> Team ID.",
+    "teamId": "TODO_TEAM_ID",
+    "bundleId": "com.natstack.mobile"
   },
   "android": {
-    "packageName": "com.natstack.app",
-    "sha256CertFingerprints": ["TODO:REPLACE_WITH_ACTUAL_FINGERPRINT"]
+    "packageName": "com.natstack.mobile",
+    "_comment_sha256CertFingerprints": "TODO(security-audit-wave3-agent-c): user must run `keytool -list -v -keystore <path-to-release.keystore> -alias <alias>` (typically the keystore referenced by RELEASE_STORE_FILE in apps/mobile/android/app/build.gradle) and paste the SHA256 fingerprint here, colon-separated, uppercase (e.g. `AA:BB:CC:...`). For Play App Signing, also include the upload-key fingerprint AND the Play-managed app-signing key fingerprint from Play Console -> Setup -> App integrity -> App signing.",
+    "sha256CertFingerprints": ["TODO_SHA256_FROM_KEYSTORE"]
   }
 }

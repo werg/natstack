@@ -197,6 +197,10 @@ export class PanelStoreAsync implements PanelStore {
     };
     await Keychain.setGenericPassword("_", JSON.stringify(data), {
       service: this.serviceName,
+      // Panel state may include sensitive panel-init payloads (server-pushed
+      // bootstrap blobs, tokens, etc.); confine to the originating device
+      // and exclude from device backups.
+      accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
     });
   }
 
