@@ -463,7 +463,6 @@ export class RpcServer {
         this.handleToolResult(msg.callId, msg.result as ToolExecutionResult);
         break;
       case "ws:route":
-      case "ws:panel-rpc":
         this.handleRoute(client, msg.targetId, msg.message);
         break;
       case "ws:auth":
@@ -881,9 +880,11 @@ export class RpcServer {
       const result = await this.handleHttpRpc(callerId, callerKind, body);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ result }));
-    } catch (err: any) {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const errorCode = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: err.message, errorCode: err.code }));
+      res.end(JSON.stringify({ error: message, ...(errorCode ? { errorCode } : {}) }));
     }
   }
 

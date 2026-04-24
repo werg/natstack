@@ -34,14 +34,8 @@ import { getAsyncTracking } from "./asyncTracking.js";
 /** Default timeout for async operations: 0 = no timeout */
 export const SANDBOX_DEFAULT_TIMEOUT_MS = 0;
 
-/** @deprecated No longer enforced — kept for backward compatibility */
-export const SANDBOX_MAX_TIMEOUT_MS = 0;
-
 /** Buffer added to tracking context cleanup */
 const TRACKING_CLEANUP_BUFFER_MS = 5_000;
-
-/** @deprecated No longer enforced — kept for backward compatibility */
-export const SANDBOX_FRAMEWORK_TIMEOUT_MS = 0;
 
 // =============================================================================
 // Types

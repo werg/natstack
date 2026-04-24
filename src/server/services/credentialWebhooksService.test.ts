@@ -1,27 +1,35 @@
 import { Readable } from "node:stream";
+import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { describe, expect, it, vi } from "vitest";
 
+import type { WebhookEvent } from "../../../packages/shared/src/webhooks/types.js";
 import { createCredentialWebhooksService } from "./credentialWebhooksService.js";
 
-function createRequest(body: string, headers: Record<string, string> = {}) {
+type TestResponse = ServerResponse & {
+  headers: Record<string, string>;
+  body: string;
+};
+
+function createRequest(body: string, headers: Record<string, string> = {}): IncomingMessage {
   const req = Readable.from([body]) as Readable & { headers: Record<string, string> };
   req.headers = headers;
-  return req as never;
+  return req as unknown as IncomingMessage;
 }
 
-function createResponse() {
-  return {
+function createResponse(): TestResponse {
+  const res = {
     statusCode: 200,
     headers: {} as Record<string, string>,
     body: "",
     setHeader(name: string, value: string) {
-      this.headers[name] = value;
+      res.headers[name] = value;
     },
     end(chunk?: string) {
-      this.body = chunk ?? "";
+      res.body = chunk ?? "";
     },
-  } as never;
+  };
+  return res as unknown as TestResponse;
 }
 
 describe("credentialWebhooksService routes", () => {
@@ -34,7 +42,7 @@ describe("credentialWebhooksService routes", () => {
       leaseId: "lease-1",
       payload: { data: { historyId: "42" } },
       receivedAt: 1,
-    };
+    } satisfies WebhookEvent;
     const delivery = { matched: 1, delivered: 1, failures: [] };
     const { routes } = createCredentialWebhooksService(
       {
@@ -71,7 +79,7 @@ describe("credentialWebhooksService routes", () => {
       leaseId: "lease-1",
       payload: {},
       receivedAt: 1,
-    };
+    } satisfies WebhookEvent;
     const delivery = { matched: 1, delivered: 1, failures: [] };
     const { routes } = createCredentialWebhooksService(
       {

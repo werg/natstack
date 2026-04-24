@@ -154,16 +154,6 @@ export class FsService {
     this.callerContextMap.set(callerId, contextId);
   }
 
-  /** @deprecated Use registerCallerContext */
-  registerPanelContext(panelId: string, contextId: string): void {
-    this.registerCallerContext(panelId, contextId);
-  }
-
-  /** @deprecated Use unregisterCallerContext */
-  unregisterPanelContext(panelId: string): void {
-    this.unregisterCallerContext(panelId);
-  }
-
   // =========================================================================
   // FileHandle cleanup
   // =========================================================================
@@ -171,11 +161,6 @@ export class FsService {
   /** Close all open file handles for a given caller. */
   closeHandlesForCaller(callerId: string): void {
     this._closeHandlesImpl(callerId);
-  }
-
-  /** @deprecated Use closeHandlesForCaller */
-  closeHandlesForPanel(panelId: string): void {
-    this._closeHandlesImpl(panelId);
   }
 
   private _closeHandlesImpl(callerId: string): void {

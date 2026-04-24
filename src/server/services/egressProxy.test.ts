@@ -4,8 +4,9 @@ import { connect as netConnect } from "node:net";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { AuditEntry, Credential, ProviderManifest } from "../../../packages/shared/src/credentials/types.js";
+import type { AuditEntry, ConsentGrant, Credential, ProviderManifest } from "../../../packages/shared/src/credentials/types.js";
 import { EgressProxy } from "./egressProxy.js";
+import type { ResolvedCodeIdentity } from "./codeIdentityResolver.js";
 
 function createProviderManifest(overrides: Partial<ProviderManifest> = {}): ProviderManifest {
   return {
@@ -44,11 +45,7 @@ function createProxy(options: {
     load: (providerId: string, connectionId: string) => Promise<Credential | null> | Credential | null;
     list: (providerId?: string) => Promise<Credential[]> | Credential[];
   };
-  resolveProxyToken?: (token: string) => {
-    callerId: string;
-    repoPath: string;
-    effectiveVersion: string;
-  } | null;
+  resolveProxyToken?: (token: string) => ResolvedCodeIdentity | null;
 }) {
   const manifest = options.manifest ?? createProviderManifest();
   const auditEntries: AuditEntry[] = [];
@@ -73,14 +70,14 @@ function createProxy(options: {
         scopes: ["repo"],
         grantedAt: 1,
         grantedBy: "panel-1",
-      })),
+      } satisfies ConsentGrant)),
     },
     providerRegistry: {
       list: vi.fn(() => [manifest]),
       matchUrl: vi.fn((targetUrl: URL) => targetUrl.host === "api.github.com" ? manifest : undefined),
     },
     auditLog: {
-      append: vi.fn((entry: AuditEntry) => {
+      append: vi.fn(async (entry: AuditEntry) => {
         auditEntries.push(entry);
       }),
     },
@@ -94,9 +91,10 @@ function createProxy(options: {
     codeIdentityResolver: {
       resolveByCallerId: vi.fn(() => ({
         callerId: "worker:1",
+        callerKind: "worker",
         repoPath: "/repo",
         effectiveVersion: "hash-1",
-      })),
+      } satisfies ResolvedCodeIdentity)),
       resolve: vi.fn((token: string) => options.resolveProxyToken?.(token) ?? null),
     },
   });
@@ -225,11 +223,12 @@ describe("EgressProxy", () => {
 
     const { proxy, auditEntries } = createProxy({
       resolveProxyToken: (token) => token === "proxy-token"
-        ? {
-            callerId: "worker:1",
-            repoPath: "/repo",
-            effectiveVersion: "hash-1",
-          }
+          ? {
+              callerId: "worker:1",
+              callerKind: "worker",
+              repoPath: "/repo",
+              effectiveVersion: "hash-1",
+            }
         : null,
     });
     const port = await proxy.start();
@@ -269,11 +268,12 @@ describe("EgressProxy", () => {
     const { proxy } = createProxy({
       manifest,
       resolveProxyToken: (token) => token === "proxy-token"
-        ? {
-            callerId: "worker:1",
-            repoPath: "/repo",
-            effectiveVersion: "hash-1",
-          }
+          ? {
+              callerId: "worker:1",
+              callerKind: "worker",
+              repoPath: "/repo",
+              effectiveVersion: "hash-1",
+            }
         : null,
     });
     const proxyPort = await proxy.start();

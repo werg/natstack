@@ -1564,10 +1564,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
               newChannelId, i, JSON.stringify(messages[i]),
             );
           }
+          this.sql.exec(`DELETE FROM pi_sessions WHERE channel_id = ?`, oldChannelId);
         } catch (err) {
           console.warn(`[AgentWorkerBase] failed to migrate pi_sessions during fork:`, err);
         }
-        this.sql.exec(`DELETE FROM pi_sessions WHERE channel_id = ?`, oldChannelId);
       }
     }
 

@@ -93,7 +93,7 @@ function ModelProviderConfigPage() {
         </h1>
         <p style={{ fontSize: "0.875rem", opacity: 0.75, margin: 0 }}>
           Connect to a subscription service (no per-token API costs) or set
-          environment variables for raw API keys (pay-per-token, dev only).
+          environment variables for raw API keys (pay-per-token).
         </p>
       </header>
 

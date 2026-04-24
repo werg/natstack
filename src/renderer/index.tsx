@@ -24,14 +24,19 @@ async function initializeApp(): Promise<void> {
     );
   } catch (error) {
     console.error("Failed to initialize app:", error);
-    // Show error in DOM
     const container = document.getElementById("app");
     if (container) {
-      container.innerHTML = `<div style="color: red; padding: 20px; font-family: monospace;">
-        <h2>Failed to initialize app</h2>
-        <pre>${error instanceof Error ? error.message : String(error)}</pre>
-        <pre>${error instanceof Error ? error.stack : ""}</pre>
-      </div>`;
+      container.textContent = "";
+      const wrapper = document.createElement("div");
+      wrapper.style.cssText = "color: red; padding: 20px; font-family: monospace;";
+      const heading = document.createElement("h2");
+      heading.textContent = "Failed to initialize app";
+      const msg = document.createElement("pre");
+      msg.textContent = error instanceof Error ? error.message : String(error);
+      const stack = document.createElement("pre");
+      stack.textContent = error instanceof Error ? (error.stack ?? "") : "";
+      wrapper.append(heading, msg, stack);
+      container.appendChild(wrapper);
     }
   }
 }

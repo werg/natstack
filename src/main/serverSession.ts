@@ -136,7 +136,6 @@ export async function establishServerSession(args: {
     ports = {
       rpcPort: remotePort,
       gitPort: remotePort,
-      pubsubPort: 0,
       workerdPort: remotePort,
       gatewayPort: remotePort,
       adminToken,

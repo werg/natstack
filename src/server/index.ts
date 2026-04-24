@@ -496,19 +496,6 @@ async function main() {
 
   const databaseManager = new DatabaseManager(statePath);
 
-  // One-time cleanup: drop orphaned Nango-era tables from the "oauth" database.
-  {
-    const oauthDbPath = path.join(statePath, ".databases", "oauth.db");
-    if (fs.existsSync(oauthDbPath)) {
-      try {
-        const handle = databaseManager.open("cleanup", "oauth");
-        databaseManager.exec(handle, "DROP TABLE IF EXISTS oauth_tokens");
-        databaseManager.exec(handle, "DROP TABLE IF EXISTS oauth_consent");
-        databaseManager.close(handle);
-      } catch { /* non-fatal */ }
-    }
-  }
-
   // ===========================================================================
   // Unified ServiceContainer — lifecycle + RPC services in one container
   // ===========================================================================
@@ -1128,7 +1115,6 @@ async function main() {
       type: "ready",
       rpcPort,
       gitPort: gitServer.getPort(),
-      pubsubPort: 0, // deprecated — channel DOs replace PubSub server
       workerdPort: workerdMgr?.getPort() ?? 0,
       panelHttpPort: panelHttpPort ?? 0,
       gatewayPort,
@@ -1171,21 +1157,19 @@ async function main() {
     const sourceLabel =
       tokenSource === "env" ? " (from NATSTACK_ADMIN_TOKEN)"
       : tokenSource === "persisted" ? " (persisted)"
-      : " (newly generated — copy this into your client; it will survive restarts)";
-    console.log(`  Admin token: ${adminToken}${sourceLabel}`);
-    console.log(`  Token file:  ${tokenFilePath}`);
+      : " (newly generated)";
+    console.log(`  Token file:  ${tokenFilePath}${sourceLabel}`);
     if (tokenSource !== "env") {
       console.log(`  Persisted:   ${getAdminTokenPath()}`);
     }
     // Mint a shell token for mobile/remote shell clients.
     // Shell tokens give callerKind "shell" (not "server"), which is the correct
     // privilege level for browser chrome operations.
-    const shellToken = tokenManager.ensureToken("remote-shell", "shell");
-    console.log(`  Shell token: ${shellToken}`);
+    tokenManager.ensureToken("remote-shell", "shell");
 
     if (args.printToken) {
-      // Machine-readable token output on its own line for scripting
       console.log(`\nNATSTACK_ADMIN_TOKEN=${adminToken}`);
+      console.log(`NATSTACK_SHELL_TOKEN=${tokenManager.getToken("remote-shell")}`);
     }
   }
 

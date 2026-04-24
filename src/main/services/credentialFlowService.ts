@@ -154,11 +154,6 @@ export function createCredentialFlowService(deps: CredentialFlowServiceDeps): Se
   };
 }
 
-async function bindLoopbackCallback(providerId: string): Promise<{
-  server: http.Server;
-  redirectUri: string;
-  callbackPromise: () => Promise<string>;
-}>;
 async function bindLoopbackCallback(
   providerId: string,
   resolveLoopbackBinding?: (providerId: string) => LoopbackBinding,

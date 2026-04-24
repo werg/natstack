@@ -275,7 +275,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           const gitToken = gitServer.getTokenForPanel(panelId);
 
           // FS context registration (skip browser panels)
-          fsService.registerPanelContext(panelId, contextId);
+          fsService.registerCallerContext(panelId, contextId);
 
           // Build env — use pre-computed panel-facing URLs
           const serverRpcToken = rpcToken;
@@ -328,7 +328,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           for (const id of closedIds) {
             tokenManager.revokeToken(id);
             gitServer.revokeTokenForPanel(id);
-            fsService.unregisterPanelContext(id);
+            fsService.unregisterCallerContext(id);
             fsService.closeHandlesForCaller(id);
             codeIdentityResolver?.unregisterCaller(id);
             persistence.archivePanel(id);
@@ -446,7 +446,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
 
           // Update FS context mapping if contextId changed
           if (updates.contextId) {
-            fsService.registerPanelContext(panelId, updates.contextId);
+            fsService.registerCallerContext(panelId, updates.contextId);
           }
           if (updates.source) {
             await upsertPanelIdentity(panelId, updates.source);
@@ -574,7 +574,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           for (const id of closedIds) {
             tokenManager.revokeToken(id);
             gitServer.revokeTokenForPanel(id);
-            fsService.unregisterPanelContext(id);
+            fsService.unregisterCallerContext(id);
             fsService.closeHandlesForCaller(id);
             codeIdentityResolver?.unregisterCaller(id);
             persistence.archivePanel(id);
@@ -615,7 +615,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           const rpcToken = tokenManager.getToken(aboutPanelId)!;
           const gitToken = gitServer.getTokenForPanel(aboutPanelId);
 
-          fsService.registerPanelContext(aboutPanelId, contextId);
+          fsService.registerCallerContext(aboutPanelId, contextId);
 
           const gitBaseUrl = urlConfig.gitBaseUrl;
           const env = buildPanelEnv({

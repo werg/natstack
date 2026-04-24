@@ -243,6 +243,10 @@ function proxyRequest(
     },
     (proxyRes) => {
       res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
+      proxyRes.on("error", (err) => {
+        log.warn(`Proxy response stream error: ${err.message}`);
+        try { res.end(); } catch { /* already closed */ }
+      });
       proxyRes.pipe(res);
     },
   );
