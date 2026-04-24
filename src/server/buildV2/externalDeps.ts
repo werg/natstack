@@ -107,6 +107,30 @@ export async function ensureExternalDeps(
     return "";
   }
 
+  // Reject any version specifier that npm would interpret as a non-registry
+  // source (file:, git+ssh://, https://, github:, npm:, local paths). Panel
+  // / worker manifests can pass arbitrary `version` strings here through
+  // the package.json transitive-collection path; without this guard, a
+  // hostile manifest could `npm install` from any URL or copy any
+  // user-readable file path into the build cache. See `buildNpmLibrary`'s
+  // `validateNpmVersion` for the authoritative shape allow-list.
+  // TODO: route legitimate non-registry installs through a separate,
+  // shell-only API rather than relaxing this regex.
+  const NPM_DEP_VERSION_RE = /^(\^|~|>=|<=|=|>|<)?\d+\.\d+\.\d+(-[\w.+-]+)?(\+[\w.+-]+)?$/;
+  for (const [name, version] of Object.entries(deps)) {
+    if (typeof version !== "string" || version.length === 0 || version.length > 64) {
+      throw new Error(`Invalid npm version for ${name}: ${version}`);
+    }
+    if (version === "latest" || version === "*") continue;
+    if (version.startsWith("workspace:")) continue;
+    if (!NPM_DEP_VERSION_RE.test(version)) {
+      throw new Error(
+        `Refusing non-registry npm specifier for ${name}: "${version}". ` +
+        `Only strict semver, "latest", or "*" allowed.`,
+      );
+    }
+  }
+
   const key = hashDeps(deps);
   const cacheDir = path.join(getExternalDepsBaseDir(), key);
   const sentinelPath = path.join(cacheDir, ".ready");
@@ -117,8 +141,11 @@ export async function ensureExternalDeps(
     return nodeModulesDir;
   }
 
-  // Install to temp dir, then atomically rename
-  const tmpDir = `${cacheDir}.tmp.${Date.now()}.${process.pid}`;
+  // Install to temp dir, then atomically rename. Use crypto.randomBytes for
+  // an unpredictable name; predictable names invite local symlink races
+  // where another process pre-creates `${cacheDir}.tmp.<guessed-ms>.<pid>`
+  // as a symlink to a writable target.
+  const tmpDir = `${cacheDir}.tmp.${crypto.randomBytes(16).toString("hex")}`;
   fs.mkdirSync(tmpDir, { recursive: true });
 
   // Write a minimal package.json for installation

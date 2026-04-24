@@ -7,6 +7,7 @@
  */
 
 import * as path from "path";
+import * as fs from "fs";
 import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { PanelPersistence } from "@natstack/shared/db/panelPersistence";
@@ -407,6 +408,29 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           const updatedSnapshot = { ...existing.snapshot };
           if (updates.contextId) updatedSnapshot.contextId = updates.contextId;
           if (updates.source) {
+            // SECURITY (#9 in audit): validate the source resolves
+            // *inside* the workspace root. Without this an absolute path
+            // or a `..`-traversal source would let a panel point itself
+            // at any file the server can read. Browser sources
+            // (`browser:<url>`) and other non-filesystem schemes are
+            // accepted as-is — only path-shaped sources are checked.
+            if (!/^[a-z]+:/i.test(updates.source)) {
+              const rootResolved = (() => {
+                try { return fs.realpathSync(workspacePath); }
+                catch { return path.resolve(workspacePath); }
+              })();
+              const candidate = path.resolve(rootResolved, updates.source);
+              // realpath the candidate when it exists so symlinks cannot
+              // dodge the prefix check.
+              let canonical = candidate;
+              try { canonical = fs.realpathSync(candidate); }
+              catch { /* file may not exist yet — fall back to candidate */ }
+              const rootWithSep = rootResolved.endsWith(path.sep) ? rootResolved : rootResolved + path.sep;
+              if (canonical !== rootResolved && !canonical.startsWith(rootWithSep)) {
+                throw new Error(`updateContext source escapes workspace root: ${updates.source}`);
+              }
+            }
+
             updatedSnapshot.source = updates.source;
             // Sync manifest-derived snapshot fields (autoArchiveWhenEmpty)
             try {

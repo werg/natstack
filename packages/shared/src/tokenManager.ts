@@ -1,5 +1,26 @@
-import { randomBytes } from "crypto";
+import { randomBytes, timingSafeEqual } from "crypto";
 import type { CallerKind } from "./serviceDispatcher.js";
+
+/**
+ * Constant-time string comparison.
+ *
+ * Compare two strings without leaking length-or-value information through
+ * timing side-channels. Uses Node's `crypto.timingSafeEqual` once the inputs
+ * have been encoded to equal-length buffers. A length mismatch returns false
+ * directly — `timingSafeEqual` itself throws on length mismatch, and the
+ * length of an admin token is not itself a secret in this codebase (all
+ * admin tokens are 64-char hex), so the early-out does not leak.
+ *
+ * Use this for every admin-token / management-token / bearer-token compare
+ * where the right-hand operand is server-side state. Plain `===` /
+ * `!==` is forbidden for such compares (audit finding #33).
+ */
+export function constantTimeStringEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
 
 /**
  * Global token manager for panel/worker/shell authentication.
@@ -128,9 +149,17 @@ export class TokenManager {
 
   /**
    * Validate an admin token.
+   *
+   * Default-deny when no admin token is configured (audit finding #25):
+   * we used to return false here too, but only when `token` was set; now we
+   * also reject empty/missing presented tokens explicitly.
+   *
+   * Comparison is constant-time (audit finding #33).
    */
   validateAdminToken(token: string): boolean {
-    return this.adminToken !== null && token === this.adminToken;
+    if (this.adminToken === null) return false;
+    if (typeof token !== "string" || token.length === 0) return false;
+    return constantTimeStringEqual(token, this.adminToken);
   }
 
   setPanelParent(panelId: string, parentId: string | null): void {

@@ -13,6 +13,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import * as crypto from "crypto";
 import { getUserDataPath } from "@natstack/env-paths";
 
 // ---------------------------------------------------------------------------
@@ -171,8 +172,11 @@ export function put(
   const dir = getBuildDir(key);
   const metadataPath = path.join(dir, "metadata.json");
 
-  // Write to temp first, then rename atomically
-  const tmpDir = `${dir}.tmp.${Date.now()}.${process.pid}`;
+  // Write to temp first, then rename atomically. Use crypto.randomBytes for
+  // an unpredictable name — `${Date.now()}.${process.pid}` is guessable and
+  // invites local symlink races (a co-tenant pre-creates the tmp path as a
+  // symlink before our mkdirSync, redirecting our writes).
+  const tmpDir = `${dir}.tmp.${crypto.randomBytes(16).toString("hex")}`;
 
   fs.mkdirSync(tmpDir, { recursive: true });
 

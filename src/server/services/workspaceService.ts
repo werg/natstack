@@ -135,15 +135,22 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): ServiceDefin
       getConfig: { args: z.tuple([]) },
       // Catalog-dependent write methods (conditionally registered above).
       ...catalogMethods,
-      // Always-available write methods.
-      select: { args: z.tuple([z.string()]) },
+      // SECURITY (#33, T2 in audit summary): `select` triggers an
+      // app.relaunch() — disruptive and reachable only via shell UI.
+      select: {
+        args: z.tuple([z.string()]),
+        policy: { allowed: ["shell"] },
+      },
       setInitPanels: { args: z.tuple([z.array(z.object({
         source: z.string(),
         stateArgs: z.record(z.unknown()).optional(),
       }))]) },
-      // Internal — used by other server services for low-level config writes.
-      // Not part of the runtime client surface.
-      setConfigField: { args: z.tuple([z.string(), z.unknown()]) },
+      // SECURITY: arbitrary config-field writes — server-internal use
+      // only. Panels MUST NOT mutate workspace config fields directly.
+      setConfigField: {
+        args: z.tuple([z.string(), z.unknown()]),
+        policy: { allowed: ["shell", "server"] },
+      },
       // Agent resource loading — read AGENTS.md and skill definitions directly
       // from the workspace source tree. Kept server-side because they touch
       // the filesystem; panels/workers call these over the RPC transport.

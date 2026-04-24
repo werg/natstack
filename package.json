@@ -65,10 +65,11 @@
       "node-git-server",
       "better-sqlite3"
     ],
-    "//overrides": "react-native 0.79 peerDeps react ^19.0.0. Pinning here prevents hoisted React 18 (pulled in transitively by workspace deps) from shadowing RN's requirement in the mobile bundle. Revisit when bumping RN.",
+    "//overrides": "react-native 0.79 peerDeps react ^19.0.0. Pinning here prevents hoisted React 18 (pulled in transitively by workspace deps) from shadowing RN's requirement in the mobile bundle. Revisit when bumping RN. protobufjs ^7.5.5 patches RCE GHSA-xq3m-2v4x-88gg reachable via @google/genai → pi-ai.",
     "overrides": {
       "react": "19.0.0",
-      "react-dom": "19.0.0"
+      "react-dom": "19.0.0",
+      "protobufjs": "^7.5.5"
     }
   },
   "devDependencies": {

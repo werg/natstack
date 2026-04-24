@@ -24,7 +24,9 @@ export function createWorkerService(deps: {
   return {
     name: "workers",
     description: "Worker DO operations (call, list)",
-    policy: { allowed: ["server", "panel", "worker"] },
+    // Service-level policy admits the read/list surface to all kinds.
+    // Mutating callDO is tightened per-method below.
+    policy: { allowed: ["shell", "server", "panel", "worker"] },
     methods: {
       listSources: {
         description: "List available worker sources with durable object classes",
@@ -34,6 +36,11 @@ export function createWorkerService(deps: {
         description: "Get DOs subscribed to a channel",
         args: z.tuple([z.string()]), // channelId
       },
+      // SECURITY (#22 in audit report): callDO dispatches an arbitrary
+      // method on an arbitrary DO. Reachable from a panel today this
+      // gives any panel cross-worker code execution. Restrict to shell
+      // (UI-driven) and server (internal orchestration). Worker-to-worker
+      // calls go through the dispatcher directly, not via this RPC.
       callDO: {
         description: "Call a method on a DO",
         args: z.tuple([
@@ -42,6 +49,7 @@ export function createWorkerService(deps: {
           z.string(), // objectKey
           z.string(), // method
         ]).rest(z.unknown()), // ...args
+        policy: { allowed: ["shell", "server"] },
       },
     },
     handler: async (_ctx, method, args) => {

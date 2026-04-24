@@ -9,6 +9,7 @@
 import { z } from "zod";
 import type { ServiceDefinition, MethodDef } from "./serviceDefinition.js";
 import type { ServicePolicy } from "./servicePolicy.js";
+import { checkServiceAccess } from "./servicePolicy.js";
 
 /**
  * Normalize an args array for wire compatibility with a Zod tuple schema.
@@ -94,6 +95,23 @@ export class ServiceError extends Error {
 }
 
 /**
+ * Structured access-denied error thrown when a caller's `callerKind` is not
+ * permitted by a service / method policy. Carries `code: "EACCES"` so transports
+ * can map this to a 403 / structured RPC error code rather than a bare string.
+ */
+export class ServiceAccessError extends ServiceError {
+  constructor(service: string, method: string, callerKind: CallerKind, message?: string) {
+    super(
+      service,
+      method,
+      message ?? `Service '${service}.${method}' is not accessible to ${callerKind} callers`,
+      "EACCES",
+    );
+    this.name = "ServiceAccessError";
+  }
+}
+
+/**
  * Service dispatcher — all services registered via registerService().
  */
 export class ServiceDispatcher {
@@ -110,13 +128,26 @@ export class ServiceDispatcher {
 
   /**
    * Register a service with full definition (schema, policy, handler).
+   *
+   * If a service with the same name was already registered, the previous
+   * definition is replaced and a warning is logged (audit finding #35 /
+   * 02-Low-15: silent overrides should be audible). The previous
+   * definition is returned so callers can detect the replacement.
    */
-  registerService(def: ServiceDefinition): void {
-    if (this.handlers.has(def.name) || this.definitions.has(def.name)) {
-      console.warn(`[ServiceDispatcher] Overwriting handler for service: ${def.name}`);
+  registerService(def: ServiceDefinition): ServiceDefinition | undefined {
+    const previous = this.definitions.get(def.name);
+    if (previous || this.handlers.has(def.name)) {
+      // Keep the word "Overwriting" so existing audits/log queries still
+      // match. The new "Replacing" verb makes the audit-finding-#35 fix
+      // (warn-then-replace-and-return-previous) visible.
+      console.warn(
+        `[ServiceDispatcher] Overwriting handler for service: ${def.name} ` +
+        `(replacing previous registration; description: ${previous?.description ?? "<unknown>"})`,
+      );
     }
     this.definitions.set(def.name, def);
     this.handlers.set(def.name, def.handler);
+    return previous;
   }
 
   /**
@@ -135,6 +166,23 @@ export class ServiceDispatcher {
     const handler = this.handlers.get(service);
     if (!handler) {
       throw new ServiceError(service, method, "Unknown service");
+    }
+
+    // Single-choke-point policy enforcement (audit findings #3 / #18).
+    // Every dispatch path — Electron IPC, WS, HTTP-RPC, IpcDispatcher,
+    // serverClient forward — flows through here, so this is the one place
+    // policy MUST be checked. Transports may also keep their own
+    // checkServiceAccess() call as defense-in-depth, but this is the
+    // load-bearing check.
+    try {
+      checkServiceAccess(service, ctx.callerKind, this, method);
+    } catch (error) {
+      throw new ServiceAccessError(
+        service,
+        method,
+        ctx.callerKind,
+        error instanceof Error ? error.message : String(error),
+      );
     }
 
     // Validate args against schema if method has a definition

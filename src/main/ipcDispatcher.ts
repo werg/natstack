@@ -84,7 +84,20 @@ export class IpcDispatcher {
     deps.eventService.registerSubscriber("shell", shellSubscriber);
 
     ipcMain.on("natstack:rpc:send", (event, targetId: string, message: unknown) => {
-      this.handleMessage(event.sender, "shell", targetId, message as RpcMessage);
+      // Derive callerKind from the IPC sender's webContents id (audit #19).
+      // Only the shell webContents may speak this generic relay channel
+      // ("shell" callerKind). Every other webContents (panels, browser
+      // panels, autofill overlay, devtools) is rejected outright.
+      const shellWc = this.deps.getShellWebContents();
+      const isShell = !!shellWc && !shellWc.isDestroyed() && shellWc.id === event.sender.id;
+      if (!isShell) {
+        console.warn(
+          `[IpcDispatcher] Rejecting natstack:rpc:send from non-shell sender ` +
+          `(webContentsId=${event.sender.id})`,
+        );
+        return;
+      }
+      this.handleMessage(event.sender, "shell", "shell", targetId, message as RpcMessage);
     });
   }
 
@@ -113,6 +126,7 @@ export class IpcDispatcher {
   private async handleMessage(
     sender: WebContents,
     callerId: string,
+    callerKind: CallerKind,
     targetId: string,
     message: RpcMessage,
   ): Promise<void> {
@@ -138,8 +152,9 @@ export class IpcDispatcher {
           // Forward to server process via serverClient
           result = await this.deps.serverClient.call(service, method, req.args);
         } else {
-          // Dispatch locally to Electron services
-          const ctx = { callerId, callerKind: "shell" as const };
+          // Dispatch locally to Electron services. The dispatcher itself
+          // enforces policy via checkServiceAccess (single choke-point).
+          const ctx = { callerId, callerKind };
           result = await this.deps.dispatcher.dispatch(ctx, service, method, req.args);
         }
         this.sendResponse(sender, req.requestId, {

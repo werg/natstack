@@ -174,11 +174,15 @@ describe("OAuth flow e2e", () => {
       credential.providerId,
       `${credential.connectionId}.json`,
     );
-    const persistedCredential = JSON.parse(await readFile(persistedPath, "utf8")) as Credential;
+    // Audit finding #10: the on-disk file is now an encrypted envelope, not
+    // plaintext credential JSON. Verify the envelope shape on disk and rely on
+    // store.load() for the round-trip equality check.
+    const persistedRaw = JSON.parse(await readFile(persistedPath, "utf8")) as { v?: string; ct?: string };
+    expect(persistedRaw.v).toMatch(/^v1-/);
+    expect(typeof persistedRaw.ct).toBe("string");
 
     await expect(store.load(credential.providerId, credential.connectionId)).resolves.toEqual(credential);
     await expect(store.list(credential.providerId)).resolves.toEqual([credential]);
-    expect(persistedCredential).toEqual(credential);
 
     const apiUrl = `${manifest.apiBase[0]}/v1/me`;
     const apiResponse = await fetch(apiUrl, {

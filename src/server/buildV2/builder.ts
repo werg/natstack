@@ -1531,6 +1531,39 @@ function validateNpmSpecifier(specifier: string): void {
   }
 }
 
+/**
+ * Validate that a version string is a strict semver-shaped registry
+ * specifier. Rejects everything that npm would otherwise interpret as a
+ * non-registry source (`file:`, `git+ssh://`, `https://`, `github:`,
+ * `npm:`, local paths, tarball URLs). Without this check, a worker /
+ * panel that reaches `getBuildNpm` can pass arbitrary `version` values
+ * straight into `npm install`, letting it fetch from attacker-controlled
+ * URLs or copy local filesystem paths into the build cache.
+ *
+ * Allowed shapes:
+ *   1.2.3                exact
+ *   ^1.2.3 / ~1.2.3      caret / tilde
+ *   >=1.2.3 etc.         comparator
+ *   1.2.3-rc.1+build.5   pre-release / build metadata
+ *   latest / *           dist-tag / wildcard (registry only)
+ *
+ * TODO: if a legitimate use case for non-registry installs ever surfaces,
+ * route it through a separate, shell-only RPC that takes a strongly-typed
+ * `{ kind: "git" | "file"; …}` argument rather than a free-form string.
+ */
+const SEMVER_RE = /^(\^|~|>=|<=|=|>|<)?\d+\.\d+\.\d+(-[\w.+-]+)?(\+[\w.+-]+)?$/;
+function validateNpmVersion(version: string): void {
+  if (typeof version !== "string" || version.length === 0 || version.length > 64) {
+    throw new Error(`Invalid npm version: ${version}`);
+  }
+  if (version === "latest" || version === "*") return;
+  if (SEMVER_RE.test(version)) return;
+  throw new Error(
+    `Invalid npm version "${version}". Only strict semver, "latest", or "*" are allowed; ` +
+    `file:, git+, http(s)://, github:, npm:, and local-path specifiers are rejected.`,
+  );
+}
+
 /** Cache key for npm library builds */
 function npmBuildKey(specifier: string, version: string, externals: string[]): string {
   const hash = createHash("sha256")
@@ -1561,6 +1594,7 @@ export async function buildNpmLibrary(
   externals: string[],
 ): Promise<string> {
   validateNpmSpecifier(specifier);
+  validateNpmVersion(version);
 
   const buildKey = npmBuildKey(specifier, version, externals);
 

@@ -158,7 +158,7 @@ describe("AutofillManager", () => {
       manager.attachToWebContents(1, wc);
       manager.detachFromWebContents(1, wc);
 
-      expect(wc.off.mock.calls.length).toBe(5); // dom-ready, did-navigate, in-page, will-navigate, frame-load
+      expect(wc.off.mock.calls.length).toBe(4); // dom-ready, did-navigate, in-page, will-navigate
     });
 
     it("clears pending credentials on detach", () => {

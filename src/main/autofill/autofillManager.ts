@@ -10,7 +10,7 @@
 
 import { ipcMain } from "electron";
 import { z } from "zod";
-import type { WebContents, WebFrameMain } from "electron";
+import type { WebContents } from "electron";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { EventService } from "@natstack/shared/eventsService";
 import type { ViewManager } from "../viewManager.js";
@@ -18,8 +18,6 @@ import type { StoredPassword } from "@natstack/browser-data";
 import {
   AUTOFILL_WORLD_ID,
   getContentScript,
-  getIframeContentScript,
-  getFrameScanScript,
   getPullStateScript,
   getReadSnapshotScript,
   getFillScript,
@@ -83,10 +81,11 @@ interface AutofillPanelState {
   hasPendingSnapshot: boolean;
   /** Whether auto-fill has already been performed for the current field set */
   hasAutoFilled: boolean;
-  /** Sub-frame that contains the login form (null = main frame) */
-  activeFrame: WebFrameMain | null;
-  /** Whether sub-frames have been scanned for this page load */
-  iframesScanned: boolean;
+  /**
+   * Sub-frame origins for which we've already logged a "rejected" warning
+   * during the current page load. Reset on navigation. Audit S3.
+   */
+  warnedSubFrameOrigins: Set<string>;
 }
 
 interface PendingCredential {
@@ -126,10 +125,37 @@ export class AutofillManager {
       onDismiss: () => this.hideOverlay(),
     });
 
-    // Handle argless ping from content script
+    // Handle argless ping from content script.
+    // Sender attribution: only accept pings from webContents that autofill
+    // is currently attached to (i.e., tracked in panelState). Otherwise any
+    // panel could spoof a ping to drive credential matching for itself or
+    // other panels. Audit finding 01-HIGH-2 / #44.
+    //
+    // Top-frame-only policy (audit S3): the ping must originate from the
+    // webContents' main frame. Sub-frame pings (e.g. from a stale iframe
+    // injection prior to deployment of this policy, or from a future
+    // preload that ends up exposed in sub-frames) are dropped with a
+    // single warn per (page-load, sub-frame-origin).
     ipcMain.on("natstack:autofill:ping", (event) => {
       const wcId = event.sender.id;
-      void this.handlePing(wcId, event.sender);
+      const state = this.panelState.get(wcId);
+      if (!state) {
+        log.warn(` Rejected autofill:ping from unattached sender id=${wcId}`);
+        return;
+      }
+      const senderFrame = event.senderFrame;
+      const wc = event.sender;
+      if (senderFrame && senderFrame !== wc.mainFrame) {
+        const subOrigin = senderFrame.origin || senderFrame.url || "<unknown>";
+        if (!state.warnedSubFrameOrigins.has(subOrigin)) {
+          state.warnedSubFrameOrigins.add(subOrigin);
+          log.warn(
+            ` Autofill sub-frame request ignored — top-frame-only policy. wc=${wcId} subOrigin=${subOrigin}`,
+          );
+        }
+        return;
+      }
+      void this.handlePing(wcId, wc);
     });
   }
 
@@ -151,8 +177,7 @@ export class AutofillManager {
       hasInjected: false,
       hasPendingSnapshot: false,
       hasAutoFilled: false,
-      activeFrame: null,
-      iframesScanned: false,
+      warnedSubFrameOrigins: new Set<string>(),
     });
 
     // Inject content script on dom-ready and resolve origin if needed
@@ -195,8 +220,7 @@ export class AutofillManager {
       state.hasInjected = false;
       state.fields = undefined;
       state.hasAutoFilled = false;
-      state.activeFrame = null;
-      state.iframesScanned = false;
+      state.warnedSubFrameOrigins.clear();
       if (this.activeOverlayWcId === webContentsId) {
         this.hideOverlay();
       }
@@ -222,21 +246,16 @@ export class AutofillManager {
     };
     webContents.on("will-navigate", willNavigateHandler);
 
-    // Scan sub-frames for login forms when they finish loading
-    const frameLoadHandler = (_event: Electron.Event, isMainFrame: boolean) => {
-      if (isMainFrame) return;
-      const state = this.panelState.get(webContentsId);
-      if (!state || state.fields) return; // already found fields in main frame
-      void this.scanSubFrames(webContentsId, webContents);
-    };
-    webContents.on("did-frame-finish-load", frameLoadHandler);
+    // Top-frame-only policy (audit S3): we no longer attach a
+    // did-frame-finish-load handler, because the only thing it did was
+    // enumerate sub-frames and inject scanning/fill scripts into them.
+    // Sub-frame login flows simply do not autofill.
 
     // Store handlers for cleanup
     (webContents as any).__autofillHandlers = {
       domReady: domReadyHandler,
       didNavigate: didNavigateHandler,
       inPageNav: inPageNavHandler,
-      frameLoad: frameLoadHandler,
       willNavigate: willNavigateHandler,
     };
   }
@@ -266,7 +285,6 @@ export class AutofillManager {
         webContents.off("did-navigate", handlers.didNavigate);
         webContents.off("did-navigate-in-page", handlers.inPageNav);
         webContents.off("will-navigate", handlers.willNavigate);
-        if (handlers.frameLoad) webContents.off("did-frame-finish-load", handlers.frameLoad);
         delete (webContents as any).__autofillHandlers;
       }
     }
@@ -345,55 +363,19 @@ export class AutofillManager {
   }
 
   /**
-   * Execute a script in the active frame (main frame isolated world or sub-frame main world).
+   * Execute a script in the top frame only, in the autofill isolated world.
+   *
+   * Top-frame-only policy (audit S3): autofill never injects credentials
+   * (or fill-related state queries) into sub-frames. The `_state` parameter
+   * is preserved for call-site symmetry with the historical signature but
+   * is no longer used to dispatch onto a sub-frame.
    */
-  private async executeInActiveFrame(wc: WebContents, state: AutofillPanelState, code: string): Promise<unknown> {
-    if (state.activeFrame && !state.activeFrame.isDestroyed()) {
-      return state.activeFrame.executeJavaScript(code);
-    }
+  private async executeInActiveFrame(
+    wc: WebContents,
+    _state: AutofillPanelState,
+    code: string,
+  ): Promise<unknown> {
     return wc.executeJavaScriptInIsolatedWorld(AUTOFILL_WORLD_ID, [{ code }]);
-  }
-
-  /**
-   * Scan sub-frames for login fields and inject content script if found.
-   */
-  private async scanSubFrames(wcId: number, wc: WebContents): Promise<void> {
-    const state = this.panelState.get(wcId);
-    if (!state || state.fields || wc.isDestroyed()) return;
-
-    try {
-      const mainFrame = wc.mainFrame;
-      if (!mainFrame || mainFrame.isDestroyed()) return;
-
-      for (const frame of mainFrame.framesInSubtree) {
-        if (frame === mainFrame || frame.isDestroyed()) continue;
-
-        try {
-          const hasFields = await frame.executeJavaScript(getFrameScanScript());
-          if (hasFields) {
-            // Inject the iframe content script
-            await frame.executeJavaScript(getIframeContentScript());
-            state.activeFrame = frame;
-            state.iframesScanned = true;
-            log.verbose(` Found login form in sub-frame of wc ${wcId}`);
-
-            // Pull state immediately from the iframe
-            const pulled = await frame.executeJavaScript(getPullStateScript()) as PulledState | null;
-            if (pulled?.fields) {
-              // Process like a normal ping with these fields
-              await this.processPulledState(wcId, wc, state, pulled);
-            }
-            return;
-          }
-        } catch {
-          // Frame may have been destroyed or be cross-origin restricted
-        }
-      }
-
-      state.iframesScanned = true;
-    } catch {
-      // mainFrame access can fail if webContents is being destroyed
-    }
   }
 
   private async handlePing(wcId: number, wc: WebContents): Promise<void> {
@@ -401,7 +383,8 @@ export class AutofillManager {
     if (!state) return;
     if (wc.isDestroyed()) return;
 
-    // Pull state from the active frame (main or sub-frame)
+    // Pull state from the top frame's isolated world only (audit S3:
+    // top-frame-only policy — sub-frames are never scanned or injected).
     let pulled: PulledState;
     try {
       const results = await this.executeInActiveFrame(wc, state, getPullStateScript());
@@ -411,12 +394,6 @@ export class AutofillManager {
     }
 
     if (!pulled) return;
-
-    // If main frame has no fields and we haven't scanned sub-frames yet, do so
-    if (!pulled.fields && !state.fields && !state.iframesScanned) {
-      await this.scanSubFrames(wcId, wc);
-      return; // scanSubFrames handles processing if fields are found
-    }
 
     await this.processPulledState(wcId, wc, state, pulled);
   }
@@ -519,6 +496,13 @@ export class AutofillManager {
     const state = this.panelState.get(wcId);
     if (!state) return;
 
+    // Origin verification (audit S3): re-derive the live top-frame origin
+    // immediately before the fill and confirm it still matches both the
+    // origin we matched the credential against and the credential's saved
+    // origin. Protects against a navigation race between credential lookup
+    // and the actual injection.
+    if (!this.verifyTopFrameOriginForFill(wc, state, credential)) return;
+
     const script = getFillScript(
       fields.usernameSelector,
       fields.passwordSelector,
@@ -544,6 +528,11 @@ export class AutofillManager {
   ): Promise<void> {
     if (wc.isDestroyed()) return;
 
+    // Origin verification (audit S3): same race protection as fillCredential.
+    // Even though no password is injected here, the username may itself be
+    // sensitive (e.g. an email used as account identifier).
+    if (!this.verifyTopFrameOriginForFill(wc, state, credential)) return;
+
     const script = getFillScript(
       usernameSelector,
       "___nonexistent___",
@@ -556,6 +545,42 @@ export class AutofillManager {
     } catch (err) {
       log.verbose(` Username fill failed: ${err}`);
     }
+  }
+
+  /**
+   * Verify that the top frame's *live* origin still matches both the
+   * credential's saved origin and the panel state's matched origin.
+   *
+   * Audit S3: protects against navigation races where credentials were
+   * matched against one origin but the top frame has since navigated to
+   * another. Returns true when fill should proceed.
+   *
+   * `wcId` is intentionally unused — passed by callers for symmetry.
+   */
+  private verifyTopFrameOriginForFill(
+    wc: WebContents,
+    state: AutofillPanelState,
+    credential: StoredPassword,
+  ): boolean {
+    const liveOrigin = this.deriveOrigin(wc);
+    if (!liveOrigin) {
+      log.warn(" Aborting fill — could not derive live top-frame origin.");
+      return false;
+    }
+    if (liveOrigin !== state.origin) {
+      log.warn(
+        ` Aborting fill — top frame navigated since credential match (matched=${state.origin} live=${liveOrigin}).`,
+      );
+      return false;
+    }
+    const credentialOrigin = this.originFromUrl(credential.origin_url);
+    if (!credentialOrigin || credentialOrigin !== liveOrigin) {
+      log.warn(
+        ` Aborting fill — credential origin does not match live top frame (cred=${credentialOrigin ?? "<invalid>"} live=${liveOrigin}).`,
+      );
+      return false;
+    }
+    return true;
   }
 
   private showOverlay(

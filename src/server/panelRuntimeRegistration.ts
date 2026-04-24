@@ -219,6 +219,13 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
         const bindContextSchema = { args: z.tuple([z.string()]) };
         // `mktemp` takes an optional prefix string; no leading path arg.
         const mktempSchema = { args: z.tuple([z.string().optional()]) };
+        // Per-method policy for sandbox-escape primitives. `symlink` and
+        // `chown` were Wave-1 audit findings (#38, #39): even though the
+        // implementation in `fsService.ts` was hardened (sandbox-target
+        // resolution, lstat parent walk), exposing them to `panel` /
+        // `worker` callers gives attackers a TOCTOU primitive. Restrict
+        // both to `shell` only — internal server callers needing these
+        // ops can bypass the dispatcher.
         return {
           name: "fs",
           description: "Per-context filesystem operations (sandboxed to context folder)",
@@ -230,6 +237,8 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
             close: fsMethodSchema, read: fsMethodSchema, write: fsMethodSchema,
             bindContext: bindContextSchema,
             mktemp: mktempSchema,
+            symlink: { ...fsMethodSchema, policy: { allowed: ["shell"] } },
+            chown: { ...fsMethodSchema, policy: { allowed: ["shell"] } },
           },
           handler: async (ctx, method, serviceArgs) => {
             return handleFsCall(fsServiceInstance, ctx, method, serviceArgs as unknown[]);

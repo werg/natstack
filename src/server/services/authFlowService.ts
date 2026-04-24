@@ -8,6 +8,11 @@ import type { AuthTokensServiceImpl } from "./authService.js";
 
 const log = createDevLogger("auth");
 const FLOW_TIMEOUT_MS = 10 * 60 * 1000;
+/** Hard cap on simultaneously-pending OAuth flows. Prevents a malicious
+ *  caller from filling memory by issuing endless `startOAuthLogin`
+ *  requests. When the cap is reached, the oldest entry is evicted
+ *  (LRU-by-insertion-order on the underlying Map). */
+const MAX_PENDING_FLOWS = 1000;
 
 interface ProviderHandle {
   buildAuthUrl(redirectUri: string): Promise<{ authUrl: string; session: AuthFlowSession }>;
@@ -58,6 +63,21 @@ export function createAuthFlowService(deps: AuthFlowServiceDeps): ServiceDefinit
     const timer = setTimeout(() => {
       pendingFlows.delete(flowId);
     }, FLOW_TIMEOUT_MS);
+    // SECURITY (#36 in audit): unref so a long-pending flow does not
+    // hold the Node event loop alive past process shutdown.
+    if (typeof timer.unref === "function") timer.unref();
+
+    // SECURITY: cap the table size. Map preserves insertion order, so
+    // iterator's first key is the oldest entry — evict it (and its
+    // timer) before inserting the new one.
+    while (pendingFlows.size >= MAX_PENDING_FLOWS) {
+      const oldestId = pendingFlows.keys().next().value;
+      if (typeof oldestId !== "string") break;
+      const oldest = pendingFlows.get(oldestId);
+      if (oldest) clearTimeout(oldest.timer);
+      pendingFlows.delete(oldestId);
+    }
+
     pendingFlows.set(flowId, {
       providerId,
       session,
@@ -77,8 +97,19 @@ export function createAuthFlowService(deps: AuthFlowServiceDeps): ServiceDefinit
     const code = callback.searchParams.get("code") ?? "";
     const error = callback.searchParams.get("error");
 
-    if (callback.pathname !== new URL(pending.session.redirectUri).pathname) {
-      throw new Error("OAuth callback path mismatch");
+    // SECURITY (#36 in audit): compare full origin + pathname, not just
+    // pathname. The previous check accepted callbacks on a different
+    // host or scheme as long as the path component matched, which would
+    // let an attacker who can steer the OAuth provider's redirect to
+    // their own host (or to `http:` instead of `https:`) complete a
+    // flow against the wrong origin.
+    const expected = new URL(pending.session.redirectUri);
+    if (
+      callback.protocol !== expected.protocol ||
+      callback.host !== expected.host ||
+      callback.pathname !== expected.pathname
+    ) {
+      throw new Error("OAuth callback URL mismatch");
     }
     if (error) {
       clearFlow(flowId);

@@ -182,11 +182,15 @@ export class AuthTokensServiceImpl {
     // extras (e.g. `accountId` for OpenAI) live at top level there, so we
     // hoist them out of `extra` for storage compatibility with the
     // `getApiKey` / `refreshToken` paths.
+    // SECURITY: spread `extra` BEFORE the protected fields so that a
+    // caller-provided `extra.access` / `extra.refresh` / `extra.expires`
+    // cannot override the explicitly-passed token fields. (#12 in audit
+    // report.)
     const stored: OAuthCredentials & { storedAt: number } = {
+      ...((credentials.extra ?? {}) as Record<string, unknown>),
       access: credentials.access,
       refresh: credentials.refresh,
       expires: credentials.expires,
-      ...((credentials.extra ?? {}) as Record<string, unknown>),
       storedAt: Date.now(),
     } as OAuthCredentials & { storedAt: number };
     this.credentials[providerId] = stored;
@@ -269,14 +273,32 @@ export function createAuthTokensService(deps: { authTokens: AuthTokensServiceImp
   return {
     name: "authTokens",
     description: "Persist and serve OAuth/API-key tokens for AI providers",
-    // Workers fetch tokens for outbound API calls; panels list provider
-    // status; clients (Electron / mobile) call persist + logout after the
-    // flow they own completes. Server callers (background refresh) too.
+    // Service-level policy admits all kinds for the *read-only* status
+    // surface (`listProviders`, `waitForProvider`). Mutating + token-yielding
+    // methods are tightened per-method below. (#5, #6 in audit report.)
     policy: { allowed: ["shell", "panel", "worker", "server"] },
     methods: {
-      getProviderToken: { args: z.tuple([z.string()]) },
-      persist: { args: z.tuple([z.string(), persistInputSchema]) },
-      logout: { args: z.tuple([z.string()]) },
+      // SECURITY: token-yielding. Panels MUST NOT read provider tokens —
+      // a panel that could read these would exfiltrate every stored OAuth
+      // / API key. `worker` is required because agentic-do worker DOs
+      // (see workspace/packages/agentic-do/src/agent-worker-base.ts) and
+      // the pi-runner harness fetch tokens to call provider APIs.
+      getProviderToken: {
+        args: z.tuple([z.string()]),
+        policy: { allowed: ["shell", "worker", "server"] },
+      },
+      // SECURITY: persisting credentials must come from the trusted
+      // shell (Electron main / mobile shell adapter) or from the server's
+      // own auth-flow service. Never from a panel.
+      persist: {
+        args: z.tuple([z.string(), persistInputSchema]),
+        policy: { allowed: ["shell", "server"] },
+      },
+      // SECURITY: logout deletes credentials — shell-only (UI driven).
+      logout: {
+        args: z.tuple([z.string()]),
+        policy: { allowed: ["shell", "server"] },
+      },
       listProviders: { args: z.tuple([]) },
       waitForProvider: { args: z.tuple([z.string(), z.number().optional()]) },
     },
