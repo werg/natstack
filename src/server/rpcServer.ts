@@ -9,7 +9,13 @@ import { WebSocketServer, WebSocket } from "ws";
 import { createServer, type Server as HttpServer } from "http";
 import { randomUUID } from "crypto";
 import { createRpcBridge, type RpcBridge, type RpcEvent, type RpcMessage, type RpcRequest, type RpcResponse } from "@natstack/rpc";
-import { createWsServerTransport, type WsServerTransportInternal } from "./wsServerTransport.js";
+import {
+  buildWsOriginAllowList,
+  checkWsRequestOrigin,
+  createWsServerTransport,
+  type WsOriginAllowList,
+  type WsServerTransportInternal,
+} from "./wsServerTransport.js";
 import type {
   WsClientMessage,
   WsServerMessage,
@@ -182,7 +188,9 @@ export class RpcServer {
     if (this.handlersInitialized) return;
     this.handlersInitialized = true;
 
-    // WSS in noServer mode — gateway calls handleUpgrade then handleGatewayWsConnection
+    // WSS in noServer mode — gateway calls handleUpgrade then
+    // handleGatewayWsConnection. Origin allow-listing for this path is
+    // enforced by the gateway's own upgrade handler (see gateway.ts).
     this.wss = new WebSocketServer({ noServer: true });
 
     // Register revocation-driven disconnect
@@ -209,9 +217,24 @@ export class RpcServer {
         }
       });
     });
-    // When self-hosting, WSS is attached to our own server
-    this.wss = new WebSocketServer({ server: this.httpServer });
-    this.wss.on("connection", (ws) => this.handleConnection(ws));
+    // When self-hosting we own the upgrade so we can enforce an Origin
+    // allow-list (audit #30) before letting `ws` allocate framing state.
+    // Standalone-mode rpcServer is loopback-bound; the allow-list defaults
+    // to loopback origins plus anything in NATSTACK_WS_ALLOWED_ORIGINS.
+    this.wss = new WebSocketServer({ noServer: true });
+    const externalHost = process.env["NATSTACK_EXTERNAL_HOST"] ?? "127.0.0.1";
+    const allowedOrigins: WsOriginAllowList = buildWsOriginAllowList(externalHost);
+    this.httpServer.on("upgrade", (req, socket, head) => {
+      if (!checkWsRequestOrigin(req, allowedOrigins)) {
+        log.warn(`WS upgrade rejected: disallowed Origin ${String(req.headers["origin"])}`);
+        socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      this.wss!.handleUpgrade(req, socket, head, (ws) => {
+        this.handleConnection(ws);
+      });
+    });
     this.handlersInitialized = true;
 
     // Register revocation-driven disconnect
@@ -584,7 +607,27 @@ export class RpcServer {
         });
       } else if (message.type === "event") {
         const { fromId: eventFromId, event, payload } = message;
-        void this.relayEvent(eventFromId ?? client.callerId, targetId, event, payload).catch(
+        // Audit finding #20 (04-4.7): the event `fromId` MUST be derived from
+        // the authenticated transport, not trusted from the caller payload.
+        // Otherwise any panel can spoof events that claim to come from the
+        // server / another panel (e.g. "notification:show", "credentials:*").
+        // Server / harness callers may set fromId explicitly (they're trusted
+        // brokers); everyone else gets their real callerId substituted.
+        const trustedSource =
+          client.callerKind === "server" || client.callerKind === "harness";
+        if (!trustedSource && eventFromId && eventFromId !== client.callerId) {
+          log.warn("rejecting event fromId spoof", {
+            callerId: client.callerId,
+            callerKind: client.callerKind,
+            attemptedFromId: eventFromId,
+            event,
+            targetId,
+          });
+        }
+        const sourceId = trustedSource
+          ? (eventFromId ?? client.callerId)
+          : client.callerId;
+        void this.relayEvent(sourceId, targetId, event, payload).catch(
           (err) => {
             this.sendRouteError(client, targetId, message, err);
           },
@@ -593,10 +636,35 @@ export class RpcServer {
       return;
     }
 
+    // Authenticated direct delivery — overwrite fromId on relayed events to
+    // match the authenticated source unless the caller is a trusted broker.
+    // Without this, a panel can send a `ws:route` whose embedded message is
+    // an event with a forged fromId; the routed envelope below would carry
+    // the correct fromId at the outer level, but consumers also see the
+    // inner message.fromId and may use it. Normalize both.
+    let outboundMessage = message;
+    if (message.type === "event") {
+      const trustedSource =
+        client.callerKind === "server" || client.callerKind === "harness";
+      const eventFromId = message.fromId;
+      if (!trustedSource && eventFromId && eventFromId !== client.callerId) {
+        log.warn("rejecting event fromId spoof (direct)", {
+          callerId: client.callerId,
+          callerKind: client.callerKind,
+          attemptedFromId: eventFromId,
+          event: message.event,
+          targetId,
+        });
+      }
+      const sourceId = trustedSource
+        ? (eventFromId ?? client.callerId)
+        : client.callerId;
+      outboundMessage = { ...message, fromId: sourceId };
+    }
     this.sendToWs(targetClient.ws, {
       type: "ws:routed",
       fromId: client.callerId,
-      message,
+      message: outboundMessage,
     });
   }
 
@@ -836,17 +904,10 @@ export class RpcServer {
       return;
     }
 
-    // Read body (with size limit)
-    const MAX_BODY_SIZE = 200 * 1024 * 1024; // 200MB
+    // Read body. Intentionally uncapped here so RPC remains compatible with
+    // existing large-payload developer workflows.
     const chunks: Buffer[] = [];
-    let totalSize = 0;
     for await (const chunk of req) {
-      totalSize += (chunk as Buffer).length;
-      if (totalSize > MAX_BODY_SIZE) {
-        res.writeHead(413, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Request body too large" }));
-        return;
-      }
       chunks.push(chunk as Buffer);
     }
     const body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>;
@@ -920,7 +981,22 @@ export class RpcServer {
     if (type === "emit") {
       const event = body["event"] as string;
       const payload = body["payload"];
-      const fromId = (body["fromId"] as string) ?? callerId;
+      const requestedFromId = body["fromId"] as string | undefined;
+      // Audit finding #20 (04-4.7): only trusted broker callers (server /
+      // harness) may set fromId; everyone else has their authenticated
+      // callerId substituted. Otherwise any caller can spoof events that
+      // claim to come from any other source.
+      const trustedSource = callerKind === "server" || callerKind === "harness";
+      if (!trustedSource && requestedFromId && requestedFromId !== callerId) {
+        log.warn("rejecting HTTP emit fromId spoof", {
+          callerId,
+          callerKind,
+          attemptedFromId: requestedFromId,
+          event,
+          targetId,
+        });
+      }
+      const fromId = trustedSource ? (requestedFromId ?? callerId) : callerId;
       if (!targetId) throw new Error("Missing targetId for emit");
       const auth = this.checkRelayAuth(callerId, callerKind, targetId);
       if (!auth.ok) throw new Error(auth.reason);

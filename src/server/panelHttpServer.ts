@@ -10,11 +10,18 @@ import * as fs from "fs";
 import * as path from "path";
 import { WebSocketServer } from "ws";
 import { createDevLogger } from "@natstack/dev-log";
+import { constantTimeStringEqual } from "@natstack/shared/tokenManager";
 import type { BuildResult, BuildMetadata } from "./buildV2/buildStore.js";
 import type { CdpBridge } from "./cdpBridge.js";
 import { CONFIG_LOADER_JS } from "./configLoader.js";
 
 const log = createDevLogger("PanelHttpServer");
+
+/**
+ * Hard cap on inbound POST bodies on the management API (audit #31). The
+ * management API has no large-payload endpoints today.
+ */
+const MANAGEMENT_MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Pre-compiled browser transport + context bootstrap
@@ -172,6 +179,21 @@ export class PanelHttpServer {
     this.managementToken = managementToken ?? null;
     this.externalHost = externalHost;
     this.protocol = protocol;
+
+    // Default-deny startup warning (audit #25). If the server is reachable
+    // from non-loopback (the host binds 0.0.0.0 / a public IP / a hostname)
+    // and no management token is configured, the management API would be
+    // open if we kept the old default-allow behavior. We have already
+    // flipped `validateManagementAuth` to default-deny; this surfaces the
+    // misconfiguration loudly so the operator knows the API is unreachable
+    // until they configure a token.
+    const looksRemote = host !== "127.0.0.1" && host !== "localhost" && host !== "::1";
+    if (looksRemote && !this.managementToken) {
+      log.warn(
+        `PanelHttpServer bound to non-loopback host (${host}) without a management token: ` +
+        `management API will be unreachable (default-deny). Configure a management token to enable it.`,
+      );
+    }
   }
 
   // =========================================================================
@@ -213,7 +235,7 @@ export class PanelHttpServer {
   initHandlers(): void {
     if (this.handlersInitialized) return;
     this.handlersInitialized = true;
-    // WSS in noServer mode — gateway calls handleGatewayUpgrade for CDP
+    // WSS in noServer mode — gateway calls handleGatewayUpgrade for CDP.
     this.wss = new WebSocketServer({ noServer: true });
   }
   private handlersInitialized = false;
@@ -232,7 +254,7 @@ export class PanelHttpServer {
       });
     });
 
-    // WebSocket upgrade handler for CDP bridge
+    // WebSocket upgrade handler for CDP bridge.
     this.wss = new WebSocketServer({ noServer: true });
     this.httpServer.on("upgrade", (req, socket, head) => {
       if (this.cdpBridge) {
@@ -513,7 +535,20 @@ export class PanelHttpServer {
       return;
     }
 
-    // Bearer token auth
+    // Reject oversized bodies up-front (audit #31). The management API has
+    // no large-payload endpoints today; any oversized POST is malicious or
+    // misconfigured. Even GETs with a body are rejected.
+    const contentLength = req.headers["content-length"];
+    if (contentLength) {
+      const len = parseInt(Array.isArray(contentLength) ? contentLength[0]! : contentLength, 10);
+      if (Number.isFinite(len) && len > MANAGEMENT_MAX_BODY_BYTES) {
+        res.writeHead(413, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Payload too large" }));
+        return;
+      }
+    }
+
+    // Bearer token auth (default-deny — see validateManagementAuth).
     if (!this.validateManagementAuth(req)) {
       res.writeHead(401, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "Unauthorized — provide management token via Authorization: Bearer <token>" }));
@@ -530,12 +565,25 @@ export class PanelHttpServer {
     }
   }
 
+  /**
+   * Validate the inbound `Authorization: Bearer <token>` against the
+   * configured management token.
+   *
+   * Default-deny semantics (audit finding #25): when no `managementToken`
+   * is configured, every request is rejected. The previous default-allow
+   * behaviour meant a remote-bound server with an empty token published
+   * its panel list to anyone who could reach the port.
+   *
+   * Comparison is constant-time (audit #33).
+   */
   private validateManagementAuth(req: import("http").IncomingMessage): boolean {
-    if (!this.managementToken) return true;
+    if (!this.managementToken) return false;
     const auth = req.headers.authorization;
     if (!auth) return false;
     const match = auth.match(/^Bearer\s+(.+)$/i);
-    return match?.[1] === this.managementToken;
+    const presented = match?.[1];
+    if (!presented) return false;
+    return constantTimeStringEqual(presented, this.managementToken);
   }
 
   private serveApiPanels(res: import("http").ServerResponse): void {

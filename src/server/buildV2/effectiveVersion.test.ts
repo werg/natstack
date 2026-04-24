@@ -35,7 +35,7 @@ describe("effectiveVersion", () => {
       expect(ref).toBe("refs/heads/main");
       expect(execFileSync).toHaveBeenCalledWith(
         "git",
-        ["rev-parse", "--verify", "refs/heads/main"],
+        ["rev-parse", "--verify", "--end-of-options", "refs/heads/main"],
         expect.objectContaining({ cwd: "/repo/resolve-main-success" }),
       );
     });
@@ -82,7 +82,7 @@ describe("effectiveVersion", () => {
       const hash = computeGitTreeHash("/repo/tree-explicit-ref", "refs/heads/feature");
       expect(execFileSync).toHaveBeenCalledWith(
         "git",
-        ["rev-parse", "refs/heads/feature^{tree}"],
+        ["rev-parse", "--verify", "--end-of-options", "refs/heads/feature^{tree}"],
         expect.anything(),
       );
       expect(hash).toBe("abc123def456");

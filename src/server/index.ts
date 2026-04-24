@@ -592,7 +592,13 @@ async function main() {
         const url = `http://127.0.0.1:${port}${urlPath}`;
         const resp = await fetch(url, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            // Internal DO dispatches stamp the process-private secret. The
+            // router verifies this when present, but public gateway-routed DO
+            // routes intentionally do not require it.
+            "X-NatStack-Dispatch-Secret": workerdManager.getDispatchSecret(),
+          },
           body: JSON.stringify(args),
         });
         if (!resp.ok) {
@@ -611,6 +617,10 @@ async function main() {
         }
         return `http://127.0.0.1:${port}`;
       });
+      // SECURITY (audit 4.8): stamp every postToDOWithToken-based dispatch
+      // with the dispatch secret. See WorkerdManager.dispatchSecret for the
+      // full rationale.
+      doDispatch.setGetDispatchSecret(() => workerdManager.getDispatchSecret());
 
       return doDispatch;
     },

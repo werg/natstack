@@ -101,12 +101,31 @@ export class CdpBridge {
     const pathname = url.pathname;
 
     if (pathname === "/api/cdp-bridge") {
-      // Extension connection
-      const token = url.searchParams.get("token");
+      // Extension connection — same wave-2 token-source rules as the
+      // client path below. Chrome extension service workers cannot set
+      // request headers on a WebSocket, so the query string is the only
+      // path available to them today. Logged accordingly.
+      const auth = req.headers["authorization"];
+      let token: string | null = null;
+      let extTokenSource: "header" | "query" = "header";
+      if (typeof auth === "string") {
+        const m = auth.match(/^Bearer\s+(.+)$/i);
+        if (m && m[1]) token = m[1];
+      }
+      if (!token) {
+        token = url.searchParams.get("token");
+        extTokenSource = "query";
+      }
       if (token !== this.adminToken) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         socket.destroy();
         return;
+      }
+      if (extTokenSource === "query") {
+        log.warn(
+          `Extension connected to /api/cdp-bridge with legacy ?token= ` +
+            `query string. Prefer Authorization: Bearer when feasible.`,
+        );
       }
 
       wss.handleUpgrade(req, socket, head, (ws) => {
@@ -115,12 +134,35 @@ export class CdpBridge {
     } else if (pathname.startsWith("/cdp/")) {
       // Client connection
       const browserId = pathname.slice("/cdp/".length);
-      const token = url.searchParams.get("token");
+      // Wave-2 (security-audit-agent-3): prefer Authorization: Bearer
+      // header; fall back to ?token= for the browser-WebSocket clients
+      // that physically cannot set headers (panel runtime, extension).
+      // The fallback path is logged once per connection so any new
+      // Node-side client lands on the header path silently.
+      const auth = req.headers["authorization"];
+      let token: string | null = null;
+      let tokenSource: "header" | "query" = "header";
+      if (typeof auth === "string") {
+        const m = auth.match(/^Bearer\s+(.+)$/i);
+        if (m && m[1]) token = m[1];
+      }
+      if (!token) {
+        token = url.searchParams.get("token");
+        tokenSource = "query";
+      }
 
       if (!token) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         socket.destroy();
         return;
+      }
+      if (tokenSource === "query") {
+        log.warn(
+          `Client connected with legacy ?token= query string ` +
+            `(browser=${browserId}). Prefer Authorization: Bearer header. ` +
+            `Note: browser-WebSocket clients cannot set headers — legacy ` +
+            `path remains intentional for them.`,
+        );
       }
 
       const entry = this.tokenManager.validateToken(token);

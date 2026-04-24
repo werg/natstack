@@ -23,7 +23,31 @@ interface PendingConsent {
   codeVerifier: string;
   redirectUri: string;
   createdAt: number;
+  /** Caller-id of the worker / panel / shell that initiated the consent.
+   *  `completeConsent` rejects if the completing caller does not match,
+   *  preventing cross-caller consent hijack. */
+  initiatorCallerId: string;
 }
+
+/**
+ * Strict charset for user-controlled identifiers crossing the RPC
+ * boundary. Mirrors the regex in §6/T6 of the audit (`store.ts` fix is
+ * Agent 4's territory; this regex is the boundary defense).
+ */
+const IDENTIFIER_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9._@+=:-]{0,127}$/;
+const identifierSchema = z
+  .string()
+  .regex(IDENTIFIER_REGEX, "Invalid identifier (must be a safe path component matching /^[a-zA-Z0-9][a-zA-Z0-9._@+=:-]{0,127}$/)");
+const optionalIdentifierSchema = identifierSchema.optional();
+const nonceSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{16,128}$/, "Invalid nonce");
+const uuidSchema = z.string().uuid();
+
+/** Pending-consent TTL — entries older than this are eligible for the
+ *  reaper sweep below. Matches the auth-flow TTL constant. */
+const PENDING_CONSENT_TTL_MS = 10 * 60 * 1000;
+const PENDING_CONSENT_REAP_INTERVAL_MS = 60 * 1000;
 
 interface CredentialServiceDeps {
   credentialStore?: CredentialStore;
@@ -40,50 +64,50 @@ const redirectModeSchema = z.enum([
 ]);
 
 const beginConsentParamsSchema = z.object({
-  providerId: z.string(),
-  scopes: z.array(z.string()),
-  accountHint: z.string().optional(),
-  role: z.string().optional(),
+  providerId: identifierSchema,
+  scopes: z.array(z.string().max(256)),
+  accountHint: z.string().max(256).optional(),
+  role: z.string().max(64).optional(),
   redirect: redirectModeSchema,
 }).strict();
 
 const completeConsentParamsSchema = z.object({
-  nonce: z.string(),
-  code: z.string(),
+  nonce: nonceSchema,
+  code: z.string().min(1).max(4096),
 }).strict();
 
 const requestConsentParamsSchema = z.object({
-  providerId: z.string(),
-  scopes: z.array(z.string()).optional(),
-  accountHint: z.string().optional(),
-  role: z.string().optional(),
+  providerId: identifierSchema,
+  scopes: z.array(z.string().max(256)).optional(),
+  accountHint: z.string().max(256).optional(),
+  role: z.string().max(64).optional(),
 }).strict();
 
 const revokeConsentParamsSchema = z.object({
-  providerId: z.string(),
-  connectionId: z.string().optional(),
+  providerId: identifierSchema,
+  connectionId: optionalIdentifierSchema,
 }).strict();
 
-const listConsentParamsSchema = z.object({ workerId: z.string().optional() }).strict();
+const listConsentParamsSchema = z.object({ workerId: optionalIdentifierSchema }).strict();
 
 const listConnectionsParamsSchema = z.object({
-  providerId: z.string().optional(),
+  providerId: optionalIdentifierSchema,
 }).strict();
 
 const renameConnectionParamsSchema = z.object({
-  connectionId: z.string(),
-  label: z.string(),
+  connectionId: identifierSchema,
+  label: z.string().min(1).max(256),
 }).strict();
 
 const auditFilterSchema = z.object({
-  workerId: z.string().optional(),
-  callerId: z.string().optional(),
-  providerId: z.string().optional(),
-  connectionId: z.string().optional(),
-  method: z.string().optional(),
-  url: z.string().optional(),
+  workerId: optionalIdentifierSchema,
+  callerId: optionalIdentifierSchema,
+  providerId: optionalIdentifierSchema,
+  connectionId: optionalIdentifierSchema,
+  method: z.string().max(32).optional(),
+  url: z.string().max(2048).optional(),
   status: z.number().optional(),
-  capabilityViolation: z.string().optional(),
+  capabilityViolation: z.string().max(256).optional(),
   breakerState: z.enum(["closed", "open", "half-open"]).optional(),
 }).strict();
 
@@ -94,13 +118,13 @@ const auditParamsSchema = z.object({
 }).strict();
 
 const subscribeWebhookParamsSchema = z.object({
-  providerId: z.string(),
-  eventType: z.string(),
-  workerId: z.string(),
+  providerId: identifierSchema,
+  eventType: z.string().min(1).max(128),
+  workerId: identifierSchema,
 }).strict();
 
 const unsubscribeWebhookParamsSchema = z.object({
-  subscriptionId: z.string(),
+  subscriptionId: identifierSchema,
 }).strict();
 
 type BeginConsentParams = z.infer<typeof beginConsentParamsSchema>;
@@ -129,11 +153,25 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   const flowResolver = deps.flowResolver ?? new FlowResolver(builtinFlows);
   const pendingConsents = new Map<string, PendingConsent>();
 
+  // SECURITY: reap expired pending consents on a fixed cadence so stale
+  // entries cannot pile up and so the consent codeVerifier does not
+  // outlive its TTL. `unref()` so this timer never holds the event loop
+  // alive (matches the same pattern used by authFlowService).
+  const reapInterval = setInterval(() => {
+    const now = Date.now();
+    for (const [nonce, entry] of pendingConsents) {
+      if (now - entry.createdAt > PENDING_CONSENT_TTL_MS) {
+        pendingConsents.delete(nonce);
+      }
+    }
+  }, PENDING_CONSENT_REAP_INTERVAL_MS);
+  if (typeof reapInterval.unref === "function") reapInterval.unref();
+
   for (const manifest of builtinProviders) {
     registry.register(manifest);
   }
 
-  async function beginConsent(params: BeginConsentParams): Promise<{ nonce: string; authorizeUrl: string }> {
+  async function beginConsent(params: BeginConsentParams, callerId: string): Promise<{ nonce: string; authorizeUrl: string }> {
     const manifest = registry.get(params.providerId);
     if (!manifest) {
       throw new Error(`Unknown provider: ${params.providerId}`);
@@ -186,15 +224,29 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       codeVerifier,
       redirectUri,
       createdAt: Date.now(),
+      initiatorCallerId: callerId,
     });
 
     return { nonce, authorizeUrl: authorizeUrl.toString() };
   }
 
-  async function completeConsent(params: CompleteConsentParams): Promise<ConsentResult> {
+  async function completeConsent(params: CompleteConsentParams, callerId: string): Promise<ConsentResult> {
     const pending = pendingConsents.get(params.nonce);
     if (!pending) {
       throw new Error("Unknown or expired consent nonce");
+    }
+    // SECURITY: enforce TTL even if reaper is paused (defense-in-depth).
+    if (Date.now() - pending.createdAt > PENDING_CONSENT_TTL_MS) {
+      pendingConsents.delete(params.nonce);
+      throw new Error("Consent nonce expired");
+    }
+    // SECURITY: bind state verification to the initiating caller. The
+    // 16-byte random nonce already proves possession of the begin-consent
+    // response, but we additionally require the completing caller to
+    // match the initiator so a token leaked between callers cannot be
+    // redeemed by a different caller.
+    if (pending.initiatorCallerId !== callerId) {
+      throw new Error("Consent caller mismatch");
     }
     pendingConsents.delete(params.nonce);
 
@@ -281,14 +333,13 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   }
 
   async function revokeConsent(params: RevokeConsentParams): Promise<void> {
-    if (params.connectionId) {
-      await credentialStore.remove(params.providerId, params.connectionId);
-    } else {
-      const creds = await credentialStore.list(params.providerId);
-      for (const cred of creds) {
-        await credentialStore.remove(params.providerId, cred.connectionId);
-      }
+    // SECURITY (#33 in audit report): reject the "wipe all consents for
+    // a provider" branch. Callers MUST specify the exact connectionId
+    // they want to revoke; a missing/empty value is no longer a wildcard.
+    if (!params.connectionId || params.connectionId.length === 0) {
+      throw new Error("revokeConsent requires an explicit connectionId");
     }
+    await credentialStore.remove(params.providerId, params.connectionId);
   }
 
   async function listConsent(params: ListConsentParams): Promise<ConsentGrant[]> {
@@ -370,12 +421,12 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         args: z.tuple([unsubscribeWebhookParamsSchema]),
       },
     },
-    handler: async (_ctx, method, args) => {
+    handler: async (ctx, method, args) => {
       switch (method) {
         case "beginConsent":
-          return beginConsent((args as [BeginConsentParams])[0]);
+          return beginConsent((args as [BeginConsentParams])[0], ctx.callerId);
         case "completeConsent":
-          return completeConsent((args as [CompleteConsentParams])[0]);
+          return completeConsent((args as [CompleteConsentParams])[0], ctx.callerId);
         case "requestConsent":
           return requestConsent((args as [RequestConsentParams])[0]);
         case "revokeConsent":

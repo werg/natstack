@@ -18,6 +18,11 @@ import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { FsService } from "@natstack/shared/fsService";
 import type { BuildResult } from "./buildV2/buildStore.js";
 import type { RouteRegistry, ManifestRouteDecl } from "./routeRegistry.js";
+import type {
+  BypassRegistry,
+  EgressProxy,
+  WorkerTokenStore,
+} from "./services/egressProxy.js";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("WorkerdManager");
@@ -109,6 +114,32 @@ export interface WorkerdManagerDeps {
   routeRegistry?: RouteRegistry;
   /** Manifest-route lookup, keyed by source. Used alongside routeRegistry. */
   getManifestRoutes?: (source: string) => ManifestRouteDecl[];
+  /**
+   * STRICT-MODE egress wiring (audit-05 S1 + S2):
+   *
+   * Factory that builds an `EgressProxy` instance, given the per-worker
+   * token registry and the optional bypass list. WorkerdManager owns the
+   * lifecycle: it calls `start()` on first config-generation (so the
+   * loopback port is known before workerd spawns), passes the resulting
+   * `127.0.0.1:<port>` address to every worker / DO service as
+   * `globalOutbound` via an `external` HTTP-proxy service, and calls
+   * `stop()` on shutdown.
+   *
+   * When omitted, workers fall back to the legacy `network` service
+   * with `allow: ["public", "local"]` — ONLY intended for tests and
+   * early-boot scenarios where the credential infrastructure isn't up
+   * yet. Production deployments MUST provide this factory.
+   */
+  buildEgressProxy?: (
+    tokenStore: WorkerTokenStore,
+    bypassRegistry: BypassRegistry,
+  ) => EgressProxy;
+  /**
+   * Optional explicit list of worker IDs that bypass strict-mode
+   * provider gating. Defaults to parsing `STRICT_EGRESS_BYPASS_WORKERS`
+   * (comma-separated). See `docs/audit/wave3-egress-migration.md`.
+   */
+  bypassWorkerIds?: ReadonlyArray<string>;
 }
 
 /** The canonical regular-worker instance name for a source. Matches the
@@ -133,13 +164,82 @@ export class WorkerdManager {
   // DO support: shared services (one per source)
   /** Shared DO services — keyed by `${source}:${className}`. Source-scoped: two workers CAN have same className if different source. */
   private doServices = new Map<string, { buildKey: string; className: string; serviceName: string; source: string }>();
+
+  /**
+   * STRICT-MODE egress proxy instance (audit-05 S1).
+   *
+   * Constructed lazily on first config-generation via
+   * `deps.buildEgressProxy(...)`. WorkerdManager:
+   *   - mints + tracks per-worker `PROXY_AUTH_TOKEN`s in `proxyAuthTokens`,
+   *   - exposes them through a `WorkerTokenStore` to the proxy,
+   *   - applies the bypass set parsed from `STRICT_EGRESS_BYPASS_WORKERS`
+   *     (or `deps.bypassWorkerIds`),
+   *   - starts the proxy on a loopback ephemeral port,
+   *   - emits an `external` workerd service on `127.0.0.1:<egressPort>`
+   *     as `globalOutbound` for every worker / DO,
+   *   - stops the proxy on shutdown.
+   */
+  private egressProxy: EgressProxy | null = null;
+  private egressProxyAddress: string | null = null;
+  private bypassWorkerIdSet: ReadonlySet<string>;
+
+  /**
+   * Per-worker / per-DO-service proxy auth tokens. Key is the value
+   * injected as `X-NatStack-Worker-Id` by the workerd runtime:
+   *   - regular worker: instance.name (see `generateConfig`).
+   *   - DO service: `do-service:${source}:${className}` (see
+   *     `generateConfig`'s DO branch).
+   *
+   * Value is the `PROXY_AUTH_TOKEN` bound into that worker's env.
+   * `EgressProxy` looks this map up via `workerTokenStore.getToken(...)`
+   * to validate inbound proxy requests (audit-05 S1 / finding #11).
+   *
+   * Tokens are minted on first config generation and kept stable for
+   * the lifetime of the worker / DO service so workerd can continue
+   * using them across config regenerations without re-propagating a
+   * rotated secret.
+   */
+  private proxyAuthTokens = new Map<string, string>();
   /** Session ID — generated once per WorkerdManager lifetime, used for restart detection in bootstrap. */
   private sessionId = crypto.randomUUID();
+  /**
+   * Per-process dispatch secret. Bound into the auto-generated router
+   * worker as `DISPATCH_SECRET` and verified when callers provide
+   * `X-NatStack-Dispatch-Secret` on `/_w/` requests.
+   *
+   * This closes audit finding 4.8: the workerd HTTP port is loopback-bound
+   * (see `address` in generateConfig) but any *local* process running as
+   * the user could otherwise POST to the DO router and forge a dispatch.
+   * Public gateway-routed DO routes cannot rely on this process-private
+   * header, so absence is allowed for DX; stale/wrong internal dispatch
+   * headers are rejected. The matching helper for server-side dispatch is
+   * `DODispatch.setGetDispatchSecret`.
+   *
+   * Generated once per WorkerdManager lifetime — rotates on server restart.
+   */
+  private dispatchSecret = crypto.randomBytes(32).toString("base64url");
 
   constructor(deps: WorkerdManagerDeps) {
     this.deps = deps;
     this.configDir = path.join(os.tmpdir(), `natstack-workerd-${process.pid}`);
     fs.mkdirSync(this.configDir, { recursive: true });
+
+    // Parse STRICT_EGRESS_BYPASS_WORKERS (comma-separated worker ids).
+    // The env var is the only "documented escape hatch" for migration —
+    // see docs/audit/wave3-egress-migration.md. Every bypass use is logged
+    // by the EgressProxy on each request from a bypassed worker.
+    const fromEnv = (process.env["STRICT_EGRESS_BYPASS_WORKERS"] ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    const fromDeps = deps.bypassWorkerIds ?? [];
+    this.bypassWorkerIdSet = new Set([...fromEnv, ...fromDeps]);
+    if (this.bypassWorkerIdSet.size > 0) {
+      log.warn(
+        `[WorkerdManager] STRICT_EGRESS_BYPASS_WORKERS active for: ` +
+          Array.from(this.bypassWorkerIdSet).join(", "),
+      );
+    }
   }
 
   // =========================================================================
@@ -244,6 +344,7 @@ export class WorkerdManager {
       this.instances.delete(name);
       this.deps.tokenManager.revokeToken(callerId);
       this.deps.fsService.unregisterCallerContext(callerId);
+      this.proxyAuthTokens.delete(name);
       log.error(`Failed to start worker "${name}":`, error);
       throw error;
     }
@@ -261,6 +362,7 @@ export class WorkerdManager {
     this.deps.tokenManager.revokeToken(instance.callerId);
     this.deps.fsService.unregisterCallerContext(instance.callerId);
     this.deps.fsService.closeHandlesForCaller(instance.callerId);
+    this.proxyAuthTokens.delete(instance.name);
     this.instances.delete(name);
 
     // Unregister regular-worker routes if this was the canonical instance.
@@ -316,9 +418,130 @@ export class WorkerdManager {
     return this.port;
   }
 
+  /**
+   * Return the per-process dispatch secret used by `DODispatch` (via
+   * `setGetDispatchSecret`) to stamp outgoing dispatches. The router verifies
+   * this header when present, but does not require it for public DO routes.
+   */
+  getDispatchSecret(): string {
+    return this.dispatchSecret;
+  }
+
+  /**
+   * Look up the `PROXY_AUTH_TOKEN` registered for a worker id or
+   * DO-service key. The `EgressProxy.WorkerTokenStore.getToken` hook
+   * delegates to this — every inbound proxy request carrying
+   * `X-NatStack-Worker-Id: <id>` must produce a matching bearer token
+   * that equals the value returned here, or the proxy rejects with 401.
+   *
+   * Returns `null` for unknown ids (strict by default — closes audit
+   * finding #11: proxy auth was never validated, so any loopback
+   * process could forge worker identity).
+   */
+  getProxyToken(workerId: string): string | null {
+    return this.proxyAuthTokens.get(workerId) ?? null;
+  }
+
+  /** Mint-on-first-use helper — stable for the lifetime of the key. */
+  private ensureProxyToken(workerId: string): string {
+    let token = this.proxyAuthTokens.get(workerId);
+    if (!token) {
+      token = crypto.randomBytes(24).toString("base64url");
+      this.proxyAuthTokens.set(workerId, token);
+    }
+    return token;
+  }
+
+  // =========================================================================
+  // Strict-mode egress proxy lifecycle
+  // =========================================================================
+
+  /**
+   * Lazily construct and start the EgressProxy on a loopback ephemeral
+   * port. Idempotent — once the address is captured, subsequent calls
+   * are no-ops. The address is read by `buildOutboundService` at config
+   * generation time.
+   *
+   * No-op when the dependency is omitted (test / early-boot mode); in
+   * that case workers fall back to the legacy `network` service.
+   */
+  private async ensureEgressProxyStarted(): Promise<void> {
+    if (this.egressProxyAddress) return;
+    if (!this.deps.buildEgressProxy) return;
+
+    const tokenStore: WorkerTokenStore = {
+      getToken: (workerId) => this.proxyAuthTokens.get(workerId) ?? null,
+    };
+    const bypassRegistry: BypassRegistry = {
+      has: (workerId) => this.bypassWorkerIdSet.has(workerId),
+    };
+
+    const proxy = this.deps.buildEgressProxy(tokenStore, bypassRegistry);
+    const port = await proxy.start();
+    this.egressProxy = proxy;
+    this.egressProxyAddress = `127.0.0.1:${port}`;
+    log.info(`[WorkerdManager] EgressProxy listening on ${this.egressProxyAddress} (strict mode)`);
+  }
+
   // =========================================================================
   // Config generation
   // =========================================================================
+
+  /**
+   * Build the per-worker outbound service that workerd will use as
+   * `globalOutbound` for one worker / DO.
+   *
+   * STRICT MODE (when the EgressProxy has bound a loopback address):
+   *   Emits an `external` service pointing at the EgressProxy with
+   *   `http: { style = proxy }`. Workerd treats this as an HTTP forward
+   *   proxy: every `fetch(...)` becomes an HTTP request with a full URL
+   *   in the request line directed to the proxy. For HTTPS targets,
+   *   workerd issues a CONNECT through the same proxy (which is why
+   *   `EgressProxy.handleConnect` is hardened separately — see audit S2).
+   *
+   *   The proxy authenticates the worker via two headers stamped onto
+   *   every outbound request by the workerd binding. Workerd does not
+   *   itself stamp these — the worker code does, by injecting the
+   *   `PROXY_WORKER_ID` and `PROXY_AUTH_TOKEN` env bindings into the
+   *   `Authorization` and `X-NatStack-Worker-Id` headers (see runtime
+   *   helper). Lacking those headers, the proxy returns 401 / 407.
+   *
+   * FALLBACK (when no proxy address): emits the legacy `network` service
+   * with `allow: ["public", "local"]`. ONLY intended for tests / early
+   * boot where the proxy hasn't started.
+   */
+  private buildOutboundService(
+    serviceName: string,
+    _workerId: string,
+    _proxyAuthToken: string,
+  ): object {
+    const proxyAddr = this.egressProxyAddress;
+    if (proxyAddr) {
+      return {
+        name: serviceName,
+        external: {
+          address: proxyAddr,
+          http: {
+            // `style = proxy` makes workerd emit the request line with a
+            // full URL (`GET https://api.example.com/foo HTTP/1.1`) and
+            // issue CONNECT for HTTPS targets — i.e. behave as a normal
+            // HTTP forward-proxy client.
+            style: "proxy",
+          },
+        },
+      };
+    }
+
+    // Fallback for test mode / early boot: legacy `network` service.
+    return {
+      name: serviceName,
+      network: {
+        allow: ["public", "local"],
+        deny: [],
+        tlsOptions: { trustBrowserCas: true },
+      },
+    };
+  }
 
   private async generateConfig(): Promise<object> {
     const services: object[] = [];
@@ -347,10 +570,15 @@ export class WorkerdManager {
       const serviceCallerId = `do-service:${serviceKey}`;
       const serviceToken = this.deps.tokenManager.ensureToken(serviceCallerId, "worker");
 
-      const doProxyAuthToken = crypto.randomBytes(24).toString("base64url");
+      // STRICT-MODE egress: per-worker proxy auth token (audit-05 S1).
+      // The worker id the EgressProxy authenticates against is
+      // `do-service:${serviceKey}`; this token is stable across restarts.
+      const doWorkerId = `do-service:${serviceKey}`;
+      const doProxyAuthToken = this.ensureProxyToken(doWorkerId);
       const bindings: object[] = [
         { name: "RPC_AUTH_TOKEN", text: serviceToken },
         { name: "PROXY_AUTH_TOKEN", text: doProxyAuthToken },
+        { name: "PROXY_WORKER_ID", text: doWorkerId },
         // Source-scoped class identity
         { name: "WORKER_SOURCE", text: doService.source },
         { name: "WORKER_CLASS_NAME", text: className },
@@ -366,9 +594,12 @@ export class WorkerdManager {
       const doStoragePath = path.join(this.deps.statePath, ".databases", "workerd-do");
       fs.mkdirSync(doStoragePath, { recursive: true });
 
-      // Network service for outbound fetch (RPC HTTP bridge, PubSub HTTP).
-      // DOs are autonomous — they make direct HTTP calls to localhost services.
-      const networkServiceName = `${doService.serviceName}_network`;
+      // STRICT-MODE egress (audit-05 S1): every DO routes outbound through
+      // the EgressProxy via an `external` service with HTTP `style = proxy`.
+      // The fall-back `network` service (allow ["public", "local"]) is
+      // ONLY emitted when no proxy address is configured (e.g. early-boot
+      // or test mode); see `buildOutboundService` below.
+      const networkServiceName = `${doService.serviceName}_egress`;
 
       const workerDef: Record<string, unknown> = {
         modules: [{ name: "worker.js", esModule: bundleContent }],
@@ -390,19 +621,7 @@ export class WorkerdManager {
 
       services.push({ name: doService.serviceName, worker: workerDef });
       services.push({ name: diskServiceName, disk: { path: doStoragePath, writable: true } });
-      services.push({
-        name: networkServiceName,
-        network: {
-          allow: ["public", "local"],
-          deny: [],
-          // Enable outbound HTTPS from worker DOs. Without TLS options,
-          // workerd's HttpClient rejects HTTPS URLs with
-          // "expected tlsNetwork != nullptr". trustBrowserCas makes the
-          // system CA store available so fetch("https://...") works for
-          // external API calls (e.g., pi-ai streaming to chatgpt.com).
-          tlsOptions: { trustBrowserCas: true },
-        },
-      });
+      services.push(this.buildOutboundService(networkServiceName, doWorkerId, doProxyAuthToken));
     }
 
     // ── Regular (non-durable) worker services ──
@@ -419,11 +638,12 @@ export class WorkerdManager {
 
       instanceNames.push(name);
 
-      // Build bindings array
-      const proxyAuthToken = crypto.randomBytes(24).toString("base64url");
+      // STRICT-MODE egress: stable per-worker proxy auth token (audit-05 S1).
+      const proxyAuthToken = this.ensureProxyToken(instance.name);
       const bindings: object[] = [
         { name: "RPC_AUTH_TOKEN", text: instance.token },
         { name: "PROXY_AUTH_TOKEN", text: proxyAuthToken },
+        { name: "PROXY_WORKER_ID", text: instance.name },
         { name: "WORKER_ID", text: instance.name },
         { name: "CONTEXT_ID", text: instance.contextId },
         { name: "SERVER_URL", text: this.deps.getServerUrl() },
@@ -459,8 +679,9 @@ export class WorkerdManager {
         }
       }
 
-      // Network service for outbound fetch (API calls, RPC).
-      const networkServiceName = `${name}_network`;
+      // STRICT-MODE egress: per-worker outbound goes through the
+      // EgressProxy as `globalOutbound`. See `buildOutboundService`.
+      const networkServiceName = `${name}_egress`;
 
       // Build workerd service config.
       //
@@ -481,14 +702,7 @@ export class WorkerdManager {
       };
 
       services.push({ name, worker: workerDef });
-      services.push({
-        name: networkServiceName,
-        network: {
-          allow: ["public", "local"],
-          deny: [],
-          tlsOptions: { trustBrowserCas: true },
-        },
-      });
+      services.push(this.buildOutboundService(networkServiceName, instance.name, proxyAuthToken));
     }
 
     // Collect DO class info for router generation (only those whose service was successfully built).
@@ -517,6 +731,11 @@ export class WorkerdManager {
       }
 
       const routerCode = this.generateRouterCode(instanceNames, doClassNames);
+
+      // Bind the per-process dispatch secret into the router worker. Public
+      // DO routes do not require it, but internal callers that provide the
+      // header must match this value.
+      routerBindings.push({ name: "DISPATCH_SECRET", text: this.dispatchSecret });
 
       services.push({
         name: "router",
@@ -549,7 +768,12 @@ export class WorkerdManager {
       sockets: hasAnyService
         ? [{
             name: "http",
-            address: `*:${this.port}`,
+            // SECURITY (audit 4.8): bind to loopback only. Workers and DO
+            // back-channel traffic never need to leave the host — workerd
+            // is co-located with the gateway by construction. Binding to
+            // `*:<port>` previously let any host on the network reach the
+            // DO router with a forged dispatch.
+            address: `127.0.0.1:${this.port}`,
             http: {},
             service: { name: "router" },
           }]
@@ -577,11 +801,38 @@ export class WorkerdManager {
 
     // Generate DO routing block for /_w/{source0}/{source1}/{className}/{objectKey}/{method...}
     // Source path is always exactly 2 segments (e.g., "workers/agent-worker")
+    //
+    // DX-preserving dispatch-secret check:
+    // Internal DODispatch calls stamp X-NatStack-Dispatch-Secret. Public
+    // gateway-routed DO routes and WebSocket upgrades do not need that
+    // process-private header, so absence is allowed. If a caller does provide
+    // the header, it must match; this catches stale/miswired internal callers
+    // without breaking published /_w/ URLs.
     let doBlock = "";
     if (doClassNames.length > 0) {
       doBlock = `
     // /_w/{source0}/{source1}/{className}/{objectKey}/{...method} — source-scoped DO routes
     if (prefix === "_w") {
+      const presented = request.headers.get("x-natstack-dispatch-secret") || "";
+      const expected = env.DISPATCH_SECRET || "";
+      if (presented) {
+        if (!expected || presented.length !== expected.length) {
+          return new Response(JSON.stringify({ error: "unauthorized: invalid dispatch secret" }), {
+            status: 401,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        let diff = 0;
+        for (let i = 0; i < expected.length; i++) {
+          diff |= presented.charCodeAt(i) ^ expected.charCodeAt(i);
+        }
+        if (diff !== 0) {
+          return new Response(JSON.stringify({ error: "unauthorized: dispatch secret mismatch" }), {
+            status: 401,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+      }
       const source = parts[1] + "/" + parts[2];
       const doClass = parts[3] || "";
       const objectKey = parts[4] || "";
@@ -682,6 +933,11 @@ ${doBlock}${cases.join("\n")}
     await this.stopWorkerd();
 
     if (this.instances.size === 0 && this.doServices.size === 0) return;
+
+    // STRICT-MODE egress: ensure the proxy is up BEFORE we generate the
+    // workerd config — config generation reads `this.egressProxyAddress`
+    // to wire each worker's `globalOutbound` to the proxy.
+    await this.ensureEgressProxyStarted();
 
     const config = await this.generateConfig();
     const configPath = path.join(this.configDir, "config.capnp");
@@ -943,6 +1199,20 @@ ${doBlock}${cases.join("\n")}
     }
     this.doServices.clear();
 
+    // Drop all proxy-auth tokens — workers and DO services are gone.
+    this.proxyAuthTokens.clear();
+
+    // Stop the egress proxy if we started one. Best-effort.
+    if (this.egressProxy) {
+      try {
+        await this.egressProxy.stop();
+      } catch (err) {
+        log.warn("[WorkerdManager] EgressProxy stop failed:", err);
+      }
+      this.egressProxy = null;
+      this.egressProxyAddress = null;
+    }
+
     // Clean up config dir
     try {
       fs.rmSync(this.configDir, { recursive: true, force: true });
@@ -999,6 +1269,7 @@ ${doBlock}${cases.join("\n")}
         if (svc.source !== source) continue;
         if (newClassNames.has(svc.className)) continue;
         this.deps.tokenManager.revokeToken(`do-service:${serviceKey}`);
+        this.proxyAuthTokens.delete(`do-service:${serviceKey}`);
         this.doServices.delete(serviceKey);
         this.deps.routeRegistry?.unregisterDoRoutes(source, svc.className);
         needsRestart = true;
