@@ -34,9 +34,7 @@ export class CentralDataManager {
     this.data = this.load();
   }
 
-  /**
-   * Load data from disk, migrating legacy format if needed.
-   */
+  /** Load data from disk. */
   private load(): CentralData {
     try {
       if (!fs.existsSync(this.dataPath)) {

@@ -88,11 +88,8 @@ export interface PanelViewLike {
 
 /**
  * HTTP panel server abstraction — optional in both modes.
- * ensureSubdomainSession is async to support remote server calls.
  */
 export interface PanelHttpServerLike {
-  ensureSubdomainSession(subdomain: string): Promise<string> | string;
-  clearSubdomainSessions(subdomain: string): void;
   hasBuild(source: string): boolean;
   invalidateBuild(source: string): void;
   getPort(): number;

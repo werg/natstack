@@ -162,31 +162,11 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
 
       const graph = buildSystem.getGraph();
       const panelNodes = graph.allNodes().filter((n) => n.kind === "panel");
-      const sanitize = (s: string) =>
-        s.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
-      const rawEntries = panelNodes.map((n) => ({
-        subdomain: sanitize(n.relativePath.split("/").pop() ?? n.relativePath) || "panel",
+      const entries = panelNodes.map((n) => ({
         source: n.relativePath,
         name: n.manifest.title ?? n.name,
       }));
-      const counts = new Map<string, number>();
-      for (const entry of rawEntries) counts.set(entry.subdomain, (counts.get(entry.subdomain) ?? 0) + 1);
-      for (const entry of rawEntries) {
-        if ((counts.get(entry.subdomain) ?? 0) > 1) entry.subdomain = sanitize(entry.source);
-      }
-      const assigned = new Set<string>();
-      for (const entry of rawEntries) {
-        let candidate = entry.subdomain.slice(0, 63).replace(/-$/, "");
-        let suffix = 1;
-        while (assigned.has(candidate)) {
-          const tag = `-${suffix}`;
-          candidate = entry.subdomain.slice(0, 63 - tag.length).replace(/-$/, "") + tag;
-          suffix++;
-        }
-        entry.subdomain = candidate;
-        assigned.add(candidate);
-      }
-      panelHttpServer.populateSourceRegistry(rawEntries);
+      panelHttpServer.populateSourceRegistry(entries);
 
       panelHttpServer.setCallbacks({
         listPanels: () => [],

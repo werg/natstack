@@ -29,7 +29,6 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `defineContract` | value |  |  |
 | `noopParent` | value |  |  |
 | `buildPanelLink` | value |  |  |
-| `contextIdToSubdomain` | value |  |  |
 | `parseContextId` | value |  |  |
 | `isValidContextId` | value |  |  |
 | `getInstanceId` | value |  |  |

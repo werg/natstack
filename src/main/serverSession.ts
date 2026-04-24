@@ -224,8 +224,6 @@ export async function establishServerSession(args: {
 
   const gatewayPort = ports.gatewayPort ?? ports.panelHttpPort ?? 0;
   const panelHttpServer: PanelHttpServerLike = {
-    ensureSubdomainSession: () => "",
-    clearSubdomainSessions: () => {},
     hasBuild: () => false,
     invalidateBuild: () => {},
     getPort: () => gatewayPort,

@@ -39,7 +39,7 @@ export async function runOpenaiCodexFlow(authorizeUrl: string, expectedState: st
       },
     });
 
-    void Linking.openURL(authUrl).catch((err: unknown) => {
+    void Linking.openURL(authUrl.toString()).catch((err: unknown) => {
       dropPendingFlow(expectedState);
       clearTimeout(timer);
       reject(err instanceof Error ? err : new Error(String(err)));

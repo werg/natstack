@@ -28,8 +28,7 @@ const SKIP_DIRS = new Set([".git", "node_modules", ".cache", ".databases"]);
 const GIT_MUTABLE = new Set(["HEAD", "index", "refs", "logs", "config", "packed-refs", "COMMIT_EDITMSG", "info"]);
 
 /**
- * Validate that a context ID is DNS-safe (lowercase alphanumeric + hyphens).
- * This ensures contextId round-trips through contextIdToSubdomain without lossy normalization.
+ * Validate that a context ID is safe for per-context folder names.
  */
 function validateContextId(contextId: string): void {
   if (!contextId || contextId.length > 63) {

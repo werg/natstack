@@ -16,7 +16,6 @@ import { createDevLogger } from "@natstack/dev-log";
 import type { Panel, PanelArtifacts, PanelInfo, PanelSummary } from "./types.js";
 import { getPanelSource, getPanelContextId } from "./panel/accessors.js";
 import { contextIdToPartition } from "./contextIdToPartition.js";
-import { contextIdToSubdomain } from "./contextIdToSubdomain.js";
 import type { PanelRelationshipProvider } from "./panelInterfaces.js";
 
 const log = createDevLogger("PanelRegistry");
@@ -28,7 +27,6 @@ const log = createDevLogger("PanelRegistry");
 export interface PanelListItem {
   panelId: string;
   title: string;
-  subdomain: string;
   source: string;
   parentId: string | null;
   contextId: string;
@@ -137,7 +135,6 @@ export class PanelRegistry implements PanelRelationshipProvider {
     return [...this.panels.values()].map((panel) => ({
       panelId: panel.id,
       title: panel.title,
-      subdomain: contextIdToSubdomain(getPanelContextId(panel)),
       source: getPanelSource(panel),
       parentId: this.findParentId(panel.id),
       contextId: getPanelContextId(panel),

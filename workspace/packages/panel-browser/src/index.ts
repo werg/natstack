@@ -49,10 +49,8 @@ export type ImportDataType =
 
 export interface ImportRequest {
   browser: BrowserName;
-  /** Pass a DetectedProfile object or a profile path string. Preferred over profilePath. */
+  /** Pass a DetectedProfile object or a profile path string. */
   profile?: DetectedProfile | string;
-  /** @deprecated Use `profile` instead. Full path to the profile directory. */
-  profilePath?: string;
   dataTypes: ImportDataType[];
   masterPassword?: string;
   csvPasswordFile?: string;

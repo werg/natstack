@@ -33,8 +33,7 @@ import { createHandlerRegistry } from "@natstack/rpc";
 //   (a) requests with no Origin header (Node clients, Electron preload,
 //       native CDP libraries),
 //   (b) explicit "null" Origin (sandboxed iframes, about:blank panels),
-//   (c) origins whose host matches the configured public host or any of
-//       its subdomains (panel pages on `*.<externalHost>`),
+//   (c) origins whose host matches the configured public host,
 //   (d) loopback origins (localhost / 127.0.0.1 / ::1) for dev,
 //   (e) anything in NATSTACK_WS_ALLOWED_ORIGINS (extension origins, etc.)
 //
@@ -51,11 +50,9 @@ export function buildWsOriginAllowList(externalHost: string): WsOriginAllowList 
   const suffix = new Set<string>();
   exact.add(`http://${externalHost}`);
   exact.add(`https://${externalHost}`);
-  suffix.add(externalHost);
   for (const h of ["localhost", "127.0.0.1", "[::1]"]) {
     exact.add(`http://${h}`);
     exact.add(`https://${h}`);
-    suffix.add(h);
   }
   const extra = process.env["NATSTACK_WS_ALLOWED_ORIGINS"];
   if (extra) {

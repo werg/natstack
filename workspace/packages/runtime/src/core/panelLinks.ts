@@ -24,21 +24,6 @@ export interface BuildPanelLinkOptions {
 }
 
 /**
- * Convert a contextId to a valid DNS subdomain label.
- *
- * Shared between server (panelHttpServer.ts) and client (panelLinks.ts).
- */
-export function contextIdToSubdomain(contextId: string): string {
-  const label = contextId
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 63);
-  return label || "default";
-}
-
-/**
  * Build a URL for navigating to a panel.
  *
  * - Same-context (no contextId): returns a relative URL (e.g., "/panels/chat/")

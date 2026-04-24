@@ -10,7 +10,6 @@ export const panelRuntimeSurface: RuntimeSurface = {
     defineContract: valueEntry(),
     noopParent: valueEntry(),
     buildPanelLink: valueEntry(),
-    contextIdToSubdomain: valueEntry(),
     parseContextId: valueEntry(),
     isValidContextId: valueEntry(),
     getInstanceId: valueEntry(),

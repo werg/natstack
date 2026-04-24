@@ -97,7 +97,7 @@ export interface GatewayDeps {
   gitPort?: number;
   /** Workerd port for /_w/ path (reverse proxy) */
   workerdPort?: number | null;
-  /** External hostname for subdomain extraction */
+  /** External hostname for generated public URLs and origin checks */
   externalHost: string;
   /** Bind host (default "0.0.0.0") */
   bindHost?: string;
@@ -344,11 +344,8 @@ function buildOriginAllowList(externalHost: string): { exact: Set<string>; suffi
   // Bare host on http/https.
   exact.add(`http://${externalHost}`);
   exact.add(`https://${externalHost}`);
-  // Subdomain panel pages — match by host suffix.
-  suffix.add(`.${externalHost}`);
   // Loopback dev origins.
   for (const h of ["localhost", "127.0.0.1", "[::1]"]) {
-    suffix.add(`.${h}`);
     exact.add(`http://${h}`);
     exact.add(`https://${h}`);
   }
@@ -371,7 +368,7 @@ function buildOriginAllowList(externalHost: string): { exact: Set<string>; suffi
  *       set Origin on direct ws connects, native CDP libraries),
  *   (b) literal `null` (some `about:blank` / sandboxed iframe contexts),
  *   (c) origin scheme://host[:port] whose host matches an allowed host or
- *       a `*.<externalHost>` suffix.
+ *       an allowed host.
  */
 function isOriginAllowed(
   origin: string | string[] | undefined,

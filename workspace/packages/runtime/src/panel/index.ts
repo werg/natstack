@@ -20,7 +20,7 @@ const { runtime, config } = initRuntime({
 export * as Rpc from "../core/rpc.js";
 export { z } from "../core/zod.js";
 export { defineContract, noopParent } from "../core/defineContract.js";
-export { buildPanelLink, contextIdToSubdomain } from "../core/panelLinks.js";
+export { buildPanelLink } from "../core/panelLinks.js";
 export {
   parseContextId,
   isValidContextId,

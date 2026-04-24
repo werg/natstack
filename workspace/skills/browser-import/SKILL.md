@@ -134,7 +134,7 @@ interface DetectedProfile {
 ### startImport Request & Response
 
 ```typescript
-// Request — pass `profile` (preferred) or `profilePath`
+// Request — pass `profile` as a DetectedProfile object or path string
 interface ImportRequest {
   browser: string;
   profile: DetectedProfile | string;  // pass the profile object or its .path

@@ -2,7 +2,7 @@
  * PanelHttpServer — source-keyed static panel asset server.
  *
  * Panel identity is injected by the host shell before app code runs, so this
- * server only resolves source builds and serves static assets for a subdomain.
+ * server resolves source builds and serves static assets from path-based URLs.
  */
 
 import { createServer, type Server as HttpServer } from "http";
@@ -58,7 +58,6 @@ export interface PanelHttpCallbacks {
   listPanels?(): Array<{
     panelId: string;
     title: string;
-    subdomain: string;
     source: string;
     parentId: string | null;
     contextId: string;
@@ -105,23 +104,6 @@ const ASSET_MIME_TYPES: Record<string, string> = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Extract subdomain from a Host header value.
- * Returns null for bare localhost / 127.0.0.1.
- */
-/**
- * Extract subdomain from a Host header, parameterized by the external host.
- * e.g., for externalHost "localhost": "ctx-abc.localhost:5173" → "ctx-abc"
- * e.g., for externalHost "my-server.com": "ctx-abc.my-server.com:8080" → "ctx-abc"
- */
-function extractSubdomain(hostHeader: string, externalHost: string): string | null {
-  const escapedHost = externalHost.replace(/\./g, "\\.");
-  const multi = hostHeader.match(new RegExp(`^([a-z0-9][a-z0-9-]*[a-z0-9])\\.${escapedHost}(:\\d+)?$`, "i"));
-  if (multi) return multi[1]!.toLowerCase();
-  const single = hostHeader.match(new RegExp(`^([a-z0-9])\\.${escapedHost}(:\\d+)?$`, "i"));
-  return single?.[1]?.toLowerCase() ?? null;
-}
-
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
@@ -146,13 +128,13 @@ function extractSourcePath(pathname: string): { source: string; resource: string
 export class PanelHttpServer {
   private httpServer: HttpServer | null = null;
 
-  /** Serving cache: source → last resolved build (for fast sub-resource serving within a page load) */
+  /** Serving cache: source -> last resolved build (for fast sub-resource serving within a page load) */
   private servingCache = new Map<string, CachedBuild>();
 
   /** Builds currently in flight (dedup concurrent requests) */
   private buildInFlight = new Map<string, Promise<void>>();
 
-  /** Build errors: source → error message (surface to next request) */
+  /** Build errors: source -> error message (surface to next request) */
   private buildErrors = new Map<string, string>();
 
   private port: number | null = null;
@@ -162,11 +144,10 @@ export class PanelHttpServer {
   private protocol: "http" | "https";
 
   /**
-   * Source registry: deterministic subdomain → panel source info.
-   * Populated at startup from the package graph. Enables on-demand panel
-   * creation when a browser visits a known subdomain.
+   * Source registry populated at startup from the package graph.
+   * Used to list launchable panels on the index page.
    */
-  private sourceRegistry = new Map<string, { source: string; name: string }>();
+  private sourceRegistry = new Map<string, { name: string }>();
 
   /** Callbacks for panel-related data (zero per-panel state on server) */
   private callbacks: PanelHttpCallbacks | null = null;
@@ -210,12 +191,11 @@ export class PanelHttpServer {
 
   /**
    * Populate the source registry with available panels from the package graph.
-   * Each entry maps a deterministic subdomain to the panel's source path.
    */
-  populateSourceRegistry(entries: Array<{ subdomain: string; source: string; name: string }>): void {
+  populateSourceRegistry(entries: Array<{ source: string; name: string }>): void {
     this.sourceRegistry.clear();
     for (const entry of entries) {
-      this.sourceRegistry.set(entry.subdomain, { source: entry.source, name: entry.name });
+      this.sourceRegistry.set(entry.source, { name: entry.name });
     }
     log.info(`Source registry populated with ${entries.length} panels`);
   }
@@ -377,9 +357,8 @@ export class PanelHttpServer {
   ): Promise<void> {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     const pathname = url.pathname;
-    const subdomain = extractSubdomain(req.headers.host ?? "", this.externalHost);
 
-    // ── Static runtime helpers (served on both bare host and legacy subdomains) ──
+    // ── Static runtime helpers ────────────────────────────────────────────
     if (pathname === "/__loader.js") {
       res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "public, max-age=3600" });
       res.end(CONFIG_LOADER_JS);
@@ -391,8 +370,8 @@ export class PanelHttpServer {
       return;
     }
 
-    // ── Management API on bare host (no subdomain) ───────────────────────
-    if (!subdomain && pathname.startsWith("/api/")) {
+    // ── Management API ────────────────────────────────────────────────────
+    if (pathname.startsWith("/api/")) {
       this.handleManagementApiRequest(req, res, url, pathname);
       return;
     }
@@ -405,7 +384,7 @@ export class PanelHttpServer {
 
     const parsed = extractSourcePath(pathname);
     if (parsed) {
-      const routeLabel = url.searchParams.get("contextId") || subdomain || parsed.source;
+      const routeLabel = url.searchParams.get("contextId") || parsed.source;
       const ref = url.searchParams.get("ref") || undefined;
       const isHtmlRequest = parsed.resource === "/" || parsed.resource === "/index.html";
       if (isHtmlRequest) {
@@ -421,13 +400,7 @@ export class PanelHttpServer {
       return;
     }
 
-    // ── Legacy subdomain fallback page ─────────────────────────────────────
-    if (subdomain) {
-      this.servePanelClosedPage(res, subdomain);
-      return;
-    }
-
-    // ── No subdomain (127.0.0.1): index page ─────────────────────────
+    // ── Index page ────────────────────────────────────────────────────────
     if (pathname === "/" || pathname === "/index.html") {
       this.serveIndex(res);
       return;
@@ -455,7 +428,7 @@ export class PanelHttpServer {
   private async resolveAndServeBuild(
     res: import("http").ServerResponse,
     source: string,
-    subdomain: string,
+    panelLabel: string,
     waitForResult = true,
     ref?: string,
   ): Promise<void> {
@@ -468,7 +441,8 @@ export class PanelHttpServer {
     // cleared when the new build completes or fails again.
     if (!this.buildInFlight.has(flightKey)) {
       if (!this.callbacks?.getBuild) {
-        this.servePanelClosedPage(res, subdomain);
+        res.writeHead(404, { "Content-Type": "text/plain" });
+        res.end("Panel build service unavailable");
         return;
       }
       const promise = this.callbacks.getBuild(source, ref).then((result) => {
@@ -486,7 +460,7 @@ export class PanelHttpServer {
     }
 
     if (!waitForResult) {
-      this.serveBuildingPage(res, subdomain);
+      this.serveBuildingPage(res, panelLabel);
       return;
     }
 
@@ -506,11 +480,11 @@ export class PanelHttpServer {
         if (error) {
           this.serveBuildErrorPage(res, source, error);
         } else {
-          this.serveBuildingPage(res, subdomain);
+          this.serveBuildingPage(res, panelLabel);
         }
       }
     } else {
-      this.serveBuildingPage(res, subdomain);
+      this.serveBuildingPage(res, panelLabel);
     }
   }
 
@@ -603,7 +577,7 @@ export class PanelHttpServer {
   /**
    * Serve a "building" placeholder page for a pending panel.
    */
-  private serveBuildingPage(res: import("http").ServerResponse, subdomain: string): void {
+  private serveBuildingPage(res: import("http").ServerResponse, panelLabel: string): void {
     const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -624,7 +598,7 @@ export class PanelHttpServer {
 <body>
   <h1>Building Panel</h1>
   <div class="spinner"></div>
-  <p>The panel at <code>${escapeHtml(subdomain)}.${escapeHtml(this.externalHost)}</code> is still building. This page will refresh automatically.</p>
+  <p>The panel <code>${escapeHtml(panelLabel)}</code> is still building. This page will refresh automatically.</p>
 </body>
 </html>`;
 
@@ -746,7 +720,7 @@ export class PanelHttpServer {
   private serveIndex(res: import("http").ServerResponse): void {
     // Use callbacks for running panels
     const runningPanels = this.callbacks?.listPanels?.() ?? [];
-    const runningSubdomains = new Set(runningPanels.map(p => p.subdomain));
+    const runningSources = new Set(runningPanels.map(p => p.source));
 
     // Active panels: currently running with direct links
     const activeEntries = runningPanels.map(p => {
@@ -760,12 +734,12 @@ export class PanelHttpServer {
 
     // Available panels: from source registry, not currently running
     const availableEntries = Array.from(this.sourceRegistry.entries())
-      .filter(([subdomain]) => !runningSubdomains.has(subdomain))
-      .map(([subdomain, { source, name }]) => {
+      .filter(([source]) => !runningSources.has(source))
+      .map(([source, { name }]) => {
         const origin = `${this.protocol}://${this.externalHost}:${this.port}`;
         return `<li>
   <a href="${origin}/${escapeHtml(source)}/">${escapeHtml(name)}</a>
-  <small class="sub">${escapeHtml(subdomain)} · ${escapeHtml(this.externalHost)}/${escapeHtml(source)}</small>
+  <small class="sub">${escapeHtml(this.externalHost)}/${escapeHtml(source)}</small>
 </li>`;
       });
 
@@ -802,33 +776,6 @@ export class PanelHttpServer {
 </html>`;
 
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    res.end(html);
-  }
-
-  private servePanelClosedPage(res: import("http").ServerResponse, subdomain: string): void {
-    const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Panel Closed — NatStack</title>
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 500px; margin: 4rem auto; padding: 0 1rem; text-align: center; color: #e0e0e0; background: #1a1a2e; }
-    h1 { color: #e94560; font-size: 1.5rem; }
-    p { color: #888; line-height: 1.6; }
-    a { color: #0a84ff; }
-    code { background: #16213e; padding: 0.1em 0.4em; border-radius: 3px; }
-  </style>
-</head>
-<body>
-  <h1>Panel Closed</h1>
-  <p>The panel at <code>${escapeHtml(subdomain)}.${escapeHtml(this.externalHost)}</code> is no longer running.</p>
-  <p><a href="${this.protocol}://${this.externalHost}:${this.port}/">View active panels</a></p>
-</body>
-</html>`;
-
-    res.writeHead(410, { "Content-Type": "text/html; charset=utf-8" });
     res.end(html);
   }
 

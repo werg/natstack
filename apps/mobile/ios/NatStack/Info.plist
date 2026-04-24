@@ -65,12 +65,11 @@
 		LAN/loopback (no public-internet cleartext) and per-domain
 		exceptions cover the literal hosts the dev server binds to.
 		TODO(security-audit-agent-5): if a developer needs cleartext
-		against another host (e.g. a *.nip.io or *.lvh.me wildcard for
-		panel subdomain routing during local dev), add a scoped
-		NSExceptionDomains entry rather than re-enabling
-		NSAllowsArbitraryLoads. Production releases must NOT add public
-		cleartext domains here; the React Native shell talks to the
-		server over wss:// and panel pages over https://.
+		against another host, add a scoped NSExceptionDomains entry
+		rather than re-enabling NSAllowsArbitraryLoads. Production
+		releases must NOT add public cleartext domains here; the React
+		Native shell talks to the server over wss:// and panel pages
+		over https://.
 	-->
 	<key>NSAppTransportSecurity</key>
 	<dict>

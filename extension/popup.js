@@ -66,7 +66,7 @@ function render(status) {
 
     const sub = document.createElement("div");
     sub.className = "panel-sub";
-    sub.textContent = `${panel.subdomain}.localhost`;
+    sub.textContent = panel.source || panel.contextId || panel.panelId;
 
     info.appendChild(title);
     info.appendChild(sub);

@@ -14,7 +14,6 @@ import { getAppRoot, getCentralConfigDirectory } from "./paths.js";
 import {
   resolveWorkspaceName,
   resolveOrCreateWorkspace,
-  loadCentralConfig,
 } from "@natstack/shared/workspace/loader";
 import type { CentralDataManager } from "@natstack/shared/centralData";
 import { loadRemoteCredentials } from "./remoteCredentialStore.js";
@@ -33,7 +32,7 @@ export type StartupMode =
   | { kind: "remote"; remoteUrl: URL; adminToken: string; tls?: RemoteTlsOptions };
 
 function isLoopbackHostname(hostname: string): boolean {
-  if (hostname === "localhost" || hostname.endsWith(".localhost")) {
+  if (hostname === "localhost") {
     return true;
   }
 
@@ -61,24 +60,21 @@ export function isTrustworthyRemoteOrigin(remoteUrl: URL): boolean {
 }
 
 /**
- * Parse remote startup mode from env vars, falling back to config.yml.
+ * Parse remote startup mode from env vars or the safeStorage-backed store.
  * Returns null if not in remote mode.
  *
- * Priority: environment variables > config.yml > nothing
+ * Priority: environment variables > safeStorage-backed store > nothing
  */
 export function parseRemoteStartupMode(): { remoteUrl: URL; adminToken: string; tls?: RemoteTlsOptions } | null {
-  const centralConfig = loadCentralConfig();
   const stored = loadRemoteCredentials();
 
-  // Resolution order: env var → safeStorage-backed store → legacy config.yml
+  // Resolution order: env var -> safeStorage-backed store.
   const rawUrl =
     process.env["NATSTACK_REMOTE_URL"] ??
-    stored?.url ??
-    centralConfig.remote?.url;
+    stored?.url;
   const adminToken =
     process.env["NATSTACK_REMOTE_TOKEN"] ??
-    stored?.token ??
-    centralConfig.remote?.token;
+    stored?.token;
 
   if (!rawUrl || !adminToken) return null;
 
@@ -96,18 +92,16 @@ export function parseRemoteStartupMode(): { remoteUrl: URL; adminToken: string; 
   if (!isTrustworthyRemoteOrigin(remoteUrl)) {
     throw new Error(
       "Invalid NATSTACK_REMOTE_URL: remote panel mode requires HTTPS, or loopback HTTP " +
-      "(localhost, *.localhost, 127.0.0.1, ::1)"
+      "(localhost, 127.0.0.1, ::1)"
     );
   }
 
   const caPath =
     process.env["NATSTACK_REMOTE_CA"] ??
-    stored?.caPath ??
-    centralConfig.remote?.caPath;
+    stored?.caPath;
   const fingerprint =
     process.env["NATSTACK_REMOTE_FINGERPRINT"] ??
-    stored?.fingerprint ??
-    centralConfig.remote?.fingerprint;
+    stored?.fingerprint;
   const tls: RemoteTlsOptions | undefined =
     caPath || fingerprint ? { caPath, fingerprint: normalizeFingerprint(fingerprint) } : undefined;
 

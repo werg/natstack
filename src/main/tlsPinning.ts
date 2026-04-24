@@ -112,8 +112,7 @@ export function createPinnedHttpsAgent(expectedFingerprint: string): HttpsAgent 
  * Install a pinned `setCertificateVerifyProc` on a single Electron session.
  *
  * For a request to succeed it must:
- *   1. resolve a hostname under `managedHost` (the host or any subdomain),
- *      AND
+ *   1. resolve exactly to `managedHost`, AND
  *   2. present a leaf certificate whose SHA-256 fingerprint matches
  *      `expectedFingerprintUpper`.
  *
@@ -138,9 +137,7 @@ export function installPinnedVerifyProcOnSession(
   expectedFingerprintUpper: string,
 ): void {
   targetSession.setCertificateVerifyProc((request, callback) => {
-    const sameManagedHost =
-      request.hostname === managedHost ||
-      request.hostname.endsWith(`.${managedHost}`);
+    const sameManagedHost = request.hostname === managedHost;
 
     if (!sameManagedHost) {
       // Not the managed host: defer to Chromium's default chain check so

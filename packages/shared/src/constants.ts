@@ -35,7 +35,7 @@ export const DEFAULT_MAX_STEPS = 10;
  */
 export function buildPanelCsp(externalHost?: string): string {
   const hostEntries = externalHost && externalHost !== "localhost"
-    ? ` ws://*.${externalHost}:* wss://*.${externalHost}:* http://*.${externalHost}:* https://*.${externalHost}:*`
+    ? ` ws://${externalHost}:* wss://${externalHost}:* http://${externalHost}:* https://${externalHost}:*`
     : "";
   return [
     "default-src 'self' https: data: blob:",

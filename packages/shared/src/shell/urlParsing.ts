@@ -14,7 +14,7 @@ export interface ParsedPanelUrl {
 }
 
 /**
- * Check if a URL targets a managed host (with or without explicit port).
+ * Check if a URL targets the managed host (with or without explicit port).
  *
  * @param url - The URL to check
  * @param externalHost - The managed host domain (e.g. "natstack.example.com")
@@ -22,7 +22,7 @@ export interface ParsedPanelUrl {
 export function isManagedHost(url: string, externalHost: string): boolean {
   try {
     const u = new URL(url);
-    return u.hostname.endsWith(`.${externalHost}`) || u.hostname === externalHost;
+    return u.hostname === externalHost;
   } catch {
     return false;
   }
@@ -38,7 +38,7 @@ export function isManagedHost(url: string, externalHost: string): boolean {
 export function parsePanelUrl(url: string, externalHost: string): ParsedPanelUrl | null {
   try {
     const u = new URL(url);
-    if (!u.hostname.endsWith(`.${externalHost}`) && u.hostname !== externalHost) return null;
+    if (u.hostname !== externalHost) return null;
 
     const match = u.pathname.match(/^\/([^/]+\/[^/]+)(\/.*)?$/);
     if (!match) return null;

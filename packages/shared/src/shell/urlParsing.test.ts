@@ -12,25 +12,16 @@ describe("isManagedHost()", () => {
     expect(isManagedHost("https://natstack.example.com/path", host)).toBe(true);
   });
 
-  it("returns true for subdomain of managed host", () => {
-    expect(
-      isManagedHost("https://panel.natstack.example.com/path", host)
-    ).toBe(true);
-  });
-
-  it("returns true for deeply nested subdomain", () => {
-    expect(
-      isManagedHost("https://a.b.c.natstack.example.com/path", host)
-    ).toBe(true);
-  });
-
-  it("returns true regardless of port", () => {
+  it("matches exact host regardless of port", () => {
     expect(
       isManagedHost("https://natstack.example.com:8080/path", host)
     ).toBe(true);
+  });
+
+  it("returns false for subdomains", () => {
     expect(
       isManagedHost("https://sub.natstack.example.com:3000/path", host)
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("returns false for completely different host", () => {
@@ -188,14 +179,13 @@ describe("parsePanelUrl()", () => {
     expect(result).toBeNull();
   });
 
-  it("works with subdomain URLs", () => {
+  it("returns null for subdomain URLs", () => {
     const result = parsePanelUrl(
       "https://sub.natstack.example.com/panels/chat",
       host
     );
 
-    expect(result).not.toBeNull();
-    expect(result!.source).toBe("panels/chat");
+    expect(result).toBeNull();
   });
 
   it("parses URL with multiple query params", () => {

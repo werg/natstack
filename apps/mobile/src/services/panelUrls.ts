@@ -6,7 +6,6 @@
  */
 
 import { isManagedHost, parsePanelUrl } from "@natstack/shared/shell/urlParsing";
-import { contextIdToSubdomain } from "@natstack/shared/contextIdToSubdomain";
 
 export { isManagedHost, parsePanelUrl };
 
@@ -47,7 +46,7 @@ export function parseHostConfig(serverUrl: string): HostConfig {
  * Build the full URL to load a panel in a WebView.
  *
  * @param source - Panel source path (e.g. "panels/chat")
- * @param contextId - Context ID for subdomain isolation
+ * @param contextId - Context ID for storage partition sharing
  * @param hostConfig - Parsed server host configuration
  *
  * @returns The URL string to load in the WebView
@@ -57,10 +56,10 @@ export function buildPanelUrl(
   contextId: string,
   hostConfig: HostConfig,
 ): string {
-  const subdomain = contextIdToSubdomain(contextId);
   const portSuffix = hostConfig.port ? `:${hostConfig.port}` : "";
-  const origin = `${hostConfig.protocol}://${subdomain}.${hostConfig.host}${portSuffix}`;
-  return `${origin}/${source}/`;
+  const origin = `${hostConfig.protocol}://${hostConfig.host}${portSuffix}`;
+  const encodedPath = encodeURIComponent(source).replace(/%2F/g, "/");
+  return `${origin}/${encodedPath}/?contextId=${encodeURIComponent(contextId)}`;
 }
 
 /**
