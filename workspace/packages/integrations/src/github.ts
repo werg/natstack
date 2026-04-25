@@ -1,10 +1,11 @@
 import { connect, type CredentialHandle } from "../../runtime/src/worker/credentials.js";
+import { githubProvider } from "./providers.js";
 
 const GITHUB_API_BASE = "https://api.github.com";
 const GITHUB_ACCEPT_HEADER = "application/vnd.github+json";
 
 export const manifest = {
-  providers: ["github"],
+  providers: [githubProvider],
   scopes: {
     github: ["repo", "read_user"],
   },
@@ -183,7 +184,7 @@ let github: CredentialHandle | undefined;
 
 async function ensureAuth(): Promise<CredentialHandle> {
   if (!github) {
-    github = await connect("github");
+    github = await connect(githubProvider);
   }
   return github;
 }

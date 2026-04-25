@@ -39,7 +39,13 @@ describe("worker credentials RPC", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const handle = await connect("github");
+    const provider = {
+      id: "github",
+      displayName: "GitHub",
+      apiBase: ["https://api.github.com"],
+      flows: [],
+    };
+    const handle = await connect(provider);
 
     expect(handle.connectionId).toBe("conn-1");
     expect(handle.providerId).toBe("github");
@@ -52,6 +58,6 @@ describe("worker credentials RPC", () => {
     expect(body.targetId).toBe("main");
     expect(body.method).toBe("credentials.resolveConnection");
     expect(body.method).not.toBe("main.credentials.resolveConnection");
-    expect(body.args).toEqual([{ providerId: "github", connectionId: undefined }]);
+    expect(body.args).toEqual([{ providerId: "github", provider, connectionId: undefined }]);
   });
 });

@@ -20,7 +20,7 @@ export function createBrowserService(deps: {
   return {
     name: "browser",
     description: "CDP/browser automation",
-    policy: { allowed: ["shell", "panel", "server"] },
+    policy: { allowed: ["shell", "panel", "server", "worker"] },
     methods: {
       getCdpEndpoint: { args: z.tuple([z.string()]) },
       navigate: { args: z.tuple([z.string(), z.string()]) },

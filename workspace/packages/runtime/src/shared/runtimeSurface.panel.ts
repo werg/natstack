@@ -82,6 +82,9 @@ export const panelRuntimeSurface: RuntimeSurface = {
     ]),
     credentials: namespaceEntry([
       "connect",
+      "capabilityFor",
+      "hookFor",
+      "metadata",
       "revokeConsent",
       "listConnections",
       "subscribeWebhook",

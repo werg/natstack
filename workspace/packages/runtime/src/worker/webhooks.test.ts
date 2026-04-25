@@ -2,6 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 
 import { registerManifestWebhooks } from "./webhooks.js";
 
+const googleWorkspaceProvider = {
+  id: "google-workspace",
+  displayName: "Google Workspace",
+  apiBase: ["https://gmail.googleapis.com"],
+  flows: [],
+};
+
 describe("registerManifestWebhooks", () => {
   it("exposes and subscribes manifest-declared webhook handlers", async () => {
     const exposeMethod = vi.fn();
@@ -25,7 +32,7 @@ describe("registerManifestWebhooks", () => {
       {
         gmail: {
           manifest: {
-            providers: ["google-workspace"],
+            providers: [googleWorkspaceProvider],
             scopes: { "google-workspace": ["gmail_readonly"] },
             endpoints: {},
             webhooks: {
@@ -52,7 +59,7 @@ describe("registerManifestWebhooks", () => {
       expect.stringContaining("__webhook__.gmail"),
       expect.any(Function),
     );
-    expect(subscribeWebhook).toHaveBeenCalledWith("google-workspace", "message.new", {
+    expect(subscribeWebhook).toHaveBeenCalledWith(googleWorkspaceProvider, "message.new", {
       connectionId: undefined,
       handler: expect.stringContaining("__webhook__.gmail"),
     });

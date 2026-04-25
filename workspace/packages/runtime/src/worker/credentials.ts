@@ -18,6 +18,8 @@ import {
   type ConnectionRecord,
   type CredentialClient,
   type CredentialHandle,
+  type ProviderDescriptor,
+  type ProviderRequest,
 } from "../shared/credentials.js";
 
 async function callHostRpc<T>(method: string, ...args: unknown[]): Promise<T> {
@@ -71,7 +73,7 @@ const client: CredentialClient = createCredentialClient({
 });
 
 export async function connect(
-  providerId: string,
+  providerId: ProviderRequest,
   opts?: { connectionId?: string },
 ): Promise<CredentialHandle> {
   return client.connect(providerId, opts);
@@ -89,7 +91,7 @@ export async function listConnections(providerId?: string): Promise<ConnectionRe
 }
 
 export async function subscribeWebhook(
-  providerId: string,
+  providerId: ProviderRequest,
   eventType: string,
   opts: { handler: string; connectionId?: string },
 ): Promise<{ subscriptionId: string; leaseId?: string }> {
@@ -108,4 +110,4 @@ export async function listWebhookLeases(filter?: {
   return client.listWebhookLeases(filter);
 }
 
-export type { CredentialHandle, ConnectionRecord, CredentialClient };
+export type { CredentialHandle, ConnectionRecord, CredentialClient, ProviderDescriptor, ProviderRequest };

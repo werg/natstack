@@ -5,11 +5,13 @@ const CREATE_CONSENT_TABLE_SQL = `
     code_identity TEXT NOT NULL,
     code_identity_type TEXT NOT NULL,
     provider_id TEXT NOT NULL,
+    provider_fingerprint TEXT NOT NULL DEFAULT '',
+    provider_audience TEXT NOT NULL DEFAULT '[]',
     connection_id TEXT NOT NULL,
     scopes TEXT NOT NULL DEFAULT '[]',
     granted_at INTEGER NOT NULL,
     granted_by TEXT NOT NULL,
-    PRIMARY KEY (code_identity, code_identity_type, provider_id)
+    PRIMARY KEY (code_identity, code_identity_type, provider_id, provider_fingerprint)
   )
 `;
 
@@ -17,6 +19,8 @@ interface ConsentGrantRow {
   code_identity: string;
   code_identity_type: "repo" | "hash";
   provider_id: string;
+  provider_fingerprint?: string;
+  provider_audience?: string;
   connection_id: string;
   scopes: string;
   granted_at: number;
@@ -46,6 +50,8 @@ function rowToGrant(row: ConsentGrantRow): ConsentGrant {
     codeIdentity: row.code_identity,
     codeIdentityType: row.code_identity_type,
     providerId: row.provider_id,
+    providerFingerprint: row.provider_fingerprint || undefined,
+    providerAudience: parseAudience(row.provider_audience),
     connectionId: row.connection_id,
     scopes: parseScopes(row.scopes),
     grantedAt: row.granted_at,
@@ -69,6 +75,9 @@ export class ConsentGrantStore {
       scopes: normalizeScopes(grant.scopes),
       grantedAt: grant.grantedAt || Date.now(),
     };
+    if (!normalizedGrant.providerFingerprint) {
+      throw new Error("Consent grants must include a provider fingerprint");
+    }
 
     if (normalizedGrant.transient) {
       this.transientGrants.set(this.getGrantKey(normalizedGrant), normalizedGrant);
@@ -81,12 +90,16 @@ export class ConsentGrantStore {
           code_identity,
           code_identity_type,
           provider_id,
+          provider_fingerprint,
+          provider_audience,
           connection_id,
           scopes,
           granted_at,
           granted_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(code_identity, code_identity_type, provider_id) DO UPDATE SET
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(code_identity, code_identity_type, provider_id, provider_fingerprint) DO UPDATE SET
+          provider_fingerprint = excluded.provider_fingerprint,
+          provider_audience = excluded.provider_audience,
           connection_id = excluded.connection_id,
           scopes = excluded.scopes,
           granted_at = excluded.granted_at,
@@ -96,6 +109,8 @@ export class ConsentGrantStore {
         normalizedGrant.codeIdentity,
         normalizedGrant.codeIdentityType,
         normalizedGrant.providerId,
+        normalizedGrant.providerFingerprint,
+        JSON.stringify(normalizedGrant.providerAudience ?? []),
         normalizedGrant.connectionId,
         JSON.stringify(normalizedGrant.scopes),
         normalizedGrant.grantedAt,
@@ -127,7 +142,7 @@ export class ConsentGrantStore {
 
     const rows = await this.db.all<ConsentGrantRow>(
       `
-        SELECT code_identity, code_identity_type, provider_id, connection_id, scopes, granted_at, granted_by
+        SELECT code_identity, code_identity_type, provider_id, provider_fingerprint, provider_audience, connection_id, scopes, granted_at, granted_by
         FROM credential_consent
         WHERE code_identity = ? AND code_identity_type = 'repo'
         ORDER BY provider_id, connection_id
@@ -151,17 +166,19 @@ export class ConsentGrantStore {
     repoPath: string;
     effectiveVersion: string;
     providerId: string;
+    providerFingerprint: string;
   }): Promise<ConsentGrant | null> {
     await this.ready;
 
     const repoRows = await this.db.all<ConsentGrantRow>(
       `
-        SELECT code_identity, code_identity_type, provider_id, connection_id, scopes, granted_at, granted_by
+        SELECT code_identity, code_identity_type, provider_id, provider_fingerprint, provider_audience, connection_id, scopes, granted_at, granted_by
         FROM credential_consent
         WHERE code_identity = ? AND code_identity_type = 'repo' AND provider_id = ?
+          AND provider_fingerprint = ?
         ORDER BY granted_at DESC
       `,
-      [query.repoPath, query.providerId],
+      [query.repoPath, query.providerId, query.providerFingerprint],
     );
     if (repoRows[0]) {
       return rowToGrant(repoRows[0]);
@@ -170,12 +187,13 @@ export class ConsentGrantStore {
     if (query.effectiveVersion) {
       const hashRows = await this.db.all<ConsentGrantRow>(
         `
-          SELECT code_identity, code_identity_type, provider_id, connection_id, scopes, granted_at, granted_by
+          SELECT code_identity, code_identity_type, provider_id, provider_fingerprint, provider_audience, connection_id, scopes, granted_at, granted_by
           FROM credential_consent
           WHERE code_identity = ? AND code_identity_type = 'hash' AND provider_id = ?
+            AND provider_fingerprint = ?
           ORDER BY granted_at DESC
         `,
-        [query.effectiveVersion, query.providerId],
+        [query.effectiveVersion, query.providerId, query.providerFingerprint],
       );
       if (hashRows[0]) {
         return rowToGrant(hashRows[0]);
@@ -184,6 +202,9 @@ export class ConsentGrantStore {
 
     for (const grant of this.transientGrants.values()) {
       if (grant.providerId !== query.providerId) {
+        continue;
+      }
+      if (grant.providerFingerprint !== query.providerFingerprint) {
         continue;
       }
       if (
@@ -197,7 +218,16 @@ export class ConsentGrantStore {
     return null;
   }
 
-  private getGrantKey(grant: Pick<ConsentGrant, "codeIdentity" | "codeIdentityType" | "providerId">): string {
-    return `${grant.codeIdentityType}:${grant.codeIdentity}:${grant.providerId}`;
+  private getGrantKey(grant: Pick<ConsentGrant, "codeIdentity" | "codeIdentityType" | "providerId" | "providerFingerprint">): string {
+    return `${grant.codeIdentityType}:${grant.codeIdentity}:${grant.providerId}:${grant.providerFingerprint}`;
   }
+}
+
+function parseAudience(rawAudience: string | undefined): string[] | undefined {
+  if (!rawAudience) return undefined;
+  const parsed = JSON.parse(rawAudience) as unknown;
+  if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== "string")) {
+    throw new Error("Invalid consent audience stored in credential_consent");
+  }
+  return parsed.length > 0 ? parsed : undefined;
 }

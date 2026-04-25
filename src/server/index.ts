@@ -391,8 +391,6 @@ async function main() {
   const { CredentialStore } = await import("../../packages/shared/src/credentials/store.js");
   const { ConsentGrantStore } = await import("../../packages/shared/src/credentials/consent.js");
   const { AuditLog } = await import("../../packages/shared/src/credentials/audit.js");
-  const { ProviderRegistry } = await import("../../packages/shared/src/credentials/registry.js");
-  const { builtinProviders } = await import("../../packages/shared/src/credentials/providers/index.js");
   const { WebhookSubscriptionStore } = await import("../../packages/shared/src/webhooks/subscription.js");
   const { CodeIdentityResolver } = await import("./services/codeIdentityResolver.js");
   const { createEgressProxy } = await import("./services/egressProxy.js");
@@ -401,11 +399,6 @@ async function main() {
   const BetterSqlite = (await import("better-sqlite3")).default;
 
   const credentialStore = new CredentialStore();
-  const providerRegistry = new ProviderRegistry();
-  for (const manifest of builtinProviders) {
-    providerRegistry.register(manifest);
-  }
-  providerRegistry.applyEnvironment();
   const consentDb = new BetterSqlite(path.join(statePath, "credentials-consent.sqlite"));
   const consentStore = new ConsentGrantStore({
     run(sql: string, params: readonly unknown[] = []) {
@@ -436,7 +429,6 @@ async function main() {
   const { WebhookWatchManager } = await import("./services/webhookWatchManager.js");
   const webhookWatchManager = new WebhookWatchManager({
     credentialStore,
-    providerRegistry,
     webhookStore,
     relayBaseUrl: process.env["NATSTACK_WEBHOOK_RELAY_URL"],
   });
@@ -452,14 +444,32 @@ async function main() {
       await rpcServerForWebhooks.callTarget(callerId, handler, event);
     },
   });
+  const { createApprovalQueue } = await import("./services/approvalQueue.js");
+  const approvalQueue = createApprovalQueue({ eventService });
+
+  const { createConsentGate } = await import("./services/consentGate.js");
+  const consentGate = createConsentGate({
+    credentialStore,
+    consentStore,
+    approvalQueue,
+  });
+
+  const { createCapabilityBroker } = await import("./services/capabilityBroker.js");
+  const capabilityBroker = createCapabilityBroker({
+    credentialStore,
+    consentGate,
+    resolveIdentity: (callerId) => codeIdentityResolver.resolveByCallerId(callerId),
+  });
+
   const egressProxy = createEgressProxy({
     credentialStore,
     consentStore,
-    providerRegistry,
     auditLog,
     rateLimiter: new EgressRateLimiterAdapter(),
     circuitBreaker: new EgressCircuitBreakerAdapter(),
     codeIdentityResolver,
+    approvalQueue,
+    capabilityBroker,
   });
   const egressProxyPort = await egressProxy.start();
 
@@ -627,6 +637,10 @@ async function main() {
   const notificationInternal = notificationResult.internal;
   container.register(rpcService(notificationResult.definition));
 
+  // ── Shell approval service (consent bar queue) ──
+  const { createShellApprovalService } = await import("./services/shellApprovalService.js");
+  container.register(rpcService(createShellApprovalService({ approvalQueue })));
+
   // ── Credential service ──
   {
     const { createCredentialService } = await import("./services/credentialService.js");
@@ -634,12 +648,18 @@ async function main() {
       credentialStore,
       consentStore,
       auditLog,
-      providerRegistry,
       egressProxy,
       codeIdentityResolver,
       webhookStore,
       webhookWatchManager,
+      capabilityBroker,
     })));
+  }
+
+  // ── Capability broker service ──
+  {
+    const { createCapabilityService } = await import("./services/capabilityService.js");
+    container.register(rpcService(createCapabilityService({ broker: capabilityBroker })));
   }
 
   // ── Webhook ingress + watch inspection ──
@@ -691,6 +711,22 @@ async function main() {
 
       // Wire per-instance identity tokens into DO dispatch.
       doDispatch.setTokenManager(tokenManager);
+      doDispatch.setBeforeDispatch(async (ref) => {
+        let identity = workerdManager.getDoCodeIdentity(ref.source, ref.className);
+        if (!identity) {
+          await workerdManager.ensureDOClass(ref.source, ref.className);
+          identity = workerdManager.getDoCodeIdentity(ref.source, ref.className);
+        }
+        if (!identity) {
+          return;
+        }
+        codeIdentityResolver.upsertCallerIdentity({
+          callerId: `do:${ref.source}:${ref.className}:${ref.objectKey}`,
+          callerKind: "worker",
+          repoPath: identity.repoPath,
+          effectiveVersion: identity.effectiveVersion,
+        });
+      });
       doDispatch.setGetWorkerdUrl(() => {
         const port = workerdManager.getPort();
         if (!port) {
@@ -775,13 +811,15 @@ async function main() {
     let workerServiceDef: import("@natstack/shared/serviceDefinition").ServiceDefinition;
     container.register({
       name: "workersRpc",
-      dependencies: ["doDispatch", "buildSystem"],
+      dependencies: ["doDispatch", "buildSystem", "fsService"],
       async start(resolve) {
         const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
         const buildSystemInst = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
+        const fsServiceInst = resolve<import("@natstack/shared/fsService").FsService>("fsService")!;
         workerServiceDef = createWorkerService({
           doDispatch,
           buildSystem: buildSystemInst,
+          fsService: fsServiceInst,
         });
       },
       getServiceDefinition() {

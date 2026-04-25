@@ -1,4 +1,5 @@
 export interface ProviderManifest {
+  /** Userland storage/display namespace. Not a credential authority boundary. */
   id: string;
   displayName: string;
   clientId?: string;
@@ -10,6 +11,12 @@ export interface ProviderManifest {
   rateLimits?: RateLimitConfig;
   retry?: RetryConfig;
   refreshBufferSeconds?: number;
+  /**
+   * Optional override for capability-token shape detection. Needed only for
+   * providers whose SDKs validate format beyond a known prefix (e.g. Google
+   * API keys require a fixed total length).
+   */
+  capabilityShape?: CapabilityShape;
   whoami?: {
     url: string;
     identityPath: {
@@ -31,6 +38,11 @@ export interface AuthInjection {
   paramName?: string;
   stripHeaders?: string[];
 }
+
+export type CapabilityShape =
+  | { kind: "opaque"; totalLength?: number }
+  | { kind: "prefixed-opaque"; prefix: string; bodyLength?: number }
+  | { kind: "jwt-passthrough" };
 
 export interface FlowConfig {
   type:
@@ -56,6 +68,11 @@ export interface FlowConfig {
   envVar?: string;
   extraAuthorizeParams?: Record<string, string>;
   fixedScope?: string;
+  loopback?: {
+    host?: string;
+    port?: number;
+    callbackPath?: string;
+  };
   tokenMetadata?: Record<string, {
     source: "jwt-claim" | "response-field";
     path: string;
@@ -63,7 +80,15 @@ export interface FlowConfig {
 }
 
 export interface Credential {
+  /** Userland storage/display namespace. Not a credential authority boundary. */
   providerId: string;
+  /**
+   * Stable hash of the userland provider descriptor that created this
+   * credential's authority boundary. Credentials are only reusable with
+   * descriptors that declare the same URL prefixes and injection contract.
+   */
+  providerFingerprint?: string;
+  providerAudience?: string[];
   connectionId: string;
   connectionLabel: string;
   accountIdentity: AccountIdentity;
@@ -90,7 +115,10 @@ export interface CredentialHandle {
 export interface ConsentGrant {
   codeIdentity: string;
   codeIdentityType: "repo" | "hash";
+  /** Userland storage/display namespace. Authority is providerFingerprint. */
   providerId: string;
+  providerFingerprint?: string;
+  providerAudience?: string[];
   connectionId: string;
   scopes: string[];
   grantedAt: number;

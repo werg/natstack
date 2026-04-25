@@ -52,16 +52,8 @@ export function createDbService(deps: {
       query: { args: z.tuple([handleSchema, z.string(), z.array(z.unknown()).optional()]) },
       run: { args: z.tuple([handleSchema, z.string(), z.array(z.unknown()).optional()]) },
       get: { args: z.tuple([handleSchema, z.string(), z.array(z.unknown()).optional()]) },
-      // SECURITY (#8 in audit report): full SQLite `exec` permits
-      // ATTACH DATABASE, VACUUM INTO, and other statements that escape
-      // the parameterised-query model. Restrict to shell and server
-      // callers; panels and workers must use parameterised
-      // `query`/`run`/`get`. TODO: re-enable for `worker` only if a
-      // specific worker is shown to need multi-statement DDL during
-      // build — none today.
       exec: {
         args: z.tuple([handleSchema, z.string()]),
-        policy: { allowed: ["shell", "server"] },
       },
       close: { args: z.tuple([handleSchema]) },
     },

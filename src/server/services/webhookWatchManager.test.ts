@@ -23,7 +23,6 @@ describe("WebhookWatchManager", () => {
     const touchLeaseDelivery = vi.fn();
     const manager = new WebhookWatchManager({
       credentialStore: { load: vi.fn() },
-      providerRegistry: { get: vi.fn() },
       webhookStore: {
         countSubscriptionsForLease: vi.fn(),
         deleteLease: vi.fn(),
@@ -62,7 +61,6 @@ describe("WebhookWatchManager", () => {
     const touchLeaseDelivery = vi.fn();
     const manager = new WebhookWatchManager({
       credentialStore: { load: vi.fn() },
-      providerRegistry: { get: vi.fn() },
       webhookStore: {
         countSubscriptionsForLease: vi.fn(),
         deleteLease: vi.fn(),

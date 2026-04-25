@@ -64,7 +64,6 @@ function createMockDeps(overrides: Partial<WorkerdManagerDeps> = {}): WorkerdMan
     getProxyPort: () => 49444,
     codeIdentityResolver: {
       upsertCallerIdentity: vi.fn(),
-      registerProxyToken: vi.fn(),
       unregisterCaller: vi.fn(),
     } as any,
     ...overrides,

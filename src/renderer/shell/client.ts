@@ -107,7 +107,7 @@ export const view = {
   setVisible: (viewId: string, visible: boolean) =>
     rpc.call<void>("main", "view.setVisible", viewId, visible),
   setThemeCss: (css: string) => rpc.call<void>("main", "view.setThemeCss", css),
-  updateLayout: (layout: { titleBarHeight?: number; sidebarVisible?: boolean; sidebarWidth?: number; saveBarHeight?: number; notificationBarHeight?: number }) =>
+  updateLayout: (layout: { titleBarHeight?: number; sidebarVisible?: boolean; sidebarWidth?: number; saveBarHeight?: number; notificationBarHeight?: number; consentBarHeight?: number }) =>
     rpc.call<void>("main", "view.updateLayout", layout),
   setShellOverlay: (active: boolean) =>
     rpc.call<void>("main", "view.setShellOverlay", active),
@@ -218,18 +218,11 @@ export const tokens = {
 // Credential Flow Service
 // =============================================================================
 
-export interface CredentialProvider {
-  id: string;
-  name: string;
-  kind: "oauth" | "env";
-  status: "connected" | "configured" | "disconnected" | "unconfigured";
-  envVar?: string;
-}
+export type CredentialFlowProviderRequest = { id: string; [key: string]: unknown };
 
 export const credentialFlow = {
-  listProviders: () => rpc.call<CredentialProvider[]>("main", "credentialFlow.listProviders"),
-  connect: (providerId: string) =>
-    rpc.call<{ success: boolean; error?: string }>("main", "credentialFlow.connect", providerId),
+  connect: (provider: CredentialFlowProviderRequest) =>
+    rpc.call<{ success: boolean; error?: string }>("main", "credentialFlow.connect", provider),
   disconnect: (providerId: string) => rpc.call<void>("main", "credentialFlow.disconnect", providerId),
 };
 
@@ -269,6 +262,18 @@ export const notification = {
     rpc.call<void>("main", "notification.reportAction", id, actionId),
   dismiss: (id: string) =>
     rpc.call<void>("main", "notification.dismiss", id),
+};
+
+// =============================================================================
+// Shell Approval Service (consent approval queue)
+// =============================================================================
+
+import type { ApprovalDecision, PendingApproval } from "@natstack/shared/approvals";
+
+export const shellApproval = {
+  resolve: (approvalId: string, decision: ApprovalDecision) =>
+    rpc.call<void>("main", "shellApproval.resolve", approvalId, decision),
+  listPending: () => rpc.call<PendingApproval[]>("main", "shellApproval.listPending"),
 };
 
 // =============================================================================

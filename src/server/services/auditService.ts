@@ -64,7 +64,7 @@ export function createAuditService(auditLog: AuditLog): ServiceDefinition {
   return {
     name: "audit",
     description: "Audit log query access",
-    policy: { allowed: ["shell", "panel", "server"] },
+    policy: { allowed: ["shell", "panel", "server", "worker"] },
     methods: {
       query: {
         args: z.tuple([auditQuerySchema.optional()]),

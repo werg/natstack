@@ -111,7 +111,7 @@ export interface WorkerdManagerDeps {
   /** Manifest-route lookup, keyed by source. Used alongside routeRegistry. */
   getManifestRoutes?: (source: string) => ManifestRouteDecl[];
   getProxyPort: () => number | null;
-  codeIdentityResolver: Pick<CodeIdentityResolver, "upsertCallerIdentity" | "registerProxyToken" | "unregisterCaller">;
+  codeIdentityResolver: Pick<CodeIdentityResolver, "upsertCallerIdentity" | "unregisterCaller">;
   cleanupWebhookSubscriptions?: (callerId: string) => Promise<void>;
 }
 
@@ -333,6 +333,17 @@ export class WorkerdManager {
     return this.dispatchSecret;
   }
 
+  getDoCodeIdentity(source: string, className: string): { repoPath: string; effectiveVersion: string } | null {
+    const service = this.doServices.get(`${source}:${className}`);
+    if (!service) {
+      return null;
+    }
+    return {
+      repoPath: service.source,
+      effectiveVersion: service.buildKey,
+    };
+  }
+
   // =========================================================================
   // Config generation
   // =========================================================================
@@ -365,17 +376,14 @@ export class WorkerdManager {
       const serviceCallerId = `do-service:${serviceKey}`;
       const serviceToken = this.deps.tokenManager.ensureToken(serviceCallerId, "worker");
 
-      const doProxyAuthToken = crypto.randomBytes(24).toString("base64url");
       this.deps.codeIdentityResolver.upsertCallerIdentity({
         callerId: serviceCallerId,
         callerKind: "worker",
         repoPath: doService.source,
         effectiveVersion: doService.buildKey,
       });
-      this.deps.codeIdentityResolver.registerProxyToken(doProxyAuthToken, serviceCallerId);
       const bindings: object[] = [
         { name: "RPC_AUTH_TOKEN", text: serviceToken },
-        { name: "PROXY_AUTH_TOKEN", text: doProxyAuthToken },
         // Source-scoped class identity
         { name: "WORKER_SOURCE", text: doService.source },
         { name: "WORKER_CLASS_NAME", text: className },
@@ -448,11 +456,8 @@ export class WorkerdManager {
       instanceNames.push(name);
 
       // Build bindings array
-      const proxyAuthToken = crypto.randomBytes(24).toString("base64url");
-      this.deps.codeIdentityResolver.registerProxyToken(proxyAuthToken, instance.callerId);
       const bindings: object[] = [
         { name: "RPC_AUTH_TOKEN", text: instance.token },
-        { name: "PROXY_AUTH_TOKEN", text: proxyAuthToken },
         { name: "WORKER_ID", text: instance.name },
         { name: "CONTEXT_ID", text: instance.contextId },
         { name: "SERVER_URL", text: this.deps.getServerUrl() },

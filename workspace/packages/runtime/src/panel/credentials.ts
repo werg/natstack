@@ -4,6 +4,8 @@ import {
   type ConnectionRecord,
   type CredentialClient,
   type CredentialHandle,
+  type ProviderDescriptor,
+  type ProviderRequest,
 } from "../shared/credentials.js";
 
 let client: CredentialClient | null = null;
@@ -46,8 +48,6 @@ function installPanelFetchProxy(rpc: RpcCaller): void {
     }
 
     const headers = Object.fromEntries(request.headers.entries());
-    const connectionId = headers["x-natstack-connection"];
-    delete headers["x-natstack-connection"];
 
     const result = await rpc.call<{
       status: number;
@@ -59,7 +59,6 @@ function installPanelFetchProxy(rpc: RpcCaller): void {
       method: request.method,
       headers,
       body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.text(),
-      connectionId,
     });
 
     return new Response(result.body, {
@@ -79,7 +78,7 @@ export function initPanelCredentials(rpc: RpcCaller): void {
   installPanelFetchProxy(rpc);
 }
 
-export async function connect(providerId: string, opts?: { connectionId?: string }): Promise<CredentialHandle> {
+export async function connect(providerId: ProviderRequest, opts?: { connectionId?: string }): Promise<CredentialHandle> {
   return requireClient().connect(providerId, opts);
 }
 
@@ -94,8 +93,29 @@ export async function listConnections(providerId?: string): Promise<ConnectionRe
   return requireClient().listConnections(providerId);
 }
 
+export async function capabilityFor(
+  providerId: ProviderRequest,
+  opts?: { connectionId?: string; ttlSeconds?: number },
+): Promise<string> {
+  return requireClient().capabilityFor(providerId, opts);
+}
+
+export function hookFor(
+  providerId: ProviderRequest,
+  opts?: { connectionId?: string },
+): () => Promise<string> {
+  return requireClient().hookFor(providerId, opts);
+}
+
+export async function metadata(
+  providerId: ProviderRequest,
+  opts?: { connectionId?: string },
+) {
+  return requireClient().metadata(providerId, opts);
+}
+
 export async function subscribeWebhook(
-  providerId: string,
+  providerId: ProviderRequest,
   eventType: string,
   opts: { handler: string; connectionId?: string },
 ): Promise<{ subscriptionId: string; leaseId?: string }> {
@@ -114,4 +134,4 @@ export async function listWebhookLeases(filter?: {
   return requireClient().listWebhookLeases(filter);
 }
 
-export { type CredentialHandle, type CredentialClient, type ConnectionRecord };
+export { type CredentialHandle, type CredentialClient, type ConnectionRecord, type ProviderDescriptor, type ProviderRequest };

@@ -3,6 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConsentGrantStore } from "./consent.js";
 import type { DatabaseHandle } from "./consent.js";
 
+const GITHUB_FINGERPRINT = "github-audience";
+const SLACK_FINGERPRINT = "slack-audience";
+
 class BetterSqliteHandle implements DatabaseHandle {
   constructor(private readonly db: Database.Database) {}
 
@@ -40,6 +43,7 @@ describe("ConsentGrantStore", () => {
       codeIdentity: "repo-1",
       codeIdentityType: "repo",
       providerId: "github",
+      providerFingerprint: GITHUB_FINGERPRINT,
       connectionId: "primary",
       scopes: ["repo", "user:email"],
       grantedAt: 0,
@@ -51,6 +55,7 @@ describe("ConsentGrantStore", () => {
         codeIdentity: "repo-1",
         codeIdentityType: "repo",
         providerId: "github",
+        providerFingerprint: GITHUB_FINGERPRINT,
         connectionId: "primary",
         scopes: ["repo", "user:email"],
         grantedAt: 1_700_000_000_000,
@@ -66,6 +71,7 @@ describe("ConsentGrantStore", () => {
       codeIdentity: "repo-1",
       codeIdentityType: "repo",
       providerId: "github",
+      providerFingerprint: GITHUB_FINGERPRINT,
       connectionId: "primary",
       scopes: ["repo"],
       grantedAt: 0,
@@ -77,6 +83,7 @@ describe("ConsentGrantStore", () => {
       codeIdentity: "repo-1",
       codeIdentityType: "repo",
       providerId: "github",
+      providerFingerprint: GITHUB_FINGERPRINT,
       connectionId: "primary",
       scopes: ["repo", "user:email"],
       grantedAt: 0,
@@ -88,6 +95,7 @@ describe("ConsentGrantStore", () => {
         codeIdentity: "repo-1",
         codeIdentityType: "repo",
         providerId: "github",
+        providerFingerprint: GITHUB_FINGERPRINT,
         connectionId: "primary",
         scopes: ["repo", "user:email"],
         grantedAt: 1_700_000_000_500,
@@ -101,6 +109,7 @@ describe("ConsentGrantStore", () => {
       codeIdentity: "repo-1",
       codeIdentityType: "repo",
       providerId: "github",
+      providerFingerprint: GITHUB_FINGERPRINT,
       connectionId: "primary",
       scopes: ["repo"],
       grantedAt: 0,
@@ -110,6 +119,7 @@ describe("ConsentGrantStore", () => {
       codeIdentity: "repo-1",
       codeIdentityType: "repo",
       providerId: "slack",
+      providerFingerprint: SLACK_FINGERPRINT,
       connectionId: "workspace",
       scopes: ["channels:read"],
       grantedAt: 0,
@@ -122,6 +132,7 @@ describe("ConsentGrantStore", () => {
         codeIdentity: "repo-1",
         codeIdentityType: "repo",
         providerId: "slack",
+        providerFingerprint: SLACK_FINGERPRINT,
         connectionId: "workspace",
         scopes: ["channels:read"],
         grantedAt: expect.any(Number),
@@ -135,6 +146,7 @@ describe("ConsentGrantStore", () => {
       codeIdentity: "hash-1",
       codeIdentityType: "hash",
       providerId: "github",
+      providerFingerprint: GITHUB_FINGERPRINT,
       connectionId: "versioned",
       scopes: ["user:email", "repo", "repo"],
       grantedAt: 0,
@@ -145,10 +157,12 @@ describe("ConsentGrantStore", () => {
       repoPath: "repo-1",
       effectiveVersion: "hash-1",
       providerId: "github",
+      providerFingerprint: GITHUB_FINGERPRINT,
     })).resolves.toEqual({
       codeIdentity: "hash-1",
       codeIdentityType: "hash",
       providerId: "github",
+      providerFingerprint: GITHUB_FINGERPRINT,
       connectionId: "versioned",
       scopes: ["repo", "user:email"],
       grantedAt: expect.any(Number),
@@ -159,6 +173,7 @@ describe("ConsentGrantStore", () => {
       codeIdentity: "repo-1",
       codeIdentityType: "repo",
       providerId: "github",
+      providerFingerprint: GITHUB_FINGERPRINT,
       connectionId: "repo-default",
       scopes: ["repo"],
       grantedAt: 0,
@@ -169,10 +184,12 @@ describe("ConsentGrantStore", () => {
       repoPath: "repo-1",
       effectiveVersion: "hash-1",
       providerId: "github",
+      providerFingerprint: GITHUB_FINGERPRINT,
     })).resolves.toEqual({
       codeIdentity: "repo-1",
       codeIdentityType: "repo",
       providerId: "github",
+      providerFingerprint: GITHUB_FINGERPRINT,
       connectionId: "repo-default",
       scopes: ["repo"],
       grantedAt: expect.any(Number),
@@ -185,6 +202,7 @@ describe("ConsentGrantStore", () => {
       codeIdentity: "hash-1",
       codeIdentityType: "hash",
       providerId: "slack",
+      providerFingerprint: SLACK_FINGERPRINT,
       connectionId: "transient",
       scopes: ["channels:read"],
       grantedAt: 0,
@@ -196,15 +214,50 @@ describe("ConsentGrantStore", () => {
       repoPath: "repo-1",
       effectiveVersion: "hash-1",
       providerId: "slack",
+      providerFingerprint: SLACK_FINGERPRINT,
     })).resolves.toEqual({
       codeIdentity: "hash-1",
       codeIdentityType: "hash",
       providerId: "slack",
+      providerFingerprint: SLACK_FINGERPRINT,
       connectionId: "transient",
       scopes: ["channels:read"],
       grantedAt: expect.any(Number),
       grantedBy: "panel-1",
       transient: true,
+    });
+  });
+
+  it("requires matching provider fingerprint when supplied", async () => {
+    await store.grant({
+      codeIdentity: "repo-1",
+      codeIdentityType: "repo",
+      providerId: "github",
+      providerFingerprint: "audience-a",
+      providerAudience: ["https://api.github.com/"],
+      connectionId: "primary",
+      scopes: ["repo"],
+      grantedAt: 0,
+      grantedBy: "panel-1",
+    });
+
+    await expect(store.check({
+      repoPath: "repo-1",
+      effectiveVersion: "hash-1",
+      providerId: "github",
+      providerFingerprint: "audience-b",
+    })).resolves.toBeNull();
+
+    await expect(store.check({
+      repoPath: "repo-1",
+      effectiveVersion: "hash-1",
+      providerId: "github",
+      providerFingerprint: "audience-a",
+    })).resolves.toMatchObject({
+      providerId: "github",
+      providerFingerprint: "audience-a",
+      providerAudience: ["https://api.github.com/"],
+      connectionId: "primary",
     });
   });
 });

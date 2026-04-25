@@ -1,12 +1,16 @@
 /**
- * useChannelMessages — React subscription to ALL channel messages (persisted + replay).
+ * useChannelMessages — React subscription to transcript channel messages.
  *
  * Replaces the Pi-snapshot-derived message path. The agent worker publishes
  * Pi events as real channel messages (text, thinking, action, image, inline_ui,
  * feedback_form, feedback_custom). This hook consumes them via `client.events()`
  * and builds the flat `ChatMessage[]` array for component rendering.
  *
- * Handles both replay and live streaming:
+ * Handles replay, live persisted messages, and live ephemeral transcript
+ * messages. Ephemerality controls storage/replay; content type controls
+ * whether a message belongs in the transcript.
+ *
+ * Handles streaming:
  * - `type: "message"` → create a new ChatMessage
  * - `type: "update-message"` → update content / mark complete
  * - `type: "error"` → mark message as errored + complete
@@ -29,6 +33,7 @@ import {
   type WireUpdateMessage,
   type WireErrorMessage,
 } from "@workspace/agentic-core";
+import { isTranscriptWireMessage } from "./transcriptRouting";
 
 /** Maximum messages in the visible window. New messages push oldest out. */
 const MAX_VISIBLE = 500;
@@ -101,7 +106,7 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
 
     const consume = async () => {
       try {
-        for await (const event of client.events({ includeReplay: true })) {
+        for await (const event of client.events({ includeReplay: true, includeEphemeral: true })) {
           if (cancelledRef.current) break;
 
           const wire = event as unknown as {
@@ -126,14 +131,11 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
             const isEphemeral = wire.kind === "ephemeral";
             const isFromClient = isClientParticipantType(wire.senderMetadata?.type);
 
-            // Worker-side notifications (notify:*, natstack-ext-status,
-            // natstack-ext-widget, natstack-ext-working) are handled by
-            // separate ephemeral hooks and must not leak into the transcript.
-            if (isEphemeral) continue;
+            if (!isTranscriptWireMessage(wire)) continue;
 
             const msg = createChatMessageFromWire(wire as WireNewMessage, {
               isReplay,
-              isFromClient,
+              isFromClient: isFromClient || isEphemeral,
             });
 
             if (!byId.has(wire.id)) {

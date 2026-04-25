@@ -67,9 +67,6 @@ export interface NatStackScopedUiContext {
     opts?: ExtensionWidgetOptions,
   ): void;
   setWorkingMessage(message: string | undefined): void;
-  requestProviderOAuth(providerId: string, displayName: string): void;
-  requestProviderConfig?(providerId: string, displayName: string): void;
-  requestConsentGrant?(providerId: string, displayName: string): void;
 }
 
 export class NatStackExtensionUIContext implements PiExtensionUIContext {
@@ -140,18 +137,6 @@ export class NatStackExtensionUIContext implements PiExtensionUIContext {
 
   setWorkingMessage(message?: string): void {
     this.scopedUi.setWorkingMessage(message);
-  }
-
-  requestProviderOAuth(providerId: string, displayName: string): void {
-    this.scopedUi.requestProviderOAuth(providerId, displayName);
-  }
-
-  requestProviderConfig(providerId: string, displayName: string): void {
-    this.scopedUi.requestProviderConfig?.(providerId, displayName);
-  }
-
-  requestConsentGrant(providerId: string, displayName: string): void {
-    this.scopedUi.requestConsentGrant?.(providerId, displayName);
   }
 
   setWidget(key: string, content: unknown, options?: ExtensionWidgetOptions): void {

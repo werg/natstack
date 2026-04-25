@@ -10,6 +10,7 @@ import { app, notification } from "../shell/client";
 import { PanelStack } from "./PanelStack";
 import { TitleBar } from "./TitleBar";
 import { NotificationBar } from "./NotificationBar";
+import { ConsentApprovalBar } from "./ConsentApprovalBar";
 import type { PanelContextMenuAction } from "@natstack/shared/types";
 
 export function PanelApp() {
@@ -97,6 +98,7 @@ function PanelAppContent() {
     <Flex direction="column" height="100dvh" style={{ overflow: "hidden" }}>
       <TitleBar title={currentTitle} onNavigateToId={navigateToId} onPanelAction={handlePanelAction} onArchive={handleArchive} />
       <NotificationBar />
+      <ConsentApprovalBar />
       <PanelStack
         onTitleChange={setCurrentTitle}
         hostTheme={effectiveTheme}

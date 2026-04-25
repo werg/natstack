@@ -13,9 +13,8 @@
  *     by `wrapToolWithApproval` so the approval-gate can short-circuit them.
  *   - Workspace resources (`AGENTS.md` + skill index) loaded over RPC and
  *     concatenated into the system prompt.
- *   - A `getApiKey` hook that only verifies provider readiness. Real auth is
- *     injected by the server-side egress proxy, so raw API keys never enter
- *     the worker runtime.
+ *   - A caller-supplied `getApiKey` hook that returns a capability token, so
+ *     raw API keys never enter the worker runtime.
  *
  * No bash, no auto-compaction, no auto-retry, no file-based session JSONL.
  */
@@ -65,40 +64,6 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 /** Built-in file tool names that are always active alongside roster tools. */
 const BUILTIN_TOOL_NAMES = ["read", "edit", "write", "grep", "find", "ls"] as const;
 
-/**
-/** Display name shown in consent/config cards. Falls back to the raw id. */
-export function providerDisplayName(providerId: string): string {
-  switch (providerId) {
-    case "openai-codex":
-      return "ChatGPT";
-    case "anthropic":
-      return "Anthropic";
-    case "openai":
-      return "OpenAI";
-    case "google":
-      return "Google";
-    case "groq":
-      return "Groq";
-    case "mistral":
-      return "Mistral";
-    case "openrouter":
-      return "OpenRouter";
-    default:
-      return providerId;
-  }
-}
-
-export function isEnvVarOnlyProvider(providerId: string): boolean {
-  return new Set([
-    "anthropic",
-    "openai",
-    "google",
-    "groq",
-    "mistral",
-    "openrouter",
-  ]).has(providerId);
-}
-
 export interface PiRunnerOptions {
   /** RPC caller — used for workspace loading and credential readiness checks. */
   rpc: RpcCaller;
@@ -125,6 +90,8 @@ export interface PiRunnerOptions {
   ) => Promise<AgentToolResult<any> | string>;
   /** "provider:model" string (e.g. "openai-codex:gpt-5"). */
   model: string;
+  /** Zero-arg callback returning the Bearer string the Agent should use. */
+  getApiKey: () => Promise<string>;
   /** Default thinking level for new sessions. */
   thinkingLevel?: ThinkingLevel;
   /**
@@ -234,10 +201,7 @@ export class PiRunner {
         tools: [],
         messages: this.options.initialMessages ?? [],
       },
-      getApiKey: async (providerName: string) => {
-        await this.ensureProviderReady(providerName);
-        return "natstack-proxy";
-      },
+      getApiKey: this.options.getApiKey,
     });
 
     // 6. Forward Agent events into our handler.
@@ -251,35 +215,6 @@ export class PiRunner {
       type: "session_start",
     });
     this.refreshActiveTools();
-  }
-
-  private async ensureProviderReady(providerName: string): Promise<void> {
-    const displayName = providerDisplayName(providerName);
-    const connections = await this.options.rpc.call<Array<{ connectionId: string }>>(
-      "main",
-      "credentials.listConnections",
-      { providerId: providerName },
-    );
-
-    if (connections.length === 0) {
-      if (isEnvVarOnlyProvider(providerName)) {
-        this.options.uiCallbacks.requestProviderConfig?.(providerName, displayName);
-        throw new Error(`Configuration required for ${displayName}.`);
-      }
-
-      this.options.uiCallbacks.requestProviderOAuth(providerName, displayName);
-      throw new Error(`Sign in required for ${displayName}.`);
-    }
-
-    const hasConsent = await this.options.rpc.call<boolean>(
-      "main",
-      "credentials.checkConsent",
-      { providerId: providerName },
-    );
-    if (!hasConsent) {
-      this.options.uiCallbacks.requestConsentGrant?.(providerName, displayName);
-      throw new Error(`Permission required for ${displayName}.`);
-    }
   }
 
   /**

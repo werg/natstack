@@ -14,7 +14,6 @@ function createCallbacks(): NatStackScopedUiContext {
     setStatus: vi.fn(),
     setWidget: vi.fn(),
     setWorkingMessage: vi.fn(),
-    requestProviderOAuth: vi.fn(),
   };
 }
 
@@ -177,10 +176,4 @@ describe("NatStackExtensionUIContext", () => {
     expect(result.success).toBe(false);
   });
 
-  it("forwards requestProviderOAuth() to the callback", () => {
-    const cbs = createCallbacks();
-    const ctx = new NatStackExtensionUIContext(cbs);
-    ctx.requestProviderOAuth("openai-codex", "ChatGPT");
-    expect(cbs.requestProviderOAuth).toHaveBeenCalledWith("openai-codex", "ChatGPT");
-  });
 });

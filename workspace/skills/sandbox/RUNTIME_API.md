@@ -69,7 +69,7 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `openPanel` | value |  |  |
 | `adblock` | namespace | `getStats`, `isActive`, `getStatsForPanel`, `isEnabledForPanel`, `setEnabledForPanel`, `resetStatsForPanel`, `getPanelUrl`, `addToWhitelist`, `removeFromWhitelist` |  |
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo`, `openPanel` |  |
-| `credentials` | namespace | `connect`, `revokeConsent`, `listConnections`, `subscribeWebhook`, `unsubscribeWebhook`, `listWebhookLeases` |  |
+| `credentials` | namespace | `connect`, `capabilityFor`, `hookFor`, `metadata`, `revokeConsent`, `listConnections`, `subscribeWebhook`, `unsubscribeWebhook`, `listWebhookLeases` |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
 <!-- END GENERATED: panel-runtime-surface -->
 
@@ -406,21 +406,30 @@ const result = await rpc.call("main", "test.run", contextId, "panels/my-app");
 import { credentials } from "@workspace/runtime";
 ```
 
-Resolve provider connections into host-side credential handles. Raw tokens do not enter runtime code; authenticated requests go through `handle.fetch(...)` and the server-side egress proxy injects auth.
-
-**Setup:** Use the model-provider settings page for AI providers and the credential consent flow for third-party integrations. See `docs/credential-system.md` for the architecture.
+Resolve userland provider descriptors into host-side credential handles. Raw tokens do not enter runtime code. The runtime receives short-lived capability tokens shaped like the provider credential; the server-side egress proxy strips the capability and injects the stored credential.
 
 | Method | Description |
 |--------|-------------|
 | `listConnections(providerId?)` | List available connections → `ConnectionRecord[]` |
-| `connect(providerId, { connectionId? })` | Resolve a usable connection for this caller → `CredentialHandle` |
+| `connect(provider, { connectionId? })` | Resolve a usable connection for this caller → `CredentialHandle` |
+| `capabilityFor(provider, { connectionId?, ttlSeconds? })` | Mint a provider-bound capability string for SDK clients |
+| `hookFor(provider, { connectionId? })` | Return a memoized async callback for SDK `getApiKey` / `apiKeyFn` hooks |
+| `metadata(provider, { connectionId? })` | Return server-extracted account identity and non-secret JWT claims |
 
 `ConnectionRecord`: `{ providerId, connectionId, connectionLabel, accountIdentity, scopes, expiresAt?, metadata? }`.
 `CredentialHandle`: `{ connectionId, providerId, fetch(url, init?) }`.
 
 **Quick connect pattern:**
 ```typescript
-const notion = await credentials.connect("notion");
+const notionProvider = {
+  id: "notion",
+  displayName: "Notion",
+  apiBase: ["https://api.notion.com"],
+  flows: [{ type: "pat", probeUrl: "https://api.notion.com/v1/users/me" }],
+  authInjection: { type: "header", headerName: "Authorization", valueTemplate: "Bearer {token}" },
+};
+
+const notion = await credentials.connect(notionProvider);
 const response = await notion.fetch("https://api.notion.com/v1/search", {
   method: "POST",
   headers: {
@@ -430,6 +439,14 @@ const response = await notion.fetch("https://api.notion.com/v1/search", {
   body: JSON.stringify({ query: "meeting notes" }),
 });
 const data = await response.json();
+```
+
+**SDK capability pattern:**
+```typescript
+// openaiProvider is a userland provider descriptor supplied by your app/worker.
+const apiKey = await credentials.capabilityFor(openaiProvider);
+// Pass apiKey to an SDK constructor. The SDK can parse token structure, but
+// the real secret remains server-side and is substituted by the egress proxy.
 ```
 
 `oauth.getToken()` is deprecated and intentionally unavailable.
@@ -443,7 +460,7 @@ For APIs without a pre-built integration, connect once and use `handle.fetch()` 
 ```typescript
 import { credentials } from "@workspace/runtime";
 
-const notion = await credentials.connect("notion");
+const notion = await credentials.connect(notionProvider);
 const response = await notion.fetch("https://api.notion.com/v1/search", {
   method: "POST",
   headers: {

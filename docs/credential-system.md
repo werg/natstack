@@ -191,7 +191,7 @@ All of the following is prototype and unused. Delete, don't migrate.
 
 - Delete `~/.config/natstack/.secrets.yml` support entirely — the
   secrets store goes with the secrets service. New credential
-  tokens live under `~/.natstack/credentials/` per the new design.
+  tokens live under `~/.config/natstack/credentials/` per the new design.
 - Remove `NANGO_URL` env var handling from `src/server/index.ts`
 - Remove the `nango:` YAML key and `nangoUrl` config support from
   `workspace/meta/natstack.yml`
@@ -221,7 +221,7 @@ and verify zero hits.
 - `types.ts` — `ProviderManifest`, `FlowConfig`, `Credential`,
   `CredentialHandle`, `ConsentGrant`.
 - `store.ts` — filesystem token store under
-  `~/.natstack/credentials/<providerId>/<connectionId>.json`, 0o600 perms,
+  `~/.config/natstack/credentials/<providerId>/<connectionId>.json`, 0o600 perms,
   atomic write via `fs.rename`, mtime-watch so external processes (other
   natstack instances, CLI refreshes) pick up changes without restart. No
   SQLite, no keychain dependency.
@@ -266,7 +266,7 @@ and verify zero hits.
 - `retry.ts` — exponential backoff, max-attempt caps, per-worker
   circuit breaker. Wraps outbound requests inside the proxy.
 - `audit.ts` — structured append-only log at
-  `~/.natstack/logs/credentials-audit-YYYY-MM-DD.jsonl`, rotated
+  `~/.config/natstack/logs/credentials-audit-YYYY-MM-DD.jsonl`, rotated
   daily, size-capped. Exposes a query API consumed by a
   `credentials.audit` RPC.
 - `reconsent.ts` — handles refresh failure. On a 401 after refresh
@@ -1212,7 +1212,7 @@ is fine; they're cheap.
 ### Credentials stored server-side, shared across surfaces
 
 Already implied by the mobile decision but worth making explicit: the
-credential store at `~/.natstack/credentials/` on the server is the
+credential store at `~/.config/natstack/credentials/` on the server is the
 sole source of truth. Desktop UI, mobile UI, workers, and panels all
 consult the same store via server RPCs. There is no desktop-local or
 mobile-local token cache; no sync protocol is required because there
@@ -1397,7 +1397,7 @@ surface, two triggers.
 ### Audit + observability
 
 Every authed outbound request appends a structured record to
-`~/.natstack/logs/credentials-audit-YYYY-MM-DD.jsonl`:
+`~/.config/natstack/logs/credentials-audit-YYYY-MM-DD.jsonl`:
 
 ```
 { ts, workerId, callerId, providerId, connectionId, method, url,
@@ -1572,7 +1572,7 @@ one, or many connections per provider:
 
 **Data model**
 
-Token store path: `~/.natstack/credentials/<providerId>/<connectionId>.json`
+Token store path: `~/.config/natstack/credentials/<providerId>/<connectionId>.json`
 where `connectionId` is a short stable ULID. Each record carries:
 
 ```ts

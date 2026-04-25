@@ -79,7 +79,7 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 | `fs` | value |  |  |
 | `workers` | namespace | `create`, `destroy`, `update`, `list`, `status`, `listInstanceSources`, `getPort`, `restartAll`, `cloneDO`, `destroyDO` |  |
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo` |  |
-| `oauth` | namespace | `getToken`, `getConnection`, `listConnections`, `listProviders`, `connect`, `requestConsent`, `startAuth`, `waitForConnection`, `disconnect`, `listConsents` |  |
+| `credentials` | namespace | `connect`, `capabilityFor`, `hookFor`, `metadata`, `revokeConsent`, `listConnections`, `subscribeWebhook`, `unsubscribeWebhook`, `listWebhookLeases` |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
 | `contextId` | value |  |  |
 | `gitConfig` | value |  |  |
@@ -94,7 +94,14 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 | `destroy` | value |  |  |
 <!-- END GENERATED: worker-runtime-surface -->
 
-The runtime is cached per worker -- multiple `fetch()` calls reuse the same WebSocket connection.
+The runtime is cached per worker -- multiple `fetch()` calls reuse the same RPC bridge.
+
+Outbound worker `fetch()` is routed through the local egress proxy. The runtime
+lazily mints a session capability for attribution on ordinary public requests.
+Credentialed provider requests must use `runtime.credentials.capabilityFor(...)`,
+`runtime.credentials.hookFor(...)`, or `CredentialHandle.fetch(...)`; the server
+keeps the real token, strips the capability from the forwarded request, and
+injects the stored credential according to the provider manifest.
 
 ## 3. AgentWorkerBase — The DO Base Class
 
@@ -130,7 +137,7 @@ export class MyWorker extends AgentWorkerBase {
 
 | Hook | Default | Purpose |
 |------|---------|---------|
-| `getModel()` | `"anthropic:claude-sonnet-4-20250514"` | Model id in `provider:model` format |
+| `getModel()` | `"openai-codex:gpt-5"` | Model id in `provider:model` format |
 | `getThinkingLevel()` | `"medium"` | Pi thinking level (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`) |
 | `getApprovalLevel(channelId)` | `2` (full auto) | Tool approval level: 0=ask all, 1=auto safe, 2=full auto |
 | `shouldProcess(event)` | Panel messages only | Filter which events trigger AI turns |

@@ -2,13 +2,14 @@ import { createHash, createSign } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { getCentralDataPath } from "@natstack/env-paths";
 import type { Credential, FlowConfig } from "../types.js";
 
 export type FlowRunner = (config: FlowConfig, providerId?: string) => Promise<Credential | null>;
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_TOKEN_LIFETIME_SECONDS = 3600;
-const DEFAULT_SERVICE_ACCOUNT_PATH = path.join(homedir(), ".natstack", "service-account.json");
+const DEFAULT_SERVICE_ACCOUNT_PATH = path.join(getCentralDataPath(), "service-account.json");
 
 type JsonObject = Record<string, unknown>;
 

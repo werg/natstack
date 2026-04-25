@@ -32,6 +32,9 @@ export const workerRuntimeSurface: RuntimeSurface = {
     ]),
     credentials: namespaceEntry([
       "connect",
+      "capabilityFor",
+      "hookFor",
+      "metadata",
       "revokeConsent",
       "listConnections",
       "subscribeWebhook",

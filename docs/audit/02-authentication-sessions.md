@@ -36,7 +36,7 @@ The most impactful are:
 2. **[Critical] Path traversal in `CredentialStore`.** `providerId` and
    `connectionId` are untrusted user input joined straight into filesystem
    paths, allowing write/read/delete outside the credentials root. A malicious
-   panel with access to `credentials.*` methods can escape `~/.natstack/credentials/`.
+   panel with access to `credentials.*` methods can escape `~/.config/natstack/credentials/`.
 3. **[High] Intra-server relay RPC is effectively unauthenticated for
    non-panel callers.** `RpcServer.checkRelayAuth` short-circuits to `ok` when
    `callerKind !== "panel"`. Any compromised worker (or any shell caller on a

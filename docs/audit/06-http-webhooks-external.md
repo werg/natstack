@@ -274,7 +274,7 @@ Upstream (workerd, git) enforces its own auth — but:
 
 **File:** `src/server/services/egressProxy.ts:254–270`
 
-The audit entry serialized to `~/.natstack/logs/credentials-audit-YYYY-MM-DD.jsonl` carries:
+The audit entry serialized to `~/.config/natstack/logs/credentials-audit-YYYY-MM-DD.jsonl` carries:
 ```ts
 url: targetUrl?.toString() ?? (req.url ?? ""),
 ```

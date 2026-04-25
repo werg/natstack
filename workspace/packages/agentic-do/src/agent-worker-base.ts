@@ -45,8 +45,6 @@ import type {
 import { isClientParticipantType } from "@natstack/pubsub";
 import {
   PiRunner,
-  isEnvVarOnlyProvider,
-  providerDisplayName,
   type ChannelToolMethod,
   type NatStackScopedUiContext,
   type AskUserParams,
@@ -70,22 +68,38 @@ import { TurnDispatcher } from "./turn-dispatcher.js";
 
 const SAFE_TOOL_NAMES_DEFAULT: ReadonlySet<string> = new Set(["read", "ls", "grep", "find"]);
 
-/**
- * TSX source for the OAuth Connect card pushed into the chat as an inline_ui
- * message when the model provider is not yet logged in. The chat panel's
- * `useInlineUi` hook compiles this via `compileComponent`/`transformCode` and
- * renders the resulting React component inside `<InlineUiMessage>`.
- *
- * Available imports inside the inline_ui sandbox: see
- * `workspace/skills/sandbox/INLINE_UI.md`. The component receives
- * `{ props, chat }` where `chat.rpc.call` is the panel's runtime RPC.
- *
- * The button calls `credentialFlow.connect(providerId)` directly. Server-side
- * idempotency in the auth service handles concurrent / repeated clicks:
- *   - First click → starts the OAuth flow, returns success on completion.
- *   - Concurrent clicks → return the same in-flight Promise.
- *   - Clicks after success → fast path returns success immediately.
- */
+const OPENAI_CODEX_PROVIDER = {
+  id: "openai-codex",
+  displayName: "ChatGPT",
+  apiBase: ["https://api.openai.com", "https://chatgpt.com/backend-api"],
+  authInjection: {
+    type: "header" as const,
+    headerName: "Authorization",
+    valueTemplate: "Bearer {token}",
+  },
+  flows: [
+    {
+      type: "loopback-pkce" as const,
+      clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
+      authorizeUrl: "https://auth.openai.com/oauth/authorize",
+      tokenUrl: "https://auth.openai.com/oauth/token",
+      fixedScope: "openid profile email offline_access",
+      loopback: { host: "localhost", port: 1455, callbackPath: "/auth/callback" },
+      extraAuthorizeParams: {
+        id_token_add_organizations: "true",
+        codex_cli_simplified_flow: "true",
+        originator: "codex_cli_rs",
+      },
+      tokenMetadata: {
+        accountId: {
+          source: "jwt-claim" as const,
+          path: "https://api.openai.com/auth.chatgpt_account_id",
+        },
+      },
+    },
+  ],
+};
+
 const OAUTH_CONNECT_CARD_TSX = `
 import { useState } from "react";
 import { Box, Button, Card, Flex, Text } from "@radix-ui/themes";
@@ -94,19 +108,16 @@ export default function OAuthConnectCard({ props, chat }) {
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState(null);
   const providerId = props.providerId;
+  const provider = props.provider || providerId;
   const displayName = props.displayName;
 
   const handleConnect = async () => {
     setStatus("connecting");
     setError(null);
     try {
-      const result = await chat.rpc.call("main", "credentialFlow.connect", providerId);
+      const result = await chat.rpc.call("main", "credentialFlow.connect", provider);
       if (result && result.success) {
         setStatus("connected");
-        // Auto-retry: publish a message so the agent's turn restarts with
-        // valid credentials. The agent worker's onChannelEvent picks this up
-        // and calls runner.runTurn, which calls getApiKey — this time it
-        // succeeds because the auth service now has fresh OAuth credentials.
         chat.publish("message", {
           content: "Connected to " + displayName + ". Please continue where you left off."
         });
@@ -126,15 +137,14 @@ export default function OAuthConnectCard({ props, chat }) {
         <Box>
           <Text as="div" size="2" weight="medium">Sign in to {displayName}</Text>
           <Text as="div" size="1" color="gray" mt="1">
-            To continue, this workspace needs to connect your {displayName} account.
-            Click below to open the sign-in page in your browser.
+            Connect your {displayName} account to continue this agent turn.
           </Text>
         </Box>
         {status === "idle" && (
           <Button onClick={handleConnect}>Connect to {displayName}</Button>
         )}
         {status === "connecting" && (
-          <Button disabled>Waiting for browser\\u2026</Button>
+          <Button disabled>Waiting for browser...</Button>
         )}
         {status === "connected" && (
           <Text size="2" color="green" weight="medium">Connected to {displayName}</Text>
@@ -151,87 +161,51 @@ export default function OAuthConnectCard({ props, chat }) {
 }
 `.trim();
 
-const PROVIDER_CONFIG_CARD_TSX = `
-import { Card, Flex, Text } from "@radix-ui/themes";
-
-export default function ProviderConfigCard({ props }) {
-  return (
-    <Card variant="surface" size="2">
-      <Flex direction="column" gap="3">
-        <Text size="2" weight="medium">Configure {props.displayName}</Text>
-        <Text size="1" color="gray">
-          This provider is configured through environment variables on the host.
-          Open the model provider settings and set {props.envVar ?? "the required env var"}.
-        </Text>
-      </Flex>
-    </Card>
-  );
+function credentialRequiredMessage(err: unknown): string | null {
+  const message = err instanceof Error ? err.message : String(err);
+  const code = (err as { code?: unknown })?.code;
+  return code === "CREDENTIAL_REQUIRED" || /(?:^|\]\s*)No credential for .+connect in Connected Accounts$/.test(message)
+    ? message
+    : null;
 }
-`.trim();
 
-const CONSENT_GRANT_CARD_TSX = `
-import { useState } from "react";
-import { Button, Card, Flex, Text } from "@radix-ui/themes";
-
-export default function ConsentGrantCard({ props, chat }) {
-  const [status, setStatus] = useState("idle");
-  const [error, setError] = useState(null);
-
-  const grant = async (mode) => {
-    setStatus(mode);
-    setError(null);
-    try {
-      if (mode === "once") {
-        await chat.rpc.call("main", "credentials.grantConsent", {
-          providerId: props.providerId,
-          codeIdentityType: "hash",
-          transient: true,
-        });
-      } else if (mode === "version") {
-        await chat.rpc.call("main", "credentials.grantConsent", {
-          providerId: props.providerId,
-          codeIdentityType: "hash",
-        });
-      } else {
-        await chat.rpc.call("main", "credentials.grantConsent", {
-          providerId: props.providerId,
-          codeIdentityType: "repo",
-        });
-      }
-      chat.publish("message", {
-        content: "Permission granted for " + props.displayName + ". Please continue where you left off."
-      });
-      setStatus("granted");
-    } catch (err) {
-      setStatus("idle");
-      setError(err && err.message ? err.message : String(err));
+function trimTrailingEmptyAbortedAssistant(messages: AgentMessage[]): AgentMessage[] {
+  const last = messages[messages.length - 1] as
+    | { role?: string; stopReason?: string; content?: unknown }
+    | undefined;
+  if (!last || last.role !== "assistant" || last.stopReason !== "aborted") {
+    return messages;
+  }
+  const content = Array.isArray(last.content) ? last.content : [];
+  const hasVisibleContent = content.some((block) => {
+    if (!block || typeof block !== "object") return true;
+    if ((block as { type?: string }).type === "text") {
+      return Boolean((block as { text?: string }).text);
     }
-  };
-
-  return (
-    <Card variant="surface" size="2">
-      <Flex direction="column" gap="3">
-        <Flex direction="column" gap="1">
-          <Text size="2" weight="medium">Grant access to {props.displayName}</Text>
-          <Text size="1" color="gray">
-            This code needs permission to use {props.displayName}. Choose how long to trust it.
-          </Text>
-        </Flex>
-        <Flex gap="2" wrap="wrap">
-          <Button disabled={status !== "idle"} onClick={() => grant("once")}>Once</Button>
-          <Button disabled={status !== "idle"} variant="soft" onClick={() => grant("version")}>This version</Button>
-          <Button disabled={status !== "idle"} variant="outline" onClick={() => grant("always")}>Always</Button>
-        </Flex>
-        {status === "granted" && <Text size="1" color="green">Permission granted.</Text>}
-        {error && <Text size="1" color="red">{error}</Text>}
-      </Flex>
-    </Card>
-  );
+    if ((block as { type?: string }).type === "thinking") {
+      return Boolean((block as { thinking?: string }).thinking);
+    }
+    return true;
+  });
+  return hasVisibleContent ? messages : messages.slice(0, -1);
 }
-`.trim();
 
 interface RunnerEntry {
   runner: PiRunner;
+}
+
+type AgentAbortReason =
+  | "channel-unsubscribe"
+  | "participant-method-dispatch"
+  | "ask-user-dispatch"
+  | "ui-prompt-dispatch"
+  | "interrupt-all"
+  | "interrupt-channel";
+
+interface AgentAbortContext {
+  reason: AgentAbortReason;
+  detail?: string;
+  at: number;
 }
 
 export abstract class AgentWorkerBase extends DurableObjectBase {
@@ -244,6 +218,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   /** One PiRunner per channel — created lazily on first user message. */
   private runners = new Map<string, RunnerEntry>();
 
+  /** Last intentional abort reason per channel, used to annotate pi-core's
+   *  generic "Request was aborted" terminal event. */
+  private abortContexts = new Map<string, AgentAbortContext>();
+
   /** Channels whose `fs.bindContext` has been called at least once per DO
    *  lifetime. The FsService caller→context map is process-scoped, so we
    *  only need to bind once per DO startup per context. */
@@ -254,11 +232,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
    *  This bridges ctx.stream() from method providers to Pi's onUpdate. */
   private streamCallbacks = new Map<string, (content: unknown) => void>();
 
-  /** OAuth Connect cards already emitted into a channel for a given provider.
-   *  Keys are `${channelId}::${providerId}`. Process-scoped — resets on DO
-   *  hibernation, which is fine because the next agent run will re-emit if
-   *  the user hasn't connected yet. */
-  private oauthCardsEmitted = new Set<string>();
+  /** Dedup inline credential prompts per channel/provider while this DO is alive. */
+  private credentialPromptCardsEmitted = new Set<string>();
 
   /** Phase 0D: Transient poison message tracker. Resets on hibernation. */
   private failedEvents = new Map<number, number>();
@@ -360,11 +335,40 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
    * PiRunner passes this directly to `pi-ai.getModel(provider, modelId)`.
    */
   protected getModel(): string {
-    return "anthropic:claude-sonnet-4-20250514";
+    return "openai-codex:gpt-5";
   }
 
   protected getThinkingLevel(): ThinkingLevel {
     return "medium";
+  }
+
+  protected getModelProviderId(): string {
+    const model = this.getModel();
+    const colonIdx = model.indexOf(":");
+    return colonIdx >= 0 ? model.slice(0, colonIdx) : model;
+  }
+
+  protected getModelProvider(): typeof OPENAI_CODEX_PROVIDER {
+    const providerId = this.getModelProviderId();
+    if (providerId === OPENAI_CODEX_PROVIDER.id) return OPENAI_CODEX_PROVIDER;
+    throw new Error(`No provider descriptor configured for model provider: ${providerId}`);
+  }
+
+  private getApiKeyForChannel(channelId: string): () => Promise<string> {
+    const provider = this.getModelProvider();
+    const providerId = provider.id;
+    const hook = this.credentials.hookFor(provider);
+    return async () => {
+      try {
+        return await hook();
+      } catch (err) {
+        const missingCredential = credentialRequiredMessage(err);
+        if (missingCredential) {
+          this.emitOAuthConnectCard(channelId, provider);
+        }
+        throw err;
+      }
+    };
   }
 
   protected getApprovalLevel(channelId: string): ApprovalLevel {
@@ -459,62 +463,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       }
     }
 
-    // Proactive auth check. Two reasons to do this here:
-    //  1. With ephemeral OAuth Connect cards, panel reload erases any
-    //     prior card; the user would be stuck staring at chat history
-    //     with no Connect button until they typed a message. Pushing on
-    //     subscribe keeps the card present across reloads.
-    //  2. On a fresh chat panel (no message sent yet) we can already see
-    //     the configured model needs auth — surfacing the card early
-    //     means the user signs in before composing, not after.
-    void this.maybeEmitOAuthCardOnSubscribe(opts.channelId);
-
     return { ok: result.ok, participantId: result.participantId };
-  }
-
-  /**
-   * Reset the provider-card dedupe entries for this channel and probe the
-   * configured model's connection + consent status.
-   */
-  private async maybeEmitOAuthCardOnSubscribe(channelId: string): Promise<void> {
-    const model = this.getModel();
-    const colon = model.indexOf(":");
-    const providerId = colon > 0 ? model.slice(0, colon) : model;
-    this.oauthCardsEmitted.delete(`${channelId}::oauth::${providerId}`);
-    this.oauthCardsEmitted.delete(`${channelId}::config::${providerId}`);
-    this.oauthCardsEmitted.delete(`${channelId}::consent::${providerId}`);
-
-    const connections = await this.rpc.call<Array<{ connectionId: string }>>(
-      "main",
-      "credentials.listConnections",
-      { providerId },
-    ).catch(() => []);
-    if (connections.length === 0) {
-      if (isEnvVarOnlyProvider(providerId)) {
-        this.buildUICallbacks(channelId).requestProviderConfig?.(
-          providerId,
-          providerDisplayName(providerId),
-        );
-      } else {
-        this.buildUICallbacks(channelId).requestProviderOAuth(
-          providerId,
-          providerDisplayName(providerId),
-        );
-      }
-      return;
-    }
-
-    const hasConsent = await this.rpc.call<boolean>(
-      "main",
-      "credentials.checkConsent",
-      { providerId },
-    ).catch(() => false);
-    if (!hasConsent) {
-      this.buildUICallbacks(channelId).requestConsentGrant?.(
-        providerId,
-        providerDisplayName(providerId),
-      );
-    }
   }
 
   async unsubscribeChannel(channelId: string): Promise<UnsubscribeResult> {
@@ -530,7 +479,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     const entry = this.runners.get(channelId);
     if (entry) {
+      this.recordAbort(channelId, "channel-unsubscribe");
       entry.runner.dispose();
+      this.abortContexts.delete(channelId);
       this.runners.delete(channelId);
     }
 
@@ -752,11 +703,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       askUserCallback: (toolCallId, params, signal) =>
         this.askUser(channelId, toolCallId, params, signal),
       model: this.getModel(),
+      getApiKey: this.getApiKeyForChannel(channelId),
       thinkingLevel: this.getThinkingLevel(),
       approvalLevel: this.getApprovalLevel(channelId),
       initialMessages,
       onPersist: async (messages) => {
-        await this.saveMessages(channelId, messages);
+        await this.saveMessages(channelId, runner.trimTrailingAbortedAssistant(messages));
         await this.drainDeferredDispatchesFor(channelId);
       },
     });
@@ -768,6 +720,49 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     const projector = this.getOrCreateProjector(channelId);
     runner.subscribe((event) => projector.handleEvent(event));
+
+    // Surface terminal-error agent runs as a visible system message and a
+    // worker-log line. Without this, a thrown getApiKey (e.g. "Sign in
+    // required", "Permission required") ends the turn silently — the chat UI
+    // just sees typing stop, and the terminal sees nothing. pi-agent-core's
+    // `handleRunFailure` attaches the thrown error message to the final
+    // assistant message as `errorMessage`; we relay that to both surfaces.
+    runner.subscribe((event) => {
+      if (event.type !== "agent_end") return;
+      const messages = (event as { messages?: unknown[] }).messages;
+      if (!Array.isArray(messages) || messages.length === 0) return;
+      const last = messages[messages.length - 1] as
+        | { role?: string; stopReason?: string; errorMessage?: string }
+        | null;
+      if (!last || last.role !== "assistant") return;
+      if (last.stopReason === "aborted") {
+        const msg = last.errorMessage ?? "Turn aborted.";
+        const context = this.abortContexts.get(channelId);
+        this.abortContexts.delete(channelId);
+        console.log(
+          `[AgentWorkerBase] Agent turn aborted on channel=${channelId}: ` +
+          `reason=${context?.reason ?? "unknown"}${context?.detail ? ` detail=${context.detail}` : ""}; ${msg}`,
+        );
+        return;
+      }
+      if (last.stopReason !== "error") return;
+      const msg = last.errorMessage ?? "Turn failed.";
+      if (credentialRequiredMessage(msg)) {
+        this.emitOAuthConnectCard(channelId, this.getModelProvider());
+        return;
+      }
+      console.error(`[AgentWorkerBase] Agent turn ended with error on channel=${channelId}: ${msg}`);
+      const participantId = this.subscriptions.getParticipantId(channelId);
+      if (!participantId) return;
+      const channel = this.createChannelClient(channelId);
+      const messageId = crypto.randomUUID();
+      void channel.send(participantId, messageId, msg, {
+        contentType: "error",
+        persist: true,
+      }).catch((err) => {
+        console.error(`[AgentWorkerBase] Failed to emit turn-error message for channel=${channelId}:`, err);
+      });
+    });
 
     this.runners.set(channelId, { runner });
     // Dispatcher self-subscribes to runner events for absorption tracking
@@ -832,6 +827,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   }
 
   private async saveMessages(channelId: string, messages: AgentMessage[]): Promise<void> {
+    messages = trimTrailingEmptyAbortedAssistant(messages);
     this.sql.exec(`DELETE FROM pi_messages WHERE channel_id = ?`, channelId);
     for (let i = 0; i < messages.length; i++) {
       this.sql.exec(
@@ -848,6 +844,24 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     await this.refreshRoster(channelId);
     await this.getOrCreateRunner(channelId);
     this.getOrCreateProjector(channelId);
+  }
+
+  private recordAbort(channelId: string, reason: AgentAbortReason, detail?: string): void {
+    this.abortContexts.set(channelId, { reason, detail, at: Date.now() });
+    console.log(
+      `[AgentWorkerBase] Agent abort requested on channel=${channelId}: ` +
+      `reason=${reason}${detail ? ` detail=${detail}` : ""}`,
+    );
+  }
+
+  private async abortAgentForReason(
+    channelId: string,
+    reason: AgentAbortReason,
+    detail?: string,
+  ): Promise<void> {
+    const runner = await this.getOrCreateRunner(channelId);
+    this.recordAbort(channelId, reason, detail);
+    runner.abortAgent();
   }
 
   private async recoverDispatchesForChannel(channelId: string): Promise<void> {
@@ -997,7 +1011,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       this.streamCallbacks.delete(callId);
       throw err;
     }
-    (await this.getOrCreateRunner(channelId)).abortAgent();
+    await this.abortAgentForReason(channelId, "participant-method-dispatch", `${participantHandle}.${method}`);
     return makeDispatchPlaceholder(toolCallId, callId, "tool-call");
   }
 
@@ -1034,7 +1048,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       this.dispatches.deleteOne(callId);
       throw err;
     }
-    (await this.getOrCreateRunner(channelId)).abortAgent();
+    await this.abortAgentForReason(channelId, "ask-user-dispatch");
     return makeDispatchPlaceholder(toolCallId, callId, "ask-user");
   }
 
@@ -1097,89 +1111,37 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         const channel = this.createChannelClient(channelId);
         void channel.sendEphemeralEvent(participantId, "natstack-ext-working", { message: message ?? null });
       },
-      requestProviderOAuth: (providerId, displayName) => {
-        const participantId = this.subscriptions.getParticipantId(channelId);
-        if (!participantId) return;
-        const key = `${channelId}::oauth::${providerId}`;
-        if (this.oauthCardsEmitted.has(key)) return;
-        this.oauthCardsEmitted.add(key);
-
-        const channel = this.createChannelClient(channelId);
-        const messageId = crypto.randomUUID();
-        const content = JSON.stringify({
-          id: `oauth-connect-${providerId}-${messageId}`,
-          code: OAUTH_CONNECT_CARD_TSX,
-          props: { providerId, displayName },
-        });
-        // Push as ephemeral: the card carries TSX source which would
-        // otherwise freeze into chat history. If the underlying flow code
-        // ships a fix in a later release, persisted cards would keep
-        // re-running the broken old TSX on every reload. Ephemeral cards
-        // disappear on panel reload; we proactively re-emit on the next
-        // subscribe (see clearAndCheckOAuthOnSubscribe).
-        void channel
-          .send(participantId, messageId, content, {
-            contentType: "inline_ui",
-            persist: false,
-          })
-          .catch((err) => {
-            console.error(`[AgentWorkerBase] Failed to emit OAuth Connect card for ${providerId}:`, err);
-            this.oauthCardsEmitted.delete(key);
-          });
-      },
-      requestProviderConfig: (providerId, displayName) => {
-        const participantId = this.subscriptions.getParticipantId(channelId);
-        if (!participantId) return;
-        const key = `${channelId}::config::${providerId}`;
-        if (this.oauthCardsEmitted.has(key)) return;
-        this.oauthCardsEmitted.add(key);
-
-        const channel = this.createChannelClient(channelId);
-        const messageId = crypto.randomUUID();
-        const content = JSON.stringify({
-          id: `provider-config-${providerId}-${messageId}`,
-          code: PROVIDER_CONFIG_CARD_TSX,
-          props: {
-            providerId,
-            displayName,
-            envVar: `${providerId.toUpperCase().replace(/[^A-Z0-9]/g, "_")}_API_KEY`,
-          },
-        });
-        void channel
-          .send(participantId, messageId, content, {
-            contentType: "inline_ui",
-            persist: false,
-          })
-          .catch((err) => {
-            console.error(`[AgentWorkerBase] Failed to emit provider config card for ${providerId}:`, err);
-            this.oauthCardsEmitted.delete(key);
-          });
-      },
-      requestConsentGrant: (providerId, displayName) => {
-        const participantId = this.subscriptions.getParticipantId(channelId);
-        if (!participantId) return;
-        const key = `${channelId}::consent::${providerId}`;
-        if (this.oauthCardsEmitted.has(key)) return;
-        this.oauthCardsEmitted.add(key);
-
-        const channel = this.createChannelClient(channelId);
-        const messageId = crypto.randomUUID();
-        const content = JSON.stringify({
-          id: `consent-grant-${providerId}-${messageId}`,
-          code: CONSENT_GRANT_CARD_TSX,
-          props: { providerId, displayName },
-        });
-        void channel
-          .send(participantId, messageId, content, {
-            contentType: "inline_ui",
-            persist: false,
-          })
-          .catch((err) => {
-            console.error(`[AgentWorkerBase] Failed to emit consent grant card for ${providerId}:`, err);
-            this.oauthCardsEmitted.delete(key);
-          });
-      },
     };
+  }
+
+  private emitOAuthConnectCard(channelId: string, provider: typeof OPENAI_CODEX_PROVIDER): void {
+    const providerId = provider.id;
+    const participantId = this.subscriptions.getParticipantId(channelId);
+    if (!participantId) return;
+    const key = `${channelId}::oauth::${providerId}`;
+    if (this.credentialPromptCardsEmitted.has(key)) return;
+    this.credentialPromptCardsEmitted.add(key);
+
+    const channel = this.createChannelClient(channelId);
+    const messageId = crypto.randomUUID();
+    const content = JSON.stringify({
+      id: `oauth-connect-${providerId}-${messageId}`,
+      code: OAUTH_CONNECT_CARD_TSX,
+      props: {
+        providerId,
+        provider,
+        displayName: provider.displayName,
+      },
+    });
+    void channel
+      .send(participantId, messageId, content, {
+        contentType: "inline_ui",
+        persist: false,
+      })
+      .catch((err) => {
+        console.error(`[AgentWorkerBase] Failed to emit OAuth Connect card for ${providerId}:`, err);
+        this.credentialPromptCardsEmitted.delete(key);
+      });
   }
 
   async onCallResult(callId: string, result: unknown, isError: boolean): Promise<void> {
@@ -1367,6 +1329,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
 
     const runner = await this.getOrCreateRunner(channelId);
+    this.recordAbort(channelId, "ui-prompt-dispatch", kind);
     runner.abortAgent();
     const placeholder = makeDispatchPlaceholder(toolCallId, callId, breadcrumbKind);
     throw new DispatchedError(placeholder);
@@ -1472,6 +1435,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       const projector = this.projectors.get(channelId);
       if (projector) await projector.closeAll();
       this.dispatchers.get(channelId)?.reset();
+      this.recordAbort(channelId, "interrupt-all");
       await entry.runner.interrupt();
     }
   }
@@ -1489,6 +1453,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       // everything stopped, not just the current turn. Dispatcher's reset()
       // also clears pi-core's steering queue.
       this.dispatchers.get(channelId)?.reset();
+      this.recordAbort(channelId, "interrupt-channel");
       await entry.runner.interrupt();
     }
   }

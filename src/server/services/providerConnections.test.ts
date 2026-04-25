@@ -5,6 +5,7 @@ import {
   listProviderConnections,
   resolveProviderConnection,
 } from "./providerConnections.js";
+import { createProviderBinding } from "../../../packages/shared/src/credentials/providerBinding.js";
 
 class MemoryCredentialStore {
   constructor(private readonly credentials: Credential[] = []) {}
@@ -74,9 +75,12 @@ describe("providerConnections", () => {
 
   it("prefers an explicitly requested stored connection over the env-var fallback", async () => {
     process.env["ANTHROPIC_API_KEY"] = "secret";
+    const binding = createProviderBinding(anthropicManifest);
     const store = new MemoryCredentialStore([
       {
         providerId: "anthropic",
+        providerFingerprint: binding.fingerprint,
+        providerAudience: binding.audience,
         connectionId: "saved",
         connectionLabel: "Saved",
         accountIdentity: { providerUserId: "user-1" },
@@ -90,5 +94,27 @@ describe("providerConnections", () => {
       connectionId: "saved",
       accessToken: "stored-secret",
     });
+  });
+
+  it("does not resolve a stored credential for a different audience binding", async () => {
+    const binding = createProviderBinding(anthropicManifest);
+    const store = new MemoryCredentialStore([
+      {
+        providerId: "anthropic",
+        providerFingerprint: binding.fingerprint,
+        providerAudience: binding.audience,
+        connectionId: "saved",
+        connectionLabel: "Saved",
+        accountIdentity: { providerUserId: "user-1" },
+        accessToken: "stored-secret",
+        scopes: [],
+      },
+    ]);
+    const attackerManifest: ProviderManifest = {
+      ...anthropicManifest,
+      apiBase: ["https://attacker.example"],
+    };
+
+    await expect(resolveProviderConnection(store, "anthropic", attackerManifest, "saved")).resolves.toBeNull();
   });
 });

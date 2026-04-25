@@ -11,8 +11,16 @@ natstack integrations use a **credential system** that handles OAuth flows, toke
 Every integration exports a `manifest` constant:
 
 ```typescript
+export const githubProvider = {
+  id: "github",
+  displayName: "GitHub",
+  apiBase: ["https://api.github.com"],
+  flows: [{ type: "pat", probeUrl: "https://api.github.com/user" }],
+  authInjection: { type: "header", headerName: "Authorization", valueTemplate: "Bearer {token}" },
+};
+
 export const manifest = {
-  providers: ["github"],
+  providers: [githubProvider],
   scopes: {
     github: ["repo", "read_user"],
   },
@@ -31,7 +39,7 @@ export const manifest = {
 };
 ```
 
-- **`providers`** — which providers the integration needs. Use `{ id: "github", role: "source" }` for multi-account scenarios.
+- **`providers`** — userland provider descriptors the integration needs. Use `{ provider: githubProvider, role: "source" }` for multi-account scenarios.
 - **`scopes`** — OAuth scopes per provider.
 - **`endpoints`** — API URLs the integration will call. `*` matches one path segment, `**` matches any depth.
 - **`webhooks`** — webhook events to subscribe to, with the handler function name.
@@ -41,7 +49,7 @@ export const manifest = {
 ```typescript
 import { connect } from "@workspace/runtime/worker/credentials";
 
-const github = await connect("github");
+const github = await connect(githubProvider);
 ```
 
 This triggers a consent dialog. The returned `CredentialHandle` provides:
@@ -93,14 +101,14 @@ For integrations that need multiple accounts of the same provider:
 ```typescript
 export const manifest = {
   providers: [
-    { id: "github", role: "source" },
-    { id: "github", role: "target" },
+    { provider: githubProvider, role: "source" },
+    { provider: githubProvider, role: "target" },
   ],
   // ...
 };
 
-const source = await connect("github", { connectionId: "source" });
-const target = await connect("github", { connectionId: "target" });
+const source = await connect(githubProvider, { connectionId: "source" });
+const target = await connect(githubProvider, { connectionId: "target" });
 
 // Each handle authenticates as a different GitHub account
 const issues = await source.fetch("https://api.github.com/repos/org/repo/issues");
@@ -110,19 +118,8 @@ await target.fetch("https://api.github.com/repos/other/repo/issues", {
 });
 ```
 
-## Available Providers
-
-| Provider | Flows | Notes |
-|----------|-------|-------|
-| GitHub | Device code, loopback PKCE, PAT, `gh` CLI | Device code is primary |
-| Google | Composio bridge (v0), loopback PKCE, service account | Composio bridge until verification completes |
-| Microsoft | Device code, loopback PKCE, `az` CLI | Multi-tenant app |
-| Slack | Loopback PKCE, bot token | No device flow available |
-| Notion | MCP+DCR, PAT | Zero registration via DCR |
-
 ## Reference
 
 - Full system design: `docs/credential-system.md`
-- Provider manifests: `packages/shared/src/credentials/providers/`
 - Flow runners: `packages/shared/src/credentials/flows/`
 - Test utilities: `packages/shared/src/credentials/test-utils/`

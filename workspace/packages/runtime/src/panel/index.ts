@@ -115,9 +115,12 @@ export const workspace = helpfulNamespace("workspace", workspaceClient);
 // Credential handles + universal outbound proxying for panel fetch().
 import {
   connect as connectCredential,
+  capabilityFor as credentialCapabilityFor,
+  hookFor as credentialHookFor,
   initPanelCredentials,
   listConnections as listCredentialConnections,
   listWebhookLeases as listCredentialWebhookLeases,
+  metadata as credentialMetadata,
   revokeConsent as revokeCredentialConsent,
   subscribeWebhook as subscribeCredentialWebhook,
   unsubscribeWebhook as unsubscribeCredentialWebhook,
@@ -126,10 +129,15 @@ export type {
   CredentialHandle,
   CredentialClient,
   ConnectionRecord,
+  ProviderDescriptor,
+  ProviderRequest,
 } from "../shared/credentials.js";
 initPanelCredentials(rpc);
 const credentialApi = {
   connect: connectCredential,
+  capabilityFor: credentialCapabilityFor,
+  hookFor: credentialHookFor,
+  metadata: credentialMetadata,
   revokeConsent: revokeCredentialConsent,
   listConnections: listCredentialConnections,
   subscribeWebhook: subscribeCredentialWebhook,

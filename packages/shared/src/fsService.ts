@@ -143,6 +143,10 @@ export class FsService {
     this.callerContextMap.set(callerId, contextId);
   }
 
+  getCallerContext(callerId: string): string | undefined {
+    return this.callerContextMap.get(callerId);
+  }
+
   unregisterCallerContext(callerId: string): void {
     this.callerContextMap.delete(callerId);
   }

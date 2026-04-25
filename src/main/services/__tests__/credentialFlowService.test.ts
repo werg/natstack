@@ -1,61 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
 import { createCredentialFlowService } from "../credentialFlowService.js";
 
+const codexProvider = {
+  id: "openai-codex",
+  displayName: "ChatGPT",
+  apiBase: ["https://api.openai.com", "https://chatgpt.com/backend-api"],
+  flows: [
+    {
+      type: "loopback-pkce",
+      clientId: "client-id",
+      authorizeUrl: "https://example.test/authorize",
+      tokenUrl: "https://example.test/token",
+      loopback: { host: "127.0.0.1", port: 0, callbackPath: "/auth/callback" },
+    },
+  ],
+};
+
 describe("main credentialFlowService", () => {
-  it("maps server provider status into the renderer-facing provider shape", async () => {
-    const call = vi.fn(async (service: string, method: string) => {
-      expect(service).toBe("credentials");
-      expect(method).toBe("listProviders");
-      return [
-        {
-          provider: "openai-codex",
-          displayName: "OpenAI Codex",
-          kind: "oauth",
-          status: "connected",
-        },
-        {
-          provider: "anthropic",
-          displayName: "Anthropic",
-          kind: "env-var",
-          status: "missing",
-          envVar: "ANTHROPIC_API_KEY",
-        },
-        {
-          provider: "github",
-          displayName: "GitHub",
-          kind: "oauth",
-          status: "connected",
-        },
-      ];
-    });
-
-    const service = createCredentialFlowService({
-      serverClient: { call } as never,
-    });
-
-    const providers = await service.handler(
-      { callerId: "shell", callerKind: "shell" },
-      "listProviders",
-      [],
-    );
-
-    expect(providers).toEqual([
-      {
-        id: "openai-codex",
-        name: "OpenAI Codex",
-        kind: "oauth",
-        status: "connected",
-      },
-      {
-        id: "anthropic",
-        name: "Anthropic",
-        kind: "env",
-        status: "unconfigured",
-        envVar: "ANTHROPIC_API_KEY",
-      },
-    ]);
-  });
-
   it("returns a failed connect result when the browser launch fails", async () => {
     const call = vi.fn(async (service: string, method: string) => {
       if (service === "credentials" && method === "beginConsent") {
@@ -79,7 +40,7 @@ describe("main credentialFlowService", () => {
       service.handler(
         { callerId: "shell", callerKind: "shell" },
         "connect",
-        ["openai-codex"],
+        [codexProvider],
       ),
     ).resolves.toEqual({
       success: false,
@@ -87,7 +48,7 @@ describe("main credentialFlowService", () => {
     });
   });
 
-  it("completes the Codex loopback flow using the expected callback path", async () => {
+  it("completes the provider-supplied loopback flow using the expected callback path", async () => {
     let redirectUri = "";
     const call = vi.fn(async (service: string, method: string, args: unknown[]) => {
       if (service !== "credentials") {
@@ -113,14 +74,6 @@ describe("main credentialFlowService", () => {
 
     const service = createCredentialFlowService({
       serverClient: { call } as never,
-      resolveLoopbackBinding: (providerId) => {
-        expect(providerId).toBe("openai-codex");
-        return {
-          host: "127.0.0.1",
-          port: 0,
-          callbackPath: "/auth/callback",
-        };
-      },
       openBrowser: async () => {
         expect(redirectUri).toContain("/auth/callback");
         const response = await fetch(`${redirectUri}?code=callback-code`);
@@ -132,7 +85,7 @@ describe("main credentialFlowService", () => {
       service.handler(
         { callerId: "shell", callerKind: "shell" },
         "connect",
-        ["openai-codex"],
+        [codexProvider],
       ),
     ).resolves.toEqual({ success: true });
   });

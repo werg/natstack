@@ -1,6 +1,6 @@
 import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import path from "node:path";
+import { getCentralDataPath } from "@natstack/env-paths";
 
 import type { AuditEntry } from "./types.js";
 
@@ -46,7 +46,7 @@ export class AuditLog {
   private readonly maxFileSizeBytes: number;
 
   constructor(opts?: { logDir?: string; maxFileSizeBytes?: number }) {
-    this.logDir = opts?.logDir ?? path.join(homedir(), ".natstack", "logs");
+    this.logDir = opts?.logDir ?? path.join(getCentralDataPath(), "logs");
     this.maxFileSizeBytes = opts?.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE_BYTES;
   }
 

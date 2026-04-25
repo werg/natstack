@@ -3,7 +3,6 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { buildPublicUrl } from "../publicUrl.js";
 import type { CredentialStore } from "../../../packages/shared/src/credentials/store.js";
 import type { Credential, ProviderManifest, WebhookSubscriptionConfig } from "../../../packages/shared/src/credentials/types.js";
-import type { ProviderRegistry } from "../../../packages/shared/src/credentials/registry.js";
 import type { WebhookSubscriptionStore } from "../../../packages/shared/src/webhooks/subscription.js";
 import type { WebhookEvent, WebhookWatchLease } from "../../../packages/shared/src/webhooks/types.js";
 
@@ -24,9 +23,14 @@ interface GmailPushPayload {
   historyId?: string;
 }
 
+interface LeaseProviderState {
+  provider?: ProviderManifest;
+  subscriptionConfig?: WebhookSubscriptionConfig;
+  [key: string]: unknown;
+}
+
 export interface WebhookWatchManagerDeps {
   credentialStore: Pick<CredentialStore, "load">;
-  providerRegistry: Pick<ProviderRegistry, "get">;
   webhookStore: Pick<
     WebhookSubscriptionStore,
     | "countSubscriptionsForLease"
@@ -41,7 +45,8 @@ export interface WebhookWatchManagerDeps {
 }
 
 interface EnsureLeaseParams {
-  providerId: string;
+  provider: ProviderManifest;
+  subscriptionConfig: WebhookSubscriptionConfig;
   eventType: string;
   connectionId: string;
 }
@@ -50,14 +55,14 @@ export class WebhookWatchManager {
   constructor(private readonly deps: WebhookWatchManagerDeps) {}
 
   async ensureLease(params: EnsureLeaseParams): Promise<WebhookWatchLease> {
-    const { manifest, subscriptionConfig } = this.getSubscriptionConfig(params.providerId, params.eventType);
+    const { provider: manifest, subscriptionConfig } = params;
     const watch = subscriptionConfig.watch;
     if (!watch) {
-      throw new Error(`Provider ${params.providerId}:${params.eventType} does not declare a managed watch`);
+      throw new Error(`Provider ${manifest.id}:${params.eventType} does not declare a managed watch`);
     }
 
     const existing = this.deps.webhookStore.listLeases({
-      providerId: params.providerId,
+      providerId: manifest.id,
       eventType: params.eventType,
       connectionId: params.connectionId,
       watchType: watch.type,
@@ -87,18 +92,19 @@ export class WebhookWatchManager {
       return;
     }
 
-    const manifest = this.deps.providerRegistry.get(lease.providerId);
-    const credential = await this.requireCredential(lease.providerId, lease.connectionId);
-
-    switch (lease.watchType) {
-      case "gmail-watch":
-        await this.stopGmailWatch(manifest, credential);
-        break;
-      case "calendar-watch":
-        await this.stopCalendarWatch(manifest, credential, lease);
-        break;
-      default:
-        break;
+    const config = readLeaseProviderState(lease);
+    if (config) {
+      const credential = await this.requireCredential(lease.providerId, lease.connectionId);
+      switch (lease.watchType) {
+        case "gmail-watch":
+          await this.stopGmailWatch(config.provider, credential);
+          break;
+        case "calendar-watch":
+          await this.stopCalendarWatch(config.provider, credential, lease);
+          break;
+        default:
+          break;
+      }
     }
 
     this.deps.webhookStore.deleteLease(leaseId);
@@ -111,13 +117,14 @@ export class WebhookWatchManager {
         continue;
       }
 
-      const { subscriptionConfig } = this.getSubscriptionConfig(lease.providerId, lease.eventType);
-      if (!this.shouldRenew(lease, subscriptionConfig)) {
+      const config = readLeaseProviderState(lease);
+      if (!config || !this.shouldRenew(lease, config.subscriptionConfig)) {
         continue;
       }
 
       await this.ensureLease({
-        providerId: lease.providerId,
+        provider: config.provider,
+        subscriptionConfig: config.subscriptionConfig,
         eventType: lease.eventType,
         connectionId: lease.connectionId,
       });
@@ -236,7 +243,7 @@ export class WebhookWatchManager {
       cursor: payload.historyId,
       expiresAt: payload.expiration ? Number(payload.expiration) : undefined,
       lastRenewedAt: now,
-      state: { topicName },
+      state: writeLeaseProviderState(existing?.state, manifest, subscriptionConfig, { topicName }),
     });
 
     return lease;
@@ -296,15 +303,16 @@ export class WebhookWatchManager {
       secret,
       expiresAt: payload.expiration ? Number(payload.expiration) : requestedExpiration,
       lastRenewedAt: now,
-      state: payload.resourceUri ? { resourceUri: payload.resourceUri } : undefined,
+      state: writeLeaseProviderState(
+        existing?.state,
+        manifest,
+        subscriptionConfig,
+        payload.resourceUri ? { resourceUri: payload.resourceUri } : undefined,
+      ),
     });
   }
 
-  private async stopGmailWatch(manifest: ProviderManifest | undefined, credential: Credential): Promise<void> {
-    if (!manifest) {
-      return;
-    }
-
+  private async stopGmailWatch(manifest: ProviderManifest, credential: Credential): Promise<void> {
     await this.fetchWithCredential(
       manifest,
       credential,
@@ -334,23 +342,6 @@ export class WebhookWatchManager {
         }),
       },
     ).catch(() => undefined);
-  }
-
-  private getSubscriptionConfig(providerId: string, eventType: string): {
-    manifest: ProviderManifest;
-    subscriptionConfig: WebhookSubscriptionConfig;
-  } {
-    const manifest = this.deps.providerRegistry.get(providerId);
-    if (!manifest) {
-      throw new Error(`Unknown provider: ${providerId}`);
-    }
-
-    const subscriptionConfig = manifest.webhooks?.subscriptions?.find((entry) => entry.event === eventType);
-    if (!subscriptionConfig) {
-      throw new Error(`Provider ${providerId} does not declare webhook event ${eventType}`);
-    }
-
-    return { manifest, subscriptionConfig };
   }
 
   private shouldRenew(lease: WebhookWatchLease, subscriptionConfig: WebhookSubscriptionConfig): boolean {
@@ -439,6 +430,34 @@ export class WebhookWatchManager {
     }
     return undefined;
   }
+}
+
+function writeLeaseProviderState(
+  existing: Record<string, unknown> | undefined,
+  provider: ProviderManifest,
+  subscriptionConfig: WebhookSubscriptionConfig,
+  extra?: Record<string, unknown>,
+): LeaseProviderState {
+  return {
+    ...existing,
+    ...extra,
+    provider,
+    subscriptionConfig,
+  };
+}
+
+function readLeaseProviderState(lease: WebhookWatchLease): {
+  provider: ProviderManifest;
+  subscriptionConfig: WebhookSubscriptionConfig;
+} | null {
+  const state = lease.state as LeaseProviderState | undefined;
+  if (!state?.provider || !state.subscriptionConfig) {
+    return null;
+  }
+  return {
+    provider: state.provider,
+    subscriptionConfig: state.subscriptionConfig,
+  };
 }
 
 function normalizeUrlBase(value: string | undefined): string | null {

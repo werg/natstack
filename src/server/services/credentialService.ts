@@ -3,8 +3,6 @@ import { z } from "zod";
 import { CredentialStore } from "../../../packages/shared/src/credentials/store.js";
 import { ConsentGrantStore } from "../../../packages/shared/src/credentials/consent.js";
 import { AuditLog } from "../../../packages/shared/src/credentials/audit.js";
-import { ProviderRegistry } from "../../../packages/shared/src/credentials/registry.js";
-import { builtinProviders } from "../../../packages/shared/src/credentials/providers/index.js";
 import type { ServiceDefinition } from "../../../packages/shared/src/serviceDefinition.js";
 import type { ServiceContext } from "../../../packages/shared/src/serviceDispatcher.js";
 import type {
@@ -12,20 +10,22 @@ import type {
   ConsentGrant,
   Credential,
   FlowConfig,
+  ProviderManifest,
 } from "../../../packages/shared/src/credentials/types.js";
 import type { WebhookSubscriptionStore } from "../../../packages/shared/src/webhooks/subscription.js";
 import type { WebhookSubscription } from "../../../packages/shared/src/webhooks/types.js";
 import type { EgressProxy } from "./egressProxy.js";
 import type { CodeIdentityResolver, ResolvedCodeIdentity } from "./codeIdentityResolver.js";
 import type { WebhookWatchManager } from "./webhookWatchManager.js";
-import {
-  listProviderConnections,
-  resolveProviderConnection,
-} from "./providerConnections.js";
+import type { CapabilityBroker } from "./capabilityBroker.js";
+import { resolveProviderConnection } from "./providerConnections.js";
+import { createProviderBinding } from "../../../packages/shared/src/credentials/providerBinding.js";
+import { providerManifestSchema } from "../../../packages/shared/src/credentials/providerManifestSchema.js";
 
 interface PendingConsent {
   nonce: string;
   providerId: string;
+  provider: ProviderManifest;
   scopes: string[];
   codeVerifier: string;
   redirectUri: string;
@@ -55,9 +55,9 @@ interface CredentialServiceDeps {
   credentialStore?: CredentialStore;
   consentStore?: ConsentGrantStore;
   auditLog?: AuditLog;
-  providerRegistry?: ProviderRegistry;
   egressProxy?: Pick<EgressProxy, "forwardProxyFetch">;
   codeIdentityResolver?: Pick<CodeIdentityResolver, "resolveByCallerId">;
+  capabilityBroker?: Pick<CapabilityBroker, "revokeFor">;
   webhookStore?: Pick<
     WebhookSubscriptionStore,
     "upsertSubscription" | "deleteSubscription" | "getSubscription"
@@ -72,7 +72,7 @@ const redirectModeSchema = z.enum([
 ]);
 
 const beginConsentParamsSchema = z.object({
-  providerId: identifierSchema,
+  provider: providerManifestSchema,
   scopes: z.array(z.string().max(256)).default([]),
   accountHint: z.string().max(256).optional(),
   role: z.string().max(64).optional(),
@@ -122,7 +122,7 @@ const auditParamsSchema = z.object({
 }).strict();
 
 const subscribeWebhookParamsSchema = z.object({
-  providerId: identifierSchema,
+  provider: providerManifestSchema,
   eventType: z.string().min(1).max(128),
   handler: z.string().min(1),
   connectionId: optionalIdentifierSchema,
@@ -133,18 +133,7 @@ const unsubscribeWebhookParamsSchema = z.object({
 }).strict();
 
 const resolveConnectionParamsSchema = z.object({
-  providerId: identifierSchema,
-  connectionId: optionalIdentifierSchema,
-}).strict();
-
-const checkConsentParamsSchema = z.object({
-  providerId: identifierSchema,
-}).strict();
-
-const grantConsentParamsSchema = z.object({
-  providerId: identifierSchema,
-  codeIdentityType: z.enum(["repo", "hash"]),
-  transient: z.boolean().optional(),
+  provider: providerManifestSchema,
   connectionId: optionalIdentifierSchema,
 }).strict();
 
@@ -153,7 +142,6 @@ const proxyFetchParamsSchema = z.object({
   method: z.string().min(1).max(16),
   headers: z.record(z.string()).optional(),
   body: z.string().optional(),
-  connectionId: optionalIdentifierSchema,
 }).strict();
 
 type BeginConsentParams = z.infer<typeof beginConsentParamsSchema>;
@@ -166,8 +154,6 @@ type AuditParams = z.infer<typeof auditParamsSchema>;
 type SubscribeWebhookParams = z.infer<typeof subscribeWebhookParamsSchema>;
 type UnsubscribeWebhookParams = z.infer<typeof unsubscribeWebhookParamsSchema>;
 type ResolveConnectionParams = z.infer<typeof resolveConnectionParamsSchema>;
-type CheckConsentParams = z.infer<typeof checkConsentParamsSchema>;
-type GrantConsentParams = z.infer<typeof grantConsentParamsSchema>;
 type ProxyFetchParams = z.infer<typeof proxyFetchParamsSchema>;
 
 type ConsentResult = {
@@ -180,22 +166,14 @@ type Connection = Pick<
 >;
 type WebhookSubscriptionResult = Pick<WebhookSubscription, "subscriptionId" | "leaseId">;
 
-interface ProviderStatus {
-  provider: string;
-  displayName: string;
-  kind: "oauth" | "env-var";
-  status: "connected" | "disconnected" | "configured" | "missing";
-  envVar?: string;
-}
-
 export function createCredentialService(deps: CredentialServiceDeps = {}): ServiceDefinition {
   const credentialStore = deps.credentialStore ?? new CredentialStore();
   const consentStore = deps.consentStore;
   const auditLog = deps.auditLog;
-  const registry = deps.providerRegistry ?? new ProviderRegistry();
   const pendingConsents = new Map<string, PendingConsent>();
   const egressProxy = deps.egressProxy;
   const codeIdentityResolver = deps.codeIdentityResolver;
+  const capabilityBroker = deps.capabilityBroker;
   const webhookStore = deps.webhookStore;
   const webhookWatchManager = deps.webhookWatchManager;
 
@@ -209,19 +187,12 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   }, PENDING_CONSENT_REAP_INTERVAL_MS);
   if (typeof reapInterval.unref === "function") reapInterval.unref();
 
-  for (const manifest of builtinProviders) {
-    registry.register(manifest);
-  }
-
   async function beginConsent(params: BeginConsentParams, callerId: string): Promise<{ nonce: string; authorizeUrl: string }> {
-    const manifest = registry.get(params.providerId);
-    if (!manifest) {
-      throw new Error(`Unknown provider: ${params.providerId}`);
-    }
+    const manifest = params.provider as ProviderManifest;
 
     const pkceFlow = manifest.flows.find((flow) => flow.type === "loopback-pkce");
     if (!pkceFlow?.authorizeUrl || !pkceFlow.clientId) {
-      throw new Error(`Provider ${params.providerId} does not support browser-based OAuth`);
+      throw new Error(`Provider ${manifest.id} does not support browser-based OAuth`);
     }
 
     const nonce = randomBytes(16).toString("base64url");
@@ -244,14 +215,15 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       authorizeUrl.searchParams.set(key, value);
     }
 
-    const redirectUri = resolveRedirectUri(params.providerId, params.redirect, params.redirectUri);
+    const redirectUri = resolveRedirectUri(params.redirect, params.redirectUri, pkceFlow);
     if (redirectUri) {
       authorizeUrl.searchParams.set("redirect_uri", redirectUri);
     }
 
     pendingConsents.set(nonce, {
       nonce,
-      providerId: params.providerId,
+      providerId: manifest.id,
+      provider: manifest,
       scopes: params.scopes,
       codeVerifier,
       redirectUri,
@@ -276,10 +248,8 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     }
     pendingConsents.delete(params.nonce);
 
-    const manifest = registry.get(pending.providerId);
-    if (!manifest) {
-      throw new Error(`Unknown provider: ${pending.providerId}`);
-    }
+    const manifest = pending.provider;
+    const binding = createProviderBinding(manifest);
 
     const pkceFlow = manifest.flows.find((flow) => flow.type === "loopback-pkce");
     if (!pkceFlow?.tokenUrl || !pkceFlow.clientId) {
@@ -324,6 +294,8 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     const connectionId = randomUUID();
     const credential: Credential = {
       providerId: pending.providerId,
+      providerFingerprint: binding.fingerprint,
+      providerAudience: binding.audience,
       connectionId,
       connectionLabel: manifest.displayName,
       accountIdentity,
@@ -342,6 +314,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   async function revokeConsent(params: RevokeConsentParams): Promise<void> {
     if (params.connectionId) {
       await credentialStore.remove(params.providerId, params.connectionId);
+      capabilityBroker?.revokeFor(params.providerId, params.connectionId);
       return;
     }
 
@@ -349,6 +322,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     for (const cred of creds) {
       await credentialStore.remove(params.providerId, cred.connectionId);
     }
+    capabilityBroker?.revokeFor(params.providerId);
   }
 
   async function listConsent(ctx: ServiceContext, params: ListConsentParams): Promise<ConsentGrant[]> {
@@ -365,9 +339,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   }
 
   async function listConnections(params: ListConnectionsParams): Promise<Connection[]> {
-    const credentials = params.providerId
-      ? await listProviderConnections(credentialStore, registry.get(params.providerId))
-      : await listAllConnections(credentialStore, registry);
+    const credentials = await credentialStore.list(params.providerId);
     return credentials.map((credential) => ({
       providerId: credential.providerId,
       connectionId: credential.connectionId,
@@ -395,95 +367,26 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     return auditLog.query({ filter: params.filter, limit: params.limit, after: params.after });
   }
 
-  async function resolveConnection(ctx: ServiceContext, params: ResolveConnectionParams): Promise<{
+  async function resolveConnection(_ctx: ServiceContext, params: ResolveConnectionParams): Promise<{
     connectionId: string;
     providerId: string;
   }> {
-    const manifest = registry.get(params.providerId);
-    if (!manifest) {
-      throw new Error(`Unknown provider: ${params.providerId}`);
-    }
+    const manifest = params.provider as ProviderManifest;
 
-    const identity = requireCallerIdentity(ctx, codeIdentityResolver);
     const connection = await resolveProviderConnection(
       credentialStore,
-      params.providerId,
+      manifest.id,
       manifest,
       params.connectionId,
     );
     if (!connection) {
-      throw new Error(`No connection configured for ${params.providerId}`);
-    }
-
-    if (!consentStore) {
-      throw new Error("Consent store is unavailable");
-    }
-
-    const grant = await consentStore.check({
-      repoPath: identity.repoPath,
-      effectiveVersion: identity.effectiveVersion,
-      providerId: params.providerId,
-    });
-
-    if (!grant) {
-      throw new Error(`No consent grant for ${params.providerId}`);
+      throw new Error(`No connection configured for ${manifest.id}`);
     }
 
     return {
-      connectionId: params.connectionId ?? grant.connectionId ?? connection.connectionId,
-      providerId: params.providerId,
+      connectionId: params.connectionId ?? connection.connectionId,
+      providerId: manifest.id,
     };
-  }
-
-  async function checkConsent(ctx: ServiceContext, params: CheckConsentParams): Promise<boolean> {
-    if (!consentStore) {
-      return false;
-    }
-
-    const identity = requireCallerIdentity(ctx, codeIdentityResolver);
-    const grant = await consentStore.check({
-      repoPath: identity.repoPath,
-      effectiveVersion: identity.effectiveVersion,
-      providerId: params.providerId,
-    });
-    return grant !== null;
-  }
-
-  async function grantConsent(ctx: ServiceContext, params: GrantConsentParams): Promise<void> {
-    if (!consentStore) {
-      throw new Error("Consent store is unavailable");
-    }
-
-    const identity = requireCallerIdentity(ctx, codeIdentityResolver);
-    const manifest = registry.get(params.providerId);
-    const connection = await resolveProviderConnection(
-      credentialStore,
-      params.providerId,
-      manifest,
-      params.connectionId,
-    );
-    if (!connection) {
-      throw new Error(`No connection configured for ${params.providerId}`);
-    }
-
-    const codeIdentity =
-      params.codeIdentityType === "repo"
-        ? identity.repoPath
-        : identity.effectiveVersion;
-    if (!codeIdentity) {
-      throw new Error(`No ${params.codeIdentityType} identity available for ${identity.repoPath}`);
-    }
-
-    await consentStore.grant({
-      codeIdentity,
-      codeIdentityType: params.codeIdentityType,
-      providerId: params.providerId,
-      connectionId: connection.connectionId,
-      scopes: connection.scopes,
-      grantedAt: Date.now(),
-      grantedBy: ctx.callerId,
-      transient: params.transient,
-    });
   }
 
   async function proxyFetch(ctx: ServiceContext, params: ProxyFetchParams): Promise<{
@@ -502,29 +405,6 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       method: params.method,
       headers: params.headers,
       body: params.body,
-      connectionId: params.connectionId,
-    });
-  }
-
-  async function listProviders(): Promise<ProviderStatus[]> {
-    const connections = await listAllConnections(credentialStore, registry);
-    const connectedByProvider = new Set(connections.map((credential) => credential.providerId));
-
-    return registry.list().map((manifest) => {
-      const envFlow = manifest.flows.find((flow) => flow.type === "env-var" && flow.envVar);
-      const hasOAuthFlow = manifest.flows.some((flow) => flow.type === "loopback-pkce" || flow.type === "device-code");
-      const kind: ProviderStatus["kind"] = !hasOAuthFlow && envFlow ? "env-var" : "oauth";
-      const connected = connectedByProvider.has(manifest.id);
-
-      return {
-        provider: manifest.id,
-        displayName: manifest.displayName,
-        kind,
-        status: kind === "env-var"
-          ? connected ? "configured" : "missing"
-          : connected ? "connected" : "disconnected",
-        envVar: envFlow?.envVar,
-      };
     });
   }
 
@@ -536,26 +416,27 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       throw new Error("Webhook subscription store is unavailable");
     }
 
-    const manifest = registry.get(params.providerId);
+    const manifest = params.provider as ProviderManifest;
     const subscriptionConfig = manifest?.webhooks?.subscriptions?.find((entry) => entry.event === params.eventType);
     if (!manifest || !subscriptionConfig) {
-      throw new Error(`Provider ${params.providerId} does not declare webhook event ${params.eventType}`);
+      throw new Error(`Provider ${manifest.id} does not declare webhook event ${params.eventType}`);
     }
 
     const resolvedConnection = await resolveConnection(ctx, {
-      providerId: params.providerId,
+      provider: params.provider,
       connectionId: params.connectionId,
     });
     const lease = subscriptionConfig.watch
       ? await webhookWatchManager.ensureLease({
-          providerId: params.providerId,
+          provider: manifest,
+          subscriptionConfig,
           eventType: params.eventType,
           connectionId: resolvedConnection.connectionId,
         })
       : null;
     const subscription = webhookStore.upsertSubscription({
       callerId: ctx.callerId,
-      providerId: params.providerId,
+      providerId: manifest.id,
       eventType: params.eventType,
       connectionId: resolvedConnection.connectionId,
       handler: params.handler,
@@ -602,10 +483,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       subscribeWebhook: { args: z.tuple([subscribeWebhookParamsSchema]) },
       unsubscribeWebhook: { args: z.tuple([unsubscribeWebhookParamsSchema]) },
       resolveConnection: { args: z.tuple([resolveConnectionParamsSchema]) },
-      checkConsent: { args: z.tuple([checkConsentParamsSchema]) },
-      grantConsent: { args: z.tuple([grantConsentParamsSchema]) },
       proxyFetch: { args: z.tuple([proxyFetchParamsSchema]) },
-      listProviders: { args: z.tuple([]) },
     },
     handler: async (ctx, method, args) => {
       switch (method) {
@@ -629,14 +507,8 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
           return unsubscribeWebhook(ctx, (args as [UnsubscribeWebhookParams])[0]);
         case "resolveConnection":
           return resolveConnection(ctx, (args as [ResolveConnectionParams])[0]);
-        case "checkConsent":
-          return checkConsent(ctx, (args as [CheckConsentParams])[0]);
-        case "grantConsent":
-          return grantConsent(ctx, (args as [GrantConsentParams])[0]);
         case "proxyFetch":
           return proxyFetch(ctx, (args as [ProxyFetchParams])[0]);
-        case "listProviders":
-          return listProviders();
         default:
           throw new Error(`Unknown credentials method: ${method}`);
       }
@@ -644,34 +516,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   };
 }
 
-async function listAllConnections(
-  credentialStore: CredentialStore,
-  registry: ProviderRegistry,
-): Promise<Credential[]> {
-  const connections = await credentialStore.list();
-  const byKey = new Set(connections.map((credential) => `${credential.providerId}:${credential.connectionId}`));
-
-  for (const manifest of registry.list()) {
-    const envCredential = manifest.flows.find((flow) => flow.type === "env-var" && flow.envVar)
-      ? await resolveProviderConnection(credentialStore, manifest.id, manifest)
-      : null;
-    if (!envCredential) {
-      continue;
-    }
-    const key = `${envCredential.providerId}:${envCredential.connectionId}`;
-    if (!byKey.has(key)) {
-      byKey.add(key);
-      connections.push(envCredential);
-    }
-  }
-
-  return connections;
-}
-
 function resolveRedirectUri(
-  providerId: string,
   redirect: BeginConsentParams["redirect"],
   redirectUriOverride?: string,
+  flow?: FlowConfig,
 ): string {
   if (redirect === "client-loopback" && redirectUriOverride) {
     return redirectUriOverride;
@@ -682,14 +530,18 @@ function resolveRedirectUri(
   if (redirect === "mobile-universal") {
     return "natstack://oauth/callback";
   }
-  if (providerId === "openai-codex") {
-    return "http://localhost:1455/auth/callback";
+  const loopback = flow?.loopback;
+  if (loopback) {
+    const host = loopback.host ?? "127.0.0.1";
+    const port = loopback.port ?? 0;
+    const callbackPath = loopback.callbackPath ?? "/oauth/callback";
+    return `http://${host}:${port}${callbackPath}`;
   }
   return "http://127.0.0.1/oauth/callback";
 }
 
 function resolveRequestedScope(
-  manifest: ReturnType<ProviderRegistry["get"]> extends infer T ? NonNullable<T> : never,
+  manifest: ProviderManifest,
   flow: FlowConfig,
   scopes: string[],
 ): string | null {

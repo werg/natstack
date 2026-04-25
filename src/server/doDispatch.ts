@@ -205,6 +205,7 @@ export type HttpDispatcher = (
 export class DODispatch {
   private dispatcher: HttpDispatcher | null = null;
   private ensureDOFn: ((source: string, className: string, objectKey: string) => Promise<void>) | null = null;
+  private beforeDispatchFn: ((ref: DORef) => Promise<void> | void) | null = null;
   private tokenManager: TokenManager | null = null;
   private getWorkerdUrl: (() => string) | null = null;
   private getDispatchSecret: (() => string) | null = null;
@@ -224,6 +225,10 @@ export class DODispatch {
    */
   setEnsureDO(fn: (source: string, className: string, objectKey: string) => Promise<void>): void {
     this.ensureDOFn = fn;
+  }
+
+  setBeforeDispatch(fn: (ref: DORef) => Promise<void> | void): void {
+    this.beforeDispatchFn = fn;
   }
 
   /**
@@ -267,6 +272,8 @@ export class DODispatch {
    * raw dispatcher function.
    */
   async dispatch(ref: DORef, method: string, ...args: unknown[]): Promise<unknown> {
+    await Promise.resolve(this.beforeDispatchFn?.(ref));
+
     // Token-based path: use postToDOWithToken when tokenManager + getWorkerdUrl are set
     if (this.tokenManager && this.getWorkerdUrl) {
       const deps: PostToDOWithTokenDeps = {
@@ -280,6 +287,7 @@ export class DODispatch {
         if (this.ensureDOFn && this.isRetryable(err)) {
           console.warn(`[DODispatch] ${doRefKey(ref)}.${method} failed (${err instanceof Error ? err.message : String(err)}), calling ensureDO and retrying`);
           await this.ensureDOFn(ref.source, ref.className, ref.objectKey);
+          await Promise.resolve(this.beforeDispatchFn?.(ref));
           return await postToDOWithToken(ref, method, args, deps);
         }
         throw err;
@@ -297,6 +305,7 @@ export class DODispatch {
       if (this.ensureDOFn && this.isRetryable(err)) {
         console.warn(`[DODispatch] ${doRefKey(ref)}.${method} failed (${err instanceof Error ? err.message : String(err)}), calling ensureDO and retrying`);
         await this.ensureDOFn(ref.source, ref.className, ref.objectKey);
+        await Promise.resolve(this.beforeDispatchFn?.(ref));
         return await this.dispatcher(urlPath, args);
       }
       throw err;

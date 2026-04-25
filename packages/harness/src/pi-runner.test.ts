@@ -101,7 +101,6 @@ function createMockRpc(
     "main:workspace.getAgentsMd": "BASE SYSTEM PROMPT",
     "main:workspace.listSkills": [],
     "main:credentials.listConnections": [{ connectionId: "conn-1" }],
-    "main:credentials.checkConsent": true,
     ...overrides,
   };
   const call = vi.fn(async (targetId: string, method: string) => {
@@ -149,7 +148,6 @@ function createStubUiCallbacks(): NatStackScopedUiContext {
     setStatus: vi.fn(),
     setWidget: vi.fn(),
     setWorkingMessage: vi.fn(),
-    requestProviderOAuth: vi.fn(),
   };
 }
 
@@ -165,6 +163,7 @@ function createOptions(
     callMethodCallback: vi.fn().mockResolvedValue(undefined),
     askUserCallback: vi.fn().mockResolvedValue(""),
     model: "openai-codex:gpt-5",
+    getApiKey: vi.fn(async () => "capability-token"),
     approvalLevel: 2, // full auto so wrapped tools never block in default tests
     ...overrides,
   };
@@ -226,84 +225,14 @@ describe("PiRunner.init", () => {
     await expect(runner.init()).rejects.toThrow(/provider:model/);
   });
 
-  it("getApiKey callback verifies credentials and returns the proxy sentinel", async () => {
-    const options = createOptions();
-    const rpcCallSpy = (options.rpc as any).call as ReturnType<typeof vi.fn>;
-    const runner = new PiRunner(options);
+  it("wires the caller-supplied getApiKey callback into the Agent", async () => {
+    const getApiKey = vi.fn(async () => "capability-token");
+    const runner = new PiRunner(createOptions({ getApiKey }));
     await runner.init();
-
     const agent = agentInstances[0];
-    const token = await agent.getApiKey("openai");
-    expect(token).toBe("natstack-proxy");
-    expect(rpcCallSpy).toHaveBeenCalledWith(
-      "main",
-      "credentials.listConnections",
-      { providerId: "openai" },
-    );
-    expect(rpcCallSpy).toHaveBeenCalledWith(
-      "main",
-      "credentials.checkConsent",
-      { providerId: "openai" },
-    );
-  });
-
-  it("OAuth fallback: shows the Connect card and throws (non-blocking) when not logged in", async () => {
-    const ui = createStubUiCallbacks();
-
-    const rpcResponses: Record<string, unknown> = {
-      "main:workspace.getAgentsMd": "BASE PROMPT",
-      "main:workspace.listSkills": [],
-      "main:credentials.listConnections": [],
-    };
-    const call = vi.fn(
-      async (targetId: string, method: string, ..._args: unknown[]) => {
-        const key = `${targetId}:${method}`;
-        if (key in rpcResponses) return rpcResponses[key];
-        throw new Error(`Unexpected RPC call: ${key}`);
-      },
-    );
-    const rpc = { call: call as never } as PiRunnerOptions["rpc"];
-
-    const runner = new PiRunner(
-      createOptions({ rpc, uiCallbacks: ui, model: "openai-codex:gpt-5.4" }),
-    );
-    await runner.init();
-
-    const agent = agentInstances[0];
-    // getApiKey should throw (non-blocking) instead of waiting.
-    await expect(agent.getApiKey("openai-codex")).rejects.toThrow(/Sign in required/);
-
-    // The OAuth card was pushed before the throw.
-    expect(ui.requestProviderOAuth).toHaveBeenCalledWith(
-      "openai-codex",
-      "ChatGPT",
-    );
-  });
-
-  it("credential readiness rethrows lookup errors without showing the card", async () => {
-    const ui = createStubUiCallbacks();
-    const call = vi.fn(async (_t: string, method: string, ...args: unknown[]) => {
-      if (method === "workspace.getAgentsMd") return "P";
-      if (method === "workspace.listSkills") return [];
-      if (
-        method === "credentials.listConnections" &&
-        (args[0] as { providerId?: string } | undefined)?.providerId === "openai-codex"
-      ) {
-        throw new Error("Network error");
-      }
-      throw new Error(`Unexpected: ${method}`);
-    });
-    const rpc = { call: call as never } as PiRunnerOptions["rpc"];
-
-    const runner = new PiRunner(
-      createOptions({ rpc, uiCallbacks: ui, model: "openai-codex:gpt-5.4" }),
-    );
-    await runner.init();
-
-    const agent = agentInstances[0];
-    await expect(agent.getApiKey("openai-codex")).rejects.toThrow(/Network error/);
-    // Should NOT have shown the card.
-    expect(ui.requestProviderOAuth).not.toHaveBeenCalled();
+    expect(await agent.getApiKey("openai")).toBe("capability-token");
+    expect(getApiKey).toHaveBeenCalled();
+    runner.dispose();
   });
 });
 

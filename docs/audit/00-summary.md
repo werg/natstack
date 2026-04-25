@@ -115,7 +115,7 @@ user-confirmed shell-only surface.
 The remote admin token goes through `safeStorage`. *Nothing else does.*
 
 - Third-party OAuth access + refresh tokens: plaintext JSON under
-  `~/.natstack/credentials/…` [03-F-01].
+  `~/.config/natstack/credentials/…` [03-F-01].
 - `.secrets.yml` / central config: written without explicit `mode: 0o600`;
   relies on ancestor dir 0o700 which is not uniform across platforms
   [03-F-04, 07-F-17].

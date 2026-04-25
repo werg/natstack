@@ -19,7 +19,6 @@ function createStubUI(): NatStackScopedUiContext {
     setStatus: vi.fn(),
     setWidget: vi.fn(),
     setWorkingMessage: vi.fn(),
-    requestProviderOAuth: vi.fn(),
   };
 }
 

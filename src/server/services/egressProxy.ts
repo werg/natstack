@@ -21,13 +21,13 @@ import type { RateLimiter } from "../../../packages/shared/src/credentials/rateL
 import type { AuditLog } from "../../../packages/shared/src/credentials/audit.js";
 import { calculateBackoff, DEFAULT_RETRY_CONFIG } from "../../../packages/shared/src/credentials/retry.js";
 import type { CodeIdentityResolver, ResolvedCodeIdentity } from "./codeIdentityResolver.js";
-import { resolveProviderConnection } from "./providerConnections.js";
+import type { ApprovalQueue } from "./approvalQueue.js";
+import type { CarrierLocation, ResolvedCapability } from "./capabilityBroker.js";
+import { credentialMatchesProviderBinding } from "../../../packages/shared/src/credentials/providerBinding.js";
 
 type AuditEntry = Parameters<AuditLog["append"]>[0];
 type BreakerState = AuditEntry["breakerState"];
 
-const PROXY_AUTH_HEADER = "x-natstack-proxy-auth";
-const CONNECTION_ID_HEADER = "x-natstack-connection";
 const PASSTHROUGH_PROVIDER_ID = "passthrough";
 const PASSTHROUGH_CONNECTION_ID = "passthrough";
 
@@ -41,8 +41,6 @@ const HOP_BY_HOP_REQUEST_HEADERS = new Set([
   "trailer",
   "transfer-encoding",
   "upgrade",
-  PROXY_AUTH_HEADER,
-  CONNECTION_ID_HEADER,
 ]);
 
 export interface CredentialStore {
@@ -55,12 +53,9 @@ export interface ConsentStore {
     repoPath: string;
     effectiveVersion: string;
     providerId: string;
+    providerFingerprint: string;
   }): Promise<ConsentGrant | null> | ConsentGrant | null;
-}
-
-export interface ProviderRegistry {
-  list(): Promise<ProviderManifest[]> | ProviderManifest[];
-  matchUrl(targetUrl: URL): Promise<ProviderManifest | undefined> | ProviderManifest | undefined;
+  grant(grant: ConsentGrant): Promise<void> | void;
 }
 
 export interface EgressRateLimiter {
@@ -81,25 +76,26 @@ export interface CircuitBreaker {
 export interface EgressProxyDeps {
   credentialStore: CredentialStore;
   consentStore: ConsentStore;
-  providerRegistry: ProviderRegistry;
   auditLog: Pick<AuditLog, "append">;
   rateLimiter: EgressRateLimiter;
   circuitBreaker: CircuitBreaker;
-  codeIdentityResolver: Pick<CodeIdentityResolver, "resolve" | "resolveByCallerId">;
+  codeIdentityResolver: Pick<CodeIdentityResolver, "resolveByCallerId">;
+  approvalQueue: ApprovalQueue;
+  capabilityBroker: import("./capabilityBroker.js").CapabilityBroker;
 }
 
 interface RequestAttribution extends ResolvedCodeIdentity {
   rateLimitKey: string;
 }
 
-interface AuthorizationResult {
-  grant: ConsentGrant;
-  credential: Credential;
-}
-
-interface AuthorizationError {
-  statusCode: number;
-  message: string;
+interface CapabilityAuthorization {
+  attribution: RequestAttribution | null;
+  provider: ProviderManifest | null;
+  credential: Credential | null;
+  connectionId: string | null;
+  scopes: string[];
+  carrier?: CarrierLocation;
+  capId?: string;
 }
 
 interface ForwardResult {
@@ -180,29 +176,19 @@ export class EgressProxy {
     method: string;
     headers?: Record<string, string>;
     body?: string;
-    connectionId?: string;
   }): Promise<{
     status: number;
     statusText: string;
     headers: Record<string, string>;
     body: string;
   }> {
-    const identity = this.deps.codeIdentityResolver.resolveByCallerId(params.callerId);
-    if (!identity) {
-      throw new Error(`Unknown caller identity: ${params.callerId}`);
-    }
-    const attribution: RequestAttribution = {
-      ...identity,
-      rateLimitKey: `${identity.repoPath}:${identity.callerId}`,
-    };
     const body = params.body;
     const bytesOut = body ? Buffer.byteLength(body) : 0;
     const result = await this.executeAuthorizedRequest({
-      attribution,
+      callerId: params.callerId,
       method: params.method.toUpperCase(),
       targetUrl: new URL(params.url),
       inputHeaders: params.headers ?? {},
-      connectionId: params.connectionId,
       initialBytesOut: bytesOut,
       replaySafe: true,
       execute: async (targetUrl, headers) => {
@@ -234,14 +220,24 @@ export class EgressProxy {
     inputHeaders: IncomingHttpHeaders | Headers | Record<string, string | string[] | undefined>,
     credential?: Credential,
     manifest?: ProviderManifest,
+    carrier?: CarrierLocation,
   ): { headers: OutgoingHttpHeaders; targetUrl: URL } {
     const headers: OutgoingHttpHeaders = {};
+
+    if (carrier?.kind === "query") {
+      const modified = new URL(targetUrl.toString());
+      modified.searchParams.delete(carrier.name);
+      targetUrl = modified;
+    }
 
     for (const [name, value] of this.iterateHeaders(inputHeaders)) {
       if (value === undefined) {
         continue;
       }
       if (HOP_BY_HOP_REQUEST_HEADERS.has(name.toLowerCase())) {
+        continue;
+      }
+      if (carrier?.kind === "header" && name.toLowerCase() === carrier.name.toLowerCase()) {
         continue;
       }
       headers[name.toLowerCase()] = value;
@@ -292,25 +288,27 @@ export class EgressProxy {
   }
 
   private async handleHttpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const attribution = this.attributeRequest(req);
-    if (!attribution) {
-      this.respondWithError(res, 407, "Missing or invalid proxy attribution");
-      return;
-    }
-
     const targetUrl = this.resolveTargetUrl(req);
     if (!targetUrl) {
       this.respondWithError(res, 400, "Proxy request URL is invalid");
       return;
     }
 
+    // "Client went away before receiving a response." res.on("close") fires
+    // iff the response wasn't fully written; we guard with !writableEnded so a
+    // normal completed response does not look like an abort. req.on("close")
+    // would fire on request-body end even for a pending GET.
+    const ac = new AbortController();
+    res.on("close", () => {
+      if (!res.writableEnded) ac.abort();
+    });
+
     try {
       await this.executeAuthorizedRequest({
-        attribution,
         method: (req.method ?? "GET").toUpperCase(),
         targetUrl,
         inputHeaders: req.headers,
-        connectionId: this.readHeader(req, CONNECTION_ID_HEADER),
+        signal: ac.signal,
         execute: async (preparedUrl, headers) => {
           const forwardResult = await this.forwardHttpRequest(req, res, preparedUrl, headers);
           return { ...forwardResult, payload: undefined };
@@ -331,18 +329,18 @@ export class EgressProxy {
   }
 
   private async executeAuthorizedRequest<T>(params: {
-    attribution: RequestAttribution;
+    callerId?: string | null;
     method: string;
     targetUrl: URL;
     inputHeaders: IncomingHttpHeaders | Headers | Record<string, string | string[] | undefined>;
-    connectionId?: string | null;
     initialBytesOut?: number;
     replaySafe?: boolean;
+    signal?: AbortSignal;
     execute: (targetUrl: URL, headers: OutgoingHttpHeaders) => Promise<RequestExecutionResult<T>>;
   }): Promise<T> {
     const startedAt = Date.now();
     let provider: ProviderManifest | null = null;
-    let authorization: AuthorizationResult | null = null;
+    let authorization: CapabilityAuthorization | null = null;
     let targetUrl = params.targetUrl;
     let statusCode = 500;
     let bytesIn = 0;
@@ -353,43 +351,36 @@ export class EgressProxy {
     let retries = 0;
 
     try {
-      provider = await this.routeProvider(targetUrl);
-      if (provider) {
-        const authorizationResult = await this.authorizeRequest(
-          params.attribution,
-          provider,
-          params.connectionId,
-        );
-        if ("error" in authorizationResult) {
-          throw new ForwardRejection(
-            authorizationResult.error.statusCode,
-            authorizationResult.error.message,
-            authorizationResult.error.statusCode === 403
-              ? authorizationResult.error.message
-              : undefined,
-          );
-        }
-
-        authorization = authorizationResult;
-        breakerKey = `${provider.id}:${authorization.grant.connectionId}`;
+      authorization = await this.authorizeCapabilityRequest({
+        callerId: params.callerId ?? null,
+        targetUrl,
+        inputHeaders: params.inputHeaders,
+      });
+      provider = authorization.provider;
+      if (provider && authorization.connectionId) {
+        breakerKey = `${provider.id}:${authorization.connectionId}`;
       }
 
-      const limiter = this.deps.rateLimiter.getLimiter(
-        params.attribution.rateLimitKey,
-        provider ?? undefined,
-        authorization?.grant.connectionId,
-      );
+      const limiter = authorization.attribution
+        ? this.deps.rateLimiter.getLimiter(
+            authorization.attribution.rateLimitKey,
+            provider ?? undefined,
+            authorization.connectionId ?? undefined,
+          )
+        : null;
       const maxAttempts = shouldUseSafeRetries(params.replaySafe, params.method, provider?.retry)
         ? Math.max(1, provider?.retry?.maxAttempts ?? DEFAULT_RETRY_CONFIG.maxAttempts)
         : 1;
       const totalAttempts = maxAttempts + 1;
-      let credential = authorization?.credential;
+      let credential = authorization.credential ?? undefined;
       let attempted401Recovery = false;
 
       for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
-        const rateLimitResult = limiter.tryConsume();
-        if (!rateLimitResult.allowed) {
-          throw new ForwardRejection(429, "Rate limit exceeded", undefined, rateLimitResult.retryAfterMs);
+        if (limiter) {
+          const rateLimitResult = limiter.tryConsume();
+          if (!rateLimitResult.allowed) {
+            throw new ForwardRejection(429, "Rate limit exceeded", undefined, rateLimitResult.retryAfterMs);
+          }
         }
 
         if (breakerKey) {
@@ -405,6 +396,7 @@ export class EgressProxy {
           params.inputHeaders,
           credential,
           provider ?? undefined,
+          authorization.carrier,
         );
         targetUrl = prepared.targetUrl;
 
@@ -414,7 +406,7 @@ export class EgressProxy {
           bytesIn = result.bytesIn;
           bytesOut = result.bytesOut;
 
-          if (statusCode === 429 && typeof result.retryAfterMs === "number") {
+          if (limiter && statusCode === 429 && typeof result.retryAfterMs === "number") {
             limiter.recordRetryAfter(Math.ceil(result.retryAfterMs / 1000));
           }
 
@@ -427,8 +419,9 @@ export class EgressProxy {
             attempted401Recovery = true;
             const refreshed = await this.reloadCredentialIfChanged(
               provider.id,
-              authorization.grant.connectionId,
+              authorization.connectionId!,
               credential?.accessToken,
+              provider,
             );
             if (refreshed) {
               credential = refreshed;
@@ -485,17 +478,17 @@ export class EgressProxy {
     } finally {
       await this.appendAuditEntry({
         ts: startedAt,
-        workerId: params.attribution.repoPath,
-        callerId: params.attribution.callerId,
+        workerId: authorization?.attribution?.repoPath ?? "unknown",
+        callerId: authorization?.attribution?.callerId ?? "unknown",
         providerId: provider?.id ?? PASSTHROUGH_PROVIDER_ID,
-        connectionId: authorization?.grant.connectionId ?? PASSTHROUGH_CONNECTION_ID,
+        connectionId: authorization?.connectionId ?? PASSTHROUGH_CONNECTION_ID,
         method: params.method,
         url: targetUrl.toString(),
         status: statusCode,
         durationMs: Date.now() - startedAt,
         bytesIn,
         bytesOut,
-        scopesUsed: authorization?.grant.scopes ?? [],
+        scopesUsed: authorization?.scopes ?? [],
         capabilityViolation,
         retries,
         breakerState,
@@ -505,7 +498,6 @@ export class EgressProxy {
 
   private async handleConnect(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
     const startedAt = Date.now();
-    const attribution = this.attributeRequest(req);
     const authority = req.url ?? "";
     const [host, portStr] = authority.split(":");
     const port = parseInt(portStr || "443", 10);
@@ -519,8 +511,8 @@ export class EgressProxy {
       auditSettled = true;
       await this.appendAuditEntry({
         ts: startedAt,
-        workerId: attribution?.repoPath ?? "unknown",
-        callerId: attribution?.callerId ?? "unknown",
+        workerId: "unknown",
+        callerId: "unknown",
         providerId: PASSTHROUGH_PROVIDER_ID,
         connectionId: PASSTHROUGH_CONNECTION_ID,
         method: "CONNECT",
@@ -535,12 +527,9 @@ export class EgressProxy {
       });
     };
 
-    if (!attribution) {
-      auditStatus = 407;
-      socket.end("HTTP/1.1 407 Proxy Authentication Required\r\nConnection: close\r\n\r\n");
-      await appendConnectAudit();
-      return;
-    }
+    // Attribution is optional for CONNECT — unattributed tunnels flow through.
+    // The proxy cannot inject credentials into a TLS tunnel anyway, so there is
+    // no credential-leakage risk in allowing uncredentialed tunnels.
 
     const upstream = netConnect(port, host || authority, () => {
       auditStatus = 200;
@@ -566,72 +555,84 @@ export class EgressProxy {
     });
   }
 
-  private attributeRequest(req: IncomingMessage): RequestAttribution | null {
-    const proxyAuthToken = this.readHeader(req, PROXY_AUTH_HEADER);
-    if (!proxyAuthToken) {
-      return null;
+  private async authorizeCapabilityRequest(params: {
+    callerId: string | null;
+    targetUrl: URL;
+    inputHeaders: IncomingHttpHeaders | Headers | Record<string, string | string[] | undefined>;
+  }): Promise<CapabilityAuthorization> {
+    const found = this.deps.capabilityBroker.resolveFromRequest(params.inputHeaders, params.targetUrl);
+
+    if (found) {
+      return this.authorizeResolvedCapability(found.entry, found.carrier, params.targetUrl);
     }
 
-    const identity = this.deps.codeIdentityResolver.resolve(proxyAuthToken);
-    if (!identity) {
-      return null;
-    }
-
+    const attribution = params.callerId ? this.resolveAttribution(params.callerId) : null;
     return {
-      ...identity,
-      rateLimitKey: `${identity.repoPath}:${identity.callerId}`,
+      attribution,
+      provider: null,
+      credential: null,
+      connectionId: null,
+      scopes: [],
     };
   }
 
-  private async routeProvider(targetUrl: URL): Promise<ProviderManifest | null> {
-    const matched = await Promise.resolve(this.deps.providerRegistry.matchUrl(targetUrl));
-    if (matched) {
-      return matched;
-    }
+  private async authorizeResolvedCapability(
+    entry: ResolvedCapability,
+    carrier: CarrierLocation,
+    targetUrl: URL,
+  ): Promise<CapabilityAuthorization> {
+    const attribution = this.resolveAttribution(entry.callerId);
 
-    const manifests = await Promise.resolve(this.deps.providerRegistry.list());
-    return manifests.find((manifest) => this.matchesProvider(targetUrl, manifest)) ?? null;
-  }
-
-  private async authorizeRequest(
-    identity: Pick<ResolvedCodeIdentity, "repoPath" | "effectiveVersion">,
-    provider: ProviderManifest,
-    connectionIdOverride?: string | null,
-  ): Promise<AuthorizationResult | { error: AuthorizationError }> {
-    const grant = await Promise.resolve(this.deps.consentStore.check({
-      repoPath: identity.repoPath,
-      effectiveVersion: identity.effectiveVersion,
-      providerId: provider.id,
-    }));
-
-    if (!grant) {
+    if (entry.kind === "session") {
       return {
-        error: {
-          statusCode: 403,
-          message: `No consent grant found for provider ${provider.id}`,
-        },
+        attribution,
+        provider: null,
+        credential: null,
+        connectionId: null,
+        scopes: [],
+        carrier,
+        capId: entry.capId,
       };
     }
 
-    const resolvedConnectionId = connectionIdOverride || grant.connectionId;
-    const credential = await resolveProviderConnection(
-      this.deps.credentialStore,
-      provider.id,
-      provider,
-      resolvedConnectionId,
+    if (!entry.providerId || !entry.connectionId) {
+      throw new ForwardRejection(401, "capability-required", "capability-required");
+    }
+
+    const provider = entry.provider;
+    if (!provider || !manifestMatchesUrl(provider, targetUrl)) {
+      throw new ForwardRejection(403, "capability-provider-mismatch", "capability-provider-mismatch");
+    }
+
+    const credential = await Promise.resolve(
+      this.deps.credentialStore.load(entry.providerId, entry.connectionId),
     );
     if (!credential) {
-      return {
-        error: {
-          statusCode: 502,
-          message: `No credential found for connection ${resolvedConnectionId}`,
-        },
-      };
+      throw new ForwardRejection(403, "consent-revoked", "consent-revoked");
+    }
+    if (!credentialMatchesProviderBinding(credential, provider)) {
+      throw new ForwardRejection(403, "credential-audience-mismatch", "credential-audience-mismatch");
     }
 
     return {
-      grant: { ...grant, connectionId: resolvedConnectionId },
+      attribution,
+      provider,
       credential,
+      connectionId: entry.connectionId,
+      scopes: credential.scopes,
+      carrier,
+      capId: entry.capId,
+    };
+  }
+
+  private resolveAttribution(callerId: string): RequestAttribution {
+    const identity = this.deps.codeIdentityResolver.resolveByCallerId(callerId);
+    if (!identity) {
+      throw new ForwardRejection(403, `Unknown caller identity: ${callerId}`, "unknown-caller");
+    }
+    return {
+      ...identity,
+      rateLimitKey: `${identity.repoPath}:${identity.callerId}`,
     };
   }
 
@@ -698,6 +699,7 @@ export class EgressProxy {
     providerId: string,
     connectionId: string,
     currentAccessToken?: string,
+    provider?: ProviderManifest,
   ): Promise<Credential | null> {
     if (connectionId.startsWith("env:")) {
       return null;
@@ -707,28 +709,11 @@ export class EgressProxy {
     if (!latest || latest.accessToken === currentAccessToken) {
       return null;
     }
+    if (provider && !credentialMatchesProviderBinding(latest, provider)) {
+      return null;
+    }
 
     return latest;
-  }
-
-  private matchesProvider(targetUrl: URL, manifest: ProviderManifest): boolean {
-    return manifest.apiBase.some((apiBase) => {
-      try {
-        const baseUrl = new URL(apiBase);
-        const normalizedBasePath = trimTrailingSlash(baseUrl.pathname);
-        const normalizedTargetPath = trimTrailingSlash(targetUrl.pathname);
-        const hostMatches = baseUrl.host === targetUrl.host;
-        const pathMatches =
-          normalizedBasePath === "" ||
-          normalizedBasePath === "/" ||
-          normalizedTargetPath === normalizedBasePath ||
-          normalizedTargetPath.startsWith(`${normalizedBasePath}/`);
-
-        return hostMatches && pathMatches;
-      } catch {
-        return apiBase === targetUrl.host || targetUrl.toString().startsWith(apiBase);
-      }
-    });
   }
 
   private iterateHeaders(
@@ -788,13 +773,6 @@ export function createEgressProxy(deps: EgressProxyDeps): EgressProxy {
   return new EgressProxy(deps);
 }
 
-function trimTrailingSlash(value: string): string {
-  if (value.length <= 1) {
-    return value;
-  }
-  return value.endsWith("/") ? value.slice(0, -1) : value;
-}
-
 function shouldUseSafeRetries(
   replaySafe: boolean | undefined,
   method: string,
@@ -815,6 +793,32 @@ function isIdempotentMethod(method: string): boolean {
     || method === "OPTIONS"
     || method === "PUT"
     || method === "DELETE";
+}
+
+function manifestMatchesUrl(manifest: ProviderManifest, targetUrl: URL | string): boolean {
+  const target = typeof targetUrl === "string" ? new URL(targetUrl) : targetUrl;
+  return manifest.apiBase.some((apiBase) => {
+    try {
+      const baseUrl = new URL(apiBase);
+      const normalizedBasePath = trimTrailingSlash(baseUrl.pathname);
+      const normalizedTargetPath = trimTrailingSlash(target.pathname);
+      const hostMatches = baseUrl.host === target.host;
+      const pathMatches =
+        normalizedBasePath === "" ||
+        normalizedBasePath === "/" ||
+        normalizedTargetPath === normalizedBasePath ||
+        normalizedTargetPath.startsWith(`${normalizedBasePath}/`);
+
+      return hostMatches && pathMatches;
+    } catch {
+      return apiBase === target.host || target.toString().startsWith(apiBase);
+    }
+  });
+}
+
+function trimTrailingSlash(value: string): string {
+  if (value.length <= 1) return value;
+  return value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
 function parseRetryAfterHeader(value: string | string[] | null | undefined): number | undefined {

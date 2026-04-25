@@ -1,12 +1,13 @@
 import { connect, type CredentialHandle } from "../../runtime/src/worker/credentials.js"
 import { hasRecentPushDelivery } from "./pushState.js"
+import { googleWorkspaceProvider } from "./providers.js"
 
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 const DEFAULT_POLL_INTERVAL_MS = 60_000
 const DEFAULT_PUSH_QUIET_WINDOW_MS = 5 * 60_000
 
 export const manifest = {
-  providers: ["google-workspace"],
+  providers: [googleWorkspaceProvider],
   scopes: {
     "google-workspace": ["gmail_readonly", "gmail_send"],
   },
@@ -314,7 +315,7 @@ let googleWorkspace: CredentialHandle | undefined
 
 async function ensureAuth(): Promise<CredentialHandle> {
   if (!googleWorkspace) {
-    googleWorkspace = await connect("google-workspace")
+    googleWorkspace = await connect(googleWorkspaceProvider)
   }
   return googleWorkspace
 }
@@ -539,7 +540,7 @@ export async function onNewMessage(_event: GmailNewMessageEvent | unknown): Prom
     return
   }
 
-  const handle = await connect("google-workspace", { connectionId: _event.connectionId })
+  const handle = await connect(googleWorkspaceProvider, { connectionId: _event.connectionId })
   const history = await listHistoryWithHandle(handle, {
     startHistoryId: previousHistoryId,
     historyTypes: ["messageAdded"],

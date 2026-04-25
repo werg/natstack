@@ -14,8 +14,6 @@ export interface WorkerEnv {
   CONTEXT_ID: string;
   /** HTTP base URL for RPC server (e.g., "http://127.0.0.1:8080") */
   SERVER_URL: string;
-  /** Per-instance auth token attached to outbound fetches for egress proxy attribution */
-  PROXY_AUTH_TOKEN: string;
   /** Parent panel/worker ID for parent handle */
   PARENT_ID?: string;
   /** Initial state args (parsed object from JSON binding, if provided at instance creation) */

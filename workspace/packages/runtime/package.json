@@ -15,7 +15,9 @@
       "workerd": "./src/worker/index.ts",
       "default": "./src/worker/index.ts"
     },
+    "./worker/credentials": "./src/worker/credentials.ts",
     "./worker/test-utils": "./src/worker/durable-test-utils.ts",
+    "./panel/credentials": "./src/panel/credentials.ts",
     "./workerd-client": "./src/shared/workerd.ts"
   },
   "dependencies": {

@@ -57,7 +57,7 @@ export interface LinearUser {
 }
 
 export const integrationManifest = {
-  providers: ["linear"],
+  providers: [manifest],
   scopes: {
     linear: ["read", "write"],
   },

@@ -1,6 +1,7 @@
 import { Linking } from "react-native";
 import type { PanelManager } from "@natstack/shared/shell/panelManager";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
+import type { ProviderManifest } from "@natstack/shared/credentials/types";
 import type { MobileTransport } from "./mobileTransport";
 import { runOpenaiCodexFlow } from "./codexAuthFlow";
 
@@ -8,7 +9,6 @@ export interface BridgeAdapterCallbacks {
   navigateToPanel(panelId: string): void;
 }
 
-const CLIENT_OAUTH_PROVIDERS = new Set(["openai-codex"]);
 const inFlightLogins = new Map<string, Promise<{ success: boolean; error?: string }>>();
 
 function chooseNextPanel(registry: PanelRegistry, closingPanelId: string): string | null {
@@ -34,10 +34,8 @@ export function createBridgeAdapter(deps: {
    * calls for the same provider share the in-flight promise so the OS
    * browser is opened at most once per attempt.
    */
-  async function startOAuthLogin(providerId: string): Promise<{ success: boolean; error?: string }> {
-    if (!CLIENT_OAUTH_PROVIDERS.has(providerId)) {
-      return { success: false, error: `OAuth not supported for ${providerId}` };
-    }
+  async function startOAuthLogin(provider: ProviderManifest): Promise<{ success: boolean; error?: string }> {
+    const providerId = provider.id;
     const existing = inFlightLogins.get(providerId);
     if (existing) return existing;
 
@@ -47,7 +45,7 @@ export function createBridgeAdapter(deps: {
           authorizeUrl: string;
           nonce: string;
         }>("main", "credentials.beginConsent", {
-          providerId,
+          provider,
           scopes: [],
           redirect: "mobile-universal",
         });
@@ -72,9 +70,7 @@ export function createBridgeAdapter(deps: {
     async handle(panelId: string, method: string, args: unknown[]): Promise<unknown> {
       switch (method) {
         case "credentialFlow.connect":
-          return startOAuthLogin(args[0] as string);
-        case "credentialFlow.listProviders":
-          return deps.transport.call("main", "credentials.listProviders");
+          return startOAuthLogin(args[0] as ProviderManifest);
         case "credentialFlow.disconnect":
           return deps.transport.call("main", "credentials.revokeConsent", {
             providerId: args[0] as string,

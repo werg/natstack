@@ -1,4 +1,4 @@
-import { mkdtemp, chmod, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, chmod, readFile, readdir, rm, stat, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -127,21 +127,28 @@ describe("CredentialStore", () => {
     await expect(store.load(credential.providerId, credential.connectionId)).resolves.toEqual(credential);
   });
 
-  it("migrates a pre-encryption plaintext file on first read", async () => {
+  it("ignores legacy plaintext credential files", async () => {
     const credential = makeCredential();
     const providerDir = path.join(tempDir, credential.providerId);
     const credentialPath = path.join(providerDir, `${credential.connectionId}.json`);
-    const { mkdir, writeFile } = await import("node:fs/promises");
     await mkdir(providerDir, { recursive: true });
-    // Plaintext write — simulates a file from before the encryption migration.
     await writeFile(credentialPath, JSON.stringify(credential), { mode: 0o600 });
 
-    const loaded = await store.load(credential.providerId, credential.connectionId);
-    expect(loaded).toEqual(credential);
+    await expect(store.load(credential.providerId, credential.connectionId)).resolves.toBeNull();
+    await expect(store.list(credential.providerId)).resolves.toEqual([]);
 
-    // After read, the file should have been re-written as an encrypted envelope.
-    const onDisk = JSON.parse(await readFile(credentialPath, "utf8")) as { v?: string; ct?: string };
-    expect(onDisk.v).toMatch(/^v1-/);
-    expect(typeof onDisk.ct).toBe("string");
+    const onDisk = JSON.parse(await readFile(credentialPath, "utf8")) as Credential;
+    expect(onDisk.accessToken).toBe(credential.accessToken);
+  });
+
+  it("ignores encrypted credential files that cannot be authenticated", async () => {
+    const credential = makeCredential();
+    const providerDir = path.join(tempDir, credential.providerId);
+    const credentialPath = path.join(providerDir, `${credential.connectionId}.json`);
+    await mkdir(providerDir, { recursive: true });
+    await writeFile(credentialPath, JSON.stringify({ v: "v1-aesgcm", ct: Buffer.alloc(64).toString("base64") }), { mode: 0o600 });
+
+    await expect(store.load(credential.providerId, credential.connectionId)).resolves.toBeNull();
+    await expect(store.list(credential.providerId)).resolves.toEqual([]);
   });
 });

@@ -18,14 +18,14 @@ The highest-severity issues are:
 
 | # | Severity | Issue |
 |---|----------|-------|
-| F-01 | **Critical** | `CredentialStore` writes OAuth access + refresh tokens as **plaintext JSON** under `~/.natstack/credentials/` — no OS keychain, no encryption-at-rest. |
+| F-01 | **Critical** | `CredentialStore` writes OAuth access + refresh tokens as **plaintext JSON** under `~/.config/natstack/credentials/` — no OS keychain, no encryption-at-rest. |
 | F-02 | **Critical** | `authTokens.getProviderToken` allows **`panel` callers** to fetch raw OAuth / API keys for any configured AI provider (Anthropic, OpenAI, Google, …). Any panel the user opens can exfiltrate the user's API keys. |
 | F-03 | **Critical** | Egress proxy trusts `x-natstack-worker-id` / `x-natstack-proxy-auth` headers unconditionally — `PROXY_AUTH_TOKEN` is minted per worker but **never validated** on the proxy. Any process on `127.0.0.1` can attribute itself as any worker and have the proxy stamp `Authorization: Bearer <user-token>` onto requests to Gmail / GitHub / etc. |
 | F-04 | **High**    | `.secrets.yml` saved with default mode (usually `0o644`) via `saveSecretsToPath` — world-readable on most Linux/macOS systems. |
 | F-05 | **High**    | Egress proxy does not enforce `expiresAt` on credentials — expired access tokens are forwarded verbatim (depends on the refresh scheduler running and never missing deadlines). |
 | F-06 | **High**    | Third-party provider manifests (`@someone/natstack-provider-foo`) are trusted unconditionally — no signing, no allow-list — and control `apiBase` (→ which hosts get `Authorization: Bearer <user-token>` stamped) and `tokenUrl` (→ where the refresh-token is POSTed). |
 | F-07 | **High**    | Webhook relay (Cloudflare Worker) has **no HMAC / auth / verification** at all — receiving endpoint for provider webhooks is an open drop box. |
-| F-08 | **Medium**  | Full request URLs (with query strings) persisted to audit log (`~/.natstack/logs/credentials-audit-YYYY-MM-DD.jsonl`). Some provider APIs put auth codes / tokens / sensitive IDs in query strings. Log file created with default mode (not `0o600`). |
+| F-08 | **Medium**  | Full request URLs (with query strings) persisted to audit log (`~/.config/natstack/logs/credentials-audit-YYYY-MM-DD.jsonl`). Some provider APIs put auth codes / tokens / sensitive IDs in query strings. Log file created with default mode (not `0o600`). |
 | F-09 | **Medium**  | Panel bootstrap RPC token is persisted in `sessionStorage` (`__natstackPanelInit`) and exposed as `globalThis.__natstackRpcToken` — any script in the panel's origin (incl. supply-chain-poisoned npm deps bundled into the panel) can read it. |
 | F-10 | **Medium**  | `remoteCredentialStore` falls back to **plaintext token on disk** when Electron `safeStorage` is unavailable (only emits a `log.warn`). Behaviour is silent from the user's perspective. |
 | F-11 | **Medium**  | `fetchPeerFingerprint` / `healthProbe` TOFU: first-time connect accepts the server-presented cert fingerprint under an "observedFingerprint" UX; but there is no pinning / UI friction enforced inside the daemon layer — relies entirely on the user visually comparing a 64-char hash. |
@@ -53,11 +53,7 @@ sweep for `AKIA…`, `sk_live_…`, `BEGIN PRIVATE KEY`, `ghp_…` came back cle
 ```ts
 // packages/shared/src/credentials/store.ts:17-23
 function getDefaultBasePath(): string {
-  const homeDir = process.env["HOME"] ?? process.env["USERPROFILE"];
-  if (!homeDir) {
-    throw new Error("Unable to resolve a home directory for credential storage");
-  }
-  return path.join(homeDir, ".natstack", "credentials");
+  return path.join(getCentralDataPath(), "credentials");
 }
 
 // :32-52 — save path
@@ -88,15 +84,14 @@ unlock user data on external SaaS — did not.
 **Exploitability.**
 
 1. Any other process running as the user can read
-   `~/.natstack/credentials/**/*.json` (on Linux/Mac) — no privileges needed.
+   `~/.config/natstack/credentials/**/*.json` (on Linux/Mac) — no privileges needed.
 2. Backup tools (Time Machine, restic, Dropbox, Arq, cloud sync) with default
    include-rules will silently copy the tokens off the machine.
-3. Directory is under `$HOME/.natstack`, not `~/.config/natstack` — some
-   dotfile-syncing setups (`stow`, `chezmoi`, `~/.config` selectivity)
-   inadvertently catch it.
+3. Directory is under the standard central NatStack data directory
+   (`$XDG_CONFIG_HOME/natstack` or `~/.config/natstack` on Linux).
 4. Core dumps / process memory snapshots include the plaintext tokens after
    load.
-5. A `.natstack/` glob shared with a coworker (e.g. via a shared home
+5. A `.config/natstack/` glob shared with a coworker (e.g. via a shared home
    directory on a dev box) leaks every connected integration.
 
 **Remediation.**
@@ -479,7 +474,7 @@ async append(entry: AuditEntry): Promise<void> {
 
 **Exploitability.**
 
-1. Other users on the machine can `tail -f ~/.natstack/logs/credentials-audit-*.jsonl`
+1. Other users on the machine can `tail -f ~/.config/natstack/logs/credentials-audit-*.jsonl`
    and watch the victim's API traffic in real time.
 2. Some third-party APIs put sensitive material in the URL: Google Calendar's
    `events.list?access_token=…` (legacy); OpenAI's older image URLs; any API

@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { AuditLog } from "../audit.js";
 import { checkCapability } from "../capability.js";
-import { ProviderRegistry } from "../registry.js";
 import { CredentialStore } from "../store.js";
 import { MockOAuthServer } from "../test-utils/mockOAuthServer.js";
 import { MockProvider } from "../test-utils/mockProvider.js";
@@ -47,7 +46,7 @@ describe("OAuth flow e2e", () => {
   let provider: MockProvider;
   let store: CredentialStore;
   let auditLog: AuditLog;
-  let registry: ProviderRegistry;
+  let manifest: ProviderManifest;
 
   beforeEach(async () => {
     tempDir = await mkdtemp(path.join(tmpdir(), "natstack-credentials-e2e-"));
@@ -74,8 +73,7 @@ describe("OAuth flow e2e", () => {
 
     store = new CredentialStore({ basePath: credentialDir });
     auditLog = new AuditLog({ logDir: auditDir });
-    registry = new ProviderRegistry();
-    registry.register(createProviderManifest(`http://127.0.0.1:${oauthServer.port}`, provider.baseUrl));
+    manifest = createProviderManifest(`http://127.0.0.1:${oauthServer.port}`, provider.baseUrl);
   });
 
   afterEach(async () => {
@@ -86,13 +84,6 @@ describe("OAuth flow e2e", () => {
   });
 
   it("completes consent, stores the token, fetches with auth, records audit, and enforces capabilities", async () => {
-    const manifest = registry.get("mock-oauth");
-    if (!manifest) {
-      throw new Error("Expected mock provider manifest to be registered");
-    }
-
-    expect(registry.list()).toEqual([manifest]);
-
     const flow = manifest.flows.find((candidate) => candidate.type === "loopback-pkce");
     if (!flow?.authorizeUrl || !flow.tokenUrl || !flow.clientId) {
       throw new Error("Expected a loopback PKCE flow with authorizeUrl, tokenUrl, and clientId");

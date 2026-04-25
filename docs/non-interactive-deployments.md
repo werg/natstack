@@ -28,7 +28,7 @@ credentials:
 
 | Variable | Description |
 |----------|-------------|
-| `NATSTACK_SERVICE_ACCOUNT_PATH` | Path to a service account JSON file (default: `~/.natstack/service-account.json`) |
+| `NATSTACK_SERVICE_ACCOUNT_PATH` | Path to a service account JSON file (default: `~/.config/natstack/service-account.json`) |
 | `GITHUB_APP_ID` | GitHub App ID for installation token flow |
 | `GITHUB_APP_PRIVATE_KEY` | PEM private key content or path to `.pem` file |
 | `GITHUB_APP_INSTALLATION_ID` | GitHub App installation ID |
@@ -65,8 +65,8 @@ natstack start --non-interactive
 Pre-seed a bot token in the credential store:
 
 ```bash
-mkdir -p ~/.natstack/credentials/slack/bot
-cat > ~/.natstack/credentials/slack/bot.json << 'EOF'
+mkdir -p ~/.config/natstack/credentials/slack
+cat > ~/.config/natstack/credentials/slack/bot.json << 'EOF'
 {
   "providerId": "slack",
   "connectionId": "bot",
@@ -76,7 +76,7 @@ cat > ~/.natstack/credentials/slack/bot.json << 'EOF'
   "scopes": ["chat:write", "channels:read"]
 }
 EOF
-chmod 600 ~/.natstack/credentials/slack/bot.json
+chmod 600 ~/.config/natstack/credentials/slack/bot.json
 ```
 
 ### CLI Piggyback

@@ -1,3 +1,5 @@
+import type { ProviderDescriptor } from "../shared/credentials.js";
+
 export interface EndpointDeclaration {
   url: string;
   methods: string[] | "*";
@@ -9,7 +11,7 @@ export interface WebhookBinding {
 }
 
 export interface IntegrationManifest {
-  providers: (string | { id: string; role: string })[];
+  providers: (ProviderDescriptor | { provider: ProviderDescriptor; role: string })[];
   scopes: Record<string, string[]>;
   endpoints: Record<string, EndpointDeclaration[]>;
   webhooks?: Record<string, WebhookBinding[]>;
@@ -21,6 +23,7 @@ export interface DiscoveredManifest {
 }
 
 export interface ResolvedProviderBinding {
+  provider: ProviderDescriptor;
   providerId: string;
   role?: string;
   scopes: string[];
@@ -47,13 +50,15 @@ export function resolveProviderBindings(manifests: DiscoveredManifest[]): Resolv
 
   for (const { manifest } of manifests) {
     for (const provider of manifest.providers) {
-      const providerId = typeof provider === "string" ? provider : provider.id;
-      const role = typeof provider === "object" ? provider.role : undefined;
+      const providerDescriptor = "provider" in provider ? provider.provider : provider;
+      const providerId = providerDescriptor.id;
+      const role = "provider" in provider ? provider.role : undefined;
       const key = role ? `${providerId}:${role}` : providerId;
 
       let binding = byProvider.get(key);
       if (!binding) {
         binding = {
+          provider: providerDescriptor,
           providerId,
           role,
           scopes: [],

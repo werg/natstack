@@ -100,7 +100,7 @@ Clicking the badge opens the settings dialog.
 | On the server (host machine) | On the client |
 |---|---|
 | Workspaces (`~/.config/natstack/workspaces/`) | Encrypted remote credentials (`~/.config/natstack/remote-credentials.json`) |
-| Credentials + consent state (`~/.natstack/credentials/`, `credentials-consent.sqlite`) | Theme / local UI preferences |
+| Credentials + consent state (`~/.config/natstack/credentials/`, `credentials-consent.sqlite`) | Theme / local UI preferences |
 | Workspace/server config | Electron userData cache for remote mode (`~/.config/natstack/remote-state/`) |
 | Durable Object state (`.databases/workerd-do/`) | |
 | Agent/worker execution | |

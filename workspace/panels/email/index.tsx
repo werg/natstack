@@ -1,7 +1,8 @@
 import { connect, type CredentialHandle } from "@workspace/runtime/panel/credentials";
+import { googleWorkspaceProvider } from "../../packages/integrations/src/providers.js";
 
 export const manifest = {
-  providers: ["google-workspace"],
+  providers: [googleWorkspaceProvider],
   scopes: {
     "google-workspace": ["gmail_readonly", "gmail_send"],
   },
@@ -41,7 +42,7 @@ let googleWorkspace: CredentialHandle | undefined;
 
 async function ensureAuth(): Promise<CredentialHandle> {
   if (!googleWorkspace) {
-    googleWorkspace = await connect("google-workspace");
+    googleWorkspace = await connect(googleWorkspaceProvider);
   }
   return googleWorkspace;
 }

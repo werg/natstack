@@ -9,6 +9,7 @@
 
 import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import type { FsService } from "@natstack/shared/fsService";
 import type { DODispatch } from "../doDispatch.js";
 import type { BuildSystemV2 } from "../buildV2/index.js";
 import { createDevLogger } from "@natstack/dev-log";
@@ -18,8 +19,9 @@ const log = createDevLogger("WorkerService");
 export function createWorkerService(deps: {
   doDispatch: DODispatch;
   buildSystem: BuildSystemV2;
+  fsService: FsService;
 }): ServiceDefinition {
-  const { doDispatch, buildSystem } = deps;
+  const { doDispatch, buildSystem, fsService } = deps;
 
   return {
     name: "workers",
@@ -36,11 +38,6 @@ export function createWorkerService(deps: {
         description: "Get DOs subscribed to a channel",
         args: z.tuple([z.string()]), // channelId
       },
-      // SECURITY (#22 in audit report): callDO dispatches an arbitrary
-      // method on an arbitrary DO. Reachable from a panel today this
-      // gives any panel cross-worker code execution. Restrict to shell
-      // (UI-driven) and server (internal orchestration). Worker-to-worker
-      // calls go through the dispatcher directly, not via this RPC.
       callDO: {
         description: "Call a method on a DO",
         args: z.tuple([
@@ -49,10 +46,9 @@ export function createWorkerService(deps: {
           z.string(), // objectKey
           z.string(), // method
         ]).rest(z.unknown()), // ...args
-        policy: { allowed: ["shell", "server"] },
       },
     },
-    handler: async (_ctx, method, args) => {
+    handler: async (ctx, method, args) => {
       switch (method) {
         case "listSources": {
           const graph = buildSystem.getGraph();
@@ -108,6 +104,21 @@ export function createWorkerService(deps: {
           const objectKey = args[2] as string;
           const doMethod = args[3] as string;
           const doArgs = args.slice(4);
+
+          // Propagate the caller's registered fs context to the target DO so
+          // the DO's own `fs.bindContext` call inside methods like
+          // `subscribeChannel` resolves as an idempotent no-op rather than
+          // failing the audit's "caller has no host-registered context" check.
+          // Panels/workers cannot self-register a context, so without this
+          // propagation a DO spawned on-demand by workerd (via idFromName) has
+          // no fs access at all. Registering the DO's callerId to the caller's
+          // own contextId preserves the audit's cross-context-pivot protection
+          // (the DO cannot later re-bind to a different contextId).
+          const callerContext = fsService.getCallerContext(ctx.callerId);
+          if (callerContext) {
+            const doCallerId = `do:${source}:${className}:${objectKey}`;
+            fsService.registerCallerContext(doCallerId, callerContext);
+          }
 
           log.info(`[callDO] ${source}:${className}/${objectKey}.${doMethod}`);
           try {

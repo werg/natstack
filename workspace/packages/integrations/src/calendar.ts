@@ -1,11 +1,12 @@
 import { connect, type CredentialHandle } from "../../runtime/src/worker/credentials.js";
 import { hasRecentPushDelivery } from "./pushState.js";
+import { googleWorkspaceProvider } from "./providers.js";
 
 const GOOGLE_CALENDAR_BASE_URL = "https://www.googleapis.com/calendar/v3";
 const DEFAULT_PUSH_QUIET_WINDOW_MS = 5 * 60_000;
 
 export const manifest = {
-  providers: ["google-workspace"],
+  providers: [googleWorkspaceProvider],
   scopes: {
     "google-workspace": ["calendar_readonly", "calendar_events"],
   },
@@ -98,7 +99,7 @@ let googleWorkspace: CredentialHandle | undefined;
 
 async function ensureAuth(): Promise<CredentialHandle> {
   if (!googleWorkspace) {
-    googleWorkspace = await connect("google-workspace");
+    googleWorkspace = await connect(googleWorkspaceProvider);
   }
   return googleWorkspace;
 }

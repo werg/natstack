@@ -36,11 +36,7 @@ function isNotFoundError(error: unknown): boolean {
 }
 
 function getDefaultBasePath(): string {
-  const homeDir = process.env["HOME"] ?? process.env["USERPROFILE"];
-  if (!homeDir) {
-    throw new Error("Unable to resolve a home directory for credential storage");
-  }
-  return path.join(homeDir, ".natstack", "credentials");
+  return path.join(getCentralDataPath(), "credentials");
 }
 
 // ---------------------------------------------------------------------------
@@ -51,7 +47,7 @@ function getDefaultBasePath(): string {
 //
 //   1. Electron `safeStorage` (preferred) — uses OS keychain / DPAPI / libsecret.
 //   2. AES-256-GCM with a per-machine random key under
-//      `<centralConfigDir>/keys/store.key` (mode 0o600). Used in headless /
+//      `<centralDataDir>/keys/store.key` (mode 0o600). Used in headless /
 //      server-detached / test mode where Electron is unavailable.
 //
 // We NEVER write a plaintext credential. If both backends are unavailable we
@@ -193,27 +189,15 @@ function decryptCredential(envelope: EncryptedEnvelope): string {
   throw new Error(`Unknown credential envelope version: ${envelope.v}`);
 }
 
-function deserializeCredentialFile(raw: string, providerId: string, connectionId: string): {
+function deserializeCredentialFile(raw: string): {
   credential: Credential;
-  needsMigration: boolean;
 } {
   const parsed = JSON.parse(raw) as unknown;
   if (isEncryptedEnvelope(parsed)) {
     const decrypted = decryptCredential(parsed);
-    return { credential: JSON.parse(decrypted) as Credential, needsMigration: false };
+    return { credential: JSON.parse(decrypted) as Credential };
   }
-  // Legacy plaintext format — migrate on first read.
-  // Audit finding #10: one-time migration of pre-encryption files.
-  const cred = parsed as Credential;
-  if (
-    !cred ||
-    typeof cred !== "object" ||
-    typeof cred.providerId !== "string" ||
-    typeof cred.connectionId !== "string"
-  ) {
-    throw new Error(`Corrupt credential file for ${providerId}/${connectionId}`);
-  }
-  return { credential: cred, needsMigration: true };
+  throw new Error("Credential file is not an encrypted credential envelope");
 }
 
 function serializeCredential(credential: Credential): string {
@@ -453,24 +437,16 @@ export class CredentialStore {
       throw error;
     }
 
-    const { credential, needsMigration } = deserializeCredentialFile(
-      raw,
-      filePath,
-      filePath,
-    );
-
-    if (needsMigration) {
-      // One-time migration of pre-encryption plaintext files. Re-write through
-      // the encrypted save path. Failure here is non-fatal (return the loaded
-      // credential anyway and let the next save migrate it).
-      try {
-        await this.save(credential);
-      } catch {
-        /* migration is best-effort */
-      }
+    try {
+      const { credential } = deserializeCredentialFile(raw);
+      return credential;
+    } catch (error) {
+      console.warn(
+        `[CredentialStore] Ignoring unreadable credential file ${filePath}: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
     }
-
-    return credential;
   }
 
   private getProviderPath(providerId: string): string {

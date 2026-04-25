@@ -1,6 +1,49 @@
-import type { ProviderManifest } from "../types.js";
+import type { ProviderDescriptor } from "../../runtime/src/shared/credentials.js";
 
-export const googleWorkspace: ProviderManifest = {
+export const githubProvider: ProviderDescriptor = {
+  id: "github",
+  displayName: "GitHub",
+  apiBase: [
+    "https://api.github.com",
+    "https://uploads.github.com",
+  ],
+  authInjection: {
+    type: "header",
+    headerName: "Authorization",
+    valueTemplate: "Bearer {token}",
+  },
+  flows: [
+    {
+      type: "device-code",
+      clientId: "PLACEHOLDER_GITHUB_CLIENT_ID",
+      deviceAuthUrl: "https://github.com/login/device/code",
+      tokenUrl: "https://github.com/login/oauth/access_token",
+    },
+    {
+      type: "loopback-pkce",
+      clientId: "PLACEHOLDER_GITHUB_CLIENT_ID",
+      authorizeUrl: "https://github.com/login/oauth/authorize",
+      tokenUrl: "https://github.com/login/oauth/access_token",
+    },
+    {
+      type: "pat",
+      probeUrl: "https://api.github.com/user",
+    },
+    {
+      type: "cli-piggyback",
+      command: "gh auth token",
+    },
+  ],
+  scopes: {
+    repo: "repo",
+    read_user: "read:user",
+    user_email: "user:email",
+    gist: "gist",
+    workflow: "workflow",
+  },
+};
+
+export const googleWorkspaceProvider: ProviderDescriptor = {
   id: "google-workspace",
   displayName: "Google Workspace",
   apiBase: [
@@ -43,23 +86,6 @@ export const googleWorkspace: ProviderManifest = {
     drive_file: "https://www.googleapis.com/auth/drive.file",
     userinfo_email: "https://www.googleapis.com/auth/userinfo.email",
   },
-  scopeDescriptions: {
-    gmail_readonly: "Read your Gmail messages",
-    gmail_send: "Send email on your behalf",
-    gmail_modify: "Read, send, and manage your Gmail",
-    calendar_readonly: "View your calendar events",
-    calendar_events: "Create and edit calendar events",
-    drive_readonly: "View files in Google Drive",
-    drive_file: "View and manage files created by this app",
-    userinfo_email: "View your email address",
-  },
-  whoami: {
-    url: "https://www.googleapis.com/oauth2/v2/userinfo",
-    identityPath: {
-      email: "email",
-      providerUserId: "id",
-    },
-  },
   webhooks: {
     subscriptions: [
       {
@@ -80,10 +106,4 @@ export const googleWorkspace: ProviderManifest = {
       },
     ],
   },
-  rateLimits: {
-    requestsPerSecond: 10,
-    burstSize: 20,
-    strategy: "delay",
-  },
-  refreshBufferSeconds: 120,
 };

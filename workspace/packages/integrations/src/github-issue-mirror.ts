@@ -1,10 +1,11 @@
 import { connect } from "../../runtime/src/worker/credentials.js";
+import { githubProvider } from "./providers.js";
 import type { CredentialHandle } from "../../runtime/src/worker/credentials.js";
 
 export const manifest = {
   providers: [
-    { id: "github", role: "source" },
-    { id: "github", role: "target" },
+    { provider: githubProvider, role: "source" },
+    { provider: githubProvider, role: "target" },
   ],
   scopes: {
     github: ["repo"],
@@ -123,8 +124,8 @@ export async function onSourceIssue(event: SourceIssueEvent): Promise<MirrorIssu
 }
 
 export async function mirrorIssue(params: MirrorIssueParams): Promise<MirrorIssueResult> {
-  const sourceAuth = await connect("github");
-  const targetAuth = await connect("github");
+  const sourceAuth = await connect(githubProvider);
+  const targetAuth = await connect(githubProvider);
 
   const sourceIssue = await getIssue(
     sourceAuth,

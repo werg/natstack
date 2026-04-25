@@ -33,8 +33,18 @@ export async function registerManifestWebhooks(
   for (const { moduleName, manifest } of manifests) {
     const module = modules[moduleName];
     const providerEntries = Object.entries(manifest.webhooks ?? {});
+    const providersById = new Map(
+      manifest.providers.map((entry) => {
+        const provider = "provider" in entry ? entry.provider : entry;
+        return [provider.id, provider] as const;
+      }),
+    );
 
     for (const [providerId, bindings] of providerEntries) {
+      const provider = providersById.get(providerId);
+      if (!provider) {
+        throw new Error(`Webhook provider "${providerId}" was not declared in module "${moduleName}"`);
+      }
       for (const binding of bindings) {
         const handler = module?.[binding.deliver];
         if (typeof handler !== "function") {
@@ -56,7 +66,7 @@ export async function registerManifestWebhooks(
             eventType: binding.event,
           });
 
-        const subscription = await runtime.credentials.subscribeWebhook(providerId, binding.event, {
+        const subscription = await runtime.credentials.subscribeWebhook(provider, binding.event, {
           connectionId,
           handler: rpcMethod,
         });

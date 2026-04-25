@@ -150,7 +150,15 @@ eval({
   code: `
     import { credentials } from "@workspace/runtime";
 
-    const notion = await credentials.connect("notion");
+    const notionProvider = {
+      id: "notion",
+      displayName: "Notion",
+      apiBase: ["https://api.notion.com"],
+      flows: [{ type: "pat", probeUrl: "https://api.notion.com/v1/users/me" }],
+      authInjection: { type: "header", headerName: "Authorization", valueTemplate: "Bearer {token}" },
+    };
+
+    const notion = await credentials.connect(notionProvider);
     const response = await notion.fetch("https://api.notion.com/v1/search", {
       method: "POST",
       headers: {

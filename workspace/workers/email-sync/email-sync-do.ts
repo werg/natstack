@@ -15,7 +15,7 @@
 
 import { DurableObjectBase } from "@workspace/runtime/worker";
 import type { DurableObjectContext } from "@workspace/runtime/worker";
-import { connect, type CredentialHandle } from "@workspace/runtime/worker/credentials";
+import { connect, type CredentialHandle, type ProviderDescriptor } from "@workspace/runtime/worker/credentials";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,7 +23,7 @@ import { connect, type CredentialHandle } from "@workspace/runtime/worker/creden
 
 interface SyncConfig {
   connectionId: string;
-  providerKey: string;
+  provider: ProviderDescriptor;
   intervalMs: number;
   lastHistoryId?: string;
   /** PubSub channel to publish new-mail events to */
@@ -126,12 +126,12 @@ export class EmailSyncWorker extends DurableObjectBase {
   private credentialHandles = new Map<string, CredentialHandle>();
 
   private async getCredentialHandle(config: SyncConfig): Promise<CredentialHandle> {
-    const key = `${config.providerKey}:${config.connectionId}`;
+    const key = `${config.provider.id}:${config.connectionId}`;
     const existing = this.credentialHandles.get(key);
     if (existing) {
       return existing;
     }
-    const handle = await connect(config.providerKey, { connectionId: config.connectionId });
+    const handle = await connect(config.provider, { connectionId: config.connectionId });
     this.credentialHandles.set(key, handle);
     return handle;
   }
@@ -216,11 +216,11 @@ export class EmailSyncWorker extends DurableObjectBase {
   // --- HTTP dispatch methods (/{objectKey}/{method}) ---
 
   protected async startSync(
-    body: { connectionId: string; providerKey: string; intervalMs?: number; pubsubChannel?: string },
+    body: { connectionId: string; provider: ProviderDescriptor; intervalMs?: number; pubsubChannel?: string },
   ): Promise<{ ok: boolean; config: SyncConfig }> {
     const config: SyncConfig = {
       connectionId: body.connectionId,
-      providerKey: body.providerKey,
+      provider: body.provider,
       intervalMs: body.intervalMs ?? 60_000,
       pubsubChannel: body.pubsubChannel,
     };

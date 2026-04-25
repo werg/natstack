@@ -31,6 +31,38 @@ function createJwt(payload: Record<string, unknown>): string {
   return `${header}.${body}.`;
 }
 
+const codexProvider = {
+  id: "openai-codex",
+  displayName: "ChatGPT",
+  apiBase: ["https://api.openai.com", "https://chatgpt.com/backend-api"],
+  authInjection: {
+    type: "header" as const,
+    headerName: "Authorization",
+    valueTemplate: "Bearer {token}",
+  },
+  flows: [
+    {
+      type: "loopback-pkce" as const,
+      clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
+      authorizeUrl: "https://auth.openai.com/oauth/authorize",
+      tokenUrl: "https://auth.openai.com/oauth/token",
+      fixedScope: "openid profile email offline_access",
+      loopback: { host: "localhost", port: 1455, callbackPath: "/auth/callback" },
+      extraAuthorizeParams: {
+        id_token_add_organizations: "true",
+        codex_cli_simplified_flow: "true",
+        originator: "codex_cli_rs",
+      },
+      tokenMetadata: {
+        accountId: {
+          source: "jwt-claim" as const,
+          path: "https://api.openai.com/auth.chatgpt_account_id",
+        },
+      },
+    },
+  ],
+};
+
 describe("credentialService", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -48,6 +80,7 @@ describe("credentialService", () => {
       "beginConsent",
       [{
         providerId: "openai-codex",
+        provider: codexProvider,
         scopes: ["ignored-scope"],
         redirect: "client-loopback",
         redirectUri: "http://localhost:1455/auth/callback",
@@ -75,6 +108,7 @@ describe("credentialService", () => {
       "beginConsent",
       [{
         providerId: "openai-codex",
+        provider: codexProvider,
         scopes: [],
         redirect: "client-loopback",
         redirectUri: "http://localhost:1455/auth/callback",

@@ -8,6 +8,8 @@
 
 import type { RpcBridge } from "@natstack/rpc";
 
+const rpcFetch = globalThis.fetch.bind(globalThis);
+
 export interface HttpRpcBridgeConfig {
   selfId: string;
   serverUrl: string;
@@ -26,7 +28,7 @@ export function createHttpRpcBridge(config: HttpRpcBridgeConfig): RpcBridge & {
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       let res: Response;
       try {
-        res = await fetch(`${serverUrl}/rpc`, {
+        res = await rpcFetch(`${serverUrl}/rpc`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",

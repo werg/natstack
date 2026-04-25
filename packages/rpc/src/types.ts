@@ -154,6 +154,7 @@ export interface RpcBridgeInternal extends RpcBridge {
  */
 export const SERVER_SERVICE_NAMES = [
   "build",
+  "capabilities",
   "credentials",
   "db",
   "fs",
@@ -163,6 +164,7 @@ export const SERVER_SERVICE_NAMES = [
   "meta",
   "notification",
   "secrets",
+  "shellApproval",
   "test",
   "tokens",
   "typecheck",
