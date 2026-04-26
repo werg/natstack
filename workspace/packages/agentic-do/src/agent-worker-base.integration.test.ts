@@ -528,6 +528,26 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
     expect(sql.exec(`SELECT * FROM dispatched_calls WHERE call_id = ?`, "call-1").toArray()).toHaveLength(0);
   });
 
+  it("does not persist empty aborted assistant messages", async () => {
+    const { instance, sql } = await createTestDO(TestWorker);
+
+    await (instance as any).saveMessages("ch-1", [
+      { role: "user", content: "hello", timestamp: 1 },
+      {
+        role: "assistant",
+        content: [],
+        stopReason: "aborted",
+        errorMessage: "Request was aborted",
+        timestamp: 2,
+      },
+    ]);
+
+    const rows = sql.exec(`SELECT content FROM pi_messages WHERE channel_id = ? ORDER BY idx`, "ch-1").toArray();
+    expect(rows.map((row) => JSON.parse(row["content"] as string))).toEqual([
+      { role: "user", content: "hello", timestamp: 1 },
+    ]);
+  });
+
   it("clears stale resolving tokens so buffered dispatch results can drain after restart", async () => {
     const { instance, sql } = await createTestDO(TestWorker);
 

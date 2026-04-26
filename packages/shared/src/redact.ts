@@ -1,9 +1,8 @@
 /**
  * Token / secret redaction helpers.
  *
- * Mirrors the style of src/server/services/secretsService.ts:22-25 so mask
- * output is consistent across the codebase. Keep this file dependency-free
- * so logger wrappers can import it cheaply.
+ * Keep this file dependency-free so logger wrappers and transport code can
+ * import it cheaply without pulling in server-only modules.
  */
 
 /**

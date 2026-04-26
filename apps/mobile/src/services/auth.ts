@@ -26,6 +26,13 @@ export interface Credentials {
 export async function saveCredentials(serverUrl: string, token: string): Promise<void> {
   await Keychain.setGenericPassword(serverUrl, token, {
     service: KEYCHAIN_SERVICE,
+    // Confine the shell token to the device it was provisioned on. The
+    // default iOS accessibility (`AccessibleWhenUnlocked`) is included in
+    // encrypted iTunes / iCloud backups, which would let an attacker
+    // restore a working shell token onto a different device. Pinning to
+    // `WHEN_UNLOCKED_THIS_DEVICE_ONLY` keeps the item out of backups and
+    // requires the device to be unlocked at access time.
+    accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
   });
 }
 

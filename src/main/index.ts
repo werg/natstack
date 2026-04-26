@@ -24,7 +24,7 @@ import { CdpServer } from "./cdpServer.js";
 import { TokenManager } from "@natstack/shared/tokenManager";
 import { EventService } from "@natstack/shared/eventsService";
 import { isValidEventName, type EventName } from "@natstack/shared/events";
-import { pemFileFingerprint, pemFingerprint } from "./tlsPinning.js";
+import { installPinnedTlsForAllPartitions, pemFileFingerprint } from "./tlsPinning.js";
 
 const eventService = new EventService();
 import { ViewManager } from "./viewManager.js";
@@ -97,7 +97,7 @@ if (startupMode.kind === "local") {
   app.setPath("userData", getRemoteUserDataDir());
 }
 
-installRemoteCertificateOverride(startupMode);
+installRemoteTlsPinning(startupMode);
 
 const tokenManager = new TokenManager();
 let cdpServer: CdpServer | null = null;
@@ -114,48 +114,27 @@ let autofillManager: import("./autofill/autofillManager.js").AutofillManager | n
 
 log.info(` Starting in main mode`);
 
-function installRemoteCertificateOverride(mode: StartupMode): void {
+/**
+ * Install TLS fingerprint pinning across the default session AND every
+ * `persist:browser` / `persist:panel:*` partition (audit finding #45).
+ * Replaces the previous `installRemoteCertificateOverride` which only
+ * pinned the default session — panel webContents created on persisted
+ * partitions could connect to a MITM'd remote with a forged cert.
+ */
+function installRemoteTlsPinning(mode: StartupMode): void {
   if (mode.kind !== "remote" || mode.remoteUrl.protocol !== "https:") {
     return;
   }
 
-  const expectedFingerprint = (
+  const expectedFingerprint =
     mode.tls?.fingerprint ??
-    (mode.tls?.caPath ? pemFileFingerprint(mode.tls.caPath) : undefined)
-  )?.toUpperCase();
+    (mode.tls?.caPath ? pemFileFingerprint(mode.tls.caPath) : undefined);
 
   if (!expectedFingerprint) {
     return;
   }
 
-  const remoteHost = mode.remoteUrl.hostname;
-  const installForSession = (targetSession: Session): void => {
-    targetSession.setCertificateVerifyProc((request, callback) => {
-      const sameManagedHost =
-        request.hostname === remoteHost || request.hostname.endsWith(`.${remoteHost}`);
-
-      if (!sameManagedHost) {
-        callback(-3);
-        return;
-      }
-
-      try {
-        const actualFingerprint = pemFingerprint(request.certificate.data).toUpperCase();
-        callback(actualFingerprint === expectedFingerprint ? 0 : -2);
-      } catch {
-        callback(-2);
-      }
-    });
-  };
-
-  app.on("session-created", installForSession);
-  if (app.isReady()) {
-    installForSession(session.defaultSession);
-  } else {
-    void app.whenReady().then(() => {
-      installForSession(session.defaultSession);
-    });
-  }
+  installPinnedTlsForAllPartitions(mode.remoteUrl.hostname, expectedFingerprint);
 }
 
 // =============================================================================
@@ -289,6 +268,64 @@ app.on("ready", async () => {
     headers["access-control-allow-headers"] = ["*"];
     headers["access-control-allow-methods"] = ["*"];
     callback({ responseHeaders: headers });
+  });
+
+  // -------------------------------------------------------------------------
+  // Default-deny permission handlers (audit finding #37 / 01-MEDIUM-4).
+  //
+  // Without these, Electron grants panel webContents the ability to request
+  // geolocation, notifications, microphone, camera, mediaKeySystem, midi,
+  // pointerLock, display-capture, etc. — and on browser panels (which load
+  // arbitrary external URLs) any site could prompt the user. We default-deny
+  // a known-sensitive set on every session that gets created (default,
+  // persist:browser, persist:panel:*).
+  //
+  // TODO(security-audit-agent-1): the shell partition currently shares the
+  // default session with panels. Once shell is moved to its own partition
+  // (audit C4 hardening — owned by another agent in src/main/viewManager.ts
+  // and the shell BrowserWindow setup), the shell partition can be allowed
+  // to request these permissions while panel partitions stay default-deny.
+  // -------------------------------------------------------------------------
+  const SENSITIVE_PERMISSIONS = new Set<string>([
+    "geolocation",
+    "notifications",
+    "media",
+    "mediaKeySystem",
+    "midi",
+    "midiSysex",
+    "pointerLock",
+    "fullscreen",
+    "openExternal",
+    "display-capture",
+  ]);
+
+  const installPermissionHandlers = (targetSession: Session): void => {
+    targetSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+      if (SENSITIVE_PERMISSIONS.has(permission)) {
+        console.warn(`[permissions] denied request for '${permission}'`);
+        callback(false);
+        return;
+      }
+      // Permissive default for non-sensitive permissions (clipboard read/etc.)
+      callback(true);
+    });
+    targetSession.setPermissionCheckHandler((_webContents, permission) => {
+      if (SENSITIVE_PERMISSIONS.has(permission)) {
+        return false;
+      }
+      return true;
+    });
+  };
+
+  // Apply to default session up-front, and to every session created later
+  // (panel partitions, persist:browser, etc.) via the session-created hook.
+  installPermissionHandlers(session.defaultSession);
+  app.on("session-created", (s) => {
+    try {
+      installPermissionHandlers(s);
+    } catch (err) {
+      console.warn(`[permissions] failed to install handlers on session: ${(err as Error).message}`);
+    }
   });
 
   // Auto-update check (production only)
@@ -595,13 +632,13 @@ app.on("ready", async () => {
     const { createRemoteCredService } = await import("./services/remoteCredService.js");
     electronContainer.register(rpcService(createRemoteCredService({ startupMode })));
     electronContainer.register(rpcService(createAdblockService({ adBlockManager })));
-    // Client-owned OAuth flow — opens the user's browser, captures the
-    // loopback redirect, exchanges the code, and forwards tokens to the
-    // server's authTokens.persist. With `auth` removed from
-    // SERVER_SERVICE_NAMES, panel calls to `auth.*` land here instead of
-    // the (potentially remote) server.
-    const { createAuthService } = await import("./services/authService.js");
-    electronContainer.register(rpcService(createAuthService({ serverClient: sc })));
+    // Client-owned provider browser flow — opens the user's browser,
+    // captures the loopback redirect, and forwards the authorization code
+    // to the server's credentials service. `credentialFlow` is intentionally
+    // main-local: the server cannot complete a browser callback on behalf of
+    // the client machine.
+    const { createCredentialFlowService } = await import("./services/credentialFlowService.js");
+    electronContainer.register(rpcService(createCredentialFlowService({ serverClient: sc })));
 
     // Locally-hosted services
     electronContainer.register(rpcService(createBrowserService({
@@ -715,6 +752,65 @@ app.on("ready", async () => {
       return viewId;
     };
 
+    /**
+     * Resolve both the caller id and caller kind from an IPC event sender.
+     * Audit findings #19 / #43 / #44: handlers must derive callerKind from
+     * authenticated transport metadata, not assume "shell". The shell
+     * webContents has a known id; everything else is a panel/browser view.
+     */
+    const resolveCaller = (
+      event: Electron.IpcMainInvokeEvent,
+    ): { callerId: string; callerKind: "shell" | "panel" } => {
+      const callerId = resolveCallerId(event);
+      return { callerId, callerKind: callerId === "shell" ? "shell" : "panel" };
+    };
+
+    /**
+     * Reject if the sender is not the shell webContents. Used for IPC
+     * channels that should only be reachable from the trusted shell UI
+     * (native dialogs, openExternal, etc.). Audit finding #43.
+     */
+    const requireShellSender = (event: Electron.IpcMainInvokeEvent, channel: string): void => {
+      const { callerKind, callerId } = resolveCaller(event);
+      if (callerKind !== "shell") {
+        console.warn(
+          `[ipc] Rejecting ${channel} from non-shell sender (callerId=${callerId})`,
+        );
+        throw new Error(`Channel '${channel}' is shell-only`);
+      }
+    };
+
+    /**
+     * Verify the caller owns (i.e. IS) the target view, OR is the shell.
+     * Used for cross-view IPC handlers like natstack:navigate where allowing
+     * any panel to drive any other panel's webContents is an audit finding
+     * (#9).
+     */
+    const requireOwnsViewOrShell = (
+      event: Electron.IpcMainInvokeEvent,
+      targetViewId: string,
+      channel: string,
+    ): void => {
+      const { callerKind, callerId } = resolveCaller(event);
+      if (callerKind === "shell") return;
+      if (callerId === targetViewId) return;
+      console.warn(
+        `[ipc] Rejecting ${channel} from ${callerId} → ${targetViewId} (not owner, not shell)`,
+      );
+      throw new Error(`Caller does not own target view '${targetViewId}'`);
+    };
+
+    // Restricted URL scheme allow-list for shell.openExternal (#43).
+    const OPEN_EXTERNAL_ALLOWED_SCHEMES = new Set(["http:", "https:", "mailto:"]);
+    const isOpenExternalUrlAllowed = (rawUrl: string): boolean => {
+      try {
+        const u = new URL(rawUrl);
+        return OPEN_EXTERNAL_ALLOWED_SCHEMES.has(u.protocol);
+      } catch {
+        return false;
+      }
+    };
+
     ipcMain.handle("natstack:getPanelInit", async (event) => {
       const callerId = resolveCallerId(event);
       return shellCore?.panelManager.getPanelInit(callerId);
@@ -775,14 +871,16 @@ app.on("ready", async () => {
       if (!viewManager) throw new Error("ViewManager not initialized");
       viewManager.openDevTools(callerId);
     });
-    ipcMain.handle("natstack:bridge.openFolderDialog", async (_event, opts?: { title?: string }) => {
+    ipcMain.handle("natstack:bridge.openFolderDialog", async (event, opts?: { title?: string }) => {
+      requireShellSender(event, "natstack:bridge.openFolderDialog");
       const result = await dialog.showOpenDialog({
         properties: ["openDirectory", "createDirectory"],
         title: opts?.title ?? "Select Folder",
       });
       return result.canceled ? null : result.filePaths[0] ?? null;
     });
-    ipcMain.handle("natstack:openFolderDialog", async (_event, opts?: { title?: string }) => {
+    ipcMain.handle("natstack:openFolderDialog", async (event, opts?: { title?: string }) => {
+      requireShellSender(event, "natstack:openFolderDialog");
       const result = await dialog.showOpenDialog({
         properties: ["openDirectory", "createDirectory"],
         title: opts?.title ?? "Select Folder",
@@ -790,9 +888,10 @@ app.on("ready", async () => {
       return result.canceled ? null : result.filePaths[0] ?? null;
     });
     ipcMain.handle("natstack:openFileDialog", async (
-      _event,
+      event,
       opts?: { title?: string; filters?: { name: string; extensions: string[] }[] },
     ) => {
+      requireShellSender(event, "natstack:openFileDialog");
       const result = await dialog.showOpenDialog({
         properties: ["openFile"],
         title: opts?.title ?? "Select File",
@@ -800,16 +899,20 @@ app.on("ready", async () => {
       });
       return result.canceled ? null : result.filePaths[0] ?? null;
     });
-    ipcMain.handle("natstack:bridge.openExternal", async (_event, url: string) => {
-      if (!/^https?:\/\//i.test(url)) {
-        throw new Error("openExternal only supports http/https URLs");
+    ipcMain.handle("natstack:bridge.openExternal", async (event, url: string) => {
+      requireShellSender(event, "natstack:bridge.openExternal");
+      if (!isOpenExternalUrlAllowed(url)) {
+        console.warn(`[ipc] Rejecting natstack:bridge.openExternal for disallowed URL: ${url}`);
+        throw new Error("openExternal only supports http(s) and mailto URLs");
       }
       const { shell } = await import("electron");
       await shell.openExternal(url);
     });
-    ipcMain.handle("natstack:openExternal", async (_event, url: string) => {
-      if (!/^https?:\/\//i.test(url)) {
-        throw new Error("openExternal only supports http/https URLs");
+    ipcMain.handle("natstack:openExternal", async (event, url: string) => {
+      requireShellSender(event, "natstack:openExternal");
+      if (!isOpenExternalUrlAllowed(url)) {
+        console.warn(`[ipc] Rejecting natstack:openExternal for disallowed URL: ${url}`);
+        throw new Error("openExternal only supports http(s) and mailto URLs");
       }
       const { shell } = await import("electron");
       await shell.openExternal(url);
@@ -819,10 +922,12 @@ app.on("ready", async () => {
     // services (browser-data, autofill, etc.) directly via IPC instead of
     // going through the server, which may be remote.
     ipcMain.handle("natstack:serviceCall", async (event, method: string, args: unknown[]) => {
-      const callerId = resolveCallerId(event);
+      // CallerKind is derived from the IPC sender's webContents id (shell vs
+      // panel), and ServiceDispatcher.dispatch now enforces the per-service
+      // policy at the choke point — see audit findings #3 / #18 / #19.
+      const { callerId, callerKind } = resolveCaller(event);
       const parsed = parseServiceMethod(method);
       if (!parsed) throw new Error(`Invalid method format: "${method}". Expected "service.method"`);
-      const callerKind = callerId === "shell" ? "shell" as const : "panel" as const;
       return dispatcher.dispatch({ callerId, callerKind }, parsed.service, parsed.method, args);
     });
 
@@ -833,7 +938,8 @@ app.on("ready", async () => {
       return getCdpEndpointForCaller(cdpServer!, browserId, callerId);
     });
     ipcMain.handle("natstack:navigate", async (event, browserId: string, url: string) => {
-      resolveCallerId(event); // auth check
+      // Audit #9: caller must own the target view OR be the shell.
+      requireOwnsViewOrShell(event, browserId, "natstack:navigate");
       const wc = viewManager!.getWebContents(browserId);
       if (!wc) throw new Error(`Browser webContents not found for ${browserId}`);
       try { await wc.loadURL(url); } catch (err) {
@@ -843,19 +949,19 @@ app.on("ready", async () => {
       }
     });
     ipcMain.handle("natstack:goBack", async (event, browserId: string) => {
-      resolveCallerId(event);
+      requireOwnsViewOrShell(event, browserId, "natstack:goBack");
       viewManager!.getWebContents(browserId)?.goBack();
     });
     ipcMain.handle("natstack:goForward", async (event, browserId: string) => {
-      resolveCallerId(event);
+      requireOwnsViewOrShell(event, browserId, "natstack:goForward");
       viewManager!.getWebContents(browserId)?.goForward();
     });
     ipcMain.handle("natstack:reload", async (event, browserId: string) => {
-      resolveCallerId(event);
+      requireOwnsViewOrShell(event, browserId, "natstack:reload");
       viewManager!.getWebContents(browserId)?.reload();
     });
     ipcMain.handle("natstack:stop", async (event, browserId: string) => {
-      resolveCallerId(event);
+      requireOwnsViewOrShell(event, browserId, "natstack:stop");
       viewManager!.getWebContents(browserId)?.stop();
     });
 

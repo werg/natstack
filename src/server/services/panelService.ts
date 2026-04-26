@@ -7,6 +7,7 @@
  */
 
 import * as path from "path";
+import * as fs from "fs";
 import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { PanelPersistence } from "@natstack/shared/db/panelPersistence";
@@ -25,6 +26,7 @@ import {
   type PanelCreateResult,
 } from "@natstack/shared/panelFactory";
 import { createSnapshot, getPanelSource, getPanelContextId, getPanelStateArgs } from "@natstack/shared/panel/accessors";
+import type { CodeIdentityResolver } from "./codeIdentityResolver.js";
 
 /**
  * Mutable URL config for panel-facing endpoints.
@@ -73,13 +75,15 @@ export interface PanelServiceDeps {
   urlConfig: PanelUrlConfig;
   /** Optional callback for theme change events (wired to EventService when available). */
   onThemeChanged?: (theme: unknown) => void;
+  getEffectiveVersion?: (source: string) => Promise<string | undefined> | string | undefined;
+  codeIdentityResolver?: Pick<CodeIdentityResolver, "upsertCallerIdentity" | "unregisterCaller">;
 }
 
 export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
   const {
     persistence, searchIndex, tokenManager, fsService,
     gitServer, workspacePath, getRpcPort, workerdPort,
-    urlConfig, onThemeChanged,
+    urlConfig, onThemeChanged, getEffectiveVersion, codeIdentityResolver,
   } = deps;
 
   // Internal helpers
@@ -147,6 +151,18 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
       ids.push(...collectSubtree(child.id));
     }
     return ids;
+  }
+
+  async function upsertPanelIdentity(panelId: string, source: string): Promise<void> {
+    const effectiveVersion = source.startsWith("browser:")
+      ? ""
+      : await Promise.resolve(getEffectiveVersion?.(source)).catch(() => undefined) ?? "";
+    codeIdentityResolver?.upsertCallerIdentity({
+      callerId: panelId,
+      callerKind: "panel",
+      repoPath: source,
+      effectiveVersion,
+    });
   }
 
   // Service definition
@@ -260,7 +276,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           const gitToken = gitServer.getTokenForPanel(panelId);
 
           // FS context registration (skip browser panels)
-          fsService.registerPanelContext(panelId, contextId);
+          fsService.registerCallerContext(panelId, contextId);
 
           // Build env — use pre-computed panel-facing URLs
           const serverRpcToken = rpcToken;
@@ -299,6 +315,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
             options: { env },
             autoArchiveWhenEmpty: snapshot.autoArchiveWhenEmpty,
           };
+          await upsertPanelIdentity(panelId, relativePath);
           return result;
         }
 
@@ -312,8 +329,9 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           for (const id of closedIds) {
             tokenManager.revokeToken(id);
             gitServer.revokeTokenForPanel(id);
-            fsService.unregisterPanelContext(id);
+            fsService.unregisterCallerContext(id);
             fsService.closeHandlesForCaller(id);
+            codeIdentityResolver?.unregisterCaller(id);
             persistence.archivePanel(id);
           }
 
@@ -358,6 +376,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
             stateArgs: {},
             options: {},
           };
+          await upsertPanelIdentity(panelId, `browser:${url}`);
           return result;
         }
 
@@ -407,6 +426,29 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           const updatedSnapshot = { ...existing.snapshot };
           if (updates.contextId) updatedSnapshot.contextId = updates.contextId;
           if (updates.source) {
+            // SECURITY (#9 in audit): validate the source resolves
+            // *inside* the workspace root. Without this an absolute path
+            // or a `..`-traversal source would let a panel point itself
+            // at any file the server can read. Browser sources
+            // (`browser:<url>`) and other non-filesystem schemes are
+            // accepted as-is — only path-shaped sources are checked.
+            if (!/^[a-z]+:/i.test(updates.source)) {
+              const rootResolved = (() => {
+                try { return fs.realpathSync(workspacePath); }
+                catch { return path.resolve(workspacePath); }
+              })();
+              const candidate = path.resolve(rootResolved, updates.source);
+              // realpath the candidate when it exists so symlinks cannot
+              // dodge the prefix check.
+              let canonical = candidate;
+              try { canonical = fs.realpathSync(candidate); }
+              catch { /* file may not exist yet — fall back to candidate */ }
+              const rootWithSep = rootResolved.endsWith(path.sep) ? rootResolved : rootResolved + path.sep;
+              if (canonical !== rootResolved && !canonical.startsWith(rootWithSep)) {
+                throw new Error(`updateContext source escapes workspace root: ${updates.source}`);
+              }
+            }
+
             updatedSnapshot.source = updates.source;
             // Sync manifest-derived snapshot fields (autoArchiveWhenEmpty)
             try {
@@ -428,7 +470,10 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
 
           // Update FS context mapping if contextId changed
           if (updates.contextId) {
-            fsService.registerPanelContext(panelId, updates.contextId);
+            fsService.registerCallerContext(panelId, updates.contextId);
+          }
+          if (updates.source) {
+            await upsertPanelIdentity(panelId, updates.source);
           }
           return;
         }
@@ -553,8 +598,9 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           for (const id of closedIds) {
             tokenManager.revokeToken(id);
             gitServer.revokeTokenForPanel(id);
-            fsService.unregisterPanelContext(id);
+            fsService.unregisterCallerContext(id);
             fsService.closeHandlesForCaller(id);
+            codeIdentityResolver?.unregisterCaller(id);
             persistence.archivePanel(id);
           }
 
@@ -593,7 +639,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           const rpcToken = tokenManager.getToken(aboutPanelId)!;
           const gitToken = gitServer.getTokenForPanel(aboutPanelId);
 
-          fsService.registerPanelContext(aboutPanelId, contextId);
+          fsService.registerCallerContext(aboutPanelId, contextId);
 
           const gitBaseUrl = urlConfig.gitBaseUrl;
           const env = buildPanelEnv({

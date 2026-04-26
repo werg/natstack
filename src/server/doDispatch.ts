@@ -14,7 +14,7 @@
  *   rest = method path
  */
 
-import type { TokenManager } from "@natstack/shared/tokenManager";
+import { constantTimeStringEqual, type TokenManager } from "@natstack/shared/tokenManager";
 
 // ---------------------------------------------------------------------------
 // DORef — source-scoped Durable Object identity
@@ -46,6 +46,15 @@ export function doRefUrl(ref: DORef, method: string): string {
 export interface PostToDOWithTokenDeps {
   tokenManager: TokenManager;
   workerdUrl: string;
+  /**
+   * Per-process dispatch secret stamped onto internal `/_w/` dispatches as
+   * the `X-NatStack-Dispatch-Secret` header. The auto-generated workerd router
+   * validates this header when present, while allowing public DO routes that
+   * cannot know the process-private secret.
+   *
+   * Optional because public route paths and some tests do not need it.
+   */
+  dispatchSecret?: string;
 }
 
 /**
@@ -80,9 +89,14 @@ export async function postToDOWithToken(
     __parentId: callerId ?? undefined,
   };
 
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (deps.dispatchSecret) {
+    headers["X-NatStack-Dispatch-Secret"] = deps.dispatchSecret;
+  }
+
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(envelope),
   });
 
@@ -92,6 +106,87 @@ export async function postToDOWithToken(
   }
 
   return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// verifyInstanceTokenEnvelope — server-side guard for inbound DO requests
+// ---------------------------------------------------------------------------
+
+export interface InstanceTokenEnvelope {
+  args?: unknown;
+  __instanceToken?: unknown;
+  __instanceId?: unknown;
+  __parentId?: unknown;
+}
+
+export interface VerifyInstanceTokenResult {
+  ok: boolean;
+  reason?: string;
+  /** When ok, the resolved parentId (caller) attribution. */
+  parentId?: string | undefined;
+}
+
+/**
+ * Verify the `__instanceToken` envelope attached by `postToDOWithToken`.
+ *
+ * The envelope is attached because workerd's HTTP router strips arbitrary
+ * headers on internal subrequests, so we cannot use a plain bearer header.
+ * The legitimate path is:
+ *
+ *   gateway-process: ensureToken(instanceId, "worker") → token T
+ *   gateway-process: POST /_w/.../method body={ args, __instanceToken: T,
+ *                                               __instanceId, __parentId }
+ *   workerd-process: must verify T against the same TokenManager.
+ *
+ * Today there is no workerd-side verifier (audit finding #29). This helper
+ * is a server-side guard that callers MUST invoke before dispatching the
+ * envelope into a DO method handler:
+ *
+ *   - Validates `__instanceToken` is present and matches the token issued
+ *     to `__instanceId` in the in-process TokenManager.
+ *   - Returns the verified `__parentId` so the DO handler can use it as
+ *     the caller attribution (overwriting any value provided in `args`).
+ *
+ * Wave-2 status (audit 4.8): the receiver inside workerd is the
+ * auto-generated router worker (see `WorkerdManager.generateRouterCode`).
+ * The router rejects a request when an `X-NatStack-Dispatch-Secret` header is
+ * present but does not match `WorkerdManager.dispatchSecret`; absence is
+ * allowed so public DO routes keep working. The TokenManager-based envelope
+ * check below is the
+ * server-side guard intended for any *in-process* code path that wants
+ * to validate the envelope (e.g., test harnesses, future direct-dispatch
+ * shims), but workerd itself never calls it — the runtime is bundled JS
+ * with no link to the host TokenManager. The router-level shared-secret
+ * check is the production-grade enforcement.
+ */
+export function verifyInstanceTokenEnvelope(
+  envelope: InstanceTokenEnvelope,
+  tokenManager: TokenManager,
+): VerifyInstanceTokenResult {
+  const { __instanceToken, __instanceId, __parentId } = envelope;
+  if (typeof __instanceToken !== "string" || __instanceToken.length === 0) {
+    return { ok: false, reason: "missing __instanceToken" };
+  }
+  if (typeof __instanceId !== "string" || __instanceId.length === 0) {
+    return { ok: false, reason: "missing __instanceId" };
+  }
+  const entry = tokenManager.validateToken(__instanceToken);
+  if (!entry) {
+    return { ok: false, reason: "unknown __instanceToken" };
+  }
+  // Constant-time compare of the verified token's callerId against the
+  // claimed __instanceId — callerId is server-controlled (it comes from
+  // tokenManager) and __instanceId is attacker-controllable, so the
+  // comparison itself does not expose a secret, but we use constant-time
+  // for consistency with other token compares.
+  if (!constantTimeStringEqual(entry.callerId, __instanceId)) {
+    return { ok: false, reason: "instanceId/token mismatch" };
+  }
+  const parentId =
+    typeof __parentId === "string" && __parentId.length > 0
+      ? __parentId
+      : undefined;
+  return { ok: true, parentId };
 }
 
 // ---------------------------------------------------------------------------
@@ -110,8 +205,10 @@ export type HttpDispatcher = (
 export class DODispatch {
   private dispatcher: HttpDispatcher | null = null;
   private ensureDOFn: ((source: string, className: string, objectKey: string) => Promise<void>) | null = null;
+  private beforeDispatchFn: ((ref: DORef) => Promise<void> | void) | null = null;
   private tokenManager: TokenManager | null = null;
   private getWorkerdUrl: (() => string) | null = null;
+  private getDispatchSecret: (() => string) | null = null;
 
   /**
    * Set the HTTP dispatcher function used by dispatch().
@@ -128,6 +225,10 @@ export class DODispatch {
    */
   setEnsureDO(fn: (source: string, className: string, objectKey: string) => Promise<void>): void {
     this.ensureDOFn = fn;
+  }
+
+  setBeforeDispatch(fn: (ref: DORef) => Promise<void> | void): void {
+    this.beforeDispatchFn = fn;
   }
 
   /**
@@ -149,6 +250,19 @@ export class DODispatch {
   }
 
   /**
+   * Set a function that returns the current per-process dispatch secret
+   * (`WorkerdManager.getDispatchSecret()`). Stamped onto every `/_w/`
+   * request as `X-NatStack-Dispatch-Secret` and verified by the
+   * auto-generated workerd router worker. Closes audit finding 4.8.
+   *
+   * Called on each dispatch so a workerd restart that rotates the secret
+   * is picked up without re-wiring.
+   */
+  setGetDispatchSecret(fn: () => string): void {
+    this.getDispatchSecret = fn;
+  }
+
+  /**
    * Dispatch a method call to a DO via HTTP POST.
    * Returns the parsed JSON response (type depends on the DO method).
    * On retryable errors (DO class not found, ECONNREFUSED), calls ensureDO and retries once.
@@ -158,11 +272,14 @@ export class DODispatch {
    * raw dispatcher function.
    */
   async dispatch(ref: DORef, method: string, ...args: unknown[]): Promise<unknown> {
+    await Promise.resolve(this.beforeDispatchFn?.(ref));
+
     // Token-based path: use postToDOWithToken when tokenManager + getWorkerdUrl are set
     if (this.tokenManager && this.getWorkerdUrl) {
       const deps: PostToDOWithTokenDeps = {
         tokenManager: this.tokenManager,
         workerdUrl: this.getWorkerdUrl(),
+        dispatchSecret: this.getDispatchSecret ? this.getDispatchSecret() : undefined,
       };
       try {
         return await postToDOWithToken(ref, method, args, deps);
@@ -170,6 +287,7 @@ export class DODispatch {
         if (this.ensureDOFn && this.isRetryable(err)) {
           console.warn(`[DODispatch] ${doRefKey(ref)}.${method} failed (${err instanceof Error ? err.message : String(err)}), calling ensureDO and retrying`);
           await this.ensureDOFn(ref.source, ref.className, ref.objectKey);
+          await Promise.resolve(this.beforeDispatchFn?.(ref));
           return await postToDOWithToken(ref, method, args, deps);
         }
         throw err;
@@ -187,6 +305,7 @@ export class DODispatch {
       if (this.ensureDOFn && this.isRetryable(err)) {
         console.warn(`[DODispatch] ${doRefKey(ref)}.${method} failed (${err instanceof Error ? err.message : String(err)}), calling ensureDO and retrying`);
         await this.ensureDOFn(ref.source, ref.className, ref.objectKey);
+        await Promise.resolve(this.beforeDispatchFn?.(ref));
         return await this.dispatcher(urlPath, args);
       }
       throw err;

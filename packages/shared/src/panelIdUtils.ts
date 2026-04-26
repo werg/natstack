@@ -69,8 +69,3 @@ export function computePanelId(params: {
   const autoSegment = generatePanelNonce();
   return `${parentPrefix}/${escapedPath}/${autoSegment}`;
 }
-
-// Re-exported from standalone module (no Node.js crypto dependency) so that
-// existing `import { contextIdToSubdomain } from "./panelIdUtils.js"` callers
-// continue to work without changing their imports.
-export { contextIdToSubdomain } from "./contextIdToSubdomain.js";

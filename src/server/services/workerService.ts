@@ -9,6 +9,7 @@
 
 import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import type { FsService } from "@natstack/shared/fsService";
 import type { DODispatch } from "../doDispatch.js";
 import type { BuildSystemV2 } from "../buildV2/index.js";
 import { createDevLogger } from "@natstack/dev-log";
@@ -18,13 +19,16 @@ const log = createDevLogger("WorkerService");
 export function createWorkerService(deps: {
   doDispatch: DODispatch;
   buildSystem: BuildSystemV2;
+  fsService: FsService;
 }): ServiceDefinition {
-  const { doDispatch, buildSystem } = deps;
+  const { doDispatch, buildSystem, fsService } = deps;
 
   return {
     name: "workers",
     description: "Worker DO operations (call, list)",
-    policy: { allowed: ["server", "panel", "worker"] },
+    // Service-level policy admits the read/list surface to all kinds.
+    // Mutating callDO is tightened per-method below.
+    policy: { allowed: ["shell", "server", "panel", "worker"] },
     methods: {
       listSources: {
         description: "List available worker sources with durable object classes",
@@ -44,7 +48,7 @@ export function createWorkerService(deps: {
         ]).rest(z.unknown()), // ...args
       },
     },
-    handler: async (_ctx, method, args) => {
+    handler: async (ctx, method, args) => {
       switch (method) {
         case "listSources": {
           const graph = buildSystem.getGraph();
@@ -100,6 +104,21 @@ export function createWorkerService(deps: {
           const objectKey = args[2] as string;
           const doMethod = args[3] as string;
           const doArgs = args.slice(4);
+
+          // Propagate the caller's registered fs context to the target DO so
+          // the DO's own `fs.bindContext` call inside methods like
+          // `subscribeChannel` resolves as an idempotent no-op rather than
+          // failing the audit's "caller has no host-registered context" check.
+          // Panels/workers cannot self-register a context, so without this
+          // propagation a DO spawned on-demand by workerd (via idFromName) has
+          // no fs access at all. Registering the DO's callerId to the caller's
+          // own contextId preserves the audit's cross-context-pivot protection
+          // (the DO cannot later re-bind to a different contextId).
+          const callerContext = fsService.getCallerContext(ctx.callerId);
+          if (callerContext) {
+            const doCallerId = `do:${source}:${className}:${objectKey}`;
+            fsService.registerCallerContext(doCallerId, callerContext);
+          }
 
           log.info(`[callDO] ${source}:${className}/${objectKey}.${doMethod}`);
           try {

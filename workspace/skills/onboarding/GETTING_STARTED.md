@@ -72,163 +72,26 @@ Then ask the user which browser/profile to import from and which data types they
 - [BOOKMARKS.md](../browser-import/BOOKMARKS.md) — bookmark browsing
 - [WORKFLOWS.md](../browser-import/WORKFLOWS.md) — end-to-end recipes
 
-## Step 3: Set Up API Integrations (OAuth)
+## Step 3: Set Up API Integrations (Credentials)
 
-NatStack can connect to third-party APIs (Gmail, Google Calendar, GitHub, Slack, Notion, Linear) via OAuth. This requires a free Nango account for token management.
+API integrations use the credential system. See `docs/credential-system.md` for the current architecture and provider setup details.
 
 **Check if already configured:**
 
 ```
 eval({ code: `
-  import { oauth } from "@workspace/runtime";
-  const providers = await oauth.listProviders();
-  if (providers.length > 0) {
-    console.log("OAuth is configured. Available providers:", providers.map(p => p.key).join(", "));
-    const connections = await oauth.listConnections();
-    if (connections.length > 0) {
-      console.log("Active connections:", connections.map(c => c.provider).join(", "));
-    }
+  import { credentials } from "@workspace/runtime";
+  const githubConnections = await credentials.listConnections("github");
+  const googleConnections = await credentials.listConnections("google-workspace");
+  const connections = [...githubConnections, ...googleConnections];
+  if (connections.length > 0) {
+    console.log("Configured connections:", connections.map(c => c.providerId + ":" + c.connectionId).join(", "));
   } else {
-    console.log("OAuth is not configured yet.");
+    console.log("No GitHub or Google Workspace credentials are configured yet.");
   }
-  return { configured: providers.length > 0, providers };
+  return { configured: connections.length > 0, connections };
 `, timeout: 10000 })
 ```
-
-If not configured, show an inline UI offering to set it up. **Don't push this on the user** — some users only want local features. Explain what it enables and let them decide.
-
-Before showing the UI, check whether the user has imported browser data (which affects whether the internal browser panel is useful):
-
-```
-eval({ code: `
-  import { browserData } from "@workspace/panel-browser";
-  const history = await browserData.getImportHistory();
-  const hasImported = history.length > 0;
-  const nangoCookies = await browserData.getCookies("nango.dev");
-  const hasNangoCookies = nangoCookies.length > 0;
-  return { hasImported, hasNangoCookies };
-`, timeout: 5000 })
-```
-
-Use the result to decide what to recommend in the inline UI. If they've imported browser data, the internal browser panel is a good option (cookies + autofill will be available). If not, the external browser is better since the user is likely already signed in there.
-
-```
-inline_ui({
-  component: `
-    const [step, setStep] = useState("intro");
-    const [key, setKey] = useState("");
-
-    // Set these based on the browserData check above
-    const hasImported = props.hasImported ?? false;
-    const hasNangoCookies = props.hasNangoCookies ?? false;
-
-    if (step === "intro") return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <div>API integrations let you connect Gmail, Calendar, GitHub, Slack, and more from NatStack.</div>
-        <div>This requires a free <strong>Nango</strong> account (an OAuth proxy service).</div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={() => setStep("setup")}>Set up now</button>
-          <button onClick={() => resolve({ skipped: true })}>Skip for now</button>
-        </div>
-      </div>
-    );
-
-    if (step === "setup") return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <div><strong>1. Sign up or log in to Nango</strong> (free)</div>
-        <div style={{ display: "flex", gap: 8 }}>
-          {hasImported && (
-            <button onClick={() => resolve({ action: "open-panel" })}>
-              Open in NatStack browser{hasNangoCookies ? " (already logged in)" : ""}
-            </button>
-          )}
-          <button onClick={() => resolve({ action: "open-external" })}>
-            Open in system browser
-          </button>
-        </div>
-        <div style={{ color: "#888", fontSize: "0.9em" }}>
-          {hasImported
-            ? "The NatStack browser has your imported cookies and autofill."
-            : "Using your system browser since no browser data has been imported yet."}
-        </div>
-      </div>
-    );
-  `,
-})
-```
-
-**Handle the result:**
-
-- If `action === "open-panel"` — open the Nango dashboard in a browser panel:
-  ```
-  eval({ code: \`
-    import { createBrowserPanel } from "@workspace/runtime";
-    await createBrowserPanel("https://app.nango.dev", { name: "Nango Setup", focus: true });
-  \`, timeout: 10000 })
-  ```
-
-- If `action === "open-external"` — open in the system browser:
-  ```
-  eval({ code: \`
-    import { openExternal } from "@workspace/runtime";
-    await openExternal("https://app.nango.dev");
-  \`, timeout: 5000 })
-  ```
-
-After the user has the dashboard open (either way), show a follow-up inline UI for the remaining steps.
-
-**IMPORTANT: Never read secret values into the model's context.** The inline UI below calls `rpc.call("main", "secrets.setSecret", ...)` directly from component code so the key goes straight from the user's input to the secrets service without passing through the model. The resolve value should only indicate success/skip — never contain the key itself.
-
-```
-inline_ui({
-  component: `
-    const [key, setKey] = useState("");
-    const [status, setStatus] = useState("idle"); // idle | saving | saved | error
-    const [error, setError] = useState("");
-
-    const handleSave = async () => {
-      setStatus("saving");
-      try {
-        await rpc.call("main", "secrets.setSecret", "nango", key);
-        setStatus("saved");
-        resolve({ saved: true });
-      } catch (e) {
-        setStatus("error");
-        setError(e.message || "Failed to save");
-      }
-    };
-
-    if (status === "saved") return (
-      <div>Nango secret saved. Restart the workspace to activate OAuth.</div>
-    );
-
-    return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        <div><strong>2. Enable providers</strong> — In the Nango dashboard, enable the providers you want (Google, GitHub, Slack, etc.)</div>
-        <div><strong>3. Copy your secret key</strong> — Go to Settings → Secret Key</div>
-        <div><strong>4. Paste it here:</strong></div>
-        <input
-          type="password"
-          placeholder="e.g. 1a2b3c4d-5e6f-7890-abcd-ef1234567890"
-          value={key}
-          onChange={e => setKey(e.target.value)}
-          style={{ fontFamily: "monospace", padding: 6 }}
-        />
-        {status === "error" && <div style={{ color: "red" }}>{error}</div>}
-        <div style={{ display: "flex", gap: 8 }}>
-          <button
-            disabled={key.trim().length === 0 || status === "saving"}
-            onClick={handleSave}
-          >{status === "saving" ? "Saving..." : "Save key"}</button>
-          <button onClick={() => resolve({ skipped: true })}>Skip</button>
-        </div>
-      </div>
-    );
-  `,
-})
-```
-
-The result will be `{ saved: true }` or `{ skipped: true }` — the model never sees the key. After saving, tell the user they need to restart the workspace for the new secret to take effect. Then point them to the `api-integrations` skill for connecting individual providers.
 
 ## Step 4: Set Up a Workspace
 

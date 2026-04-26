@@ -1,8 +1,8 @@
 /**
  * startupMode — priority tests for `parseRemoteStartupMode`.
  *
- * Order: env vars > safeStorage-backed store > legacy config.yml.
- * Covered here: each "wins" case, missing-data → null, invalid-URL throws,
+ * Order: env vars > safeStorage-backed store.
+ * Covered here: each "wins" case, missing-data -> null, invalid-URL throws,
  * fingerprint normalization.
  */
 
@@ -11,11 +11,9 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 // Mocks must be set up before the startupMode module is imported, so we
 // resetModules + re-import in each test.
 
-const mockLoadCentralConfig = vi.fn();
 const mockLoadRemoteCredentials = vi.fn();
 
 vi.mock("@natstack/shared/workspace/loader", () => ({
-  loadCentralConfig: () => mockLoadCentralConfig(),
   resolveWorkspaceName: () => null,
   resolveOrCreateWorkspace: () => { throw new Error("not used in these tests"); },
 }));
@@ -47,9 +45,7 @@ describe("parseRemoteStartupMode priority", () => {
 
   beforeEach(async () => {
     clearEnv();
-    mockLoadCentralConfig.mockReset();
     mockLoadRemoteCredentials.mockReset();
-    mockLoadCentralConfig.mockReturnValue({});
     mockLoadRemoteCredentials.mockReturnValue(null);
     vi.resetModules();
     mod = await import("./startupMode.js");
@@ -59,29 +55,20 @@ describe("parseRemoteStartupMode priority", () => {
     expect(mod.parseRemoteStartupMode()).toBeNull();
   });
 
-  it("env vars win over store and config", () => {
+  it("env vars win over store", () => {
     process.env["NATSTACK_REMOTE_URL"] = "https://env:1";
     process.env["NATSTACK_REMOTE_TOKEN"] = "env-token";
     mockLoadRemoteCredentials.mockReturnValue({ url: "https://store:1", token: "store-token" });
-    mockLoadCentralConfig.mockReturnValue({ remote: { url: "https://cfg:1", token: "cfg-token" } });
     const result = mod.parseRemoteStartupMode()!;
     expect(result.remoteUrl.href).toBe("https://env:1/");
     expect(result.adminToken).toBe("env-token");
   });
 
-  it("store wins over config when env is unset", () => {
+  it("uses store when env is unset", () => {
     mockLoadRemoteCredentials.mockReturnValue({ url: "https://store:1", token: "store-token" });
-    mockLoadCentralConfig.mockReturnValue({ remote: { url: "https://cfg:1", token: "cfg-token" } });
     const result = mod.parseRemoteStartupMode()!;
     expect(result.remoteUrl.href).toBe("https://store:1/");
     expect(result.adminToken).toBe("store-token");
-  });
-
-  it("falls back to config when neither env nor store is set", () => {
-    mockLoadCentralConfig.mockReturnValue({ remote: { url: "https://cfg:1", token: "cfg-token" } });
-    const result = mod.parseRemoteStartupMode()!;
-    expect(result.remoteUrl.href).toBe("https://cfg:1/");
-    expect(result.adminToken).toBe("cfg-token");
   });
 
   it("throws on malformed URL", () => {
@@ -105,6 +92,12 @@ describe("parseRemoteStartupMode priority", () => {
 
   it("rejects non-loopback HTTP origins", () => {
     process.env["NATSTACK_REMOTE_URL"] = "http://server.example.com:1455";
+    process.env["NATSTACK_REMOTE_TOKEN"] = "t";
+    expect(() => mod.parseRemoteStartupMode()).toThrow(/requires HTTPS, or loopback HTTP/i);
+  });
+
+  it("rejects localhost subdomains for HTTP remote origins", () => {
+    process.env["NATSTACK_REMOTE_URL"] = "http://panel.localhost:1455";
     process.env["NATSTACK_REMOTE_TOKEN"] = "t";
     expect(() => mod.parseRemoteStartupMode()).toThrow(/requires HTTPS, or loopback HTTP/i);
   });

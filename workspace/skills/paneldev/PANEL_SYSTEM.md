@@ -65,7 +65,7 @@ import {
   getWorkspaceTree, listBranches, listCommits,
 
   // Navigation
-  openPanel, buildPanelLink, contextIdToSubdomain,
+  openPanel, buildPanelLink,
 
   // Utilities
   parseContextId, isValidContextId, getInstanceId,
@@ -103,7 +103,7 @@ import { buildPanelLink } from "@workspace/runtime";
 // Navigate this panel to a different source
 window.location.href = buildPanelLink("panels/editor");
 
-// Cross-context navigation (absolute URL, different subdomain)
+// Cross-context navigation (absolute URL with contextId query parameter)
 window.location.href = buildPanelLink("panels/chat", {
   contextId: "abc-123",
   stateArgs: { channelName: "general" },

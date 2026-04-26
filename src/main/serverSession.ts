@@ -136,7 +136,6 @@ export async function establishServerSession(args: {
     ports = {
       rpcPort: remotePort,
       gitPort: remotePort,
-      pubsubPort: 0,
       workerdPort: remotePort,
       gatewayPort: remotePort,
       adminToken,
@@ -225,8 +224,6 @@ export async function establishServerSession(args: {
 
   const gatewayPort = ports.gatewayPort ?? ports.panelHttpPort ?? 0;
   const panelHttpServer: PanelHttpServerLike = {
-    ensureSubdomainSession: () => "",
-    clearSubdomainSessions: () => {},
     hasBuild: () => false,
     invalidateBuild: () => {},
     getPort: () => gatewayPort,

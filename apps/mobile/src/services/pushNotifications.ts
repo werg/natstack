@@ -43,6 +43,9 @@ async function getDeviceClientId(): Promise<string> {
     const Keychain = await import("react-native-keychain");
     await Keychain.setGenericPassword("push-device-id", cachedDeviceId, {
       service: "natstack-push-device-id",
+      // Device-only: if this ID leaks via backup, an attacker could receive
+      // push notifications addressed to the original device (cloned device).
+      accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
     });
   } catch {
     // Keychain write failed — ID works for this session but won't persist

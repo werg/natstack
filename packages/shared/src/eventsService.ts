@@ -264,7 +264,7 @@ export function createEventsServiceDefinition(eventService: EventService): Servi
   return {
     name: "events",
     description: "Event subscriptions",
-    policy: { allowed: ["shell", "panel", "server"] },
+    policy: { allowed: ["shell", "panel", "server", "worker"] },
     methods: {
       subscribe: { args: z.tuple([z.string()]) },
       unsubscribe: { args: z.tuple([z.string()]) },

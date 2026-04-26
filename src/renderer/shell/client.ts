@@ -107,7 +107,7 @@ export const view = {
   setVisible: (viewId: string, visible: boolean) =>
     rpc.call<void>("main", "view.setVisible", viewId, visible),
   setThemeCss: (css: string) => rpc.call<void>("main", "view.setThemeCss", css),
-  updateLayout: (layout: { titleBarHeight?: number; sidebarVisible?: boolean; sidebarWidth?: number; saveBarHeight?: number; notificationBarHeight?: number }) =>
+  updateLayout: (layout: { titleBarHeight?: number; sidebarVisible?: boolean; sidebarWidth?: number; saveBarHeight?: number; notificationBarHeight?: number; consentBarHeight?: number }) =>
     rpc.call<void>("main", "view.updateLayout", layout),
   setShellOverlay: (active: boolean) =>
     rpc.call<void>("main", "view.setShellOverlay", active),
@@ -215,32 +215,15 @@ export const tokens = {
 };
 
 // =============================================================================
-// Auth Service (W1a)
+// Credential Flow Service
 // =============================================================================
 
-/**
- * Provider entry returned by auth.listProviders.
- *
- * Shape is placeholder — the auth service is being built by a parallel track
- * (W1a) and the final shape may differ. Kept minimal so the shell just has
- * enough to render a row and trigger a login/logout.
- */
-export interface AuthProvider {
-  id: string;
-  name: string;
-  /** "oauth" providers use startOAuthLogin; "env" providers rely on env vars. */
-  kind: "oauth" | "env";
-  /** "connected" | "configured" means the provider is usable. */
-  status: "connected" | "configured" | "disconnected" | "unconfigured";
-  /** For env providers, the env var name we look for. */
-  envVar?: string;
-}
+export type CredentialFlowProviderRequest = { id: string; [key: string]: unknown };
 
-export const auth = {
-  listProviders: () => rpc.call<AuthProvider[]>("main", "auth.listProviders"),
-  startOAuthLogin: (providerId: string) =>
-    rpc.call<void>("main", "auth.startOAuthLogin", providerId),
-  logout: (providerId: string) => rpc.call<void>("main", "auth.logout", providerId),
+export const credentialFlow = {
+  connect: (provider: CredentialFlowProviderRequest) =>
+    rpc.call<{ success: boolean; error?: string }>("main", "credentialFlow.connect", provider),
+  disconnect: (providerId: string) => rpc.call<void>("main", "credentialFlow.disconnect", providerId),
 };
 
 // =============================================================================
@@ -279,6 +262,18 @@ export const notification = {
     rpc.call<void>("main", "notification.reportAction", id, actionId),
   dismiss: (id: string) =>
     rpc.call<void>("main", "notification.dismiss", id),
+};
+
+// =============================================================================
+// Shell Approval Service (consent approval queue)
+// =============================================================================
+
+import type { ApprovalDecision, PendingApproval } from "@natstack/shared/approvals";
+
+export const shellApproval = {
+  resolve: (approvalId: string, decision: ApprovalDecision) =>
+    rpc.call<void>("main", "shellApproval.resolve", approvalId, decision),
+  listPending: () => rpc.call<PendingApproval[]>("main", "shellApproval.listPending"),
 };
 
 // =============================================================================

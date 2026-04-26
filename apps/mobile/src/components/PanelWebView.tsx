@@ -232,6 +232,14 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
     const [hasError, setHasError] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
     const [errorMessage, setErrorMessage] = useState("");
+    // Track the origin currently loaded in the WebView so we can verify that
+    // host-bridge messages (handleMessage below) actually originate from a
+    // managed panel page on our shell host. A redirect inside the same
+    // WebView (e.g. via `handleShouldStartLoad` chaining or a meta-refresh)
+    // would otherwise let an attacker-controlled origin invoke privileged
+    // bridge methods (createBrowserPanel, openExternal, auth.startOAuthLogin,
+    // etc.). Initialised to the configured panel URL.
+    const currentUrlRef = useRef<string>(url);
 
     const dispatchHostEvent = useCallback((event: string, payload: unknown) => {
       if (!managed) return;
@@ -296,6 +304,9 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
     const handleNavigationStateChange = useCallback(
       (navState: WebViewNavigation) => {
         setIsLoading(navState.loading ?? false);
+        if (typeof navState.url === "string" && navState.url.length > 0) {
+          currentUrlRef.current = navState.url;
+        }
         onNavigationStateChange?.(navState);
       },
       [onNavigationStateChange],
@@ -303,6 +314,22 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
 
     const handleMessage = useCallback(async (event: WebViewMessageEvent) => {
       if (!managed || !onBridgeCall) return;
+
+      // Origin check: bridge calls (createBrowserPanel, openExternal,
+      // auth.startOAuthLogin, setStateArgs, ...) are only accepted when the
+      // WebView is currently displaying a page on the managed shell host.
+      // If the page redirected itself to an attacker origin, drop the
+      // message. We prefer the event's nativeEvent.url (the source frame
+      // origin reported by react-native-webview); fall back to the last
+      // known top-level navigation URL.
+      const sourceUrl = (event.nativeEvent as { url?: string }).url
+        ?? currentUrlRef.current;
+      if (!sourceUrl || !isManagedHost(sourceUrl, externalHost)) {
+        console.warn(
+          `[PanelWebView] Rejecting bridge message from non-managed origin: ${sourceUrl ?? "<unknown>"} (panel=${panelId})`,
+        );
+        return;
+      }
 
       try {
         const message = JSON.parse(event.nativeEvent.data) as {
@@ -348,7 +375,7 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
       } catch {
         // Ignore non-bridge messages.
       }
-    }, [managed, onBridgeCall, panelId]);
+    }, [externalHost, managed, onBridgeCall, panelId]);
 
     const handleError = useCallback(
       (syntheticEvent: { nativeEvent: { description?: string; code?: number } }) => {
@@ -462,9 +489,11 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
           }}
           javaScriptEnabled
           domStorageEnabled
-          mixedContentMode="compatibility"
+          mixedContentMode="never"
           allowsInlineMediaPlayback
-          allowFileAccess
+          allowFileAccess={false}
+          allowFileAccessFromFileURLs={false}
+          allowUniversalAccessFromFileURLs={false}
           pullToRefreshEnabled={false}
         />
       </View>

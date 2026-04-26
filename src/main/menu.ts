@@ -82,14 +82,6 @@ export function buildCommonMenuItems(
         eventService().emit("open-workspace-switcher");
       },
     },
-    { type: "separator" },
-    {
-      label: "Model Provider Config...",
-      accelerator: "CmdOrCtrl+Shift+M",
-      click: () => {
-        eventService().emit("navigate-about", { page: "model-provider-config" });
-      },
-    },
   ];
 
   const edit: MenuItemConstructorOptions[] = [
@@ -267,14 +259,6 @@ export function setupMenu(
           accelerator: "CmdOrCtrl+Shift+O",
           click: () => {
             eventService().emit("open-workspace-switcher");
-          },
-        },
-        { type: "separator" },
-        {
-          label: "Model Provider Config...",
-          accelerator: "CmdOrCtrl+Shift+M",
-          click: () => {
-            eventService().emit("navigate-about", { page: "model-provider-config" });
           },
         },
         { type: "separator" },

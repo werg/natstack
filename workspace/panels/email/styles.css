@@ -1,4 +1,0 @@
-.email-message-row--unread { background-color: var(--blue-a2); }
-.email-message-row:hover,
-.email-message-row:focus-visible { background-color: var(--gray-a3); }
-.email-message-row:active { background-color: var(--gray-a4); }

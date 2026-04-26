@@ -1,0 +1,20 @@
+name = "natstack-webhook-relay"
+main = "src/index.ts"
+compatibility_date = "2024-11-15"
+
+# Deploy as its own Worker.
+#
+#   cd apps/webhook-relay
+#   wrangler deploy
+#
+# Required secret:
+#   wrangler secret put NATSTACK_SERVER_BASE_URL
+#
+# Optional secret:
+#   wrangler secret put NATSTACK_SERVER_BEARER_TOKEN
+#
+# account_id and route/zone bindings are environment-specific. Set them under
+# your own [env.<name>] block or via CLOUDFLARE_ACCOUNT_ID.
+
+[vars]
+ENVIRONMENT = "development"

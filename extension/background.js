@@ -130,21 +130,34 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
-// Track when tabs navigate to detect natstack tabs by subdomain
+function getManagedPanelBrowserId(tabUrl) {
+  if (!serverUrl) return null;
+  try {
+    const server = new URL(serverUrl);
+    const url = new URL(tabUrl);
+    if (url.protocol !== server.protocol || url.hostname !== server.hostname) return null;
+    if (server.port && url.port !== server.port) return null;
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (parts.length < 2) return null;
+    return url.searchParams.get("contextId") || parts.slice(0, 2).join("/");
+  } catch {
+    return null;
+  }
+}
+
+// Track when tabs navigate to detect natstack path-based panel URLs.
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url && tab.url) {
-    const match = tab.url.match(/^https?:\/\/([a-z0-9-]+)\.localhost(:\d+)?\//i);
-    if (match) {
-      const subdomain = match[1];
+    const browserId = getManagedPanelBrowserId(tab.url);
+    if (browserId) {
       // If this tab isn't already tracked for a browserId, register it
       if (!tabPanels.has(tabId)) {
-        // Use subdomain as browserId for CDP targeting
-        panelTabs.set(subdomain, tabId);
-        tabPanels.set(tabId, subdomain);
+        panelTabs.set(browserId, tabId);
+        tabPanels.set(tabId, browserId);
 
         // Register with CDP bridge
         if (cdpWs && cdpWs.readyState === WebSocket.OPEN) {
-          cdpWs.send(JSON.stringify({ type: "cdp:register", browserId: subdomain, tabId }));
+          cdpWs.send(JSON.stringify({ type: "cdp:register", browserId, tabId }));
         }
       }
     }

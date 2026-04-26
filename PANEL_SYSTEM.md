@@ -65,7 +65,6 @@ import {
 
   // Navigation
   buildPanelLink,        // Build URL for panel navigation
-  contextIdToSubdomain,  // Convert context ID to subdomain string
 
   // Parent communication
   parent,                // ParentHandle (noop if root)
@@ -149,13 +148,12 @@ import { buildPanelLink } from "@workspace/runtime";
 // Same-context navigation (relative URL)
 window.location.href = buildPanelLink("panels/chat");
 
-// Cross-context navigation (absolute URL, different subdomain)
+// Cross-context navigation (absolute URL with contextId query parameter)
 window.location.href = buildPanelLink("panels/chat", { contextId: "abc-123" });
 ```
 
-`buildPanelLink` returns a relative path for same-context navigation and an absolute URL (with the context subdomain) when `contextId` is provided.
+`buildPanelLink` returns a relative path for same-context navigation and an absolute URL with `contextId` in the query string when `contextId` is provided.
 
-The `contextIdToSubdomain` utility (exported from `@workspace/runtime`) converts a context ID into the subdomain string used in cross-context URLs.
 
 ## ParentHandle Methods
 

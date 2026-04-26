@@ -19,7 +19,6 @@ import {
 export interface ServerPorts {
   rpcPort: number;
   gitPort: number;
-  pubsubPort: number;
   workerdPort?: number;
   gatewayPort?: number;
   panelHttpPort?: number;
@@ -174,7 +173,6 @@ export class ServerProcessManager {
           resolve({
             rpcPort: msg.rpcPort,
             gitPort: msg.gitPort,
-            pubsubPort: msg.pubsubPort,
             workerdPort: msg.workerdPort,
             gatewayPort: msg.gatewayPort,
             panelHttpPort: msg.panelHttpPort,

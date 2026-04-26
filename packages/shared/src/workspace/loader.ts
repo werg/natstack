@@ -135,7 +135,10 @@ export function loadCentralConfig(): CentralConfig {
     const mutated = migrateClaudeAgentModelsConfig(parsed);
     if (mutated) {
       try {
-        fs.writeFileSync(paths.configPath, YAML.stringify(parsed), "utf-8");
+        // Audit finding #51: secret-bearing config writes must be 0o600
+        // regardless of dir perms.
+        fs.writeFileSync(paths.configPath, YAML.stringify(parsed), { encoding: "utf-8", mode: 0o600 });
+        try { fs.chmodSync(paths.configPath, 0o600); } catch { /* best-effort */ }
       } catch (writeErr) {
         console.warn(
           `[Config] Failed to persist migrated config back to ${paths.configPath}:`,
@@ -203,8 +206,16 @@ export function saveSecrets(secrets: Record<string, string>): void {
 
 export function saveSecretsToPath(secretsPath: string, secrets: Record<string, string>): void {
   try {
-    fs.mkdirSync(path.dirname(secretsPath), { recursive: true });
-    fs.writeFileSync(secretsPath, YAML.stringify(secrets), "utf-8");
+    // Audit finding #51 (cross-cutting), F-04 / F-17 (creds + filesystem
+    // reports): `.secrets.yml` was previously written with default umask
+    // (0o644), relying on the parent dir being 0o700. Force 0o600 explicitly
+    // and re-chmod after write to repair files created with looser modes by
+    // older code.
+    fs.mkdirSync(path.dirname(secretsPath), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(secretsPath, YAML.stringify(secrets), { encoding: "utf-8", mode: 0o600 });
+    if (process.platform !== "win32") {
+      try { fs.chmodSync(secretsPath, 0o600); } catch { /* best-effort */ }
+    }
   } catch (error) {
     console.error("[Config] Failed to save secrets:", error);
     throw error;
@@ -219,7 +230,12 @@ export function saveCentralConfig(config: CentralConfig): void {
 
   try {
     ensureCentralConfigDir();
-    fs.writeFileSync(paths.configPath, YAML.stringify(config), "utf-8");
+    // Audit finding #51: central config may carry provider references that
+    // imply token presence; treat as secret-adjacent and lock to 0o600.
+    fs.writeFileSync(paths.configPath, YAML.stringify(config), { encoding: "utf-8", mode: 0o600 });
+    if (process.platform !== "win32") {
+      try { fs.chmodSync(paths.configPath, 0o600); } catch { /* best-effort */ }
+    }
   } catch (error) {
     console.error("[Config] Failed to save central config:", error);
     throw error;

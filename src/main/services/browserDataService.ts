@@ -149,9 +149,19 @@ export function createBrowserDataService(deps: {
 }): ServiceDefinition {
   const { eventService, browserDataStore } = deps;
 
+  // Methods that read/export plaintext credentials (passwords, cookies,
+  // history) MUST be shell-only. The user's settings/import UI runs in the
+  // shell; panels and workers must never be able to dump the imported
+  // browser credential store. See audit findings #4 / 07-F-02 / 01-C2.
+  const SHELL_ONLY: { allowed: ("shell" | "panel" | "worker" | "server" | "harness")[] } = { allowed: ["shell"] };
+
   return {
     name: "browser-data",
     description: "Browser data import, export, and management",
+    // Service-level default keeps panel/worker access for non-sensitive
+    // methods (detectBrowsers, bookmark CRUD, search engines). Every
+    // method that touches plaintext credentials, cookies, or browsing
+    // history is locked down via per-method `policy: SHELL_ONLY` below.
     policy: { allowed: ["shell", "panel", "worker"] },
     methods: {
       // Detection
@@ -169,23 +179,24 @@ export function createBrowserDataService(deps: {
       moveBookmark: { args: z.tuple([z.number(), z.string(), z.number()]) },
       searchBookmarks: { args: z.tuple([z.string()]) },
 
-      // History
-      getHistory: { args: z.tuple([HistoryQuerySchema]) },
-      deleteHistoryEntry: { args: z.tuple([z.number()]) },
-      deleteHistoryRange: { args: z.tuple([z.number(), z.number()]) },
-      clearAllHistory: { args: z.tuple([]) },
-      searchHistory: { args: z.tuple([z.string(), z.number().optional()]) },
+      // History — plaintext browsing record; shell-only.
+      getHistory: { args: z.tuple([HistoryQuerySchema]), policy: SHELL_ONLY },
+      deleteHistoryEntry: { args: z.tuple([z.number()]), policy: SHELL_ONLY },
+      deleteHistoryRange: { args: z.tuple([z.number(), z.number()]), policy: SHELL_ONLY },
+      clearAllHistory: { args: z.tuple([]), policy: SHELL_ONLY },
+      searchHistory: { args: z.tuple([z.string(), z.number().optional()]), policy: SHELL_ONLY },
 
-      // Passwords
-      getPasswords: { args: z.tuple([]) },
-      getPasswordForSite: { args: z.tuple([z.string()]) },
-      addPassword: { args: z.tuple([PasswordSchema]) },
-      updatePassword: { args: z.tuple([z.number(), PasswordSchema.partial()]) },
-      deletePassword: { args: z.tuple([z.number()]) },
+      // Passwords — plaintext credentials; shell-only.
+      getPasswords: { args: z.tuple([]), policy: SHELL_ONLY },
+      getPasswordForSite: { args: z.tuple([z.string()]), policy: SHELL_ONLY },
+      addPassword: { args: z.tuple([PasswordSchema]), policy: SHELL_ONLY },
+      updatePassword: { args: z.tuple([z.number(), PasswordSchema.partial()]), policy: SHELL_ONLY },
+      deletePassword: { args: z.tuple([z.number()]), policy: SHELL_ONLY },
 
-      // Autofill
+      // Autofill suggestions — surface the same plaintext store; shell-only.
       getAutofillSuggestions: {
         args: z.tuple([z.string(), z.string().optional()]),
+        policy: SHELL_ONLY,
       },
 
       // Search Engines
@@ -196,24 +207,28 @@ export function createBrowserDataService(deps: {
       getPermissions: { args: z.tuple([z.string().optional()]) },
       setPermission: { args: z.tuple([z.string(), z.string(), z.string()]) },
 
-      // Export
+      // Export — every export*/exportAll method dumps credentials in
+      // plaintext or near-plaintext; shell-only.
       exportBookmarks: {
         args: z.tuple([z.enum(["html", "json", "chrome-json"])]),
+        policy: SHELL_ONLY,
       },
       exportPasswords: {
         args: z.tuple([z.enum(["csv-chrome", "csv-firefox", "json"])]),
+        policy: SHELL_ONLY,
       },
       exportCookies: {
         args: z.tuple([z.enum(["json", "netscape-txt"])]),
+        policy: SHELL_ONLY,
       },
-      exportAll: { args: z.tuple([]) },
+      exportAll: { args: z.tuple([]), policy: SHELL_ONLY },
 
-      // Cookies
-      getCookies: { args: z.tuple([z.string().optional()]) },
-      deleteCookie: { args: z.tuple([z.number()]) },
-      clearCookies: { args: z.tuple([z.string().optional()]) },
-      syncCookiesToSession: { args: z.tuple([z.string().optional()]) },
-      syncCookiesFromSession: { args: z.tuple([z.string().optional()]) },
+      // Cookies — session credentials; shell-only.
+      getCookies: { args: z.tuple([z.string().optional()]), policy: SHELL_ONLY },
+      deleteCookie: { args: z.tuple([z.number()]), policy: SHELL_ONLY },
+      clearCookies: { args: z.tuple([z.string().optional()]), policy: SHELL_ONLY },
+      syncCookiesToSession: { args: z.tuple([z.string().optional()]), policy: SHELL_ONLY },
+      syncCookiesFromSession: { args: z.tuple([z.string().optional()]), policy: SHELL_ONLY },
     },
     handler: async (_ctx, method, args) => {
       switch (method) {

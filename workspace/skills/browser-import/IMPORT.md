@@ -149,7 +149,6 @@ interface ImportRequest {
   dataTypes: string[];       // which data types to import
   masterPassword?: string;   // Firefox master password (if set)
   csvPasswordFile?: string;  // path to Chrome password CSV export
-  // profilePath is also accepted (deprecated alias for profile)
 }
 
 // startImport returns an ARRAY — one entry per requested dataType

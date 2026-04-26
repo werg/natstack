@@ -37,19 +37,11 @@ export interface WsRouteMessage {
   message: RpcMessage;
 }
 
-/** @deprecated Use WsRouteMessage. Kept for backward compatibility. */
-export interface WsPanelRpcMessage {
-  type: "ws:panel-rpc";
-  targetId: string;
-  message: RpcMessage;
-}
-
 export type WsClientMessage =
   | WsAuthMessage
   | WsRpcMessage
   | WsToolResultMessage
-  | WsRouteMessage
-  | WsPanelRpcMessage;
+  | WsRouteMessage;
 
 // =============================================================================
 // Server → Client messages
@@ -97,18 +89,10 @@ export interface WsRoutedResponseErrorMessage {
   errorCode?: string;
 }
 
-/** @deprecated Use WsRoutedMessage. Kept for backward compatibility. */
-export interface WsPanelRpcDeliveryMessage {
-  type: "ws:panel-rpc-delivery";
-  fromId: string;
-  message: RpcMessage;
-}
-
 export type WsServerMessage =
   | WsAuthResultMessage
   | WsRpcResponseMessage
   | WsEventMessage
   | WsRoutedMessage
   | WsRoutedEventErrorMessage
-  | WsRoutedResponseErrorMessage
-  | WsPanelRpcDeliveryMessage;
+  | WsRoutedResponseErrorMessage;

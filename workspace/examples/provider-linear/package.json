@@ -1,0 +1,13 @@
+{
+  "name": "@natstack/provider-linear",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Example: Linear issue-tracker provider manifest and integration helpers.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@workspace/runtime": "workspace:*"
+  }
+}

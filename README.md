@@ -215,8 +215,7 @@ Each panel gets:
 
 NatStack ships Chrome and Firefox extensions that connect to the headless
 server and automatically manage browser tabs for panels. The extensions
-handle SSE lifecycle events, context pre-warming, and subdomain-based
-origin isolation.
+handle lifecycle events, context pre-warming, and path-based panel URLs.
 
 See **[BROWSER_EXTENSIONS.md](BROWSER_EXTENSIONS.md)** for installation
 instructions, configuration, and the full connection flow.
@@ -225,4 +224,3 @@ instructions, configuration, and the full connection flow.
 
 Agents run as in-process services managed by AgentManager. They have direct
 access to DatabaseManager and AIHandler, and communicate via channels.
-

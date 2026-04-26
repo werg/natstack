@@ -20,6 +20,7 @@ import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { FsService } from "@natstack/shared/fsService";
 import type { BuildResult } from "./buildV2/buildStore.js";
 import type { RouteRegistry, ManifestRouteDecl } from "./routeRegistry.js";
+import type { CodeIdentityResolver } from "./services/codeIdentityResolver.js";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("WorkerdManager");
@@ -121,6 +122,9 @@ export interface WorkerdManagerDeps {
   routeRegistry?: RouteRegistry;
   /** Manifest-route lookup, keyed by source. Used alongside routeRegistry. */
   getManifestRoutes?: (source: string) => ManifestRouteDecl[];
+  getProxyPort: () => number | null;
+  codeIdentityResolver: Pick<CodeIdentityResolver, "upsertCallerIdentity" | "unregisterCaller">;
+  cleanupWebhookSubscriptions?: (callerId: string) => Promise<void>;
 }
 
 /** The canonical regular-worker instance name for a source. Matches the
@@ -147,6 +151,7 @@ export class WorkerdManager {
   private doServices = new Map<string, { buildKey: string; className: string; serviceName: string; source: string }>();
   /** Session ID — generated once per WorkerdManager lifetime, used for restart detection in bootstrap. */
   private sessionId = crypto.randomUUID();
+  private dispatchSecret = crypto.randomBytes(32).toString("base64url");
 
   constructor(deps: WorkerdManagerDeps) {
     this.deps = deps;
@@ -258,6 +263,12 @@ export class WorkerdManager {
     try {
       const buildResult = await this.deps.getBuild(options.source, options.ref);
       instance.buildKey = buildResult.metadata.ev;
+      this.deps.codeIdentityResolver.upsertCallerIdentity({
+        callerId,
+        callerKind: "worker",
+        repoPath: options.source,
+        effectiveVersion: buildResult.metadata.ev,
+      });
       instance.status = "starting";
 
       // Restart workerd process with updated config
@@ -304,6 +315,8 @@ export class WorkerdManager {
     this.deps.tokenManager.revokeToken(instance.callerId);
     this.deps.fsService.unregisterCallerContext(instance.callerId);
     this.deps.fsService.closeHandlesForCaller(instance.callerId);
+    await this.deps.cleanupWebhookSubscriptions?.(instance.callerId);
+    this.deps.codeIdentityResolver.unregisterCaller(instance.callerId);
     this.instances.delete(name);
 
     // Unregister regular-worker routes if this was the canonical instance.
@@ -320,7 +333,7 @@ export class WorkerdManager {
     if (this.instances.size > 0 || this.doServices.size > 0) {
       await this.restartWorkerd();
     } else {
-      this.stopWorkerd();
+      await this.stopWorkerd();
     }
 
     log.info(`Worker instance "${name}" destroyed`);
@@ -359,6 +372,21 @@ export class WorkerdManager {
     return this.port;
   }
 
+  getDispatchSecret(): string {
+    return this.dispatchSecret;
+  }
+
+  getDoCodeIdentity(source: string, className: string): { repoPath: string; effectiveVersion: string } | null {
+    const service = this.doServices.get(`${source}:${className}`);
+    if (!service) {
+      return null;
+    }
+    return {
+      repoPath: service.source,
+      effectiveVersion: service.buildKey,
+    };
+  }
+
   // =========================================================================
   // Config generation
   // =========================================================================
@@ -377,6 +405,7 @@ export class WorkerdManager {
       try {
         const buildResult = await this.deps.getBuild(doService.source);
         bundleContent = buildResult.bundle;
+        doService.buildKey = buildResult.metadata.ev;
       } catch (err) {
         log.warn(`Skipping DO service "${serviceKey}" — build not available:`, err);
         continue;
@@ -390,6 +419,12 @@ export class WorkerdManager {
       const serviceCallerId = `do-service:${serviceKey}`;
       const serviceToken = this.deps.tokenManager.ensureToken(serviceCallerId, "worker");
 
+      this.deps.codeIdentityResolver.upsertCallerIdentity({
+        callerId: serviceCallerId,
+        callerKind: "worker",
+        repoPath: doService.source,
+        effectiveVersion: doService.buildKey,
+      });
       const bindings: object[] = [
         { name: "RPC_AUTH_TOKEN", text: serviceToken },
         // Source-scoped class identity
@@ -407,9 +442,11 @@ export class WorkerdManager {
       const doStoragePath = path.join(this.deps.statePath, ".databases", "workerd-do");
       fs.mkdirSync(doStoragePath, { recursive: true });
 
-      // Network service for outbound fetch (RPC HTTP bridge, PubSub HTTP).
-      // DOs are autonomous — they make direct HTTP calls to localhost services.
       const networkServiceName = `${doService.serviceName}_network`;
+      const proxyPort = this.deps.getProxyPort();
+      if (!proxyPort) {
+        throw new Error("Egress proxy port not available");
+      }
 
       const workerDef: Record<string, unknown> = {
         modules: [{ name: "worker.js", esModule: bundleContent }],
@@ -433,15 +470,9 @@ export class WorkerdManager {
       services.push({ name: diskServiceName, disk: { path: doStoragePath, writable: true } });
       services.push({
         name: networkServiceName,
-        network: {
-          allow: ["public", "local"],
-          deny: [],
-          // Enable outbound HTTPS from worker DOs. Without TLS options,
-          // workerd's HttpClient rejects HTTPS URLs with
-          // "expected tlsNetwork != nullptr". trustBrowserCas makes the
-          // system CA store available so fetch("https://...") works for
-          // external API calls (e.g., pi-ai streaming to chatgpt.com).
-          tlsOptions: { trustBrowserCas: true },
+        external: {
+          address: `127.0.0.1:${proxyPort}`,
+          http: { forwardedProtoHeader: "X-Forwarded-Proto" },
         },
       });
     }
@@ -453,6 +484,13 @@ export class WorkerdManager {
       try {
         const buildResult = await this.deps.getBuild(instance.source, instance.ref);
         bundleContent = buildResult.bundle;
+        instance.buildKey = buildResult.metadata.ev;
+        this.deps.codeIdentityResolver.upsertCallerIdentity({
+          callerId: instance.callerId,
+          callerKind: "worker",
+          repoPath: instance.source,
+          effectiveVersion: instance.buildKey,
+        });
       } catch (err) {
         log.warn(`Skipping worker "${name}" — build not available:`, err);
         continue;
@@ -498,8 +536,11 @@ export class WorkerdManager {
         }
       }
 
-      // Network service for outbound fetch (API calls, RPC).
       const networkServiceName = `${name}_network`;
+      const proxyPort = this.deps.getProxyPort();
+      if (!proxyPort) {
+        throw new Error("Egress proxy port not available");
+      }
 
       // Build workerd service config.
       //
@@ -522,10 +563,9 @@ export class WorkerdManager {
       services.push({ name, worker: workerDef });
       services.push({
         name: networkServiceName,
-        network: {
-          allow: ["public", "local"],
-          deny: [],
-          tlsOptions: { trustBrowserCas: true },
+        external: {
+          address: `127.0.0.1:${proxyPort}`,
+          http: { forwardedProtoHeader: "X-Forwarded-Proto" },
         },
       });
     }
@@ -556,6 +596,7 @@ export class WorkerdManager {
       }
 
       const routerCode = this.generateRouterCode(instanceNames, doClassNames);
+      routerBindings.push({ name: "DISPATCH_SECRET", text: this.dispatchSecret });
 
       services.push({
         name: "router",
@@ -588,7 +629,7 @@ export class WorkerdManager {
       sockets: hasAnyService
         ? [{
             name: "http",
-            address: `*:${this.port}`,
+            address: `127.0.0.1:${this.port}`,
             http: {},
             service: { name: "router" },
           }]
@@ -621,6 +662,26 @@ export class WorkerdManager {
       doBlock = `
     // /_w/{source0}/{source1}/{className}/{objectKey}/{...method} — source-scoped DO routes
     if (prefix === "_w") {
+      const presented = request.headers.get("x-natstack-dispatch-secret") || "";
+      const expected = env.DISPATCH_SECRET || "";
+      if (presented) {
+        if (!expected || presented.length !== expected.length) {
+          return new Response(JSON.stringify({ error: "unauthorized: invalid dispatch secret" }), {
+            status: 401,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        let diff = 0;
+        for (let i = 0; i < expected.length; i++) {
+          diff |= presented.charCodeAt(i) ^ expected.charCodeAt(i);
+        }
+        if (diff !== 0) {
+          return new Response(JSON.stringify({ error: "unauthorized: dispatch secret mismatch" }), {
+            status: 401,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+      }
       const source = parts[1] + "/" + parts[2];
       const doClass = parts[3] || "";
       const objectKey = parts[4] || "";
@@ -1038,6 +1099,7 @@ ${doBlock}${cases.join("\n")}
         if (svc.source !== source) continue;
         if (newClassNames.has(svc.className)) continue;
         this.deps.tokenManager.revokeToken(`do-service:${serviceKey}`);
+        this.deps.codeIdentityResolver.unregisterCaller(`do-service:${serviceKey}`);
         this.doServices.delete(serviceKey);
         this.deps.routeRegistry?.unregisterDoRoutes(source, svc.className);
         needsRestart = true;

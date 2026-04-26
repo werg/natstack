@@ -30,12 +30,9 @@ export function getContentScript(): string {
 
   var ping = window.__natstack_autofill ? window.__natstack_autofill.ping : function() {};
 
-  // Relay pings from iframes (they use postMessage since they lack the preload bridge)
-  window.addEventListener('message', function(e) {
-    if (e.data && e.data.type === '__natstack_af_iframe_ping') {
-      ping();
-    }
-  });
+  // Top-frame-only policy (audit S3): the autofill content script is only
+  // injected into the main frame and does not accept ping relays from
+  // sub-frames. Sub-frames are intentionally not scanned or filled.
 
   // =========================================================================
   // Field Detection
@@ -470,39 +467,6 @@ export function getInjectKeyIconScript(fieldSelector: string): string {
   if (typeof window.__natstack_af_injectIcon === 'function') {
     window.__natstack_af_injectIcon(el);
   }
-})()`;
-}
-
-/**
- * Content script variant for iframes.
- * Identical logic but uses window.top.postMessage() instead of preload ping,
- * since the preload bridge is only available in the main frame.
- * Runs in the main world (not isolated) via WebFrameMain.executeJavaScript().
- */
-export function getIframeContentScript(): string {
-  // Take the main content script and replace the ping mechanism
-  const mainScript = getContentScript();
-  return mainScript
-    // Replace the preload ping with postMessage to top
-    .replace(
-      "var ping = window.__natstack_autofill ? window.__natstack_autofill.ping : function() {};",
-      "var ping = function() { try { window.top.postMessage({type: '__natstack_af_iframe_ping'}, '*'); } catch(e) {} };",
-    )
-    // Remove the iframe relay listener (not needed in iframes, prevents loops)
-    .replace(
-      /\/\/ Relay pings from iframes[\s\S]*?}\);/,
-      "// (iframe mode — no relay needed)",
-    );
-}
-
-/**
- * Quick scan script for detecting password fields in a frame.
- * Returns true if the frame has login-relevant fields.
- */
-export function getFrameScanScript(): string {
-  return `(function() {
-  return document.querySelectorAll('input[type="password"]').length > 0 ||
-    document.querySelectorAll('input[type="email"], input[autocomplete="username"]').length > 0;
 })()`;
 }
 

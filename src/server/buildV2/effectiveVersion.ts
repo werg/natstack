@@ -57,7 +57,10 @@ export function resolveMainRef(repoPath: string): string {
   if (cached) return cached;
   for (const ref of MAIN_CANDIDATES) {
     try {
-      execFileSync("git", ["rev-parse", "--verify", ref], {
+      // `--end-of-options` prevents a ref that starts with "-" from being
+      // parsed as an option. Do not use plain "--" here: `git rev-parse -- X`
+      // echoes the rev tokens instead of resolving them.
+      execFileSync("git", ["rev-parse", "--verify", "--end-of-options", ref], {
         cwd: repoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
       });
       mainRefCache.set(repoPath, ref);
@@ -73,7 +76,7 @@ export function resolveMainRef(repoPath: string): string {
  */
 export function computeGitTreeHash(repoPath: string, ref?: string): string {
   const resolvedRef = ref ?? resolveMainRef(repoPath);
-  return execFileSync("git", ["rev-parse", `${resolvedRef}^{tree}`], {
+  return execFileSync("git", ["rev-parse", "--verify", "--end-of-options", `${resolvedRef}^{tree}`], {
     cwd: repoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
   }).toString().trim();
 }
@@ -85,7 +88,7 @@ export function computeGitTreeHash(repoPath: string, ref?: string): string {
 export function computeGitTreeHashAsync(repoPath: string, ref?: string): Promise<string> {
   const resolvedRef = ref ?? resolveMainRef(repoPath);
   return new Promise((resolve, reject) => {
-    execFile("git", ["rev-parse", `${resolvedRef}^{tree}`], {
+    execFile("git", ["rev-parse", "--verify", "--end-of-options", `${resolvedRef}^{tree}`], {
       cwd: repoPath, encoding: "utf-8",
     }, (err, stdout) => {
       if (err) reject(err);
@@ -97,8 +100,11 @@ export function computeGitTreeHashAsync(repoPath: string, ref?: string): Promise
 /** Get the commit SHA at a specific ref. Returns null if ref doesn't exist. */
 export function getCommitAt(repoPath: string, ref?: string): string | null {
   const resolvedRef = ref ?? resolveMainRef(repoPath);
+  // `--` separator: if a ref ever ends up with a leading `-`, git would
+  // otherwise interpret it as a flag. Belt-and-braces — refs at this layer
+  // come from PackageGraph dep specs which are already validated.
   try {
-    return execFileSync("git", ["rev-parse", resolvedRef], {
+    return execFileSync("git", ["rev-parse", "--verify", "--end-of-options", resolvedRef], {
       cwd: repoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
     }).toString().trim();
   } catch { return null; }

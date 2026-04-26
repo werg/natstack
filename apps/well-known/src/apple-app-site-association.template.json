@@ -1,0 +1,17 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appIDs": ["{{teamId}}.{{bundleId}}"],
+        "components": [
+          { "/": "/oauth/callback/*", "comment": "OAuth provider callbacks (Codex, Linear, GitHub, etc.)" },
+          { "/": "/oauth/linkback/*", "comment": "OAuth account-linking callbacks" }
+        ]
+      }
+    ]
+  },
+  "webcredentials": {
+    "apps": ["{{teamId}}.{{bundleId}}"]
+  }
+}

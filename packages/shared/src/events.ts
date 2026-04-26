@@ -5,6 +5,8 @@
  * Keep them in sync by importing from this single source of truth.
  */
 
+import type { PendingApproval } from "./approvals.js";
+
 /**
  * Known event names that can be subscribed to.
  */
@@ -25,7 +27,8 @@ export type EventName =
   | "notification:dismiss"
   | "notification:action"
   | "server-connection-changed"
-  | "server-health";
+  | "server-health"
+  | "shell-approval:pending-changed";
 
 /**
  * Action button definition for notifications.
@@ -121,6 +124,7 @@ export interface EventPayloads {
     /** Epoch ms when this sample was captured. */
     sampledAt: number;
   };
+  "shell-approval:pending-changed": { pending: PendingApproval[] };
 }
 
 /**
@@ -144,6 +148,7 @@ export const VALID_EVENT_NAMES: EventName[] = [
   "notification:action",
   "server-connection-changed",
   "server-health",
+  "shell-approval:pending-changed",
 ];
 
 /**

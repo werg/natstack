@@ -130,12 +130,12 @@ describe("ViewManager", () => {
       });
     });
 
-    it("creates a panel view via HTTP subdomain", () => {
+    it("creates a panel view via path-based HTTP URL", () => {
       const view = vm.createView({
         id: "test-panel",
         type: "panel",
         preload: null,
-        url: "http://test-panel.localhost:9100/?token=abc",
+        url: "http://localhost:9100/panels/test-panel/?token=abc",
       });
 
       expect(view).toBeDefined();
@@ -159,7 +159,7 @@ describe("ViewManager", () => {
         id: "test-view",
         type: "panel",
         preload: null,
-        url: "http://test-view.localhost:9100/",
+        url: "http://localhost:9100/panels/test-view/",
       });
 
       expect(() => {
@@ -167,7 +167,7 @@ describe("ViewManager", () => {
           id: "test-view",
           type: "panel",
           preload: null,
-          url: "http://test-view.localhost:9100/",
+          url: "http://localhost:9100/panels/test-view/",
         });
       }).toThrow("View already exists: test-view");
     });

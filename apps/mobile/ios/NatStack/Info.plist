@@ -35,8 +35,17 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<!--
-		CFBundleURLTypes: Register the natstack:// URL scheme for OAuth callbacks.
-		The oauthHandler.ts service listens for natstack://oauth-callback?... deep links.
+		CFBundleURLTypes: registers the `natstack://` custom URL scheme.
+		This is now a TRANSITIONAL FALLBACK only — the primary OAuth
+		callback path is the universal link
+		https://auth.snugenv.com/oauth/callback/<provider>?... declared in
+		NatStack.entitlements (associated-domains). The custom scheme is
+		kept so devices that haven't completed App-Site Association
+		verification don't get locked out (cold-start before AASA fetch,
+		users on networks that block apple-app-site-association.cdn.apple.com).
+		oauthHandler.ts emits `warn` on every custom-scheme hit; once
+		telemetry shows zero fallback usage the entry below can be
+		removed. See docs/audit/08-mobile-supply-chain.md H-2.
 	-->
 	<key>CFBundleURLTypes</key>
 	<array>
@@ -50,15 +59,39 @@
 		</dict>
 	</array>
 	<!--
-		NSAppTransportSecurity: Allow cleartext HTTP for development.
-		In production, remove this block and ensure all server traffic uses HTTPS/WSS.
-		The wildcard domain entry covers *.natstack.example.com subdomains used for
-		panel routing during local development (e.g. via nip.io).
+		NSAppTransportSecurity: ATS is enforced by default. Cleartext is
+		allowed ONLY for the loopback addresses used by `npm run ios`
+		against a local NatStack server. NSAllowsLocalNetworking permits
+		LAN/loopback (no public-internet cleartext) and per-domain
+		exceptions cover the literal hosts the dev server binds to.
+		TODO(security-audit-agent-5): if a developer needs cleartext
+		against another host, add a scoped NSExceptionDomains entry
+		rather than re-enabling NSAllowsArbitraryLoads. Production
+		releases must NOT add public cleartext domains here; the React
+		Native shell talks to the server over wss:// and panel pages
+		over https://.
 	-->
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<key>NSAllowsArbitraryLoads</key>
+		<key>NSAllowsLocalNetworking</key>
 		<true/>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>localhost</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<false/>
+			</dict>
+			<key>127.0.0.1</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<false/>
+			</dict>
+		</dict>
 	</dict>
 </dict>
 </plist>

@@ -29,7 +29,7 @@ function createTestSetup() {
       return { ok: true };
     }),
     getPolicy: vi.fn((service: string) => {
-      if (service === "oauth") return { allowed: ["shell", "panel", "worker"] as CallerKind[] };
+      if (service === "credentials") return { allowed: ["shell", "panel", "worker"] as CallerKind[] };
       if (service === "harness") return { allowed: ["harness", "server", "worker"] as CallerKind[] };
       if (service === "build") return { allowed: ["panel", "shell", "server", "worker"] as CallerKind[] };
       return undefined;
@@ -90,7 +90,7 @@ describe("RpcServer HTTP POST /rpc", () => {
       const res = await fetch(`http://127.0.0.1:${port}/rpc`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ method: "oauth.getToken", args: [] }),
+        body: JSON.stringify({ method: "credentials.listConnections", args: [{}] }),
       });
       expect(res.status).toBe(401);
       const body = await res.json() as { error: string };
@@ -99,8 +99,8 @@ describe("RpcServer HTTP POST /rpc", () => {
 
     it("rejects invalid token", async () => {
       const { status, body } = await postRpc(port, "invalid-token-xxx", {
-        method: "oauth.getToken",
-        args: [],
+        method: "credentials.listConnections",
+        args: [{}],
       });
       expect(status).toBe(401);
       expect(body["error"]).toContain("Invalid token");
@@ -117,8 +117,8 @@ describe("RpcServer HTTP POST /rpc", () => {
 
     it("accepts worker token", async () => {
       const { status, body } = await postRpc(port, setup.workerToken, {
-        method: "oauth.listProviders",
-        args: [],
+        method: "credentials.listConnections",
+        args: [{}],
       });
       expect(status).toBe(200);
       expect(body["result"]).toBeDefined();
@@ -129,31 +129,31 @@ describe("RpcServer HTTP POST /rpc", () => {
 
   describe("service dispatch", () => {
     it("dispatches to correct service and method", async () => {
-      setup.dispatchResults.set("oauth.listProviders", [{ key: "google", provider: "google" }]);
+      setup.dispatchResults.set("credentials.listConnections", [{ providerId: "google", connectionId: "conn-1" }]);
 
       const { body } = await postRpc(port, setup.workerToken, {
-        method: "oauth.listProviders",
-        args: [],
+        method: "credentials.listConnections",
+        args: [{}],
       });
 
-      expect(body["result"]).toEqual([{ key: "google", provider: "google" }]);
-      expect(setup.dispatched[0]!.service).toBe("oauth");
-      expect(setup.dispatched[0]!.method).toBe("listProviders");
+      expect(body["result"]).toEqual([{ providerId: "google", connectionId: "conn-1" }]);
+      expect(setup.dispatched[0]!.service).toBe("credentials");
+      expect(setup.dispatched[0]!.method).toBe("listConnections");
     });
 
     it("passes args to dispatcher", async () => {
       await postRpc(port, setup.workerToken, {
-        method: "oauth.getToken",
-        args: ["google-mail", "conn-1"],
+        method: "credentials.resolveConnection",
+        args: [{ provider: { id: "google-mail", displayName: "Google Mail", apiBase: ["https://example.com"], flows: [] }, connectionId: "conn-1" }],
       });
 
-      expect(setup.dispatched[0]!.args).toEqual(["google-mail", "conn-1"]);
+      expect(setup.dispatched[0]!.args).toEqual([{ provider: { id: "google-mail", displayName: "Google Mail", apiBase: ["https://example.com"], flows: [] }, connectionId: "conn-1" }]);
     });
 
     it("builds correct ServiceContext from worker token", async () => {
       await postRpc(port, setup.workerToken, {
-        method: "oauth.listProviders",
-        args: [],
+        method: "credentials.listConnections",
+        args: [{}],
       });
 
       expect(setup.dispatched[0]!.ctx).toEqual({
@@ -178,8 +178,8 @@ describe("RpcServer HTTP POST /rpc", () => {
       (setup.dispatcher.dispatch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("token expired"));
 
       const { status, body } = await postRpc(port, setup.workerToken, {
-        method: "oauth.getToken",
-        args: ["google-mail", "conn-1"],
+        method: "credentials.resolveConnection",
+        args: [{ provider: { id: "google-mail", displayName: "Google Mail", apiBase: ["https://example.com"], flows: [] }, connectionId: "conn-1" }],
       });
 
       // HTTP 200, error in body (RPC convention)
@@ -201,10 +201,10 @@ describe("RpcServer HTTP POST /rpc", () => {
       expect(setup.dispatched).toHaveLength(0);
     });
 
-    it("allows worker calling oauth service", async () => {
+    it("allows worker calling credentials service", async () => {
       await postRpc(port, setup.workerToken, {
-        method: "oauth.listProviders",
-        args: [],
+        method: "credentials.listConnections",
+        args: [{}],
       });
 
       expect(setup.dispatched).toHaveLength(1);
@@ -252,8 +252,8 @@ describe("RpcServer HTTP POST /rpc", () => {
     it("treats targetId=main as direct dispatch", async () => {
       await postRpc(port, setup.workerToken, {
         targetId: "main",
-        method: "oauth.listProviders",
-        args: [],
+        method: "credentials.listConnections",
+        args: [{}],
       });
 
       expect(setup.dispatched).toHaveLength(1);

@@ -6,4 +6,4 @@ export default defineConfig({
     environment: "node",
     include: ["src/**/*.test.ts"],
   },
-});
+} as Parameters<typeof defineConfig>[0]);

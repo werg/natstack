@@ -25,29 +25,19 @@ Panels are served over HTTP. No extension is needed to view them. Navigate
 directly to:
 
 ```
-http://{contextSubdomain}.localhost:{port}/{source}/
+http://localhost:{port}/{source}/?contextId={contextId}
 ```
 
 For example:
 
 ```
-http://ctx-abc.localhost:5173/panels/my-app/
+http://localhost:5173/panels/my-app/?contextId=ctx-abc
 ```
 
-### Subdomain-Based Isolation
+### Context-Based Isolation
 
-Each panel runs on its own `*.localhost` subdomain. Modern browsers (Chrome 73+,
-Firefox 84+) resolve `*.localhost` to `127.0.0.1` per the WHATWG URL Standard.
-Each subdomain gets a distinct browser origin, giving panels:
-
-- Separate **localStorage** and **IndexedDB**
-- Separate **cookies** and **service workers**
-
-This mirrors Electron's `persist:{contextId}` partition behavior.
-
-> **Note:** Some corporate DNS configurations may interfere with `*.localhost`
-> resolution. If panels fail to load, verify that `*.localhost` resolves to
-> `127.0.0.1` in your environment.
+Panels use path-based URLs. The `contextId` query parameter identifies the
+storage context used by the host shell and runtime services.
 
 ---
 
@@ -71,7 +61,7 @@ The Chrome extension requires:
 - `debugger` -- to relay CDP commands via `chrome.debugger`
 - `nativeMessaging` -- for server auto-discovery
 - `storage` -- to persist settings in `chrome.storage.local`
-- Host permissions for `http://*.localhost/*` and `http://127.0.0.1/*`
+- Host permissions for `http://localhost/*` and `http://127.0.0.1/*`
 
 ---
 
@@ -123,7 +113,6 @@ layer is swapped transparently.
 ### Panels show a blank page or network error
 
 - Verify the server is running with `--serve-panels`
-- Ensure `*.localhost` resolves to `127.0.0.1` (default on modern browsers)
 - Check the browser console for CORS or WebSocket errors
 
 ### Server won't start

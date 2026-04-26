@@ -1,0 +1,23 @@
+diff --git a/lib/set.cc b/lib/set.cc
+index a87d5dafaca674851f7e5a560b21e1009c5cf0dc..0f071a06484a08d7c459f5e14987b4c9cfe51d47 100644
+--- a/lib/set.cc
++++ b/lib/set.cc
+@@ -330,8 +330,8 @@ static const char setDeprecationMessage[] = "BMP patterns aren't supported by no
+ 
+ NAN_METHOD(WrappedRE2Set::New)
+ {
+-	auto context = Nan::GetCurrentContext();
+-	auto isolate = context->GetIsolate();
++	auto isolate = info.GetIsolate();
++	auto context = isolate->GetCurrentContext();
+ 
+ 	if (!info.IsConstructCall())
+ 	{
+@@ -340,7 +340,6 @@ NAN_METHOD(WrappedRE2Set::New)
+ 		{
+ 			parameters[i] = info[i];
+ 		}
+-		auto isolate = context->GetIsolate();
+ 		auto addonData = getAddonData(isolate);
+ 		if (!addonData) return;
+ 		auto maybeNew = Nan::NewInstance(Nan::GetFunction(addonData->re2SetTpl.Get(isolate)).ToLocalChecked(), parameters.size(), &parameters[0]);

@@ -10,13 +10,69 @@
 
 import { createServer, request, type Server as HttpServer, type IncomingMessage, type ServerResponse } from "http";
 import { createServer as createHttpsServer } from "https";
+import { randomBytes } from "crypto";
 import * as fs from "fs";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Duplex } from "stream";
 import { createDevLogger } from "@natstack/dev-log";
+import { constantTimeStringEqual } from "@natstack/shared/tokenManager";
 import type { RouteRegistry, LookupResult } from "./routeRegistry.js";
 
 const log = createDevLogger("Gateway");
+
+// ---------------------------------------------------------------------------
+// Per-upstream gateway credentials (audit finding #32).
+//
+// Wave-1 stripped inbound `Authorization` before forwarding to workerd /
+// git upstreams (so panel/admin tokens never leak into workerd-served
+// code). What was missing: an upstream-scoped credential that lets the
+// upstream attribute the request to "the gateway" rather than "anonymous
+// loopback caller". We mint a fresh random token per upstream at gateway
+// construction time and stamp it onto every forwarded request.
+//
+// The receiving side (workerd entrypoint, git server) must validate the
+// bearer matches its expected token. Wiring that validation into workerd
+// and the git server is OUT of this agent's file scope.
+//
+// TODO(security-audit-wave2-agent-1): wire WORKERD_GATEWAY_TOKEN into
+// `src/server/workerdManager.ts` so that the workerd entrypoint refuses
+// requests whose Authorization bearer does not match the env-injected
+// token. Pass via `WORKERD_GATEWAY_TOKEN` env binding on workerd start.
+// TODO(security-audit-wave2-agent-1): wire GIT_GATEWAY_TOKEN into
+// `src/server/gitServer.ts` so the git server validates the bearer
+// before serving any /_git/ request. Until that lands, the bearer is
+// stamped but unverified.
+// ---------------------------------------------------------------------------
+
+/**
+ * Headers that must NEVER be forwarded from inbound gateway requests to
+ * upstream workerd / git proxies (audit finding #32). These carry
+ * gateway-level authority that the upstream must not see; the upstream
+ * gets its own narrow credential injected (or, for git, no credential at
+ * all — git auth is handled by the git server's own bearer scheme).
+ *
+ * `x-natstack-*` covers `x-natstack-token` (admin) and any future
+ * NatStack-internal admin-bearing headers.
+ */
+const STRIP_UPSTREAM_HEADERS = new Set<string>([
+  "authorization",
+  "cookie",
+  "proxy-authorization",
+]);
+
+function stripUpstreamHeaders(
+  headers: IncomingMessage["headers"],
+): Record<string, string | string[]> {
+  const out: Record<string, string | string[]> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    if (v === undefined) continue;
+    const lower = k.toLowerCase();
+    if (STRIP_UPSTREAM_HEADERS.has(lower)) continue;
+    if (lower.startsWith("x-natstack-")) continue;
+    out[k] = v as string | string[];
+  }
+  return out;
+}
 
 /** Handler interface for PanelHttpServer (in-process dispatch) */
 export interface PanelHttpHandler {
@@ -41,7 +97,7 @@ export interface GatewayDeps {
   gitPort?: number;
   /** Workerd port for /_w/ path (reverse proxy) */
   workerdPort?: number | null;
-  /** External hostname for subdomain extraction */
+  /** External hostname for generated public URLs and origin checks */
   externalHost: string;
   /** Bind host (default "0.0.0.0") */
   bindHost?: string;
@@ -62,15 +118,36 @@ export class Gateway {
   private server: HttpServer | null = null;
   private wss: WebSocketServer | null = null;
   private deps: GatewayDeps;
+  /** Per-upstream gateway-internal bearer tokens (audit #32). Minted once at
+   *  construction; stamped onto every forwarded request after inbound auth
+   *  headers are stripped. */
+  private readonly workerdGatewayToken: string;
+  private readonly gitGatewayToken: string;
 
   constructor(deps: GatewayDeps) {
     this.deps = deps;
+    this.workerdGatewayToken = randomBytes(32).toString("hex");
+    this.gitGatewayToken = randomBytes(32).toString("hex");
   }
+
+  /** Bearer token the gateway uses when calling workerd. The workerd
+   *  entrypoint should be configured to require this exact token. */
+  getWorkerdGatewayToken(): string {
+    return this.workerdGatewayToken;
+  }
+
+  /** Bearer token the gateway uses when calling the git server. */
+  getGitGatewayToken(): string {
+    return this.gitGatewayToken;
+  }
+
 
   async start(port: number): Promise<number> {
     const { rpcHandler, panelHttpHandler, gitPort, workerdPort, tlsCert, tlsKey } = this.deps;
 
     const { healthProvider, adminToken, routeRegistry } = this.deps;
+    const workerdToken = this.workerdGatewayToken;
+    const gitToken = this.gitGatewayToken;
 
     const requestHandler = (req: IncomingMessage, res: ServerResponse) => {
       const url = req.url ?? "/";
@@ -81,14 +158,23 @@ export class Gateway {
       // uses — keeps the admin token out of URLs / proxy logs).
       if (req.method === "GET" && (url === "/healthz" || url.startsWith("/healthz?"))) {
         let detailed = false;
+        // Default-deny: the detailed branch is only reachable when the host
+        // configured an admin token AND the caller presents the matching
+        // token. No token configured ⇒ no detailed branch (audit #25).
         if (adminToken) {
           const qIdx = url.indexOf("?");
           if (qIdx !== -1) {
             const params = new URLSearchParams(url.slice(qIdx + 1));
-            if (params.get("token") === adminToken) detailed = true;
+            const qToken = params.get("token");
+            if (qToken && constantTimeStringEqual(qToken, adminToken)) {
+              detailed = true;
+            }
           }
           const headerToken = req.headers["x-natstack-token"];
-          if (typeof headerToken === "string" && headerToken === adminToken) detailed = true;
+          if (typeof headerToken === "string" && headerToken.length > 0
+              && constantTimeStringEqual(headerToken, adminToken)) {
+            detailed = true;
+          }
         }
         const body = healthProvider
           ? healthProvider(detailed)
@@ -100,7 +186,7 @@ export class Gateway {
 
       // /_w/ → workerd reverse proxy
       if (url.startsWith("/_w/") && workerdPort) {
-        return proxyRequest(req, res, workerdPort, url);
+        return proxyRequest(req, res, workerdPort, url, workerdToken);
       }
 
       // /_r/ → route registry dispatch (worker + service HTTP routes)
@@ -112,6 +198,7 @@ export class Gateway {
           routeRegistry,
           workerdPort,
           adminToken,
+          workerdToken,
         );
         if (handled) return;
         // Fall through to 404 below — no panel fallback for `/_r/` misses.
@@ -120,7 +207,7 @@ export class Gateway {
       // /_git/ → git server reverse proxy
       if (url.startsWith("/_git/") && gitPort) {
         const gitPath = url.slice(5); // strip /_git prefix
-        return proxyRequest(req, res, gitPort, gitPath);
+        return proxyRequest(req, res, gitPort, gitPath, gitToken);
       }
 
       // POST /rpc → RPC handler (in-process)
@@ -147,11 +234,26 @@ export class Gateway {
       this.server = createServer(requestHandler);
     }
 
-    // WebSocket upgrade routing
+    // WebSocket upgrade routing. No payload cap is configured here so the
+    // gateway preserves existing WebSocket behavior for large developer flows.
     this.wss = new WebSocketServer({ noServer: true });
+
+    const externalHost = this.deps.externalHost;
+    const allowedOrigins = buildOriginAllowList(externalHost);
 
     this.server.on("upgrade", (req, socket, head) => {
       const url = req.url ?? "/";
+
+      // Origin allow-list (audit #30). Bearer auth still gates the actual
+      // RPC, but rejecting cross-site browser connects defends against the
+      // case where a malicious local web page learns the loopback port and
+      // tries to ride an existing token via XSS.
+      if (!isOriginAllowed(req.headers["origin"], allowedOrigins)) {
+        log.warn(`WS upgrade rejected: disallowed Origin ${String(req.headers["origin"])}`);
+        socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
 
       // /rpc → RPC WebSocket (in-process via WSS)
       if ((url === "/rpc" || url.startsWith("/rpc?")) && rpcHandler) {
@@ -163,7 +265,7 @@ export class Gateway {
 
       // /_w/ → workerd WebSocket proxy
       if (url.startsWith("/_w/") && workerdPort) {
-        return proxyUpgrade(req, socket, head, workerdPort);
+        return proxyUpgrade(req, socket, head, workerdPort, workerdToken);
       }
 
       // /_r/ → route registry dispatch (worker + service WS routes)
@@ -176,6 +278,7 @@ export class Gateway {
           routeRegistry,
           workerdPort,
           adminToken,
+          workerdToken,
         );
         if (handled) return;
         // Miss → fall through to destroy below.
@@ -220,6 +323,79 @@ export class Gateway {
 }
 
 // ===========================================================================
+// Origin allow-list helpers (audit finding #30)
+// ===========================================================================
+
+/**
+ * Build the set of allowed Origin header values for incoming WS upgrades.
+ * Empty Origin is treated separately by `isOriginAllowed` (Node clients,
+ * curl, the Electron preload, etc., do not send Origin).
+ *
+ * The list intentionally does not contain a port: we accept any port the
+ * caller used (the gateway is loopback-bound on the dev host; in remote
+ * mode the externalHost resolves to a fixed published port).
+ *
+ * Override / extension: set `NATSTACK_WS_ALLOWED_ORIGINS` to a comma list
+ * of additional origins (e.g. `http://my-dev-host:5173,chrome-extension://xyz`).
+ */
+function buildOriginAllowList(externalHost: string): { exact: Set<string>; suffix: Set<string> } {
+  const exact = new Set<string>();
+  const suffix = new Set<string>();
+  // Bare host on http/https.
+  exact.add(`http://${externalHost}`);
+  exact.add(`https://${externalHost}`);
+  // Loopback dev origins.
+  for (const h of ["localhost", "127.0.0.1", "[::1]"]) {
+    exact.add(`http://${h}`);
+    exact.add(`https://${h}`);
+  }
+  // Custom panel/extension origins via env.
+  const extra = process.env["NATSTACK_WS_ALLOWED_ORIGINS"];
+  if (extra) {
+    for (const raw of extra.split(",")) {
+      const v = raw.trim();
+      if (v) exact.add(v);
+    }
+  }
+  return { exact, suffix };
+}
+
+/**
+ * Decide whether an inbound WS upgrade Origin is allowed.
+ *
+ * Allow:
+ *   (a) absent / empty Origin (Node clients, Electron preload that does not
+ *       set Origin on direct ws connects, native CDP libraries),
+ *   (b) literal `null` (some `about:blank` / sandboxed iframe contexts),
+ *   (c) origin scheme://host[:port] whose host matches an allowed host or
+ *       an allowed host.
+ */
+function isOriginAllowed(
+  origin: string | string[] | undefined,
+  allowed: { exact: Set<string>; suffix: Set<string> },
+): boolean {
+  if (origin === undefined) return true;
+  const value = Array.isArray(origin) ? origin[0] : origin;
+  if (value === undefined || value === "") return true;
+  if (value === "null") return true;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  const originBase = `${parsed.protocol}//${parsed.host}`;
+  const originNoPort = `${parsed.protocol}//${parsed.hostname}`;
+  if (allowed.exact.has(originBase)) return true;
+  if (allowed.exact.has(originNoPort)) return true;
+  for (const suffix of allowed.suffix) {
+    if (parsed.hostname.endsWith(suffix.replace(/^\./, ""))) return true;
+    if (parsed.hostname === suffix.replace(/^\./, "")) return true;
+  }
+  return false;
+}
+
+// ===========================================================================
 // Reverse proxy helpers (for external processes: git, workerd)
 // ===========================================================================
 
@@ -228,21 +404,32 @@ function proxyRequest(
   res: ServerResponse,
   targetPort: number,
   targetPath: string,
+  upstreamToken: string,
   hostHeader?: string,
 ): void {
+  // Strip inbound auth/cookie/X-NatStack-* before forwarding (audit #32).
+  // Workerd-served code is untrusted-by-design; it must never see the
+  // gateway's admin token, the panel's bearer, or session cookies. After
+  // stripping, stamp a per-upstream gateway-internal bearer so the
+  // upstream can attribute the request to "the gateway".
+  const safeHeaders = stripUpstreamHeaders(req.headers);
+  safeHeaders["authorization"] = `Bearer ${upstreamToken}`;
+  if (hostHeader) safeHeaders["host"] = hostHeader;
+
   const proxyReq = request(
     {
       hostname: "127.0.0.1",
       port: targetPort,
       path: targetPath,
       method: req.method,
-      headers: {
-        ...req.headers,
-        ...(hostHeader ? { host: hostHeader } : {}),
-      },
+      headers: safeHeaders,
     },
     (proxyRes) => {
       res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
+      proxyRes.on("error", (err) => {
+        log.warn(`Proxy response stream error: ${err.message}`);
+        try { res.end(); } catch { /* already closed */ }
+      });
       proxyRes.pipe(res);
     },
   );
@@ -262,10 +449,15 @@ function proxyUpgrade(
   socket: Duplex,
   head: Buffer,
   targetPort: number,
+  upstreamToken: string,
 ): void {
+  // Strip inbound auth/cookie/X-NatStack-* (audit #32). See proxyRequest.
+  // After stripping, stamp the per-upstream gateway bearer.
+  const safeHeaders = stripUpstreamHeaders(req.headers);
+  safeHeaders["authorization"] = `Bearer ${upstreamToken}`;
   const { connect } = require("net") as typeof import("net");
   const targetSocket = connect(targetPort, "127.0.0.1", () => {
-    const headers = Object.entries(req.headers)
+    const headers = Object.entries(safeHeaders)
       .filter(([, v]) => v !== undefined)
       .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
       .join("\r\n");
@@ -312,9 +504,13 @@ function enforceAuth(
   adminToken: string | undefined,
 ): boolean {
   if (lookup.auth !== "admin-token") return true;
+  // Default-deny when no admin token is configured (audit #25): without a
+  // token there is no way to authenticate, so the route is unreachable.
   if (!adminToken) return false;
   const presented = extractRouteToken(url, req);
-  return presented === adminToken;
+  if (!presented) return false;
+  // Constant-time compare (audit #33).
+  return constantTimeStringEqual(presented, adminToken);
 }
 
 /**
@@ -350,6 +546,7 @@ function handleRouteRequest(
   routeRegistry: RouteRegistry,
   workerdPort: number | null | undefined,
   adminToken: string | undefined,
+  workerdToken: string,
 ): boolean {
   const qIdx = url.indexOf("?");
   const pathOnly = qIdx === -1 ? url : url.slice(0, qIdx);
@@ -392,7 +589,7 @@ function handleRouteRequest(
     return true;
   }
   const targetPath = buildWorkerTargetPath(result, url);
-  proxyRequest(req, res, workerdPort, targetPath);
+  proxyRequest(req, res, workerdPort, targetPath, workerdToken);
   return true;
 }
 
@@ -407,6 +604,7 @@ function handleRouteUpgrade(
   routeRegistry: RouteRegistry,
   workerdPort: number | null | undefined,
   adminToken: string | undefined,
+  workerdToken: string,
 ): boolean {
   const qIdx = url.indexOf("?");
   const pathOnly = qIdx === -1 ? url : url.slice(0, qIdx);
@@ -443,6 +641,6 @@ function handleRouteUpgrade(
   }
   // Rewrite req.url so the upstream (workerd) sees the rewritten path.
   req.url = buildWorkerTargetPath(result, url);
-  proxyUpgrade(req, socket, head, workerdPort);
+  proxyUpgrade(req, socket, head, workerdPort, workerdToken);
   return true;
 }

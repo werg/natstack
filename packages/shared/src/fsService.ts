@@ -23,9 +23,6 @@ const log = createDevLogger("FsService");
 /** Idle timeout for open file handles (5 minutes). */
 const HANDLE_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
-/** Maximum bytes for a single handleRead call (64 MB). */
-const MAX_READ_LENGTH = 64 * 1024 * 1024;
-
 /** Tracked file handle with cleanup metadata. */
 interface TrackedHandle {
   handle: NodeFileHandle;
@@ -146,22 +143,16 @@ export class FsService {
     this.callerContextMap.set(callerId, contextId);
   }
 
+  getCallerContext(callerId: string): string | undefined {
+    return this.callerContextMap.get(callerId);
+  }
+
   unregisterCallerContext(callerId: string): void {
     this.callerContextMap.delete(callerId);
   }
 
   updateCallerContext(callerId: string, contextId: string): void {
     this.callerContextMap.set(callerId, contextId);
-  }
-
-  /** @deprecated Use registerCallerContext */
-  registerPanelContext(panelId: string, contextId: string): void {
-    this.registerCallerContext(panelId, contextId);
-  }
-
-  /** @deprecated Use unregisterCallerContext */
-  unregisterPanelContext(panelId: string): void {
-    this.unregisterCallerContext(panelId);
   }
 
   // =========================================================================
@@ -171,11 +162,6 @@ export class FsService {
   /** Close all open file handles for a given caller. */
   closeHandlesForCaller(callerId: string): void {
     this._closeHandlesImpl(callerId);
-  }
-
-  /** @deprecated Use closeHandlesForCaller */
-  closeHandlesForPanel(panelId: string): void {
-    this._closeHandlesImpl(panelId);
   }
 
   private _closeHandlesImpl(callerId: string): void {
@@ -266,10 +252,41 @@ export class FsService {
     // `bindContext` is special: it registers the caller→context mapping and
     // therefore must run *before* resolveContextRoot (which would otherwise
     // throw "No context registered" for an unbound caller).
+    //
+    // Audit finding #39 (filesystem report) / #7 (cross-cutting summary):
+    // previously, any panel/worker could call `bindContext("<another-panel's-contextId>")`
+    // and pivot its fs.* sandbox to the other panel's folder.
+    //
+    // Hardening: require the caller to already have a context registered
+    // (panel/worker hosts call `registerCallerContext` at panel/worker
+    // creation), and only allow re-binding to that same contextId. This
+    // collapses bindContext to an idempotent no-op when invoked legitimately
+    // (panel re-init), and rejects every cross-pivot attempt.
+    //
+    // For server / shell callers (which manage contexts on behalf of others)
+    // we leave the legacy behaviour: those caller kinds aren't normally
+    // routed through fs.bindContext, but if they are we trust them.
     if (method === "bindContext") {
       const contextId = rawArgs[0];
       if (typeof contextId !== "string" || contextId.length === 0) {
         throw new Error("bindContext requires a non-empty contextId string");
+      }
+      if (ctx.callerKind === "panel" || ctx.callerKind === "worker") {
+        const existing = this.callerContextMap.get(ctx.callerId);
+        if (!existing) {
+          throw new Error(
+            `bindContext denied: caller ${ctx.callerId} has no host-registered context. ` +
+              `Panels/workers cannot self-register a context.`,
+          );
+        }
+        if (existing !== contextId) {
+          throw new Error(
+            `bindContext denied: caller ${ctx.callerId} cannot re-bind from ` +
+              `context ${existing} to ${contextId} (cross-context pivot blocked).`,
+          );
+        }
+        // Idempotent — no-op (already registered to the same contextId).
+        return;
       }
       this.registerCallerContext(ctx.callerId, contextId);
       return;
@@ -420,6 +437,13 @@ export class FsService {
         return target;
       }
 
+      // TODO(audit #39): `symlink` and `chown` should NOT be reachable from
+      // panel/worker callers. The `fs` service `policy.allowed` is declared
+      // in `src/server/panelRuntimeRegistration.ts` (see fsServiceInstance
+      // registration). Remove `panel` from the allowed list there — and ideally
+      // remove `symlink` / `chown` from the methods table entirely so panels
+      // cannot construct sandbox-escape primitives (TOCTOU on symlink races,
+      // privilege weirdness on setgid dirs).
       case "symlink": {
         // Validate that the target resolves within the context root
         const target = args[0] as string;
@@ -469,8 +493,8 @@ export class FsService {
       case "handleRead": {
         const tracked = this.getTrackedHandle(args[0] as number, panelId);
         const length = args[1] as number;
-        if (length < 0 || length > MAX_READ_LENGTH) {
-          throw new Error(`Read length out of range (max ${MAX_READ_LENGTH})`);
+        if (length < 0) {
+          throw new Error(`Read length out of range`);
         }
         const position = args[2] as number | null;
         const buf = Buffer.alloc(length);
@@ -517,11 +541,17 @@ export class FsService {
           throw new Error("mktemp prefix must be a string when provided");
         }
         // Normalize prefix: strip any path separators so callers can't escape
-        // `.tmp/` by passing e.g. "../foo".
-        const safePrefix = (prefix ?? "tmp").replace(/[\\/]/g, "_");
+        // `.tmp/` by passing e.g. "../foo". Audit finding #20 (filesystem
+        // report): strip leading dots so callers cannot create .htaccess /
+        // .DS_Store / other hidden-file conventions inside `.tmp/`.
+        let safePrefix = (prefix ?? "tmp").replace(/[\\/]/g, "_").replace(/^\.+/, "");
+        if (safePrefix.length === 0) safePrefix = "tmp";
         const tmpDir = path.join(root, ".tmp");
         await fs.mkdir(tmpDir, { recursive: true });
-        const random = randomBytes(8).toString("hex");
+        // Audit finding #34: 16 bytes of crypto-grade entropy in the suffix
+        // (was already crypto.randomBytes(8); widened to 16 to reduce
+        // brute-force pre-create races).
+        const random = randomBytes(16).toString("hex");
         const filename = `${safePrefix}-${random}`;
         // Return path relative to context root (with leading `/`) so it
         // matches the format other fs methods accept.

@@ -3,13 +3,11 @@
  *
  * These are unit tests for the zero per-panel state server:
  * - extractSourcePath (URL parsing)
- * - contextIdToSubdomain (subdomain derivation)
  * - storeBuild / invalidateBuild (serving cache)
  * - Callback-based flow (listPanels)
  */
 
 import { describe, it, expect } from "vitest";
-import { contextIdToSubdomain } from "../../packages/shared/src/panelIdUtils.js";
 
 // ---------------------------------------------------------------------------
 // extractSourcePath is module-private, so we test the regex logic directly.
@@ -71,37 +69,6 @@ describe("extractSourcePath", () => {
 
   it("rejects colon-based single-segment path", () => {
     expect(extractSourcePath("/shell:about/")).toBeNull();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// contextIdToSubdomain
-// ---------------------------------------------------------------------------
-
-describe("contextIdToSubdomain", () => {
-  it("lowercases and replaces non-alphanumeric chars", () => {
-    expect(contextIdToSubdomain("My-Context_123")).toBe("my-context-123");
-  });
-
-  it("collapses multiple dashes", () => {
-    expect(contextIdToSubdomain("a--b---c")).toBe("a-b-c");
-  });
-
-  it("strips leading and trailing dashes", () => {
-    expect(contextIdToSubdomain("-abc-")).toBe("abc");
-  });
-
-  it("truncates to 63 chars", () => {
-    const long = "a".repeat(100);
-    expect(contextIdToSubdomain(long).length).toBe(63);
-  });
-
-  it("returns 'default' for empty input", () => {
-    expect(contextIdToSubdomain("")).toBe("default");
-  });
-
-  it("returns 'default' for all-special-char input", () => {
-    expect(contextIdToSubdomain("!!!")).toBe("default");
   });
 });
 

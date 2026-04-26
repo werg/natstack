@@ -24,6 +24,21 @@ import { WorkspaceTreeManager } from "./git/workspaceTree.js";
 const DEFAULT_GIT_SERVER_PORT = 63524;
 
 /**
+ * Strict allow-list for user-controlled git refs / branches / paths that flow
+ * into `spawn("git", [...args])`. Refs starting with "-" would be parsed as
+ * git options (e.g. `--upload-pack=…`, `--exec=…`). We reject them and any
+ * char outside `[A-Za-z0-9._/@-]`. This is a subset of git's full ref
+ * grammar — sufficient for our use cases (branch names, tags, panel paths).
+ */
+const SAFE_GIT_REF_RE = /^[A-Za-z0-9._/@-]+$/;
+function assertSafeGitRef(ref: string, label = "ref"): string {
+  if (!ref || ref.startsWith("-") || !SAFE_GIT_REF_RE.test(ref)) {
+    throw new Error(`Invalid ${label}: ${ref}`);
+  }
+  return ref;
+}
+
+/**
  * Structured push event emitted after a git push is accepted.
  */
 export interface GitPushEvent {
@@ -701,10 +716,17 @@ export class GitServer {
       throw new Error(`Invalid repo path: ${repoPath}`);
     }
 
+    // Strict ref validation + `--` separator: a ref beginning with `-` would
+    // otherwise be consumed as a git option.
+    assertSafeGitRef(ref, "ref");
+    const safeLimit = Number.isFinite(limit) && limit > 0 && limit <= 10000
+      ? Math.floor(limit)
+      : 30;
+
     const absolutePath = this.toAbsolutePath(repoPath);
 
     const stdout = await this.runGit(
-      ["log", ref, `-${limit}`, "--format=%H|%s|%an|%at"],
+      ["log", `-${safeLimit}`, "--format=%H|%s|%an|%at", "--end-of-options", ref, "--"],
       absolutePath
     );
 
@@ -755,9 +777,10 @@ export class GitServer {
     }
 
     const targetRef = ref ?? "HEAD";
+    assertSafeGitRef(targetRef, "ref");
 
     try {
-      const result = await this.runGit(["rev-parse", targetRef], absolutePath);
+      const result = await this.runGit(["rev-parse", "--verify", "--end-of-options", targetRef], absolutePath);
       return result.trim();
     } catch (error) {
       // Try fallback refs for common branch name variations
@@ -773,7 +796,9 @@ export class GitServer {
 
       for (const candidate of candidates) {
         try {
-          const result = await this.runGit(["rev-parse", candidate], absolutePath);
+          // candidates are derived from the (already validated) targetRef plus
+          // hard-coded prefixes — they cannot start with `-`.
+          const result = await this.runGit(["rev-parse", "--verify", "--end-of-options", candidate], absolutePath);
           return result.trim();
         } catch {
           // continue to next candidate

@@ -9,7 +9,7 @@
  */
 
 import { createHttpRpcBridge } from "../shared/httpRpcBridge.js";
-import { createOAuthClient, type OAuthClient } from "../shared/oauth.js";
+import { createCredentialClient, type CredentialClient } from "../shared/credentials.js";
 import { createNotificationClient, type NotificationClient } from "../shared/notifications.js";
 import { createDbClient } from "../shared/database.js";
 import { createRpcFs } from "../shared/rpcFs.js";
@@ -121,7 +121,7 @@ export abstract class DurableObjectBase {
 
   private _schemaReady = false;
   private _rpc: (RpcBridge & { handleIncomingPost(body: unknown): Promise<unknown> }) | null = null;
-  private _oauth: OAuthClient | null = null;
+  private _credentials: CredentialClient | null = null;
   private _notifications: NotificationClient | null = null;
   private _db: DbClient | null = null;
   private _fs: RuntimeFs | null = null;
@@ -260,9 +260,9 @@ export abstract class DurableObjectBase {
   }
 
   /** OAuth client for token access */
-  protected get oauth(): OAuthClient {
-    if (!this._oauth) this._oauth = createOAuthClient(this.rpc);
-    return this._oauth;
+  protected get credentials(): CredentialClient {
+    if (!this._credentials) this._credentials = createCredentialClient(this.rpc);
+    return this._credentials;
   }
 
   /** Notification client for shell notifications */
@@ -433,7 +433,7 @@ export abstract class DurableObjectBase {
     this.deleteStateValue("__parentId");
     this.deleteStateValue("__instanceId");
     this._rpc = null;
-    this._oauth = null;
+    this._credentials = null;
     this._notifications = null;
     this._db = null;
     this._fs = null;

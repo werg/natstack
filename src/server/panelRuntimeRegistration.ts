@@ -13,6 +13,7 @@ import type { Workspace, WorkspaceConfig } from "@natstack/shared/workspace/type
 import type { GitServer } from "@natstack/git-server";
 import type { CentralDataManager } from "@natstack/shared/centralData";
 import type { HostConfig } from "@natstack/shared/hostConfig";
+import type { CodeIdentityResolver } from "./services/codeIdentityResolver.js";
 
 export interface CommonDeps {
   container: ServiceContainer;
@@ -30,6 +31,8 @@ export interface CommonDeps {
   requestRelaunch?: (name: string) => void;
   /** IPC proxy: fetch workspace list from Electron main when centralData is null. */
   requestWorkspaceList?: () => Promise<unknown[]>;
+  codeIdentityResolver?: Pick<CodeIdentityResolver, "upsertCallerIdentity" | "unregisterCaller">;
+  getEffectiveVersion?: (source: string) => Promise<string | undefined>;
 }
 
 export async function registerPanelServices(deps: CommonDeps): Promise<void> {
@@ -88,6 +91,8 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
             getRpcPort,
             workerdPort: wkrdPort,
             urlConfig,
+            codeIdentityResolver: deps.codeIdentityResolver,
+            getEffectiveVersion: deps.getEffectiveVersion,
           }),
         };
       },
@@ -157,31 +162,11 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
 
       const graph = buildSystem.getGraph();
       const panelNodes = graph.allNodes().filter((n) => n.kind === "panel");
-      const sanitize = (s: string) =>
-        s.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
-      const rawEntries = panelNodes.map((n) => ({
-        subdomain: sanitize(n.relativePath.split("/").pop() ?? n.relativePath) || "panel",
+      const entries = panelNodes.map((n) => ({
         source: n.relativePath,
         name: n.manifest.title ?? n.name,
       }));
-      const counts = new Map<string, number>();
-      for (const entry of rawEntries) counts.set(entry.subdomain, (counts.get(entry.subdomain) ?? 0) + 1);
-      for (const entry of rawEntries) {
-        if ((counts.get(entry.subdomain) ?? 0) > 1) entry.subdomain = sanitize(entry.source);
-      }
-      const assigned = new Set<string>();
-      for (const entry of rawEntries) {
-        let candidate = entry.subdomain.slice(0, 63).replace(/-$/, "");
-        let suffix = 1;
-        while (assigned.has(candidate)) {
-          const tag = `-${suffix}`;
-          candidate = entry.subdomain.slice(0, 63 - tag.length).replace(/-$/, "") + tag;
-          suffix++;
-        }
-        entry.subdomain = candidate;
-        assigned.add(candidate);
-      }
-      panelHttpServer.populateSourceRegistry(rawEntries);
+      panelHttpServer.populateSourceRegistry(entries);
 
       panelHttpServer.setCallbacks({
         listPanels: () => [],
@@ -219,6 +204,13 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
         const bindContextSchema = { args: z.tuple([z.string()]) };
         // `mktemp` takes an optional prefix string; no leading path arg.
         const mktempSchema = { args: z.tuple([z.string().optional()]) };
+        // Per-method policy for sandbox-escape primitives. `symlink` and
+        // `chown` were Wave-1 audit findings (#38, #39): even though the
+        // implementation in `fsService.ts` was hardened (sandbox-target
+        // resolution, lstat parent walk), exposing them to `panel` /
+        // `worker` callers gives attackers a TOCTOU primitive. Restrict
+        // both to `shell` only — internal server callers needing these
+        // ops can bypass the dispatcher.
         return {
           name: "fs",
           description: "Per-context filesystem operations (sandboxed to context folder)",
@@ -230,6 +222,8 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
             close: fsMethodSchema, read: fsMethodSchema, write: fsMethodSchema,
             bindContext: bindContextSchema,
             mktemp: mktempSchema,
+            symlink: { ...fsMethodSchema, policy: { allowed: ["shell"] } },
+            chown: { ...fsMethodSchema, policy: { allowed: ["shell"] } },
           },
           handler: async (ctx, method, serviceArgs) => {
             return handleFsCall(fsServiceInstance, ctx, method, serviceArgs as unknown[]);

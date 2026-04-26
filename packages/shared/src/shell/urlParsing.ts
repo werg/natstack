@@ -53,7 +53,7 @@ function parseUrlLike(url: string): ParsedUrlLike | null {
 }
 
 /**
- * Check if a URL targets a managed host (with or without explicit port).
+ * Check if a URL targets the managed host (with or without explicit port).
  *
  * @param url - The URL to check
  * @param externalHost - The managed host domain (e.g. "natstack.example.com")
@@ -61,7 +61,7 @@ function parseUrlLike(url: string): ParsedUrlLike | null {
 export function isManagedHost(url: string, externalHost: string): boolean {
   const parsed = parseUrlLike(url);
   if (!parsed) return false;
-  return parsed.hostname.endsWith(`.${externalHost}`) || parsed.hostname === externalHost;
+  return parsed.hostname === externalHost.toLowerCase();
 }
 
 /**
@@ -74,7 +74,7 @@ export function isManagedHost(url: string, externalHost: string): boolean {
 export function parsePanelUrl(url: string, externalHost: string): ParsedPanelUrl | null {
   const parsed = parseUrlLike(url);
   if (!parsed) return null;
-  if (!parsed.hostname.endsWith(`.${externalHost}`) && parsed.hostname !== externalHost) return null;
+  if (parsed.hostname !== externalHost.toLowerCase()) return null;
 
   const match = parsed.pathname.match(/^\/([^/]+\/[^/]+)(\/.*)?$/);
   if (!match) return null;

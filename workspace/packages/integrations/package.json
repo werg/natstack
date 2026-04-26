@@ -7,7 +7,9 @@
   "exports": {
     ".": "./src/index.ts",
     "./gmail": "./src/gmail.ts",
-    "./calendar": "./src/calendar.ts"
+    "./calendar": "./src/calendar.ts",
+    "./github": "./src/github.ts",
+    "./github-issue-mirror": "./src/github-issue-mirror.ts"
   },
   "dependencies": {
     "@workspace/runtime": "workspace:*"

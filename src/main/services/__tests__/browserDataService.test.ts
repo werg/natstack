@@ -141,7 +141,7 @@ describe("browserDataService", () => {
     ];
     mockRunImportPipeline.mockResolvedValue(importResults);
 
-    const request = { browser: "chrome", profilePath: "/some/path", dataTypes: ["bookmarks", "history"] };
+    const request = { browser: "chrome", profile: "/some/path", dataTypes: ["bookmarks", "history"] };
     const result = await handler({}, "startImport", [request]);
 
     expect(result).toEqual(importResults);
@@ -180,7 +180,7 @@ describe("browserDataService", () => {
     mockRunImportPipeline.mockResolvedValue(importResults);
 
     await handler({}, "startImport", [
-      { browser: "chrome", profilePath: "/path", dataTypes: ["cookies"] },
+      { browser: "chrome", profile: "/path", dataTypes: ["cookies"] },
     ]);
 
     // Should have called electron session.cookies.set

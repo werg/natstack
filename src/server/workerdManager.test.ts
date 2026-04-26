@@ -61,6 +61,11 @@ function createMockDeps(overrides: Partial<WorkerdManagerDeps> = {}): WorkerdMan
     }),
     workspacePath: "/tmp/test-workspace",
     statePath: "/tmp/test-workspace-state",
+    getProxyPort: () => 49444,
+    codeIdentityResolver: {
+      upsertCallerIdentity: vi.fn(),
+      unregisterCaller: vi.fn(),
+    } as any,
     ...overrides,
   };
 }

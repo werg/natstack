@@ -90,7 +90,7 @@ export class PanelStoreAsync implements PanelStore {
     while (currentId) {
       if (visited.has(currentId)) break;
       visited.add(currentId);
-      const parentId = this.records.get(currentId)?.parentId ?? null;
+      const parentId: string | null = this.records.get(currentId)?.parentId ?? null;
       if (!parentId) break;
       this.requireRecord(parentId).panel.selectedChildId = currentId;
       currentId = parentId;
@@ -197,6 +197,10 @@ export class PanelStoreAsync implements PanelStore {
     };
     await Keychain.setGenericPassword("_", JSON.stringify(data), {
       service: this.serviceName,
+      // Panel state may include sensitive panel-init payloads (server-pushed
+      // bootstrap blobs, tokens, etc.); confine to the originating device
+      // and exclude from device backups.
+      accessible: Keychain.ACCESSIBLE.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
     });
   }
 

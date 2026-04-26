@@ -7,6 +7,9 @@
 
 import { WebContentsView, ipcMain } from "electron";
 import type { BaseWindow } from "electron";
+import { createDevLogger } from "@natstack/dev-log";
+
+const overlayLog = createDevLogger("AutofillOverlay");
 
 export interface OverlayCallbacks {
   onSelect: (credentialId: number) => void;
@@ -19,15 +22,32 @@ export class AutofillOverlay {
   private callbacks: OverlayCallbacks | null = null;
   private preloadPath: string;
   private visible = false;
+  /** webContents.id of the overlay view, used to attribute IPC senders. */
+  private overlayWcId: number | null = null;
 
   constructor(preloadPath: string) {
     this.preloadPath = preloadPath;
 
-    ipcMain.on("natstack:autofill-overlay:select", (_event, id: number) => {
+    // Sender attribution: only accept from the overlay's own webContents.
+    // Audit finding 01-HIGH-2 / #44: any panel could otherwise force a
+    // credential autofill into any other loaded panel.
+    ipcMain.on("natstack:autofill-overlay:select", (event, id: number) => {
+      if (this.overlayWcId === null || event.sender.id !== this.overlayWcId) {
+        overlayLog.warn(
+          `Rejected autofill-overlay:select from non-overlay sender id=${event.sender.id} (expected ${this.overlayWcId ?? "<none>"})`,
+        );
+        return;
+      }
       this.callbacks?.onSelect(id);
     });
 
-    ipcMain.on("natstack:autofill-overlay:dismiss", () => {
+    ipcMain.on("natstack:autofill-overlay:dismiss", (event) => {
+      if (this.overlayWcId === null || event.sender.id !== this.overlayWcId) {
+        overlayLog.warn(
+          `Rejected autofill-overlay:dismiss from non-overlay sender id=${event.sender.id} (expected ${this.overlayWcId ?? "<none>"})`,
+        );
+        return;
+      }
       this.callbacks?.onDismiss();
     });
   }
@@ -53,6 +73,10 @@ export class AutofillOverlay {
         sandbox: true,
       },
     });
+
+    // Track the overlay's webContents id so the IPC handlers can verify
+    // that select/dismiss only originate from this view.
+    this.overlayWcId = this.view.webContents.id;
 
     this.view.setVisible(false);
     this.view.setBounds({ x: 0, y: 0, width: 0, height: 0 });
@@ -194,6 +218,7 @@ ${itemsHtml}
       this.view.webContents.close();
     }
     this.view = null;
+    this.overlayWcId = null;
     ipcMain.removeAllListeners("natstack:autofill-overlay:select");
     ipcMain.removeAllListeners("natstack:autofill-overlay:dismiss");
   }

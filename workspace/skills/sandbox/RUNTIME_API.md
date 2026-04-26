@@ -29,7 +29,6 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `defineContract` | value |  |  |
 | `noopParent` | value |  |  |
 | `buildPanelLink` | value |  |  |
-| `contextIdToSubdomain` | value |  |  |
 | `parseContextId` | value |  |  |
 | `isValidContextId` | value |  |  |
 | `getInstanceId` | value |  |  |
@@ -70,7 +69,7 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `openPanel` | value |  |  |
 | `adblock` | namespace | `getStats`, `isActive`, `getStatsForPanel`, `isEnabledForPanel`, `setEnabledForPanel`, `resetStatsForPanel`, `getPanelUrl`, `addToWhitelist`, `removeFromWhitelist` |  |
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo`, `openPanel` |  |
-| `oauth` | namespace | `getToken`, `getConnection`, `listConnections`, `listProviders`, `connect`, `requestConsent`, `startAuth`, `waitForConnection`, `disconnect`, `listConsents` |  |
+| `credentials` | namespace | `connect`, `capabilityFor`, `hookFor`, `metadata`, `revokeConsent`, `listConnections`, `subscribeWebhook`, `unsubscribeWebhook`, `listWebhookLeases` |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
 <!-- END GENERATED: panel-runtime-surface -->
 
@@ -401,56 +400,76 @@ import { rpc } from "@workspace/runtime";
 const result = await rpc.call("main", "test.run", contextId, "panels/my-app");
 ```
 
-## OAuth (`oauth`)
+## Credentials (`credentials`)
 
 ```typescript
-import { oauth } from "@workspace/runtime";
+import { credentials } from "@workspace/runtime";
 ```
 
-Manage OAuth connections. Handles token refresh, consent prompts, and browser sign-in automatically.
-
-**Setup:** Requires a Nango secret key in `~/.config/natstack/.secrets.yml` under `nango:` (a UUID from the Nango dashboard's Settings → Secret Key). Sign up free at https://app.nango.dev, then configure providers in the Nango dashboard. Use the `api-integrations` skill for full setup guidance.
+Resolve userland provider descriptors into host-side credential handles. Raw tokens do not enter runtime code. The runtime receives short-lived capability tokens shaped like the provider credential; the server-side egress proxy strips the capability and injects the stored credential.
 
 | Method | Description |
 |--------|-------------|
-| `listProviders()` | List configured providers → `[{ key, provider }]` |
-| `listConnections()` | List active connections → `OAuthConnection[]` |
-| `getConnection(providerKey, connectionId?)` | Check connection status → `OAuthConnection` |
-| `getToken(providerKey, connectionId?)` | Get access token (auto-refreshes) → `{ accessToken, expiresAt, scopes }` |
-| `requestConsent(providerKey, { scopes? })` | Request user consent (shows notification in shell) → `{ consented }` |
-| `startAuth(providerKey, connectionId?, { openIn? })` | Sync cookies + open sign-in (`openIn`: `"panel"` (default) or `"external"`) → `{ authUrl }` |
-| `waitForConnection(providerKey, connectionId?, timeoutMs?)` | Poll until connected → `OAuthConnection` |
-| `connect(providerKey, connectionId?, { scopes?, openIn? })` | All-in-one: consent + auth + wait → `OAuthConnection` |
-| `disconnect(providerKey, connectionId?)` | Revoke connection |
-| `listConsents()` | List consent records for this caller → `ConsentRecord[]` |
+| `listConnections(providerId?)` | List available connections → `ConnectionRecord[]` |
+| `connect(provider, { connectionId? })` | Resolve a usable connection for this caller → `CredentialHandle` |
+| `capabilityFor(provider, { connectionId?, ttlSeconds? })` | Mint a provider-bound capability string for SDK clients |
+| `hookFor(provider, { connectionId? })` | Return a memoized async callback for SDK `getApiKey` / `apiKeyFn` hooks |
+| `metadata(provider, { connectionId? })` | Return server-extracted account identity and non-secret JWT claims |
 
-`OAuthConnection`: `{ id, provider, email?, connected, lastRefreshed? }`.
-`ConsentRecord`: `{ callerId, provider, scopes, grantedAt }`.
+`ConnectionRecord`: `{ providerId, connectionId, connectionLabel, accountIdentity, scopes, expiresAt?, metadata? }`.
+`CredentialHandle`: `{ connectionId, providerId, fetch(url, init?) }`.
 
 **Quick connect pattern:**
 ```typescript
-const conn = await oauth.getConnection("notion");
-if (!conn.connected) {
-  await oauth.requestConsent("notion", { scopes: ["database:read"] });
-  await oauth.startAuth("notion");
-  await oauth.waitForConnection("notion");
-}
-const token = await oauth.getToken("notion");
+const notionProvider = {
+  id: "notion",
+  displayName: "Notion",
+  apiBase: ["https://api.notion.com"],
+  flows: [{ type: "pat", probeUrl: "https://api.notion.com/v1/users/me" }],
+  authInjection: { type: "header", headerName: "Authorization", valueTemplate: "Bearer {token}" },
+};
+
+const notion = await credentials.connect(notionProvider);
+const response = await notion.fetch("https://api.notion.com/v1/search", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Notion-Version": "2022-06-28",
+  },
+  body: JSON.stringify({ query: "meeting notes" }),
+});
+const data = await response.json();
 ```
+
+**SDK capability pattern:**
+```typescript
+// openaiProvider is a userland provider descriptor supplied by your app/worker.
+const apiKey = await credentials.capabilityFor(openaiProvider);
+// Pass apiKey to an SDK constructor. The SDK can parse token structure, but
+// the real secret remains server-side and is substituted by the egress proxy.
+```
+
+`oauth.getToken()` is deprecated and intentionally unavailable.
 
 ## Integrations (`@workspace/integrations`)
 
 Pre-built API clients that wrap OAuth + fetch. See `api-integrations` skill for the full spectrum from quick experiments to custom libraries.
 
-For APIs without a pre-built integration, use `oauth.getToken()` + the official npm SDK directly:
+For APIs without a pre-built integration, connect once and use `handle.fetch()` against the provider's HTTP API:
 
 ```typescript
-import { oauth } from "@workspace/runtime";
-import { Client } from "@notionhq/client";  // npm SDK, installed via imports param
+import { credentials } from "@workspace/runtime";
 
-const token = await oauth.getToken("notion");
-const notion = new Client({ auth: token.accessToken });
-const results = await notion.search({ query: "my tasks" });
+const notion = await credentials.connect(notionProvider);
+const response = await notion.fetch("https://api.notion.com/v1/search", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Notion-Version": "2022-06-28",
+  },
+  body: JSON.stringify({ query: "my tasks" }),
+});
+const results = await response.json();
 ```
 
 Pre-built wrappers for Gmail and Calendar:

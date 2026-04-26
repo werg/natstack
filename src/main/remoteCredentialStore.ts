@@ -8,7 +8,6 @@
  * Resolution order consumed by startupMode:
  *   1. NATSTACK_REMOTE_* env vars
  *   2. this store
- *   3. legacy central config.yml remote.{url,token,...}
  */
 
 import { safeStorage } from "electron";

@@ -133,8 +133,7 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
         break;
       }
 
-      case "ws:routed":
-      case "ws:panel-rpc-delivery": {
+      case "ws:routed": {
         deliver(msg.fromId, msg.message);
         break;
       }

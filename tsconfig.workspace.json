@@ -208,6 +208,12 @@
       "@workspace/runtime/worker": [
         "workspace/packages/runtime/src/worker/index.ts"
       ],
+      "@workspace/runtime/worker/credentials": [
+        "workspace/packages/runtime/src/worker/credentials.ts"
+      ],
+      "@workspace/runtime/panel/credentials": [
+        "workspace/packages/runtime/src/panel/credentials.ts"
+      ],
       "@workspace/runtime/worker/test-utils": [
         "workspace/packages/runtime/src/worker/durable-test-utils.ts"
       ],

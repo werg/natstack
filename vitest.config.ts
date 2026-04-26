@@ -79,6 +79,7 @@ export default defineConfig({
         inline: [
           /node_modules\/\.pnpm\/@radix-ui\+/,
           /node_modules\/\.pnpm\/radix-ui@/,
+          /node_modules\/use-stick-to-bottom/,
         ],
       },
     },

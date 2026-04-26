@@ -25,6 +25,79 @@ import {
   type TruncationResult,
 } from "./truncate.js";
 
+// ---------------------------------------------------------------------------
+// RE2 loader — preferred linear-time matcher. Falls back to `RegExp` when
+// the native build is unavailable (no toolchain, prebuilt missing for
+// platform, etc.). The fallback is announced once via stderr at startup so
+// operators can trace ReDoS-mitigation status without spamming logs per
+// call.
+// ---------------------------------------------------------------------------
+
+type RegexLike = { test(input: string): boolean };
+
+interface Re2Ctor {
+  new (source: string, flags?: string): RegexLike;
+}
+
+let RE2: Re2Ctor | null = null;
+let re2WarningEmitted = false;
+
+try {
+  // Use createRequire so that environments without the optional native
+  // dependency (e.g. CI on alpine, Termux, fresh checkouts where
+  // `pnpm install` skipped postinstall scripts) keep working with the
+  // structural-shape fallback below.
+  const { createRequire } = await import("node:module");
+  const requireFn = createRequire(import.meta.url);
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const mod = requireFn("re2");
+  RE2 = (mod && typeof mod === "function" ? mod : mod?.default) as Re2Ctor;
+  if (typeof RE2 !== "function") RE2 = null;
+} catch {
+  RE2 = null;
+}
+
+function warnFallbackOnce(): void {
+  if (re2WarningEmitted) return;
+  re2WarningEmitted = true;
+  // eslint-disable-next-line no-console
+  console.warn(
+    "[harness/grep] `re2` native binding not available — falling back to V8 RegExp. " +
+      "Pattern length is capped and structural ReDoS shapes are rejected, but matching is " +
+      "no longer guaranteed linear-time. Install build tooling (python3, make, g++) and " +
+      "re-run `pnpm install` in packages/harness to enable RE2.",
+  );
+}
+
+/** Exposed for `find.ts` so it can apply the same RE2 / fallback policy. */
+export function isRe2Available(): boolean {
+  return RE2 !== null;
+}
+
+/**
+ * Compile a user-supplied regex source. Applies the structural-shape
+ * pre-check first (cheap defence-in-depth) and then uses `re2` if
+ * available, otherwise the V8 `RegExp` — emitting a one-shot warning the
+ * first time the fallback path is taken.
+ */
+export function compileUserRegex(source: string, flags: string): RegexLike {
+  rejectRedosShape(source);
+  if (RE2) {
+    try {
+      return new RE2(source, flags);
+    } catch {
+      // RE2 rejects some V8 features (lookbehind, backrefs). Surface the
+      // failure as a regular pattern error rather than crashing the tool.
+      throw new Error(
+        `RE2 could not compile pattern (likely uses unsupported features such as lookbehind or backreferences). ` +
+          `Rewrite the pattern using basic constructs.`,
+      );
+    }
+  }
+  warnFallbackOnce();
+  return new RegExp(source, flags);
+}
+
 const grepSchema = Type.Object({
   pattern: Type.String({ description: "Search pattern (regex or literal string)" }),
   path: Type.Optional(Type.String({ description: "Directory or file to search (default: current directory)" })),
@@ -146,8 +219,11 @@ export function createGrepTool(
             matchLimitReached = true;
             break;
           }
-          // Reset regex state for each line (relevant when /g is set elsewhere).
-          regex.lastIndex = 0;
+          // Reset regex state for each line (only relevant when /g is set
+          // and the matcher is a V8 RegExp; RE2's `test` is stateless).
+          if ("lastIndex" in regex) {
+            (regex as { lastIndex: number }).lastIndex = 0;
+          }
           if (regex.test(lines[i]!)) {
             matchCount++;
             const lineNumber = i + 1;
@@ -209,14 +285,70 @@ export function createGrepTool(
   };
 }
 
-/** Build a JS regex from the user's pattern, honouring `literal` / `ignoreCase`. */
+/**
+ * Maximum allowed pattern length. Most legitimate user regexes are well
+ * under this; longer patterns are almost always pathological or
+ * machine-generated.
+ */
+const MAX_PATTERN_LENGTH = 256;
+
+/**
+ * Structural shapes that produce catastrophic backtracking on V8's regex
+ * engine when fed an adversarial input. Not exhaustive — see RE2's
+ * documentation for the full taxonomy — but covers the common
+ * "(a+)+", "(a*)*", "(a|a)*" / "(a|aa)*" styles seen in CTF / fuzzers.
+ *
+ * Defence-in-depth fast-path: rejected even when `re2` is available, so
+ * obviously-pathological patterns never reach the matcher at all. When
+ * `re2` is unavailable, this is the *only* protection against ReDoS in
+ * the fallback `RegExp` path.
+ */
+const REDOS_SHAPES: RegExp[] = [
+  // (X+)+ / (X*)+ / (X+)* — nested unbounded quantifiers
+  /\([^()]*[+*]\)[+*]/,
+  // (X|X)* / (X|XX)* — alternation with overlapping branches under *
+  /\([^()|]+\|[^()|]+\)[+*]/,
+];
+
+function rejectRedosShape(source: string): void {
+  for (const shape of REDOS_SHAPES) {
+    if (shape.test(source)) {
+      throw new Error(
+        `Refusing potentially catastrophic regex (matches structural shape ${shape.source}). ` +
+        `Rewrite the pattern or split it across multiple grep calls.`,
+      );
+    }
+  }
+}
+
+/** Build a regex matcher from the user's pattern, honouring `literal` / `ignoreCase`. */
 function buildRegex(
   pattern: string,
   { literal, ignoreCase }: { literal: boolean; ignoreCase: boolean },
-): RegExp {
+): RegexLike {
+  if (pattern.length > MAX_PATTERN_LENGTH) {
+    throw new Error(
+      `Pattern too long (${pattern.length} chars; max ${MAX_PATTERN_LENGTH}). ` +
+      `Long regexes are almost always pathological.`,
+    );
+  }
   const source = literal ? escapeRegex(pattern) : pattern;
   const flags = ignoreCase ? "i" : "";
-  return new RegExp(source, flags);
+  // Literal patterns can never trigger ReDoS (no metacharacters survive
+  // `escapeRegex`), so feed them straight to the matcher without the
+  // structural pre-check. Non-literal patterns go through `compileUserRegex`
+  // which applies the shape check then prefers RE2.
+  if (literal) {
+    if (RE2) {
+      try {
+        return new RE2(source, flags);
+      } catch {
+        // fall through to RegExp
+      }
+    }
+    return new RegExp(source, flags);
+  }
+  return compileUserRegex(source, flags);
 }
 
 function escapeRegex(s: string): string {

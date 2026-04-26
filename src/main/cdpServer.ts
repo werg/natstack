@@ -10,6 +10,49 @@ import { createDevLogger } from "@natstack/dev-log";
 const log = createDevLogger("CdpServer");
 
 /**
+ * Loopback bind address (audit finding #34). The CDP debugger surface is
+ * absurdly powerful (`Runtime.evaluate` is full RCE in the browser context,
+ * `Page.navigate` plus `Fetch.continueRequest` is full request forgery on
+ * any session the panel can drive). It must NEVER be reachable from
+ * non-loopback. Previously the WS bound the http.Server's default 0.0.0.0.
+ */
+const CDP_BIND_HOST = "127.0.0.1";
+
+/**
+ * Extract a CDP access token from either the `Authorization: Bearer …`
+ * header (preferred — keeps the token out of URLs / proxy logs) or, for
+ * legacy clients that cannot set headers on a WebSocket handshake, the
+ * `?token=` query string (audit finding #34). Returns the token plus
+ * which path it came from so the caller can log a deprecation warning
+ * when the legacy path fires.
+ *
+ * Wave-2 status (security-audit-agent-3): the in-tree CDP clients are
+ * `BrowserImpl.connect()` (panel-context, browser-`WebSocket` global)
+ * and the Chrome extension at `extension/background.js` (extension
+ * service-worker, also browser-`WebSocket`). Neither environment
+ * supports custom request headers on a WebSocket handshake — the
+ * `Authorization: Bearer` migration cannot complete from those clients
+ * without first proxying through a Node-side relay. The legacy
+ * query-string path therefore stays in place; we log a `warn` whenever
+ * it is exercised so any new client that lands on the header path can
+ * be confirmed silently, and so an audit reader can spot if a Node-side
+ * client ever regresses to the URL form.
+ */
+function extractCdpToken(
+  req: http.IncomingMessage,
+  url: URL,
+): { token: string; source: "header" | "query" } | null {
+  const auth = req.headers["authorization"];
+  if (typeof auth === "string") {
+    const m = auth.match(/^Bearer\s+(.+)$/i);
+    if (m && m[1]) return { token: m[1], source: "header" };
+  }
+  const queryToken = url.searchParams.get("token");
+  if (queryToken) return { token: queryToken, source: "query" };
+  return null;
+}
+
+/**
  * CDP WebSocket server for browser panel automation.
  * Uses the global TokenManager for authentication.
  *
@@ -166,9 +209,16 @@ export class CdpServer {
       return null; // Access denied
     }
 
-    // Get or create token via global token manager
+    // Get or create token via global token manager.
+    // The endpoint embeds the token in the URL because every consumer
+    // of `getCdpEndpoint` is a *browser-environment* WebSocket client
+    // (panel JS opening BrowserImpl.connect → BrowserWebSocketTransport
+    // → `new WebSocket(url)`; the browser global has no headers option).
+    // The CDP server also accepts the token via `Authorization: Bearer …`
+    // — that path is the one Node-side clients (none in-tree today)
+    // should take. See `extractCdpToken` for the deprecation warning.
     const token = this.tokenManager.getToken(requestingPanelId);
-    return `ws://localhost:${this.getPort()}/${browserId}?token=${token}`;
+    return `ws://${CDP_BIND_HOST}:${this.getPort()}/${browserId}?token=${token}`;
   }
 
   /**
@@ -202,23 +252,38 @@ export class CdpServer {
 
     await new Promise<void>((resolve, reject) => {
       this.server!.once("error", reject);
-      this.server!.listen(port, () => resolve());
+      // Bind loopback only — never expose CDP to non-loopback (audit #34).
+      this.server!.listen(port, CDP_BIND_HOST, () => resolve());
     });
 
     this.actualPort = port;
-    log.verbose(` Started on ws://localhost:${port}`);
+    log.verbose(` Started on ws://${CDP_BIND_HOST}:${port}`);
     return port;
   }
 
   private async handleConnection(ws: WebSocket, req: http.IncomingMessage): Promise<void> {
     const url = new URL(req.url!, `http://localhost`);
     const browserId = url.pathname.slice(1); // Remove leading /
-    const token = url.searchParams.get("token");
+    // Prefer Authorization header; fall back to ?token= for legacy clients.
+    const extracted = extractCdpToken(req, url);
 
     // Validate token
-    if (!token) {
+    if (!extracted) {
       ws.close(4001, "Token required");
       return;
+    }
+    const { token, source } = extracted;
+    if (source === "query") {
+      // Wave-2 deprecation marker (security-audit-agent-3). Once every
+      // in-tree client either uses Authorization: Bearer or has been
+      // routed through a Node-side relay that can, this branch can be
+      // removed and the close() switched to 4001.
+      log.warn(
+        `[CdpServer] Client connected with legacy ?token= query string ` +
+          `(browser=${browserId}). Prefer Authorization: Bearer header. ` +
+          `Note: browser-WebSocket clients (extension, panel-context Playwright) ` +
+          `cannot set headers on the upgrade — legacy path remains intentional for them.`,
+      );
     }
 
     // Validate token and get panel ID
@@ -453,4 +518,3 @@ export class CdpServer {
     }
   }
 }
-

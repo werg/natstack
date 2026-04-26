@@ -1,6 +1,7 @@
 import { Linking } from "react-native";
 import type { PanelManager } from "@natstack/shared/shell/panelManager";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
+import type { ProviderManifest } from "@natstack/shared/credentials/types";
 import type { MobileTransport } from "./mobileTransport";
 import { runOpenaiCodexFlow } from "./codexAuthFlow";
 
@@ -8,7 +9,6 @@ export interface BridgeAdapterCallbacks {
   navigateToPanel(panelId: string): void;
 }
 
-const CLIENT_OAUTH_PROVIDERS = new Set(["openai-codex"]);
 const inFlightLogins = new Map<string, Promise<{ success: boolean; error?: string }>>();
 
 function chooseNextPanel(registry: PanelRegistry, closingPanelId: string): string | null {
@@ -30,21 +30,30 @@ export function createBridgeAdapter(deps: {
 }) {
   /**
    * Run the client-owned OAuth flow for a provider, then ship the
-   * resulting credentials to the server's `authTokens.persist`. Concurrent
+   * resulting authorization code back to the server's credentials service. Concurrent
    * calls for the same provider share the in-flight promise so the OS
    * browser is opened at most once per attempt.
    */
-  async function startOAuthLogin(providerId: string): Promise<{ success: boolean; error?: string }> {
-    if (!CLIENT_OAUTH_PROVIDERS.has(providerId)) {
-      return { success: false, error: `OAuth not supported for ${providerId}` };
-    }
+  async function startOAuthLogin(provider: ProviderManifest): Promise<{ success: boolean; error?: string }> {
+    const providerId = provider.id;
     const existing = inFlightLogins.get(providerId);
     if (existing) return existing;
 
     const promise = (async () => {
       try {
-        const credentials = await runOpenaiCodexFlow();
-        await deps.transport.call("main", "authTokens.persist", providerId, credentials);
+        const { authorizeUrl, nonce } = await deps.transport.call<{
+          authorizeUrl: string;
+          nonce: string;
+        }>("main", "credentials.beginConsent", {
+          provider,
+          scopes: [],
+          redirect: "mobile-universal",
+        });
+        const code = await runOpenaiCodexFlow(authorizeUrl, nonce);
+        await deps.transport.call("main", "credentials.completeConsent", {
+          nonce,
+          code,
+        });
         return { success: true };
       } catch (err) {
         return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -60,12 +69,12 @@ export function createBridgeAdapter(deps: {
   return {
     async handle(panelId: string, method: string, args: unknown[]): Promise<unknown> {
       switch (method) {
-        case "auth.startOAuthLogin":
-          return startOAuthLogin(args[0] as string);
-        case "auth.listProviders":
-          return deps.transport.call("main", "authTokens.listProviders");
-        case "auth.logout":
-          return deps.transport.call("main", "authTokens.logout", args[0] as string);
+        case "credentialFlow.connect":
+          return startOAuthLogin(args[0] as ProviderManifest);
+        case "credentialFlow.disconnect":
+          return deps.transport.call("main", "credentials.revokeConsent", {
+            providerId: args[0] as string,
+          });
         case "getPanelInit":
           return deps.panelManager.getPanelInit(panelId);
         case "getInfo":

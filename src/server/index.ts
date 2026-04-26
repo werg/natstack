@@ -306,11 +306,10 @@ if (!ipcChannel) {
 
 async function main() {
   const { setUserDataPath } = await import("@natstack/env-paths");
-  const { loadCentralEnv, deleteWorkspaceDir, loadPersistedAdminToken, savePersistedAdminToken, getAdminTokenPath, getCentralConfigPaths } = await import("@natstack/shared/workspace/loader");
+  const { loadCentralEnv, deleteWorkspaceDir, loadPersistedAdminToken, savePersistedAdminToken, getAdminTokenPath } = await import("@natstack/shared/workspace/loader");
   const { resolveLocalWorkspaceStartup } = await import("@natstack/shared/workspace/startup");
   const { CentralDataManager } = await import("@natstack/shared/centralData");
   const { GitServer } = await import("@natstack/git-server");
-  const { createSecretsStore } = await import("@natstack/shared/secrets");
   const { TokenManager } = await import("@natstack/shared/tokenManager");
   const { z } = await import("zod");
   const { ServiceDispatcher } = await import("@natstack/shared/serviceDispatcher");
@@ -396,7 +395,90 @@ async function main() {
 
   const githubConfig = workspaceConfig.git?.github;
   const tokenManager = new TokenManager();
-  let secretsStoreInstance: import("@natstack/shared/secrets").SecretsStore | null = null;
+  const { CredentialStore } = await import("../../packages/shared/src/credentials/store.js");
+  const { ConsentGrantStore } = await import("../../packages/shared/src/credentials/consent.js");
+  const { AuditLog } = await import("../../packages/shared/src/credentials/audit.js");
+  const { WebhookSubscriptionStore } = await import("../../packages/shared/src/webhooks/subscription.js");
+  const { CodeIdentityResolver } = await import("./services/codeIdentityResolver.js");
+  const { createEgressProxy } = await import("./services/egressProxy.js");
+  const { EgressRateLimiterAdapter } = await import("./services/egressRateLimiterAdapter.js");
+  const { EgressCircuitBreakerAdapter } = await import("./services/egressCircuitBreakerAdapter.js");
+  const BetterSqlite = (await import("better-sqlite3")).default;
+
+  const credentialStore = new CredentialStore();
+  const consentDb = new BetterSqlite(path.join(statePath, "credentials-consent.sqlite"));
+  const consentStore = new ConsentGrantStore({
+    run(sql: string, params: readonly unknown[] = []) {
+      consentDb.prepare(sql).run(...params);
+    },
+    all<T>(sql: string, params: readonly unknown[] = []) {
+      return consentDb.prepare(sql).all(...params) as T[];
+    },
+    exec(sql: string) {
+      consentDb.exec(sql);
+    },
+  });
+  const auditLog = new AuditLog({ logDir: path.join(statePath, "credentials-audit") });
+  const codeIdentityResolver = new CodeIdentityResolver();
+  const webhookDb = new BetterSqlite(path.join(statePath, "webhooks.sqlite"));
+  const webhookStore = new WebhookSubscriptionStore({
+    run(sql: string, params: unknown[] = []) {
+      webhookDb.prepare(sql).run(...params);
+    },
+    all<T>(sql: string, params: unknown[] = []) {
+      return webhookDb.prepare(sql).all(...params) as T[];
+    },
+    exec(sql: string) {
+      webhookDb.exec(sql);
+    },
+  });
+  webhookStore.init();
+  const { WebhookWatchManager } = await import("./services/webhookWatchManager.js");
+  const webhookWatchManager = new WebhookWatchManager({
+    credentialStore,
+    webhookStore,
+    relayBaseUrl: process.env["NATSTACK_WEBHOOK_RELAY_URL"],
+  });
+  const { WebhookDeliveryService } = await import("./services/webhookDeliveryService.js");
+  let rpcServerForWebhooks: import("./rpcServer.js").RpcServer | null = null;
+  const webhookDeliveryService = new WebhookDeliveryService({
+    webhookStore,
+    webhookWatchManager,
+    deliverToCaller: async (callerId, handler, event) => {
+      if (!rpcServerForWebhooks) {
+        throw new Error("RPC server is not ready for webhook delivery");
+      }
+      await rpcServerForWebhooks.callTarget(callerId, handler, event);
+    },
+  });
+  const { createApprovalQueue } = await import("./services/approvalQueue.js");
+  const approvalQueue = createApprovalQueue({ eventService });
+
+  const { createConsentGate } = await import("./services/consentGate.js");
+  const consentGate = createConsentGate({
+    credentialStore,
+    consentStore,
+    approvalQueue,
+  });
+
+  const { createCapabilityBroker } = await import("./services/capabilityBroker.js");
+  const capabilityBroker = createCapabilityBroker({
+    credentialStore,
+    consentGate,
+    resolveIdentity: (callerId) => codeIdentityResolver.resolveByCallerId(callerId),
+  });
+
+  const egressProxy = createEgressProxy({
+    credentialStore,
+    consentStore,
+    auditLog,
+    rateLimiter: new EgressRateLimiterAdapter(),
+    circuitBreaker: new EgressCircuitBreakerAdapter(),
+    codeIdentityResolver,
+    approvalQueue,
+    capabilityBroker,
+  });
+  const egressProxyPort = await egressProxy.start();
 
   // Auto-default devTargetDir: when running from a natstack source checkout,
   // mirror pushes back to `<appRoot>/workspace` so edits made inside ephemeral
@@ -418,7 +500,6 @@ async function main() {
     github: {
       ...githubConfig,
       token: githubConfig?.token ?? process.env["GITHUB_TOKEN"],
-      getToken: () => secretsStoreInstance?.get("github"),
     },
   });
 
@@ -457,24 +538,8 @@ async function main() {
     async start() { return databaseManager; },
   });
   container.register({
-    name: "secretsStore",
-    async start() {
-      const { secretsPath } = getCentralConfigPaths();
-      secretsStoreInstance = createSecretsStore({ secretsPath });
-      return secretsStoreInstance;
-    },
-    async stop(instance: import("@natstack/shared/secrets").SecretsStore | null | undefined) {
-      await instance?.close();
-      if (secretsStoreInstance === instance) {
-        secretsStoreInstance = null;
-      }
-    },
-  });
-  container.register({
     name: "gitServer",
-    dependencies: ["secretsStore"],
-    async start(resolve) {
-      secretsStoreInstance = resolve<import("@natstack/shared/secrets").SecretsStore>("secretsStore")!;
+    async start() {
       await gitServer.start();
       return gitServer;
     },
@@ -513,7 +578,6 @@ async function main() {
   const { createDbService } = await import("./services/dbService.js");
   const { createTypecheckService } = await import("./services/typecheckService.js");
   const { createWorkerService } = await import("./services/workerService.js");
-  const { createAuthFlowService } = await import("./services/authFlowService.js");
 
   // Resolve testSetup.ts relative to this module's location
   const serverDir = path.dirname(__filename);
@@ -580,75 +644,41 @@ async function main() {
   const notificationInternal = notificationResult.internal;
   container.register(rpcService(notificationResult.definition));
 
-  // ── Secrets service (API keys with user consent) ──
+  // ── Shell approval service (consent bar queue) ──
+  const { createShellApprovalService } = await import("./services/shellApprovalService.js");
+  container.register(rpcService(createShellApprovalService({ approvalQueue })));
+
+  // ── Credential service ──
   {
-    const { createSecretsService } = await import("./services/secretsService.js");
-    let secretsDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null = null;
-    container.register({
-      name: "secrets",
-      dependencies: ["secretsStore"],
-      async start(resolve) {
-        let panelRegistry: import("@natstack/shared/panelRegistry").PanelRegistry | undefined;
-        try { panelRegistry = container.get<import("@natstack/shared/panelRegistry").PanelRegistry>("panelRegistry"); } catch { /* not available */ }
-        const secretsStore = resolve<import("@natstack/shared/secrets").SecretsStore>("secretsStore")!;
-        secretsDefinition = createSecretsService({
-          notificationService: notificationInternal,
-          panelRegistry,
-          secretsStore,
-        });
-      },
-      getServiceDefinition() {
-        if (!secretsDefinition) throw new Error("secrets service not initialized");
-        return secretsDefinition;
-      },
-    });
+    const { createCredentialService } = await import("./services/credentialService.js");
+    container.register(rpcService(createCredentialService({
+      credentialStore,
+      consentStore,
+      auditLog,
+      egressProxy,
+      codeIdentityResolver,
+      webhookStore,
+      webhookWatchManager,
+      capabilityBroker,
+    })));
   }
 
-  // ── OAuth service (works in both Electron and standalone modes) ──
+  // ── Capability broker service ──
   {
-    const { OAuthManager } = await import("@natstack/shared/oauth/oauthManager");
-    const { createOAuthService } = await import("./services/oauthService.js");
-    let oauthManager: InstanceType<typeof OAuthManager>;
-    container.register({
-      name: "oauth",
-      dependencies: ["databaseManager", "secretsStore"],
-      optionalDependencies: ["panelRegistry"],
-      async start(resolve) {
-        const nangoUrl = workspace.config.oauth?.nangoUrl ?? process.env["NANGO_URL"] ?? "https://api.nango.dev";
-        const secretsStore = resolve<import("@natstack/shared/secrets").SecretsStore>("secretsStore")!;
-        oauthManager = new OAuthManager({
-          nangoUrl,
-          secrets: secretsStore,
-          databaseManager,
-        });
-      },
-      async stop() {
-        oauthManager?.close();
-      },
-      getServiceDefinition() {
-        let panelRegistry: import("@natstack/shared/panelRegistry").PanelRegistry | undefined;
-        try { panelRegistry = container.get<import("@natstack/shared/panelRegistry").PanelRegistry>("panelRegistry"); } catch { /* not available in Electron mode */ }
+    const { createCapabilityService } = await import("./services/capabilityService.js");
+    container.register(rpcService(createCapabilityService({ broker: capabilityBroker })));
+  }
 
-        const syncCookiesToSession = async (domain: string) => {
-          try {
-            return await dispatcher.dispatch(
-              { callerId: "oauth-service", callerKind: "server" },
-              "browser-data",
-              "syncCookiesToSession",
-              [domain],
-            ) as { synced: number; failed: number };
-          } catch { /* non-fatal: browser-data service may not be registered */ }
-          return { synced: 0, failed: 0 };
-        };
-
-        return createOAuthService({
-          oauthManager,
-          panelRegistry,
-          notificationService: notificationInternal,
-          syncCookiesToSession,
-        });
-      },
-    });
+  // ── Webhook ingress + watch inspection ──
+  {
+    const { rpcServiceWithRoutes } = await import("./rpcServiceWithRoutes.js");
+    const { createCredentialWebhooksService } = await import("./services/credentialWebhooksService.js");
+    container.register(
+      rpcServiceWithRoutes(
+        createCredentialWebhooksService(webhookStore, webhookWatchManager, webhookDeliveryService),
+        routeRegistry,
+      ),
+    );
   }
 
   // ── DODispatch (source-scoped HTTP dispatch to Durable Objects) ──
@@ -670,7 +700,13 @@ async function main() {
         const url = `http://127.0.0.1:${port}${urlPath}`;
         const resp = await fetch(url, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            // Internal DO dispatches stamp the process-private secret. The
+            // router verifies this when present, but public gateway-routed DO
+            // routes intentionally do not require it.
+            "X-NatStack-Dispatch-Secret": workerdManager.getDispatchSecret(),
+          },
           body: JSON.stringify(args),
         });
         if (!resp.ok) {
@@ -682,6 +718,22 @@ async function main() {
 
       // Wire per-instance identity tokens into DO dispatch.
       doDispatch.setTokenManager(tokenManager);
+      doDispatch.setBeforeDispatch(async (ref) => {
+        let identity = workerdManager.getDoCodeIdentity(ref.source, ref.className);
+        if (!identity) {
+          await workerdManager.ensureDOClass(ref.source, ref.className);
+          identity = workerdManager.getDoCodeIdentity(ref.source, ref.className);
+        }
+        if (!identity) {
+          return;
+        }
+        codeIdentityResolver.upsertCallerIdentity({
+          callerId: `do:${ref.source}:${ref.className}:${ref.objectKey}`,
+          callerKind: "worker",
+          repoPath: identity.repoPath,
+          effectiveVersion: identity.effectiveVersion,
+        });
+      });
       doDispatch.setGetWorkerdUrl(() => {
         const port = workerdManager.getPort();
         if (!port) {
@@ -689,6 +741,10 @@ async function main() {
         }
         return `http://127.0.0.1:${port}`;
       });
+      // SECURITY (audit 4.8): stamp every postToDOWithToken-based dispatch
+      // with the dispatch secret. See WorkerdManager.dispatchSecret for the
+      // full rationale.
+      doDispatch.setGetDispatchSecret(() => workerdManager.getDispatchSecret());
 
       return doDispatch;
     },
@@ -736,6 +792,7 @@ async function main() {
       // RpcServer needs a panelManager for panel-to-panel RPC auth.
       // We'll wire it lazily after panelService starts.
       const server = new RpcServer({ tokenManager, dispatcher, eventService });
+      rpcServerForWebhooks = server;
       if (ipcChannel) {
         // IPC mode: server binds its own socket (Electron connects directly).
         // Same socket handles panel WS + workerd HTTP POST back-channel.
@@ -761,13 +818,15 @@ async function main() {
     let workerServiceDef: import("@natstack/shared/serviceDefinition").ServiceDefinition;
     container.register({
       name: "workersRpc",
-      dependencies: ["doDispatch", "buildSystem"],
+      dependencies: ["doDispatch", "buildSystem", "fsService"],
       async start(resolve) {
         const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
         const buildSystemInst = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
+        const fsServiceInst = resolve<import("@natstack/shared/fsService").FsService>("fsService")!;
         workerServiceDef = createWorkerService({
           doDispatch,
           buildSystem: buildSystemInst,
+          fsService: fsServiceInst,
         });
       },
       getServiceDefinition() {
@@ -828,6 +887,9 @@ async function main() {
             const manifest = node?.manifest as import("@natstack/shared/types").PackageManifest | undefined;
             return manifest?.routes ?? [];
           },
+          getProxyPort: () => egressProxyPort,
+          codeIdentityResolver,
+          cleanupWebhookSubscriptions: (callerId) => webhookDeliveryService.cleanupCaller(callerId),
         });
 
         // Wire push trigger to restart workers on source rebuild.
@@ -906,7 +968,28 @@ async function main() {
         return resp?.workspaces ?? [];
       }
     : undefined;
-  const commonDeps = { container, dispatcher, tokenManager, workspace, workspacePath, workspaceConfig, gitServer, adminToken, centralData: centralData ?? null, args, hostConfig, isIpcMode: !!ipcChannel, eventService, requestRelaunch, requestWorkspaceList };
+  const commonDeps = {
+    container,
+    dispatcher,
+    tokenManager,
+    workspace,
+    workspacePath,
+    workspaceConfig,
+    gitServer,
+    adminToken,
+    centralData: centralData ?? null,
+    args,
+    hostConfig,
+    isIpcMode: !!ipcChannel,
+    eventService,
+    requestRelaunch,
+    requestWorkspaceList,
+    codeIdentityResolver,
+    getEffectiveVersion: async (source: string) => {
+      const buildSystem = container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
+      return buildSystem?.getEffectiveVersion(source) ?? undefined;
+    },
+  };
   await registerPanelServices(commonDeps);
 
   {
@@ -920,41 +1003,6 @@ async function main() {
         workerRuntime: workerRuntimeSurface,
       },
     })));
-  }
-
-  // ── authTokens service (storage + silent refresh of AI provider creds) ──
-  // OAuth login flow (browser, callback handling, code→token exchange) lives
-  // on the *client* — Electron main on desktop (loopback redirect URI) and
-  // mobile shell (custom URL scheme). Server only persists what the client
-  // delivers and silently refreshes via the refresh-token grant.
-  {
-    const { AuthTokensServiceImpl, createAuthTokensService } = await import("./services/authService.js");
-    let authTokensDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null = null;
-    let authFlowDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null = null;
-    let authTokensInstance: import("./services/authService.js").AuthTokensServiceImpl | null = null;
-    container.register({
-      name: "authTokens",
-      dependencies: ["secretsStore"],
-      async start(resolve) {
-        authTokensInstance = new AuthTokensServiceImpl({
-          secretsStore: resolve<import("@natstack/shared/secrets").SecretsStore>("secretsStore")!,
-        });
-        authTokensDefinition = createAuthTokensService({ authTokens: authTokensInstance });
-        authFlowDefinition = createAuthFlowService({ authTokens: authTokensInstance });
-      },
-      getServiceDefinition() {
-        if (!authTokensDefinition) throw new Error("authTokens service not initialized");
-        return authTokensDefinition;
-      },
-    });
-    container.register({
-      name: "auth",
-      dependencies: ["authTokens"],
-      getServiceDefinition() {
-        if (!authFlowDefinition || !authTokensInstance) throw new Error("auth service not initialized");
-        return authFlowDefinition;
-      },
-    });
   }
 
   if (!ipcChannel) {
@@ -1096,6 +1144,7 @@ async function main() {
       gatewayPort,
     });
   }
+  await webhookWatchManager.reconcileLeases();
 
   if (!ipcChannel) {
     // Standalone: gateway IS the RPC ingress — propagate its port so
@@ -1121,7 +1170,6 @@ async function main() {
       type: "ready",
       rpcPort,
       gitPort: gitServer.getPort(),
-      pubsubPort: 0, // deprecated — channel DOs replace PubSub server
       workerdPort: workerdMgr?.getPort() ?? 0,
       panelHttpPort: panelHttpPort ?? 0,
       gatewayPort,
@@ -1165,9 +1213,8 @@ async function main() {
     const sourceLabel =
       tokenSource === "env" ? " (from NATSTACK_ADMIN_TOKEN)"
       : tokenSource === "persisted" ? " (persisted)"
-      : " (newly generated — copy this into your client; it will survive restarts)";
-    console.log(`  Admin token: ${adminToken}${sourceLabel}`);
-    console.log(`  Token file:  ${tokenFilePath}`);
+      : " (newly generated)";
+    console.log(`  Token file:  ${tokenFilePath}${sourceLabel}`);
     if (tokenSource !== "env") {
       console.log(`  Persisted:   ${getAdminTokenPath()}`);
     }
@@ -1175,7 +1222,6 @@ async function main() {
     // Shell tokens give callerKind "shell" (not "server"), which is the correct
     // privilege level for browser chrome operations.
     const shellToken = tokenManager.ensureToken("remote-shell", "shell");
-    console.log(`  Shell token: ${shellToken}`);
 
     if (args.readyFile) {
       const readyPayload = {
@@ -1203,8 +1249,8 @@ async function main() {
     }
 
     if (args.printToken) {
-      // Machine-readable token output on its own line for scripting
       console.log(`\nNATSTACK_ADMIN_TOKEN=${adminToken}`);
+      console.log(`NATSTACK_SHELL_TOKEN=${tokenManager.getToken("remote-shell")}`);
     }
   }
 

@@ -85,6 +85,8 @@ export interface LayoutState {
   saveBarHeight: number;
   /** Height of notification bar (0 when hidden) */
   notificationBarHeight: number;
+  /** Height of consent approval bar (0 when hidden) */
+  consentBarHeight: number;
 }
 
 export class ViewManager {
@@ -101,6 +103,7 @@ export class ViewManager {
     sidebarWidth: 260,
     saveBarHeight: 0,
     notificationBarHeight: 0,
+    consentBarHeight: 0,
   };
   /** ID of the currently visible panel (to apply bounds updates) */
   private visiblePanelId: string | null = null;
@@ -496,9 +499,9 @@ export class ViewManager {
     const size = this.window.getContentSize();
     const windowWidth = size[0] ?? 0;
     const windowHeight = size[1] ?? 0;
-    const { titleBarHeight, sidebarVisible, sidebarWidth, saveBarHeight, notificationBarHeight } = this.layoutState;
+    const { titleBarHeight, sidebarVisible, sidebarWidth, saveBarHeight, notificationBarHeight, consentBarHeight } = this.layoutState;
     const effectiveSidebarWidth = sidebarVisible ? sidebarWidth : 0;
-    const topOffset = titleBarHeight + notificationBarHeight + saveBarHeight;
+    const topOffset = titleBarHeight + notificationBarHeight + saveBarHeight + consentBarHeight;
 
     return {
       x: effectiveSidebarWidth,

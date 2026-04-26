@@ -27,9 +27,7 @@ export function createWorkerLogService(): ServiceDefinition {
   return {
     name: "workerLog",
     description: "Forward DO console output to the server terminal",
-    // Only workers (DOs) should call this. Panels and the server have their
-    // own native console routing.
-    policy: { allowed: ["worker"] },
+    policy: { allowed: ["shell", "panel", "server", "worker"] },
     methods: {
       write: {
         args: z.tuple([

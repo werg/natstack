@@ -32,7 +32,7 @@ export async function runImportPipeline(
   store: BrowserDataStore,
   onProgress?: ProgressCallback,
 ): Promise<ImportResult[]> {
-  // Resolve profile/profilePath to a concrete path, then normalize request
+  // Resolve profile to a concrete path, then normalize request for readers.
   const profilePath = resolveProfilePath(request);
   const resolved = { ...request, profilePath };
 
