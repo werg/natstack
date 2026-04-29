@@ -120,24 +120,31 @@ export class ServerProcessManager {
   }
 
   async shutdown(): Promise<void> {
-    if (!this.proc) return;
+    const proc = this.proc;
+    if (!proc) return;
     this.isShuttingDown = true;
 
     // Send shutdown via IPC
-    this.proc.postMessage({ type: "shutdown" });
+    proc.postMessage({ type: "shutdown" });
 
     // Wait up to 5s for clean exit, then SIGKILL
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
     await Promise.race([
-      new Promise<void>((resolve) => this.proc!.on("exit", () => resolve())),
-      new Promise<void>((resolve) =>
-        setTimeout(() => {
-          this.proc!.kill();
+      new Promise<void>((resolve) => proc.on("exit", () => resolve())),
+      new Promise<void>((resolve) => {
+        killTimer = setTimeout(() => {
+          proc.kill();
           resolve();
-        }, 5000)
-      ),
+        }, 5000);
+      }),
     ]);
+    if (killTimer) {
+      clearTimeout(killTimer);
+    }
 
-    this.proc = null;
+    if (this.proc === proc) {
+      this.proc = null;
+    }
   }
 
   getPorts(): ServerPorts | null {
