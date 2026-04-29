@@ -5,6 +5,9 @@ OAuth semantics; the host stores encrypted credential material and injects it
 only through host-mediated egress when the request URL matches an approved
 audience.
 
+Mobile OAuth on `auth.snugenv.com` and public webhook ingress on
+`hooks.snugenv.com` are tracked in `docs/credential-system-human-tasks.md`.
+
 ## Store Directly
 
 ```ts
