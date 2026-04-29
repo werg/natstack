@@ -26,7 +26,7 @@ describe("AiChatWorker model credential defaults", () => {
     const { instance } = await createTestDO(TestAiChatWorker);
     const worker = instance as TestAiChatWorker;
 
-    expect(worker.model()).toBe("openai-codex:gpt-5.4");
+    expect(worker.model()).toBe("openai-codex:gpt-5.5");
 
     const setup = worker.setupProps("openai-codex");
     expect(setup).toMatchObject({

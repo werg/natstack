@@ -13,17 +13,17 @@ const OPENAI_CODEX_ACCOUNT_CLAIM = "https://api.openai.com/auth";
  *
  * The model, thinking level, and approval level can be customized via the
  * `getModel`/`getThinkingLevel`/`getApprovalLevel` overridable hooks. The
- * default is `openai-codex:gpt-5.4` at "medium" thinking with full-auto
+ * default is `openai-codex:gpt-5.5` at "medium" thinking with full-auto
  * approval. Model credentials are URL-bound and injected by the host egress
  * path after user approval.
  */
 export class AiChatWorker extends AgentWorkerBase {
   static override schemaVersion = 5;
 
-  /** Default to OpenAI Codex / gpt-5.4. The worker owns provider-specific
+  /** Default to OpenAI Codex / gpt-5.5. The worker owns provider-specific
    *  credential setup; host egress injects the resulting URL-bound credential. */
   protected override getModel(): string {
-    return "openai-codex:gpt-5.4";
+    return "openai-codex:gpt-5.5";
   }
 
   protected override getModelCredentialSetupProps(providerId: string): ModelCredentialSetupProps | null {
