@@ -51,65 +51,65 @@ Implemented in the repo:
   create, list, revoke, and rotate secret.
 - Userland subscriptions are constrained to the caller's own source before they
   can target a worker method.
+- Legacy webhook relay routes, provider/lease subscription storage, and
+  manifest-webhook runtime stubs have been deleted.
 
-Still blocked on real deployment details or broader product decisions:
+Follow-up TODOs:
 
-- Real DNS, Cloudflare bindings, relay secrets, Apple Team ID, Android signing
-  fingerprints, and provider redirect registrations.
-- A mobile OAuth continuation token if OAuth must survive full app termination
-  or a shell reconnect during the pending flow.
-- A dedicated approval-bar shape for public ingress creation; the current
-  credential approval queue is credential-shaped and should not be reused
-  blindly for webhook targets.
-- Delivery audit entries and end-to-end provider tests.
-- Deleting legacy relay `/calendar/:leaseId` and `/pubsub/:providerId` routes
-  after existing integrations have moved to `/i/:subscriptionId`.
+- TODO: Configure real DNS, Cloudflare bindings, relay secrets, Apple Team ID,
+  Android signing fingerprints, and provider redirect registrations.
+- TODO: Add a mobile OAuth continuation token if OAuth must survive full app
+  termination or a shell reconnect during the pending flow.
+- TODO: Add a dedicated approval-bar shape for public ingress creation; the
+  current credential approval queue is credential-shaped and should not be
+  reused blindly for webhook targets.
+- TODO: Add delivery audit entries and end-to-end provider tests.
+- TODO: Verify no deployed provider still points at deleted legacy
+  `/calendar/:leaseId` or `/pubsub/:providerId` URLs.
 
 ## Human Tasks
 
-### Domain and Cloudflare
+### TODO: Domain and Cloudflare
 
-- Add DNS records for:
+- TODO: Add DNS records for:
   - `snugenv.com`
   - `auth.snugenv.com`
   - `hooks.snugenv.com`
-- Bind `snugenv.com` and `auth.snugenv.com` to the well-known static site.
-- Bind `hooks.snugenv.com` to the webhook relay Worker.
-- Decide the production NatStack relay-to-server target for hosted/dev
+- TODO: Bind `snugenv.com` and `auth.snugenv.com` to the well-known static site.
+- TODO: Bind `hooks.snugenv.com` to the webhook relay Worker.
+- TODO: Decide the production NatStack relay-to-server target for hosted/dev
   deployments. For local-only development, expose the local gateway through an
   explicit tunnel and set the relay's upstream to that tunnel URL.
-- Configure Cloudflare secrets for the relay:
+- TODO: Configure Cloudflare secrets for the relay:
   - `NATSTACK_SERVER_BASE_URL`
   - `NATSTACK_RELAY_SIGNING_SECRET`
-  - optional temporary `NATSTACK_SERVER_BEARER_TOKEN` only if a deployment still
-    needs legacy bearer forwarding during migration.
 
-### Mobile App Links
+### TODO: Mobile App Links
 
-- Fill `apps/well-known/config.json` with the real Apple Developer Team ID.
-- Fill `apps/well-known/config.json` with Android release signing SHA256
+- TODO: Fill `apps/well-known/config.json` with the real Apple Developer Team ID.
+- TODO: Fill `apps/well-known/config.json` with Android release signing SHA256
   fingerprints:
   - upload key
   - Play App Signing key, if Play signing is enabled
-- Build and deploy the well-known site.
-- Verify:
+- TODO: Build and deploy the well-known site.
+- TODO: Verify:
   - `https://auth.snugenv.com/.well-known/apple-app-site-association`
   - `https://auth.snugenv.com/.well-known/assetlinks.json`
   - same payloads from `https://snugenv.com/.well-known/...` if apex deep links
     are kept.
-- Confirm iOS associated domains include `applinks:auth.snugenv.com`.
-- Confirm Android intent filters include `https://auth.snugenv.com/oauth/callback`.
-- Keep `natstack://` only as a debug/transitional fallback until app-link
+- TODO: Confirm iOS associated domains include `applinks:auth.snugenv.com`.
+- TODO: Confirm Android intent filters include `https://auth.snugenv.com/oauth/callback`.
+- TODO: Keep `natstack://` only as a debug/transitional fallback until app-link
   verification is proven on production builds.
 
-### OAuth Provider Registrations
+### TODO: OAuth Provider Registrations
 
 For each OAuth-backed credential provider we ship or document:
 
-- Register `https://auth.snugenv.com/oauth/callback/:providerId`.
-- Register loopback redirects only for desktop flows that need them.
-- Prefer public PKCE clients. Do not require a mobile client secret.
-- Record whether the provider supports:
+- TODO: Register `https://auth.snugenv.com/oauth/callback/:providerId`.
+- TODO: Register loopback redirects only for desktop flows that need them.
+- TODO: Prefer public PKCE clients. Do not require a mobile client secret.
+- TODO: Record whether the provider supports:
   - absent `token_type`
   - absent `expires_in`
   - refresh tokens
@@ -120,139 +120,147 @@ The OpenAI/Codex default must continue to use URL-bound credentials and the
 server-supported OAuth PKCE path. The default model is
 `openai-codex:gpt-5.5`.
 
-### Webhook Provider Setup
+### TODO: Webhook Provider Setup
 
 For each provider integration that needs webhooks:
 
-- Create the provider-side webhook URL with
+- TODO: Create the provider-side webhook URL with
   `https://hooks.snugenv.com/i/:subscriptionId`.
-- Generate a provider webhook secret where the provider supports one.
-- Select a verifier primitive:
+- TODO: Generate a provider webhook secret where the provider supports one.
+- TODO: Select a verifier primitive:
   - HMAC SHA-256 header
   - timestamped HMAC
   - bearer token header
   - provider-specific built-in verifier only when needed
-- Document expected event headers and replay identifiers.
+- TODO: Document expected event headers and replay identifiers.
 
-No provider webhook should point at the old `/calendar/:leaseId` or
-`/pubsub/:providerId` relay paths after the migration.
+Provider webhooks must use `https://hooks.snugenv.com/i/:subscriptionId`.
 
 ## Programming Work
 
-### Phase 1: Mobile OAuth on `auth.snugenv.com`
+### Completed: Mobile OAuth on `auth.snugenv.com`
 
-1. Add a mobile OAuth helper to `workspace/packages/runtime` that wraps:
+Done:
+
+1. Mobile OAuth helper wraps:
    - `credentials.beginCreateWithOAuthPkce`
    - system-browser open
    - mobile deep-link pending-flow registration
    - `credentials.completeCreateWithOAuthPkce`
-2. Make the helper use
+2. The helper uses
    `https://auth.snugenv.com/oauth/callback/:providerId` by default on mobile.
-3. Return enough data from `beginCreateWithOAuthPkce` for mobile to register the
-   pending flow. Today `nonce` is also the OAuth state; keep that contract
-   explicit in types/tests or add a `state` field that aliases it.
-4. Ensure the mobile completion call uses the same shell/server caller identity
-   that began the flow. If mobile reconnects during OAuth, add a short-lived
-   mobile OAuth continuation token instead of weakening the caller check.
-5. Add mobile tests for:
-   - universal-link callback parsing
-   - custom-scheme fallback warning
-   - duplicate callback dedupe
-   - begin/complete happy path
-   - state mismatch rejection
-   - app restart/reconnect behavior
-6. Keep desktop loopback unchanged. Panels and workers should continue using the
-   existing server-supported PKCE APIs and should not receive raw tokens.
+3. `beginCreateWithOAuthPkce` returns a `state` field that aliases the nonce.
+4. Desktop loopback remains unchanged. Panels and workers continue using the
+   server-supported PKCE APIs and do not receive raw tokens.
 
-### Phase 2: Well-Known Deployment Hardening
+Follow-up:
 
-1. Extend `apps/well-known` build output with an explicit
+- TODO: Add a short-lived mobile OAuth continuation token if mobile reconnects
+  during OAuth or the app must survive full termination while an OAuth flow is
+  pending.
+- TODO: Add app restart/reconnect mobile OAuth tests once continuation tokens
+  exist.
+
+### TODO: Well-Known Deployment Hardening
+
+1. TODO: Extend `apps/well-known` build output with an explicit
    `auth.snugenv.com`/`snugenv.com` deployment checklist.
-2. Add tests that fail production builds if placeholder Team ID or Android
-   fingerprints remain.
-3. Add a small verification script that fetches both well-known URLs and checks:
+2. Done: production builds fail if placeholder Team ID or Android fingerprints
+   remain.
+3. TODO: Add a small verification script that fetches both well-known URLs and checks:
    - content type
    - cache headers
    - Apple app ID
    - Android package/fingerprints
-4. Wire that script into CI as a manual or environment-gated check.
+4. TODO: Wire that script into CI as a manual or environment-gated check.
 
-### Phase 3: Generic Public Webhook Ingress
+### Completed: Generic Public Webhook Ingress
 
-1. Replace provider-shaped relay routes with one public route:
+Done:
+
+1. Provider-shaped relay routes were replaced with one public route:
    - `POST /i/:subscriptionId`
-2. Preserve the raw request body and original provider headers at the relay.
-3. Sign a relay envelope before forwarding to the NatStack server:
+2. The relay preserves the raw request body and original provider headers.
+3. The relay signs an envelope before forwarding to the NatStack server:
    - method
    - path
    - query
    - timestamp
    - raw body SHA-256
-   - selected original headers
-4. Forward to a private server route such as:
+4. The relay forwards to:
    - `POST /_r/s/webhookIngress/:subscriptionId`
-5. On the server, verify the relay envelope first, then look up the webhook
-   subscription, then verify the provider signature.
-6. Add replay protection:
+5. The server verifies the relay envelope first, then looks up the webhook
+   subscription, then verifies the provider signature.
+6. Replay protection exists:
    - relay timestamp tolerance
    - provider delivery ID dedupe when available
    - payload hash dedupe fallback with a short TTL
-7. Deliver verified events to userland through a worker method or event queue.
-   The delivery payload should include verified metadata and parsed JSON when
-   safe, but also keep the raw body available for integrations that need it.
-8. Add audit entries for:
-   - accepted delivery
-   - verifier failure
-   - replay rejection
-   - target delivery failure
+7. Verified events are delivered to userland through a worker method.
+8. Tests prove old calendar/pubsub relay paths are no longer exposed.
 
-### Phase 4: Webhook Subscription API
+Follow-up:
 
-1. Replace legacy provider/lease subscription storage with a generic model:
+- TODO: Add audit entries for:
+  - accepted delivery
+  - verifier failure
+  - replay rejection
+  - target delivery failure
+
+### Completed: Webhook Subscription API
+
+Done:
+
+1. Legacy provider/lease subscription storage was deleted.
+2. Generic webhook ingress subscriptions are stored durably with:
    - `subscriptionId`
-   - `owner`
-   - `targetWorker`
-   - `targetMethod`
-   - `verifier`
-   - `secretRef` or encrypted secret
-   - `publicUrl`
-   - `createdAt`
-   - `revokedAt`
-2. Add runtime APIs for workers/panels:
+   - owner caller
+   - target worker source/class/object/method
+   - verifier
+   - public URL
+   - creation/update/revocation timestamps
+3. Runtime APIs exist for workers/panels:
    - create subscription
    - list own subscriptions
    - revoke subscription
    - rotate secret
-3. Require shell/server approval to create public ingress for sensitive targets.
-4. Ensure userland cannot create a subscription that targets another source's
+4. Userland cannot create a subscription that targets another source's
    worker/method.
-5. Add migration tests proving old calendar/pubsub relay paths are no longer
-   advertised.
 
-### Phase 5: Verification and Cutover
+Follow-up:
 
-1. Add end-to-end tests with a local fake OAuth provider and a local fake
+- TODO: Require shell/server approval to create public ingress for sensitive
+  targets.
+- TODO: Move webhook verifier secrets behind encrypted secret references if the
+  current encrypted workspace database storage is not enough for the deployment
+  threat model.
+
+### TODO: Verification and Deployment Cutover
+
+1. TODO: Add end-to-end tests with a local fake OAuth provider and a local fake
    webhook sender.
-2. Add Cloudflare Worker unit tests for relay signing and raw-body preservation.
-3. Add server integration tests for:
+2. Done: Cloudflare Worker unit tests cover relay signing, raw-body
+   preservation, fail-closed signing-secret behavior, and legacy route removal.
+3. Done: Server integration tests cover:
    - valid signed relay + valid provider signature
-   - valid relay + invalid provider signature
    - invalid relay signature
    - replayed delivery
    - revoked subscription
-4. Update `docs/credential-system.md`, `docs/routes.md`, and the sandbox skills
-   once the APIs are stable.
-5. Delete all old `/calendar/:leaseId`, `/pubsub/:providerId`, provider-lease,
-   and webhook-watch terminology from code/docs after the generic ingress path
-   is live.
+   - durable subscription persistence
+   - secret rotation
+   - cross-source target rejection
+4. TODO: Add a server integration test for valid relay + invalid provider
+   signature.
+5. TODO: Update `docs/credential-system.md`, `docs/routes.md`, and the sandbox
+   skills once the APIs are stable.
 
 ## Open Decisions
 
-- Whether `hooks.snugenv.com` points directly at a Cloudflare Worker in all
-  environments or only production.
-- Whether local development should require an explicit tunnel or use a hosted
-  relay queue.
-- Which verifier primitives are required for the first integrations beyond
-  HMAC/timestamped HMAC/bearer.
-- Whether mobile OAuth continuations need to survive full app termination or
-  only foreground/background reconnects during the pending OAuth TTL.
+- TODO: Decide whether `hooks.snugenv.com` points directly at a Cloudflare
+  Worker in all environments or only production.
+- TODO: Decide whether local development should require an explicit tunnel or
+  use a hosted relay queue.
+- TODO: Decide which verifier primitives are required for the first integrations
+  beyond HMAC/timestamped HMAC/bearer.
+- TODO: Decide whether mobile OAuth continuations need to survive full app
+  termination or only foreground/background reconnects during the pending OAuth
+  TTL.

@@ -1,5 +1,10 @@
 import * as crypto from "node:crypto";
-import type { WebhookVerifier } from "./types.js";
+
+export type WebhookVerifier = (
+  payload: Buffer | string,
+  headers: Record<string, string>,
+  secret: string,
+) => boolean;
 
 function getHeader(headers: Record<string, string>, name: string): string | undefined {
   const direct = headers[name];

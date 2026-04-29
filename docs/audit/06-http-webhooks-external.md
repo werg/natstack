@@ -538,8 +538,7 @@ res.setHeader("X-Frame-Options", "DENY");
 - `apps/well-known/config.json`
 - `apps/well-known/src/*.template.json`
 - `packages/shared/src/webhooks/verifier.ts` (+ test)
-- `packages/shared/src/webhooks/subscription.ts`
-- `packages/shared/src/webhooks/types.ts`
+- `packages/shared/src/webhooks/ingress.ts`
 - `packages/shared/src/credentials/audit.ts`
 - `packages/shared/src/credentials/types.ts`
 - `packages/shared/src/credentials/flows/loopbackPkce.ts`

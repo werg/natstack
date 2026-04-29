@@ -1,6 +1,6 @@
 # NatStack webhook relay
 
-Cloudflare Worker that will forward public provider webhook callbacks from
+Cloudflare Worker that forwards public provider webhook callbacks from
 `hooks.snugenv.com` to a reachable NatStack server.
 
 The relay must stay thin: it preserves the raw body and provider headers, signs
@@ -17,10 +17,6 @@ The target plan is tracked in `docs/credential-system-human-tasks.md`.
 | GET | `/healthz` or `/health` | none | Liveness check. |
 | POST | `/i/:subscriptionId` | relay envelope to server | Generic ingress path; forwards to `/_r/s/webhookIngress/:subscriptionId`. |
 
-The current implementation still contains legacy `/calendar/:leaseId` and
-`/pubsub/:providerId` forwarding paths. Those are migration scaffolding and
-should not be advertised to new integrations.
-
 ## Deploy
 
 ```bash
@@ -33,9 +29,6 @@ wrangler secret put NATSTACK_SERVER_BASE_URL
 # Required for generic ingress: HMAC key for relay envelope signing.
 wrangler secret put NATSTACK_RELAY_SIGNING_SECRET
 
-# Optional temporary compatibility secret for legacy bearer forwarding.
-wrangler secret put NATSTACK_SERVER_BEARER_TOKEN
-
 wrangler deploy
 ```
 
@@ -47,9 +40,6 @@ URL, without a trailing path. Example: `https://natstack.example.com`.
 `NATSTACK_RELAY_SIGNING_SECRET` is required by the generic ingress path.
 The Worker signs the forwarded method/path/query/timestamp/body-hash envelope;
 the server verifies it before provider-specific webhook verification.
-
-`NATSTACK_SERVER_BEARER_TOKEN` is temporary compatibility plumbing. Do not build
-new webhook authentication on top of it.
 
 ## Provider URLs
 

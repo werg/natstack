@@ -77,4 +77,24 @@ describe("webhook relay", () => {
     });
     expect(upstream).not.toHaveBeenCalled();
   });
+
+  it("does not expose legacy provider-shaped relay paths", async () => {
+    const upstream = vi.fn();
+    vi.stubGlobal("fetch", upstream);
+
+    for (const url of [
+      "https://hooks.snugenv.com/calendar/lease-1",
+      "https://hooks.snugenv.com/pubsub/google",
+    ]) {
+      const response = await worker.fetch(
+        new Request(url, { method: "POST", body: "{}" }),
+        {
+          NATSTACK_SERVER_BASE_URL: "https://server.example.test",
+          NATSTACK_RELAY_SIGNING_SECRET: "relay-secret",
+        },
+      );
+      expect(response.status).toBe(404);
+    }
+    expect(upstream).not.toHaveBeenCalled();
+  });
 });
