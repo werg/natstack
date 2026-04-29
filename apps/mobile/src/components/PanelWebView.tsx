@@ -183,7 +183,7 @@ function buildBridgeBootstrapScript(panelInit: unknown, enableDebug: boolean): s
         createBrowserPanel: (url, opts) => callHost("createBrowserPanel", [url, opts]),
         openDevtools: () => callHost("openDevtools", []),
         openFolderDialog: (opts) => callHost("openFolderDialog", [opts]),
-        openExternal: (url) => callHost("openExternal", [url]),
+        openExternal: (url, opts) => callHost("openExternal", [url, opts]),
         getCdpEndpoint: (id) => callHost("getCdpEndpoint", [id]),
         navigate: (id, url) => callHost("navigate", [id, url]),
         goBack: (id) => callHost("goBack", [id]),

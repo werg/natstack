@@ -92,4 +92,47 @@ describe("externalOpenService", () => {
       ["file:///etc/passwd"],
     )).rejects.toThrow("openExternal only supports http(s) and mailto URLs");
   });
+
+  it("validates OAuth authorize URLs when an expected redirect URI is supplied", async () => {
+    const eventService = new EventService();
+    const approvalQueue = {
+      request: vi.fn(async () => "session" as const),
+      resolve: vi.fn(),
+      listPending: vi.fn(() => []),
+    };
+    const service = createExternalOpenService({
+      eventService,
+      approvalQueue,
+      grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
+      codeIdentityResolver: {
+        resolveByCallerId: (callerId) => ({
+          callerId,
+          callerKind: "panel",
+          repoPath: "panels/example",
+          effectiveVersion: "version-1",
+        }),
+      },
+    });
+    const authorizeUrl = new URL("https://login.example.com/oauth/authorize");
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("client_id", "client-1");
+    authorizeUrl.searchParams.set("redirect_uri", "http://localhost:1455/auth/callback");
+    authorizeUrl.searchParams.set("state", "state-1");
+    authorizeUrl.searchParams.set("code_challenge", "challenge-1");
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+
+    await expect(service.handler(
+      { callerId: "panel-1", callerKind: "panel" },
+      "openExternal",
+      [authorizeUrl.toString(), { expectedRedirectUri: "http://localhost:1456/auth/callback" }],
+    )).rejects.toThrow("redirect_uri does not match");
+
+    await service.handler(
+      { callerId: "panel-1", callerKind: "panel" },
+      "openExternal",
+      [authorizeUrl.toString(), { expectedRedirectUri: "http://localhost:1455/auth/callback" }],
+    );
+
+    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
+  });
 });

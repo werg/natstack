@@ -131,8 +131,8 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
       setStatus("waiting");
       if (openMode === "external") {
         const shell = globalThis.__natstackShell || globalThis.__natstackElectron;
-        if (shell && typeof shell.openOAuthExternal === "function") {
-          await shell.openOAuthExternal(begin.authorizeUrl, callback.redirectUri);
+        if (shell && typeof shell.openExternal === "function") {
+          await shell.openExternal(begin.authorizeUrl, { expectedRedirectUri: callback.redirectUri });
         } else {
           window.open(begin.authorizeUrl, "_blank", "noopener,noreferrer");
         }

@@ -25,7 +25,6 @@ import { TokenManager } from "@natstack/shared/tokenManager";
 import { EventService } from "@natstack/shared/eventsService";
 import { isValidEventName, type EventName } from "@natstack/shared/events";
 import { installPinnedTlsForAllPartitions, pemFileFingerprint } from "./tlsPinning.js";
-import { assertAllowedOAuthExternalUrl } from "./oauthExternal.js";
 
 const eventService = new EventService();
 import { ViewManager } from "./viewManager.js";
@@ -893,40 +892,21 @@ app.on("ready", async () => {
       });
       return result.canceled ? null : result.filePaths[0] ?? null;
     });
-    ipcMain.handle("natstack:bridge.openExternal", async (event, url: string) => {
+    ipcMain.handle("natstack:bridge.openExternal", async (event, url: string, options?: unknown) => {
       const caller = resolveCaller(event);
       if (caller.callerKind === "shell") {
-        await sc.call("externalOpen", "openExternal", [url]);
+        await sc.call("externalOpen", "openExternal", [url, options]);
       } else {
-        await sc.call("externalOpen", "openExternalForCaller", [{ ...caller, url }]);
+        await sc.call("externalOpen", "openExternalForCaller", [{ ...caller, url, options }]);
       }
     });
-    ipcMain.handle("natstack:openExternal", async (event, url: string) => {
+    ipcMain.handle("natstack:openExternal", async (event, url: string, options?: unknown) => {
       const caller = resolveCaller(event);
       if (caller.callerKind === "shell") {
-        await sc.call("externalOpen", "openExternal", [url]);
+        await sc.call("externalOpen", "openExternal", [url, options]);
       } else {
-        await sc.call("externalOpen", "openExternalForCaller", [{ ...caller, url }]);
+        await sc.call("externalOpen", "openExternalForCaller", [{ ...caller, url, options }]);
       }
-    });
-    ipcMain.handle("natstack:bridge.openOAuthExternal", async (
-      event,
-      url: string,
-      expectedRedirectUri: string,
-    ) => {
-      const { callerId } = resolveCaller(event);
-      try {
-        assertAllowedOAuthExternalUrl(url, expectedRedirectUri);
-      } catch (err) {
-        console.warn(
-          `[ipc] Rejecting natstack:bridge.openOAuthExternal from ${callerId}: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-        throw err;
-      }
-      const { shell } = await import("electron");
-      await shell.openExternal(url);
     });
 
     // Generic Electron service dispatch — lets panels call Electron-local

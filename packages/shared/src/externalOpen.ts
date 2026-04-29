@@ -1,11 +1,10 @@
-const DEFAULT_ALLOWED_EXTERNAL_OAUTH_ORIGINS = new Set([
-  "https://auth.openai.com",
-]);
+export interface OpenExternalOptions {
+  expectedRedirectUri?: string;
+}
 
 export function assertAllowedOAuthExternalUrl(
   rawUrl: string,
   expectedRedirectUri: string,
-  allowedOrigins: ReadonlySet<string> = DEFAULT_ALLOWED_EXTERNAL_OAUTH_ORIGINS,
 ): void {
   let url: URL;
   let redirectUri: URL;
@@ -18,9 +17,6 @@ export function assertAllowedOAuthExternalUrl(
 
   if (url.protocol !== "https:") {
     throw new Error("OAuth authorization URL must use https");
-  }
-  if (!allowedOrigins.has(url.origin)) {
-    throw new Error(`OAuth authorization origin is not allowed: ${url.origin}`);
   }
   if (url.searchParams.get("response_type") !== "code") {
     throw new Error("OAuth authorization URL must request an authorization code");

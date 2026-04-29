@@ -29,6 +29,7 @@ if (typeof globalThis.Buffer === "undefined") {
 
 import type { RpcBridge } from "@natstack/rpc";
 import { createHttpRpcBridge } from "../shared/httpRpcBridge.js";
+import type { OpenExternalOptions } from "@natstack/shared/externalOpen";
 import { createDbClient } from "../shared/database.js";
 import { createRpcFs } from "../shared/rpcFs.js";
 import { createCredentialClient, type CredentialClient } from "../shared/credentials.js";
@@ -87,7 +88,7 @@ export interface WorkerRuntime {
 
   /** Call a server-side service method via RPC. */
   callMain<T>(method: string, ...args: unknown[]): Promise<T>;
-  openExternal(url: string): Promise<void>;
+  openExternal(url: string, options?: OpenExternalOptions): Promise<void>;
   getWorkspaceTree(): Promise<unknown>;
   listBranches(repoPath: string): Promise<unknown[]>;
   listCommits(repoPath: string, ref?: string, limit?: number): Promise<unknown[]>;
@@ -155,7 +156,7 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     pubsubConfig: null,
 
     callMain,
-    openExternal: (url: string) => callMain<void>("externalOpen.openExternal", url),
+    openExternal: (url: string, options?: OpenExternalOptions) => callMain<void>("externalOpen.openExternal", url, options),
     getWorkspaceTree: () => callMain<unknown>("git.getWorkspaceTree"),
     listBranches: (repoPath: string) => callMain<unknown[]>("git.listBranches", repoPath),
     listCommits: (repoPath: string, ref?: string, limit?: number) =>

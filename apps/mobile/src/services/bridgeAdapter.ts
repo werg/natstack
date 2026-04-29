@@ -58,11 +58,12 @@ export function createBridgeAdapter(deps: {
           return { id: created.panelId, title: created.title };
         }
         case "openExternal": {
-          const [url] = args as [string];
+          const [url, options] = args as [string, unknown?];
           await deps.transport.call("main", "externalOpen.openExternalForCaller", {
             callerId: panelId,
             callerKind: "panel",
             url,
+            options,
           });
           return;
         }

@@ -160,7 +160,6 @@ export function MainScreen() {
     const eventNames = [
       "navigate-to-panel",
       "external-open:open",
-      "open-external-requested",
       "notification:show",
       "shell-approval:pending-changed",
     ] as const;
@@ -237,14 +236,6 @@ export function MainScreen() {
       },
     );
 
-    const unsubLegacyExternal = shellClient.transport.onEvent(
-      "event:open-external-requested",
-      (_from: string, payload: unknown) => {
-        const { url } = payload as { url: string };
-        if (url) void Linking.openURL(url);
-      },
-    );
-
     const unsubNotification = shellClient.transport.onEvent(
       "event:notification:show",
       (_from: string, payload: unknown) => {
@@ -307,7 +298,6 @@ export function MainScreen() {
       unsubNavigate();
       unsubNav();
       unsubExternal();
-      unsubLegacyExternal();
       unsubNotification();
       unsubApproval();
       for (const name of eventNames) {

@@ -280,9 +280,9 @@ The connection status is also available programmatically via `app.getInfo()` whi
 ## OAuth in remote mode
 
 When an OAuth flow is initiated from a remotely-connected client, the server
-dispatches an `open-external-requested` event to **only the initiating client**
-(not broadcast — so a second connected client doesn't also try to handle
-somebody else's login). That client opens the URL locally
+validates the authorization URL through `externalOpen.openExternal` with the
+active callback URL attached as `expectedRedirectUri`. The shell client receives
+the approved `external-open:open` event and opens the URL locally
 (`shell.openExternal` on desktop, `Linking.openURL` on mobile). The server
 drives the OAuth state machine and persists the resulting tokens.
 

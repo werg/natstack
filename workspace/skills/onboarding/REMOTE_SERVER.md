@@ -73,7 +73,7 @@ Environment variable alternatives: `NATSTACK_REMOTE_CA`, `NATSTACK_REMOTE_FINGER
 
 ## 4. OAuth from a remote client
 
-When you trigger an OAuth flow (e.g. connecting an AI provider) from a remotely-connected client, the server dispatches an `open-external-requested` event to the initiating client with the auth URL. **The client that started the flow** opens that URL in its local browser — desktop uses `shell.openExternal`, mobile uses `Linking.openURL`. The server itself no longer needs a browser.
+When you trigger an OAuth flow (e.g. connecting an AI provider) from a remotely-connected client, the flow opens through `externalOpen.openExternal` with the active callback URL attached as `expectedRedirectUri`. **The client that started the flow** receives the approved `external-open:open` event and opens that URL in its local browser — desktop uses `shell.openExternal`, mobile uses `Linking.openURL`. The server itself no longer needs a browser.
 
 The OAuth callback redirects back to the server. For this to work your server's URL must be reachable from the internet (or you need a tunnel like Cloudflare Tunnel / Tailscale funnel). Set `--public-url` so the server builds the correct `redirect_uri`. See `docs/remote-server.md` for concrete proxy recipes.
 

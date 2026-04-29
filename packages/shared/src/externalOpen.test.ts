@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { assertAllowedOAuthExternalUrl } from "./oauthExternal.js";
+import { assertAllowedOAuthExternalUrl } from "./externalOpen.js";
 
 function authorizeUrl(overrides: Record<string, string> = {}): string {
   const url = new URL("https://auth.openai.com/oauth/authorize");
@@ -17,7 +17,7 @@ function authorizeUrl(overrides: Record<string, string> = {}): string {
 }
 
 describe("assertAllowedOAuthExternalUrl", () => {
-  it("accepts a known OAuth authorize URL bound to the active loopback callback", () => {
+  it("accepts an OAuth authorize URL bound to the active loopback callback", () => {
     expect(() =>
       assertAllowedOAuthExternalUrl(
         authorizeUrl(),
@@ -26,13 +26,13 @@ describe("assertAllowedOAuthExternalUrl", () => {
     ).not.toThrow();
   });
 
-  it("rejects arbitrary external sites", () => {
+  it("does not hardcode a provider auth origin", () => {
     expect(() =>
       assertAllowedOAuthExternalUrl(
         authorizeUrl({ redirect_uri: "http://localhost:1455/auth/callback" }).replace("auth.openai.com", "evil.example"),
         "http://localhost:1455/auth/callback",
       ),
-    ).toThrow(/origin is not allowed/);
+    ).not.toThrow();
   });
 
   it("rejects redirect_uri mismatch", () => {

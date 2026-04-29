@@ -16,6 +16,7 @@
  */
 
 import type { RpcBridge } from "@natstack/rpc";
+import type { OpenExternalOptions } from "@natstack/shared/externalOpen";
 import { buildPanelLink } from "../core/panelLinks.js";
 
 export interface BrowserHandle {
@@ -64,8 +65,8 @@ export async function createBrowserPanel(
 /**
  * Open a URL in the system browser (no CDP access).
  */
-export async function openExternal(url: string): Promise<void> {
-  await shell.openExternal(url);
+export async function openExternal(url: string, options?: OpenExternalOptions): Promise<void> {
+  await shell.openExternal(url, options);
 }
 
 /**

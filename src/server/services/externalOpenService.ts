@@ -1,5 +1,7 @@
 import { z } from "zod";
 import type { EventService } from "@natstack/shared/eventsService";
+import { assertAllowedOAuthExternalUrl } from "@natstack/shared/externalOpen";
+import type { OpenExternalOptions } from "@natstack/shared/externalOpen";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
 import type { ApprovalQueue, GrantedDecision } from "./approvalQueue.js";
@@ -8,6 +10,9 @@ import type { CodeIdentityResolver } from "./codeIdentityResolver.js";
 
 const CAPABILITY = "external-browser-open";
 const OPEN_EXTERNAL_ALLOWED_SCHEMES = new Set(["http:", "https:", "mailto:"]);
+const OPEN_EXTERNAL_OPTIONS_SCHEMA = z.object({
+  expectedRedirectUri: z.string().optional(),
+}).strict();
 
 export interface ExternalOpenServiceDeps {
   eventService: EventService;
@@ -17,8 +22,11 @@ export interface ExternalOpenServiceDeps {
 }
 
 export function createExternalOpenService(deps: ExternalOpenServiceDeps): ServiceDefinition {
-  async function requestOpen(ctx: ServiceContext, rawUrl: string): Promise<void> {
+  async function requestOpen(ctx: ServiceContext, rawUrl: string, options?: OpenExternalOptions): Promise<void> {
     const url = normalizeExternalUrl(rawUrl);
+    if (options?.expectedRedirectUri) {
+      assertAllowedOAuthExternalUrl(url.toString(), options.expectedRedirectUri);
+    }
     const resource = resourceForExternalUrl(url);
     const identity = resolveIdentity(ctx, deps.codeIdentityResolver);
 
@@ -27,7 +35,7 @@ export function createExternalOpenService(deps: ExternalOpenServiceDeps): Servic
         throw new Error("External browser open approval is unavailable");
       }
       if (!deps.grantStore.hasGrant(CAPABILITY, resource.key, identity)) {
-        const decision = await requestApproval(ctx, url, resource, identity, deps.approvalQueue);
+        const decision = await requestApproval(ctx, url, options, resource, identity, deps.approvalQueue);
         if (decision === "deny") {
           throw new Error("External browser open denied");
         }
@@ -47,13 +55,14 @@ export function createExternalOpenService(deps: ExternalOpenServiceDeps): Servic
     description: "Approval-gated system browser opens",
     policy: { allowed: ["shell", "server", "panel", "worker"] },
     methods: {
-      openExternal: { args: z.tuple([z.string()]) },
+      openExternal: { args: z.tuple([z.string(), OPEN_EXTERNAL_OPTIONS_SCHEMA.optional()]) },
       openExternalForCaller: {
         args: z.tuple([
           z.object({
             callerId: z.string(),
             callerKind: z.enum(["panel", "worker"]),
             url: z.string(),
+            options: OPEN_EXTERNAL_OPTIONS_SCHEMA.optional(),
           }).strict(),
         ]),
       },
@@ -61,16 +70,21 @@ export function createExternalOpenService(deps: ExternalOpenServiceDeps): Servic
     handler: async (ctx, method, args) => {
       switch (method) {
         case "openExternal":
-          return requestOpen(ctx, args[0] as string);
+          return requestOpen(ctx, args[0] as string, args[1] as OpenExternalOptions | undefined);
         case "openExternalForCaller": {
           if (ctx.callerKind !== "shell" && ctx.callerKind !== "server") {
             throw new Error("openExternalForCaller is shell/server-only");
           }
-          const [request] = args as [{ callerId: string; callerKind: "panel" | "worker"; url: string }];
+          const [request] = args as [{
+            callerId: string;
+            callerKind: "panel" | "worker";
+            url: string;
+            options?: OpenExternalOptions;
+          }];
           return requestOpen({
             callerId: request.callerId,
             callerKind: request.callerKind,
-          }, request.url);
+          }, request.url, request.options);
         }
         default:
           throw new Error(`Unknown externalOpen method: ${method}`);
@@ -116,10 +130,18 @@ function resolveIdentity(
 async function requestApproval(
   ctx: ServiceContext,
   url: URL,
+  options: OpenExternalOptions | undefined,
   resource: { key: string; label: string; value: string },
   identity: CapabilityGrantIdentity,
   approvalQueue: ApprovalQueue,
 ): Promise<GrantedDecision> {
+  const details = [
+    { label: "URL", value: url.toString() },
+  ];
+  if (options?.expectedRedirectUri) {
+    details.push({ label: "OAuth callback", value: options.expectedRedirectUri });
+  }
+
   return approvalQueue.request({
     kind: "capability",
     callerId: ctx.callerId,
@@ -134,8 +156,6 @@ async function requestApproval(
       label: resource.label,
       value: resource.value,
     },
-    details: [
-      { label: "URL", value: url.toString() },
-    ],
+    details,
   });
 }
