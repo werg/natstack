@@ -33,6 +33,38 @@ routes, not on provider-facing URLs directly.
 5. Public infrastructure must fail closed when domain, signing, or relay secrets
    are missing.
 
+## Current Implementation Status
+
+Implemented in the repo:
+
+- Mobile OAuth helpers default to
+  `https://auth.snugenv.com/oauth/callback/:providerId` and complete through the
+  server-supported PKCE credential APIs.
+- `beginCreateWithOAuthPkce` returns an explicit `state` alias so mobile can
+  register the pending callback without deriving host internals.
+- The webhook relay accepts `POST /i/:subscriptionId`, preserves the raw body,
+  signs the relay envelope, and forwards to the private server ingress route.
+- The server verifies the relay envelope before provider verification, applies
+  replay protection, stores subscriptions durably in workspace SQLite, and
+  dispatches verified events to the configured worker target.
+- Worker and panel runtimes expose generic webhook subscription APIs:
+  create, list, revoke, and rotate secret.
+- Userland subscriptions are constrained to the caller's own source before they
+  can target a worker method.
+
+Still blocked on real deployment details or broader product decisions:
+
+- Real DNS, Cloudflare bindings, relay secrets, Apple Team ID, Android signing
+  fingerprints, and provider redirect registrations.
+- A mobile OAuth continuation token if OAuth must survive full app termination
+  or a shell reconnect during the pending flow.
+- A dedicated approval-bar shape for public ingress creation; the current
+  credential approval queue is credential-shaped and should not be reused
+  blindly for webhook targets.
+- Delivery audit entries and end-to-end provider tests.
+- Deleting legacy relay `/calendar/:leaseId` and `/pubsub/:providerId` routes
+  after existing integrations have moved to `/i/:subscriptionId`.
+
 ## Human Tasks
 
 ### Domain and Cloudflare

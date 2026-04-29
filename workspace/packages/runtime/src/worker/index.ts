@@ -32,6 +32,7 @@ import { createHttpRpcBridge } from "../shared/httpRpcBridge.js";
 import { createDbClient } from "../shared/database.js";
 import { createRpcFs } from "../shared/rpcFs.js";
 import { createCredentialClient, type CredentialClient } from "../shared/credentials.js";
+import { createWebhookIngressClient, type WebhookIngressClient } from "../shared/webhooks.js";
 import { createWorkerdClient, type WorkerdClient } from "../shared/workerd.js";
 import { createWorkspaceClient, type WorkspaceClient } from "../shared/workspace.js";
 import { createNotificationClient, type NotificationClient } from "../shared/notifications.js";
@@ -50,6 +51,15 @@ export type {
   CompleteOAuthPkceCredentialRequest,
   CreateOAuthPkceCredentialRequest,
 } from "../shared/credentials.js";
+export type {
+  CreateWebhookIngressSubscriptionRequest,
+  RotateWebhookIngressSecretRequest,
+  RotateWebhookIngressSecretResult,
+  WebhookIngressClient,
+  WebhookIngressSubscriptionSummary,
+  WebhookTarget,
+  WebhookVerifierConfig,
+} from "../shared/webhooks.js";
 export type { NotificationClient } from "../shared/notifications.js";
 export { DurableObjectBase } from "./durable-base.js";
 export type { DurableObjectContext, SqlStorage, SqlResult, DORef } from "./durable-base.js";
@@ -69,6 +79,7 @@ export interface WorkerRuntime {
   readonly workers: WorkerdClient;
   readonly workspace: WorkspaceClient;
   readonly credentials: CredentialClient;
+  readonly webhooks: WebhookIngressClient;
   readonly notifications: NotificationClient;
   readonly contextId: string;
   readonly gitConfig: null;
@@ -120,6 +131,7 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
   const workers = helpfulNamespace("workers", createWorkerdClient(rpc));
   const workspaceApi = helpfulNamespace("workspace", createWorkspaceClient(rpc));
   const credentials = helpfulNamespace("credentials", createCredentialClient(rpc));
+  const webhooks = helpfulNamespace("webhooks", createWebhookIngressClient(rpc));
   const notifications = helpfulNamespace("notifications", createNotificationClient(rpc));
 
   const parentId = (env.PARENT_ID as string) || null;
@@ -135,6 +147,7 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     workers,
     workspace: workspaceApi,
     credentials,
+    webhooks,
     notifications,
     contextId: env.CONTEXT_ID,
     gitConfig: null,

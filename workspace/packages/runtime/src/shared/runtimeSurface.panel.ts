@@ -94,6 +94,12 @@ export const panelRuntimeSurface: RuntimeSurface = {
       "fetch",
       "hookForUrl",
     ]),
+    webhooks: namespaceEntry([
+      "createSubscription",
+      "listSubscriptions",
+      "revokeSubscription",
+      "rotateSecret",
+    ]),
     notifications: namespaceEntry(["show", "dismiss"]),
   },
 };

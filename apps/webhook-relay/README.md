@@ -15,7 +15,7 @@ The target plan is tracked in `docs/credential-system-human-tasks.md`.
 | Method | Path | Auth | Purpose |
 | --- | --- | --- | --- |
 | GET | `/healthz` or `/health` | none | Liveness check. |
-| POST | `/i/:subscriptionId` | relay envelope to server | Planned generic ingress path; forwards to `/_r/s/webhookIngress/:subscriptionId`. |
+| POST | `/i/:subscriptionId` | relay envelope to server | Generic ingress path; forwards to `/_r/s/webhookIngress/:subscriptionId`. |
 
 The current implementation still contains legacy `/calendar/:leaseId` and
 `/pubsub/:providerId` forwarding paths. Those are migration scaffolding and
@@ -30,7 +30,7 @@ pnpm install
 # Configure the NatStack server this Worker forwards to.
 wrangler secret put NATSTACK_SERVER_BASE_URL
 
-# Required once generic ingress lands: HMAC key for relay envelope signing.
+# Required for generic ingress: HMAC key for relay envelope signing.
 wrangler secret put NATSTACK_RELAY_SIGNING_SECRET
 
 # Optional temporary compatibility secret for legacy bearer forwarding.
@@ -44,7 +44,7 @@ wrangler deploy
 `NATSTACK_SERVER_BASE_URL` must be an externally reachable NatStack server base
 URL, without a trailing path. Example: `https://natstack.example.com`.
 
-`NATSTACK_RELAY_SIGNING_SECRET` is required by the planned generic ingress path.
+`NATSTACK_RELAY_SIGNING_SECRET` is required by the generic ingress path.
 The Worker signs the forwarded method/path/query/timestamp/body-hash envelope;
 the server verifies it before provider-specific webhook verification.
 

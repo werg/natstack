@@ -48,7 +48,11 @@ export function createEditTool(
     description:
       "Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits.",
     parameters: editSchema,
-    execute: async (_toolCallId, { path, oldText, newText }, signal) => {
+    execute: async (_toolCallId, input, signal) => {
+      const { path, oldText, newText } = input;
+      if (typeof path !== "string" || typeof oldText !== "string" || typeof newText !== "string") {
+        throw new Error("edit requires path, oldText, and newText");
+      }
       if (signal?.aborted) {
         throw new Error("Operation aborted");
       }

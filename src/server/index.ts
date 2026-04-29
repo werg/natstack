@@ -598,6 +598,31 @@ async function main() {
     })));
   }
 
+  // ── Generic public webhook ingress ──
+  {
+    const { createWebhookIngressService } = await import("./services/webhookIngressService.js");
+    const { rpcServiceWithRoutes } = await import("./rpcServiceWithRoutes.js");
+    const webhookIngress = createWebhookIngressService({
+      relaySigningSecret: process.env["NATSTACK_RELAY_SIGNING_SECRET"],
+      publicBaseUrl: process.env["NATSTACK_WEBHOOK_PUBLIC_URL"] ?? "https://hooks.snugenv.com",
+      databaseManager,
+      codeIdentityResolver,
+      dispatchToTarget: async (target, event) => {
+        const doDispatch = container.get<import("./doDispatch.js").DODispatch>("doDispatch");
+        await doDispatch.dispatch(
+          {
+            source: target.source,
+            className: target.className,
+            objectKey: target.objectKey,
+          },
+          target.method,
+          event,
+        );
+      },
+    });
+    container.register(rpcServiceWithRoutes(webhookIngress, routeRegistry));
+  }
+
   // ── DODispatch (source-scoped HTTP dispatch to Durable Objects) ──
 
   container.register({

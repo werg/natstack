@@ -16,6 +16,7 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 | `workers` | namespace | `create`, `destroy`, `update`, `list`, `status`, `listInstanceSources`, `getPort`, `restartAll`, `cloneDO`, `destroyDO` |  |
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo` |  |
 | `credentials` | namespace | `store`, `beginCreateWithOAuthPkce`, `completeCreateWithOAuthPkce`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl` |  |
+| `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
 | `contextId` | value |  |  |
 | `gitConfig` | value |  |  |

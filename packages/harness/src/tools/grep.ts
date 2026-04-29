@@ -143,9 +143,13 @@ export function createGrepTool(
     parameters: grepSchema,
     execute: async (
       _toolCallId,
-      { pattern, path: searchDir, glob, ignoreCase, literal, context, limit },
+      input,
       signal,
     ) => {
+      const { pattern, path: searchDir, glob, ignoreCase, literal, context, limit } = input;
+      if (typeof pattern !== "string") {
+        throw new Error("grep requires pattern");
+      }
       if (signal?.aborted) {
         throw new Error("Operation aborted");
       }

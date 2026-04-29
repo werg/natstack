@@ -147,6 +147,19 @@ const credentialApi = {
 };
 export const credentials = helpfulNamespace("credentials", credentialApi);
 
+// Generic public webhook ingress.
+import { createWebhookIngressClient } from "../shared/webhooks.js";
+export type {
+  CreateWebhookIngressSubscriptionRequest,
+  RotateWebhookIngressSecretRequest,
+  RotateWebhookIngressSecretResult,
+  WebhookIngressClient,
+  WebhookIngressSubscriptionSummary,
+  WebhookTarget,
+  WebhookVerifierConfig,
+} from "../shared/webhooks.js";
+export const webhooks = helpfulNamespace("webhooks", createWebhookIngressClient(rpc));
+
 // Shell notifications
 import { createNotificationClient } from "./notifications.js";
 export type { NotificationClient } from "./notifications.js";

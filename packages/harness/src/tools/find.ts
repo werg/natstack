@@ -59,7 +59,11 @@ export function createFindTool(
     label: "find",
     description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Output is truncated to ${DEFAULT_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
     parameters: findSchema,
-    execute: async (_toolCallId, { pattern, path: searchDir, limit }, signal) => {
+    execute: async (_toolCallId, input, signal) => {
+      const { pattern, path: searchDir, limit } = input;
+      if (typeof pattern !== "string") {
+        throw new Error("find requires pattern");
+      }
       if (signal?.aborted) {
         throw new Error("Operation aborted");
       }

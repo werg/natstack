@@ -35,7 +35,11 @@ export function createWriteTool(
     description:
       "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
     parameters: writeSchema,
-    execute: async (_toolCallId, { path, content }, signal) => {
+    execute: async (_toolCallId, input, signal) => {
+      const { path, content } = input;
+      if (typeof path !== "string" || typeof content !== "string") {
+        throw new Error("write requires path and content");
+      }
       if (signal?.aborted) {
         throw new Error("Operation aborted");
       }

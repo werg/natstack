@@ -41,6 +41,12 @@ export const workerRuntimeSurface: RuntimeSurface = {
       "fetch",
       "hookForUrl",
     ]),
+    webhooks: namespaceEntry([
+      "createSubscription",
+      "listSubscriptions",
+      "revokeSubscription",
+      "rotateSecret",
+    ]),
     notifications: namespaceEntry(["show", "dismiss"]),
     contextId: valueEntry(),
     gitConfig: valueEntry(),

@@ -76,6 +76,7 @@ export interface CreateOAuthPkceCredentialRequest {
 
 export interface BeginOAuthPkceCredentialResult {
   nonce: string;
+  state: string;
   authorizeUrl: string;
 }
 

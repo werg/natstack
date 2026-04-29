@@ -56,6 +56,7 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `adblock` | namespace | `getStats`, `isActive`, `getStatsForPanel`, `isEnabledForPanel`, `setEnabledForPanel`, `resetStatsForPanel`, `getPanelUrl`, `addToWhitelist`, `removeFromWhitelist` |  |
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo`, `openPanel` |  |
 | `credentials` | namespace | `store`, `beginCreateWithOAuthPkce`, `completeCreateWithOAuthPkce`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl` |  |
+| `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
 <!-- END GENERATED: panel-runtime-surface -->
 

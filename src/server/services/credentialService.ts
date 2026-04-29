@@ -248,7 +248,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   async function beginCreateWithOAuthPkce(
     ctx: ServiceContext,
     params: CreateOAuthPkceCredentialParams,
-  ): Promise<{ nonce: string; authorizeUrl: string }> {
+  ): Promise<{ nonce: string; state: string; authorizeUrl: string }> {
     const request = params as CreateOAuthPkceCredentialRequest;
     normalizeUrlAudiences(request.credential.audience);
     normalizeCredentialInjection(request.credential.injection);
@@ -288,7 +288,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       initiatorCallerId: ctx.callerId,
     });
 
-    return { nonce, authorizeUrl: authorizeUrl.toString() };
+    return { nonce, state: nonce, authorizeUrl: authorizeUrl.toString() };
   }
 
   async function completeCreateWithOAuthPkce(

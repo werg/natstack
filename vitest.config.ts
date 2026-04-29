@@ -62,7 +62,16 @@ export default defineConfig({
   },
   test: {
     globals: true,
-    include: ["src/**/*.test.ts", "src/**/*.test.tsx", "workspace/**/*.test.ts", "workspace/**/*.test.tsx", "packages/**/*.test.ts", "packages/**/*.test.tsx"],
+    include: [
+      "src/**/*.test.ts",
+      "src/**/*.test.tsx",
+      "workspace/**/*.test.ts",
+      "workspace/**/*.test.tsx",
+      "packages/**/*.test.ts",
+      "packages/**/*.test.tsx",
+      "apps/**/*.test.ts",
+      "apps/**/*.test.tsx",
+    ],
     exclude: ["**/node_modules/**", "dist", "workspace/.contexts"],
     setupFiles: ["tests/setup/vitest.setup.ts"],
     server: {
