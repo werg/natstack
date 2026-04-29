@@ -18,8 +18,10 @@ export interface LaunchConsentFlowParams {
 }
 
 export interface CompleteConsentParams {
+  providerId?: string;
   nonce: string;
   code: string;
+  state: string;
 }
 
 export interface ConsentCallbackParams {

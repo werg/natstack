@@ -72,6 +72,9 @@
       ],
       "@natstack/types": [
         "packages/types/src/index.ts"
+      ],
+      "@workspace/integrations/providers": [
+        "workspace/packages/integrations/src/providers.ts"
       ]
     }
   },

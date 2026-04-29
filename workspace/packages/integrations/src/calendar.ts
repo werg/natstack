@@ -1,12 +1,11 @@
-import { connect, type CredentialHandle } from "../../runtime/src/worker/credentials.js";
 import { hasRecentPushDelivery } from "./pushState.js";
-import { googleWorkspaceProvider } from "./providers.js";
+import { googleWorkspaceCredential } from "./providers.js";
+import { getUrlCredentialClient, type UrlCredentialClient } from "./urlCredentialClient.js";
 
 const GOOGLE_CALENDAR_BASE_URL = "https://www.googleapis.com/calendar/v3";
 const DEFAULT_PUSH_QUIET_WINDOW_MS = 5 * 60_000;
 
 export const manifest = {
-  providers: [googleWorkspaceProvider],
   scopes: {
     "google-workspace": ["calendar_readonly", "calendar_events"],
   },
@@ -95,11 +94,11 @@ export interface StartPollingOptions {
   onError?: (error: Error) => void | Promise<void>;
 }
 
-let googleWorkspace: CredentialHandle | undefined;
+let googleWorkspace: UrlCredentialClient | undefined;
 
-async function ensureAuth(): Promise<CredentialHandle> {
+async function ensureAuth(): Promise<UrlCredentialClient> {
   if (!googleWorkspace) {
-    googleWorkspace = await connect(googleWorkspaceProvider);
+    googleWorkspace = await getUrlCredentialClient(googleWorkspaceCredential);
   }
   return googleWorkspace;
 }
@@ -314,7 +313,7 @@ export function startPolling(options: StartPollingOptions): () => void {
         await hasRecentPushDelivery(
           "google-workspace",
           "events.changed",
-          handle.connectionId,
+          handle.credentialId,
           options.pushQuietWindowMs ?? DEFAULT_PUSH_QUIET_WINDOW_MS,
         )
       ) {

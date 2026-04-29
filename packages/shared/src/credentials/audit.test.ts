@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { AuditLog } from "./audit.js";
-import type { AuditEntry } from "./types.js";
+import type { AuditEntry, ConnectionCredentialAuditEvent } from "./types.js";
 
 function atLocalNoon(dayOffset = 0, hour = 12): number {
   const date = new Date();
@@ -122,5 +122,24 @@ describe("AuditLog", () => {
 
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0] as string)).toEqual(entry);
+  });
+
+  it("returns credential write audit events without egress-only fields", async () => {
+    const auditLog = new AuditLog({ logDir });
+    const setupEntry: ConnectionCredentialAuditEvent = {
+      type: "connection_credential.created",
+      ts: atLocalNoon(),
+      callerId: "panel:test",
+      providerId: "url-bound",
+      connectionId: "cred-1",
+      storageKind: "connection-credential",
+      fieldNames: ["credential"],
+    };
+
+    await auditLog.append(setupEntry);
+
+    await expect(auditLog.query({
+      filter: { providerId: "url-bound" },
+    })).resolves.toEqual([setupEntry]);
   });
 });

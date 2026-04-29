@@ -1,8 +1,11 @@
-import { connect, type CredentialHandle } from "@workspace/runtime/panel/credentials";
-import { googleWorkspaceProvider } from "../../packages/integrations/src/providers.js";
+import {
+  fetch as credentialFetch,
+  resolveCredential,
+  type StoredCredentialSummary,
+} from "@workspace/runtime/panel/credentials";
+import { googleWorkspaceCredential } from "../../packages/integrations/src/providers.js";
 
 export const manifest = {
-  providers: [googleWorkspaceProvider],
   scopes: {
     "google-workspace": ["gmail_readonly", "gmail_send"],
   },
@@ -38,18 +41,33 @@ interface GmailProfile {
 
 const GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
 
-let googleWorkspace: CredentialHandle | undefined;
+let googleWorkspaceCredentialId: string | undefined;
 
-async function ensureAuth(): Promise<CredentialHandle> {
-  if (!googleWorkspace) {
-    googleWorkspace = await connect(googleWorkspaceProvider);
+async function ensureCredentialId(): Promise<string> {
+  if (!googleWorkspaceCredentialId) {
+    const credential = await findGoogleWorkspaceCredential();
+    if (!credential) {
+      throw new Error("No URL-bound Google Workspace credential found for gmail.googleapis.com.");
+    }
+    googleWorkspaceCredentialId = credential.id;
   }
-  return googleWorkspace;
+  return googleWorkspaceCredentialId;
+}
+
+async function gmailFetch(input: string, init?: RequestInit): Promise<Response> {
+  return credentialFetch(input, init, { credentialId: await ensureCredentialId() });
+}
+
+async function findGoogleWorkspaceCredential(): Promise<StoredCredentialSummary | null> {
+  for (const audience of googleWorkspaceCredential.audiences) {
+    const credential = await resolveCredential({ url: audience.url });
+    if (credential) return credential;
+  }
+  return null;
 }
 
 export async function getProfile(): Promise<GmailProfile> {
-  await ensureAuth();
-  const res = await fetch(`${GMAIL_API}/profile`);
+  const res = await gmailFetch(`${GMAIL_API}/profile`);
   if (!res.ok) throw new Error(`Gmail API error: ${res.status}`);
   return (await res.json()) as GmailProfile;
 }
@@ -60,14 +78,13 @@ export async function listMessages(opts?: {
   q?: string;
   pageToken?: string;
 }): Promise<{ messages: GmailMessage[]; nextPageToken?: string }> {
-  await ensureAuth();
   const params = new URLSearchParams();
   if (opts?.maxResults) params.set("maxResults", String(opts.maxResults));
   if (opts?.labelIds) params.set("labelIds", opts.labelIds.join(","));
   if (opts?.q) params.set("q", opts.q);
   if (opts?.pageToken) params.set("pageToken", opts.pageToken);
 
-  const res = await fetch(`${GMAIL_API}/messages?${params}`);
+  const res = await gmailFetch(`${GMAIL_API}/messages?${params}`);
   if (!res.ok) throw new Error(`Gmail API error: ${res.status}`);
   const data = (await res.json()) as { messages?: { id: string; threadId: string }[]; nextPageToken?: string };
 
@@ -83,8 +100,7 @@ export async function listMessages(opts?: {
 }
 
 export async function getMessage(messageId: string): Promise<GmailMessage> {
-  await ensureAuth();
-  const res = await fetch(`${GMAIL_API}/messages/${messageId}`);
+  const res = await gmailFetch(`${GMAIL_API}/messages/${messageId}`);
   if (!res.ok) throw new Error(`Gmail API error: ${res.status}`);
   return (await res.json()) as GmailMessage;
 }
@@ -94,7 +110,6 @@ export async function sendMessage(params: {
   subject: string;
   body: string;
 }): Promise<GmailMessage> {
-  await ensureAuth();
   const raw = [
     `To: ${params.to}`,
     `Subject: ${params.subject}`,
@@ -108,7 +123,7 @@ export async function sendMessage(params: {
     .replace(/\//g, "_")
     .replace(/=+$/, "");
 
-  const res = await fetch(`${GMAIL_API}/messages/send`, {
+  const res = await gmailFetch(`${GMAIL_API}/messages/send`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ raw: encoded }),
@@ -118,8 +133,7 @@ export async function sendMessage(params: {
 }
 
 export async function listLabels(): Promise<{ id: string; name: string; type: string }[]> {
-  await ensureAuth();
-  const res = await fetch(`${GMAIL_API}/labels`);
+  const res = await gmailFetch(`${GMAIL_API}/labels`);
   if (!res.ok) throw new Error(`Gmail API error: ${res.status}`);
   const data = (await res.json()) as { labels: { id: string; name: string; type: string }[] };
   return data.labels;

@@ -1,11 +1,14 @@
 import type { RpcCaller } from "@natstack/rpc";
 import {
   createCredentialClient,
-  type ConnectionRecord,
+  type BeginOAuthPkceCredentialResult,
+  type CompleteOAuthPkceCredentialRequest,
+  type CreateOAuthPkceCredentialRequest,
   type CredentialClient,
-  type CredentialHandle,
-  type ProviderDescriptor,
-  type ProviderRequest,
+  type GrantUrlBoundCredentialRequest,
+  type ResolveUrlBoundCredentialRequest,
+  type StoredCredentialSummary,
+  type StoreUrlBoundCredentialRequest,
 } from "../shared/credentials.js";
 
 let client: CredentialClient | null = null;
@@ -17,121 +20,68 @@ function requireClient(): CredentialClient {
   return client;
 }
 
-function shouldProxyPanelFetch(url: URL): boolean {
-  if (url.protocol === "data:") {
-    return false;
-  }
-  if (url.origin === location.origin) {
-    return false;
-  }
-  if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
-    return false;
-  }
-  return true;
-}
-
-function installPanelFetchProxy(rpc: RpcCaller): void {
-  const globals = globalThis as typeof globalThis & {
-    __natstackProxyFetchInstalled?: boolean;
-  };
-  if (globals.__natstackProxyFetchInstalled) {
-    return;
-  }
-
-  const originalFetch = globalThis.fetch.bind(globalThis);
-  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const request = new Request(input, init);
-    const targetUrl = new URL(request.url, location.href);
-
-    if (!shouldProxyPanelFetch(targetUrl)) {
-      return originalFetch(input, init);
-    }
-
-    const headers = Object.fromEntries(request.headers.entries());
-
-    const result = await rpc.call<{
-      status: number;
-      statusText: string;
-      headers: Record<string, string>;
-      body: string;
-    }>("main", "credentials.proxyFetch", {
-      url: targetUrl.toString(),
-      method: request.method,
-      headers,
-      body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.text(),
-    });
-
-    return new Response(result.body, {
-      status: result.status,
-      statusText: result.statusText,
-      headers: result.headers,
-    });
-  };
-
-  globals.__natstackProxyFetchInstalled = true;
-}
-
 export function initPanelCredentials(rpc: RpcCaller): void {
   if (!client) {
     client = createCredentialClient(rpc);
   }
-  installPanelFetchProxy(rpc);
 }
 
-export async function connect(providerId: ProviderRequest, opts?: { connectionId?: string }): Promise<CredentialHandle> {
-  return requireClient().connect(providerId, opts);
+export async function store(input: StoreUrlBoundCredentialRequest): Promise<StoredCredentialSummary> {
+  return requireClient().store(input);
 }
 
-export async function revokeConsent(
-  providerId: string,
-  connectionId?: string,
-): Promise<void> {
-  await requireClient().revokeConsent(providerId, connectionId);
+export async function beginCreateWithOAuthPkce(
+  input: CreateOAuthPkceCredentialRequest,
+): Promise<BeginOAuthPkceCredentialResult> {
+  return requireClient().beginCreateWithOAuthPkce(input);
 }
 
-export async function listConnections(providerId?: string): Promise<ConnectionRecord[]> {
-  return requireClient().listConnections(providerId);
+export async function completeCreateWithOAuthPkce(
+  input: CompleteOAuthPkceCredentialRequest,
+): Promise<StoredCredentialSummary> {
+  return requireClient().completeCreateWithOAuthPkce(input);
 }
 
-export async function capabilityFor(
-  providerId: ProviderRequest,
-  opts?: { connectionId?: string; ttlSeconds?: number },
-): Promise<string> {
-  return requireClient().capabilityFor(providerId, opts);
+export async function listStoredCredentials(): Promise<StoredCredentialSummary[]> {
+  return requireClient().listStoredCredentials();
 }
 
-export function hookFor(
-  providerId: ProviderRequest,
-  opts?: { connectionId?: string },
-): () => Promise<string> {
-  return requireClient().hookFor(providerId, opts);
+export async function revokeCredential(credentialId: string): Promise<void> {
+  await requireClient().revokeCredential(credentialId);
 }
 
-export async function metadata(
-  providerId: ProviderRequest,
-  opts?: { connectionId?: string },
-) {
-  return requireClient().metadata(providerId, opts);
+export async function grantCredential(input: GrantUrlBoundCredentialRequest): Promise<StoredCredentialSummary> {
+  return requireClient().grantCredential(input);
 }
 
-export async function subscribeWebhook(
-  providerId: ProviderRequest,
-  eventType: string,
-  opts: { handler: string; connectionId?: string },
-): Promise<{ subscriptionId: string; leaseId?: string }> {
-  return requireClient().subscribeWebhook(providerId, eventType, opts);
+export async function resolveCredential(
+  input: ResolveUrlBoundCredentialRequest,
+): Promise<StoredCredentialSummary | null> {
+  return requireClient().resolveCredential(input);
 }
 
-export async function unsubscribeWebhook(subscriptionId: string): Promise<void> {
-  await requireClient().unsubscribeWebhook(subscriptionId);
+export async function fetch(
+  url: string | URL,
+  init?: RequestInit,
+  opts?: { credentialId?: string },
+): Promise<Response> {
+  return requireClient().fetch(url, init, opts);
 }
 
-export async function listWebhookLeases(filter?: {
-  providerId?: string;
-  eventType?: string;
-  connectionId?: string;
-}) {
-  return requireClient().listWebhookLeases(filter);
+export function hookForUrl(
+  url: string | URL,
+  opts?: { credentialId?: string },
+): (init?: RequestInit) => Promise<Response> {
+  return requireClient().hookForUrl(url, opts);
 }
 
-export { type CredentialHandle, type CredentialClient, type ConnectionRecord, type ProviderDescriptor, type ProviderRequest };
+export type {
+  BeginOAuthPkceCredentialResult,
+  CompleteOAuthPkceCredentialRequest,
+  CreateOAuthPkceCredentialRequest,
+  CredentialClient,
+  GrantUrlBoundCredentialRequest,
+  ResolveUrlBoundCredentialRequest,
+  StoredCredentialSummary,
+  StoreUrlBoundCredentialRequest,
+} from "../shared/credentials.js";

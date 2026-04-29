@@ -14,14 +14,14 @@ import { useShellEvent } from "../shell/useShellEvent";
 import { shellApproval, view } from "../shell/client";
 
 export function ConsentApprovalBar() {
-  const [pending, setPending] = useState<PendingApproval[]>([]);
+  const [pendingAccess, setPendingAccess] = useState<PendingApproval[]>([]);
 
   useEffect(() => {
     let cancelled = false;
     void shellApproval
       .listPending()
       .then((list) => {
-        if (!cancelled) setPending(list);
+        if (!cancelled) setPendingAccess(list);
       })
       .catch((err: unknown) => console.warn("[ConsentApprovalBar] listPending failed:", err));
     return () => {
@@ -32,11 +32,11 @@ export function ConsentApprovalBar() {
   useShellEvent(
     "shell-approval:pending-changed",
     useCallback((payload: { pending: PendingApproval[] }) => {
-      setPending(payload.pending);
+      setPendingAccess(payload.pending);
     }, []),
   );
 
-  const current = pending[0] ?? null;
+  const current = pendingAccess[0] ?? null;
 
   const barRef = useRef<HTMLDivElement>(null);
 
@@ -67,9 +67,13 @@ export function ConsentApprovalBar() {
   const callerLabel = current.callerKind === "worker" ? "Worker" : "Panel";
   const accountLabel = formatAccount(current);
   const injectionLabel = formatInjection(current);
-  const extraCount = pending.length - 1;
-  const visibleScopes = current.scopes.slice(0, 3);
-  const hiddenScopeCount = Math.max(0, current.scopes.length - visibleScopes.length);
+  const extraCount = pendingAccess.length - 1;
+  const detailItems = current.scopes;
+  const visibleScopes = detailItems.slice(0, 3);
+  const hiddenScopeCount = Math.max(0, detailItems.length - visibleScopes.length);
+  const oauthOrigins = [current.oauthAuthorizeOrigin, current.oauthTokenOrigin].filter(
+    (origin): origin is string => typeof origin === "string" && origin.length > 0,
+  );
 
   return (
     <Box
@@ -113,7 +117,7 @@ export function ConsentApprovalBar() {
                 Credential access request
               </Text>
               <Badge color="amber" variant="soft">
-                {current.providerDisplayName}
+                {current.credentialLabel}
               </Badge>
               {extraCount > 0 ? (
                 <Badge color="gray" variant="soft">
@@ -129,19 +133,29 @@ export function ConsentApprovalBar() {
             </Flex>
 
             <Flex align="center" gap="1" wrap="wrap">
-              {current.providerAudience.map((audience) => (
-                <Code key={audience} size="1" variant="soft" style={{ maxWidth: 360 }}>
-                  {audience}
+              {oauthOrigins.map((origin) => (
+                <Code key={origin} size="1" color={current.oauthAudienceDomainMismatch ? "red" : "gray"} variant="soft" style={{ maxWidth: 360 }}>
+                  OAuth {origin}
                 </Code>
               ))}
+              {current.audience.map((audience) => (
+                <Code key={`${audience.match}:${audience.url}`} size="1" variant="soft" style={{ maxWidth: 360 }}>
+                  {audience.url}
+                </Code>
+              ))}
+              {current.oauthAudienceDomainMismatch ? (
+                <Tooltip content="OAuth authority and credential audience do not share the same base domain">
+                  <Badge color="red" variant="soft">Domain mismatch</Badge>
+                </Tooltip>
+              ) : null}
               {visibleScopes.map((scope) => (
                 <Badge key={scope} color="gray" variant="outline">
                   {scope}
                 </Badge>
               ))}
               {hiddenScopeCount > 0 ? (
-                <Tooltip content={current.scopes.slice(visibleScopes.length).join(", ")}>
-                  <Badge color="gray" variant="outline">+{hiddenScopeCount} scopes</Badge>
+                <Tooltip content={detailItems.slice(visibleScopes.length).join(", ")}>
+                  <Badge color="gray" variant="outline">+{hiddenScopeCount} details</Badge>
                 </Tooltip>
               ) : null}
             </Flex>
@@ -201,7 +215,7 @@ function formatAccount(approval: PendingApproval): string {
     ?? identity.username
     ?? identity.workspaceName
     ?? identity.providerUserId
-    ?? approval.connectionId;
+    ?? approval.credentialId;
 }
 
 function formatInjection(approval: PendingApproval): string {

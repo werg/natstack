@@ -1,12 +1,7 @@
-import { connect } from "../../runtime/src/worker/credentials.js";
-import { githubProvider } from "./providers.js";
-import type { CredentialHandle } from "../../runtime/src/worker/credentials.js";
+import { githubCredential } from "./providers.js";
+import { getUrlCredentialClient, type UrlCredentialClient } from "./urlCredentialClient.js";
 
 export const manifest = {
-  providers: [
-    { provider: githubProvider, role: "source" },
-    { provider: githubProvider, role: "target" },
-  ],
   scopes: {
     github: ["repo"],
   },
@@ -124,8 +119,8 @@ export async function onSourceIssue(event: SourceIssueEvent): Promise<MirrorIssu
 }
 
 export async function mirrorIssue(params: MirrorIssueParams): Promise<MirrorIssueResult> {
-  const sourceAuth = await connect(githubProvider);
-  const targetAuth = await connect(githubProvider);
+  const sourceAuth = await getUrlCredentialClient(githubCredential);
+  const targetAuth = await getUrlCredentialClient(githubCredential);
 
   const sourceIssue = await getIssue(
     sourceAuth,
@@ -235,7 +230,7 @@ function buildMirrorMarker(sourceOwner: string, sourceRepo: string, issueNumber:
 }
 
 async function getIssue(
-  auth: CredentialHandle,
+  auth: UrlCredentialClient,
   owner: string,
   repo: string,
   issueNumber: number,
@@ -248,7 +243,7 @@ async function getIssue(
 }
 
 async function createIssue(
-  auth: CredentialHandle,
+  auth: UrlCredentialClient,
   owner: string,
   repo: string,
   payload: CreateOrUpdateIssuePayload,
@@ -264,7 +259,7 @@ async function createIssue(
 }
 
 async function updateIssue(
-  auth: CredentialHandle,
+  auth: UrlCredentialClient,
   owner: string,
   repo: string,
   issueNumber: number,
@@ -281,7 +276,7 @@ async function updateIssue(
 }
 
 async function findMirroredIssue(
-  auth: CredentialHandle,
+  auth: UrlCredentialClient,
   owner: string,
   repo: string,
   marker: string,
@@ -304,7 +299,7 @@ async function findMirroredIssue(
 }
 
 async function githubRequest<T>(
-  auth: CredentialHandle,
+  auth: UrlCredentialClient,
   path: string,
   init: RequestInit,
 ): Promise<T> {

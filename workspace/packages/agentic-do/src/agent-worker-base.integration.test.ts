@@ -127,6 +127,10 @@ class TestWorker extends AgentWorkerBase {
   /** Skip the real roster RPC. */
   protected override async refreshRoster(): Promise<void> { /* no-op */ }
 
+  protected override getModel(): string {
+    return "test-provider:test-model";
+  }
+
   /** Inject a fake runner instead of booting pi-agent-core + loading
    *  workspace resources over RPC. Still uses the real dispatcher +
    *  projector so the test actually exercises them. */
@@ -146,6 +150,10 @@ class TestWorker extends AgentWorkerBase {
 
   protected override getParticipantInfo() {
     return { handle: "test", name: "Test", type: "agent" as const, metadata: {}, methods: [] };
+  }
+
+  resumeAfterCredential(channelId: string): Promise<boolean> {
+    return this.resumeAfterModelCredentialConnected(channelId);
   }
 }
 
@@ -546,6 +554,65 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
     expect(rows.map((row) => JSON.parse(row["content"] as string))).toEqual([
       { role: "user", content: "hello", timestamp: 1 },
     ]);
+  });
+
+  it("resumes the failed user turn after a model credential is connected", async () => {
+    const { instance, sql } = await createTestDO(TestWorker);
+
+    await (instance as any).saveMessages("ch-1", [
+      { role: "user", content: "hello", timestamp: 1 },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "" }],
+        stopReason: "error",
+        errorMessage: "No URL-bound model credential is configured for model provider: openai-codex",
+        timestamp: 2,
+      },
+    ]);
+
+    await (instance as TestWorker).resumeAfterCredential("ch-1");
+    await flush();
+
+    expect(instance.fakeState!.continueCount).toBe(1);
+    const rows = sql.exec(`SELECT content FROM pi_messages WHERE channel_id = ? ORDER BY idx`, "ch-1").toArray();
+    expect(rows.map((row) => JSON.parse(row["content"] as string))).toEqual([
+      { role: "user", content: "hello", timestamp: 1 },
+    ]);
+  });
+
+  it("does not resume after unrelated assistant errors", async () => {
+    const { instance } = await createTestDO(TestWorker);
+
+    await (instance as any).saveMessages("ch-1", [
+      { role: "user", content: "hello", timestamp: 1 },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "" }],
+        stopReason: "error",
+        errorMessage: "unrelated failure",
+        timestamp: 2,
+      },
+    ]);
+
+    const resumed = await (instance as TestWorker).resumeAfterCredential("ch-1");
+    await flush();
+
+    expect(resumed).toBe(false);
+    expect(instance.fakeState!.continueCount).toBe(0);
+  });
+
+  it("does not replay a user turn from a stale credential card", async () => {
+    const { instance } = await createTestDO(TestWorker);
+
+    await (instance as any).saveMessages("ch-1", [
+      { role: "user", content: "hello", timestamp: 1 },
+    ]);
+
+    const resumed = await (instance as TestWorker).resumeAfterCredential("ch-1");
+    await flush();
+
+    expect(resumed).toBe(false);
+    expect(instance.fakeState!.continueCount).toBe(0);
   });
 
   it("clears stale resolving tokens so buffered dispatch results can drain after restart", async () => {

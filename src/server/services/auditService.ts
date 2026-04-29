@@ -1,7 +1,7 @@
 import z from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import { AuditLog } from "@natstack/shared/credentials/audit";
-import type { AuditEntry } from "@natstack/shared/credentials/types";
+import type { AuditEntry, CredentialAuditEvent } from "@natstack/shared/credentials/types";
 
 const auditQuerySchema = z.object({
   filter: z.object({
@@ -60,6 +60,10 @@ function sanitizeEntry(entry: AuditEntry): AuditEntry {
   return { ...entry, url: sanitizeUrlForAudit(entry.url) };
 }
 
+function sanitizeAuditEvent(entry: CredentialAuditEvent): CredentialAuditEvent {
+  return "url" in entry ? sanitizeEntry(entry) : entry;
+}
+
 export function createAuditService(auditLog: AuditLog): ServiceDefinition {
   return {
     name: "audit",
@@ -79,7 +83,7 @@ export function createAuditService(auditLog: AuditLog): ServiceDefinition {
           // sanitisation must be wired in `egressProxy.ts` (Agent 5's
           // territory) by routing URL fields through `sanitizeUrlForAudit`
           // before calling `auditLog.append`.
-          return entries.map(sanitizeEntry);
+          return entries.map(sanitizeAuditEvent);
         }
         default:
           throw new Error(`Unknown audit method: ${method}`);

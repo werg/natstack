@@ -1,13 +1,12 @@
-import { connect, type CredentialHandle } from "../../runtime/src/worker/credentials.js"
 import { hasRecentPushDelivery } from "./pushState.js"
-import { googleWorkspaceProvider } from "./providers.js"
+import { googleWorkspaceCredential } from "./providers.js"
+import { getUrlCredentialClient, type UrlCredentialClient } from "./urlCredentialClient.js"
 
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 const DEFAULT_POLL_INTERVAL_MS = 60_000
 const DEFAULT_PUSH_QUIET_WINDOW_MS = 5 * 60_000
 
 export const manifest = {
-  providers: [googleWorkspaceProvider],
   scopes: {
     "google-workspace": ["gmail_readonly", "gmail_send"],
   },
@@ -213,7 +212,7 @@ async function gmailFetch<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 async function gmailFetchWithHandle<T>(
-  handle: CredentialHandle,
+  handle: UrlCredentialClient,
   path: string,
   init?: RequestInit,
 ): Promise<T> {
@@ -311,25 +310,25 @@ function isExpiredHistoryCursor(error: unknown): boolean {
   return message.includes("404") || message.includes("notFound")
 }
 
-let googleWorkspace: CredentialHandle | undefined
+let googleWorkspace: UrlCredentialClient | undefined
 
-async function ensureAuth(): Promise<CredentialHandle> {
+async function ensureAuth(): Promise<UrlCredentialClient> {
   if (!googleWorkspace) {
-    googleWorkspace = await connect(googleWorkspaceProvider)
+    googleWorkspace = await getUrlCredentialClient(googleWorkspaceCredential)
   }
   return googleWorkspace
 }
 
-async function getProfileWithHandle(handle: CredentialHandle): Promise<GmailProfile> {
+async function getProfileWithHandle(handle: UrlCredentialClient): Promise<GmailProfile> {
   return gmailFetchWithHandle<GmailProfile>(handle, "/profile")
 }
 
-async function getMessageWithHandle(handle: CredentialHandle, messageId: string): Promise<GmailMessage> {
+async function getMessageWithHandle(handle: UrlCredentialClient, messageId: string): Promise<GmailMessage> {
   return gmailFetchWithHandle<GmailMessage>(handle, `/messages/${encodeURIComponent(messageId)}`)
 }
 
 async function listHistoryWithHandle(
-  handle: CredentialHandle,
+  handle: UrlCredentialClient,
   opts: ListHistoryOptions,
 ): Promise<GmailHistoryResponse> {
   let pageToken: string | undefined
@@ -464,7 +463,7 @@ export function startPolling(opts: StartPollingOptions = {}): () => void {
         await hasRecentPushDelivery(
           "google-workspace",
           "message.new",
-          handle.connectionId,
+          handle.credentialId,
           opts.pushQuietWindowMs ?? DEFAULT_PUSH_QUIET_WINDOW_MS,
         )
       ) {
@@ -540,7 +539,7 @@ export async function onNewMessage(_event: GmailNewMessageEvent | unknown): Prom
     return
   }
 
-  const handle = await connect(googleWorkspaceProvider, { connectionId: _event.connectionId })
+  const handle = await getUrlCredentialClient(googleWorkspaceCredential)
   const history = await listHistoryWithHandle(handle, {
     startHistoryId: previousHistoryId,
     historyTypes: ["messageAdded"],

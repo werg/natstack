@@ -27,6 +27,8 @@ const natstackShell = {
   openDevtools: () => ipcRenderer.invoke("natstack:bridge.openDevtools"),
   openFolderDialog: (opts?: unknown) => ipcRenderer.invoke("natstack:bridge.openFolderDialog", opts),
   openExternal: (url: string) => ipcRenderer.invoke("natstack:bridge.openExternal", url),
+  openOAuthExternal: (url: string, expectedRedirectUri: string) =>
+    ipcRenderer.invoke("natstack:bridge.openOAuthExternal", url, expectedRedirectUri),
 
   // Browser automation (CdpServer)
   getCdpEndpoint: (id: string) => ipcRenderer.invoke("natstack:getCdpEndpoint", id),

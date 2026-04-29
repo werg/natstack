@@ -215,18 +215,6 @@ export const tokens = {
 };
 
 // =============================================================================
-// Credential Flow Service
-// =============================================================================
-
-export type CredentialFlowProviderRequest = { id: string; [key: string]: unknown };
-
-export const credentialFlow = {
-  connect: (provider: CredentialFlowProviderRequest) =>
-    rpc.call<{ success: boolean; error?: string }>("main", "credentialFlow.connect", provider),
-  disconnect: (providerId: string) => rpc.call<void>("main", "credentialFlow.disconnect", providerId),
-};
-
-// =============================================================================
 // Autofill Service
 // =============================================================================
 

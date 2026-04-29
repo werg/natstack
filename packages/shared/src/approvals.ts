@@ -1,5 +1,4 @@
-import type { AccountIdentity } from "./credentials/types.js";
-import type { ProviderBindingInjection } from "./credentials/providerBinding.js";
+import type { AccountIdentity, CredentialInjection, UrlAudience } from "./credentials/types.js";
 
 export type ApprovalDecision = "session" | "version" | "repo" | "deny" | "dismiss";
 
@@ -9,13 +8,14 @@ export interface PendingApproval {
   callerKind: "panel" | "worker";
   repoPath: string;
   effectiveVersion: string;
-  providerNamespace: string;
-  providerDisplayName: string;
-  providerAudience: string[];
-  providerFingerprint: string;
-  injection: ProviderBindingInjection;
-  connectionId: string;
+  credentialId: string;
+  credentialLabel: string;
+  audience: UrlAudience[];
+  injection: CredentialInjection;
   accountIdentity: AccountIdentity;
   scopes: string[];
+  oauthAuthorizeOrigin?: string;
+  oauthTokenOrigin?: string;
+  oauthAudienceDomainMismatch?: boolean;
   requestedAt: number;
 }

@@ -92,6 +92,10 @@ _initBrowserBridge(rpc);
 export { createBrowserPanel, openExternal, onChildCreated, getBrowserHandle, openPanel } from "./browser.js";
 export type { BrowserHandle } from "./browser.js";
 
+import { _initOAuthBridge, createLoopbackCallback } from "./oauth.js";
+_initOAuthBridge(rpc);
+export const oauth = helpfulNamespace("oauth", { createLoopbackCallback });
+
 // Ad blocking programmatic interface
 import { createAdBlockApi } from "./adblock.js";
 export type { AdBlockStats, AdBlockApi } from "./adblock.js";
@@ -114,35 +118,32 @@ export const workspace = helpfulNamespace("workspace", workspaceClient);
 
 // Credential handles + universal outbound proxying for panel fetch().
 import {
-  connect as connectCredential,
-  capabilityFor as credentialCapabilityFor,
-  hookFor as credentialHookFor,
+  beginCreateWithOAuthPkce as beginCredentialOAuthPkce,
+  completeCreateWithOAuthPkce as completeCredentialOAuthPkce,
+  fetch as credentialFetch,
+  hookForUrl as credentialHookForUrl,
   initPanelCredentials,
-  listConnections as listCredentialConnections,
-  listWebhookLeases as listCredentialWebhookLeases,
-  metadata as credentialMetadata,
-  revokeConsent as revokeCredentialConsent,
-  subscribeWebhook as subscribeCredentialWebhook,
-  unsubscribeWebhook as unsubscribeCredentialWebhook,
+  listStoredCredentials as listUrlBoundCredentials,
+  revokeCredential as revokeUrlBoundCredential,
+  store as storeUrlBoundCredential,
 } from "./credentials.js";
 export type {
-  CredentialHandle,
   CredentialClient,
-  ConnectionRecord,
-  ProviderDescriptor,
-  ProviderRequest,
+  StoredCredentialSummary,
+  StoreUrlBoundCredentialRequest,
+  BeginOAuthPkceCredentialResult,
+  CompleteOAuthPkceCredentialRequest,
+  CreateOAuthPkceCredentialRequest,
 } from "../shared/credentials.js";
 initPanelCredentials(rpc);
 const credentialApi = {
-  connect: connectCredential,
-  capabilityFor: credentialCapabilityFor,
-  hookFor: credentialHookFor,
-  metadata: credentialMetadata,
-  revokeConsent: revokeCredentialConsent,
-  listConnections: listCredentialConnections,
-  subscribeWebhook: subscribeCredentialWebhook,
-  unsubscribeWebhook: unsubscribeCredentialWebhook,
-  listWebhookLeases: listCredentialWebhookLeases,
+  store: storeUrlBoundCredential,
+  beginCreateWithOAuthPkce: beginCredentialOAuthPkce,
+  completeCreateWithOAuthPkce: completeCredentialOAuthPkce,
+  listStoredCredentials: listUrlBoundCredentials,
+  revokeCredential: revokeUrlBoundCredential,
+  fetch: credentialFetch,
+  hookForUrl: credentialHookForUrl,
 };
 export const credentials = helpfulNamespace("credentials", credentialApi);
 

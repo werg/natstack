@@ -1,24 +1,14 @@
 /**
  * Approval queue for shell-owned consent prompts.
  *
- * When the egress proxy sees a credentialed fetch without an existing consent
- * grant, it calls `request()` here. The queue holds the pending approval until
- * the renderer's consent bar resolves it via the `shellApproval` RPC, then
- * every refcounted requester for the same (repoPath, effectiveVersion,
- * provider namespace + audience fingerprint) receives the same decision.
- *
- * Entries are coalesced by repo, effective version, userland namespace, and
- * provider binding fingerprint. The namespace is display/storage metadata; the
- * fingerprint is the credential authority boundary.
- * so concurrent fetches from the same code identity+provider share one prompt.
+ * Approval queue for shell-owned credential prompts.
  */
 
 import { randomUUID } from "node:crypto";
 
 import type { EventService } from "@natstack/shared/eventsService";
 import type { ApprovalDecision, PendingApproval } from "@natstack/shared/approvals";
-import type { AccountIdentity } from "@natstack/shared/credentials/types";
-import type { ProviderBindingInjection } from "@natstack/shared/credentials/providerBinding";
+import type { AccountIdentity, CredentialInjection, UrlAudience } from "@natstack/shared/credentials/types";
 
 /** Terminal decision surfaced back to queue waiters (dismiss collapses to deny). */
 export type GrantedDecision = "session" | "version" | "repo" | "deny";
@@ -28,14 +18,15 @@ export interface ApprovalQueueRequest {
   callerKind: "panel" | "worker";
   repoPath: string;
   effectiveVersion: string;
-  providerNamespace: string;
-  providerFingerprint: string;
-  providerDisplayName: string;
-  providerAudience: string[];
-  injection: ProviderBindingInjection;
-  connectionId: string;
+  credentialId: string;
+  credentialLabel: string;
+  audience: UrlAudience[];
+  injection: CredentialInjection;
   accountIdentity: AccountIdentity;
   scopes: string[];
+  oauthAuthorizeOrigin?: string;
+  oauthTokenOrigin?: string;
+  oauthAudienceDomainMismatch?: boolean;
   signal?: AbortSignal;
 }
 
@@ -74,7 +65,7 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
   }
 
   function dedupKeyFor(req: ApprovalQueueRequest): string {
-    return `${req.repoPath}\x00${req.effectiveVersion}\x00${req.providerNamespace}\x00${req.providerFingerprint}`;
+    return `${req.repoPath}\x00${req.effectiveVersion}\x00${req.credentialId}`;
   }
 
   return {
@@ -89,14 +80,15 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
           callerKind: req.callerKind,
           repoPath: req.repoPath,
           effectiveVersion: req.effectiveVersion,
-          providerNamespace: req.providerNamespace,
-          providerDisplayName: req.providerDisplayName,
-          providerAudience: req.providerAudience,
-          providerFingerprint: req.providerFingerprint,
+          credentialId: req.credentialId,
+          credentialLabel: req.credentialLabel,
+          audience: req.audience,
           injection: req.injection,
-          connectionId: req.connectionId,
           accountIdentity: req.accountIdentity,
           scopes: req.scopes,
+          oauthAuthorizeOrigin: req.oauthAuthorizeOrigin,
+          oauthTokenOrigin: req.oauthTokenOrigin,
+          oauthAudienceDomainMismatch: req.oauthAudienceDomainMismatch,
           requestedAt: Date.now(),
         };
         entry = {

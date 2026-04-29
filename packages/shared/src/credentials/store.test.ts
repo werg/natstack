@@ -17,7 +17,6 @@ function makeCredential(overrides: Partial<Credential> = {}): Credential {
       providerUserId: "user-123",
     },
     accessToken: "access-token",
-    refreshToken: "refresh-token",
     scopes: ["repo", "user:email"],
     expiresAt: 1_700_000_000_000,
     ...overrides,
@@ -96,9 +95,6 @@ describe("CredentialStore", () => {
     // The plaintext access token must NOT appear in the on-disk file.
     const fileBytes = await readFile(credentialPath, "utf8");
     expect(fileBytes).not.toContain(updatedCredential.accessToken);
-    if (updatedCredential.refreshToken) {
-      expect(fileBytes).not.toContain(updatedCredential.refreshToken);
-    }
 
     await expect(store.load(updatedCredential.providerId, updatedCredential.connectionId)).resolves.toEqual(
       updatedCredential,

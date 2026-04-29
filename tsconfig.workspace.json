@@ -115,6 +115,9 @@
       "@workspace-skills/paneldev": [
         "workspace/skills/paneldev/index.ts"
       ],
+      "@workspace-skills/google-workspace": [
+        "workspace/skills/google-workspace/index.ts"
+      ],
       "@workspace-skills/system-testing": [
         "workspace/skills/system-testing/index.ts"
       ],
@@ -192,6 +195,9 @@
       ],
       "@workspace/integrations/gmail": [
         "workspace/packages/integrations/src/gmail.ts"
+      ],
+      "@workspace/integrations/providers": [
+        "workspace/packages/integrations/src/providers.ts"
       ],
       "@workspace/panel-browser": [
         "workspace/packages/panel-browser/src/index.ts"

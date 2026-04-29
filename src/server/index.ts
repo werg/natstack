@@ -396,87 +396,24 @@ async function main() {
   const githubConfig = workspaceConfig.git?.github;
   const tokenManager = new TokenManager();
   const { CredentialStore } = await import("../../packages/shared/src/credentials/store.js");
-  const { ConsentGrantStore } = await import("../../packages/shared/src/credentials/consent.js");
   const { AuditLog } = await import("../../packages/shared/src/credentials/audit.js");
-  const { WebhookSubscriptionStore } = await import("../../packages/shared/src/webhooks/subscription.js");
   const { CodeIdentityResolver } = await import("./services/codeIdentityResolver.js");
   const { createEgressProxy } = await import("./services/egressProxy.js");
-  const { EgressRateLimiterAdapter } = await import("./services/egressRateLimiterAdapter.js");
-  const { EgressCircuitBreakerAdapter } = await import("./services/egressCircuitBreakerAdapter.js");
-  const BetterSqlite = (await import("better-sqlite3")).default;
+  const { CredentialSessionGrantStore } = await import("./services/credentialSessionGrants.js");
 
   const credentialStore = new CredentialStore();
-  const consentDb = new BetterSqlite(path.join(statePath, "credentials-consent.sqlite"));
-  const consentStore = new ConsentGrantStore({
-    run(sql: string, params: readonly unknown[] = []) {
-      consentDb.prepare(sql).run(...params);
-    },
-    all<T>(sql: string, params: readonly unknown[] = []) {
-      return consentDb.prepare(sql).all(...params) as T[];
-    },
-    exec(sql: string) {
-      consentDb.exec(sql);
-    },
-  });
   const auditLog = new AuditLog({ logDir: path.join(statePath, "credentials-audit") });
   const codeIdentityResolver = new CodeIdentityResolver();
-  const webhookDb = new BetterSqlite(path.join(statePath, "webhooks.sqlite"));
-  const webhookStore = new WebhookSubscriptionStore({
-    run(sql: string, params: unknown[] = []) {
-      webhookDb.prepare(sql).run(...params);
-    },
-    all<T>(sql: string, params: unknown[] = []) {
-      return webhookDb.prepare(sql).all(...params) as T[];
-    },
-    exec(sql: string) {
-      webhookDb.exec(sql);
-    },
-  });
-  webhookStore.init();
-  const { WebhookWatchManager } = await import("./services/webhookWatchManager.js");
-  const webhookWatchManager = new WebhookWatchManager({
-    credentialStore,
-    webhookStore,
-    relayBaseUrl: process.env["NATSTACK_WEBHOOK_RELAY_URL"],
-  });
-  const { WebhookDeliveryService } = await import("./services/webhookDeliveryService.js");
-  let rpcServerForWebhooks: import("./rpcServer.js").RpcServer | null = null;
-  const webhookDeliveryService = new WebhookDeliveryService({
-    webhookStore,
-    webhookWatchManager,
-    deliverToCaller: async (callerId, handler, event) => {
-      if (!rpcServerForWebhooks) {
-        throw new Error("RPC server is not ready for webhook delivery");
-      }
-      await rpcServerForWebhooks.callTarget(callerId, handler, event);
-    },
-  });
+  const credentialSessionGrantStore = new CredentialSessionGrantStore();
   const { createApprovalQueue } = await import("./services/approvalQueue.js");
   const approvalQueue = createApprovalQueue({ eventService });
 
-  const { createConsentGate } = await import("./services/consentGate.js");
-  const consentGate = createConsentGate({
-    credentialStore,
-    consentStore,
-    approvalQueue,
-  });
-
-  const { createCapabilityBroker } = await import("./services/capabilityBroker.js");
-  const capabilityBroker = createCapabilityBroker({
-    credentialStore,
-    consentGate,
-    resolveIdentity: (callerId) => codeIdentityResolver.resolveByCallerId(callerId),
-  });
-
   const egressProxy = createEgressProxy({
     credentialStore,
-    consentStore,
     auditLog,
-    rateLimiter: new EgressRateLimiterAdapter(),
-    circuitBreaker: new EgressCircuitBreakerAdapter(),
     codeIdentityResolver,
     approvalQueue,
-    capabilityBroker,
+    sessionGrantStore: credentialSessionGrantStore,
   });
   const egressProxyPort = await egressProxy.start();
 
@@ -653,32 +590,12 @@ async function main() {
     const { createCredentialService } = await import("./services/credentialService.js");
     container.register(rpcService(createCredentialService({
       credentialStore,
-      consentStore,
       auditLog,
       egressProxy,
       codeIdentityResolver,
-      webhookStore,
-      webhookWatchManager,
-      capabilityBroker,
+      approvalQueue,
+      sessionGrantStore: credentialSessionGrantStore,
     })));
-  }
-
-  // ── Capability broker service ──
-  {
-    const { createCapabilityService } = await import("./services/capabilityService.js");
-    container.register(rpcService(createCapabilityService({ broker: capabilityBroker })));
-  }
-
-  // ── Webhook ingress + watch inspection ──
-  {
-    const { rpcServiceWithRoutes } = await import("./rpcServiceWithRoutes.js");
-    const { createCredentialWebhooksService } = await import("./services/credentialWebhooksService.js");
-    container.register(
-      rpcServiceWithRoutes(
-        createCredentialWebhooksService(webhookStore, webhookWatchManager, webhookDeliveryService),
-        routeRegistry,
-      ),
-    );
   }
 
   // ── DODispatch (source-scoped HTTP dispatch to Durable Objects) ──
@@ -792,7 +709,6 @@ async function main() {
       // RpcServer needs a panelManager for panel-to-panel RPC auth.
       // We'll wire it lazily after panelService starts.
       const server = new RpcServer({ tokenManager, dispatcher, eventService });
-      rpcServerForWebhooks = server;
       if (ipcChannel) {
         // IPC mode: server binds its own socket (Electron connects directly).
         // Same socket handles panel WS + workerd HTTP POST back-channel.
@@ -889,7 +805,6 @@ async function main() {
           },
           getProxyPort: () => egressProxyPort,
           codeIdentityResolver,
-          cleanupWebhookSubscriptions: (callerId) => webhookDeliveryService.cleanupCaller(callerId),
         });
 
         // Wire push trigger to restart workers on source rebuild.
@@ -1144,8 +1059,6 @@ async function main() {
       gatewayPort,
     });
   }
-  await webhookWatchManager.reconcileLeases();
-
   if (!ipcChannel) {
     // Standalone: gateway IS the RPC ingress — propagate its port so
     // rpcServer.getPort() + panel URL generation see the real port.

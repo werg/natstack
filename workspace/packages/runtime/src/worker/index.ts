@@ -44,16 +44,15 @@ import type { RuntimeFs } from "../types.js";
 export type { WorkerEnv, ExecutionContext } from "./types.js";
 export type {
   CredentialClient,
-  CredentialHandle,
-  ConnectionRecord,
-  ProviderDescriptor,
-  ProviderRequest,
+  StoredCredentialSummary,
+  StoreUrlBoundCredentialRequest,
+  BeginOAuthPkceCredentialResult,
+  CompleteOAuthPkceCredentialRequest,
+  CreateOAuthPkceCredentialRequest,
 } from "../shared/credentials.js";
 export type { NotificationClient } from "../shared/notifications.js";
 export { DurableObjectBase } from "./durable-base.js";
 export type { DurableObjectContext, SqlStorage, SqlResult, DORef } from "./durable-base.js";
-export { registerManifestWebhooks } from "./webhooks.js";
-export type { RegisteredWebhookHandler, RegisterWebhookOptions } from "./webhooks.js";
 // Note: createTestDO is intentionally NOT exported here — it depends on better-sqlite3
 // which is a Node.js-only dependency that can't be bundled for workerd.
 // Import directly from "@workspace/runtime/src/worker/durable-test-utils" in tests.
@@ -115,7 +114,6 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     serverUrl,
     authToken: env.RPC_AUTH_TOKEN,
   });
-  installProxyFetchWrapper({ rpc, serverUrl });
 
   const fs = createRpcFs(rpc);
   const db = createDbClient(rpc);
@@ -162,107 +160,6 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
   cachedWorkerId = workerId;
 
   return runtime;
-}
-
-function installProxyFetchWrapper(params: { rpc: RpcBridge; serverUrl: string }): void {
-  const globals = globalThis as typeof globalThis & {
-    __natstackProxyFetchInstalled?: boolean;
-    __natstackEnsureSessionCapability?: () => Promise<string>;
-    __natstackServerUrl?: string;
-  };
-  let sessionCapPromise: Promise<string> | null = null;
-  globals.__natstackEnsureSessionCapability = async () => {
-    sessionCapPromise ??= params.rpc
-      .call<{ token: string; expiresAt: number }>("main", "capabilities.mintSession")
-      .then((result) => result.token);
-    return sessionCapPromise;
-  };
-  globals.__natstackServerUrl = params.serverUrl;
-
-  if (globals.__natstackProxyFetchInstalled) {
-    return;
-  }
-
-  const originalFetch = globalThis.fetch.bind(globalThis);
-  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const request = new Request(input, init);
-    if (isInternalRpcUrl(request.url, globals.__natstackServerUrl ?? "")) {
-      return originalFetch(input, init);
-    }
-    if (requestAlreadyCarriesCapability(request)) {
-      return originalFetch(input, init);
-    }
-
-    const ensureSessionCap = globals.__natstackEnsureSessionCapability;
-    if (!ensureSessionCap) {
-      return originalFetch(input, init);
-    }
-
-    const sessionCap = await ensureSessionCap();
-    const headers = new Headers(request.headers);
-    headers.set("authorization", `Bearer ${sessionCap}`);
-    return originalFetch(new Request(request, { headers }));
-  };
-  globals.__natstackProxyFetchInstalled = true;
-}
-
-function isInternalRpcUrl(rawUrl: string, rawServerUrl: string): boolean {
-  if (!rawServerUrl) return false;
-  try {
-    const url = new URL(rawUrl);
-    const serverUrl = new URL(rawServerUrl);
-    if (url.origin !== serverUrl.origin) return false;
-    const basePath = trimTrailingSlash(serverUrl.pathname);
-    const rpcPath = `${basePath}/rpc`;
-    return url.pathname === rpcPath || url.pathname.startsWith(`${rpcPath}/`);
-  } catch {
-    return false;
-  }
-}
-
-function requestAlreadyCarriesCapability(request: Request): boolean {
-  const headersToCheck = [
-    "authorization",
-    "x-api-key",
-    "api-key",
-    "anthropic-api-key",
-    "openai-api-key",
-  ];
-  for (const name of headersToCheck) {
-    const value = request.headers.get(name);
-    if (value && looksCapabilityLike(value)) return true;
-  }
-
-  try {
-    const url = new URL(request.url);
-    for (const value of url.searchParams.values()) {
-      if (looksCapabilityLike(value)) return true;
-    }
-  } catch {
-    // Ignore invalid URLs; Request construction should already have normalized.
-  }
-  return false;
-}
-
-function looksCapabilityLike(value: string): boolean {
-  const token = stripBearer(value);
-  if (token.startsWith("natstack_session_") || token.startsWith("natstack_cap_")) {
-    return true;
-  }
-  if (token.split(".").length === 3) {
-    return true;
-  }
-  return /^[a-zA-Z][\w-]{1,30}[_-].{8,}$/.test(token);
-}
-
-function stripBearer(value: string): string {
-  const trimmed = value.trim();
-  return trimmed.toLowerCase().startsWith("bearer ") ? trimmed.slice(7).trim() : trimmed;
-}
-
-function trimTrailingSlash(value: string): string {
-  if (value === "/") return "";
-  return value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
 /**

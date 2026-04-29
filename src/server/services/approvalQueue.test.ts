@@ -16,17 +16,14 @@ describe("approvalQueue", () => {
       callerKind: "worker",
       repoPath: "/repo",
       effectiveVersion: "hash-1",
-      providerNamespace: "github",
-      providerFingerprint: "fingerprint-1",
-      providerDisplayName: "GitHub",
-      providerAudience: ["https://api.github.com/"],
+      credentialId: "cred-1",
+      credentialLabel: "GitHub",
+      audience: [{ url: "https://api.github.com/", match: "origin" }],
       injection: {
         type: "header",
         name: "authorization",
         valueTemplate: "Bearer {token}",
-        strippedHeaders: ["authorization"],
       },
-      connectionId: "conn-1",
       accountIdentity: { providerUserId: "user-1" },
       scopes: ["repo"],
       signal: ac.signal,
@@ -38,31 +35,28 @@ describe("approvalQueue", () => {
     expect(queue.listPending()).toEqual([]);
   });
 
-  it("includes provider audience in pending approvals", async () => {
+  it("includes credential audience in pending approvals", async () => {
     const { queue } = createQueue();
     const promise = queue.request({
       callerId: "worker:1",
       callerKind: "worker",
       repoPath: "/repo",
       effectiveVersion: "hash-1",
-      providerNamespace: "github",
-      providerFingerprint: "fingerprint-1",
-      providerDisplayName: "GitHub",
-      providerAudience: ["https://api.github.com/"],
+      credentialId: "cred-1",
+      credentialLabel: "GitHub",
+      audience: [{ url: "https://api.github.com/", match: "origin" }],
       injection: {
         type: "header",
         name: "authorization",
         valueTemplate: "Bearer {token}",
-        strippedHeaders: ["authorization"],
       },
-      connectionId: "conn-1",
       accountIdentity: { providerUserId: "user-1" },
       scopes: ["repo"],
     });
 
     expect(queue.listPending()[0]).toMatchObject({
-      providerDisplayName: "GitHub",
-      providerAudience: ["https://api.github.com/"],
+      credentialLabel: "GitHub",
+      audience: [{ url: "https://api.github.com/", match: "origin" }],
     });
     queue.resolve(queue.listPending()[0]!.approvalId, "deny");
     await expect(promise).resolves.toBe("deny");

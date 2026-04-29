@@ -2,7 +2,7 @@ import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { getCentralDataPath } from "@natstack/env-paths";
 
-import type { AuditEntry } from "./types.js";
+import type { AuditEntry, CredentialAuditEvent } from "./types.js";
 
 const DEFAULT_MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
 
@@ -15,14 +15,14 @@ function formatDateKey(ts: number): string {
 }
 
 function matchesFilter(
-  entry: AuditEntry,
+  entry: CredentialAuditEvent,
   filter?: Partial<Pick<AuditEntry, "workerId" | "providerId" | "connectionId" | "method">>,
 ): boolean {
   if (!filter) {
     return true;
   }
 
-  if (filter.workerId !== undefined && entry.workerId !== filter.workerId) {
+  if (filter.workerId !== undefined && (!("workerId" in entry) || entry.workerId !== filter.workerId)) {
     return false;
   }
 
@@ -34,7 +34,7 @@ function matchesFilter(
     return false;
   }
 
-  if (filter.method !== undefined && entry.method !== filter.method) {
+  if (filter.method !== undefined && (!("method" in entry) || entry.method !== filter.method)) {
     return false;
   }
 
@@ -50,7 +50,7 @@ export class AuditLog {
     this.maxFileSizeBytes = opts?.maxFileSizeBytes ?? DEFAULT_MAX_FILE_SIZE_BYTES;
   }
 
-  async append(entry: AuditEntry): Promise<void> {
+  async append(entry: CredentialAuditEvent): Promise<void> {
     await mkdir(this.logDir, { recursive: true });
 
     const filePath = this.getLogPath(entry.ts);
@@ -69,7 +69,7 @@ export class AuditLog {
     filter?: Partial<Pick<AuditEntry, "workerId" | "providerId" | "connectionId" | "method">>;
     limit?: number;
     after?: number;
-  }): Promise<AuditEntry[]> {
+  }): Promise<CredentialAuditEvent[]> {
     const filePath = this.getLogPath(Date.now());
     let fileContents: string;
 
@@ -82,7 +82,7 @@ export class AuditLog {
       throw error;
     }
 
-    const entries: AuditEntry[] = [];
+    const entries: CredentialAuditEvent[] = [];
     const lines = fileContents.split(/\r?\n/u);
 
     for (const line of lines) {
@@ -90,7 +90,7 @@ export class AuditLog {
         continue;
       }
 
-      const parsed = JSON.parse(line) as AuditEntry;
+      const parsed = JSON.parse(line) as CredentialAuditEvent;
 
       if (opts?.after !== undefined && parsed.ts <= opts.after) {
         continue;

@@ -25,6 +25,7 @@ import { TokenManager } from "@natstack/shared/tokenManager";
 import { EventService } from "@natstack/shared/eventsService";
 import { isValidEventName, type EventName } from "@natstack/shared/events";
 import { installPinnedTlsForAllPartitions, pemFileFingerprint } from "./tlsPinning.js";
+import { assertAllowedOAuthExternalUrl } from "./oauthExternal.js";
 
 const eventService = new EventService();
 import { ViewManager } from "./viewManager.js";
@@ -598,6 +599,7 @@ app.on("ready", async () => {
     const { createSettingsService } = await import("./services/settingsService.js");
     const { createAdblockService } = await import("./services/adblockService.js");
     const { createBrowserService } = await import("./services/browserService.js");
+    const { createOAuthLoopbackService } = await import("./services/oauthLoopbackService.js");
     // FS and git-local services removed — server owns these via panel service
     const { createBrowserDataService } = await import("./services/browserDataService.js");
     const { BrowserDataStore } = await import("@natstack/browser-data");
@@ -631,15 +633,8 @@ app.on("ready", async () => {
     electronContainer.register(rpcService(createSettingsService({ serverClient: sc })));
     const { createRemoteCredService } = await import("./services/remoteCredService.js");
     electronContainer.register(rpcService(createRemoteCredService({ startupMode })));
+    electronContainer.register(rpcService(createOAuthLoopbackService()));
     electronContainer.register(rpcService(createAdblockService({ adBlockManager })));
-    // Client-owned provider browser flow — opens the user's browser,
-    // captures the loopback redirect, and forwards the authorization code
-    // to the server's credentials service. `credentialFlow` is intentionally
-    // main-local: the server cannot complete a browser callback on behalf of
-    // the client machine.
-    const { createCredentialFlowService } = await import("./services/credentialFlowService.js");
-    electronContainer.register(rpcService(createCredentialFlowService({ serverClient: sc })));
-
     // Locally-hosted services
     electronContainer.register(rpcService(createBrowserService({
       cdpServer, getViewManager, panelRegistry,
@@ -913,6 +908,25 @@ app.on("ready", async () => {
       if (!isOpenExternalUrlAllowed(url)) {
         console.warn(`[ipc] Rejecting natstack:openExternal for disallowed URL: ${url}`);
         throw new Error("openExternal only supports http(s) and mailto URLs");
+      }
+      const { shell } = await import("electron");
+      await shell.openExternal(url);
+    });
+    ipcMain.handle("natstack:bridge.openOAuthExternal", async (
+      event,
+      url: string,
+      expectedRedirectUri: string,
+    ) => {
+      const { callerId } = resolveCaller(event);
+      try {
+        assertAllowedOAuthExternalUrl(url, expectedRedirectUri);
+      } catch (err) {
+        console.warn(
+          `[ipc] Rejecting natstack:bridge.openOAuthExternal from ${callerId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        throw err;
       }
       const { shell } = await import("electron");
       await shell.openExternal(url);

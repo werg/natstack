@@ -9,6 +9,7 @@
     "./gmail": "./src/gmail.ts",
     "./calendar": "./src/calendar.ts",
     "./github": "./src/github.ts",
+    "./providers": "./src/providers.ts",
     "./github-issue-mirror": "./src/github-issue-mirror.ts"
   },
   "dependencies": {

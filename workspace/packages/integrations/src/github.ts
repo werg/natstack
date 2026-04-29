@@ -1,11 +1,10 @@
-import { connect, type CredentialHandle } from "../../runtime/src/worker/credentials.js";
-import { githubProvider } from "./providers.js";
+import { githubCredential } from "./providers.js";
+import { getUrlCredentialClient, type UrlCredentialClient } from "./urlCredentialClient.js";
 
 const GITHUB_API_BASE = "https://api.github.com";
 const GITHUB_ACCEPT_HEADER = "application/vnd.github+json";
 
 export const manifest = {
-  providers: [githubProvider],
   scopes: {
     github: ["repo", "read_user"],
   },
@@ -155,7 +154,7 @@ function toQueryParams(params?: object): string {
 async function githubFetch<T>(
   path: string,
   init?: RequestInit,
-  auth?: CredentialHandle,
+  auth?: UrlCredentialClient,
 ): Promise<T> {
   const handle = auth ?? await ensureAuth();
   const headers = new Headers(init?.headers);
@@ -180,21 +179,21 @@ async function githubFetch<T>(
   return await response.json() as T;
 }
 
-let github: CredentialHandle | undefined;
+let github: UrlCredentialClient | undefined;
 
-async function ensureAuth(): Promise<CredentialHandle> {
+async function ensureAuth(): Promise<UrlCredentialClient> {
   if (!github) {
-    github = await connect(githubProvider);
+    github = await getUrlCredentialClient(githubCredential);
   }
   return github;
 }
 
-export async function getUser(auth?: CredentialHandle): Promise<GitHubUser> {
+export async function getUser(auth?: UrlCredentialClient): Promise<GitHubUser> {
   return githubFetch<GitHubUser>("/user", undefined, auth);
 }
 
 export async function listRepos(
-  auth?: CredentialHandle,
+  auth?: UrlCredentialClient,
   opts?: ListReposOptions,
 ): Promise<GitHubRepo[]> {
   return githubFetch<GitHubRepo[]>(
@@ -207,7 +206,7 @@ export async function listRepos(
 export async function getRepo(
   owner: string,
   repo: string,
-  auth?: CredentialHandle,
+  auth?: UrlCredentialClient,
 ): Promise<GitHubRepo> {
   return githubFetch<GitHubRepo>(
     `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
@@ -220,7 +219,7 @@ export async function listIssues(
   owner: string,
   repo: string,
   opts?: ListIssuesOptions,
-  auth?: CredentialHandle,
+  auth?: UrlCredentialClient,
 ): Promise<GitHubIssue[]> {
   const labels = Array.isArray(opts?.labels) ? opts.labels.join(",") : opts?.labels;
   return githubFetch<GitHubIssue[]>(
@@ -237,7 +236,7 @@ export async function createIssue(
   owner: string,
   repo: string,
   params: CreateIssueParams,
-  auth?: CredentialHandle,
+  auth?: UrlCredentialClient,
 ): Promise<GitHubIssue> {
   return githubFetch<GitHubIssue>(
     `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues`,
@@ -253,7 +252,7 @@ export async function getIssue(
   owner: string,
   repo: string,
   number: number,
-  auth?: CredentialHandle,
+  auth?: UrlCredentialClient,
 ): Promise<GitHubIssue> {
   return githubFetch<GitHubIssue>(
     `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues/${number}`,

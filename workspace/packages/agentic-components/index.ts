@@ -1,2 +1,5 @@
 export { AgentSelector } from "./components/AgentSelector";
-export type { AgentSelectorProps, AgentInfo } from "./types";
+export type {
+  AgentSelectorProps,
+  AgentInfo,
+} from "./types";

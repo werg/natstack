@@ -13,13 +13,17 @@ type WorkerGlobals = typeof globalThis & {
   __natstack_rpc?: (payload: RpcCallPayload) => Promise<unknown>;
   __natstackEnv?: Record<string, string>;
 };
+
 import {
   createCredentialClient,
-  type ConnectionRecord,
+  type BeginOAuthPkceCredentialResult,
+  type CompleteOAuthPkceCredentialRequest,
+  type CreateOAuthPkceCredentialRequest,
   type CredentialClient,
-  type CredentialHandle,
-  type ProviderDescriptor,
-  type ProviderRequest,
+  type GrantUrlBoundCredentialRequest,
+  type ResolveUrlBoundCredentialRequest,
+  type StoredCredentialSummary,
+  type StoreUrlBoundCredentialRequest,
 } from "../shared/credentials.js";
 
 async function callHostRpc<T>(method: string, ...args: unknown[]): Promise<T> {
@@ -42,7 +46,7 @@ async function callHostRpc<T>(method: string, ...args: unknown[]): Promise<T> {
     headers.set("Authorization", `Bearer ${authToken}`);
   }
 
-  const response = await fetch(`${serverUrl}/rpc`, {
+  const response = await globalThis.fetch(`${serverUrl}/rpc`, {
     method: "POST",
     headers,
     body: JSON.stringify({
@@ -72,42 +76,62 @@ const client: CredentialClient = createCredentialClient({
   },
 });
 
-export async function connect(
-  providerId: ProviderRequest,
-  opts?: { connectionId?: string },
-): Promise<CredentialHandle> {
-  return client.connect(providerId, opts);
+export async function store(input: StoreUrlBoundCredentialRequest): Promise<StoredCredentialSummary> {
+  return client.store(input);
 }
 
-export async function revokeConsent(
-  providerId: string,
-  connectionId?: string,
-): Promise<void> {
-  await callHostRpc("credentials.revokeConsent", { providerId, connectionId });
+export async function beginCreateWithOAuthPkce(
+  input: CreateOAuthPkceCredentialRequest,
+): Promise<BeginOAuthPkceCredentialResult> {
+  return client.beginCreateWithOAuthPkce(input);
 }
 
-export async function listConnections(providerId?: string): Promise<ConnectionRecord[]> {
-  return client.listConnections(providerId);
+export async function completeCreateWithOAuthPkce(
+  input: CompleteOAuthPkceCredentialRequest,
+): Promise<StoredCredentialSummary> {
+  return client.completeCreateWithOAuthPkce(input);
 }
 
-export async function subscribeWebhook(
-  providerId: ProviderRequest,
-  eventType: string,
-  opts: { handler: string; connectionId?: string },
-): Promise<{ subscriptionId: string; leaseId?: string }> {
-  return client.subscribeWebhook(providerId, eventType, opts);
+export async function listStoredCredentials(): Promise<StoredCredentialSummary[]> {
+  return client.listStoredCredentials();
 }
 
-export async function unsubscribeWebhook(subscriptionId: string): Promise<void> {
-  await client.unsubscribeWebhook(subscriptionId);
+export async function revokeCredential(credentialId: string): Promise<void> {
+  await client.revokeCredential(credentialId);
 }
 
-export async function listWebhookLeases(filter?: {
-  providerId?: string;
-  eventType?: string;
-  connectionId?: string;
-}) {
-  return client.listWebhookLeases(filter);
+export async function grantCredential(input: GrantUrlBoundCredentialRequest): Promise<StoredCredentialSummary> {
+  return client.grantCredential(input);
 }
 
-export type { CredentialHandle, ConnectionRecord, CredentialClient, ProviderDescriptor, ProviderRequest };
+export async function resolveCredential(
+  input: ResolveUrlBoundCredentialRequest,
+): Promise<StoredCredentialSummary | null> {
+  return client.resolveCredential(input);
+}
+
+export async function fetch(
+  url: string | URL,
+  init?: RequestInit,
+  opts?: { credentialId?: string },
+): Promise<Response> {
+  return client.fetch(url, init, opts);
+}
+
+export function hookForUrl(
+  url: string | URL,
+  opts?: { credentialId?: string },
+): (init?: RequestInit) => Promise<Response> {
+  return client.hookForUrl(url, opts);
+}
+
+export type {
+  BeginOAuthPkceCredentialResult,
+  CompleteOAuthPkceCredentialRequest,
+  CreateOAuthPkceCredentialRequest,
+  CredentialClient,
+  GrantUrlBoundCredentialRequest,
+  ResolveUrlBoundCredentialRequest,
+  StoredCredentialSummary,
+  StoreUrlBoundCredentialRequest,
+} from "../shared/credentials.js";

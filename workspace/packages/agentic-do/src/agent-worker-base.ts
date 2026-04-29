@@ -53,7 +53,7 @@ import {
   DispatchedError,
 } from "@natstack/harness";
 import type { AgentEvent, AgentMessage, AgentToolResult } from "@mariozechner/pi-agent-core";
-import type { ImageContent } from "@mariozechner/pi-ai";
+import { getModel as getPiModel, type ImageContent } from "@mariozechner/pi-ai";
 
 import { DOIdentity } from "./identity.js";
 import { SubscriptionManager } from "./subscription-manager.js";
@@ -67,106 +67,203 @@ import { ContentBlockProjector, type ProjectorSink } from "./content-block-proje
 import { TurnDispatcher } from "./turn-dispatcher.js";
 
 const SAFE_TOOL_NAMES_DEFAULT: ReadonlySet<string> = new Set(["read", "ls", "grep", "find"]);
+const URL_BOUND_MODEL_CREDENTIAL_SENTINEL = "natstack-url-bound-model-credential";
+const URL_BOUND_MODEL_CREDENTIAL_SENTINEL_CLAIM = "https://natstack.local/url-bound-model-credential";
 
-const OPENAI_CODEX_PROVIDER = {
-  id: "openai-codex",
-  displayName: "ChatGPT",
-  apiBase: ["https://api.openai.com", "https://chatgpt.com/backend-api"],
-  authInjection: {
-    type: "header" as const,
-    headerName: "Authorization",
-    valueTemplate: "Bearer {token}",
-  },
-  flows: [
-    {
-      type: "loopback-pkce" as const,
-      clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
-      authorizeUrl: "https://auth.openai.com/oauth/authorize",
-      tokenUrl: "https://auth.openai.com/oauth/token",
-      fixedScope: "openid profile email offline_access",
-      loopback: { host: "localhost", port: 1455, callbackPath: "/auth/callback" },
-      extraAuthorizeParams: {
-        id_token_add_organizations: "true",
-        codex_cli_simplified_flow: "true",
-        originator: "codex_cli_rs",
-      },
-      tokenMetadata: {
-        accountId: {
-          source: "jwt-claim" as const,
-          path: "https://api.openai.com/auth.chatgpt_account_id",
-        },
-      },
-    },
-  ],
-};
+export interface ModelCredentialSummary {
+  id: string;
+  accountIdentity?: {
+    providerUserId?: string;
+  };
+  metadata?: Record<string, string>;
+}
 
-const OAUTH_CONNECT_CARD_TSX = `
+export type ModelCredentialSetupProps = Record<string, unknown>;
+
+const MODEL_CREDENTIAL_REQUIRED_CARD_TSX = `
 import { useState } from "react";
-import { Box, Button, Card, Flex, Text } from "@radix-ui/themes";
+import { Box, Button, Callout, Card, Code, Flex, Spinner, Text } from "@radix-ui/themes";
 
-export default function OAuthConnectCard({ props, chat }) {
-  const [status, setStatus] = useState("idle");
-  const [error, setError] = useState(null);
+export default function ModelCredentialRequiredCard({ props, chat }) {
   const providerId = props.providerId;
-  const provider = props.provider || providerId;
-  const displayName = props.displayName;
+  const modelBaseUrl = props.modelBaseUrl;
+  const oauth = props.oauth;
+  const [status, setStatus] = useState("idle");
+  const [error, setError] = useState("");
+  const [authorizeUrl, setAuthorizeUrl] = useState("");
 
-  const handleConnect = async () => {
-    setStatus("connecting");
-    setError(null);
+  const startOAuth = async (openMode) => {
+    if (!oauth || !modelBaseUrl) return;
+    setStatus("starting");
+    setError("");
+    setAuthorizeUrl("");
+    let callbackId = "";
     try {
-      const result = await chat.rpc.call("main", "credentialFlow.connect", provider);
-      if (result && result.success) {
-        setStatus("connected");
-        chat.publish("message", {
-          content: "Connected to " + displayName + ". Please continue where you left off."
-        });
+      let callback;
+      try {
+        callback = await chat.rpc.call("main", "oauthLoopback.createLoopbackCallback", props.loopback || {});
+      } catch (loopbackErr) {
+        if (!props.loopback || !props.loopback.port) throw loopbackErr;
+        callback = await chat.rpc.call("main", "oauthLoopback.createLoopbackCallback", {});
+      }
+      callbackId = callback.callbackId;
+      const begin = await chat.rpc.call("main", "credentials.beginCreateWithOAuthPkce", {
+        oauth,
+        credential: {
+          label: props.credentialLabel || "Model credential: " + providerId,
+          audience: [{ url: modelBaseUrl, match: "path-prefix" }],
+          injection: {
+            type: "header",
+            name: "Authorization",
+            valueTemplate: "Bearer {token}",
+            stripIncoming: ["authorization"],
+          },
+          scopes: oauth.scopes || [],
+          metadata: {
+            modelProviderId: providerId,
+            oauthAccountIdentityJwtClaimRoot: props.accountIdentityJwtClaimRoot || "",
+            oauthAccountIdentityJwtClaimField: props.accountIdentityJwtClaimField || "",
+          },
+        },
+        redirectUri: callback.redirectUri,
+      });
+      setAuthorizeUrl(begin.authorizeUrl);
+      setStatus("waiting");
+      if (openMode === "external") {
+        const shell = globalThis.__natstackShell || globalThis.__natstackElectron;
+        if (shell && typeof shell.openOAuthExternal === "function") {
+          await shell.openOAuthExternal(begin.authorizeUrl, callback.redirectUri);
+        } else {
+          window.open(begin.authorizeUrl, "_blank", "noopener,noreferrer");
+        }
       } else {
-        setStatus("error");
-        setError((result && result.error) || "Login failed");
+        window.open(begin.authorizeUrl, "_blank", "noopener,noreferrer");
+      }
+      const result = await chat.rpc.call("main", "oauthLoopback.waitForLoopbackCallback", callback.callbackId);
+      setStatus("approval");
+      await chat.rpc.call("main", "credentials.completeCreateWithOAuthPkce", {
+        nonce: begin.nonce,
+        code: result.code,
+        state: result.state,
+      });
+      setStatus("done");
+      if (props.agentParticipantId) {
+        await chat.callMethod(props.agentParticipantId, "credentialConnected", {
+          providerId,
+          modelBaseUrl,
+        }).catch(() => {});
       }
     } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
       setStatus("error");
-      setError(err && err.message ? err.message : String(err));
+    } finally {
+      if (callbackId) {
+        await chat.rpc.call("main", "oauthLoopback.closeLoopbackCallback", callbackId).catch(() => {});
+      }
     }
   };
+
+  const busy = status === "starting" || status === "waiting" || status === "approval";
+  const unsupported = !oauth || !modelBaseUrl;
 
   return (
     <Card variant="surface" size="2">
       <Flex direction="column" gap="3">
         <Box>
-          <Text as="div" size="2" weight="medium">Sign in to {displayName}</Text>
+          <Text as="div" size="2" weight="medium">Credential required for {providerId}</Text>
           <Text as="div" size="1" color="gray" mt="1">
-            Connect your {displayName} account to continue this agent turn.
+            Connect a URL-bound model credential for <Code size="1">{modelBaseUrl || providerId}</Code>.
           </Text>
         </Box>
-        {status === "idle" && (
-          <Button onClick={handleConnect}>Connect to {displayName}</Button>
-        )}
-        {status === "connecting" && (
-          <Button disabled>Waiting for browser...</Button>
-        )}
-        {status === "connected" && (
-          <Text size="2" color="green" weight="medium">Connected to {displayName}</Text>
-        )}
-        {status === "error" && (
-          <Flex direction="column" gap="2">
-            <Text size="1" color="red">{error}</Text>
-            <Button onClick={handleConnect} variant="soft">Try again</Button>
-          </Flex>
-        )}
+        {unsupported ? (
+          <Callout.Root color="amber" size="1">
+            <Callout.Text>No built-in OAuth setup is available for this model provider.</Callout.Text>
+          </Callout.Root>
+        ) : null}
+        {status === "waiting" && authorizeUrl ? (
+          <Text size="1" color="gray">
+            Browser did not open? <a href={authorizeUrl} target="_blank" rel="noreferrer">Open sign-in</a>.
+          </Text>
+        ) : null}
+        {status === "approval" ? (
+          <Callout.Root color="blue" size="1">
+            <Callout.Text>Approve the credential request to finish connecting.</Callout.Text>
+          </Callout.Root>
+        ) : null}
+        {status === "done" ? (
+          <Callout.Root color="green" size="1">
+            <Callout.Text>Credential connected. Continuing...</Callout.Text>
+          </Callout.Root>
+        ) : null}
+        {error ? (
+          <Callout.Root color="red" size="1">
+            <Callout.Text>{error}</Callout.Text>
+          </Callout.Root>
+        ) : null}
+        <Flex gap="2" wrap="wrap">
+          <Button size="1" onClick={() => startOAuth("panel")} disabled={busy || unsupported || status === "done"}>
+            {busy ? <Spinner size="1" /> : null}
+            {status === "done" ? "Connected" : status === "error" ? "Try Again" : "Connect"}
+          </Button>
+          <Button size="1" variant="soft" onClick={() => startOAuth("external")} disabled={busy || unsupported || status === "done"}>
+            External Browser
+          </Button>
+        </Flex>
       </Flex>
     </Card>
   );
 }
 `.trim();
 
+function base64UrlJson(value: unknown): string {
+  return btoa(JSON.stringify(value))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function isModelCredentialSentinel(value: string): boolean {
+  if (value === URL_BOUND_MODEL_CREDENTIAL_SENTINEL) {
+    return true;
+  }
+  const parts = value.split(".");
+  if (parts.length !== 3) {
+    return false;
+  }
+  try {
+    const normalized = (parts[1] ?? "").replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    const payload = JSON.parse(atob(padded)) as Record<string, unknown>;
+    return payload[URL_BOUND_MODEL_CREDENTIAL_SENTINEL_CLAIM] === true;
+  } catch {
+    return false;
+  }
+}
+
 function credentialRequiredMessage(err: unknown): string | null {
   const message = err instanceof Error ? err.message : String(err);
   const code = (err as { code?: unknown })?.code;
-  return code === "CREDENTIAL_REQUIRED" || /(?:^|\]\s*)No credential for .+connect in Connected Accounts$/.test(message)
+  return code === "CREDENTIAL_REQUIRED" ||
+    /^No URL-bound model credential is configured for model provider: /.test(message)
     ? message
     : null;
+}
+
+function shouldProxyUrlBoundModelFetch(url: URL, baseUrls: readonly string[]): boolean {
+  if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+  if (url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "::1") return false;
+  return baseUrls.some((baseUrl) => isUrlWithinBase(url, baseUrl));
+}
+
+function isUrlWithinBase(url: URL, rawBaseUrl: string): boolean {
+  try {
+    const base = new URL(rawBaseUrl);
+    if (url.origin !== base.origin) return false;
+    const basePath = base.pathname.endsWith("/") ? base.pathname : `${base.pathname}/`;
+    return url.pathname === base.pathname || url.pathname.startsWith(basePath);
+  } catch {
+    return false;
+  }
 }
 
 function trimTrailingEmptyAbortedAssistant(messages: AgentMessage[]): AgentMessage[] {
@@ -330,12 +427,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   // ── Customization hooks (Pi-native) ─────────────────────────────────────
 
   /**
-   * Model id in `provider:model` format (e.g. `anthropic:claude-sonnet-4-20250514`,
-   * `openai-codex:gpt-5`). Subclasses override to pick a different default.
+   * Model id in `provider:model` format (e.g. `anthropic:claude-sonnet-4-20250514`).
+   * Concrete agent workers must pick their own model.
    * PiRunner passes this directly to `pi-ai.getModel(provider, modelId)`.
    */
   protected getModel(): string {
-    return "openai-codex:gpt-5";
+    throw new Error("AgentWorkerBase subclasses must override getModel()");
   }
 
   protected getThinkingLevel(): ThinkingLevel {
@@ -348,27 +445,113 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     return colonIdx >= 0 ? model.slice(0, colonIdx) : model;
   }
 
-  protected getModelProvider(): typeof OPENAI_CODEX_PROVIDER {
+  private getApiKeyForChannel(channelId: string): () => Promise<string> {
     const providerId = this.getModelProviderId();
-    if (providerId === OPENAI_CODEX_PROVIDER.id) return OPENAI_CODEX_PROVIDER;
-    throw new Error(`No provider descriptor configured for model provider: ${providerId}`);
+    return async () => {
+      const modelBaseUrl = this.getModelBaseUrl();
+      this.installUrlBoundModelFetchProxy(modelBaseUrl);
+      const credential = await this.rpc.call<ModelCredentialSummary | null>("main", "credentials.resolveCredential", {
+        url: modelBaseUrl,
+      });
+      if (!credential) {
+        this.emitModelCredentialRequiredCard(channelId, providerId, modelBaseUrl);
+        throw new Error(
+          `No URL-bound model credential is configured for model provider: ${providerId}`,
+        );
+      }
+      return this.createModelCredentialSentinel(providerId, credential);
+    };
   }
 
-  private getApiKeyForChannel(channelId: string): () => Promise<string> {
-    const provider = this.getModelProvider();
-    const providerId = provider.id;
-    const hook = this.credentials.hookFor(provider);
-    return async () => {
-      try {
-        return await hook();
-      } catch (err) {
-        const missingCredential = credentialRequiredMessage(err);
-        if (missingCredential) {
-          this.emitOAuthConnectCard(channelId, provider);
-        }
-        throw err;
-      }
+  protected getModelCredentialSetupProps(_providerId: string): ModelCredentialSetupProps | null {
+    return null;
+  }
+
+  protected getModelCredentialTokenClaims(
+    _providerId: string,
+    _credential: ModelCredentialSummary,
+  ): Record<string, unknown> {
+    return {};
+  }
+
+  private createModelCredentialSentinel(providerId: string, credential: ModelCredentialSummary): string {
+    const providerClaims = this.getModelCredentialTokenClaims(providerId, credential);
+    if (Object.keys(providerClaims).length === 0) {
+      return URL_BOUND_MODEL_CREDENTIAL_SENTINEL;
+    }
+    return [
+      "natstack",
+      base64UrlJson({
+        [URL_BOUND_MODEL_CREDENTIAL_SENTINEL_CLAIM]: true,
+        ...providerClaims,
+      }),
+      "url-bound",
+    ].join(".");
+  }
+
+  private getModelBaseUrl(): string {
+    const model = this.getModel();
+    const colonIdx = model.indexOf(":");
+    if (colonIdx < 0) {
+      throw new Error(`Model must be "provider:model", got: ${model}`);
+    }
+    const provider = model.slice(0, colonIdx);
+    const modelId = model.slice(colonIdx + 1);
+    const resolved = getPiModel(provider as never, modelId as never);
+    if (!resolved?.baseUrl) {
+      throw new Error(`No model metadata found for model provider: ${provider}`);
+    }
+    return resolved.baseUrl;
+  }
+
+  private installUrlBoundModelFetchProxy(modelBaseUrl: string): void {
+    const globals = globalThis as typeof globalThis & {
+      __natstackModelFetchProxyInstalled?: boolean;
+      __natstackModelFetchProxyBaseUrls?: string[];
     };
+    globals.__natstackModelFetchProxyBaseUrls = Array.from(new Set([
+      ...(globals.__natstackModelFetchProxyBaseUrls ?? []),
+      modelBaseUrl,
+    ]));
+    if (globals.__natstackModelFetchProxyInstalled) return;
+
+    const originalFetch = globalThis.fetch.bind(globalThis);
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const request = new Request(input, init);
+      const targetUrl = new URL(request.url);
+      const headers = new Headers(request.headers);
+      const authorization = headers.get("authorization");
+      const hasSentinel = authorization?.startsWith("Bearer ")
+        ? isModelCredentialSentinel(authorization.slice("Bearer ".length))
+        : false;
+      if (!hasSentinel) {
+        return originalFetch(input, init);
+      }
+      if (!shouldProxyUrlBoundModelFetch(targetUrl, globals.__natstackModelFetchProxyBaseUrls ?? [])) {
+        throw new Error(`Refusing to send URL-bound model credential to non-model URL: ${targetUrl.origin}`);
+      }
+      headers.delete("authorization");
+
+      const result = await this.rpc.call<{
+        status: number;
+        statusText: string;
+        headers: Record<string, string>;
+        body: string;
+      }>("main", "credentials.proxyFetch", {
+        url: targetUrl.toString(),
+        method: request.method,
+        headers: Object.fromEntries(headers.entries()),
+        body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.text(),
+      });
+
+      return new Response(result.body, {
+        status: result.status,
+        statusText: result.statusText,
+        headers: result.headers,
+      });
+    };
+
+    globals.__natstackModelFetchProxyInstalled = true;
   }
 
   protected getApprovalLevel(channelId: string): ApprovalLevel {
@@ -748,7 +931,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       if (last.stopReason !== "error") return;
       const msg = last.errorMessage ?? "Turn failed.";
       if (credentialRequiredMessage(msg)) {
-        this.emitOAuthConnectCard(channelId, this.getModelProvider());
+        this.emitModelCredentialRequiredCard(channelId, this.getModelProviderId(), this.getModelBaseUrl());
         return;
       }
       console.error(`[AgentWorkerBase] Agent turn ended with error on channel=${channelId}: ${msg}`);
@@ -1114,23 +1297,23 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     };
   }
 
-  private emitOAuthConnectCard(channelId: string, provider: typeof OPENAI_CODEX_PROVIDER): void {
-    const providerId = provider.id;
+  private emitModelCredentialRequiredCard(channelId: string, providerId: string, modelBaseUrl: string): void {
     const participantId = this.subscriptions.getParticipantId(channelId);
     if (!participantId) return;
-    const key = `${channelId}::oauth::${providerId}`;
+    const key = `${channelId}::model-credential::${providerId}`;
     if (this.credentialPromptCardsEmitted.has(key)) return;
     this.credentialPromptCardsEmitted.add(key);
 
     const channel = this.createChannelClient(channelId);
     const messageId = crypto.randomUUID();
     const content = JSON.stringify({
-      id: `oauth-connect-${providerId}-${messageId}`,
-      code: OAUTH_CONNECT_CARD_TSX,
+      id: `model-credential-${providerId}-${messageId}`,
+      code: MODEL_CREDENTIAL_REQUIRED_CARD_TSX,
       props: {
         providerId,
-        provider,
-        displayName: provider.displayName,
+        modelBaseUrl,
+        agentParticipantId: participantId,
+        ...(this.getModelCredentialSetupProps(providerId) ?? {}),
       },
     });
     void channel
@@ -1139,7 +1322,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         persist: false,
       })
       .catch((err) => {
-        console.error(`[AgentWorkerBase] Failed to emit OAuth Connect card for ${providerId}:`, err);
+        console.error(`[AgentWorkerBase] Failed to emit model credential card for ${providerId}:`, err);
         this.credentialPromptCardsEmitted.delete(key);
       });
   }
@@ -1427,6 +1610,40 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   async onMethodCall(_channelId: string, _callId: string, _methodName: string, _args: unknown): Promise<{ result: unknown; isError?: boolean }> {
     return { result: { error: "not implemented" }, isError: true };
+  }
+
+  protected async resumeAfterModelCredentialConnected(channelId: string): Promise<boolean> {
+    await this.ensureChannelContext(channelId);
+    const entry = this.runners.get(channelId);
+    if (!entry) return false;
+
+    const messages = this.loadMessages(channelId);
+    const last = messages[messages.length - 1] as
+      | { role?: string; stopReason?: string; errorMessage?: string }
+      | undefined;
+    if (
+      last?.role !== "assistant" ||
+      last.stopReason !== "error" ||
+      !credentialRequiredMessage(last.errorMessage ?? "")
+    ) {
+      return false;
+    }
+
+    const resumableMessages = messages.slice(0, -1);
+    const resumeFrom = resumableMessages[resumableMessages.length - 1] as
+      | { role?: string }
+      | undefined;
+    if (!resumeFrom || (resumeFrom.role !== "user" && resumeFrom.role !== "toolResult")) {
+      return false;
+    }
+
+    await this.saveMessages(channelId, resumableMessages);
+    entry.runner.replaceHistory(resumableMessages);
+    this.credentialPromptCardsEmitted.delete(`${channelId}::model-credential::${this.getModelProviderId()}`);
+    const projector = this.getOrCreateProjector(channelId);
+    const dispatcher = this.getOrCreateDispatcher(channelId, entry.runner, projector);
+    dispatcher.submitContinue();
+    return true;
   }
 
   /** Interrupt the in-flight Pi turn for every active channel runner. */

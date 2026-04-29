@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { Credential } from "../../../packages/shared/src/credentials/types.js";
+import type {
+  AuditEntry,
+  Credential,
+  CredentialAuditEvent,
+  StoredCredentialSummary,
+} from "../../../packages/shared/src/credentials/types.js";
 import { createCredentialService } from "./credentialService.js";
+import { CredentialSessionGrantStore } from "./credentialSessionGrants.js";
 
 class MemoryCredentialStore {
   private readonly credentials = new Map<string, Credential>();
@@ -10,8 +16,20 @@ class MemoryCredentialStore {
     this.credentials.set(`${credential.providerId}:${credential.connectionId}`, credential);
   }
 
+  async saveUrlBound(credential: Credential & { id: string }): Promise<void> {
+    this.credentials.set(`url-bound:${credential.id}`, {
+      ...credential,
+      providerId: "url-bound",
+      connectionId: credential.id,
+    });
+  }
+
   async load(providerId: string, connectionId: string): Promise<Credential | null> {
     return this.credentials.get(`${providerId}:${connectionId}`) ?? null;
+  }
+
+  async loadUrlBound(id: string): Promise<Credential | null> {
+    return this.credentials.get(`url-bound:${id}`) ?? null;
   }
 
   async list(providerId?: string): Promise<Credential[]> {
@@ -20,48 +38,38 @@ class MemoryCredentialStore {
     );
   }
 
+  async listUrlBound(): Promise<Credential[]> {
+    return [...this.credentials.values()].filter((credential) => credential.providerId === "url-bound");
+  }
+
   async remove(providerId: string, connectionId: string): Promise<void> {
     this.credentials.delete(`${providerId}:${connectionId}`);
   }
+
+  async removeUrlBound(id: string): Promise<void> {
+    this.credentials.delete(`url-bound:${id}`);
+  }
 }
 
-function createJwt(payload: Record<string, unknown>): string {
-  const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
-  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
-  return `${header}.${body}.`;
+class MemoryAuditLog {
+  readonly entries: CredentialAuditEvent[] = [];
+
+  async append(entry: CredentialAuditEvent): Promise<void> {
+    this.entries.push(entry);
+  }
+
+  async query(): Promise<CredentialAuditEvent[]> {
+    return this.entries;
+  }
 }
 
-const codexProvider = {
-  id: "openai-codex",
-  displayName: "ChatGPT",
-  apiBase: ["https://api.openai.com", "https://chatgpt.com/backend-api"],
-  authInjection: {
-    type: "header" as const,
-    headerName: "Authorization",
-    valueTemplate: "Bearer {token}",
-  },
-  flows: [
-    {
-      type: "loopback-pkce" as const,
-      clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
-      authorizeUrl: "https://auth.openai.com/oauth/authorize",
-      tokenUrl: "https://auth.openai.com/oauth/token",
-      fixedScope: "openid profile email offline_access",
-      loopback: { host: "localhost", port: 1455, callbackPath: "/auth/callback" },
-      extraAuthorizeParams: {
-        id_token_add_organizations: "true",
-        codex_cli_simplified_flow: "true",
-        originator: "codex_cli_rs",
-      },
-      tokenMetadata: {
-        accountId: {
-          source: "jwt-claim" as const,
-          path: "https://api.openai.com/auth.chatgpt_account_id",
-        },
-      },
-    },
-  ],
-};
+function jwtWithPayload(payload: Record<string, unknown>): string {
+  return [
+    "header",
+    Buffer.from(JSON.stringify(payload)).toString("base64url"),
+    "signature",
+  ].join(".");
+}
 
 describe("credentialService", () => {
   afterEach(() => {
@@ -69,92 +77,432 @@ describe("credentialService", () => {
     vi.restoreAllMocks();
   });
 
-  it("uses fixedScope, extra authorize params, and the client loopback redirect for Codex consent", async () => {
+  it("stores, lists, and revokes URL-bound credentials without returning secrets", async () => {
     const store = new MemoryCredentialStore();
+    const auditLog = new MemoryAuditLog();
     const service = createCredentialService({
       credentialStore: store as never,
+      auditLog: auditLog as never,
+      codeIdentityResolver: {
+        resolveByCallerId: () => ({
+          callerId: "worker:test",
+          callerKind: "worker",
+          repoPath: "/repo",
+          effectiveVersion: "hash-1",
+        }),
+      },
     });
 
-    const result = await service.handler(
-      { callerId: "panel:test", callerKind: "panel" },
-      "beginConsent",
+    const stored = await service.handler(
+      { callerId: "worker:test", callerKind: "worker" },
+      "storeCredential",
       [{
-        providerId: "openai-codex",
-        provider: codexProvider,
-        scopes: ["ignored-scope"],
-        redirect: "client-loopback",
-        redirectUri: "http://localhost:1455/auth/callback",
+        label: "Example API",
+        audience: [{ url: "https://API.example.com:443/v1?ignored=1", match: "path-prefix" }],
+        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        material: { type: "bearer-token", token: "secret-token" },
+        accountIdentity: { providerUserId: "acct-1" },
       }],
-    ) as { nonce: string; authorizeUrl: string };
+    ) as StoredCredentialSummary;
 
-    expect(result.nonce).toBeTruthy();
+    expect(stored).toMatchObject({
+      label: "Example API",
+      audience: [{ url: "https://api.example.com/v1", match: "path-prefix" }],
+      injection: { name: "authorization" },
+      owner: { sourceId: "/repo", sourceKind: "workspace" },
+    });
+    expect(JSON.stringify(stored)).not.toContain("secret-token");
 
-    const authorizeUrl = new URL(result.authorizeUrl);
-    expect(authorizeUrl.searchParams.get("scope")).toBe("openid profile email offline_access");
-    expect(authorizeUrl.searchParams.get("redirect_uri")).toBe("http://localhost:1455/auth/callback");
-    expect(authorizeUrl.searchParams.get("id_token_add_organizations")).toBe("true");
-    expect(authorizeUrl.searchParams.get("codex_cli_simplified_flow")).toBe("true");
-    expect(authorizeUrl.searchParams.get("originator")).toBe("codex_cli_rs");
+    const persisted = await store.loadUrlBound(stored.id);
+    expect(persisted?.accessToken).toBe("secret-token");
+
+    const listed = await service.handler(
+      { callerId: "worker:test", callerKind: "worker" },
+      "listStoredCredentials",
+      [],
+    ) as StoredCredentialSummary[];
+    expect(listed).toHaveLength(1);
+    expect(JSON.stringify(listed)).not.toContain("secret-token");
+
+    await service.handler(
+      { callerId: "worker:test", callerKind: "worker" },
+      "revokeCredential",
+      [{ credentialId: stored.id }],
+    );
+    expect((await store.loadUrlBound(stored.id))?.revokedAt).toEqual(expect.any(Number));
+    expect(auditLog.entries).toHaveLength(1);
   });
 
-  it("stores Codex account metadata and account identity from the token response", async () => {
+  it("rejects credential revocation from callers without owner or grant access", async () => {
     const store = new MemoryCredentialStore();
     const service = createCredentialService({
       credentialStore: store as never,
+      codeIdentityResolver: {
+        resolveByCallerId: (callerId: string) => callerId === "worker:owner"
+          ? { callerId, callerKind: "worker", repoPath: "/owner", effectiveVersion: "hash-1" }
+          : { callerId, callerKind: "worker", repoPath: "/other", effectiveVersion: "hash-2" },
+      },
     });
 
-    const begin = await service.handler(
-      { callerId: "panel:test", callerKind: "panel" },
-      "beginConsent",
+    const stored = await service.handler(
+      { callerId: "worker:owner", callerKind: "worker" },
+      "storeCredential",
       [{
-        providerId: "openai-codex",
-        provider: codexProvider,
-        scopes: [],
-        redirect: "client-loopback",
-        redirectUri: "http://localhost:1455/auth/callback",
+        label: "Example API",
+        audience: [{ url: "https://api.example.test/", match: "origin" }],
+        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        material: { type: "bearer-token", token: "secret-token" },
       }],
-    ) as { nonce: string };
+    ) as StoredCredentialSummary;
 
-    const accessToken = createJwt({
-      sub: "codex-user-1",
-      "https://api.openai.com/auth.chatgpt_account_id": "acct_123",
+    await expect(service.handler(
+      { callerId: "worker:other", callerKind: "worker" },
+      "revokeCredential",
+      [{ credentialId: stored.id }],
+    )).rejects.toThrow(/not authorized to revoke/);
+
+    expect((await store.loadUrlBound(stored.id))?.revokedAt).toBeUndefined();
+  });
+
+  it("keeps session approvals process-local but stable across caller instances for the same version", async () => {
+    const store = new MemoryCredentialStore();
+    const approvalQueue = {
+      request: vi.fn(async () => "session" as const),
+      resolve: vi.fn(),
+      listPending: vi.fn(() => []),
+    };
+    const service = createCredentialService({
+      credentialStore: store as never,
+      approvalQueue: approvalQueue as never,
+      sessionGrantStore: new CredentialSessionGrantStore(),
+      codeIdentityResolver: {
+        resolveByCallerId: (callerId: string) => {
+          if (callerId === "worker:first" || callerId === "do:worker:first") {
+            return { callerId, callerKind: "worker", repoPath: "/agent", effectiveVersion: "hash-1" };
+          }
+          if (callerId === "worker:new-version") {
+            return { callerId, callerKind: "worker", repoPath: "/agent", effectiveVersion: "hash-2" };
+          }
+          return null;
+        },
+      },
     });
-    const idToken = createJwt({
-      email: "dev@example.com",
-      preferred_username: "dev-user",
+
+    const stored = await service.handler(
+      { callerId: "worker:first", callerKind: "worker" },
+      "storeCredential",
+      [{
+        label: "Example API",
+        audience: [{ url: "https://api.example.test/", match: "origin" }],
+        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        material: { type: "bearer-token", token: "secret-token" },
+      }],
+    ) as StoredCredentialSummary;
+
+    expect((await store.loadUrlBound(stored.id))?.allowedCallers).toEqual([]);
+
+    await expect(service.handler(
+      { callerId: "do:worker:first", callerKind: "worker" },
+      "resolveCredential",
+      [{ url: "https://api.example.test/v1" }],
+    )).resolves.toMatchObject({ id: stored.id });
+    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
+
+    await service.handler(
+      { callerId: "worker:new-version", callerKind: "worker" },
+      "resolveCredential",
+      [{ url: "https://api.example.test/v1" }],
+    );
+    expect(approvalQueue.request).toHaveBeenCalledTimes(2);
+  });
+
+  it("creates URL-bound credentials through generic OAuth PKCE and discards refresh tokens", async () => {
+    const store = new MemoryCredentialStore();
+    const service = createCredentialService({ credentialStore: store as never });
+    const ctx = { callerId: "panel:test", callerKind: "panel" as const };
+
+    const begin = await service.handler(ctx, "beginCreateWithOAuthPkce", [{
+      oauth: {
+        authorizeUrl: "https://auth.example.test/oauth/authorize",
+        tokenUrl: "https://auth.example.test/oauth/token",
+        clientId: "client-1",
+        scopes: ["read", "write"],
+        extraAuthorizeParams: { prompt: "consent" },
+      },
+      credential: {
+        label: "Example OAuth",
+        audience: [{ url: "https://api.example.test/v1", match: "path-prefix" }],
+        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        accountIdentity: { email: "dev@example.test" },
+      },
+      redirectUri: "http://127.0.0.1:53123/oauth/callback",
+    }]) as { nonce: string; authorizeUrl: string };
+
+    const authorizeUrl = new URL(begin.authorizeUrl);
+    expect(authorizeUrl.searchParams.get("response_type")).toBe("code");
+    expect(authorizeUrl.searchParams.get("client_id")).toBe("client-1");
+    expect(authorizeUrl.searchParams.get("scope")).toBe("read write");
+    expect(authorizeUrl.searchParams.get("state")).toBe(begin.nonce);
+    expect(authorizeUrl.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(authorizeUrl.searchParams.get("prompt")).toBe("consent");
+
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(init?.method).toBe("POST");
+      const body = init?.body as URLSearchParams;
+      expect(body.get("grant_type")).toBe("authorization_code");
+      expect(body.get("client_id")).toBe("client-1");
+      expect(body.get("code_verifier")).toBeTruthy();
+      return new Response(JSON.stringify({
+        access_token: "oauth-access-token",
+        refresh_token: "must-not-persist",
+        token_type: "Bearer",
+        expires_in: 3600,
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }));
+
+    const completed = await service.handler(ctx, "completeCreateWithOAuthPkce", [{
+      nonce: begin.nonce,
+      state: begin.nonce,
+      code: "code-1",
+    }]) as StoredCredentialSummary;
+
+    expect(completed).toMatchObject({
+      label: "Example OAuth",
+      accountIdentity: { email: "dev@example.test", providerUserId: "dev@example.test" },
+      scopes: ["read", "write"],
     });
+    expect(completed.expiresAt).toBeGreaterThan(Date.now());
+    expect(JSON.stringify(completed)).not.toContain("oauth-access-token");
+
+    const persisted = await store.loadUrlBound(completed.id);
+    expect(persisted?.accessToken).toBe("oauth-access-token");
+    expect(JSON.stringify(persisted)).not.toContain("must-not-persist");
+  });
+
+  it("surfaces OAuth origins and domain mismatch in credential approval requests", async () => {
+    const store = new MemoryCredentialStore();
+    const approvalQueue = {
+      request: vi.fn(async () => "session" as const),
+      resolve: vi.fn(),
+      listPending: vi.fn(() => []),
+    };
+    const service = createCredentialService({
+      credentialStore: store as never,
+      approvalQueue: approvalQueue as never,
+    });
+    const ctx = { callerId: "panel:test", callerKind: "panel" as const };
+
+    const begin = await service.handler(ctx, "beginCreateWithOAuthPkce", [{
+      oauth: {
+        authorizeUrl: "https://accounts.example-login.test/oauth/authorize",
+        tokenUrl: "https://accounts.example-login.test/oauth/token",
+        clientId: "client-1",
+        allowMissingExpiry: true,
+      },
+      credential: {
+        label: "Example OAuth",
+        audience: [{ url: "https://api.example.test", match: "origin" }],
+        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+      },
+      redirectUri: "http://localhost:53123/oauth/callback",
+    }]) as { nonce: string };
 
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      access_token: accessToken,
-      id_token: idToken,
-      refresh_token: "refresh-1",
-      expires_in: "3600",
-    }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    })));
+      access_token: "token",
+    }), { status: 200, headers: { "content-type": "application/json" } })));
 
-    const result = await service.handler(
-      { callerId: "panel:test", callerKind: "panel" },
-      "completeConsent",
-      [{ nonce: begin.nonce, code: "auth-code-1" }],
-    ) as { connectionId: string };
+    await service.handler(ctx, "completeCreateWithOAuthPkce", [{
+      nonce: begin.nonce,
+      state: begin.nonce,
+      code: "code-1",
+    }]);
 
-    const saved = await store.load("openai-codex", result.connectionId);
-    expect(saved).toMatchObject({
-      providerId: "openai-codex",
-      connectionId: result.connectionId,
-      connectionLabel: "ChatGPT",
-      refreshToken: "refresh-1",
-      metadata: {
-        accountId: "acct_123",
+    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
+      oauthAuthorizeOrigin: "https://accounts.example-login.test",
+      oauthTokenOrigin: "https://accounts.example-login.test",
+      oauthAudienceDomainMismatch: true,
+    }));
+  });
+
+  it("rejects OAuth extra authorize params that override host-controlled PKCE fields", async () => {
+    const service = createCredentialService({ credentialStore: new MemoryCredentialStore() as never });
+    const ctx = { callerId: "panel:test", callerKind: "panel" as const };
+
+    await expect(service.handler(ctx, "beginCreateWithOAuthPkce", [{
+      oauth: {
+        authorizeUrl: "https://auth.example.test/oauth/authorize",
+        tokenUrl: "https://auth.example.test/oauth/token",
+        clientId: "client-1",
+        extraAuthorizeParams: { state: "attacker" },
       },
-      accountIdentity: {
-        providerUserId: "acct_123",
-        email: "dev@example.com",
-        username: "dev-user",
+      credential: {
+        label: "Example OAuth",
+        audience: [{ url: "https://api.example.test", match: "origin" }],
+        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
       },
-    });
-    expect(saved?.expiresAt).toBeGreaterThan(Date.now());
+      redirectUri: "http://127.0.0.1:53123/oauth/callback",
+    }])).rejects.toThrow(/cannot override state/);
+  });
+
+  it("accepts OAuth token responses that omit token_type", async () => {
+    const store = new MemoryCredentialStore();
+    const service = createCredentialService({ credentialStore: store as never });
+    const ctx = { callerId: "panel:test", callerKind: "panel" as const };
+    const begin = await service.handler(ctx, "beginCreateWithOAuthPkce", [{
+      oauth: {
+        authorizeUrl: "https://auth.example.test/oauth/authorize",
+        tokenUrl: "https://auth.example.test/oauth/token",
+        clientId: "client-1",
+      },
+      credential: {
+        label: "Example OAuth",
+        audience: [{ url: "https://api.example.test", match: "origin" }],
+        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+      },
+      redirectUri: "http://localhost:53123/oauth/callback",
+    }]) as { nonce: string };
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      access_token: "token",
+      expires_in: 3600,
+    }), { status: 200, headers: { "content-type": "application/json" } })));
+
+    const completed = await service.handler(ctx, "completeCreateWithOAuthPkce", [{
+      nonce: begin.nonce,
+      state: begin.nonce,
+      code: "code-1",
+    }]) as StoredCredentialSummary;
+
+    expect((await store.loadUrlBound(completed.id))?.accessToken).toBe("token");
+  });
+
+  it("can derive OAuth account identity from an access-token JWT claim", async () => {
+    const store = new MemoryCredentialStore();
+    const service = createCredentialService({ credentialStore: store as never });
+    const ctx = { callerId: "panel:test", callerKind: "panel" as const };
+    const begin = await service.handler(ctx, "beginCreateWithOAuthPkce", [{
+      oauth: {
+        authorizeUrl: "https://auth.example.test/oauth/authorize",
+        tokenUrl: "https://auth.example.test/oauth/token",
+        clientId: "client-1",
+      },
+      credential: {
+        label: "Example OAuth",
+        audience: [{ url: "https://api.example.test", match: "origin" }],
+        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        metadata: {
+          oauthAccountIdentityJwtClaimRoot: "https://api.example.test/auth",
+          oauthAccountIdentityJwtClaimField: "account_id",
+        },
+      },
+      redirectUri: "http://localhost:53123/oauth/callback",
+    }]) as { nonce: string };
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      access_token: jwtWithPayload({
+        "https://api.example.test/auth": { account_id: "acct-from-token" },
+      }),
+      expires_in: 3600,
+    }), { status: 200, headers: { "content-type": "application/json" } })));
+
+    const completed = await service.handler(ctx, "completeCreateWithOAuthPkce", [{
+      nonce: begin.nonce,
+      state: begin.nonce,
+      code: "code-1",
+    }]) as StoredCredentialSummary;
+
+    expect(completed.accountIdentity?.providerUserId).toBe("acct-from-token");
+  });
+
+  it("rejects OAuth callback state and non-bearer token responses", async () => {
+    const service = createCredentialService({ credentialStore: new MemoryCredentialStore() as never });
+    const ctx = { callerId: "panel:test", callerKind: "panel" as const };
+    const begin = await service.handler(ctx, "beginCreateWithOAuthPkce", [{
+      oauth: {
+        authorizeUrl: "https://auth.example.test/oauth/authorize",
+        tokenUrl: "https://auth.example.test/oauth/token",
+        clientId: "client-1",
+      },
+      credential: {
+        label: "Example OAuth",
+        audience: [{ url: "https://api.example.test", match: "origin" }],
+        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+      },
+      redirectUri: "http://localhost:53123/oauth/callback",
+    }]) as { nonce: string };
+
+    await expect(service.handler(ctx, "completeCreateWithOAuthPkce", [{
+      nonce: begin.nonce,
+      state: "wrong",
+      code: "code-1",
+    }])).rejects.toThrow(/OAuth state mismatch/);
+
+    const begin2 = await service.handler(ctx, "beginCreateWithOAuthPkce", [{
+      oauth: {
+        authorizeUrl: "https://auth.example.test/oauth/authorize",
+        tokenUrl: "https://auth.example.test/oauth/token",
+        clientId: "client-1",
+      },
+      credential: {
+        label: "Example OAuth",
+        audience: [{ url: "https://api.example.test", match: "origin" }],
+        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+      },
+      redirectUri: "http://localhost:53123/oauth/callback",
+    }]) as { nonce: string };
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      access_token: "token",
+      token_type: "mac",
+      expires_in: 3600,
+    }), { status: 200, headers: { "content-type": "application/json" } })));
+
+    await expect(service.handler(ctx, "completeCreateWithOAuthPkce", [{
+      nonce: begin2.nonce,
+      state: begin2.nonce,
+      code: "code-1",
+    }])).rejects.toThrow(/bearer token_type/);
+  });
+
+  it("returns only egress audit entries from audit queries", async () => {
+    const auditLog = new MemoryAuditLog();
+    auditLog.entries.push(
+      {
+        type: "connection_credential.created",
+        ts: 1,
+        callerId: "worker:test",
+        providerId: "url-bound",
+        connectionId: "cred-1",
+        storageKind: "connection-credential",
+        fieldNames: ["credential"],
+      },
+      {
+        ts: 2,
+        workerId: "/repo",
+        callerId: "worker:test",
+        providerId: "url-bound",
+        connectionId: "cred-1",
+        method: "GET",
+        url: "https://api.example.test/",
+        status: 200,
+        durationMs: 1,
+        bytesIn: 0,
+        bytesOut: 0,
+        scopesUsed: [],
+        retries: 0,
+        breakerState: "closed",
+      } satisfies AuditEntry,
+    );
+    const service = createCredentialService({ auditLog: auditLog as never });
+    const entries = await service.handler(
+      { callerId: "shell", callerKind: "shell" },
+      "audit",
+      [{}],
+    ) as AuditEntry[];
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.method).toBe("GET");
   });
 });

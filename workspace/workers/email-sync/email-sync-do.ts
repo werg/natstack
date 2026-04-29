@@ -15,7 +15,12 @@
 
 import { DurableObjectBase } from "@workspace/runtime/worker";
 import type { DurableObjectContext } from "@workspace/runtime/worker";
-import { connect, type CredentialHandle, type ProviderDescriptor } from "@workspace/runtime/worker/credentials";
+import {
+  fetch as credentialFetch,
+  listStoredCredentials,
+  resolveCredential,
+  type StoredCredentialSummary,
+} from "@workspace/runtime/worker/credentials";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,7 +28,7 @@ import { connect, type CredentialHandle, type ProviderDescriptor } from "@worksp
 
 interface SyncConfig {
   connectionId: string;
-  provider: ProviderDescriptor;
+  providerId: string;
   intervalMs: number;
   lastHistoryId?: string;
   /** PubSub channel to publish new-mail events to */
@@ -123,23 +128,28 @@ export class EmailSyncWorker extends DurableObjectBase {
 
   // --- Credential handles ---
 
-  private credentialHandles = new Map<string, CredentialHandle>();
+  private credentialCache = new Map<string, StoredCredentialSummary>();
 
-  private async getCredentialHandle(config: SyncConfig): Promise<CredentialHandle> {
-    const key = `${config.provider.id}:${config.connectionId}`;
-    const existing = this.credentialHandles.get(key);
+  private async getCredential(config: SyncConfig): Promise<StoredCredentialSummary> {
+    const key = `${config.providerId}:${config.connectionId}`;
+    const existing = this.credentialCache.get(key);
     if (existing) {
       return existing;
     }
-    const handle = await connect(config.provider, { connectionId: config.connectionId });
-    this.credentialHandles.set(key, handle);
-    return handle;
+    const credentials = await listStoredCredentials();
+    const credential = credentials.find((entry) => entry.id === config.connectionId)
+      ?? await resolveCredential({ url: "https://gmail.googleapis.com/" });
+    if (!credential) {
+      throw new Error("No URL-bound Gmail credential found for email sync");
+    }
+    this.credentialCache.set(key, credential);
+    return credential;
   }
 
   // --- Gmail API (native fetch — DOs have outbound network) ---
 
-  private async gmailFetch<T>(path: string, handle: CredentialHandle): Promise<T> {
-    const res = await handle.fetch(`${GMAIL_BASE}${path}`);
+  private async gmailFetch<T>(path: string, handle: StoredCredentialSummary): Promise<T> {
+    const res = await credentialFetch(`${GMAIL_BASE}${path}`, undefined, { credentialId: handle.id });
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`Gmail API ${res.status}: ${body}`);
@@ -147,12 +157,12 @@ export class EmailSyncWorker extends DurableObjectBase {
     return res.json() as Promise<T>;
   }
 
-  private async getProfile(handle: CredentialHandle): Promise<GmailProfileResponse> {
+  private async getProfile(handle: StoredCredentialSummary): Promise<GmailProfileResponse> {
     return this.gmailFetch("/profile", handle);
   }
 
   private async getHistory(
-    handle: CredentialHandle,
+    handle: StoredCredentialSummary,
     startHistoryId: string,
   ): Promise<GmailHistoryResponse> {
     // Paginate through all history pages to avoid missing messages
@@ -176,7 +186,7 @@ export class EmailSyncWorker extends DurableObjectBase {
   }
 
   private async getMessageMetadata(
-    handle: CredentialHandle,
+    handle: StoredCredentialSummary,
     messageId: string,
   ): Promise<GmailMessageMetadata> {
     return this.gmailFetch(
@@ -216,18 +226,18 @@ export class EmailSyncWorker extends DurableObjectBase {
   // --- HTTP dispatch methods (/{objectKey}/{method}) ---
 
   protected async startSync(
-    body: { connectionId: string; provider: ProviderDescriptor; intervalMs?: number; pubsubChannel?: string },
+    body: { connectionId: string; providerId: string; intervalMs?: number; pubsubChannel?: string },
   ): Promise<{ ok: boolean; config: SyncConfig }> {
     const config: SyncConfig = {
       connectionId: body.connectionId,
-      provider: body.provider,
+      providerId: body.providerId,
       intervalMs: body.intervalMs ?? 60_000,
       pubsubChannel: body.pubsubChannel,
     };
 
     // Seed historyId from the user's profile so we only get new messages
     try {
-      const handle = await this.getCredentialHandle(config);
+      const handle = await this.getCredential(config);
       const profile = await this.getProfile(handle);
       config.lastHistoryId = profile.historyId;
     } catch (err) {
@@ -291,7 +301,7 @@ export class EmailSyncWorker extends DurableObjectBase {
   // --- Core sync logic ---
 
   private async doSync(config: SyncConfig): Promise<number> {
-    const handle = await this.getCredentialHandle(config);
+    const handle = await this.getCredential(config);
 
     // If no historyId yet, seed it from the profile (first sync)
     if (!config.lastHistoryId) {
