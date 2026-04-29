@@ -1,0 +1,10 @@
+{
+  "name": "@workspace-skills/google-workspace",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": { ".": "./index.ts" },
+  "dependencies": {
+    "@workspace/runtime": "workspace:*",
+    "@workspace/integrations": "workspace:*"
+  }
+}

@@ -76,13 +76,30 @@ Then ask the user which browser/profile to import from and which data types they
 
 API integrations use the credential system. See `docs/credential-system.md` for the current architecture and provider setup details.
 
+For Google Workspace, load the dedicated setup skill:
+
+```
+read("skills/google-workspace/SKILL.md")
+```
+
+Then use `getGoogleOnboardingStatus()` from
+`@workspace-skills/google-workspace` to detect state and guide the user through
+`skills/google-workspace/ONBOARDING.md` and `skills/google-workspace/SETUP.md`
+when configuration is missing.
+
 **Check if already configured:**
 
 ```
 eval({ code: `
   import { credentials } from "@workspace/runtime";
+  import {
+    formatGoogleOnboardingStatus,
+    getGoogleOnboardingStatus,
+  } from "@workspace-skills/google-workspace";
   const githubConnections = await credentials.listConnections("github");
-  const googleConnections = await credentials.listConnections("google-workspace");
+  const googleStatus = await getGoogleOnboardingStatus();
+  console.log(formatGoogleOnboardingStatus(googleStatus));
+  const googleConnections = googleStatus.connected ? [{ providerId: "google-workspace", connectionId: "configured" }] : [];
   const connections = [...githubConnections, ...googleConnections];
   if (connections.length > 0) {
     console.log("Configured connections:", connections.map(c => c.providerId + ":" + c.connectionId).join(", "));

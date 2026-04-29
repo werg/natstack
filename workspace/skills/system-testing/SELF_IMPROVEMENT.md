@@ -122,7 +122,7 @@ For each failure, determine the root cause category and act accordingly:
 | Build failed | `src/server/buildV2/`, `build.mjs` |
 | Worker/DO issue | `src/server/services/workerService.ts`, `workspace/packages/runtime/src/worker/` |
 | Panel lifecycle | `src/main/panelOrchestrator.ts`, `src/server/services/bridgeService.ts` |
-| Credential/OAuth error | `src/server/services/credentialService.ts`, `src/main/services/credentialFlowService.ts`, `workspace/packages/runtime/src/shared/credentials.ts` |
+| Credential/OAuth error | `src/server/services/credentialService.ts`, `src/main/services/oauthLoopbackService.ts`, `workspace/packages/runtime/src/shared/credentials.ts` |
 | Harness crash | `packages/harness/src/entry.ts`, `src/server/harnessManager.ts` |
 | PubSub issue | `workspace/packages/pubsub/src/`, `workspace/workers/pubsub-channel/` |
 | Skill import | `src/server/buildV2/`, package.json exports |

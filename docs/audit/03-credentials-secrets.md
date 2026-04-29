@@ -874,8 +874,8 @@ is the standard to measure other secret-bearing files against.
   Only hits were `xoxb-test-bot-token` in test fixtures + placeholders
   (`PLACEHOLDER_GOOGLE_CLIENT_ID`, `PLACEHOLDER_GITHUB_CLIENT_ID`).
 - `git log --all -p | grep -iE 'api[_-]?key|password=|secret='` — no leaked
-  credentials; hits are legit code paths around env-var names
-  (`ANTHROPIC_API_KEY`, `COMPOSIO_API_KEY`) or documentation strings.
+  credentials; hits are legit code paths around env-var names such as
+  `ANTHROPIC_API_KEY` or documentation strings.
 - `grep -rE "Sentry|bugsnag|captureException"` in product code paths → no
   hits outside node_modules. Good: tokens aren't being shipped to a
   third-party error-reporting service.

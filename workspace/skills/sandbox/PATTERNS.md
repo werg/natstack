@@ -141,32 +141,30 @@ export default function Shuffler({ props }) {
 })
 ```
 
-## Connect to an API with OAuth + npm SDK
+## Call an API with a URL-bound credential
 
-The general pattern for any OAuth-protected API: connect once, then use the official SDK.
+The general pattern: store a URL-bound credential once, then fetch through the runtime credential proxy.
 
 ```
 eval({
   code: `
     import { credentials } from "@workspace/runtime";
 
-    const notionProvider = {
-      id: "notion",
-      displayName: "Notion",
-      apiBase: ["https://api.notion.com"],
-      flows: [{ type: "pat", probeUrl: "https://api.notion.com/v1/users/me" }],
-      authInjection: { type: "header", headerName: "Authorization", valueTemplate: "Bearer {token}" },
-    };
+    const credential = await credentials.store({
+      label: "Notion",
+      audience: [{ url: "https://api.notion.com", match: "origin" }],
+      injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
+      material: { type: "bearer-token", token: process.env.NOTION_TOKEN! },
+    });
 
-    const notion = await credentials.connect(notionProvider);
-    const response = await notion.fetch("https://api.notion.com/v1/search", {
+    const response = await credentials.fetch("https://api.notion.com/v1/search", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Notion-Version": "2022-06-28",
       },
       body: JSON.stringify({ query: "meeting notes" }),
-    });
+    }, { credentialId: credential.id });
     const results = await response.json();
     for (const page of results.results ?? []) {
       if (page.object === "page") {
