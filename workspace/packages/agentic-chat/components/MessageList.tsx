@@ -7,6 +7,7 @@ import { NewContentIndicator } from "./NewContentIndicator";
 import { MessageCard } from "./MessageCard";
 import type { ChatMessage, ChatParticipantMetadata, InlineUiComponentEntry } from "../types";
 import type { ToolCallPayload } from "@workspace/agentic-core";
+import type { MdxActionHandlers } from "./markdownComponents";
 
 // Grouped item types produced by the grouping logic
 type GroupedItem =
@@ -142,6 +143,7 @@ export interface MessageListProps {
   onInterrupt?: (agentId: string, messageId?: string, agentHandle?: string) => void;
   onFocusPanel?: (panelId: string) => void;
   onReloadPanel?: (panelId: string) => void;
+  mdxActions?: MdxActionHandlers;
   /** Override default message card rendering */
   renderMessage?: (msg: ChatMessage, senderInfo: SenderInfo) => React.ReactNode;
   /** Override default inline group rendering */
@@ -173,6 +175,7 @@ export const MessageList = React.memo(function MessageList({
   onInterrupt,
   onFocusPanel,
   onReloadPanel,
+  mdxActions,
   renderMessage: customRenderMessage,
   renderInlineGroup: customRenderInlineGroup,
 }: MessageListProps) {
@@ -474,10 +477,11 @@ export const MessageList = React.memo(function MessageList({
           onCopy={handleCopyMessage}
           onFocusPanel={onFocusPanel}
           onReloadPanel={onReloadPanel}
+          mdxActions={mdxActions}
         />
       </Flex>
     );
-  }, [getSenderInfo, inlineUiComponents,
+  }, [getSenderInfo, inlineUiComponents, mdxActions,
       handleInterruptMessage, handleCopyMessage, handleTypingInterrupt, onFocusPanel, onReloadPanel,
       customRenderMessage, customRenderInlineGroup]);
 

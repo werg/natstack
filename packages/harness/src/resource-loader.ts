@@ -32,7 +32,7 @@ export interface SkillEntry {
 }
 
 export interface NatStackResources {
-  /** Contents of `workspace/AGENTS.md`. */
+  /** Contents of `workspace/meta/AGENTS.md`. */
   systemPrompt: string;
   /** Markdown-formatted skill index suitable for appending to the system prompt. */
   skillIndex: string;

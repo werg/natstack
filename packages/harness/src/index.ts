@@ -5,6 +5,11 @@
 // PiRunner — the worker DO instantiates one per channel
 export { PiRunner } from "./pi-runner.js";
 export type { PiRunnerOptions, PiStateSnapshot, ThinkingLevel } from "./pi-runner.js";
+export {
+  NATSTACK_BASE_SYSTEM_PROMPT,
+  composeSystemPrompt,
+} from "./system-prompt.js";
+export type { ComposeSystemPromptOptions, SystemPromptMode } from "./system-prompt.js";
 
 // NatStack extension factories — supplied to the runner via PiRunnerOptions
 export {

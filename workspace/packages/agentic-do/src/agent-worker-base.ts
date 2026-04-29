@@ -50,6 +50,7 @@ import {
   type AskUserParams,
   type ApprovalLevel,
   type ThinkingLevel,
+  type SystemPromptMode,
   DispatchedError,
 } from "@natstack/harness";
 import type { AgentEvent, AgentMessage, AgentToolResult } from "@mariozechner/pi-agent-core";
@@ -427,7 +428,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   // ── Customization hooks (Pi-native) ─────────────────────────────────────
 
   /**
-   * Model id in `provider:model` format (e.g. `anthropic:claude-sonnet-4-20250514`).
+   * Model id in `provider:model` format (e.g. `openai-codex:gpt-5.5`).
    * Concrete agent workers must pick their own model.
    * PiRunner passes this directly to `pi-ai.getModel(provider, modelId)`.
    */
@@ -589,6 +590,26 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       type: "agent",
       metadata: {},
       methods: [],
+    };
+  }
+
+  protected getRunnerPromptConfig(channelId: string): {
+    systemPrompt?: string;
+    systemPromptMode?: SystemPromptMode;
+  } {
+    const config = this.subscriptions.getConfig(channelId);
+    if (!config) return {};
+    const systemPrompt = typeof config["systemPrompt"] === "string"
+      ? config["systemPrompt"]
+      : undefined;
+    const rawMode = config["systemPromptMode"];
+    const systemPromptMode =
+      rawMode === "append" || rawMode === "replace-natstack" || rawMode === "replace"
+        ? rawMode
+        : undefined;
+    return {
+      ...(systemPrompt ? { systemPrompt } : {}),
+      ...(systemPromptMode ? { systemPromptMode } : {}),
     };
   }
 
@@ -888,6 +909,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       model: this.getModel(),
       getApiKey: this.getApiKeyForChannel(channelId),
       thinkingLevel: this.getThinkingLevel(),
+      ...this.getRunnerPromptConfig(channelId),
       approvalLevel: this.getApprovalLevel(channelId),
       initialMessages,
       onPersist: async (messages) => {

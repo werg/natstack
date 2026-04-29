@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import React from "react";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 
 const hookState = vi.hoisted(() => {
@@ -117,5 +117,27 @@ describe("MessageList typing indicators (roster-based)", () => {
 
     expect(screen.getByText("Read src/app.ts")).toBeTruthy();
     expect(screen.getByText("Edit src/config.ts")).toBeTruthy();
+  });
+
+  it("wires MDX ActionButton to publish a follow-up message", async () => {
+    const publishMessage = vi.fn();
+    render(React.createElement(MessageList, {
+      messages: [
+        makeMessage({
+          id: "mdx-1",
+          content: '<ActionButton message="Refresh the data">Refresh</ActionButton>',
+          complete: true,
+        }),
+      ],
+      participants: {},
+      selfId: "user-1",
+      allParticipants: {},
+      mdxActions: { publishMessage },
+    } as never));
+
+    const button = await waitFor(() => screen.getByRole("button", { name: "Refresh" }));
+    fireEvent.click(button);
+
+    expect(publishMessage).toHaveBeenCalledWith("Refresh the data");
   });
 });

@@ -255,15 +255,16 @@ import type { ParticipantDescriptor } from "@natstack/harness";
  * ephemerals. You only need to override the small set of customization hooks
  * below.
  *
- * The system prompt lives in <contextFolder>/.pi/AGENTS.md. Workspace skills
- * live in <contextFolder>/.pi/skills/. Both are loaded automatically.
+ * The system prompt is composed from the NatStack base prompt,
+ * workspace/meta/AGENTS.md, the generated skill index, and optional channel
+ * prompt config.
  */
 export class ${className} extends AgentWorkerBase {
   static override schemaVersion = 1;
 
   // --- Hook: model id (provider:model format) ---
   // protected override getModel(): string {
-  //   return "anthropic:claude-sonnet-4-20250514";
+  //   return "openai-codex:gpt-5.5";
   // }
 
   // --- Hook: thinking level ---

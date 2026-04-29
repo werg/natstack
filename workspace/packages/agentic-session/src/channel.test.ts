@@ -3,10 +3,8 @@
  *
  * The point of these tests is to lock in the *unified* state: a headless
  * subscription must NOT carry a tool restriction or any other lockdown shape
- * that would diverge from the panel-hosted path. Phase 5 also dropped the
- * `systemPrompt`/`systemPromptMode`/`temperature` fields from the public
- * helper API; per-test prompt overrides go into `<contextFolder>/.pi/AGENTS.md`
- * and `extraConfig` is now restricted to Pi-native pass-through values.
+ * that would diverge from the panel-hosted path. Prompt overrides are
+ * optional pass-through values; the helper should not invent one by default.
  */
 
 import { describe, it, expect, vi } from "vitest";
@@ -37,7 +35,7 @@ describe("subscribeHeadlessAgent — unified contract", () => {
     expect(captured.config!["toolAllowlist"]).toBeUndefined();
   });
 
-  it("does not pass a systemPrompt (Phase 5 dropped this from the public API)", async () => {
+  it("does not pass a systemPrompt by default", async () => {
     const captured: { config?: Record<string, unknown> } = {};
     await subscribeHeadlessAgent({
       rpcCall: makeRpcCall(captured),
@@ -81,6 +79,25 @@ describe("subscribeHeadlessAgent — unified contract", () => {
     expect(captured.config!["model"]).toBe("anthropic:claude-opus-4-5");
     expect(captured.config!["thinkingLevel"]).toBe("high");
     expect(captured.config!["toolAllowlist"]).toBeUndefined();
+  });
+
+  it("forwards prompt pass-through values when explicitly provided", async () => {
+    const captured: { config?: Record<string, unknown> } = {};
+    await subscribeHeadlessAgent({
+      rpcCall: makeRpcCall(captured),
+      source: "workers/agent-worker",
+      className: "AiChatWorker",
+      objectKey: "obj-1",
+      channelId: "ch-1",
+      contextId: "ctx-1",
+      extraConfig: {
+        systemPrompt: "Headless prompt",
+        systemPromptMode: "replace-natstack",
+      },
+    });
+
+    expect(captured.config!["systemPrompt"]).toBe("Headless prompt");
+    expect(captured.config!["systemPromptMode"]).toBe("replace-natstack");
   });
 });
 

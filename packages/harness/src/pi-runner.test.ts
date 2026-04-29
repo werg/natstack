@@ -87,6 +87,7 @@ vi.mock("@mariozechner/pi-ai", () => {
 // ── Imports under test (after mocks) ────────────────────────────────────────
 
 import { PiRunner, type PiRunnerOptions } from "./pi-runner.js";
+import { NATSTACK_BASE_SYSTEM_PROMPT } from "./system-prompt.js";
 import type { RpcCaller } from "./resource-loader.js";
 import type { RuntimeFs } from "./tools/runtime-fs.js";
 import type { NatStackScopedUiContext } from "./natstack-extension-context.js";
@@ -194,6 +195,7 @@ describe("PiRunner.init", () => {
     expect(agentInstances).toHaveLength(1);
 
     const agent = agentInstances[0];
+    expect(agent.state.systemPrompt).toContain(NATSTACK_BASE_SYSTEM_PROMPT);
     expect(agent.state.systemPrompt).toContain("BASE SYSTEM PROMPT");
     expect(agent.state.model).toEqual(
       expect.objectContaining({ id: "openai-codex:gpt-5" }),
@@ -209,6 +211,27 @@ describe("PiRunner.init", () => {
     const runner = new PiRunner(options);
     await runner.init();
     expect(agentInstances[0].state.thinkingLevel).toBe("high");
+  });
+
+  it("appends a caller-provided system prompt to the NatStack and workspace prompts", async () => {
+    const runner = new PiRunner(createOptions({ systemPrompt: "CHANNEL PROMPT" }));
+    await runner.init();
+    const prompt = agentInstances[0].state.systemPrompt;
+
+    expect(prompt).toContain(NATSTACK_BASE_SYSTEM_PROMPT);
+    expect(prompt).toContain("BASE SYSTEM PROMPT");
+    expect(prompt).toContain("CHANNEL PROMPT");
+    expect(prompt.indexOf("BASE SYSTEM PROMPT")).toBeLessThan(prompt.indexOf("CHANNEL PROMPT"));
+  });
+
+  it("supports replacing the full prompt with a caller-provided system prompt", async () => {
+    const runner = new PiRunner(createOptions({
+      systemPrompt: "ONLY THIS",
+      systemPromptMode: "replace",
+    }));
+    await runner.init();
+
+    expect(agentInstances[0].state.systemPrompt).toBe("ONLY THIS");
   });
 
   it("seeds initialMessages on warm restore", async () => {

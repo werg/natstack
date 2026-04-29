@@ -102,9 +102,9 @@ export interface HeadlessWithAgentConfig extends HeadlessSessionConfig {
   channelConfig?: ChannelConfig;
   methods?: Record<string, MethodDefinition>;
   /**
-   * Pi-native pass-through subscription config. Allowed keys: `model`,
-   * `thinkingLevel`, `approvalLevel`. Per-test prompt overrides should
-   * live in `<contextFolder>/.pi/AGENTS.md`.
+   * Pi-native pass-through subscription config. Common keys: `model`,
+   * `thinkingLevel`, `approvalLevel`, `systemPrompt`, and
+   * `systemPromptMode`.
    */
   extraConfig?: Record<string, unknown>;
 }

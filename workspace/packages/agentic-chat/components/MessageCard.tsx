@@ -8,6 +8,7 @@ import { ImageGallery } from "./ImageGallery";
 import { InlineUiMessage, parseInlineUiData } from "./InlineUiMessage";
 import { AgentDisconnectedMessage } from "./AgentDisconnectedMessage";
 import type { ChatMessage, ChatParticipantMetadata, InlineUiComponentEntry } from "../types";
+import type { MdxActionHandlers } from "./markdownComponents";
 
 interface MessageCardProps {
   msg: ChatMessage;
@@ -21,6 +22,7 @@ interface MessageCardProps {
   onCopy: (msgId: string, content: string) => void;
   onFocusPanel?: (panelId: string) => void;
   onReloadPanel?: (panelId: string) => void;
+  mdxActions?: MdxActionHandlers;
 }
 
 /**
@@ -40,6 +42,7 @@ export const MessageCard = React.memo(function MessageCard({
   onCopy,
   onFocusPanel,
   onReloadPanel,
+  mdxActions,
 }: MessageCardProps) {
   const key = msg.id || `fallback-msg-${index}`;
 
@@ -120,6 +123,7 @@ export const MessageCard = React.memo(function MessageCard({
               <MessageContent
                 content={msg.content}
                 isStreaming={isStreaming}
+                mdxActions={mdxActions}
               />
             </Box>
           )}

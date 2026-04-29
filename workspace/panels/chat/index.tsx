@@ -43,7 +43,7 @@ interface ChatStateArgs {
   initialPrompt?: string;
   /** System prompt for the agent harness */
   systemPrompt?: string;
-  /** How systemPrompt interacts with base NatStack prompt and SDK defaults */
+  /** How systemPrompt interacts with NatStack base, workspace prompt, and skills */
   systemPromptMode?: "append" | "replace-natstack" | "replace";
 }
 

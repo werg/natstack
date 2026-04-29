@@ -152,6 +152,10 @@ class TestWorker extends AgentWorkerBase {
     return { handle: "test", name: "Test", type: "agent" as const, metadata: {}, methods: [] };
   }
 
+  readPromptConfig(channelId: string) {
+    return this.getRunnerPromptConfig(channelId);
+  }
+
   resumeAfterCredential(channelId: string): Promise<boolean> {
     return this.resumeAfterModelCredentialConnected(channelId);
   }
@@ -177,6 +181,22 @@ async function flush(): Promise<void> {
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
+  it("reads subscription system prompt config for PiRunner construction", async () => {
+    const { instance, sql } = await createTestDO(TestWorker);
+    sql.exec(
+      `INSERT INTO subscriptions (channel_id, context_id, subscribed_at, config) VALUES (?, ?, ?, ?)`,
+      "ch-1",
+      "ctx-1",
+      Date.now(),
+      JSON.stringify({ systemPrompt: "CHANNEL PROMPT", systemPromptMode: "replace-natstack" }),
+    );
+
+    expect((instance as TestWorker).readPromptConfig("ch-1")).toEqual({
+      systemPrompt: "CHANNEL PROMPT",
+      systemPromptMode: "replace-natstack",
+    });
+  });
+
   it("user message flows: shouldProcess → buildTurnInput → buildUserMessage → dispatcher → runTurnMessage", async () => {
     const { instance } = await createTestDO(TestWorker);
 

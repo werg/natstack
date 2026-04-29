@@ -31,9 +31,9 @@ export interface SubscribeHeadlessAgentOptions {
   /** Context ID for authorization */
   contextId: string;
   /**
-   * Pi-native pass-through config. Allowed keys are limited to what Pi
-   * understands: `model`, `thinkingLevel`, `approvalLevel`. Per-test prompt
-   * overrides should be written into `<contextFolder>/.pi/AGENTS.md` instead.
+   * Pi-native pass-through config. Common keys are `model`,
+   * `thinkingLevel`, `approvalLevel`, `systemPrompt`, and
+   * `systemPromptMode`.
    */
   extraConfig?: Record<string, unknown>;
 }

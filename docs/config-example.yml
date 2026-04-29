@@ -10,10 +10,10 @@
 # Format: "provider:model" or detailed config object
 
 models:
-  smart: anthropic:claude-sonnet-4-20250514
-  coding: anthropic:claude-sonnet-4-20250514
-  fast: anthropic:claude-haiku-3-5-20241022
-  cheap: anthropic:claude-haiku-3-5-20241022
+  smart: openai-codex:gpt-5.5
+  coding: openai-codex:gpt-5.5
+  fast: openai-codex:gpt-5.5
+  cheap: openai-codex:gpt-5.5
 
 # ============================================================================
 # Build Cache Configuration

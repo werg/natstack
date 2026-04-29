@@ -51,7 +51,7 @@
         "systemPromptMode": {
           "type": "string",
           "enum": ["append", "replace-natstack", "replace"],
-          "description": "append (default): layers on NatStack prompt + SDK defaults. replace-natstack: replaces NatStack prompt but keeps SDK defaults. replace: replaces everything."
+          "description": "append (default): layers on NatStack base + workspace prompt + skill index. replace-natstack: replaces the NatStack base while preserving workspace prompt + skill index. replace: replaces everything."
         }
       }
     },

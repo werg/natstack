@@ -30,6 +30,7 @@ import { getModel as piGetModel, type ImageContent } from "@mariozechner/pi-ai";
 
 import type { RuntimeFs } from "./tools/runtime-fs.js";
 import { type RpcCaller, loadNatStackResources } from "./resource-loader.js";
+import { composeSystemPrompt, type SystemPromptMode } from "./system-prompt.js";
 
 import { PiExtensionRuntime } from "./pi-extension-runtime.js";
 import {
@@ -94,6 +95,10 @@ export interface PiRunnerOptions {
   getApiKey: () => Promise<string>;
   /** Default thinking level for new sessions. */
   thinkingLevel?: ThinkingLevel;
+  /** Optional channel- or caller-provided system prompt layer. */
+  systemPrompt?: string;
+  /** Controls how systemPrompt composes with NatStack and workspace prompts. */
+  systemPromptMode?: SystemPromptMode;
   /**
    * Initial approval level. The worker can mutate `runner.approvalLevel`
    * at any time and the approval-gate extension will read the new value
@@ -195,7 +200,12 @@ export class PiRunner {
       // `pendingToolCalls`, `errorMessage`) is owned by the Agent and Omit'd
       // from the Partial.
       initialState: {
-        systemPrompt: `${resources.systemPrompt}\n\n${resources.skillIndex}`,
+        systemPrompt: composeSystemPrompt({
+          workspacePrompt: resources.systemPrompt,
+          skillIndex: resources.skillIndex,
+          systemPrompt: this.options.systemPrompt,
+          systemPromptMode: this.options.systemPromptMode,
+        }),
         model,
         thinkingLevel: this.options.thinkingLevel ?? "medium",
         tools: [],

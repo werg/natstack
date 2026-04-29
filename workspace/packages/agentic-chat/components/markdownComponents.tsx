@@ -63,6 +63,10 @@ import {
   StopIcon,
 } from "@radix-ui/react-icons";
 
+export interface MdxActionHandlers {
+  publishMessage?: (content: string) => void | Promise<void>;
+}
+
 // Re-export as Icons namespace for MDX components: <Icons.CheckIcon />
 const Icons = {
   CheckIcon,
@@ -124,6 +128,35 @@ const Callout = Object.assign(RadixCallout.Root, {
   Icon: RadixCallout.Icon,
   Text: CalloutText,
 });
+
+function createActionButton(actions?: MdxActionHandlers) {
+  return function ActionButton({
+    children,
+    message,
+    variant = "soft",
+    size = "1",
+  }: {
+    children?: ReactNode;
+    message?: string;
+    variant?: "classic" | "solid" | "soft" | "surface" | "outline" | "ghost";
+    size?: "1" | "2" | "3" | "4";
+  }) {
+    const disabled = !message || !actions?.publishMessage;
+    return (
+      <Button
+        size={size}
+        variant={variant}
+        disabled={disabled}
+        onClick={() => {
+          if (!message) return;
+          void actions?.publishMessage?.(message);
+        }}
+      >
+        {children ?? message}
+      </Button>
+    );
+  };
+}
 
 export const markdownComponents: Components = {
   h1: ({ children }) => (
@@ -264,3 +297,10 @@ export const mdxComponents: Record<string, unknown> = {
   Text,
   Icons,
 };
+
+export function createMdxComponents(actions?: MdxActionHandlers): Record<string, unknown> {
+  return {
+    ...mdxComponents,
+    ActionButton: createActionButton(actions),
+  };
+}

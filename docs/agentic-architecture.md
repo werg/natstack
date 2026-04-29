@@ -66,17 +66,17 @@ Location: `workspace/packages/agentic-do/src/agent-worker-base.ts`
 
 | Hook | Default | Purpose |
 |------|---------|---------|
-| `getModel()` | `"anthropic:claude-sonnet-4-20250514"` | Model id in `provider:model` format |
+| `getModel()` | subclass override required; `AiChatWorker` uses `"openai-codex:gpt-5.5"` | Model id in `provider:model` format |
 | `getThinkingLevel()` | `"medium"` | Pi thinking level |
 | `getApprovalLevel(channelId)` | `2` (full auto) | 0 = ask all, 1 = auto safe tools, 2 = full auto |
 | `shouldProcess(event)` | Panel messages only | Filter incoming channel events |
 | `buildTurnInput(event)` | Extract content | Transform to TurnInput |
 | `getParticipantInfo()` | Generic agent | Channel identity + advertised methods |
 
-The system prompt lives in `workspace/AGENTS.md` and workspace skills live
-under `workspace/skills/`. Both are read via the `workspace.*` RPC service
-and loaded into Pi (AGENTS.md as the system prompt, skills via
-`additionalSkillPaths`).
+The final prompt is composed from the NatStack base prompt,
+`workspace/meta/AGENTS.md`, the generated skill index, and optional
+subscription prompt config. Workspace skills live under `workspace/skills/`
+and are discovered through the `workspace.*` RPC service.
 
 ### SQLite tables
 
@@ -115,9 +115,8 @@ new DefaultResourceLoader({
 })
 ```
 
-The system prompt (`workspace/AGENTS.md`) and compaction/retry/thinking-level
-defaults (`workspace/settings.json`) are read via the `workspace.*` RPC
-service and handed to Pi through the resource loader — not via Pi's
+The workspace prompt (`workspace/meta/AGENTS.md`) and skill index are read via
+the `workspace.*` RPC service and composed by `PiRunner` — not via Pi's
 skill/extension auto-discovery.
 
 API keys are bridged via `AuthStorage.setRuntimeApiKey(provider, key)` —
@@ -159,14 +158,15 @@ asynchronous fire-and-forget call/result protocol.
 
 ## Workspace layout
 
-Skills and the agent system prompt live directly in `workspace/` and are
+Skills and the agent system prompt live under `workspace/` and are
 read via the `workspace.*` RPC service:
 
 ```
 workspace/
-├── AGENTS.md        # System prompt content
-├── settings.json    # Compaction/retry/thinking-level defaults
-└── skills/          # Workspace skills (eval, sandbox, paneldev, etc.)
+├── meta/
+│   ├── AGENTS.md        # Workspace system prompt content
+│   └── natstack.yml     # Init panels and workspace config
+└── skills/              # Workspace skills (sandbox, paneldev, onboarding, etc.)
     └── ...
 ```
 

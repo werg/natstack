@@ -121,10 +121,10 @@ interface HeadlessSessionConfig {
 }
 ```
 
-To customize the agent's system prompt, edit the workspace's
-`<contextFolder>/.pi/AGENTS.md` file *before* spawning the session. The
-`systemPrompt`/`systemPromptMode`/`temperature` fields were removed in
-Phase 5 — Pi handles the prompt and runtime tuning itself.
+To customize the agent's system prompt for a session, pass
+`systemPrompt` and `systemPromptMode` through `extraConfig`. The final prompt
+is composed from the NatStack base prompt, `workspace/meta/AGENTS.md`, the
+generated skill index, and the optional session prompt override.
 
 ### HeadlessWithAgentConfig
 

@@ -57,12 +57,13 @@ The entry point must:
 
 ### getModel(): string
 
-Returns the model id in `provider:model` format. Default:
-`"anthropic:claude-sonnet-4-20250514"`.
+Returns the model id in `provider:model` format. `AgentWorkerBase` requires
+subclasses to override this hook. The default chat worker uses
+`"openai-codex:gpt-5.5"`.
 
 ```typescript
 protected getModel(): string {
-  return 'anthropic:claude-opus-4-5';
+  return 'openai-codex:gpt-5.5';
 }
 ```
 
@@ -96,9 +97,11 @@ The default reads from a per-channel `state` table key
 
 ### System prompt
 
-The system prompt lives in `workspace/AGENTS.md` and is loaded via
-`workspace.getAgentsMd` RPC at PiRunner init. Customization is via
-`getModel()` / `getThinkingLevel()` / `getApprovalLevel()` hooks.
+The final prompt is composed at `PiRunner` init from the NatStack base prompt,
+`workspace/meta/AGENTS.md`, the generated skill index, and optional
+subscription config (`systemPrompt` / `systemPromptMode`). Model/runtime
+customization is via `getModel()` / `getThinkingLevel()` /
+`getApprovalLevel()` hooks.
 
 ### shouldProcess(event: ChannelEvent): boolean
 
@@ -315,7 +318,10 @@ if (config?.model) {
 }
 ```
 
-Subscription config can override `model` and `thinkingLevel` via `extraConfig`. The system prompt comes from `workspace/AGENTS.md` (loaded via `workspace.getAgentsMd` RPC).
+Subscription config can override `model`, `thinkingLevel`, `systemPrompt`, and
+`systemPromptMode` via `extraConfig`. The final prompt is composed from the
+NatStack base prompt, `workspace/meta/AGENTS.md`, the generated skill index,
+and any subscription prompt override.
 
 ## 10. Event Flow
 
@@ -428,10 +434,10 @@ import type { ChannelEvent, ParticipantDescriptor, TurnInput } from "@natstack/h
 export class CodeReviewWorker extends AgentWorkerBase {
   static override schemaVersion = 3;
 
-  // The system prompt comes from workspace/AGENTS.md by default.
+  // The system prompt is composed from NatStack base + workspace/meta/AGENTS.md.
   // Override getModel() to select a specific model for code review:
   protected override getModel(): string {
-    return "anthropic:claude-sonnet-4-20250514";
+    return "openai-codex:gpt-5.5";
   }
 
   protected override getParticipantInfo(channelId: string, config?: unknown): ParticipantDescriptor {

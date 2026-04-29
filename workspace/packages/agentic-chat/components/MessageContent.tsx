@@ -13,11 +13,16 @@ async function getMdx() {
   }
   return mdxModule;
 }
-import { markdownComponents, mdxComponents } from "./markdownComponents";
+import {
+  createMdxComponents,
+  markdownComponents,
+  type MdxActionHandlers,
+} from "./markdownComponents";
 
 interface MessageContentProps {
   content: string;
   isStreaming: boolean;
+  mdxActions?: MdxActionHandlers;
 }
 
 const remarkPlugins = [remarkGfm];
@@ -40,13 +45,17 @@ function getRehypeHighlight(): Promise<RehypeHighlightPlugin> {
   return rehypeHighlightPromise;
 }
 
-async function compileMdx(content: string, rehypeHighlight: RehypeHighlightPlugin): Promise<ComponentType | null> {
+async function compileMdx(
+  content: string,
+  rehypeHighlight: RehypeHighlightPlugin,
+  mdxActions?: MdxActionHandlers,
+): Promise<ComponentType | null> {
   const rehypePlugins: [RehypeHighlightPlugin, { ignoreMissing: boolean }][] = [[rehypeHighlight, { ignoreMissing: true }]];
   const { evaluate } = await getMdx();
   const { default: Component } = await evaluate(content, {
     ...runtime,
     development: false,
-    useMDXComponents: (() => mdxComponents) as never,
+    useMDXComponents: (() => createMdxComponents(mdxActions)) as never,
     remarkPlugins,
     rehypePlugins,
   });
@@ -61,7 +70,7 @@ const MARKDOWN_SYNTAX_RE = /^[ \t]*#{1,6} |`[^`]|```|\*\*|__|\*[^\s*]|_[^\s_]|^[
 // Debounce interval for streaming content updates (ms)
 const STREAMING_DEBOUNCE_MS = 100;
 
-export const MessageContent = React.memo(function MessageContent({ content, isStreaming }: MessageContentProps) {
+export const MessageContent = React.memo(function MessageContent({ content, isStreaming, mdxActions }: MessageContentProps) {
   const [MdxComponent, setMdxComponent] = useState<ComponentType | null>(null);
   const [highlightLoaded, setHighlightLoaded] = useState<RehypeHighlightPlugin | null>(rehypeHighlightPlugin);
   const contentRef = useRef(content);
@@ -135,7 +144,7 @@ export const MessageContent = React.memo(function MessageContent({ content, isSt
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
     // Try compilation
-    compileMdx(content, highlightLoaded)
+    compileMdx(content, highlightLoaded, mdxActions)
       .then((Component) => {
         if (!cancelled) setMdxComponent(() => Component);
       })
@@ -144,7 +153,7 @@ export const MessageContent = React.memo(function MessageContent({ content, isSt
         retryTimer = setTimeout(() => {
           if (cancelled || contentRef.current !== content) return;
 
-          compileMdx(content, highlightLoaded)
+          compileMdx(content, highlightLoaded, mdxActions)
             .then((Component) => {
               if (!cancelled) setMdxComponent(() => Component);
             })
@@ -158,7 +167,7 @@ export const MessageContent = React.memo(function MessageContent({ content, isSt
       cancelled = true;
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [content, isStreaming, highlightLoaded]);
+  }, [content, isStreaming, highlightLoaded, mdxActions]);
 
   if (MdxComponent) {
     return <MdxComponent />;

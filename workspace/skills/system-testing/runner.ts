@@ -22,8 +22,8 @@ export class HeadlessRunner {
    * standard NatStack chat prompt and tool surface — UI tools like inline_ui
    * and feedback_form will be available because the panel is connected.
    *
-   * Per-test prompt overrides should be written into
-   * `<contextFolder>/.pi/AGENTS.md` *before* calling spawn().
+   * Per-test prompt overrides can be passed through spawn extraConfig as
+   * `systemPrompt` and `systemPromptMode`.
    */
   async spawn(opts?: {
     source?: string;

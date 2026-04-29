@@ -13,6 +13,7 @@ How to use the chat panel's code execution sandbox — the eval tool, inline UI 
 |----------|---------|
 | [EVAL.md](EVAL.md) | Eval tool — run code, stream console, dynamic imports |
 | [INLINE_UI.md](INLINE_UI.md) | Inline UI — persistent interactive components in chat |
+| [MDX.md](MDX.md) | Normal rich chat messages — callouts, badges, tables, ActionButton |
 | [FEEDBACK.md](FEEDBACK.md) | Feedback forms — block until user responds |
 | [RUNTIME_API.md](RUNTIME_API.md) | Full runtime API reference — fs, db, workers, ai, git, browser data |
 | [CHAT_API.md](CHAT_API.md) | Chat API — publish messages, call methods, interact with the conversation |
@@ -81,6 +82,7 @@ See [EVAL.md](EVAL.md) for details. On-demand imports are not available in inlin
 
 ## Interaction Patterns
 
+See [MDX.md](MDX.md) for rich normal chat messages and `ActionButton`.
 See [INTERACTION_PATTERNS.md](INTERACTION_PATTERNS.md) for when to use inline UI vs eval for side-effect actions. In short: if an action involves choices or could fail, prefer rendering an inline UI that lets the user trigger it and reports results back via `chat.publish`. For setup workflows with links, use the [INLINE_UI.md](INLINE_UI.md) link/checklist patterns and offer both internal browser-panel opens and approval-gated `openExternal` system-browser opens.
 
 ## Critical Rules
