@@ -3,8 +3,8 @@
 ## `accessNotConfigured`
 
 The API is not enabled in the Google Cloud project that owns the OAuth client.
-Open the API links in [SETUP.md](SETUP.md) and enable Gmail, Calendar, and
-Drive in the same project.
+Open the API links in the [SETUP.md](SETUP.md) workflow UI and enable Gmail,
+Calendar, and Drive in the same project.
 
 ## `invalid_client`
 
@@ -43,10 +43,13 @@ application**.
 
 ## Client Secret Is Not Saved
 
-NatStack expects both values from the Desktop app credential JSON. Save:
+Use the setup workflow/provider setup path for OAuth client material. Do not ask
+the user to paste secrets into chat. If debugging the downloaded Desktop app
+JSON, the relevant Google fields are:
 
 - `clientId` from `installed.client_id`
-- `clientSecret` from `installed.client_secret`
+- `clientSecret` from `installed.client_secret` when the specific credential
+  flow requires it
 
 Then reload setup status.
 

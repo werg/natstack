@@ -13,13 +13,13 @@ offline refresh tokens, and a verified live API call.
 ## Onboarding Policy
 
 Be explicit about state and next action. Do not ask the user to paste secrets
-into chat. Tell them exactly where to create credentials, which fields to copy,
-and how to save them through NatStack's provider setup API.
+into chat. When Google Cloud setup is missing, render the workflow UI from
+[SETUP.md](SETUP.md); do not replace it with a plain numbered list.
 
 Use this order:
 
 1. Run `getGoogleOnboardingStatus()` and summarize the stage.
-2. If `stage === "needs-setup"`, walk the user through [SETUP.md](SETUP.md).
+2. If `stage === "needs-setup"`, show the [SETUP.md](SETUP.md) workflow UI.
 3. If `stage === "ready-to-connect"`, run `connectGoogle()`.
 4. If `stage === "connected"`, run `verifyGoogleConnection(connectionId)`.
 5. If `stage === "verified"`, continue onboarding.
@@ -34,10 +34,15 @@ Gmail, Calendar, and Drive expire after 7 days.
 3. Configure the OAuth consent screen with the required scopes.
 4. Publish the app to Production, even while unverified.
 5. Create OAuth credentials with application type **Desktop app**.
-6. Save the Desktop app `installed.client_id` and `installed.client_secret`
-   through `saveGoogleOAuthClient()` or the generic provider setup UI.
+6. Save/use the Desktop app `installed.client_id` through the Google credential
+   setup path. Do not ask the user to paste client secrets into chat.
 7. Connect the account through NatStack's credential flow.
 8. Verify a live Google API call succeeds.
+
+Deep-link every Google Console step where possible. Offer both:
+
+- **Internal**: `createBrowserPanel(url, { focus: true })`
+- **External**: `openExternal(url)` through the approval-gated browser-open API
 
 Read [SETUP.md](SETUP.md) for the full guided setup and
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common Google OAuth errors.
@@ -63,7 +68,7 @@ const status = await getGoogleOnboardingStatus();
 console.log(formatGoogleOnboardingStatus(status));
 
 if (status.stage === "needs-setup") {
-  // Walk the user through SETUP.md, then save the OAuth client fields.
+  // Render the workflow UI from SETUP.md, then use the Desktop app client_id.
 }
 
 if (status.stage === "ready-to-connect") {

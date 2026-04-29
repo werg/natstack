@@ -84,8 +84,10 @@ read("skills/google-workspace/SKILL.md")
 
 Then use `getGoogleOnboardingStatus()` from
 `@workspace-skills/google-workspace` to detect state and guide the user through
-`skills/google-workspace/ONBOARDING.md` and `skills/google-workspace/SETUP.md`
-when configuration is missing.
+`skills/google-workspace/ONBOARDING.md` and the workflow UI in
+`skills/google-workspace/SETUP.md` when configuration is missing. Do not paste
+the Google Cloud setup checklist into chat as plain text; show the workflow UI
+with internal/external deep links.
 
 **Check if already configured:**
 

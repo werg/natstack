@@ -6,8 +6,8 @@ no Google configuration to a verified NatStack Google Workspace connection.
 ## Principles
 
 - Keep the user in control of secrets. They should import or paste OAuth client
-  fields into NatStack's provider setup UI/API; they should not paste client
-  secrets into chat.
+  fields into a trusted setup UI/API; they should not paste client secrets into
+  chat.
 - Keep the Google Cloud project consistent. APIs, OAuth consent, and OAuth
   credentials must all belong to the same project.
 - Require Desktop app credentials. Web application credentials are the wrong
@@ -15,6 +15,9 @@ no Google configuration to a verified NatStack Google Workspace connection.
 - Require Production publishing before connecting. Testing mode causes 7-day
   refresh-token expiry for Google user-data scopes.
 - Verify with a live API call before declaring onboarding complete.
+- Prefer workflow UI over prose. Use the setup UI in [SETUP.md](SETUP.md) so
+  the user gets checkboxes and deep links that can open internally or
+  externally.
 
 ## Detect State
 
@@ -35,26 +38,33 @@ Stages:
 
 | Stage | Meaning | Agent Action |
 |-------|---------|--------------|
-| `needs-setup` | Google OAuth client fields are not saved | Walk through SETUP.md and save the Desktop app fields through provider setup |
+| `needs-setup` | Google OAuth client fields are not saved | Render the SETUP.md workflow UI and use the Desktop app client ID |
 | `ready-to-connect` | Env vars are present but no credential is stored | Run `connectGoogle()` |
 | `connected` | Credential exists but live verification has not run | Run `verifyGoogleConnection(connectionId)` |
 | `verified` | A live Google userinfo request succeeded | Continue onboarding |
 | `error` | Status check failed | Resolve the error and rerun status |
 
-## User Script
+## Missing Setup UX
 
-When setup is missing, tell the user:
+When setup is missing, render the `feedback_custom` workflow UI from
+[SETUP.md](SETUP.md). Do not send only this list as chat prose. The UI must
+include these deep-linked actions:
 
-1. "Create or select one Google Cloud project. Keep it selected for every step."
-2. "Enable Gmail API, Google Calendar API, and Google Drive API."
-3. "Configure OAuth consent with app name, support email, developer contact, and Workspace scopes."
-4. "Publish the app to Production. This prevents 7-day refresh-token expiry."
-5. "Create OAuth credentials with application type Desktop app."
-6. "From the downloaded JSON, save `installed.client_id` and `installed.client_secret` with `saveGoogleOAuthClient()` or the provider setup UI."
+1. Create/select one Google Cloud project.
+2. Enable Gmail API, Google Calendar API, and Google Drive API.
+3. Configure OAuth branding.
+4. Open OAuth audience and publish to Production.
+5. Create OAuth credentials with application type Desktop app.
+6. Return to NatStack with the Desktop app `installed.client_id`.
 
 Do not say that Google verification is required for local development. It is
 not required while under Google's unverified-app user cap. Do say that users may
 see Google's unverified-app warning and can continue through **Advanced**.
+
+Use `createBrowserPanel(url, { focus: true })` for **Internal** link buttons
+and `openExternal(url)` for **External** link buttons. If opening an OAuth
+authorize URL, pass `{ expectedRedirectUri }` to `openExternal` so the host
+validates the callback binding.
 
 ## Connect
 

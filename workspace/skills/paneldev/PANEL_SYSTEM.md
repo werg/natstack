@@ -95,6 +95,22 @@ await openPanel("panels/chat", { stateArgs: { channelName: "general" } });
 await openPanel("https://github.com");
 ```
 
+For workflow UI deep links, pair browser-panel navigation with external browser
+opens:
+
+```typescript
+import { createBrowserPanel, openExternal } from "@workspace/runtime";
+
+await createBrowserPanel("https://console.cloud.google.com/apis/credentials", {
+  focus: true,
+});
+await openExternal("https://console.cloud.google.com/apis/credentials");
+```
+
+Use `openExternal(authorizeUrl, { expectedRedirectUri })` for OAuth authorize
+URLs so the host validates the callback binding before opening the system
+browser.
+
 For in-page navigation (replacing the current panel), use `buildPanelLink` + `window.location.href`:
 
 ```typescript

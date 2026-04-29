@@ -40,7 +40,8 @@ This opens the browser, waits for the local OAuth callback, and stores the
 resulting credential.
 
 If this reports missing setup, save the Desktop app OAuth client fields with
-`saveGoogleOAuthClient()` or the provider setup UI.
+the Google setup workflow UI/provider setup path. Do not ask the user to paste
+client secrets into chat.
 
 ## Verify With A Live API Call
 

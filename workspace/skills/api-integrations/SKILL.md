@@ -1,8 +1,30 @@
-# Runtime Credential API
+---
+name: api-integrations
+description: Build API integrations with URL-bound credentials, approval-gated browser opens, and workflow UI for provider setup.
+---
+
+# API Integrations Skill
 
 Credentials are URL-bound and may only be used through host-mediated egress.
+Provider setup should be user-friendly: when a provider requires console work,
+OAuth app creation, webhook registration, or API enablement, render a workflow
+UI with deep links instead of writing a long plain-text checklist.
 
-## Store
+## UX Rules
+
+1. Prefer a `feedback_custom` workflow UI for setup flows with multiple steps.
+2. Put provider-console links directly beside the step that uses them.
+3. Offer both **Internal** and **External** opens when a URL is useful:
+   - Internal: `createBrowserPanel(url, { focus: true })`
+   - External: `openExternal(url)`
+4. Use `openExternal(authorizeUrl, { expectedRedirectUri })` for OAuth
+   authorize URLs so the host validates the callback binding.
+5. Do not ask the user to paste secrets into chat. Use a trusted provider setup
+   UI/API or host-owned credential flow.
+
+## Runtime Credential API
+
+Store static tokens only when the provider does not support a better OAuth flow:
 
 ```ts
 const stored = await credentials.store({
@@ -17,7 +39,8 @@ const stored = await credentials.store({
 });
 ```
 
-## OAuth PKCE Without Returning Tokens
+Use host-brokered OAuth PKCE when userland should initiate OAuth but should not
+receive the access token:
 
 ```ts
 const begin = await credentials.beginCreateWithOAuthPkce({
@@ -39,6 +62,8 @@ const begin = await credentials.beginCreateWithOAuthPkce({
   redirectUri,
 });
 
+await openExternal(begin.authorizeUrl, { expectedRedirectUri: redirectUri });
+
 const stored = await credentials.completeCreateWithOAuthPkce({
   nonce: begin.nonce,
   code,
@@ -46,10 +71,51 @@ const stored = await credentials.completeCreateWithOAuthPkce({
 });
 ```
 
-## Use
+Use credentials only through host-mediated egress:
 
 ```ts
 await credentials.fetch("https://api.example.com/v1/items", undefined, {
   credentialId: stored.id,
 });
 ```
+
+## Provider Setup UI Pattern
+
+```tsx
+import { useState } from "react";
+import { Button, Checkbox, Flex, Text } from "@radix-ui/themes";
+import { GlobeIcon, OpenInNewWindowIcon } from "@radix-ui/react-icons";
+import { createBrowserPanel, openExternal } from "@workspace/runtime";
+
+export default function ProviderSetup({ onSubmit, onCancel }) {
+  const [done, setDone] = useState(false);
+  const consoleUrl = "https://provider.example.com/developer/apps";
+
+  return (
+    <Flex direction="column" gap="3" p="2">
+      <Text size="2" weight="bold">Provider setup</Text>
+      <Flex align="center" justify="between" gap="3" wrap="wrap">
+        <Flex align="center" gap="2">
+          <Checkbox checked={done} onCheckedChange={(checked) => setDone(checked === true)} />
+          <Text size="2">Create an OAuth app and copy the client ID into NatStack.</Text>
+        </Flex>
+        <Flex gap="2">
+          <Button size="1" variant="soft" onClick={() => createBrowserPanel(consoleUrl, { focus: true })}>
+            <GlobeIcon /> Internal
+          </Button>
+          <Button size="1" variant="soft" onClick={() => openExternal(consoleUrl)}>
+            <OpenInNewWindowIcon /> External
+          </Button>
+        </Flex>
+      </Flex>
+      <Flex justify="end" gap="2">
+        <Button variant="soft" color="gray" onClick={onCancel}>Cancel</Button>
+        <Button disabled={!done} onClick={() => onSubmit({ ready: true })}>Continue</Button>
+      </Flex>
+    </Flex>
+  );
+}
+```
+
+For Google Workspace specifically, use the dedicated
+`google-workspace` skill and its setup workflow UI.
