@@ -55,10 +55,37 @@ describe("approvalQueue", () => {
     });
 
     expect(queue.listPending()[0]).toMatchObject({
+      kind: "credential",
       credentialLabel: "GitHub",
       audience: [{ url: "https://api.github.com/", match: "origin" }],
     });
     queue.resolve(queue.listPending()[0]!.approvalId, "deny");
     await expect(promise).resolves.toBe("deny");
+  });
+
+  it("supports generic capability approvals", async () => {
+    const { queue } = createQueue();
+    const promise = queue.request({
+      kind: "capability",
+      callerId: "panel:1",
+      callerKind: "panel",
+      repoPath: "panels/example",
+      effectiveVersion: "hash-1",
+      capability: "external-browser-open",
+      title: "Open external browser",
+      resource: {
+        type: "url-origin",
+        label: "Origin",
+        value: "https://example.com",
+      },
+    });
+
+    expect(queue.listPending()[0]).toMatchObject({
+      kind: "capability",
+      title: "Open external browser",
+      capability: "external-browser-open",
+    });
+    queue.resolve(queue.listPending()[0]!.approvalId, "session");
+    await expect(promise).resolves.toBe("session");
   });
 });

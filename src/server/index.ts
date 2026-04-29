@@ -405,6 +405,8 @@ async function main() {
   const auditLog = new AuditLog({ logDir: path.join(statePath, "credentials-audit") });
   const codeIdentityResolver = new CodeIdentityResolver();
   const credentialSessionGrantStore = new CredentialSessionGrantStore();
+  const { CapabilityGrantStore } = await import("./services/capabilityGrantStore.js");
+  const capabilityGrantStore = new CapabilityGrantStore({ statePath });
   const { createApprovalQueue } = await import("./services/approvalQueue.js");
   const approvalQueue = createApprovalQueue({ eventService });
 
@@ -574,6 +576,17 @@ async function main() {
   container.register(rpcService(createDbService({ databaseManager }), ["databaseManager"]));
   container.register(rpcService(createTypecheckService({ contextFolderManager })));
   container.register(rpcService(createEventsServiceDefinition(eventService)));
+
+  // ── Approval-gated host capabilities ──
+  {
+    const { createExternalOpenService } = await import("./services/externalOpenService.js");
+    container.register(rpcService(createExternalOpenService({
+      eventService,
+      approvalQueue,
+      grantStore: capabilityGrantStore,
+      codeIdentityResolver,
+    })));
+  }
 
   // ── Notification service ──
   const { createNotificationService } = await import("./services/notificationService.js");

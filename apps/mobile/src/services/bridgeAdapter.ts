@@ -1,4 +1,3 @@
-import { Linking } from "react-native";
 import type { PanelManager } from "@natstack/shared/shell/panelManager";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { MobileTransport } from "./mobileTransport";
@@ -60,7 +59,11 @@ export function createBridgeAdapter(deps: {
         }
         case "openExternal": {
           const [url] = args as [string];
-          await Linking.openURL(url);
+          await deps.transport.call("main", "externalOpen.openExternalForCaller", {
+            callerId: panelId,
+            callerKind: "panel",
+            url,
+          });
           return;
         }
         case "getCdpEndpoint":

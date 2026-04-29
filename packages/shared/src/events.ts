@@ -19,6 +19,7 @@ export type EventName =
   | "navigate-about"
   | "navigate-to-panel"
   | "open-external-requested"
+  | "external-open:open"
   | "browser-import-progress"
   | "browser-import-complete"
   | "browser-data-changed"
@@ -83,6 +84,11 @@ export interface EventPayloads {
   "navigate-about": { page: string };
   "navigate-to-panel": { panelId: string };
   "open-external-requested": { url: string };
+  "external-open:open": {
+    url: string;
+    callerId: string;
+    callerKind: "panel" | "worker" | "shell" | "server" | "harness";
+  };
   "browser-import-progress": {
     requestId: string;
     dataType: string;
@@ -139,6 +145,7 @@ export const VALID_EVENT_NAMES: EventName[] = [
   "navigate-about",
   "navigate-to-panel",
   "open-external-requested",
+  "external-open:open",
   "browser-import-progress",
   "browser-import-complete",
   "browser-data-changed",

@@ -22,6 +22,7 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 | `gitConfig` | value |  |  |
 | `pubsubConfig` | value |  |  |
 | `callMain` | value |  |  |
+| `openExternal` | value |  |  |
 | `getWorkspaceTree` | value |  |  |
 | `listBranches` | value |  |  |
 | `listCommits` | value |  |  |

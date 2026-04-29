@@ -5,11 +5,12 @@ import {
   CheckCircledIcon,
   Cross2Icon,
   CrossCircledIcon,
+  ExternalLinkIcon,
   GlobeIcon,
   LockClosedIcon,
   PersonIcon,
 } from "@radix-ui/react-icons";
-import type { ApprovalDecision, PendingApproval } from "@natstack/shared/approvals";
+import type { ApprovalDecision, PendingApproval, PendingCapabilityApproval, PendingCredentialApproval } from "@natstack/shared/approvals";
 import { useShellEvent } from "../shell/useShellEvent";
 import { shellApproval, view } from "../shell/client";
 
@@ -65,15 +66,7 @@ export function ConsentApprovalBar() {
   };
 
   const callerLabel = current.callerKind === "worker" ? "Worker" : "Panel";
-  const accountLabel = formatAccount(current);
-  const injectionLabel = formatInjection(current);
   const extraCount = pendingAccess.length - 1;
-  const detailItems = current.scopes;
-  const visibleScopes = detailItems.slice(0, 3);
-  const hiddenScopeCount = Math.max(0, detailItems.length - visibleScopes.length);
-  const oauthOrigins = [current.oauthAuthorizeOrigin, current.oauthTokenOrigin].filter(
-    (origin): origin is string => typeof origin === "string" && origin.length > 0,
-  );
 
   return (
     <Box
@@ -108,17 +101,19 @@ export function ConsentApprovalBar() {
               flexShrink: 0,
             }}
           >
-            <LockClosedIcon width={16} height={16} />
+            {current.kind === "capability" ? <ExternalLinkIcon width={16} height={16} /> : <LockClosedIcon width={16} height={16} />}
           </Flex>
 
           <Flex direction="column" gap="2" style={{ minWidth: 0, flex: 1 }}>
             <Flex align="center" gap="2" wrap="wrap">
               <Text size="2" weight="medium">
-                Credential access request
+                {current.kind === "capability" ? current.title : "Credential access request"}
               </Text>
-              <Badge color="amber" variant="soft">
-                {current.credentialLabel}
-              </Badge>
+              {current.kind === "credential" ? (
+                <Badge color="amber" variant="soft">
+                  {current.credentialLabel}
+                </Badge>
+              ) : null}
               {extraCount > 0 ? (
                 <Badge color="gray" variant="soft">
                   +{extraCount} queued
@@ -128,37 +123,17 @@ export function ConsentApprovalBar() {
 
             <Flex align="center" gap="2" wrap="wrap">
               <Detail icon={<PersonIcon />} label={`${callerLabel} ${current.callerId}`} />
-              <Detail icon={<LockClosedIcon />} label={accountLabel} />
-              <Detail icon={<GlobeIcon />} label={injectionLabel} />
+              {current.kind === "credential" ? (
+                <>
+                  <Detail icon={<LockClosedIcon />} label={formatAccount(current)} />
+                  <Detail icon={<GlobeIcon />} label={formatInjection(current)} />
+                </>
+              ) : (
+                <CapabilityDetails approval={current} />
+              )}
             </Flex>
 
-            <Flex align="center" gap="1" wrap="wrap">
-              {oauthOrigins.map((origin) => (
-                <Code key={origin} size="1" color={current.oauthAudienceDomainMismatch ? "red" : "gray"} variant="soft" style={{ maxWidth: 360 }}>
-                  OAuth {origin}
-                </Code>
-              ))}
-              {current.audience.map((audience) => (
-                <Code key={`${audience.match}:${audience.url}`} size="1" variant="soft" style={{ maxWidth: 360 }}>
-                  {audience.url}
-                </Code>
-              ))}
-              {current.oauthAudienceDomainMismatch ? (
-                <Tooltip content="OAuth authority and credential audience do not share the same base domain">
-                  <Badge color="red" variant="soft">Domain mismatch</Badge>
-                </Tooltip>
-              ) : null}
-              {visibleScopes.map((scope) => (
-                <Badge key={scope} color="gray" variant="outline">
-                  {scope}
-                </Badge>
-              ))}
-              {hiddenScopeCount > 0 ? (
-                <Tooltip content={detailItems.slice(visibleScopes.length).join(", ")}>
-                  <Badge color="gray" variant="outline">+{hiddenScopeCount} details</Badge>
-                </Tooltip>
-              ) : null}
-            </Flex>
+            {current.kind === "credential" ? <CredentialDetails approval={current} /> : null}
           </Flex>
         </Flex>
 
@@ -209,7 +184,57 @@ function Detail({ icon, label }: { icon: ReactNode; label: string }) {
   );
 }
 
-function formatAccount(approval: PendingApproval): string {
+function CredentialDetails({ approval }: { approval: PendingCredentialApproval }) {
+  const detailItems = approval.scopes;
+  const visibleScopes = detailItems.slice(0, 3);
+  const hiddenScopeCount = Math.max(0, detailItems.length - visibleScopes.length);
+  const oauthOrigins = [approval.oauthAuthorizeOrigin, approval.oauthTokenOrigin].filter(
+    (origin): origin is string => typeof origin === "string" && origin.length > 0,
+  );
+
+  return (
+    <Flex align="center" gap="1" wrap="wrap">
+      {oauthOrigins.map((origin) => (
+        <Code key={origin} size="1" color={approval.oauthAudienceDomainMismatch ? "red" : "gray"} variant="soft" style={{ maxWidth: 360 }}>
+          OAuth {origin}
+        </Code>
+      ))}
+      {approval.audience.map((audience) => (
+        <Code key={`${audience.match}:${audience.url}`} size="1" variant="soft" style={{ maxWidth: 360 }}>
+          {audience.url}
+        </Code>
+      ))}
+      {approval.oauthAudienceDomainMismatch ? (
+        <Tooltip content="OAuth authority and credential audience do not share the same base domain">
+          <Badge color="red" variant="soft">Domain mismatch</Badge>
+        </Tooltip>
+      ) : null}
+      {visibleScopes.map((scope) => (
+        <Badge key={scope} color="gray" variant="outline">
+          {scope}
+        </Badge>
+      ))}
+      {hiddenScopeCount > 0 ? (
+        <Tooltip content={detailItems.slice(visibleScopes.length).join(", ")}>
+          <Badge color="gray" variant="outline">+{hiddenScopeCount} details</Badge>
+        </Tooltip>
+      ) : null}
+    </Flex>
+  );
+}
+
+function CapabilityDetails({ approval }: { approval: PendingCapabilityApproval }) {
+  return (
+    <>
+      {approval.resource ? <Detail icon={<GlobeIcon />} label={`${approval.resource.label}: ${approval.resource.value}`} /> : null}
+      {approval.details?.map((detail) => (
+        <Detail key={detail.label} icon={<LockClosedIcon />} label={`${detail.label}: ${detail.value}`} />
+      ))}
+    </>
+  );
+}
+
+function formatAccount(approval: PendingCredentialApproval): string {
   const identity = approval.accountIdentity;
   return identity.email
     ?? identity.username
@@ -218,7 +243,7 @@ function formatAccount(approval: PendingApproval): string {
     ?? approval.credentialId;
 }
 
-function formatInjection(approval: PendingApproval): string {
+function formatInjection(approval: PendingCredentialApproval): string {
   const injection = approval.injection;
   if (injection.type === "query-param") {
     return `query ${injection.name}`;

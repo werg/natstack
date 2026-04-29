@@ -21,6 +21,7 @@ import {
   getExternalHost,
 } from "../services/panelUrls";
 import type { HostConfig } from "../services/panelUrls";
+import type { ApprovalDecision, PendingApproval } from "@natstack/shared/approvals";
 const MAX_WEBVIEWS = 5;
 
 interface WebViewEntry {
@@ -158,8 +159,10 @@ export function MainScreen() {
 
     const eventNames = [
       "navigate-to-panel",
+      "external-open:open",
       "open-external-requested",
       "notification:show",
+      "shell-approval:pending-changed",
     ] as const;
     const subscribeAll = () => {
       for (const name of eventNames) {
@@ -188,7 +191,53 @@ export function MainScreen() {
       },
     );
 
+    const resolveApproval = (approvalId: string, decision: ApprovalDecision) => {
+      void shellClient.transport.call("main", "shellApproval.resolve", approvalId, decision);
+    };
+
+    const shownApprovals = new Set<string>();
+    const showApproval = (approval: PendingApproval | null | undefined) => {
+      if (!approval || shownApprovals.has(approval.approvalId)) return;
+      shownApprovals.add(approval.approvalId);
+      Alert.alert(
+        approval.kind === "capability" ? approval.title : "Credential access request",
+        formatApprovalMessage(approval),
+        [
+          {
+            text: "Deny",
+            style: "cancel",
+            onPress: () => resolveApproval(approval.approvalId, "deny"),
+          },
+          {
+            text: "Session",
+            onPress: () => resolveApproval(approval.approvalId, "session"),
+          },
+          {
+            text: "Version",
+            onPress: () => resolveApproval(approval.approvalId, "version"),
+          },
+          {
+            text: "Repo",
+            onPress: () => resolveApproval(approval.approvalId, "repo"),
+          },
+        ],
+      );
+    };
+
+    void shellClient.transport
+      .call<PendingApproval[]>("main", "shellApproval.listPending")
+      .then((pending) => showApproval(pending[0]))
+      .catch(() => {});
+
     const unsubExternal = shellClient.transport.onEvent(
+      "event:external-open:open",
+      (_from: string, payload: unknown) => {
+        const { url } = payload as { url: string };
+        if (url) void Linking.openURL(url);
+      },
+    );
+
+    const unsubLegacyExternal = shellClient.transport.onEvent(
       "event:open-external-requested",
       (_from: string, payload: unknown) => {
         const { url } = payload as { url: string };
@@ -242,6 +291,14 @@ export function MainScreen() {
       },
     );
 
+    const unsubApproval = shellClient.transport.onEvent(
+      "event:shell-approval:pending-changed",
+      (_from: string, payload: unknown) => {
+        const { pending } = payload as { pending?: PendingApproval[] };
+        showApproval(pending?.[0]);
+      },
+    );
+
     const timer = setInterval(refreshTree, 60_000);
 
     return () => {
@@ -250,7 +307,9 @@ export function MainScreen() {
       unsubNavigate();
       unsubNav();
       unsubExternal();
+      unsubLegacyExternal();
       unsubNotification();
+      unsubApproval();
       for (const name of eventNames) {
         void shellClient.events.unsubscribe(name).catch(() => {});
       }
@@ -404,6 +463,17 @@ export function MainScreen() {
       </View>
     </View>
   );
+}
+
+function formatApprovalMessage(approval: PendingApproval): string {
+  const caller = `${approval.callerKind === "worker" ? "Worker" : "Panel"} ${approval.callerId}`;
+  if (approval.kind === "capability") {
+    const resource = approval.resource ? `\n${approval.resource.label}: ${approval.resource.value}` : "";
+    const details = approval.details?.map((detail) => `\n${detail.label}: ${detail.value}`).join("") ?? "";
+    return `${caller} requests permission: ${approval.description ?? approval.title}.${resource}${details}`;
+  }
+  const audience = approval.audience.map((entry) => entry.origin).join(", ");
+  return `${caller} wants to use ${approval.credentialLabel}.\nAudience: ${audience || "unspecified"}`;
 }
 
 const styles = StyleSheet.create({

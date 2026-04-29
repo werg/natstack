@@ -7,17 +7,27 @@
 import { randomUUID } from "node:crypto";
 
 import type { EventService } from "@natstack/shared/eventsService";
-import type { ApprovalDecision, PendingApproval } from "@natstack/shared/approvals";
+import type {
+  ApprovalDecision,
+  PendingApproval,
+  PendingCapabilityApproval,
+  PendingCredentialApproval,
+} from "@natstack/shared/approvals";
 import type { AccountIdentity, CredentialInjection, UrlAudience } from "@natstack/shared/credentials/types";
 
 /** Terminal decision surfaced back to queue waiters (dismiss collapses to deny). */
 export type GrantedDecision = "session" | "version" | "repo" | "deny";
 
-export interface ApprovalQueueRequest {
+interface ApprovalQueueRequestBase {
   callerId: string;
   callerKind: "panel" | "worker";
   repoPath: string;
   effectiveVersion: string;
+  signal?: AbortSignal;
+}
+
+export interface CredentialApprovalQueueRequest extends ApprovalQueueRequestBase {
+  kind?: "credential";
   credentialId: string;
   credentialLabel: string;
   audience: UrlAudience[];
@@ -27,8 +37,18 @@ export interface ApprovalQueueRequest {
   oauthAuthorizeOrigin?: string;
   oauthTokenOrigin?: string;
   oauthAudienceDomainMismatch?: boolean;
-  signal?: AbortSignal;
 }
+
+export interface CapabilityApprovalQueueRequest extends ApprovalQueueRequestBase {
+  kind: "capability";
+  capability: string;
+  title: string;
+  description?: string;
+  resource?: PendingCapabilityApproval["resource"];
+  details?: PendingCapabilityApproval["details"];
+}
+
+export type ApprovalQueueRequest = CredentialApprovalQueueRequest | CapabilityApprovalQueueRequest;
 
 interface QueueWaiter {
   resolve: (decision: GrantedDecision) => void;
@@ -65,7 +85,51 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
   }
 
   function dedupKeyFor(req: ApprovalQueueRequest): string {
+    if (req.kind === "capability") {
+      return [
+        "capability",
+        req.repoPath,
+        req.effectiveVersion,
+        req.capability,
+        req.resource?.value ?? "",
+      ].join("\x00");
+    }
     return `${req.repoPath}\x00${req.effectiveVersion}\x00${req.credentialId}`;
+  }
+
+  function createPendingApproval(req: ApprovalQueueRequest): PendingApproval {
+    const base = {
+      approvalId: randomUUID(),
+      callerId: req.callerId,
+      callerKind: req.callerKind,
+      repoPath: req.repoPath,
+      effectiveVersion: req.effectiveVersion,
+      requestedAt: Date.now(),
+    };
+    if (req.kind === "capability") {
+      return {
+        ...base,
+        kind: "capability",
+        capability: req.capability,
+        title: req.title,
+        description: req.description,
+        resource: req.resource,
+        details: req.details,
+      } satisfies PendingCapabilityApproval;
+    }
+    return {
+      ...base,
+      kind: "credential",
+      credentialId: req.credentialId,
+      credentialLabel: req.credentialLabel,
+      audience: req.audience,
+      injection: req.injection,
+      accountIdentity: req.accountIdentity,
+      scopes: req.scopes,
+      oauthAuthorizeOrigin: req.oauthAuthorizeOrigin,
+      oauthTokenOrigin: req.oauthTokenOrigin,
+      oauthAudienceDomainMismatch: req.oauthAudienceDomainMismatch,
+    } satisfies PendingCredentialApproval;
   }
 
   return {
@@ -74,23 +138,7 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
       let entry = entriesByDedupKey.get(dedupKey);
       let newEntry = false;
       if (!entry) {
-        const approval: PendingApproval = {
-          approvalId: randomUUID(),
-          callerId: req.callerId,
-          callerKind: req.callerKind,
-          repoPath: req.repoPath,
-          effectiveVersion: req.effectiveVersion,
-          credentialId: req.credentialId,
-          credentialLabel: req.credentialLabel,
-          audience: req.audience,
-          injection: req.injection,
-          accountIdentity: req.accountIdentity,
-          scopes: req.scopes,
-          oauthAuthorizeOrigin: req.oauthAuthorizeOrigin,
-          oauthTokenOrigin: req.oauthTokenOrigin,
-          oauthAudienceDomainMismatch: req.oauthAudienceDomainMismatch,
-          requestedAt: Date.now(),
-        };
+        const approval = createPendingApproval(req);
         entry = {
           approval,
           dedupKey,

@@ -52,6 +52,7 @@ export const workerRuntimeSurface: RuntimeSurface = {
     gitConfig: valueEntry(),
     pubsubConfig: valueEntry(),
     callMain: valueEntry(),
+    openExternal: valueEntry(),
     getWorkspaceTree: valueEntry(),
     listBranches: valueEntry(),
     listCommits: valueEntry(),

@@ -1,4 +1,4 @@
-import { app, dialog, BaseWindow, nativeTheme, session, ipcMain, type Session } from "electron";
+import { app, dialog, BaseWindow, nativeTheme, session, ipcMain, shell, type Session } from "electron";
 import * as path from "path";
 import * as fs from "fs";
 // Silence Electron security warnings in dev; panels run in isolated webviews.
@@ -437,6 +437,14 @@ app.on("ready", async () => {
 
     if (event.startsWith("event:")) {
       const bareEvent = event.slice("event:".length);
+      if (bareEvent === "external-open:open") {
+        const { url } = payload as { url?: string };
+        if (typeof url === "string") {
+          void shell.openExternal(url).catch((err: unknown) => {
+            log.warn(`[externalOpen] shell.openExternal failed: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
+      }
       if (isValidEventName(bareEvent)) {
         (eventService.emit as (e: EventName, d: unknown) => void)(bareEvent, payload);
       }
@@ -481,6 +489,8 @@ app.on("ready", async () => {
       },
     });
     serverClientRef = serverSession.serverClient;
+    shellEventSubscriptions.add("external-open:open");
+    await replayShellSubscriptionsToServer();
     workspaceId = serverSession.workspaceId;
 
     performance.mark("startup:server-spawned");
@@ -763,7 +773,7 @@ app.on("ready", async () => {
     /**
      * Reject if the sender is not the shell webContents. Used for IPC
      * channels that should only be reachable from the trusted shell UI
-     * (native dialogs, openExternal, etc.). Audit finding #43.
+     * (native dialogs, etc.). Audit finding #43.
      */
     const requireShellSender = (event: Electron.IpcMainInvokeEvent, channel: string): void => {
       const { callerKind, callerId } = resolveCaller(event);
@@ -793,17 +803,6 @@ app.on("ready", async () => {
         `[ipc] Rejecting ${channel} from ${callerId} → ${targetViewId} (not owner, not shell)`,
       );
       throw new Error(`Caller does not own target view '${targetViewId}'`);
-    };
-
-    // Restricted URL scheme allow-list for shell.openExternal (#43).
-    const OPEN_EXTERNAL_ALLOWED_SCHEMES = new Set(["http:", "https:", "mailto:"]);
-    const isOpenExternalUrlAllowed = (rawUrl: string): boolean => {
-      try {
-        const u = new URL(rawUrl);
-        return OPEN_EXTERNAL_ALLOWED_SCHEMES.has(u.protocol);
-      } catch {
-        return false;
-      }
     };
 
     ipcMain.handle("natstack:getPanelInit", async (event) => {
@@ -895,22 +894,20 @@ app.on("ready", async () => {
       return result.canceled ? null : result.filePaths[0] ?? null;
     });
     ipcMain.handle("natstack:bridge.openExternal", async (event, url: string) => {
-      requireShellSender(event, "natstack:bridge.openExternal");
-      if (!isOpenExternalUrlAllowed(url)) {
-        console.warn(`[ipc] Rejecting natstack:bridge.openExternal for disallowed URL: ${url}`);
-        throw new Error("openExternal only supports http(s) and mailto URLs");
+      const caller = resolveCaller(event);
+      if (caller.callerKind === "shell") {
+        await sc.call("externalOpen", "openExternal", [url]);
+      } else {
+        await sc.call("externalOpen", "openExternalForCaller", [{ ...caller, url }]);
       }
-      const { shell } = await import("electron");
-      await shell.openExternal(url);
     });
     ipcMain.handle("natstack:openExternal", async (event, url: string) => {
-      requireShellSender(event, "natstack:openExternal");
-      if (!isOpenExternalUrlAllowed(url)) {
-        console.warn(`[ipc] Rejecting natstack:openExternal for disallowed URL: ${url}`);
-        throw new Error("openExternal only supports http(s) and mailto URLs");
+      const caller = resolveCaller(event);
+      if (caller.callerKind === "shell") {
+        await sc.call("externalOpen", "openExternal", [url]);
+      } else {
+        await sc.call("externalOpen", "openExternalForCaller", [{ ...caller, url }]);
       }
-      const { shell } = await import("electron");
-      await shell.openExternal(url);
     });
     ipcMain.handle("natstack:bridge.openOAuthExternal", async (
       event,

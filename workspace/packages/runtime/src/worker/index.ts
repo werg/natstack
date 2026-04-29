@@ -87,6 +87,7 @@ export interface WorkerRuntime {
 
   /** Call a server-side service method via RPC. */
   callMain<T>(method: string, ...args: unknown[]): Promise<T>;
+  openExternal(url: string): Promise<void>;
   getWorkspaceTree(): Promise<unknown>;
   listBranches(repoPath: string): Promise<unknown[]>;
   listCommits(repoPath: string, ref?: string, limit?: number): Promise<unknown[]>;
@@ -154,6 +155,7 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     pubsubConfig: null,
 
     callMain,
+    openExternal: (url: string) => callMain<void>("externalOpen.openExternal", url),
     getWorkspaceTree: () => callMain<unknown>("git.getWorkspaceTree"),
     listBranches: (repoPath: string) => callMain<unknown[]>("git.listBranches", repoPath),
     listCommits: (repoPath: string, ref?: string, limit?: number) =>

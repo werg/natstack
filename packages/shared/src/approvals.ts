@@ -2,12 +2,17 @@ import type { AccountIdentity, CredentialInjection, UrlAudience } from "./creden
 
 export type ApprovalDecision = "session" | "version" | "repo" | "deny" | "dismiss";
 
-export interface PendingApproval {
+export interface PendingApprovalBase {
   approvalId: string;
   callerId: string;
   callerKind: "panel" | "worker";
   repoPath: string;
   effectiveVersion: string;
+  requestedAt: number;
+}
+
+export interface PendingCredentialApproval extends PendingApprovalBase {
+  kind: "credential";
   credentialId: string;
   credentialLabel: string;
   audience: UrlAudience[];
@@ -17,5 +22,22 @@ export interface PendingApproval {
   oauthAuthorizeOrigin?: string;
   oauthTokenOrigin?: string;
   oauthAudienceDomainMismatch?: boolean;
-  requestedAt: number;
 }
+
+export interface PendingCapabilityApproval extends PendingApprovalBase {
+  kind: "capability";
+  capability: string;
+  title: string;
+  description?: string;
+  resource?: {
+    type: string;
+    label: string;
+    value: string;
+  };
+  details?: Array<{
+    label: string;
+    value: string;
+  }>;
+}
+
+export type PendingApproval = PendingCredentialApproval | PendingCapabilityApproval;
