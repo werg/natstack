@@ -17,17 +17,15 @@ import { createRequire } from "module";
 import * as path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 
-// In ESM this resolves via `import.meta.url`; in the CJS server-electron
-// bundle esbuild stubs `import.meta` (it logs a warning), so `import.meta.url`
-// is `undefined` and `createRequire(undefined)` throws ERR_INVALID_ARG_VALUE.
-// Fall back to __filename when running in CJS.
+// This module is bundled as both ESM (standalone server) and CJS (Electron
+// utility process). build.mjs injects __filename into the ESM bundle, while
+// CJS provides it natively. Avoid spelling import.meta here: esbuild warns
+// whenever import.meta appears in CJS output, even behind typeof guards.
 declare const __filename: string | undefined;
 const requireFromUrl: string =
-  (typeof import.meta !== "undefined" && import.meta.url)
-    ? import.meta.url
-    : (typeof __filename !== "undefined" && __filename)
-      ? pathToFileURL(__filename).href
-      : pathToFileURL(process.cwd() + "/").href;
+  (typeof __filename !== "undefined" && __filename)
+    ? pathToFileURL(__filename).href
+    : pathToFileURL(process.cwd() + "/").href;
 
 const require = createRequire(requireFromUrl);
 const fs = require("fs") as typeof import("fs");

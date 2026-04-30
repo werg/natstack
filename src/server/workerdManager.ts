@@ -26,12 +26,14 @@ import { createDevLogger } from "@natstack/dev-log";
 const log = createDevLogger("WorkerdManager");
 declare const __filename: string | undefined;
 
+// This file is bundled as both ESM (standalone server) and CJS (Electron
+// utility process). build.mjs injects __filename into the ESM bundle, while
+// CJS provides it natively. Avoid spelling import.meta here: esbuild warns
+// whenever import.meta appears in CJS output, even behind typeof guards.
 const requireFromUrl: string =
-  (typeof import.meta !== "undefined" && import.meta.url)
-    ? import.meta.url
-    : (typeof __filename !== "undefined" && __filename)
-      ? pathToFileURL(__filename).href
-      : pathToFileURL(process.cwd() + "/").href;
+  (typeof __filename !== "undefined" && __filename)
+    ? pathToFileURL(__filename).href
+    : pathToFileURL(process.cwd() + "/").href;
 
 const require = createRequire(requireFromUrl);
 
