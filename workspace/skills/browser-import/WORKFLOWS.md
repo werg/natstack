@@ -215,7 +215,7 @@ eval({ code: `
 The agent should compose these building blocks based on what the user actually asks:
 
 - **"Import my Chrome cookies"** → skip wizard, auto-detect Chrome, import cookies only, show cookie manager
-- **"Set up GitHub authentication"** → import cookies (auto-synced) → set up OAuth (see `api-integrations` skill) → connect with `openIn: "panel"` (imported cookies make sign-in seamless)
+- **"Set up GitHub authentication"** → use the API provider/OAuth setup path directly (see `api-integrations` skill); import cookies only if the user also wants GitHub browser-session state
 - **"What browsers do I have?"** → discovery only, show rich browser cards
 - **"Show me my saved passwords"** → import passwords if not already imported → show password vault
 - **"Import everything from Firefox"** → detect Firefox → import all types → show summary → leave managers for each type

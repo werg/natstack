@@ -230,7 +230,7 @@ After the user submits, the agent receives `{ browser, profile, dataTypes }` and
 ```typescript
 interface DetectedBrowser {
   name: string;          // "chrome" | "firefox" | "safari" | "edge" | "brave" | ...
-  family: string;        // "chromium" | "firefox" | "webkit"
+  family: string;        // "chromium" | "firefox" | "safari"
   displayName: string;   // "Google Chrome"
   version?: string;
   dataDir: string;       // path to browser data directory

@@ -43,6 +43,7 @@ The chat panel hosts an AI agent that can:
 - **Render UI** via `inline_ui` (persistent components in chat) and `feedback_custom` (interactive forms)
 - **Read/write files** in the workspace
 - **Build and launch panels** on demand
+- **Connect API provider integrations** — Gmail, GitHub, Slack, and other OAuth/credential-backed services
 - **Import browser data** — cookies, passwords, bookmarks, history
 - **Automate browsers** via Playwright (CDP)
 - **Query databases**, call AI models, manage workers

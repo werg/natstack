@@ -2,21 +2,54 @@
 
 A step-by-step guide for onboarding. The agent should first detect the user's experience level, then walk through the relevant steps interactively.
 
-## Step 0: Detect Experience Level
+## Step 0: Detect Experience Level And Setup State
 
-Before anything else, check how many workspaces exist:
+Before anything else, check how many workspaces exist and what is already set
+up. Keep this lightweight and tolerate failures because some APIs are
+panel-only or depend on optional skills.
 
 ```
 eval({ code: `
-  import { workspace } from "@workspace/runtime";
+  import { credentials, fs, workspace } from "@workspace/runtime";
+
   const workspaces = await workspace.list();
   const active = await workspace.getActive();
-  return { count: workspaces.length, names: workspaces.map(w => w.name), active };
-` })
+  const storedCredentials = await credentials.listStoredCredentials().catch(() => []);
+  let google = null;
+  try {
+    const googleSkill = await import("@workspace-skills/google-workspace");
+    google = await googleSkill.getGoogleOnboardingStatus();
+  } catch (error) {
+    google = { error: error instanceof Error ? error.message : String(error) };
+  }
+  let importHistory = [];
+  try {
+    const { browserData } = await import("@workspace/panel-browser");
+    importHistory = await browserData.getImportHistory();
+  } catch {
+    importHistory = [];
+  }
+  const panels = await fs.readdir("/panels").catch(() => []);
+  const providerIds = [...new Set(storedCredentials.map(c =>
+    String(c.metadata?.providerId ?? c.providerId ?? "unknown")
+  ))];
+
+  return {
+    workspaceCount: workspaces.length,
+    workspaceNames: workspaces.map(w => w.name),
+    active,
+    providerIds,
+    storedCredentialCount: storedCredentials.length,
+    google,
+    browserImportCount: importHistory.length,
+    panelCount: panels.length,
+  };
+`, timeout: 10000 })
 ```
 
-- **`count <= 1`** → new user. Start from Step 1, explain concepts thoroughly. Note: in IPC/remote mode `workspace.list()` may return `[]` even when an active workspace exists — treat `count === 0` with a valid `active` as a new user too.
-- **`count > 1`** → returning user. Greet them briefly, mention their active workspace, and ask what they need. Skip to whichever step is relevant, or point them to the right skill directly.
+- **`workspaceCount <= 1`** → new user. Start from Step 1, explain concepts thoroughly. Note: in IPC/remote mode `workspace.list()` may return `[]` even when an active workspace exists — treat `workspaceCount === 0` with a valid `active` as a new user too.
+- **`workspaceCount > 1`** → returning user. Greet them briefly, mention their active workspace, and ask what they need. Skip to whichever step is relevant, or point them to the right skill directly.
+- Use `providerIds`, Google status, `browserImportCount`, and `panelCount` to make the first recommendations specific.
 
 ## Step 1: Explore Your Workspace
 
@@ -43,7 +76,99 @@ Key directories:
 - `agents/` — agent definitions
 - `skills/` — skill documentation (like this one)
 
-## Step 2: Import Browser Data
+## Step 2: Recommend a First Setup Path
+
+After the workspace overview, ask what the user wants to do first. Present these
+as peer options. Prefer an MDX message with `ActionButton`s:
+
+```mdx
+I checked the workspace. Here are good next steps:
+
+<Flex gap="2" wrap="wrap">
+  <ActionButton message="Set up Google Workspace provider integration">
+    Google Workspace
+  </ActionButton>
+  <ActionButton message="Set up GitHub provider integration">
+    GitHub
+  </ActionButton>
+  <ActionButton message="Set up Slack provider integration">
+    Slack
+  </ActionButton>
+  <ActionButton message="Set up a model or API key provider">
+    Model/API key
+  </ActionButton>
+  <ActionButton message="Set up a custom OAuth or API provider">
+    Custom provider
+  </ActionButton>
+  <ActionButton message="Import browser data">
+    Browser import
+  </ActionButton>
+  <ActionButton message="Help me build a panel">
+    Build a panel
+  </ActionButton>
+</Flex>
+```
+
+If MDX is not available, use the same choices in a concise plain-text list:
+
+1. **Connect API providers** — set up Gmail, GitHub, Slack, or other provider
+   integrations through OAuth/credentials. This is available immediately and
+   does not require importing browser data.
+2. **Import browser data** — bring in cookies, bookmarks, passwords, or history
+   from Chrome/Firefox/etc. when they want local browser state in NatStack.
+3. **Build something** — scaffold and launch a panel app.
+4. **Organize workspaces** — create, fork, or switch workspaces.
+5. **Explore capabilities** — inspect runtime APIs and live examples.
+
+Only run browser import when the user chooses browser data or specifically needs
+local browser state. OAuth/API provider setup should go straight to the relevant
+provider setup flow.
+
+## Step 3: Set Up API Integrations (Credentials)
+
+API integrations use the credential system. See `docs/credential-system.md` for the current architecture and provider setup details.
+
+For Google Workspace, load the dedicated setup skill:
+
+```
+read("skills/google-workspace/SKILL.md")
+```
+
+Then use `getGoogleOnboardingStatus()` from
+`@workspace-skills/google-workspace` to detect state and guide the user through
+`skills/google-workspace/ONBOARDING.md` and the workflow UI in
+`skills/google-workspace/SETUP.md` when configuration is missing. Do not paste
+the Google Cloud setup checklist into chat as plain text; show the workflow UI
+with internal/external deep links.
+
+**Check if already configured:**
+
+```
+eval({ code: `
+  import { credentials } from "@workspace/runtime";
+  import {
+    formatGoogleOnboardingStatus,
+    getGoogleOnboardingStatus,
+  } from "@workspace-skills/google-workspace";
+  const storedCredentials = await credentials.listStoredCredentials();
+  const googleStatus = await getGoogleOnboardingStatus();
+  console.log(formatGoogleOnboardingStatus(googleStatus));
+  const providerIds = [...new Set(storedCredentials.map(c =>
+    String(c.metadata?.providerId ?? c.providerId ?? "unknown")
+  ))];
+  if (providerIds.length > 0 || googleStatus.connected) {
+    console.log("Configured providers:", [...new Set([
+      ...providerIds,
+      ...(googleStatus.connected ? ["google-workspace"] : []),
+    ])].join(", "));
+  } else {
+    console.log("No stored provider credentials are configured yet.");
+  }
+  return { configured: providerIds.length > 0 || googleStatus.connected, providerIds, googleStatus };
+`, timeout: 10000 })
+```
+
+## Step 4: Import Browser Data
 
 If the user wants to bring in their existing browser data (cookies for authentication, bookmarks, passwords), use the **browser-import** skill.
 
@@ -72,47 +197,7 @@ Then ask the user which browser/profile to import from and which data types they
 - [BOOKMARKS.md](../browser-import/BOOKMARKS.md) — bookmark browsing
 - [WORKFLOWS.md](../browser-import/WORKFLOWS.md) — end-to-end recipes
 
-## Step 3: Set Up API Integrations (Credentials)
-
-API integrations use the credential system. See `docs/credential-system.md` for the current architecture and provider setup details.
-
-For Google Workspace, load the dedicated setup skill:
-
-```
-read("skills/google-workspace/SKILL.md")
-```
-
-Then use `getGoogleOnboardingStatus()` from
-`@workspace-skills/google-workspace` to detect state and guide the user through
-`skills/google-workspace/ONBOARDING.md` and the workflow UI in
-`skills/google-workspace/SETUP.md` when configuration is missing. Do not paste
-the Google Cloud setup checklist into chat as plain text; show the workflow UI
-with internal/external deep links.
-
-**Check if already configured:**
-
-```
-eval({ code: `
-  import { credentials } from "@workspace/runtime";
-  import {
-    formatGoogleOnboardingStatus,
-    getGoogleOnboardingStatus,
-  } from "@workspace-skills/google-workspace";
-  const githubConnections = await credentials.listConnections("github");
-  const googleStatus = await getGoogleOnboardingStatus();
-  console.log(formatGoogleOnboardingStatus(googleStatus));
-  const googleConnections = googleStatus.connected ? [{ providerId: "google-workspace", connectionId: "configured" }] : [];
-  const connections = [...githubConnections, ...googleConnections];
-  if (connections.length > 0) {
-    console.log("Configured connections:", connections.map(c => c.providerId + ":" + c.connectionId).join(", "));
-  } else {
-    console.log("No GitHub or Google Workspace credentials are configured yet.");
-  }
-  return { configured: connections.length > 0, connections };
-`, timeout: 10000 })
-```
-
-## Step 4: Set Up a Workspace
+## Step 5: Set Up a Workspace
 
 If the user wants to organize their work into separate workspaces:
 
@@ -161,7 +246,7 @@ eval({ code: `
 ` })
 ```
 
-## Step 5: Create Your First Panel
+## Step 6: Create Your First Panel
 
 Use the **paneldev** skill to scaffold and launch a panel. See the `paneldev` skill for the full workflow:
 - [WORKFLOW.md](../paneldev/WORKFLOW.md) — step-by-step development process
@@ -188,7 +273,7 @@ eval({ code: `
 `, timeout: 30000 })
 ```
 
-## Step 6: Explore the Runtime
+## Step 7: Explore the Runtime
 
 Use the **sandbox** skill to learn what you can do from the chat panel:
 - [EVAL.md](../sandbox/EVAL.md) — running code in the sandbox
@@ -203,11 +288,11 @@ Not every user needs every step. Tailor the walkthrough:
 
 | User goal | Steps to focus on |
 |-----------|-------------------|
-| "I want to browse the web with my logins" | Steps 1, 2 (import cookies + sync) |
-| "I want to connect Gmail/Slack/GitHub" | Steps 1, 2, 3 (import cookies + OAuth setup) |
-| "I want to build an app" | Steps 1, 5 (scaffold + launch panel) |
-| "I want to organize my projects" | Steps 1, 4 (workspace management) |
-| "I want to see what this can do" | Steps 1, 6 (explore runtime APIs) |
+| "I want to browse the web with my logins" | Steps 1, 2, 4 (import cookies + sync) |
+| "I want to connect Gmail/Slack/GitHub" | Steps 1, 2, 3 (OAuth/API setup; no browser import required) |
+| "I want to build an app" | Steps 1, 2, 6 (scaffold + launch panel) |
+| "I want to organize my projects" | Steps 1, 2, 5 (workspace management) |
+| "I want to see what this can do" | Steps 1, 2, 7 (explore runtime APIs) |
 | "Set everything up" | All steps in order |
 
 Ask the user what they're most interested in and skip to the relevant section.

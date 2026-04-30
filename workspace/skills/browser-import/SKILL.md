@@ -114,7 +114,7 @@ interface StoredPassword {
 ```typescript
 interface DetectedBrowser {
   name: string;          // "chrome" | "firefox" | "safari" | etc.
-  family: string;        // "chromium" | "firefox" | "webkit"
+  family: string;        // "chromium" | "firefox" | "safari"
   displayName: string;   // "Google Chrome"
   version?: string;
   dataDir: string;       // path to browser data directory
@@ -178,13 +178,13 @@ Imported cookies are **automatically synced** to the shared browser session (`pe
 3. **Import**: `eval` → `startImport({ browser, profile, dataTypes })` → returns `ImportResult[]` (cookies auto-synced to browser session)
 4. **Show results**: `inline_ui` → interactive data managers (cookie table, password vault, etc.)
 5. **Verify**: `eval` → open browser panel, check authentication state
-6. **Suggest OAuth**: After a successful import, always ask the user if they'd like to set up OAuth for API access (Gmail, GitHub, Slack, etc.). Imported cookies make sign-in seamless. Load the `api-integrations` skill for the setup guide.
+6. **Offer API provider setup when relevant**: After a successful import, ask whether the user also wants direct API access for Gmail, GitHub, Slack, etc. Make clear this is optional and independent of browser import. Load the `api-integrations` skill for the provider setup guide.
 
-**Step 6 is important.** The whole point of importing cookies is often to enable authenticated API access. Don't just import and stop — proactively offer the next step:
+**Step 6 is optional.** Browser import is useful for local browser state, while API provider integrations use OAuth/credentials and can be set up with or without imported browser data. If the user seems to want automation against provider APIs, offer the next step:
 
-> "Your cookies are imported! Would you like to set up OAuth so I can access Gmail, GitHub, or other APIs on your behalf? Your imported cookies will make the sign-in process seamless."
+> "Your browser data is imported. If you want direct Gmail, GitHub, Slack, or other API access too, I can set up provider credentials next."
 
-If they say yes, load the `api-integrations` skill and follow its Prerequisites section. If OAuth is already configured, offer to connect to a provider right away using `openIn: "panel"` (their imported cookies will pre-authenticate the browser panel).
+If they say yes, load the `api-integrations` skill and follow its provider setup UI guidance. If credentials are already configured, use the relevant provider skill or credential flow directly.
 
 ## Environment Compatibility
 

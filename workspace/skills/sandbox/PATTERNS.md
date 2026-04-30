@@ -176,7 +176,7 @@ eval({
 })
 ```
 
-Works with any configured provider. Check `await credentials.listConnections()` to see what's available.
+Works with any configured provider. Check `await credentials.listStoredCredentials()` to see what's available.
 
 ## Import Cookies from Chrome
 
