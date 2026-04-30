@@ -89,6 +89,50 @@ describe("approvalQueue", () => {
     await expect(promise).resolves.toBe("once");
   });
 
+  it("can isolate one-shot capability approvals from concurrent waiters", async () => {
+    const { queue } = createQueue();
+    const first = queue.request({
+      kind: "capability",
+      dedupKey: null,
+      callerId: "panel:1",
+      callerKind: "panel",
+      repoPath: "panels/example",
+      effectiveVersion: "hash-1",
+      capability: "internal-git-write",
+      title: "Write project files",
+      resource: {
+        type: "git-repo",
+        label: "Repository",
+        value: "panels/target",
+      },
+    });
+    const second = queue.request({
+      kind: "capability",
+      dedupKey: null,
+      callerId: "panel:1",
+      callerKind: "panel",
+      repoPath: "panels/example",
+      effectiveVersion: "hash-1",
+      capability: "internal-git-write",
+      title: "Write project files",
+      resource: {
+        type: "git-repo",
+        label: "Repository",
+        value: "panels/target",
+      },
+    });
+
+    const pending = queue.listPending();
+    expect(pending).toHaveLength(2);
+
+    queue.resolve(pending[0]!.approvalId, "once");
+    await expect(first).resolves.toBe("once");
+    expect(queue.listPending()).toHaveLength(1);
+
+    queue.resolve(queue.listPending()[0]!.approvalId, "deny");
+    await expect(second).resolves.toBe("deny");
+  });
+
   it("supports OAuth client config approvals with submitted field values", async () => {
     const { queue } = createQueue();
     const promise = queue.requestOAuthClientConfig({

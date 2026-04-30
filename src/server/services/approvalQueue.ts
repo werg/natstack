@@ -1,7 +1,9 @@
 /**
- * Approval queue for shell-owned consent prompts.
+ * Sensitive action queue for shell-owned prompts.
  *
- * Approval queue for shell-owned credential prompts.
+ * Despite the historical ApprovalQueue name, this queue handles more than
+ * access approvals: one-shot actions, reusable permission grants, and
+ * privileged setup prompts all share this user-decision rendezvous point.
  */
 
 import { randomUUID } from "node:crypto";
@@ -43,6 +45,12 @@ export interface CredentialApprovalQueueRequest extends ApprovalQueueRequestBase
 export interface CapabilityApprovalQueueRequest extends ApprovalQueueRequestBase {
   kind: "capability";
   capability: string;
+  /**
+   * Override pending-request deduplication for capability prompts. `null`
+   * isolates this request so a one-shot approval cannot release unrelated
+   * waiters for the same resource.
+   */
+  dedupKey?: string | null;
   title: string;
   description?: string;
   resource?: PendingCapabilityApproval["resource"];
@@ -96,6 +104,8 @@ export interface ApprovalQueue {
   listPending(): PendingApproval[];
 }
 
+export type SensitiveActionQueue = ApprovalQueue;
+
 export function createApprovalQueue(deps: { eventService: EventService }): ApprovalQueue {
   const { eventService } = deps;
   const entriesById = new Map<string, QueueEntry>();
@@ -113,6 +123,12 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
 
   function dedupKeyFor(req: ApprovalQueueRequest): string {
     if (req.kind === "capability") {
+      if (req.dedupKey === null) {
+        return ["capability-isolated", randomUUID()].join("\x00");
+      }
+      if (req.dedupKey) {
+        return ["capability-custom", req.dedupKey].join("\x00");
+      }
       return [
         "capability",
         req.repoPath,

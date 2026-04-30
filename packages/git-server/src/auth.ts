@@ -1,8 +1,9 @@
 /**
  * Git authentication and authorization.
  *
- * GitAuthManager wraps a TokenManager to enforce per-panel push access
- * based on repo path ownership rules.
+ * GitAuthManager wraps a TokenManager for authentication only: bearer tokens
+ * identify the caller. Host-side permission grants decide whether that caller
+ * may perform sensitive writes.
  */
 
 import type { TokenManagerLike } from "./types.js";
@@ -93,18 +94,18 @@ export class GitAuthManager {
     token: string,
     repoPath: string,
     operation: "fetch" | "push"
-  ): { valid: boolean; reason?: string } {
+  ): { valid: boolean; reason?: string; callerId?: string; callerKind?: string } {
     const entry = this.tokenManager.validateToken(token);
-    const panelId = entry?.callerId ?? null;
-    if (!panelId) {
+    if (!entry?.callerId) {
       return { valid: false, reason: "Invalid token" };
     }
+    const panelId = entry.callerId;
 
     const accessResult = this.canAccess(panelId, repoPath, operation);
     if (!accessResult.allowed) {
       return { valid: false, reason: accessResult.reason };
     }
 
-    return { valid: true };
+    return { valid: true, callerId: entry.callerId, callerKind: entry.callerKind };
   }
 }

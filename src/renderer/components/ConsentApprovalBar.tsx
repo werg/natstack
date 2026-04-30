@@ -622,6 +622,9 @@ function getApprovalCategoryLabel(approval: PendingApproval): string {
   if (approval.kind === "oauth-client-config") {
     return "Service setup";
   }
+  if (approval.capability === "internal-git-write") {
+    return "Write request";
+  }
   return isOAuthExternalApproval(approval) ? "Sign-in action" : "Browser action";
 }
 
@@ -650,6 +653,15 @@ function getStandardActionCopy(approval: PendingCredentialApproval | PendingCapa
       denyDescription: "Do not open this sign-in flow.",
     };
   }
+  if (approval.capability === "internal-git-write") {
+    return {
+      once: { label: "Write once", description: "Allow this git write once." },
+      session: { label: "Write this session", description: "Allow writes to this repository until NatStack restarts." },
+      version: { label: "Trust version", description: "Allow this code version to write to this repository." },
+      repo: { label: "Trust repo", description: "Allow this workspace project to write to this repository." },
+      denyDescription: "Do not allow this git write.",
+    };
+  }
   return {
     once: { label: "Open once", description: "Open this browser action once." },
     session: { label: "Open this session", description: "Allow this browser origin until NatStack restarts." },
@@ -665,6 +677,13 @@ function getApprovalCopy(
 ): { title: string; summary: string; warning?: string } {
   const requester = `${callerLabel} ${approval.callerId}`;
   if (approval.kind === "capability") {
+    if (approval.capability === "internal-git-write") {
+      const destination = approval.resource?.value ?? "this repository";
+      return {
+        title: "Write project files",
+        summary: `${requester} wants to push changes to ${destination}.`,
+      };
+    }
     const isOAuth = isOAuthExternalApproval(approval);
     const destination = formatCapabilityDestination(approval, isOAuth);
     if (isOAuth) {

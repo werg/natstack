@@ -19,4 +19,7 @@ export type {
   GitWatcherLike,
   GitHubProxyConfig,
   TokenManagerLike,
+  GitWriteAuthorizationRequest,
+  GitWriteAuthorizationResult,
+  GitWriteAuthorizer,
 } from "./types.js";

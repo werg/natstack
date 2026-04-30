@@ -4,9 +4,10 @@ import { assertAllowedOAuthExternalUrl } from "@natstack/shared/externalOpen";
 import type { OpenExternalOptions } from "@natstack/shared/externalOpen";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
-import type { ApprovalQueue, GrantedDecision } from "./approvalQueue.js";
-import type { CapabilityGrantIdentity, CapabilityGrantStore } from "./capabilityGrantStore.js";
+import type { ApprovalQueue } from "./approvalQueue.js";
+import type { CapabilityGrantStore } from "./capabilityGrantStore.js";
 import type { CodeIdentityResolver } from "./codeIdentityResolver.js";
+import { requestCapabilityPermission } from "./capabilityPermission.js";
 
 const CAPABILITY = "external-browser-open";
 const OPEN_EXTERNAL_ALLOWED_SCHEMES = new Set(["http:", "https:", "mailto:"]);
@@ -28,20 +29,27 @@ export function createExternalOpenService(deps: ExternalOpenServiceDeps): Servic
       assertAllowedOAuthExternalUrl(url.toString(), options.expectedRedirectUri);
     }
     const resource = resourceForExternalUrl(url);
-    const identity = resolveIdentity(ctx, deps.codeIdentityResolver);
 
     if (ctx.callerKind === "panel" || ctx.callerKind === "worker") {
-      if (!deps.grantStore || !deps.approvalQueue) {
+      if (!deps.grantStore || !deps.approvalQueue || !deps.codeIdentityResolver) {
         throw new Error("External browser open approval is unavailable");
       }
-      if (!deps.grantStore.hasGrant(CAPABILITY, resource.key, identity)) {
-        const decision = await requestApproval(ctx, url, options, resource, identity, deps.approvalQueue);
-        if (decision === "deny") {
-          throw new Error("External browser open denied");
-        }
-        if (decision !== "once") {
-          deps.grantStore.grant(CAPABILITY, resource.key, identity, decision);
-        }
+      const authorization = await requestCapabilityPermission({
+        approvalQueue: deps.approvalQueue,
+        grantStore: deps.grantStore,
+        codeIdentityResolver: deps.codeIdentityResolver,
+      }, {
+        callerId: ctx.callerId,
+        callerKind: ctx.callerKind,
+        capability: CAPABILITY,
+        resource,
+        title: "Open external browser",
+        description: "Allow this code to open URLs in the system browser.",
+        details: externalOpenDetails(url, options),
+        deniedReason: "External browser open denied",
+      });
+      if (!authorization.allowed) {
+        throw new Error(authorization.reason ?? "External browser open denied");
       }
     }
 
@@ -111,53 +119,19 @@ function normalizeExternalUrl(rawUrl: string): URL {
   return url;
 }
 
-function resourceForExternalUrl(url: URL): { key: string; label: string; value: string } {
+function resourceForExternalUrl(url: URL): { key: string; type: string; label: string; value: string } {
   if (url.protocol === "mailto:") {
-    return { key: "mailto:", label: "Scheme", value: "mailto:" };
+    return { key: "mailto:", type: "url-origin", label: "Scheme", value: "mailto:" };
   }
-  return { key: url.origin, label: "Origin", value: url.origin };
+  return { key: url.origin, type: "url-origin", label: "Origin", value: url.origin };
 }
 
-function resolveIdentity(
-  ctx: ServiceContext,
-  codeIdentityResolver: ExternalOpenServiceDeps["codeIdentityResolver"],
-): CapabilityGrantIdentity {
-  const identity = codeIdentityResolver?.resolveByCallerId(ctx.callerId);
-  return {
-    repoPath: identity?.repoPath ?? ctx.callerId,
-    effectiveVersion: identity?.effectiveVersion ?? "unknown",
-  };
-}
-
-async function requestApproval(
-  ctx: ServiceContext,
-  url: URL,
-  options: OpenExternalOptions | undefined,
-  resource: { key: string; label: string; value: string },
-  identity: CapabilityGrantIdentity,
-  approvalQueue: ApprovalQueue,
-): Promise<GrantedDecision> {
+function externalOpenDetails(url: URL, options: OpenExternalOptions | undefined): Array<{ label: string; value: string }> {
   const details = [
     { label: "URL", value: url.toString() },
   ];
   if (options?.expectedRedirectUri) {
     details.push({ label: "OAuth callback", value: options.expectedRedirectUri });
   }
-
-  return approvalQueue.request({
-    kind: "capability",
-    callerId: ctx.callerId,
-    callerKind: ctx.callerKind as "panel" | "worker",
-    repoPath: identity.repoPath,
-    effectiveVersion: identity.effectiveVersion,
-    capability: CAPABILITY,
-    title: "Open external browser",
-    description: "Allow this code to open URLs in the system browser.",
-    resource: {
-      type: "url-origin",
-      label: resource.label,
-      value: resource.value,
-    },
-    details,
-  });
+  return details;
 }

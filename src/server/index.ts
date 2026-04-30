@@ -434,10 +434,16 @@ async function main() {
       ? (explicitDevTarget || undefined)
       : (isSourceRun && templateDiffersFromActive ? templateDir : undefined);
 
+  const { createGitWriteAuthorizer } = await import("./services/gitWritePermission.js");
   const gitServer = new GitServer(tokenManager, {
     port: workspaceConfig.git?.port,
     reposPath: workspacePath,
     devTargetDir,
+    writeAuthorizer: createGitWriteAuthorizer({
+      approvalQueue,
+      grantStore: capabilityGrantStore,
+      codeIdentityResolver,
+    }),
     github: {
       ...githubConfig,
       token: githubConfig?.token ?? process.env["GITHUB_TOKEN"],
@@ -569,7 +575,14 @@ async function main() {
       },
     });
   }
-  container.register(rpcService(createGitService({ gitServer, tokenManager, workspacePath }), ["gitServer"]));
+  container.register(rpcService(createGitService({
+    gitServer,
+    tokenManager,
+    workspacePath,
+    approvalQueue,
+    grantStore: capabilityGrantStore,
+    codeIdentityResolver,
+  }), ["gitServer"]));
   container.register(rpcService(createTestService({ contextFolderManager, workspacePath, panelTestSetupPath })));
   {
     const { createWorkerLogService } = await import("./services/workerLogService.js");

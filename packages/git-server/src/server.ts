@@ -7,7 +7,15 @@ import { execFile, spawn, spawnSync } from "child_process";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("GitServer");
-import type { WorkspaceTree, BranchInfo, CommitInfo, GitWatcherLike, GitHubProxyConfig, TokenManagerLike } from "./types.js";
+import type {
+  WorkspaceTree,
+  BranchInfo,
+  CommitInfo,
+  GitWatcherLike,
+  GitHubProxyConfig,
+  TokenManagerLike,
+  GitWriteAuthorizer,
+} from "./types.js";
 import { GitAuthManager } from "./auth.js";
 import * as net from "net";
 import {
@@ -67,6 +75,12 @@ export interface GitServerConfig {
    * to `<devTargetDir>/<repo>/`, keeping a dev template directory in sync.
    */
   devTargetDir?: string;
+  /**
+   * Host permission gate for pushes. Authentication identifies the caller;
+   * this authorizer decides whether that caller may write this repo. Pushes
+   * fail closed when no authorizer is configured.
+   */
+  writeAuthorizer?: GitWriteAuthorizer;
 }
 
 export class GitServer {
@@ -86,6 +100,7 @@ export class GitServer {
 
   // Dev target directory for mirroring pushes
   private devTargetDir: string | null;
+  private writeAuthorizer: GitWriteAuthorizer | null;
 
   // GitHub proxy configuration
   private githubConfig: {
@@ -105,6 +120,7 @@ export class GitServer {
     this.configuredReposPath = config?.reposPath ?? null;
     this.initPatterns = config?.initPatterns ?? ["panels/*", "packages/*"];
     this.devTargetDir = config?.devTargetDir ?? null;
+    this.writeAuthorizer = config?.writeAuthorizer ?? null;
     this.authManager = new GitAuthManager(tokenManager);
 
     if (config?.github) {
@@ -199,12 +215,45 @@ export class GitServer {
         const operation: "fetch" | "push" = type === "push" ? "push" : "fetch";
         const result = this.authManager.validateAccess(token, repo, operation);
 
-        if (result.valid) {
-          next();
-        } else {
+        if (!result.valid) {
           log.verbose(` Auth failed for ${operation} on ${repo}: ${result.reason}`);
           next(new Error(result.reason || "Authentication failed"));
+          return;
         }
+
+        if (operation !== "push") {
+          next();
+          return;
+        }
+        if (!this.writeAuthorizer) {
+          next(new Error("Git write permission unavailable"));
+          return;
+        }
+        if (!result.callerId) {
+          next(new Error("Authenticated git caller is missing"));
+          return;
+        }
+
+        const repoPath = this.normalizePath(repo);
+        Promise.resolve(this.writeAuthorizer({
+          callerId: result.callerId,
+          callerKind: result.callerKind ?? "panel",
+          repoPath,
+        }))
+          .then((authorization) => {
+            if (authorization.allowed) {
+              next();
+              return;
+            }
+            const reason = authorization.reason || "Git write permission denied";
+            log.verbose(` Write permission denied for ${result.callerId} on ${repoPath}: ${reason}`);
+            next(new Error(reason));
+          })
+          .catch((error: unknown) => {
+            const reason = error instanceof Error ? error.message : String(error);
+            log.verbose(` Write permission check failed for ${result.callerId} on ${repoPath}: ${reason}`);
+            next(new Error(reason || "Git write permission check failed"));
+          });
       },
     });
 

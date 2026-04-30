@@ -48,3 +48,18 @@ export interface TokenManagerLike {
   revokeToken(callerId: string): boolean;
   validateToken(token: string): { callerId: string; callerKind: string } | null;
 }
+
+export interface GitWriteAuthorizationRequest {
+  callerId: string;
+  callerKind: string;
+  repoPath: string;
+}
+
+export interface GitWriteAuthorizationResult {
+  allowed: boolean;
+  reason?: string;
+}
+
+export type GitWriteAuthorizer = (
+  request: GitWriteAuthorizationRequest,
+) => Promise<GitWriteAuthorizationResult> | GitWriteAuthorizationResult;
