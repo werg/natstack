@@ -85,8 +85,8 @@ describe("approvalQueue", () => {
       title: "Open external browser",
       capability: "external-browser-open",
     });
-    queue.resolve(queue.listPending()[0]!.approvalId, "session");
-    await expect(promise).resolves.toBe("session");
+    queue.resolve(queue.listPending()[0]!.approvalId, "once");
+    await expect(promise).resolves.toBe("once");
   });
 
   it("supports OAuth client config approvals with submitted field values", async () => {

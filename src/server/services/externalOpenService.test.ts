@@ -86,6 +86,30 @@ describe("externalOpenService", () => {
     expect(approvalQueue.request).toHaveBeenCalledTimes(1);
   });
 
+  it("does not reuse allow-once browser approvals", async () => {
+    const eventService = new EventService();
+    const approvalQueue = createApprovalQueueMock();
+    vi.mocked(approvalQueue.request).mockResolvedValue("once");
+    const service = createExternalOpenService({
+      eventService,
+      approvalQueue,
+      grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
+      codeIdentityResolver: {
+        resolveByCallerId: (callerId) => ({
+          callerId,
+          callerKind: "worker",
+          repoPath: "workers/example",
+          effectiveVersion: "version-1",
+        }),
+      },
+    });
+
+    await service.handler({ callerId: "worker-1", callerKind: "worker" }, "openExternal", ["https://example.com/a"]);
+    await service.handler({ callerId: "worker-1", callerKind: "worker" }, "openExternal", ["https://example.com/b"]);
+
+    expect(approvalQueue.request).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects non-browser schemes", async () => {
     const service = createExternalOpenService({ eventService: new EventService() });
 

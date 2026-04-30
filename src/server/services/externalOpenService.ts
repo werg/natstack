@@ -39,7 +39,9 @@ export function createExternalOpenService(deps: ExternalOpenServiceDeps): Servic
         if (decision === "deny") {
           throw new Error("External browser open denied");
         }
-        deps.grantStore.grant(CAPABILITY, resource.key, identity, decision);
+        if (decision !== "once") {
+          deps.grantStore.grant(CAPABILITY, resource.key, identity, decision);
+        }
       }
     }
 

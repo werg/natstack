@@ -1,6 +1,6 @@
 import type { AccountIdentity, CredentialInjection, UrlAudience } from "./credentials/types.js";
 
-export type ApprovalDecision = "session" | "version" | "repo" | "deny" | "dismiss";
+export type ApprovalDecision = "once" | "session" | "version" | "repo" | "deny" | "dismiss";
 export type ApprovalConfigFieldType = "text" | "secret";
 
 export interface PendingApprovalBase {

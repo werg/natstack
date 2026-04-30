@@ -123,7 +123,7 @@ export function ConsentApprovalBar() {
           <Flex direction="column" gap="1" style={{ minWidth: 0, flex: 1 }}>
             <Flex align="center" gap="2" wrap="wrap" style={{ minWidth: 0 }}>
               <Badge color="amber" variant="soft">
-                Approval needed
+                {getApprovalCategoryLabel(current)}
               </Badge>
               <Text size="2" weight="medium">
                 {copy.title}
@@ -179,14 +179,21 @@ export function ConsentApprovalBar() {
             onDismiss={() => decide("dismiss")}
           />
         ) : (
-          <StandardApprovalActions decide={decide} />
+          <StandardApprovalActions approval={current} decide={decide} />
         )}
       </Flex>
     </Box>
   );
 }
 
-function StandardApprovalActions({ decide }: { decide: (decision: ApprovalDecision) => void }) {
+function StandardApprovalActions({
+  approval,
+  decide,
+}: {
+  approval: PendingCredentialApproval | PendingCapabilityApproval;
+  decide: (decision: ApprovalDecision) => void;
+}) {
+  const copy = getStandardActionCopy(approval);
   return (
     <Flex
       align="center"
@@ -201,24 +208,29 @@ function StandardApprovalActions({ decide }: { decide: (decision: ApprovalDecisi
       }}
     >
       <DecisionButton
-        label="Allow session"
-        description="Temporary; clears when NatStack restarts."
+        label={copy.once.label}
+        description={copy.once.description}
         variant="solid"
+        onClick={() => decide("once")}
+      />
+      <DecisionButton
+        label={copy.session.label}
+        description={copy.session.description}
         onClick={() => decide("session")}
       />
       <DecisionButton
-        label="Trust version"
-        description="Reuse for this exact code version."
+        label={copy.version.label}
+        description={copy.version.description}
         onClick={() => decide("version")}
       />
       <DecisionButton
-        label="Trust repo"
-        description="Reuse for this workspace."
+        label={copy.repo.label}
+        description={copy.repo.description}
         onClick={() => decide("repo")}
       />
       <DecisionButton
         label="Deny"
-        description="Do not grant this request."
+        description={copy.denyDescription}
         color="red"
         icon={<CrossCircledIcon />}
         style={{ marginLeft: 6 }}
@@ -601,6 +613,50 @@ function InlineCode({ children }: { children: ReactNode }) {
       {children}
     </Code>
   );
+}
+
+function getApprovalCategoryLabel(approval: PendingApproval): string {
+  if (approval.kind === "credential") {
+    return "Access request";
+  }
+  if (approval.kind === "oauth-client-config") {
+    return "Service setup";
+  }
+  return isOAuthExternalApproval(approval) ? "Sign-in action" : "Browser action";
+}
+
+function getStandardActionCopy(approval: PendingCredentialApproval | PendingCapabilityApproval): {
+  once: { label: string; description: string };
+  session: { label: string; description: string };
+  version: { label: string; description: string };
+  repo: { label: string; description: string };
+  denyDescription: string;
+} {
+  if (approval.kind === "credential") {
+    return {
+      once: { label: "Use once", description: "Use this service for this request only." },
+      session: { label: "Use this session", description: "Reuse this service until NatStack restarts." },
+      version: { label: "Trust version", description: "Reuse this service for this exact code version." },
+      repo: { label: "Trust repo", description: "Reuse this service for this workspace." },
+      denyDescription: "Do not use this service.",
+    };
+  }
+  if (isOAuthExternalApproval(approval)) {
+    return {
+      once: { label: "Connect once", description: "Open this sign-in flow once." },
+      session: { label: "Connect this session", description: "Allow this sign-in origin until NatStack restarts." },
+      version: { label: "Trust version", description: "Allow this sign-in origin for this exact code version." },
+      repo: { label: "Trust repo", description: "Allow this sign-in origin for this workspace." },
+      denyDescription: "Do not open this sign-in flow.",
+    };
+  }
+  return {
+    once: { label: "Open once", description: "Open this browser action once." },
+    session: { label: "Open this session", description: "Allow this browser origin until NatStack restarts." },
+    version: { label: "Trust version", description: "Allow this browser origin for this exact code version." },
+    repo: { label: "Trust repo", description: "Allow this browser origin for this workspace." },
+    denyDescription: "Do not open this site.",
+  };
 }
 
 function getApprovalCopy(

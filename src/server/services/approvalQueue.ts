@@ -17,7 +17,7 @@ import type {
 import type { AccountIdentity, CredentialInjection, UrlAudience } from "@natstack/shared/credentials/types";
 
 /** Terminal decision surfaced back to queue waiters (dismiss collapses to deny). */
-export type GrantedDecision = "session" | "version" | "repo" | "deny";
+export type GrantedDecision = "once" | "session" | "version" | "repo" | "deny";
 
 interface ApprovalQueueRequestBase {
   callerId: string;

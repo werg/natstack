@@ -275,7 +275,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       owner,
       audience,
       injection,
-      allowedCallers: approvalDecision === "session"
+      allowedCallers: approvalDecision === "session" || approvalDecision === "once"
         ? []
         : [grantForDecision(ctx.callerId, approvalIdentity, approvalDecision, now)],
       providerId: "url-bound",
@@ -671,7 +671,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       identity: { repoPath: string; effectiveVersion: string };
       metadata?: Record<string, string>;
     },
-  ): Promise<GrantedDecision> {
+  ): Promise<Exclude<GrantedDecision, "deny">> {
     if (!approvalQueue || (ctx.callerKind !== "panel" && ctx.callerKind !== "worker")) {
       return "session";
     }
@@ -751,6 +751,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     });
     if (decision === "deny") {
       throw new Error("Credential approval denied");
+    }
+    if (decision === "once") {
+      return;
     }
     const now = Date.now();
     if (decision === "session") {
@@ -955,7 +958,7 @@ function canCallerUseCredential(ctx: ServiceContext, credential: Credential): bo
 function grantForDecision(
   callerId: string,
   identity: { repoPath: string; effectiveVersion: string },
-  decision: GrantedDecision,
+  decision: Exclude<GrantedDecision, "deny" | "once" | "session">,
   grantedAt: number,
 ): { callerId: string; grantedAt: number; grantedBy: string } {
   if (decision === "repo") {

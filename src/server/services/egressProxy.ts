@@ -466,6 +466,9 @@ export class EgressProxy {
     if (decision === "deny") {
       throw new ForwardRejection(403, "credential-caller-not-granted", "credential-caller-not-granted");
     }
+    if (decision === "once") {
+      return;
+    }
     if (decision === "session") {
       this.sessionGrantStore.grant(credential.id, attribution);
       return;
@@ -781,7 +784,7 @@ function recordCircuitFailure(circuits: Map<string, CircuitState>, key: string):
 function grantForDecision(
   callerId: string,
   attribution: RequestAttribution,
-  decision: GrantedDecision,
+  decision: Exclude<GrantedDecision, "deny" | "once" | "session">,
   grantedAt: number,
 ): { callerId: string; grantedAt: number; grantedBy: string } {
   if (decision === "repo") {

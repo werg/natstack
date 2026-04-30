@@ -256,6 +256,51 @@ describe("credentialService", () => {
     expect(approvalQueue.request).toHaveBeenCalledTimes(2);
   });
 
+  it("does not persist allow-once credential access approvals", async () => {
+    const store = new MemoryCredentialStore();
+    const approvalQueue = {
+      request: vi.fn(async () => "once" as const),
+      resolve: vi.fn(),
+      listPending: vi.fn(() => []),
+    };
+    const service = createCredentialService({
+      credentialStore: store as never,
+      approvalQueue: approvalQueue as never,
+      sessionGrantStore: new CredentialSessionGrantStore(),
+      codeIdentityResolver: {
+        resolveByCallerId: (callerId: string) => callerId === "worker:owner"
+          ? { callerId, callerKind: "worker", repoPath: "/owner", effectiveVersion: "hash-1" }
+          : { callerId, callerKind: "worker", repoPath: "/consumer", effectiveVersion: "hash-1" },
+      },
+    });
+
+    const stored = await service.handler(
+      { callerId: "worker:owner", callerKind: "worker" },
+      "storeCredential",
+      [{
+        label: "Example API",
+        audience: [{ url: "https://api.example.test/", match: "origin" }],
+        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        material: { type: "bearer-token", token: "secret-token" },
+      }],
+    ) as StoredCredentialSummary;
+    approvalQueue.request.mockClear();
+
+    await service.handler(
+      { callerId: "worker:consumer", callerKind: "worker" },
+      "resolveCredential",
+      [{ url: "https://api.example.test/v1" }],
+    );
+    await service.handler(
+      { callerId: "worker:consumer", callerKind: "worker" },
+      "resolveCredential",
+      [{ url: "https://api.example.test/v1" }],
+    );
+
+    expect(approvalQueue.request).toHaveBeenCalledTimes(2);
+    expect((await store.loadUrlBound(stored.id))?.allowedCallers).toEqual([]);
+  });
+
   it("creates URL-bound credentials through generic OAuth PKCE and discards refresh tokens", async () => {
     const store = new MemoryCredentialStore();
     const service = createCredentialService({ credentialStore: store as never });
