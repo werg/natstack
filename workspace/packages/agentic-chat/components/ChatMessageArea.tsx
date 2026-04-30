@@ -31,7 +31,9 @@ export function ChatMessageArea({ renderMessage, renderInlineGroup }: ChatMessag
   } = useChatContext();
 
   const mdxActions = useMemo(() => ({
-    publishMessage: (content: string) => chat.publish("message", { content }),
+    publishMessage: async (content: string) => {
+      await chat.publish("message", { content });
+    },
   }), [chat]);
 
   return (
