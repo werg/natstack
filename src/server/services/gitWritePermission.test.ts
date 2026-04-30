@@ -14,8 +14,10 @@ function createApprovalQueueMock(decision: Awaited<ReturnType<ApprovalQueue["req
   return {
     request: vi.fn(async () => decision),
     requestOAuthClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+    requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
     resolve: vi.fn(),
     submitOAuthClientConfig: vi.fn(),
+    submitCredentialInput: vi.fn(),
     listPending: vi.fn(() => []),
   };
 }

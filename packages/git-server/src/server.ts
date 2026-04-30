@@ -12,21 +12,11 @@ import type {
   BranchInfo,
   CommitInfo,
   GitWatcherLike,
-  GitHubProxyConfig,
   TokenManagerLike,
   GitWriteAuthorizer,
 } from "./types.js";
 import { GitAuthManager } from "./auth.js";
 import * as net from "net";
-import {
-  parseGitHubPath,
-  isGitHubPath,
-  toGitHubRelativePath,
-  toGitHubUrl,
-  ensureGitHubRepo,
-  errorTypeToHttpStatus,
-  isGitRepo,
-} from "./githubCloner.js";
 import { WorkspaceTreeManager } from "./git/workspaceTree.js";
 
 const DEFAULT_GIT_SERVER_PORT = 63524;
@@ -68,8 +58,6 @@ export interface GitServerConfig {
   reposPath?: string;
   /** Glob patterns for directories to initialize as git repos (e.g., ["panels/*"]) */
   initPatterns?: string[];
-  /** GitHub proxy configuration for transparent cloning */
-  github?: GitHubProxyConfig;
   /**
    * When set, every push mirrors the updated working tree (excluding .git)
    * to `<devTargetDir>/<repo>/`, keeping a dev template directory in sync.
@@ -102,19 +90,6 @@ export class GitServer {
   private devTargetDir: string | null;
   private writeAuthorizer: GitWriteAuthorizer | null;
 
-  // GitHub proxy configuration
-  private githubConfig: {
-    enabled: boolean;
-    token?: string;
-    getToken?: () => string | undefined;
-    depth: number;
-  } = {
-    enabled: true,
-    token: undefined,
-    getToken: undefined,
-    depth: 1,
-  };
-
   constructor(tokenManager: TokenManagerLike, config?: GitServerConfig) {
     this.configuredPort = config?.port ?? DEFAULT_GIT_SERVER_PORT;
     this.configuredReposPath = config?.reposPath ?? null;
@@ -122,19 +97,6 @@ export class GitServer {
     this.devTargetDir = config?.devTargetDir ?? null;
     this.writeAuthorizer = config?.writeAuthorizer ?? null;
     this.authManager = new GitAuthManager(tokenManager);
-
-    if (config?.github) {
-      this.githubConfig = {
-        enabled: config.github.enabled ?? true,
-        token: config.github.token,
-        getToken: config.github.getToken,
-        depth: config.github.depth ?? 1,
-      };
-    }
-  }
-
-  private getGitHubToken(): string | undefined {
-    return this.githubConfig.getToken?.() ?? this.githubConfig.token;
   }
 
   private getTreeManager(): WorkspaceTreeManager {
@@ -260,14 +222,6 @@ export class GitServer {
     // Handle push events
     this.git.on("push", (push) => {
       const pushRepo = push.repo.replace(/^\/+/, "").replace(/\.git(\/.*)?$/, "").replace(/\/+$/, "");
-      const pushBranch = push.branch.replace(/^refs\/heads\//, "");
-
-      // Reject pushes to main/master on GitHub repos — force agents to create branches
-      if (isGitHubPath(pushRepo) && (pushBranch === "main" || pushBranch === "master")) {
-        log.verbose(` Rejected push to ${pushRepo}/${pushBranch} — create a branch instead`);
-        push.reject(403, `Pushes to ${pushBranch} are not allowed on GitHub repos. Create a branch instead.`);
-        return;
-      }
 
       // Ensure repo allows pushes to checked-out branches (may be auto-created
       // by node-git-server, which doesn't set this config)
@@ -303,13 +257,8 @@ export class GitServer {
             }
 
             // Mirror working tree to dev target directory (if configured)
-            if (this.devTargetDir && !isGitHubPath(repo)) {
+            if (this.devTargetDir) {
               this.syncToDevTarget(repo, repoDir);
-            }
-
-            // Push to upstream GitHub remote (if this is a GitHub-cloned repo)
-            if (isGitHubPath(repo) && this.getGitHubToken()) {
-              this.pushToUpstream(repoDir, branch);
             }
 
             // Emit push event after checkout so listeners see the updated working tree
@@ -347,20 +296,6 @@ export class GitServer {
         res.writeHead(200);
         res.end();
         return;
-      }
-
-      // Check if this is a GitHub path that might need cloning
-      if (this.githubConfig.enabled && req.url) {
-        const urlPath = req.url.split("?")[0] ?? "";
-        const repoPath = this.normalizePath(urlPath);
-
-        if (isGitHubPath(repoPath)) {
-          const handled = await this.handleGitHubRequest(repoPath, res);
-          if (!handled) {
-            // Error response already sent
-            return;
-          }
-        }
       }
 
       git.handle(req, res);
@@ -572,34 +507,6 @@ export class GitServer {
     );
   }
 
-  /**
-   * Push a branch to the upstream GitHub remote.
-   * Uses the same credential helper pattern as clone.
-   * Runs async — errors are logged but don't block.
-   */
-  private pushToUpstream(repoDir: string, branch: string): void {
-    const token = this.getGitHubToken();
-    const env: NodeJS.ProcessEnv = { ...process.env };
-    if (token) {
-      env["GIT_USERNAME"] = token;
-      env["GIT_PASSWORD"] = "x-oauth-basic";
-    }
-
-    // Push the branch to origin (the GitHub remote set during clone)
-    const args = [
-      "-c", "credential.helper=!f() { echo username=$GIT_USERNAME; echo password=$GIT_PASSWORD; }; f",
-      "push", "origin", `refs/heads/${branch}`,
-    ];
-
-    execFile("git", args, { cwd: repoDir, env }, (err) => {
-      if (err) {
-        log.verbose(` Upstream push failed for ${branch}: ${err.message}`);
-      } else {
-        log.verbose(` Pushed ${branch} to upstream GitHub`);
-      }
-    });
-  }
-
   // ===========================================================================
   // GitWatcher Integration
   // ===========================================================================
@@ -646,74 +553,6 @@ export class GitServer {
 
   private normalizePath(p: string): string {
     return this.getTreeManager().normalizePath(p);
-  }
-
-  // ===========================================================================
-  // GitHub Proxy (Transparent Cloning)
-  // ===========================================================================
-
-  /**
-   * Handle a GitHub repository request, cloning if necessary.
-   *
-   * This enables transparent access to GitHub repos via paths like:
-   *   github.com/owner/repo
-   *
-   * If the repo isn't already cloned locally, it will be fetched from GitHub.
-   *
-   * @returns true if the request should continue to git.handle(), false if handled/errored
-   */
-  private async handleGitHubRequest(
-    repoPath: string,
-    res: http.ServerResponse
-  ): Promise<boolean> {
-    const spec = parseGitHubPath(repoPath);
-    if (!spec) {
-      // Not a valid GitHub path - let it fail normally
-      return true;
-    }
-
-    const relPath = toGitHubRelativePath(spec);
-    const targetPath = path.join(this.ensureReposPath(), relPath);
-
-    // Fast path: already cloned and discovered
-    if (this.getTreeManager().discoveredRepoPaths.has(relPath)) {
-      return true;
-    }
-
-    // Check if it exists on disk but wasn't discovered yet
-    if (isGitRepo(targetPath)) {
-      this.getTreeManager().discoveredRepoPaths.add(relPath);
-      return true;
-    }
-
-    // Need to clone from GitHub
-    log.verbose(` Cloning GitHub repo: ${spec.owner}/${spec.repo}`);
-
-    const remoteUrl = toGitHubUrl(spec);
-    const result = await ensureGitHubRepo({
-      targetPath,
-      remoteUrl,
-      token: this.getGitHubToken(),
-      depth: this.githubConfig.depth,
-    });
-
-    if (!result.success) {
-      const status = errorTypeToHttpStatus(result.errorType ?? "unknown");
-      res.writeHead(status, { "Content-Type": "text/plain" });
-      res.end(`Failed to clone GitHub repository: ${result.error}`);
-      return false;
-    }
-
-    // Add to discovered paths so validation passes
-    this.getTreeManager().discoveredRepoPaths.add(relPath);
-
-    // Invalidate tree cache so the new repo appears in workspace tree
-    this.invalidateTreeCache();
-    // Re-add since invalidate clears the set
-    this.getTreeManager().discoveredRepoPaths.add(relPath);
-
-    log.verbose(` GitHub repo ready: ${relPath}`);
-    return true;
   }
 
   /**
@@ -802,22 +641,13 @@ export class GitServer {
 
   /**
    * Resolve a git ref to a commit SHA.
-   * For GitHub paths, triggers auto-clone if the repo doesn't exist locally.
    *
-   * This is used by the context template resolver to get exact commit SHAs
-   * for template dependencies, including GitHub repositories.
-   *
-   * @param repoPath - Relative path to repo (e.g., "panels/editor" or "github.com/owner/repo")
+   * @param repoPath - Relative path to repo (e.g., "panels/editor")
    * @param ref - Git ref (branch, tag, or commit) - if undefined, uses HEAD
    * @returns Full commit SHA
    */
   async resolveRef(repoPath: string, ref?: string): Promise<string> {
     const normalized = this.normalizePath(repoPath);
-
-    // Handle GitHub paths - may need to clone first
-    if (this.githubConfig.enabled && isGitHubPath(normalized)) {
-      await this.ensureGitHubRepoCloned(normalized);
-    }
 
     const absolutePath = this.toAbsolutePath(normalized);
 
@@ -857,48 +687,6 @@ export class GitServer {
       const msg = error instanceof Error ? error.message : String(error);
       throw new Error(`Failed to resolve ref "${targetRef}" in ${repoPath}: ${msg}`);
     }
-  }
-
-  /**
-   * Ensure a GitHub repo is cloned locally.
-   * Called before ref resolution for GitHub paths.
-   */
-  private async ensureGitHubRepoCloned(repoPath: string): Promise<void> {
-    const spec = parseGitHubPath(repoPath);
-    if (!spec) return;
-
-    const relPath = toGitHubRelativePath(spec);
-    const targetPath = path.join(this.ensureReposPath(), relPath);
-
-    // Already cloned?
-    if (isGitRepo(targetPath)) {
-      // Ensure it's in discovered paths
-      if (!this.getTreeManager().discoveredRepoPaths.has(relPath)) {
-        this.getTreeManager().discoveredRepoPaths.add(relPath);
-      }
-      return;
-    }
-
-    // Clone from GitHub (full clone for ref resolution - need all refs/tags)
-    log.verbose(` Auto-cloning for ref resolution: ${spec.owner}/${spec.repo}`);
-    const result = await ensureGitHubRepo({
-      targetPath,
-      remoteUrl: toGitHubUrl(spec),
-      token: this.getGitHubToken(),
-      depth: 0, // Full clone - shallow clones may not have all refs
-    });
-
-    if (!result.success) {
-      throw new Error(`Failed to clone GitHub repository ${spec.owner}/${spec.repo}: ${result.error}`);
-    }
-
-    // Add to discovered paths and invalidate cache
-    this.getTreeManager().discoveredRepoPaths.add(relPath);
-    this.invalidateTreeCache();
-    // Re-add since invalidate clears the set
-    this.getTreeManager().discoveredRepoPaths.add(relPath);
-
-    log.verbose(` GitHub repo ready for ref resolution: ${relPath}`);
   }
 
   /**

@@ -173,6 +173,126 @@ describe("credentialService", () => {
     expect(auditLog.entries).toHaveLength(1);
   });
 
+  it("stores privileged credential input without returning the submitted token", async () => {
+    const store = new MemoryCredentialStore();
+    const approvalQueue = {
+      request: vi.fn(async () => "deny" as const),
+      requestOAuthClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+      requestCredentialInput: vi.fn(async () => ({
+        decision: "submit" as const,
+        values: { token: "github_pat_secret" },
+      })),
+      resolve: vi.fn(),
+      submitOAuthClientConfig: vi.fn(),
+      submitCredentialInput: vi.fn(),
+      listPending: vi.fn(() => []),
+    };
+    const service = createCredentialService({
+      credentialStore: store as never,
+      approvalQueue: approvalQueue as never,
+      sessionGrantStore: new CredentialSessionGrantStore(),
+      codeIdentityResolver: {
+        resolveByCallerId: () => ({
+          callerId: "worker:test",
+          callerKind: "worker",
+          repoPath: "/repo",
+          effectiveVersion: "hash-1",
+        }),
+      },
+    });
+
+    const stored = await service.handler(
+      { callerId: "worker:test", callerKind: "worker" },
+      "requestCredentialInput",
+      [{
+        title: "Add GitHub",
+        credential: {
+          label: "GitHub",
+          audience: [{ url: "https://api.github.com/", match: "origin" }],
+          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+          accountIdentity: { providerUserId: "github-pat" },
+          metadata: { providerId: "github" },
+        },
+        fields: [
+          { name: "token", label: "Fine-grained PAT", type: "secret", required: true },
+        ],
+        material: { type: "bearer-token", tokenField: "token" },
+      }],
+    ) as StoredCredentialSummary;
+
+    expect(stored).toMatchObject({
+      label: "GitHub",
+      metadata: expect.objectContaining({ providerId: "github" }),
+    });
+    expect(JSON.stringify(stored)).not.toContain("github_pat_secret");
+    expect((await store.loadUrlBound(stored.id))?.accessToken).toBe("github_pat_secret");
+    expect(approvalQueue.requestCredentialInput).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "credential-input",
+        credentialLabel: "GitHub",
+        repoPath: "/repo",
+        effectiveVersion: "hash-1",
+      })
+    );
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+  });
+
+  it("only accepts one required secret field for privileged credential input", async () => {
+    const approvalQueue = {
+      request: vi.fn(async () => "deny" as const),
+      requestOAuthClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+      requestCredentialInput: vi.fn(async () => ({
+        decision: "submit" as const,
+        values: { token: "github_pat_secret" },
+      })),
+      resolve: vi.fn(),
+      submitOAuthClientConfig: vi.fn(),
+      submitCredentialInput: vi.fn(),
+      listPending: vi.fn(() => []),
+    };
+    const service = createCredentialService({
+      credentialStore: new MemoryCredentialStore() as never,
+      approvalQueue: approvalQueue as never,
+      sessionGrantStore: new CredentialSessionGrantStore(),
+      codeIdentityResolver: {
+        resolveByCallerId: () => ({
+          callerId: "worker:test",
+          callerKind: "worker",
+          repoPath: "/repo",
+          effectiveVersion: "hash-1",
+        }),
+      },
+    });
+    const baseRequest = {
+      title: "Add GitHub",
+      credential: {
+        label: "GitHub",
+        audience: [{ url: "https://api.github.com/", match: "origin" }],
+        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+      },
+      fields: [
+        { name: "token", label: "Fine-grained PAT", type: "secret", required: true },
+      ],
+      material: { type: "bearer-token", tokenField: "token" },
+    };
+    const ctx = { callerId: "worker:test", callerKind: "worker" as const };
+
+    await expect(service.handler(ctx, "requestCredentialInput", [{
+      ...baseRequest,
+      fields: [
+        ...baseRequest.fields,
+        { name: "username", label: "Username", type: "text", required: true },
+      ],
+    }])).rejects.toThrow("Credential input expects exactly one secret field");
+
+    await expect(service.handler(ctx, "requestCredentialInput", [{
+      ...baseRequest,
+      fields: [{ name: "token", label: "Token", type: "text", required: true }],
+    }])).rejects.toThrow("Credential input tokenField must be a secret field");
+
+    expect(approvalQueue.requestCredentialInput).not.toHaveBeenCalled();
+  });
+
   it("rejects credential revocation from callers without owner or grant access", async () => {
     const store = new MemoryCredentialStore();
     const service = createCredentialService({
@@ -458,8 +578,10 @@ describe("credentialService", () => {
           clientSecret: "secret-1",
         },
       })),
+      requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
       resolve: vi.fn(),
       submitOAuthClientConfig: vi.fn(),
+      submitCredentialInput: vi.fn(),
       listPending: vi.fn(() => []),
     };
     const service = createCredentialService({
@@ -501,8 +623,10 @@ describe("credentialService", () => {
       approvalQueue: {
         request: vi.fn(),
         requestOAuthClientConfig: vi.fn(),
+        requestCredentialInput: vi.fn(),
         resolve: vi.fn(),
         submitOAuthClientConfig: vi.fn(),
+        submitCredentialInput: vi.fn(),
         listPending: vi.fn(() => []),
       } as never,
     });
@@ -612,8 +736,10 @@ describe("credentialService", () => {
           clientSecret: "secret-2",
         },
       })),
+      requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
       resolve: vi.fn(),
       submitOAuthClientConfig: vi.fn(),
+      submitCredentialInput: vi.fn(),
       listPending: vi.fn(() => []),
     };
     const service = createCredentialService({

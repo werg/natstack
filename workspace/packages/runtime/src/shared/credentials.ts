@@ -7,6 +7,7 @@ import type {
   GetOAuthClientConfigStatusRequest,
   GrantUrlBoundCredentialRequest,
   OAuthClientConfigStatus,
+  RequestCredentialInputRequest,
   RequestOAuthClientConfigRequest,
   ResolveUrlBoundCredentialRequest,
   StoredCredentialSummary,
@@ -21,6 +22,7 @@ export type {
   GetOAuthClientConfigStatusRequest,
   GrantUrlBoundCredentialRequest,
   OAuthClientConfigStatus,
+  RequestCredentialInputRequest,
   RequestOAuthClientConfigRequest,
   ResolveUrlBoundCredentialRequest,
   StoredCredentialSummary,
@@ -33,6 +35,7 @@ export interface CredentialClient {
   beginCreateWithOAuthClientPkce(input: BeginOAuthClientPkceCredentialRequest): Promise<BeginOAuthPkceCredentialResult>;
   completeCreateWithOAuthPkce(input: CompleteOAuthPkceCredentialRequest): Promise<StoredCredentialSummary>;
   requestOAuthClientConfig(input: RequestOAuthClientConfigRequest): Promise<OAuthClientConfigStatus>;
+  requestCredentialInput(input: RequestCredentialInputRequest): Promise<StoredCredentialSummary>;
   getOAuthClientConfigStatus(input: GetOAuthClientConfigStatusRequest): Promise<OAuthClientConfigStatus>;
   listStoredCredentials(): Promise<StoredCredentialSummary[]>;
   revokeCredential(credentialId: string): Promise<void>;
@@ -65,6 +68,9 @@ export function createCredentialClient(rpc: RpcCaller): CredentialClient {
     },
     async requestOAuthClientConfig(input) {
       return rpc.call<OAuthClientConfigStatus>("main", "credentials.requestOAuthClientConfig", input);
+    },
+    async requestCredentialInput(input) {
+      return rpc.call<StoredCredentialSummary>("main", "credentials.requestCredentialInput", input);
     },
     async getOAuthClientConfigStatus(input) {
       return rpc.call<OAuthClientConfigStatus>("main", "credentials.getOAuthClientConfigStatus", input);

@@ -126,6 +126,7 @@ import {
   hookForUrl as credentialHookForUrl,
   initPanelCredentials,
   listStoredCredentials as listUrlBoundCredentials,
+  requestCredentialInput as requestCredentialSecretInput,
   requestOAuthClientConfig as requestOAuthClientCredentialConfig,
   revokeCredential as revokeUrlBoundCredential,
   store as storeUrlBoundCredential,
@@ -140,6 +141,7 @@ export type {
   CreateOAuthPkceCredentialRequest,
   GetOAuthClientConfigStatusRequest,
   OAuthClientConfigStatus,
+  RequestCredentialInputRequest,
   RequestOAuthClientConfigRequest,
 } from "../shared/credentials.js";
 initPanelCredentials(rpc);
@@ -149,6 +151,7 @@ const credentialApi = {
   beginCreateWithOAuthClientPkce: beginOAuthClientCredentialPkce,
   completeCreateWithOAuthPkce: completeCredentialOAuthPkce,
   requestOAuthClientConfig: requestOAuthClientCredentialConfig,
+  requestCredentialInput: requestCredentialSecretInput,
   getOAuthClientConfigStatus: getOAuthClientCredentialConfigStatus,
   listStoredCredentials: listUrlBoundCredentials,
   revokeCredential: revokeUrlBoundCredential,

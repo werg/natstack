@@ -14,6 +14,7 @@ import type {
   PendingApproval,
   PendingCapabilityApproval,
   PendingCredentialApproval,
+  PendingCredentialInputApproval,
   PendingOAuthClientConfigApproval,
 } from "@natstack/shared/approvals";
 import type { AccountIdentity, CredentialInjection, UrlAudience } from "@natstack/shared/credentials/types";
@@ -67,14 +68,29 @@ export interface OAuthClientConfigApprovalQueueRequest extends ApprovalQueueRequ
   fields: PendingOAuthClientConfigApproval["fields"];
 }
 
+export interface CredentialInputApprovalQueueRequest extends ApprovalQueueRequestBase {
+  kind: "credential-input";
+  title: string;
+  description?: string;
+  credentialLabel: string;
+  audience: UrlAudience[];
+  injection: CredentialInjection;
+  accountIdentity: AccountIdentity;
+  scopes: string[];
+  fields: PendingCredentialInputApproval["fields"];
+}
+
 export type ApprovalQueueRequest =
   | CredentialApprovalQueueRequest
   | CapabilityApprovalQueueRequest
-  | OAuthClientConfigApprovalQueueRequest;
+  | OAuthClientConfigApprovalQueueRequest
+  | CredentialInputApprovalQueueRequest;
+export type DecisionApprovalQueueRequest = CredentialApprovalQueueRequest | CapabilityApprovalQueueRequest;
 
 export type OAuthClientConfigApprovalResult =
   | { decision: "submit"; values: Record<string, string> }
   | { decision: "deny" };
+export type FieldInputApprovalResult = OAuthClientConfigApprovalResult;
 
 interface QueueWaiter {
   resolve: (decision: GrantedDecision) => void;
@@ -82,8 +98,8 @@ interface QueueWaiter {
   onAbort?: () => void;
 }
 
-interface OAuthClientConfigQueueWaiter {
-  resolve: (result: OAuthClientConfigApprovalResult) => void;
+interface FieldInputQueueWaiter {
+  resolve: (result: FieldInputApprovalResult) => void;
   signal?: AbortSignal;
   onAbort?: () => void;
 }
@@ -92,15 +108,17 @@ interface QueueEntry {
   approval: PendingApproval;
   dedupKey: string;
   waiters: Map<number, QueueWaiter>;
-  oauthClientConfigWaiters: Map<number, OAuthClientConfigQueueWaiter>;
+  fieldInputWaiters: Map<number, FieldInputQueueWaiter>;
   nextWaiterId: number;
 }
 
 export interface ApprovalQueue {
-  request(req: ApprovalQueueRequest): Promise<GrantedDecision>;
+  request(req: DecisionApprovalQueueRequest): Promise<GrantedDecision>;
   requestOAuthClientConfig(req: OAuthClientConfigApprovalQueueRequest): Promise<OAuthClientConfigApprovalResult>;
+  requestCredentialInput(req: CredentialInputApprovalQueueRequest): Promise<FieldInputApprovalResult>;
   resolve(approvalId: string, decision: ApprovalDecision): void;
   submitOAuthClientConfig(approvalId: string, values: Record<string, string>): void;
+  submitCredentialInput(approvalId: string, values: Record<string, string>): void;
   listPending(): PendingApproval[];
 }
 
@@ -148,6 +166,12 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
         req.fields.map((field) => field.name).join(","),
       ].join("\x00");
     }
+    if (req.kind === "credential-input") {
+      // A submitted secret is a one-shot input, not a reusable approval. Keep
+      // concurrent prompts isolated so one submission cannot release multiple
+      // waiters and create duplicate credentials.
+      return ["credential-input-isolated", randomUUID()].join("\x00");
+    }
     return `${req.repoPath}\x00${req.effectiveVersion}\x00${req.credentialId}`;
   }
 
@@ -183,6 +207,20 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
         fields: req.fields,
       } satisfies PendingOAuthClientConfigApproval;
     }
+    if (req.kind === "credential-input") {
+      return {
+        ...base,
+        kind: "credential-input",
+        title: req.title,
+        description: req.description,
+        credentialLabel: req.credentialLabel,
+        audience: req.audience,
+        injection: req.injection,
+        accountIdentity: req.accountIdentity,
+        scopes: req.scopes,
+        fields: req.fields,
+      } satisfies PendingCredentialInputApproval;
+    }
     return {
       ...base,
       kind: "credential",
@@ -198,6 +236,91 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
     } satisfies PendingCredentialApproval;
   }
 
+  function enqueueFieldInputRequest(
+    req: OAuthClientConfigApprovalQueueRequest | CredentialInputApprovalQueueRequest,
+    expectedKind: "oauth-client-config" | "credential-input",
+    collisionMessage: string,
+  ): Promise<FieldInputApprovalResult> {
+    const dedupKey = dedupKeyFor(req);
+    let entry = entriesByDedupKey.get(dedupKey);
+    let newEntry = false;
+    if (!entry) {
+      const approval = createPendingApproval(req);
+      entry = {
+        approval,
+        dedupKey,
+        waiters: new Map(),
+        fieldInputWaiters: new Map(),
+        nextWaiterId: 0,
+      };
+      entriesById.set(approval.approvalId, entry);
+      entriesByDedupKey.set(dedupKey, entry);
+      newEntry = true;
+    }
+
+    if (entry.approval.kind !== expectedKind) {
+      throw new Error(collisionMessage);
+    }
+
+    const bound = entry;
+    return new Promise<FieldInputApprovalResult>((resolve) => {
+      const waiterId = bound.nextWaiterId++;
+      const waiter: FieldInputQueueWaiter = { resolve, signal: req.signal };
+
+      if (req.signal) {
+        const onAbort = () => {
+          const e = entriesById.get(bound.approval.approvalId);
+          if (!e) {
+            resolve({ decision: "deny" });
+            return;
+          }
+          e.fieldInputWaiters.delete(waiterId);
+          if (e.waiters.size === 0 && e.fieldInputWaiters.size === 0) {
+            removeEntry(e);
+            emitPendingChanged();
+          }
+          resolve({ decision: "deny" });
+        };
+        waiter.onAbort = onAbort;
+        if (req.signal.aborted) {
+          queueMicrotask(onAbort);
+        } else {
+          req.signal.addEventListener("abort", onAbort, { once: true });
+        }
+      }
+
+      bound.fieldInputWaiters.set(waiterId, waiter);
+
+      if (newEntry) {
+        emitPendingChanged();
+      }
+    });
+  }
+
+  function submitFieldInput(approvalId: string, expectedKind: "oauth-client-config" | "credential-input", values: Record<string, string>): void {
+    const entry = entriesById.get(approvalId);
+    if (!entry || entry.approval.kind !== expectedKind) return;
+
+    removeEntry(entry);
+
+    for (const waiter of entry.fieldInputWaiters.values()) {
+      if (waiter.signal && waiter.onAbort) {
+        waiter.signal.removeEventListener("abort", waiter.onAbort);
+      }
+      waiter.resolve({ decision: "submit", values });
+    }
+    entry.fieldInputWaiters.clear();
+    for (const waiter of entry.waiters.values()) {
+      if (waiter.signal && waiter.onAbort) {
+        waiter.signal.removeEventListener("abort", waiter.onAbort);
+      }
+      waiter.resolve("deny");
+    }
+    entry.waiters.clear();
+
+    emitPendingChanged();
+  }
+
   return {
     request(req) {
       const dedupKey = dedupKeyFor(req);
@@ -209,7 +332,7 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
           approval,
           dedupKey,
           waiters: new Map(),
-          oauthClientConfigWaiters: new Map(),
+          fieldInputWaiters: new Map(),
           nextWaiterId: 0,
         };
         entriesById.set(approval.approvalId, entry);
@@ -253,60 +376,19 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
     },
 
     requestOAuthClientConfig(req) {
-      const dedupKey = dedupKeyFor(req);
-      let entry = entriesByDedupKey.get(dedupKey);
-      let newEntry = false;
-      if (!entry) {
-        const approval = createPendingApproval(req);
-        entry = {
-          approval,
-          dedupKey,
-          waiters: new Map(),
-          oauthClientConfigWaiters: new Map(),
-          nextWaiterId: 0,
-        };
-        entriesById.set(approval.approvalId, entry);
-        entriesByDedupKey.set(dedupKey, entry);
-        newEntry = true;
-      }
+      return enqueueFieldInputRequest(
+        req,
+        "oauth-client-config",
+        "Approval dedup collision for OAuth client config request",
+      );
+    },
 
-      if (entry.approval.kind !== "oauth-client-config") {
-        throw new Error("Approval dedup collision for OAuth client config request");
-      }
-
-      const bound = entry;
-      return new Promise<OAuthClientConfigApprovalResult>((resolve) => {
-        const waiterId = bound.nextWaiterId++;
-        const waiter: OAuthClientConfigQueueWaiter = { resolve, signal: req.signal };
-
-        if (req.signal) {
-          const onAbort = () => {
-            const e = entriesById.get(bound.approval.approvalId);
-            if (!e) {
-              resolve({ decision: "deny" });
-              return;
-            }
-            e.oauthClientConfigWaiters.delete(waiterId);
-            if (e.waiters.size === 0 && e.oauthClientConfigWaiters.size === 0) {
-              removeEntry(e);
-              emitPendingChanged();
-            }
-            resolve({ decision: "deny" });
-          };
-          waiter.onAbort = onAbort;
-          if (req.signal.aborted) {
-            queueMicrotask(onAbort);
-          } else {
-            req.signal.addEventListener("abort", onAbort, { once: true });
-          }
-        }
-
-        bound.oauthClientConfigWaiters.set(waiterId, waiter);
-
-        if (newEntry) {
-          emitPendingChanged();
-        }
-      });
+    requestCredentialInput(req) {
+      return enqueueFieldInputRequest(
+        req,
+        "credential-input",
+        "Approval dedup collision for credential input request",
+      );
     },
 
     resolve(approvalId, decision) {
@@ -325,39 +407,23 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
         waiter.resolve(granted);
       }
       entry.waiters.clear();
-      for (const waiter of entry.oauthClientConfigWaiters.values()) {
+      for (const waiter of entry.fieldInputWaiters.values()) {
         if (waiter.signal && waiter.onAbort) {
           waiter.signal.removeEventListener("abort", waiter.onAbort);
         }
         waiter.resolve({ decision: "deny" });
       }
-      entry.oauthClientConfigWaiters.clear();
+      entry.fieldInputWaiters.clear();
 
       emitPendingChanged();
     },
 
     submitOAuthClientConfig(approvalId, values) {
-      const entry = entriesById.get(approvalId);
-      if (!entry || entry.approval.kind !== "oauth-client-config") return;
+      submitFieldInput(approvalId, "oauth-client-config", values);
+    },
 
-      removeEntry(entry);
-
-      for (const waiter of entry.oauthClientConfigWaiters.values()) {
-        if (waiter.signal && waiter.onAbort) {
-          waiter.signal.removeEventListener("abort", waiter.onAbort);
-        }
-        waiter.resolve({ decision: "submit", values });
-      }
-      entry.oauthClientConfigWaiters.clear();
-      for (const waiter of entry.waiters.values()) {
-        if (waiter.signal && waiter.onAbort) {
-          waiter.signal.removeEventListener("abort", waiter.onAbort);
-        }
-        waiter.resolve("deny");
-      }
-      entry.waiters.clear();
-
-      emitPendingChanged();
+    submitCredentialInput(approvalId, values) {
+      submitFieldInput(approvalId, "credential-input", values);
     },
 
     listPending() {

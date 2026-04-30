@@ -118,6 +118,9 @@
       "@workspace-skills/google-workspace": [
         "workspace/skills/google-workspace/index.ts"
       ],
+      "@workspace-skills/github": [
+        "workspace/skills/github/index.ts"
+      ],
       "@workspace-skills/system-testing": [
         "workspace/skills/system-testing/index.ts"
       ],

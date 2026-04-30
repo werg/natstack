@@ -166,27 +166,6 @@ eval({ code: `
 
 **`commitAndPush(dir, message)`** — stages all changes, commits, and pushes. Auto-initializes git if the directory doesn't have `.git` yet.
 
-**Cloning remote GitHub repos** — the git server transparently proxies GitHub. Use `github.com/owner/repo` as the path:
-
-```
-eval({ code: `
-  import git from "isomorphic-git";
-  import http from "isomorphic-git/http/web";
-  import { fs, gitConfig } from "@workspace/runtime";
-
-  await git.clone({
-    fs, http,
-    dir: "/my-lib",
-    url: \`\${gitConfig.serverUrl}/github.com/owner/repo\`,
-    headers: { Authorization: \`Bearer \${gitConfig.token}\` },
-    depth: 1,
-  });
-
-  const files = await fs.readdir("/my-lib");
-  console.log("Cloned:", files);
-`, timeout: 30000 })
-```
-
 #### typecheck.checkPanel (recommended)
 
 Type-check a panel. Pass the panel source path, or omit it to auto-detect from the caller's context.

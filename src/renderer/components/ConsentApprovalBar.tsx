@@ -17,6 +17,7 @@ import type {
   PendingApproval,
   PendingCapabilityApproval,
   PendingCredentialApproval,
+  PendingCredentialInputApproval,
   PendingOAuthClientConfigApproval,
 } from "@natstack/shared/approvals";
 import { useShellEvent } from "../shell/useShellEvent";
@@ -24,7 +25,7 @@ import { shellApproval, view } from "../shell/client";
 
 export function ConsentApprovalBar() {
   const [pendingAccess, setPendingAccess] = useState<PendingApproval[]>([]);
-  const [oauthClientConfigValues, setOAuthClientConfigValues] = useState<Record<string, string>>({});
+  const [secretConfigValues, setSecretConfigValues] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -49,7 +50,7 @@ export function ConsentApprovalBar() {
   const current = pendingAccess[0] ?? null;
 
   useEffect(() => {
-    setOAuthClientConfigValues({});
+    setSecretConfigValues({});
   }, [current?.approvalId]);
 
   const barRef = useRef<HTMLDivElement>(null);
@@ -80,8 +81,14 @@ export function ConsentApprovalBar() {
   const submitOAuthClientConfig = () => {
     if (current?.kind !== "oauth-client-config") return;
     void shellApproval
-      .submitOAuthClientConfig(current.approvalId, oauthClientConfigValues)
+      .submitOAuthClientConfig(current.approvalId, secretConfigValues)
       .catch((err: unknown) => console.error("[ConsentApprovalBar] submitOAuthClientConfig failed:", err));
+  };
+  const submitCredentialInput = () => {
+    if (current?.kind !== "credential-input") return;
+    void shellApproval
+      .submitCredentialInput(current.approvalId, secretConfigValues)
+      .catch((err: unknown) => console.error("[ConsentApprovalBar] submitCredentialInput failed:", err));
   };
 
   const callerLabel = current.callerKind === "worker" ? "Worker" : "Panel";
@@ -158,12 +165,12 @@ export function ConsentApprovalBar() {
               callerLabel={callerLabel}
               defaultOpen={shouldOpenApprovalDetails(current)}
             />
-            {current.kind === "oauth-client-config" ? (
-              <OAuthClientConfigFields
+            {current.kind === "oauth-client-config" || current.kind === "credential-input" ? (
+              <SecretConfigFields
                 approval={current}
-                values={oauthClientConfigValues}
+                values={secretConfigValues}
                 onChange={(name, value) =>
-                  setOAuthClientConfigValues((previous) => ({ ...previous, [name]: value }))
+                  setSecretConfigValues((previous) => ({ ...previous, [name]: value }))
                 }
               />
             ) : null}
@@ -173,8 +180,16 @@ export function ConsentApprovalBar() {
         {current.kind === "oauth-client-config" ? (
           <OAuthClientConfigActions
             approval={current}
-            values={oauthClientConfigValues}
+            values={secretConfigValues}
             onSubmit={submitOAuthClientConfig}
+            onDeny={() => decide("deny")}
+            onDismiss={() => decide("dismiss")}
+          />
+        ) : current.kind === "credential-input" ? (
+          <CredentialInputActions
+            approval={current}
+            values={secretConfigValues}
+            onSubmit={submitCredentialInput}
             onDeny={() => decide("deny")}
             onDismiss={() => decide("dismiss")}
           />
@@ -294,6 +309,55 @@ function OAuthClientConfigActions({
   );
 }
 
+function CredentialInputActions({
+  approval,
+  values,
+  onSubmit,
+  onDeny,
+  onDismiss,
+}: {
+  approval: PendingCredentialInputApproval;
+  values: Record<string, string>;
+  onSubmit: () => void;
+  onDeny: () => void;
+  onDismiss: () => void;
+}) {
+  const missingRequired = approval.fields.some((field) => field.required && !values[field.name]?.trim());
+  return (
+    <Flex
+      align="center"
+      className="approval-actions"
+      gap="2"
+      wrap="wrap"
+      style={{
+        alignSelf: "flex-end",
+        flexShrink: 0,
+        justifyContent: "flex-start",
+        marginLeft: "auto",
+      }}
+    >
+      <Tooltip content={missingRequired ? "Enter the required secret first." : "Save this connected service."}>
+        <Button size="1" variant="solid" disabled={missingRequired} onClick={onSubmit}>
+          <CheckCircledIcon />
+          Save service
+        </Button>
+      </Tooltip>
+      <DecisionButton
+        label="Deny"
+        description="Do not save this connected service."
+        color="red"
+        icon={<CrossCircledIcon />}
+        onClick={onDeny}
+      />
+      <Tooltip content="Dismiss">
+        <IconButton size="1" variant="ghost" color="gray" onClick={onDismiss}>
+          <Cross2Icon />
+        </IconButton>
+      </Tooltip>
+    </Flex>
+  );
+}
+
 function DecisionButton({
   label,
   description,
@@ -380,6 +444,8 @@ function ApprovalDetails({
           <CredentialDetails approval={approval} />
         ) : approval.kind === "oauth-client-config" ? (
           <OAuthClientConfigDetails approval={approval} />
+        ) : approval.kind === "credential-input" ? (
+          <CredentialInputDetails approval={approval} />
         ) : (
           <CapabilityDetails approval={approval} />
         )}
@@ -388,19 +454,19 @@ function ApprovalDetails({
   );
 }
 
-function OAuthClientConfigFields({
+function SecretConfigFields({
   approval,
   values,
   onChange,
 }: {
-  approval: PendingOAuthClientConfigApproval;
+  approval: PendingOAuthClientConfigApproval | PendingCredentialInputApproval;
   values: Record<string, string>;
   onChange: (name: string, value: string) => void;
 }) {
   return (
     <Flex direction="column" gap="2" pt="1" style={{ maxWidth: 620 }}>
       <Text size="1" color="gray" style={{ lineHeight: 1.35 }}>
-        Secret fields are stored encrypted and only used when connecting to this service.
+        Secrets are entered in NatStack's shell UI, not exposed to panels or workers, and stored encrypted after submission.
       </Text>
       {approval.fields.map((field) => (
         <Flex key={field.name} direction="column" gap="1">
@@ -494,6 +560,69 @@ function OAuthClientConfigDetails({ approval }: { approval: PendingOAuthClientCo
           </Flex>
         }
       />
+    </>
+  );
+}
+
+function CredentialInputDetails({ approval }: { approval: PendingCredentialInputApproval }) {
+  return (
+    <>
+      <Detail
+        icon={<LockClosedIcon />}
+        label="Service"
+        value={<InlineCode>{approval.credentialLabel}</InlineCode>}
+      />
+      <Detail
+        icon={<LockClosedIcon />}
+        label="Injects as"
+        value={<InlineCode>{formatInjection(approval)}</InlineCode>}
+      />
+      <Detail
+        icon={<GlobeIcon />}
+        label="Audience"
+        value={
+          <Flex align="center" gap="1" wrap="wrap">
+            {approval.audience.map((audience) => (
+              <Code
+                key={`${audience.match}:${audience.url}`}
+                size="1"
+                variant="soft"
+                style={{ maxWidth: 360 }}
+              >
+                {audience.match ?? "origin"}: {audience.url}
+              </Code>
+            ))}
+          </Flex>
+        }
+      />
+      <Detail
+        icon={<LockClosedIcon />}
+        label="Fields"
+        value={
+          <Flex align="center" gap="1" wrap="wrap">
+            {approval.fields.map((field) => (
+              <Badge key={field.name} color={field.type === "secret" ? "amber" : "gray"} variant="outline">
+                {field.name}{field.type === "secret" ? " (secret)" : ""}
+              </Badge>
+            ))}
+          </Flex>
+        }
+      />
+      {approval.scopes.length > 0 ? (
+        <Detail
+          icon={<LockClosedIcon />}
+          label="Scopes"
+          value={
+            <Flex align="center" gap="1" wrap="wrap">
+              {approval.scopes.map((scope) => (
+                <Badge key={scope} color="gray" variant="outline">
+                  {scope}
+                </Badge>
+              ))}
+            </Flex>
+          }
+        />
+      ) : null}
     </>
   );
 }
@@ -622,6 +751,9 @@ function getApprovalCategoryLabel(approval: PendingApproval): string {
   if (approval.kind === "oauth-client-config") {
     return "Service setup";
   }
+  if (approval.kind === "credential-input") {
+    return "Service setup";
+  }
   if (approval.capability === "internal-git-write") {
     return "Write request";
   }
@@ -703,6 +835,13 @@ function getApprovalCopy(
       summary: `${requester} wants to add ${formatServiceName(approval.configId)} as a connected service. Secrets stay encrypted and are only sent to ${formatUrlForSummary(approval.tokenUrl, "origin")}.`,
     };
   }
+  if (approval.kind === "credential-input") {
+    const audience = formatCredentialInputAudienceSummary(approval);
+    return {
+      title: "Add service",
+      summary: `${requester} wants to save ${approval.credentialLabel} for ${audience}. Secrets stay encrypted and are only sent to matching requests.`,
+    };
+  }
 
   const audience = formatAudienceSummary(approval);
   return {
@@ -755,7 +894,16 @@ function formatAccount(approval: PendingCredentialApproval): string {
   );
 }
 
-function formatInjection(approval: PendingCredentialApproval): string {
+function formatCredentialInputAudienceSummary(approval: PendingCredentialInputApproval): string {
+  if (approval.audience.length === 0) return "this service";
+  const first = approval.audience[0];
+  if (!first) return "this service";
+  const audience = formatUrlForSummary(first.url, first.match === "origin" ? "origin" : "path");
+  const extraCount = approval.audience.length - 1;
+  return extraCount > 0 ? `${audience} and ${extraCount} more` : audience;
+}
+
+function formatInjection(approval: PendingCredentialApproval | PendingCredentialInputApproval): string {
   const injection = approval.injection;
   if (injection.type === "query-param") {
     return `query ${injection.name}`;

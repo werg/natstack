@@ -36,6 +36,7 @@ export const workerRuntimeSurface: RuntimeSurface = {
       "beginCreateWithOAuthClientPkce",
       "completeCreateWithOAuthPkce",
       "requestOAuthClientConfig",
+      "requestCredentialInput",
       "getOAuthClientConfigStatus",
       "listStoredCredentials",
       "revokeCredential",

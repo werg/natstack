@@ -108,9 +108,6 @@ import { gitConfig } from "@workspace/runtime";
 
 const git = new GitClient(fs, { serverUrl: gitConfig.serverUrl, token: gitConfig.token });
 await git.clone({ url: `${gitConfig.serverUrl}/my-repo`, dir: "/repo" });
-
-// Clone a remote GitHub repo (the git server proxies github.com/* paths automatically)
-await git.clone({ url: `${gitConfig.serverUrl}/github.com/owner/repo`, dir: "/lib" });
 ```
 
 ---

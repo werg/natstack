@@ -114,6 +114,28 @@ export interface RequestOAuthClientConfigRequest {
   fields: OAuthClientConfigFieldRequest[];
 }
 
+export interface RequestCredentialInputRequest {
+  title: string;
+  description?: string;
+  credential: {
+    label: string;
+    audience: UrlAudience[];
+    injection: CredentialInjection;
+    accountIdentity?: Partial<AccountIdentity>;
+    scopes?: string[];
+    metadata?: Record<string, string>;
+  };
+  /**
+   * Static credential input currently supports exactly one required secret
+   * field. Use OAuth client config for multi-field provider setup material.
+   */
+  fields: OAuthClientConfigFieldRequest[];
+  material: {
+    type: "bearer-token" | "api-key";
+    tokenField: string;
+  };
+}
+
 export interface GetOAuthClientConfigStatusRequest {
   configId: string;
   fields?: OAuthClientConfigFieldRequest[];

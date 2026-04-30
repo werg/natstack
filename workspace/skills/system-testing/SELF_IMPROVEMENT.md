@@ -130,9 +130,12 @@ For each failure, determine the root cause category and act accordingly:
 | RPC routing | `src/shared/serviceDispatcher.ts`, `packages/rpc/src/` |
 | Error swallowed | Search for `.catch(` and empty catch blocks near the failure site |
 
-## Phase 5: Clone the NatStack Repo
+## Phase 5: Prepare an Editable Checkout
 
-Before you can fix anything, clone the source repo:
+Before you can fix anything, work from an editable NatStack checkout that is
+already available in the workspace. The git server no longer transparently
+clones GitHub repositories; use a local workspace repo or the future host git
+integration for remote sources.
 
 ```
 eval({
@@ -141,13 +144,13 @@ eval({
     import { GitClient } from "@natstack/git";
 
     const git = new GitClient(fs, { serverUrl: gitConfig.serverUrl, token: gitConfig.token });
-    await git.clone({ url: gitConfig.serverUrl + "/github.com/werg/natstack.git", dir: "natstack" });
+    await git.clone({ url: gitConfig.serverUrl + "/path/to/local/repo", dir: "natstack" });
     scope.git = git;
   `,
 })
 ```
 
-**Important:** Pushes to `main` and `master` are rejected on GitHub repos. Always create a branch. Branches are auto-pushed to the upstream GitHub remote.
+**Important:** Work on a branch before making changes.
 
 ```typescript
 const branchName = `fix/system-test-${failedTestName}`;
@@ -211,7 +214,7 @@ if (retest.result.passed) {
 
 - **Start with smoke tests.** They're fast and catch the most common issues.
 - **One fix per branch.** Don't bundle unrelated fixes.
-- **Always create a branch** — pushes to main/master are rejected on GitHub repos.
+- **Always create a branch** before making changes.
 - **Check type errors before committing.** Use `chat.rpc.call("main", "typecheck.check")`.
 - **Re-run the full smoke suite after fixing.** Your fix might break something else.
 - **If an API is confusing, fix the API.** Don't add comments explaining the confusion.

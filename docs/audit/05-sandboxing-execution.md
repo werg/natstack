@@ -574,7 +574,7 @@ A second chain, targeting the UI host:
 - `src/main/cdpServer.ts`
 - `src/main/adblock/adBlockManager.ts`, `src/main/services/adblockService.ts`
 - `src/main/autofill/autofillManager.ts`, `src/main/autofill/contentScript.ts`
-- `packages/git-server/src/server.ts`, `packages/git-server/src/auth.ts`, `packages/git-server/src/githubCloner.ts`
+- `packages/git-server/src/server.ts`, `packages/git-server/src/auth.ts`
 - `packages/git/src/*` (surface only)
 - `packages/harness/src/index.ts`, `packages/harness/src/tools/path-utils.ts`, `packages/harness/src/tools/grep.ts`, `packages/harness/src/pi-extension-runtime.ts`
 - `packages/process-adapter/src/index.ts`

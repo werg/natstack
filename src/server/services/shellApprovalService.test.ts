@@ -7,8 +7,10 @@ describe("shellApprovalService", () => {
       approvalQueue: {
         request: vi.fn(),
         requestOAuthClientConfig: vi.fn(),
+        requestCredentialInput: vi.fn(),
         resolve: vi.fn(),
         submitOAuthClientConfig: vi.fn(),
+        submitCredentialInput: vi.fn(),
         listPending: vi.fn(() => []),
       },
     });

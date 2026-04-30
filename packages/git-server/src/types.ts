@@ -34,14 +34,6 @@ export interface GitWatcherLike {
   on(event: string, callback: (repoPath: string) => void): () => void;
 }
 
-/** GitHub proxy configuration. */
-export interface GitHubProxyConfig {
-  enabled?: boolean;
-  token?: string;
-  getToken?: () => string | undefined;
-  depth?: number;
-}
-
 /** Minimal TokenManager interface — subset used by GitAuthManager. */
 export interface TokenManagerLike {
   getToken(callerId: string): string;

@@ -393,7 +393,6 @@ async function main() {
   // Service initialization
   // ===========================================================================
 
-  const githubConfig = workspaceConfig.git?.github;
   const tokenManager = new TokenManager();
   const { CredentialStore } = await import("../../packages/shared/src/credentials/store.js");
   const { OAuthClientConfigStore } = await import("../../packages/shared/src/credentials/oauthClientConfigStore.js");
@@ -444,10 +443,6 @@ async function main() {
       grantStore: capabilityGrantStore,
       codeIdentityResolver,
     }),
-    github: {
-      ...githubConfig,
-      token: githubConfig?.token ?? process.env["GITHUB_TOKEN"],
-    },
   });
 
   // Create ContextFolderManager before core services

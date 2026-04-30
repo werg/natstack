@@ -1,7 +1,7 @@
 {
   "name": "@natstack/git-server",
   "version": "0.1.0",
-  "description": "Internal git server with GitHub proxy for NatStack",
+  "description": "Internal git server for NatStack",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

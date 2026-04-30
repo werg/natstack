@@ -9,6 +9,7 @@ import {
   type GetOAuthClientConfigStatusRequest,
   type GrantUrlBoundCredentialRequest,
   type OAuthClientConfigStatus,
+  type RequestCredentialInputRequest,
   type RequestOAuthClientConfigRequest,
   type ResolveUrlBoundCredentialRequest,
   type StoredCredentialSummary,
@@ -56,6 +57,12 @@ export async function requestOAuthClientConfig(
   input: RequestOAuthClientConfigRequest,
 ): Promise<OAuthClientConfigStatus> {
   return requireClient().requestOAuthClientConfig(input);
+}
+
+export async function requestCredentialInput(
+  input: RequestCredentialInputRequest,
+): Promise<StoredCredentialSummary> {
+  return requireClient().requestCredentialInput(input);
 }
 
 export async function getOAuthClientConfigStatus(
@@ -106,6 +113,7 @@ export type {
   GetOAuthClientConfigStatusRequest,
   GrantUrlBoundCredentialRequest,
   OAuthClientConfigStatus,
+  RequestCredentialInputRequest,
   RequestOAuthClientConfigRequest,
   ResolveUrlBoundCredentialRequest,
   StoredCredentialSummary,

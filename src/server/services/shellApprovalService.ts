@@ -15,6 +15,7 @@ import type { ApprovalQueue } from "./approvalQueue.js";
 
 const DECISION_VALUES = ["once", "session", "version", "repo", "deny", "dismiss"] as const;
 const oauthClientConfigValuesSchema = z.record(z.string().min(1).max(128), z.string().max(4096));
+const credentialInputValuesSchema = oauthClientConfigValuesSchema;
 
 export function createShellApprovalService(deps: {
   approvalQueue: ApprovalQueue;
@@ -28,6 +29,7 @@ export function createShellApprovalService(deps: {
     methods: {
       resolve: { args: z.tuple([z.string(), z.enum(DECISION_VALUES)]) },
       submitOAuthClientConfig: { args: z.tuple([z.string(), oauthClientConfigValuesSchema]) },
+      submitCredentialInput: { args: z.tuple([z.string(), credentialInputValuesSchema]) },
       listPending: { args: z.tuple([]) },
     },
     handler: async (_ctx, method, args) => {
@@ -40,6 +42,11 @@ export function createShellApprovalService(deps: {
         case "submitOAuthClientConfig": {
           const [approvalId, values] = args as [string, Record<string, string>];
           approvalQueue.submitOAuthClientConfig(approvalId, values);
+          return;
+        }
+        case "submitCredentialInput": {
+          const [approvalId, values] = args as [string, Record<string, string>];
+          approvalQueue.submitCredentialInput(approvalId, values);
           return;
         }
         case "listPending": {

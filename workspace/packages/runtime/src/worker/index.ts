@@ -51,6 +51,7 @@ export type {
   BeginOAuthPkceCredentialResult,
   CompleteOAuthPkceCredentialRequest,
   CreateOAuthPkceCredentialRequest,
+  RequestCredentialInputRequest,
 } from "../shared/credentials.js";
 export type {
   CreateWebhookIngressSubscriptionRequest,

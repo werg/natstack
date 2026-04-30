@@ -1,0 +1,11 @@
+{
+  "name": "@workspace-skills/github",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "dependencies": {
+    "@workspace/runtime": "workspace:*"
+  }
+}

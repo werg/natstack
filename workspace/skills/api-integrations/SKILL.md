@@ -39,6 +39,33 @@ const stored = await credentials.store({
 });
 ```
 
+When a static token or API key must be entered by the user, do not collect it in
+chat or panel-owned React state. Use the host-owned credential input prompt.
+This prompt currently supports one required secret field; multi-field setup
+material belongs in OAuth client config or another provider-specific setup API.
+The secret is entered in NatStack's shell UI and stored encrypted after
+submission, but it is not exposed to panels, workers, or chat state.
+
+```ts
+const stored = await credentials.requestCredentialInput({
+  title: "Add Example API",
+  credential: {
+    label: "Example API",
+    audience: [{ url: "https://api.example.com/", match: "origin" }],
+    injection: {
+      type: "header",
+      name: "authorization",
+      valueTemplate: "Bearer {token}",
+    },
+    metadata: { providerId: "example" },
+  },
+  fields: [
+    { name: "token", label: "Token", type: "secret", required: true },
+  ],
+  material: { type: "bearer-token", tokenField: "token" },
+});
+```
+
 Use host-brokered OAuth PKCE when userland should initiate OAuth but should not
 receive the access token. Do not pass client secrets through userland; use
 `credentials.requestOAuthClientConfig()` and URL-bound OAuth client config PKCE
@@ -123,3 +150,5 @@ export default function ProviderSetup({ onSubmit, onCancel }) {
 
 For Google Workspace specifically, use the dedicated
 `google-workspace` skill and its setup workflow UI.
+For GitHub specifically, use the dedicated `github` skill and its fine-grained
+PAT setup workflow.

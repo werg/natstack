@@ -263,6 +263,8 @@ export const shellApproval = {
     rpc.call<void>("main", "shellApproval.resolve", approvalId, decision),
   submitOAuthClientConfig: (approvalId: string, values: Record<string, string>) =>
     rpc.call("main", "shellApproval.submitOAuthClientConfig", approvalId, values) as Promise<void>,
+  submitCredentialInput: (approvalId: string, values: Record<string, string>) =>
+    rpc.call("main", "shellApproval.submitCredentialInput", approvalId, values) as Promise<void>,
   listPending: () => rpc.call<PendingApproval[]>("main", "shellApproval.listPending"),
 };
 

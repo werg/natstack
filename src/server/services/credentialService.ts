@@ -14,6 +14,7 @@ import type {
   GetOAuthClientConfigStatusRequest,
   GrantUrlBoundCredentialRequest,
   OAuthClientConfigStatus,
+  RequestCredentialInputRequest,
   RequestOAuthClientConfigRequest,
   ResolveUrlBoundCredentialRequest,
   StoredCredentialSummary,
@@ -129,6 +130,24 @@ const requestOAuthClientConfigParamsSchema = z.object({
   fields: z.array(oauthClientConfigFieldSchema).min(1).max(16),
 }).strict();
 
+const requestCredentialInputParamsSchema = z.object({
+  title: z.string().min(1).max(256),
+  description: z.string().max(1024).optional(),
+  credential: z.object({
+    label: z.string().min(1).max(256),
+    audience: z.array(urlAudienceSchema).min(1).max(16),
+    injection: credentialInjectionSchema,
+    accountIdentity: accountIdentitySchema.optional(),
+    scopes: z.array(z.string().max(256)).optional(),
+    metadata: z.record(z.string(), z.string()).optional(),
+  }).strict(),
+  fields: z.array(oauthClientConfigFieldSchema).length(1),
+  material: z.object({
+    type: z.enum(["bearer-token", "api-key"]),
+    tokenField: identifierSchema,
+  }).strict(),
+}).strict();
+
 const getOAuthClientConfigStatusParamsSchema = z.object({
   configId: identifierSchema,
   fields: z.array(oauthClientConfigFieldSchema).max(16).optional(),
@@ -183,6 +202,7 @@ type StoreUrlBoundCredentialParams = z.infer<typeof storeUrlBoundCredentialParam
 type CreateOAuthPkceCredentialParams = z.infer<typeof createOAuthPkceCredentialParamsSchema>;
 type CompleteOAuthPkceCredentialParams = z.infer<typeof completeOAuthPkceCredentialParamsSchema>;
 type RequestOAuthClientConfigParams = z.infer<typeof requestOAuthClientConfigParamsSchema>;
+type RequestCredentialInputParams = z.infer<typeof requestCredentialInputParamsSchema>;
 type GetOAuthClientConfigStatusParams = z.infer<typeof getOAuthClientConfigStatusParamsSchema>;
 type BeginOAuthClientPkceCredentialParams = z.infer<typeof beginOAuthClientPkceCredentialParamsSchema>;
 type CredentialIdParams = z.infer<typeof credentialIdParamsSchema>;
@@ -245,6 +265,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   async function storeCredential(
     ctx: ServiceContext,
     params: StoreUrlBoundCredentialParams,
+    opts: { approvalDecision?: Exclude<GrantedDecision, "deny"> } = {},
   ): Promise<StoredCredentialSummary> {
     const request = params as StoreUrlBoundCredentialRequest;
     const id = randomUUID();
@@ -253,7 +274,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     const identity = codeIdentityResolver?.resolveByCallerId(ctx.callerId) ?? null;
     const now = Date.now();
     const approvalIdentity = resolveApprovalIdentity(ctx);
-    const approvalDecision = await requestCredentialApproval(ctx, {
+    const approvalDecision = opts.approvalDecision ?? (await requestCredentialApproval(ctx, {
       credentialId: id,
       credentialLabel: request.label,
       audience,
@@ -262,7 +283,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       scopes: request.scopes ?? [],
       identity: approvalIdentity,
       metadata: request.metadata,
-    });
+    }));
     const owner = {
       sourceId: identity?.repoPath ?? ctx.callerId,
       sourceKind: identity ? "workspace" as const : "user" as const,
@@ -446,6 +467,75 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     const request = params as GetOAuthClientConfigStatusRequest;
     const record = await oauthClientConfigStore.load(request.configId);
     return oauthClientConfigStore.summarize(request.configId, record, request.fields);
+  }
+
+  async function requestCredentialInput(
+    ctx: ServiceContext,
+    params: RequestCredentialInputParams,
+  ): Promise<StoredCredentialSummary> {
+    const request = params as RequestCredentialInputRequest;
+    if (!approvalQueue || (ctx.callerKind !== "panel" && ctx.callerKind !== "worker")) {
+      throw new Error("Credential input approval is unavailable");
+    }
+    if (request.fields.length !== 1) {
+      throw new Error("Credential input expects exactly one secret field");
+    }
+    const tokenField = request.fields[0]!;
+    if (tokenField.name !== request.material.tokenField) {
+      throw new Error("Credential input tokenField must match the submitted secret field");
+    }
+    if (tokenField.type !== "secret") {
+      throw new Error("Credential input tokenField must be a secret field");
+    }
+    if (tokenField.required !== true) {
+      throw new Error("Credential input tokenField must be required");
+    }
+    const audience = normalizeUrlAudiences(request.credential.audience);
+    const injection = normalizeCredentialInjection(request.credential.injection);
+    const accountIdentity = normalizeAccountIdentity(request.credential.accountIdentity, ctx.callerId);
+    const identity = resolveApprovalIdentity(ctx);
+    const result = await approvalQueue.requestCredentialInput({
+      kind: "credential-input",
+      callerId: ctx.callerId,
+      callerKind: ctx.callerKind,
+      repoPath: identity.repoPath,
+      effectiveVersion: identity.effectiveVersion,
+      title: request.title,
+      description: request.description,
+      credentialLabel: request.credential.label,
+      audience,
+      injection,
+      accountIdentity,
+      scopes: request.credential.scopes ?? [],
+      fields: request.fields.map((field) => ({
+        name: field.name,
+        label: field.label,
+        type: field.type,
+        required: field.required ?? false,
+        description: field.description,
+      })),
+    });
+    if (result.decision !== "submit") {
+      throw new Error("Credential input approval denied");
+    }
+
+    const token = result.values[request.material.tokenField]?.trim() ?? "";
+    if (!token) {
+      throw new Error(`Credential input field is required: ${request.material.tokenField}`);
+    }
+
+    return storeCredential(ctx, {
+      label: request.credential.label,
+      audience,
+      injection,
+      material: {
+        type: request.material.type,
+        token,
+      },
+      accountIdentity,
+      scopes: request.credential.scopes ?? [],
+      metadata: request.credential.metadata,
+    }, { approvalDecision: "session" });
   }
 
   async function beginCreateWithOAuthClientPkce(
@@ -836,6 +926,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       beginCreateWithOAuthClientPkce: { args: z.tuple([beginOAuthClientPkceCredentialParamsSchema]) },
       completeCreateWithOAuthPkce: { args: z.tuple([completeOAuthPkceCredentialParamsSchema]) },
       requestOAuthClientConfig: { args: z.tuple([requestOAuthClientConfigParamsSchema]) },
+      requestCredentialInput: { args: z.tuple([requestCredentialInputParamsSchema]) },
       getOAuthClientConfigStatus: { args: z.tuple([getOAuthClientConfigStatusParamsSchema]) },
       listStoredCredentials: { args: z.tuple([]) },
       revokeCredential: { args: z.tuple([credentialIdParamsSchema]) },
@@ -856,6 +947,8 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
           return completeCreateWithOAuthPkce(ctx, (args as [CompleteOAuthPkceCredentialParams])[0]);
         case "requestOAuthClientConfig":
           return requestOAuthClientConfig(ctx, (args as [RequestOAuthClientConfigParams])[0]);
+        case "requestCredentialInput":
+          return requestCredentialInput(ctx, (args as [RequestCredentialInputParams])[0]);
         case "getOAuthClientConfigStatus":
           return getOAuthClientConfigStatus(ctx, (args as [GetOAuthClientConfigStatusParams])[0]);
         case "listStoredCredentials":

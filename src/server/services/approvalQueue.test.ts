@@ -177,4 +177,88 @@ describe("approvalQueue", () => {
       },
     });
   });
+
+  it("supports credential input approvals without exposing submitted secrets in pending state", async () => {
+    const { queue } = createQueue();
+    const promise = queue.requestCredentialInput({
+      kind: "credential-input",
+      callerId: "panel:1",
+      callerKind: "panel",
+      repoPath: "panels/example",
+      effectiveVersion: "hash-1",
+      title: "Add GitHub",
+      credentialLabel: "GitHub",
+      audience: [
+        { url: "https://api.github.com/", match: "origin" },
+      ],
+      injection: {
+        type: "header",
+        name: "authorization",
+        valueTemplate: "Bearer {token}",
+      },
+      accountIdentity: { providerUserId: "github-pat" },
+      scopes: ["contents:read"],
+      fields: [
+        { name: "token", label: "Fine-grained PAT", type: "secret", required: true },
+      ],
+    });
+
+    const pending = queue.listPending()[0]!;
+    expect(pending).toMatchObject({
+      kind: "credential-input",
+      credentialLabel: "GitHub",
+      fields: [{ name: "token", type: "secret" }],
+    });
+    expect(JSON.stringify(pending)).not.toContain("github_pat_1");
+
+    queue.submitCredentialInput(pending.approvalId, {
+      token: "github_pat_1",
+    });
+
+    await expect(promise).resolves.toEqual({
+      decision: "submit",
+      values: {
+        token: "github_pat_1",
+      },
+    });
+  });
+
+  it("does not deduplicate credential input approvals", async () => {
+    const { queue } = createQueue();
+    const request = {
+      kind: "credential-input" as const,
+      callerId: "panel:1",
+      callerKind: "panel" as const,
+      repoPath: "panels/example",
+      effectiveVersion: "hash-1",
+      title: "Add GitHub",
+      credentialLabel: "GitHub",
+      audience: [{ url: "https://api.github.com/", match: "origin" as const }],
+      injection: {
+        type: "header" as const,
+        name: "authorization",
+        valueTemplate: "Bearer {token}",
+      },
+      accountIdentity: { providerUserId: "github-pat" },
+      scopes: ["contents:read"],
+      fields: [
+        { name: "token", label: "Fine-grained PAT", type: "secret" as const, required: true },
+      ],
+    };
+    const first = queue.requestCredentialInput(request);
+    const second = queue.requestCredentialInput(request);
+
+    const pending = queue.listPending();
+    expect(pending).toHaveLength(2);
+
+    queue.submitCredentialInput(pending[0]!.approvalId, { token: "github_pat_1" });
+    await expect(first).resolves.toEqual({
+      decision: "submit",
+      values: { token: "github_pat_1" },
+    });
+    expect(queue.listPending()).toHaveLength(1);
+
+    queue.resolve(queue.listPending()[0]!.approvalId, "deny");
+    await expect(second).resolves.toEqual({ decision: "deny" });
+  });
 });

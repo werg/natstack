@@ -59,7 +59,20 @@ export interface PendingOAuthClientConfigApproval extends PendingApprovalBase {
   fields: PendingOAuthClientConfigField[];
 }
 
+export interface PendingCredentialInputApproval extends PendingApprovalBase {
+  kind: "credential-input";
+  title: string;
+  description?: string;
+  credentialLabel: string;
+  audience: UrlAudience[];
+  injection: CredentialInjection;
+  accountIdentity: AccountIdentity;
+  scopes: string[];
+  fields: PendingOAuthClientConfigField[];
+}
+
 export type PendingApproval =
   | PendingCredentialApproval
   | PendingCapabilityApproval
-  | PendingOAuthClientConfigApproval;
+  | PendingOAuthClientConfigApproval
+  | PendingCredentialInputApproval;
