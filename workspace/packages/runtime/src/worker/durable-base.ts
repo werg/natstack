@@ -12,7 +12,7 @@ import { createHttpRpcBridge } from "../shared/httpRpcBridge.js";
 import { createCredentialClient, type CredentialClient } from "../shared/credentials.js";
 import { createNotificationClient, type NotificationClient } from "../shared/notifications.js";
 import { createDbClient } from "../shared/database.js";
-import { createRpcFs } from "../shared/rpcFs.js";
+import { _initFsWithRpc } from "./fs.js";
 import { createParentHandle } from "../shared/handles.js";
 import type { RpcBridge } from "@natstack/rpc";
 import type { DbClient } from "@natstack/types";
@@ -279,7 +279,7 @@ export abstract class DurableObjectBase {
 
   /** Filesystem client */
   protected get fs(): RuntimeFs {
-    if (!this._fs) this._fs = createRpcFs(this.rpc);
+    if (!this._fs) this._fs = _initFsWithRpc(this.rpc);
     return this._fs;
   }
 
