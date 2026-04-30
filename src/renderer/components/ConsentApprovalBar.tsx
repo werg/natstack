@@ -260,15 +260,15 @@ function OAuthClientConfigActions({
         marginLeft: "auto",
       }}
     >
-      <Tooltip content={missingRequired ? "Enter the required fields first." : "Save this URL-bound OAuth client."}>
+      <Tooltip content={missingRequired ? "Enter the required fields first." : "Save this connected service."}>
         <Button size="1" variant="solid" disabled={missingRequired} onClick={onSubmit}>
           <CheckCircledIcon />
-          Save OAuth client
+          Save service
         </Button>
       </Tooltip>
       <DecisionButton
         label="Deny"
-        description="Do not save this OAuth client."
+        description="Do not save this connected service."
         color="red"
         icon={<CrossCircledIcon />}
         onClick={onDeny}
@@ -337,8 +337,9 @@ function ApprovalDetails({
   callerLabel: string;
   defaultOpen: boolean;
 }) {
+  const detailsProps = defaultOpen ? { open: true } : {};
   return (
-    <details className="approval-details" open={defaultOpen}>
+    <details className="approval-details" {...detailsProps}>
       <summary>
         <ChevronDownIcon className="approval-details-chevron" width={13} height={13} />
         Request details
@@ -387,7 +388,7 @@ function OAuthClientConfigFields({
   return (
     <Flex direction="column" gap="2" pt="1" style={{ maxWidth: 620 }}>
       <Text size="1" color="gray" style={{ lineHeight: 1.35 }}>
-        Secret fields are stored encrypted and can only be used with the approved OAuth token URL.
+        Secret fields are stored encrypted and only used when connecting to this service.
       </Text>
       {approval.fields.map((field) => (
         <Flex key={field.name} direction="column" gap="1">
@@ -608,25 +609,32 @@ function getApprovalCopy(
 ): { title: string; summary: string; warning?: string } {
   const requester = `${callerLabel} ${approval.callerId}`;
   if (approval.kind === "capability") {
-    const destination = getCapabilityPrimaryDestination(approval);
+    const isOAuth = isOAuthExternalApproval(approval);
+    const destination = formatCapabilityDestination(approval, isOAuth);
+    if (isOAuth) {
+      return {
+        title: "Connect to service",
+        summary: `${requester} wants to connect to ${destination} in your browser.`,
+      };
+    }
     return {
-      title: approval.title,
+      title: "Open external site",
       summary: `${requester} wants to open ${destination} in your system browser.`,
     };
   }
   if (approval.kind === "oauth-client-config") {
     return {
-      title: approval.title,
-      summary: `${requester} wants to save OAuth client material for ${approval.configId}; secrets will be bound to ${originForUrl(approval.tokenUrl)}.`,
+      title: "Add service",
+      summary: `${requester} wants to add ${formatServiceName(approval.configId)} as a connected service. Secrets stay encrypted and are only sent to ${formatUrlForSummary(approval.tokenUrl, "origin")}.`,
     };
   }
 
   const audience = formatAudienceSummary(approval);
   return {
-    title: "Use stored credential",
-    summary: `${requester} wants to use ${approval.credentialLabel} for ${audience}.`,
+    title: "Use connected service",
+    summary: `${requester} wants to use ${approval.credentialLabel} with ${audience}.`,
     warning: approval.oauthAudienceDomainMismatch
-      ? "Check the details first: the OAuth provider domain does not match the credential audience."
+      ? "The sign-in domain differs from the service domain."
       : undefined,
   };
 }
@@ -640,13 +648,8 @@ function getCapabilityPrimaryDestination(approval: PendingCapabilityApproval): s
 }
 
 function shouldOpenApprovalDetails(approval: PendingApproval): boolean {
-  if (approval.kind === "credential") {
-    return approval.oauthAudienceDomainMismatch === true;
-  }
-  if (approval.kind === "oauth-client-config") {
-    return true;
-  }
-  return approval.details?.some((detail) => detail.label.toLowerCase() === "oauth callback") === true;
+  void approval;
+  return false;
 }
 
 function originForUrl(raw: string): string {
@@ -661,14 +664,9 @@ function formatAudienceSummary(approval: PendingCredentialApproval): string {
   if (approval.audience.length === 0) return "an unspecified audience";
   const first = approval.audience[0];
   if (!first) return "an unspecified audience";
-  let origin = first.url;
-  try {
-    origin = new URL(first.url).origin;
-  } catch {
-    // Keep the original URL if it is not parseable in the renderer.
-  }
+  const audience = formatUrlForSummary(first.url, first.match === "origin" ? "origin" : "path");
   const extraCount = approval.audience.length - 1;
-  return extraCount > 0 ? `${origin} and ${extraCount} more` : origin;
+  return extraCount > 0 ? `${audience} and ${extraCount} more` : audience;
 }
 
 function formatAccount(approval: PendingCredentialApproval): string {
@@ -688,4 +686,50 @@ function formatInjection(approval: PendingCredentialApproval): string {
     return `query ${injection.name}`;
   }
   return `header ${injection.name}`;
+}
+
+function isOAuthExternalApproval(approval: PendingCapabilityApproval): boolean {
+  return approval.details?.some((detail) => detail.label.toLowerCase() === "oauth callback") === true;
+}
+
+function formatCapabilityDestination(approval: PendingCapabilityApproval, oauth: boolean): string {
+  const rawDestination = getCapabilityPrimaryDestination(approval);
+  return formatUrlForSummary(rawDestination, oauth ? "origin" : "path");
+}
+
+function formatUrlForSummary(raw: string, mode: "origin" | "path" = "path"): string {
+  try {
+    const url = new URL(raw);
+    if (url.protocol === "mailto:") {
+      return "email";
+    }
+    const host = url.hostname;
+    if (mode === "origin") {
+      return host;
+    }
+    const path = compactPath(url.pathname);
+    return path ? `${host}${path}` : host;
+  } catch {
+    return raw.length > 64 ? `${raw.slice(0, 61)}...` : raw;
+  }
+}
+
+function compactPath(pathname: string): string {
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments.length === 0) {
+    return "";
+  }
+  const first = segments[0] ?? "";
+  if (!first || first.length > 32) {
+    return "";
+  }
+  return `/${first}${segments.length > 1 ? "/..." : ""}`;
+}
+
+function formatServiceName(configId: string): string {
+  return configId
+    .split(/[-_.]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ") || "this service";
 }
