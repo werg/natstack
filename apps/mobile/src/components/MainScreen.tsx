@@ -34,7 +34,7 @@ interface WebViewEntry {
 
 function addWebViewEntry(entries: WebViewEntry[], nextEntry: WebViewEntry): WebViewEntry[] {
   const withoutExisting = entries.filter((entry) => entry.panelId !== nextEntry.panelId);
-  let nextEntries = [...withoutExisting, nextEntry];
+  const nextEntries = [...withoutExisting, nextEntry];
   if (nextEntries.length <= MAX_WEBVIEWS) return nextEntries;
   const candidates = nextEntries
     .filter((entry) => entry.panelId !== nextEntry.panelId)
@@ -199,7 +199,7 @@ export function MainScreen() {
       if (!approval || shownApprovals.has(approval.approvalId)) return;
       shownApprovals.add(approval.approvalId);
       Alert.alert(
-        approval.kind === "capability" ? approval.title : "Credential access request",
+        approval.kind === "capability" ? approval.title : "Use stored credential",
         formatApprovalMessage(approval),
         [
           {
@@ -208,15 +208,15 @@ export function MainScreen() {
             onPress: () => resolveApproval(approval.approvalId, "deny"),
           },
           {
-            text: "Session",
+            text: "Allow Session",
             onPress: () => resolveApproval(approval.approvalId, "session"),
           },
           {
-            text: "Version",
+            text: "Trust Version",
             onPress: () => resolveApproval(approval.approvalId, "version"),
           },
           {
-            text: "Repo",
+            text: "Trust Repo",
             onPress: () => resolveApproval(approval.approvalId, "repo"),
           },
         ],
@@ -458,12 +458,17 @@ export function MainScreen() {
 function formatApprovalMessage(approval: PendingApproval): string {
   const caller = `${approval.callerKind === "worker" ? "Worker" : "Panel"} ${approval.callerId}`;
   if (approval.kind === "capability") {
-    const resource = approval.resource ? `\n${approval.resource.label}: ${approval.resource.value}` : "";
-    const details = approval.details?.map((detail) => `\n${detail.label}: ${detail.value}`).join("") ?? "";
-    return `${caller} requests permission: ${approval.description ?? approval.title}.${resource}${details}`;
+    const destination =
+      approval.details?.find((detail) => detail.label.toLowerCase() === "url")?.value ??
+      approval.resource?.value ??
+      "an external destination";
+    return `${caller} wants to open ${destination} in your system browser.\n\nApprove only if you expected this handoff.`;
   }
-  const audience = approval.audience.map((entry) => entry.origin).join(", ");
-  return `${caller} wants to use ${approval.credentialLabel}.\nAudience: ${audience || "unspecified"}`;
+  const audience = approval.audience.map((entry) => entry.url).join(", ") || "unspecified audience";
+  const warning = approval.oauthAudienceDomainMismatch
+    ? "\n\nCheck first: the OAuth provider domain does not match the credential audience."
+    : "";
+  return `${caller} wants to use ${approval.credentialLabel} for ${audience}.\n\nAllow Session is temporary. Trust Version and Trust Repo allow reuse.${warning}`;
 }
 
 const styles = StyleSheet.create({

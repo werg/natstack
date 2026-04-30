@@ -33,3 +33,57 @@
 .breadcrumb-archive-btn:hover {
   background-color: var(--red-a4);
 }
+
+/* Approval details: native disclosure with shell chrome styling */
+.approval-details {
+  width: fit-content;
+  max-width: 100%;
+}
+
+.approval-details summary {
+  align-items: center;
+  color: var(--gray-11);
+  cursor: pointer;
+  display: flex;
+  font-size: 12px;
+  gap: 4px;
+  line-height: 1.25;
+  list-style: none;
+  outline: none;
+  user-select: none;
+}
+
+.approval-details summary:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--accent-8);
+  outline-offset: 2px;
+}
+
+.approval-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.approval-details summary:hover {
+  color: var(--gray-12);
+}
+
+.approval-details-chevron {
+  flex-shrink: 0;
+  transform: rotate(-90deg);
+  transition: transform 120ms ease;
+}
+
+.approval-details[open] .approval-details-chevron {
+  transform: rotate(0deg);
+}
+
+.approval-actions {
+  max-width: 100%;
+}
+
+@media (max-width: 760px) {
+  .approval-actions {
+    margin-left: 0 !important;
+    width: 100%;
+  }
+}
