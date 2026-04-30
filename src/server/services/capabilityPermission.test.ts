@@ -62,6 +62,35 @@ describe("capabilityPermission", () => {
     }));
   });
 
+  it.each(["version", "repo"] as const)("reuses %s-scoped capability grants", async (decision) => {
+    const approvalQueue = createApprovalQueueMock(decision);
+    const deps = {
+      approvalQueue,
+      grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
+      codeIdentityResolver: {
+        resolveByCallerId: () => ({
+          callerId: "worker:source",
+          callerKind: "worker" as const,
+          repoPath: "workers/source",
+          effectiveVersion: "version-1",
+        }),
+      },
+    };
+    const request = {
+      callerId: "worker:source",
+      callerKind: "worker",
+      capability: "example-capability",
+      resource: { type: "example", label: "Example", value: "stable-key" },
+      title: "Example action",
+      deniedReason: "Denied",
+    };
+
+    await requestCapabilityPermission(deps, request);
+    await requestCapabilityPermission(deps, request);
+
+    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
+  });
+
   it("does not store allow-once grants", async () => {
     const approvalQueue = createApprovalQueueMock("once");
     const deps = {

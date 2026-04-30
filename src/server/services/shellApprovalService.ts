@@ -13,7 +13,7 @@ import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { ApprovalDecision } from "@natstack/shared/approvals";
 import type { ApprovalQueue } from "./approvalQueue.js";
 
-const DECISION_VALUES = ["session", "version", "repo", "deny", "dismiss"] as const;
+const DECISION_VALUES = ["once", "session", "version", "repo", "deny", "dismiss"] as const;
 const oauthClientConfigValuesSchema = z.record(z.string().min(1).max(128), z.string().max(4096));
 
 export function createShellApprovalService(deps: {

@@ -301,6 +301,56 @@ describe("credentialService", () => {
     expect((await store.loadUrlBound(stored.id))?.allowedCallers).toEqual([]);
   });
 
+  it.each(["version", "repo"] as const)("reuses %s credential access grants", async (decision) => {
+    const store = new MemoryCredentialStore();
+    const approvalQueue = {
+      request: vi.fn(async () => decision),
+      resolve: vi.fn(),
+      listPending: vi.fn(() => []),
+    };
+    const service = createCredentialService({
+      credentialStore: store as never,
+      approvalQueue: approvalQueue as never,
+      sessionGrantStore: new CredentialSessionGrantStore(),
+      codeIdentityResolver: {
+        resolveByCallerId: (callerId: string) => callerId === "worker:owner"
+          ? { callerId, callerKind: "worker", repoPath: "/owner", effectiveVersion: "hash-1" }
+          : { callerId, callerKind: "worker", repoPath: "/consumer", effectiveVersion: "hash-1" },
+      },
+    });
+
+    const stored = await service.handler(
+      { callerId: "worker:owner", callerKind: "worker" },
+      "storeCredential",
+      [{
+        label: "Example API",
+        audience: [{ url: "https://api.example.test/", match: "origin" }],
+        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        material: { type: "bearer-token", token: "secret-token" },
+      }],
+    ) as StoredCredentialSummary;
+    approvalQueue.request.mockClear();
+
+    await service.handler(
+      { callerId: "worker:consumer", callerKind: "worker" },
+      "resolveCredential",
+      [{ url: "https://api.example.test/v1" }],
+    );
+    await service.handler(
+      { callerId: "worker:consumer", callerKind: "worker" },
+      "resolveCredential",
+      [{ url: "https://api.example.test/v1" }],
+    );
+
+    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
+    expect((await store.loadUrlBound(stored.id))?.allowedCallers).toContainEqual(
+      expect.objectContaining({
+        callerId: decision === "repo" ? "repo:/consumer" : "version:/consumer:hash-1",
+        grantedBy: decision,
+      }),
+    );
+  });
+
   it("creates URL-bound credentials through generic OAuth PKCE and discards refresh tokens", async () => {
     const store = new MemoryCredentialStore();
     const service = createCredentialService({ credentialStore: store as never });

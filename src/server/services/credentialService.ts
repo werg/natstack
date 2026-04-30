@@ -774,10 +774,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     if (ctx.callerKind === "shell" || ctx.callerKind === "server") {
       return true;
     }
-    if (canCallerUseCredential(ctx, credential)) {
-      return true;
-    }
-    if (hasSessionCredentialUse(ctx, credential)) {
+    if (canCallerUseStoredCredential(ctx, credential)) {
       return true;
     }
     const identity = codeIdentityResolver?.resolveByCallerId(ctx.callerId);
@@ -797,7 +794,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     if (ctx.callerKind === "shell" || ctx.callerKind === "server") {
       return true;
     }
-    return canCallerUseCredential(ctx, credential) || hasSessionCredentialUse(ctx, credential);
+    return canCallerUseCredential(ctx, credential)
+      || hasPersistentCredentialUse(ctx, credential)
+      || hasSessionCredentialUse(ctx, credential);
   }
 
   function canCallerAdministerStoredCredential(ctx: ServiceContext, credential: Credential): boolean {
@@ -817,6 +816,14 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       return false;
     }
     return sessionGrantStore.has(credentialId, resolveApprovalIdentity(ctx));
+  }
+
+  function hasPersistentCredentialUse(ctx: ServiceContext, credential: Credential): boolean {
+    const identity = resolveApprovalIdentity(ctx);
+    return !!credential.allowedCallers?.some((grant) =>
+      grant.callerId === `repo:${identity.repoPath}`
+      || grant.callerId === `version:${identity.repoPath}:${identity.effectiveVersion}`
+    );
   }
 
   return {

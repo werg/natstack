@@ -231,4 +231,49 @@ describe("EgressProxy", () => {
     expect(approvalQueue.request).toHaveBeenCalledTimes(1);
     expect(store.loadUrlBound("cred-1")?.allowedCallers).toEqual([]);
   });
+
+  it.each(["version", "repo"] as const)("reuses persisted %s grants across callers", async (decision) => {
+    const credential = createCredential({ allowedCallers: [] });
+    const store = new MemoryCredentialStore(new Map([[credential.id!, credential]]));
+    const approvalQueue = {
+      request: vi.fn(async () => decision),
+      resolve: vi.fn(),
+      listPending: vi.fn(() => []),
+    };
+    const proxy = new EgressProxy({
+      credentialStore: store,
+      auditLog: new MemoryAuditLog() as never,
+      approvalQueue: approvalQueue as never,
+      codeIdentityResolver: {
+        resolveByCallerId: (callerId: string) => {
+          if (callerId === "worker:first" || callerId === "do:worker:first") {
+            return { callerId, callerKind: "worker", repoPath: "/repo", effectiveVersion: "hash-1" };
+          }
+          return null;
+        },
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("ok", { status: 200, statusText: "OK" })));
+
+    await proxy.forwardProxyFetch({
+      callerId: "worker:first",
+      credentialId: "cred-1",
+      url: "https://api.example.test/v1/items",
+      method: "GET",
+    });
+    await proxy.forwardProxyFetch({
+      callerId: "do:worker:first",
+      credentialId: "cred-1",
+      url: "https://api.example.test/v1/items",
+      method: "GET",
+    });
+
+    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
+    expect(store.loadUrlBound("cred-1")?.allowedCallers).toContainEqual(
+      expect.objectContaining({
+        callerId: decision === "repo" ? "repo:/repo" : "version:/repo:hash-1",
+        grantedBy: decision,
+      }),
+    );
+  });
 });
