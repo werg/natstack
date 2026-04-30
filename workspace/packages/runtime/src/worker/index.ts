@@ -31,7 +31,7 @@ import type { RpcBridge } from "@natstack/rpc";
 import { createHttpRpcBridge } from "../shared/httpRpcBridge.js";
 import type { OpenExternalOptions } from "@natstack/shared/externalOpen";
 import { createDbClient } from "../shared/database.js";
-import { createRpcFs } from "../shared/rpcFs.js";
+import { fs, _initFsWithRpc } from "./fs.js";
 import { createCredentialClient, type CredentialClient } from "../shared/credentials.js";
 import { createWebhookIngressClient, type WebhookIngressClient } from "../shared/webhooks.js";
 import { createWorkerdClient, type WorkerdClient } from "../shared/workerd.js";
@@ -67,6 +67,7 @@ export type {
 export type { NotificationClient } from "../shared/notifications.js";
 export { DurableObjectBase } from "./durable-base.js";
 export type { DurableObjectContext, SqlStorage, SqlResult, DORef } from "./durable-base.js";
+export { fs } from "./fs.js";
 // Note: createTestDO is intentionally NOT exported here — it depends on better-sqlite3
 // which is a Node.js-only dependency that can't be bundled for workerd.
 // Import directly from "@workspace/runtime/src/worker/durable-test-utils" in tests.
@@ -163,7 +164,7 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     authToken: env.RPC_AUTH_TOKEN,
   });
 
-  const fs = createRpcFs(rpc);
+  const runtimeFs = _initFsWithRpc(rpc);
   const db = createDbClient(rpc);
   const workers = helpfulNamespace("workers", createWorkerdClient(rpc));
   const workspaceApi = helpfulNamespace("workspace", createWorkspaceClient(rpc));
@@ -187,9 +188,9 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     },
     client(options: { credentialId?: string } = {}) {
       if (!gitConfig) {
-        return new GitClient(fs, { http: credentials.gitHttp({ credentialId: options.credentialId }) });
+        return new GitClient(runtimeFs, { http: credentials.gitHttp({ credentialId: options.credentialId }) });
       }
-      return new GitClient(fs, {
+      return new GitClient(runtimeFs, {
         serverUrl: gitConfig.serverUrl,
         http: createRoutingHttpClient({
           internalOrigin: gitConfig.serverUrl,
@@ -211,7 +212,7 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     id: workerId,
     rpc,
     db,
-    fs,
+    fs: runtimeFs,
     workers,
     workspace: workspaceApi,
     credentials,

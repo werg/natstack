@@ -466,7 +466,8 @@ export const writeFileSync = existsSync;
 export const readdirSync = existsSync;
 export const statSync = existsSync;
 export const mkdirSync = existsSync;
-export default { promises: _fs, readFile: (...a) => _fs.readFile(...a), writeFile: (...a) => _fs.writeFile(...a), readdir: (...a) => _fs.readdir(...a), stat: (...a) => _fs.stat(...a), constants: {}, existsSync, readFileSync, writeFileSync, readdirSync, statSync, mkdirSync };`;
+export const realpathSync = existsSync;
+export default { promises: _fs, readFile: (...a) => _fs.readFile(...a), writeFile: (...a) => _fs.writeFile(...a), readdir: (...a) => _fs.readdir(...a), stat: (...a) => _fs.stat(...a), constants: {}, existsSync, readFileSync, writeFileSync, readdirSync, statSync, mkdirSync, realpathSync };`;
           return { contents, loader: "js", resolveDir };
         },
       );
@@ -558,6 +559,24 @@ export default { getRandomValues, randomBytes, createHash };`,
           loader: "js",
         }),
       );
+    },
+  };
+}
+
+function createWorkerBufferShimPlugin(resolveDir: string): esbuild.Plugin {
+  return {
+    name: "worker-buffer-shim",
+    setup(build) {
+      build.onResolve({ filter: /^(buffer|node:buffer)$/ }, async (args) => {
+        const result = await build.resolve("buffer/", {
+          kind: args.kind,
+          resolveDir,
+        });
+        if (!result.errors || result.errors.length === 0) {
+          return result;
+        }
+        return null;
+      });
     },
   };
 }
@@ -725,7 +744,7 @@ export function generateExposeModuleCode(
   if (runtimeIndex >= 0) {
     const rtVar = `__mod${runtimeIndex}__`;
     shimLines.push(`(function() {
-  var _fs = ${rtVar}.fs;
+  var _fs = ${rtVar}["fs"];
   if (!_fs) return;
   var fsShim = { promises: _fs, default: null, constants: {} };
   var methods = ["readFile","writeFile","readdir","stat","lstat","mkdir","rmdir","unlink","rename","copyFile","access","rm","symlink","readlink","realpath","appendFile","chmod","chown","truncate","utimes","open"];
@@ -773,6 +792,12 @@ export function generateWorkerEntry(exposeEntryFile: string, entryFile: string):
   return `import ${JSON.stringify(exposeEntryFile)};
 export * from ${JSON.stringify(entryFile)};
 export { default } from ${JSON.stringify(entryFile)};
+`;
+}
+
+export function generateForcedSplitEntry(specifier: string): string {
+  return `import * as __natstackForcedSplitModule from ${JSON.stringify(specifier)};
+export { __natstackForcedSplitModule };
 `;
 }
 
@@ -1004,7 +1029,7 @@ async function buildPanel(
       outdir,
       `_split_${index}_${sanitizeModuleForFileName(specifier)}.js`,
     );
-    fs.writeFileSync(moduleEntry, `import ${JSON.stringify(specifier)};\n`);
+    fs.writeFileSync(moduleEntry, generateForcedSplitEntry(specifier));
     entryPoints[`split-${index}`] = moduleEntry;
   }
 
@@ -1337,7 +1362,6 @@ export const createInterface = stubFn;
  */
 const WORKER_NODE_BUILTIN_EXTERNALS: readonly string[] = [
   "node:assert",
-  "node:buffer",
   "node:console",
   "node:crypto",
   "node:events",
@@ -1361,7 +1385,6 @@ const WORKER_NODE_BUILTIN_EXTERNALS: readonly string[] = [
   // Bare (non-prefixed) builtins — same deal, stay external so workerd
   // can satisfy them via nodejs_compat.
   "assert",
-  "buffer",
   "console",
   "crypto",
   "events",
@@ -1423,6 +1446,7 @@ async function buildWorker(
   const plugins: esbuild.Plugin[] = [
     createWorkspaceResolvePlugin(graph, workspaceRoot, sourceRoot, WORKER_CONDITIONS),
     createTsExtensionPlugin(sourceRoot),
+    createWorkerBufferShimPlugin(resolveDir),
     // Stub Node built-ins that workerd's nodejs_compat does NOT provide
     // (e.g. child_process, worker_threads) so the bundle links even when
     // transitive SDK deps import them for dead code paths.

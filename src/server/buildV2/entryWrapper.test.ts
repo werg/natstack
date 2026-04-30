@@ -11,6 +11,7 @@ import {
   generateModuleMapBootstrap,
   generateExposeModuleCode,
   generateWorkerEntry,
+  generateForcedSplitEntry,
 } from "./builder.js";
 
 describe("generateModuleMapBootstrap (panel target)", () => {
@@ -90,6 +91,12 @@ describe("generateExposeModuleCode", () => {
     expect(code).toContain('import * as __mod0__ from "@workspace/runtime"');
   });
 
+  it("worker target synthesizes fs shims from runtime exports", () => {
+    const code = generateExposeModuleCode(["@workspace/runtime"], "worker");
+    expect(code).toContain('map["fs"]');
+    expect(code).toContain('__mod0__["fs"]');
+  });
+
   it("panel target produces the panel-flavored bootstrap", () => {
     const code = generateExposeModuleCode(["react"], "panel");
     expect(code).toContain("__natstackRequireAsync__");
@@ -119,5 +126,14 @@ describe("generateWorkerEntry", () => {
     );
     expect(code).toContain('"/tmp/path with spaces/_expose.js"');
     expect(code).toContain('"/src/path with spaces/index.ts"');
+  });
+});
+
+describe("generateForcedSplitEntry", () => {
+  it("uses a live namespace import instead of a bare side-effect import", () => {
+    const code = generateForcedSplitEntry("@radix-ui/react-icons");
+    expect(code).toContain('import * as __natstackForcedSplitModule from "@radix-ui/react-icons"');
+    expect(code).toContain("export { __natstackForcedSplitModule }");
+    expect(code).not.toContain('import "@radix-ui/react-icons"');
   });
 });
