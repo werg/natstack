@@ -59,6 +59,7 @@ export interface CreateOAuthPkceCredentialRequest {
     authorizeUrl: string;
     tokenUrl: string;
     clientId: string;
+    clientSecret?: string;
     scopes?: string[];
     extraAuthorizeParams?: Record<string, string>;
     allowMissingExpiry?: boolean;

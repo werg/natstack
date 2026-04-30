@@ -74,6 +74,7 @@ export interface GoogleOnboardingStatusOptions {
 
 export interface ConnectGoogleOptions {
   clientId?: string;
+  clientSecret?: string;
   scopes?: string[];
 }
 
@@ -142,12 +143,24 @@ function isGoogleCredential(credential: StoredCredentialSummary): boolean {
   });
 }
 
-async function getConfiguredClientId(): Promise<string | undefined> {
+interface GoogleOAuthClientMaterial {
+  clientId?: string;
+  clientSecret?: string;
+}
+
+function hasCompleteGoogleOAuthClientMaterial(material: GoogleOAuthClientMaterial): boolean {
+  return !!material.clientId && !!material.clientSecret;
+}
+
+async function getConfiguredClientMaterial(): Promise<GoogleOAuthClientMaterial> {
   const config = (await workspace.getConfig()) as WorkspaceConfig;
-  return (
-    config.credentials?.providers?.[GOOGLE_PROVIDER_ID]?.clientId ??
-    config.credentials?.providers?.["google"]?.clientId
-  );
+  const provider =
+    config.credentials?.providers?.[GOOGLE_PROVIDER_ID] ??
+    config.credentials?.providers?.["google"];
+  return {
+    clientId: provider?.clientId,
+    clientSecret: provider?.clientSecret,
+  };
 }
 
 function getPrimaryCredential(
@@ -167,7 +180,7 @@ function getNextActions(
     case "needs-setup":
       return [
         "Render the Google Workspace setup workflow from SETUP.md.",
-        "Save a Desktop app OAuth client_id under credentials.providers.google-workspace.clientId.",
+        "Save a Desktop app OAuth client_id and client_secret under credentials.providers.google-workspace.",
       ];
     case "ready-to-connect":
       return ["Run connectGoogle() to create the Google Workspace credential."];
@@ -217,6 +230,7 @@ function buildStatus(input: {
 
 export async function beginGoogleCredentialCreation(opts: {
   clientId: string;
+  clientSecret: string;
   redirectUri: string;
   scopes?: string[];
 }): Promise<BeginOAuthPkceCredentialResult> {
@@ -226,6 +240,7 @@ export async function beginGoogleCredentialCreation(opts: {
         authorizeUrl: GOOGLE_AUTH_URL,
         tokenUrl: GOOGLE_TOKEN_URL,
         clientId: opts.clientId,
+        clientSecret: opts.clientSecret,
         scopes: getDefaultScopes(opts.scopes),
         extraAuthorizeParams: {
           access_type: "offline",
@@ -317,9 +332,9 @@ export async function getGoogleOnboardingStatus(
 ): Promise<GoogleOnboardingStatus> {
   const warnings: string[] = [];
   try {
-    let configured = false;
+    let configuredClient: GoogleOAuthClientMaterial = {};
     try {
-      configured = !!(await getConfiguredClientId());
+      configuredClient = await getConfiguredClientMaterial();
     } catch (error) {
       warnings.push(
         `Could not read workspace credential provider config: ${error instanceof Error ? error.message : String(error)}`
@@ -336,7 +351,7 @@ export async function getGoogleOnboardingStatus(
     }
 
     return buildStatus({
-      configured,
+      configured: hasCompleteGoogleOAuthClientMaterial(configuredClient),
       credentials: googleCredentials,
       verification,
       warnings,
@@ -363,7 +378,9 @@ export async function connectGoogle(
 ): Promise<GoogleConnectionResult> {
   let callback: Awaited<ReturnType<typeof oauth.createLoopbackCallback>> | null = null;
   try {
-    const clientId = opts.clientId ?? (await getConfiguredClientId());
+    const configuredClient = await getConfiguredClientMaterial();
+    const clientId = opts.clientId ?? configuredClient.clientId;
+    const clientSecret = opts.clientSecret ?? configuredClient.clientSecret;
     if (!clientId) {
       return {
         success: false,
@@ -372,10 +389,19 @@ export async function connectGoogle(
           "Save a Desktop app client_id under credentials.providers.google-workspace.clientId before calling connectGoogle().",
       };
     }
+    if (!clientSecret) {
+      return {
+        success: false,
+        error:
+          "Google Workspace OAuth client_secret is not configured. " +
+          "Save the Desktop app client_secret under credentials.providers.google-workspace.clientSecret before calling connectGoogle().",
+      };
+    }
 
     callback = await oauth.createLoopbackCallback();
     const begin = await beginGoogleCredentialCreation({
       clientId,
+      clientSecret,
       redirectUri: callback.redirectUri,
       scopes: opts.scopes,
     });

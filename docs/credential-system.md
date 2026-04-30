@@ -34,6 +34,9 @@ const begin = await credentials.beginCreateWithOAuthPkce({
     authorizeUrl: "https://auth.example.com/oauth/authorize",
     tokenUrl: "https://auth.example.com/oauth/token",
     clientId: "public-client-id",
+    // Optional. Confidential/native providers that issue one use it only
+    // during the host-side token exchange.
+    clientSecret: "client-secret",
     scopes: ["read"],
   },
   credential: {

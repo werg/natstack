@@ -48,8 +48,7 @@ the user to paste secrets into chat. If debugging the downloaded Desktop app
 JSON, the relevant Google fields are:
 
 - `clientId` from `installed.client_id`
-- `clientSecret` from `installed.client_secret` when the specific credential
-  flow requires it
+- `clientSecret` from `installed.client_secret`
 
 Then reload setup status.
 

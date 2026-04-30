@@ -86,6 +86,7 @@ const createOAuthPkceCredentialParamsSchema = z.object({
     authorizeUrl: z.string().url(),
     tokenUrl: z.string().url(),
     clientId: z.string().min(1).max(512),
+    clientSecret: z.string().min(1).max(2048).optional(),
     scopes: z.array(z.string().max(256)).optional(),
     extraAuthorizeParams: z.record(z.string(), z.string()).optional(),
     allowMissingExpiry: z.boolean().optional(),
@@ -317,6 +318,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     body.set("code", request.code);
     body.set("code_verifier", pending.codeVerifier);
     body.set("client_id", pending.oauth.clientId);
+    if (pending.oauth.clientSecret) {
+      body.set("client_secret", pending.oauth.clientSecret);
+    }
     body.set("redirect_uri", pending.redirectUri);
 
     const tokenResponse = await fetch(pending.oauth.tokenUrl, {
@@ -325,9 +329,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       body,
     });
     const tokenText = await tokenResponse.text();
-    const tokenData = parseJsonObject(tokenText);
+    const tokenData = parseJsonObject(tokenText, { strict: tokenResponse.ok });
     if (!tokenResponse.ok) {
-      throw new Error(`OAuth token exchange failed: ${tokenResponse.status}`);
+      throw new Error(formatOAuthTokenExchangeError(tokenResponse.status, tokenData, tokenText));
     }
     if (typeof tokenData?.["error"] === "string") {
       throw new Error(`OAuth token exchange failed: ${tokenData["error"]}`);
@@ -710,7 +714,7 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
     const decoded = Buffer.from(padded, "base64").toString("utf8");
     const payload = JSON.parse(decoded);
     return payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
-  } catch {
+  } catch (error) {
     return null;
   }
 }
@@ -799,7 +803,7 @@ function registrableDomainForUrl(raw: string): string | null {
     }
     const parts = hostname.split(".").filter(Boolean);
     return parts.length >= 2 ? parts.slice(-2).join(".") : hostname;
-  } catch {
+  } catch (error) {
     return null;
   }
 }
@@ -808,15 +812,58 @@ function fail(message: string): never {
   throw new Error(message);
 }
 
-function parseJsonObject(text: string): Record<string, unknown> | null {
+function parseJsonObject(text: string, opts: { strict?: boolean } = {}): Record<string, unknown> | null {
   if (!text.trim()) {
     return null;
   }
-  const parsed = JSON.parse(text) as unknown;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch (error) {
+    if (!opts.strict) {
+      return null;
+    }
+    throw error;
+  }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    if (!opts.strict) {
+      return null;
+    }
     throw new Error("OAuth token exchange returned a non-object JSON response");
   }
   return parsed as Record<string, unknown>;
+}
+
+function formatOAuthTokenExchangeError(
+  status: number,
+  data: Record<string, unknown> | null,
+  text: string,
+): string {
+  const details: string[] = [];
+  const providerError = data?.["error"];
+  const providerDescription = data?.["error_description"];
+  if (typeof providerError === "string" && providerError.trim()) {
+    details.push(providerError.trim());
+  }
+  if (typeof providerDescription === "string" && providerDescription.trim()) {
+    details.push(providerDescription.trim());
+  }
+  if (details.length) {
+    return `OAuth token exchange failed: ${status} ${details.join(": ")}`;
+  }
+  const sanitizedText = sanitizeOAuthErrorText(text);
+  return sanitizedText
+    ? `OAuth token exchange failed: ${status}; response: ${sanitizedText}`
+    : `OAuth token exchange failed: ${status}`;
+}
+
+function sanitizeOAuthErrorText(text: string): string {
+  return text
+    .replace(/("(?:access_token|refresh_token|id_token|client_secret)"\s*:\s*")[^"]*(")/gi, "$1[redacted]$2")
+    .replace(/((?:access_token|refresh_token|id_token|client_secret)=)[^&\s]+/gi, "$1[redacted]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 300);
 }
 
 function readNumericField(value: unknown): number | undefined {

@@ -34,8 +34,9 @@ Gmail, Calendar, and Drive expire after 7 days.
 3. Configure the OAuth consent screen with the required scopes.
 4. Publish the app to Production, even while unverified.
 5. Create OAuth credentials with application type **Desktop app**.
-6. Save/use the Desktop app `installed.client_id` through the Google credential
-   setup path. Do not ask the user to paste client secrets into chat.
+6. Save/use the Desktop app `installed.client_id` and
+   `installed.client_secret` through the Google credential setup path. Do not
+   ask the user to paste client secrets into chat.
 7. Connect the account through NatStack's credential flow.
 8. Verify a live Google API call succeeds.
 
@@ -68,7 +69,8 @@ const status = await getGoogleOnboardingStatus();
 console.log(formatGoogleOnboardingStatus(status));
 
 if (status.stage === "needs-setup") {
-  // Render the workflow UI from SETUP.md, then use the Desktop app client_id.
+  // Render the workflow UI from SETUP.md, then use the Desktop app client_id
+  // and client_secret from the credential setup path.
 }
 
 if (status.stage === "ready-to-connect") {

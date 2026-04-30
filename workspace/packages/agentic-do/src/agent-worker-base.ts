@@ -85,6 +85,7 @@ interface ModelCredentialOAuthConfig {
   authorizeUrl: string;
   tokenUrl: string;
   clientId: string;
+  clientSecret?: string;
   scopes?: string[];
   extraAuthorizeParams?: Record<string, string>;
   allowMissingExpiry?: boolean;
@@ -274,6 +275,10 @@ function isModelCredentialOAuthConfig(value: unknown): value is ModelCredentialO
   return typeof config["authorizeUrl"] === "string"
     && typeof config["tokenUrl"] === "string"
     && typeof config["clientId"] === "string"
+    && (
+      config["clientSecret"] === undefined ||
+      typeof config["clientSecret"] === "string"
+    )
     && (
       config["scopes"] === undefined ||
       (Array.isArray(config["scopes"]) && config["scopes"].every((scope) => typeof scope === "string"))

@@ -89,12 +89,29 @@ describe("google-workspace skill facade", () => {
     expect(status.nextActions.join(" ")).toContain("SETUP.md");
   });
 
-  it("reports ready-to-connect when a Google OAuth client is configured", async () => {
+  it("reports needs-setup when only a Google OAuth client id is configured", async () => {
     runtimeMock.workspace.getConfig.mockResolvedValue({
       id: "test",
       credentials: {
         providers: {
           "google-workspace": { clientId: "client-1" },
+        },
+      },
+    });
+
+    const status = await getGoogleOnboardingStatus();
+
+    expect(status.stage).toBe("needs-setup");
+    expect(status.configured).toBe(false);
+    expect(status.readyToConnect).toBe(false);
+  });
+
+  it("reports ready-to-connect when Google OAuth client id and secret are configured", async () => {
+    runtimeMock.workspace.getConfig.mockResolvedValue({
+      id: "test",
+      credentials: {
+        providers: {
+          "google-workspace": { clientId: "client-1", clientSecret: "secret-1" },
         },
       },
     });
@@ -146,6 +163,7 @@ describe("google-workspace skill facade", () => {
   it("uses host-brokered PKCE with Google scopes and URL-bound audiences", async () => {
     await beginGoogleCredentialCreation({
       clientId: "client-1",
+      clientSecret: "secret-1",
       redirectUri: "http://127.0.0.1:12345/oauth/callback",
     });
 
@@ -153,6 +171,7 @@ describe("google-workspace skill facade", () => {
       expect.objectContaining({
         oauth: expect.objectContaining({
           clientId: "client-1",
+          clientSecret: "secret-1",
           scopes: expect.arrayContaining([
             "https://www.googleapis.com/auth/gmail.modify",
             "https://www.googleapis.com/auth/calendar",
@@ -177,6 +196,37 @@ describe("google-workspace skill facade", () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain("client_id is not configured");
     expect(runtimeMock.oauth.createLoopbackCallback).not.toHaveBeenCalled();
+  });
+
+  it("connectGoogle returns a setup error instead of starting OAuth without a client secret", async () => {
+    const result = await connectGoogle({ clientId: "client-1" });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("client_secret is not configured");
+    expect(runtimeMock.oauth.createLoopbackCallback).not.toHaveBeenCalled();
+  });
+
+  it("connectGoogle reads Desktop OAuth client material from workspace config", async () => {
+    runtimeMock.workspace.getConfig.mockResolvedValue({
+      id: "test",
+      credentials: {
+        providers: {
+          "google-workspace": { clientId: "client-1", clientSecret: "secret-1" },
+        },
+      },
+    });
+
+    const result = await connectGoogle();
+
+    expect(result.success).toBe(true);
+    expect(runtimeMock.credentials.beginCreateWithOAuthPkce).toHaveBeenCalledWith(
+      expect.objectContaining({
+        oauth: expect.objectContaining({
+          clientId: "client-1",
+          clientSecret: "secret-1",
+        }),
+      })
+    );
   });
 
   it("verifyGoogleCredential returns scopes from the stored credential", async () => {

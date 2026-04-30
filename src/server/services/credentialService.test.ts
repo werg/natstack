@@ -282,6 +282,75 @@ describe("credentialService", () => {
     expect(JSON.stringify(persisted)).not.toContain("must-not-persist");
   });
 
+  it("uses optional OAuth client secrets only during token exchange", async () => {
+    const service = createCredentialService({ credentialStore: new MemoryCredentialStore() as never });
+    const ctx = { callerId: "panel:test", callerKind: "panel" as const };
+
+    const begin = await service.handler(ctx, "beginCreateWithOAuthPkce", [{
+      oauth: {
+        authorizeUrl: "https://auth.example.test/oauth/authorize",
+        tokenUrl: "https://auth.example.test/oauth/token",
+        clientId: "client-1",
+        clientSecret: "secret-1",
+      },
+      credential: {
+        label: "Example OAuth",
+        audience: [{ url: "https://api.example.test", match: "origin" }],
+        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+      },
+      redirectUri: "http://127.0.0.1:53123/oauth/callback",
+    }]) as { nonce: string; authorizeUrl: string };
+
+    const authorizeUrl = new URL(begin.authorizeUrl);
+    expect(authorizeUrl.searchParams.get("client_secret")).toBeNull();
+
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = init?.body as URLSearchParams;
+      expect(body.get("client_id")).toBe("client-1");
+      expect(body.get("client_secret")).toBe("secret-1");
+      return new Response(JSON.stringify({
+        access_token: "token",
+        expires_in: 3600,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+
+    await service.handler(ctx, "completeCreateWithOAuthPkce", [{
+      nonce: begin.nonce,
+      state: begin.nonce,
+      code: "code-1",
+    }]);
+  });
+
+  it("surfaces sanitized OAuth token endpoint error details", async () => {
+    const service = createCredentialService({ credentialStore: new MemoryCredentialStore() as never });
+    const ctx = { callerId: "panel:test", callerKind: "panel" as const };
+    const begin = await service.handler(ctx, "beginCreateWithOAuthPkce", [{
+      oauth: {
+        authorizeUrl: "https://auth.example.test/oauth/authorize",
+        tokenUrl: "https://auth.example.test/oauth/token",
+        clientId: "client-1",
+      },
+      credential: {
+        label: "Example OAuth",
+        audience: [{ url: "https://api.example.test", match: "origin" }],
+        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+      },
+      redirectUri: "http://127.0.0.1:53123/oauth/callback",
+    }]) as { nonce: string };
+
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      error: "invalid_client",
+      error_description: "Unauthorized",
+      refresh_token: "must-not-leak",
+    }), { status: 400, headers: { "content-type": "application/json" } })));
+
+    await expect(service.handler(ctx, "completeCreateWithOAuthPkce", [{
+      nonce: begin.nonce,
+      state: begin.nonce,
+      code: "code-1",
+    }])).rejects.toThrow("OAuth token exchange failed: 400 invalid_client: Unauthorized");
+  });
+
   it("surfaces OAuth origins and domain mismatch in credential approval requests", async () => {
     const store = new MemoryCredentialStore();
     const approvalQueue = {
