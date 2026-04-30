@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
-import { Badge, Box, Button, Code, Flex, IconButton, Text, Tooltip } from "@radix-ui/themes";
+import { Badge, Box, Button, Code, Flex, IconButton, Text, TextField, Tooltip } from "@radix-ui/themes";
 import {
   ChevronDownIcon,
   CheckCircledIcon,
@@ -17,12 +17,14 @@ import type {
   PendingApproval,
   PendingCapabilityApproval,
   PendingCredentialApproval,
+  PendingOAuthClientConfigApproval,
 } from "@natstack/shared/approvals";
 import { useShellEvent } from "../shell/useShellEvent";
 import { shellApproval, view } from "../shell/client";
 
 export function ConsentApprovalBar() {
   const [pendingAccess, setPendingAccess] = useState<PendingApproval[]>([]);
+  const [oauthClientConfigValues, setOAuthClientConfigValues] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -45,6 +47,10 @@ export function ConsentApprovalBar() {
   );
 
   const current = pendingAccess[0] ?? null;
+
+  useEffect(() => {
+    setOAuthClientConfigValues({});
+  }, [current?.approvalId]);
 
   const barRef = useRef<HTMLDivElement>(null);
 
@@ -70,6 +76,12 @@ export function ConsentApprovalBar() {
     void shellApproval
       .resolve(current.approvalId, decision)
       .catch((err: unknown) => console.error("[ConsentApprovalBar] resolve failed:", err));
+  };
+  const submitOAuthClientConfig = () => {
+    if (current?.kind !== "oauth-client-config") return;
+    void shellApproval
+      .submitOAuthClientConfig(current.approvalId, oauthClientConfigValues)
+      .catch((err: unknown) => console.error("[ConsentApprovalBar] submitOAuthClientConfig failed:", err));
   };
 
   const callerLabel = current.callerKind === "worker" ? "Worker" : "Panel";
@@ -146,53 +158,127 @@ export function ConsentApprovalBar() {
               callerLabel={callerLabel}
               defaultOpen={shouldOpenApprovalDetails(current)}
             />
+            {current.kind === "oauth-client-config" ? (
+              <OAuthClientConfigFields
+                approval={current}
+                values={oauthClientConfigValues}
+                onChange={(name, value) =>
+                  setOAuthClientConfigValues((previous) => ({ ...previous, [name]: value }))
+                }
+              />
+            ) : null}
           </Flex>
         </Flex>
 
-        <Flex
-          align="center"
-          className="approval-actions"
-          gap="2"
-          wrap="wrap"
-          style={{
-            alignSelf: "flex-end",
-            flexShrink: 0,
-            justifyContent: "flex-start",
-            marginLeft: "auto",
-          }}
-        >
-          <DecisionButton
-            label="Allow session"
-            description="Temporary; clears when NatStack restarts."
-            variant="solid"
-            onClick={() => decide("session")}
+        {current.kind === "oauth-client-config" ? (
+          <OAuthClientConfigActions
+            approval={current}
+            values={oauthClientConfigValues}
+            onSubmit={submitOAuthClientConfig}
+            onDeny={() => decide("deny")}
+            onDismiss={() => decide("dismiss")}
           />
-          <DecisionButton
-            label="Trust version"
-            description="Reuse for this exact code version."
-            onClick={() => decide("version")}
-          />
-          <DecisionButton
-            label="Trust repo"
-            description="Reuse for this workspace."
-            onClick={() => decide("repo")}
-          />
-          <DecisionButton
-            label="Deny"
-            description="Do not grant this request."
-            color="red"
-            icon={<CrossCircledIcon />}
-            style={{ marginLeft: 6 }}
-            onClick={() => decide("deny")}
-          />
-          <Tooltip content="Dismiss">
-            <IconButton size="1" variant="ghost" color="gray" onClick={() => decide("dismiss")}>
-              <Cross2Icon />
-            </IconButton>
-          </Tooltip>
-        </Flex>
+        ) : (
+          <StandardApprovalActions decide={decide} />
+        )}
       </Flex>
     </Box>
+  );
+}
+
+function StandardApprovalActions({ decide }: { decide: (decision: ApprovalDecision) => void }) {
+  return (
+    <Flex
+      align="center"
+      className="approval-actions"
+      gap="2"
+      wrap="wrap"
+      style={{
+        alignSelf: "flex-end",
+        flexShrink: 0,
+        justifyContent: "flex-start",
+        marginLeft: "auto",
+      }}
+    >
+      <DecisionButton
+        label="Allow session"
+        description="Temporary; clears when NatStack restarts."
+        variant="solid"
+        onClick={() => decide("session")}
+      />
+      <DecisionButton
+        label="Trust version"
+        description="Reuse for this exact code version."
+        onClick={() => decide("version")}
+      />
+      <DecisionButton
+        label="Trust repo"
+        description="Reuse for this workspace."
+        onClick={() => decide("repo")}
+      />
+      <DecisionButton
+        label="Deny"
+        description="Do not grant this request."
+        color="red"
+        icon={<CrossCircledIcon />}
+        style={{ marginLeft: 6 }}
+        onClick={() => decide("deny")}
+      />
+      <Tooltip content="Dismiss">
+        <IconButton size="1" variant="ghost" color="gray" onClick={() => decide("dismiss")}>
+          <Cross2Icon />
+        </IconButton>
+      </Tooltip>
+    </Flex>
+  );
+}
+
+function OAuthClientConfigActions({
+  approval,
+  values,
+  onSubmit,
+  onDeny,
+  onDismiss,
+}: {
+  approval: PendingOAuthClientConfigApproval;
+  values: Record<string, string>;
+  onSubmit: () => void;
+  onDeny: () => void;
+  onDismiss: () => void;
+}) {
+  const missingRequired = approval.fields.some((field) => field.required && !values[field.name]?.trim());
+  return (
+    <Flex
+      align="center"
+      className="approval-actions"
+      gap="2"
+      wrap="wrap"
+      style={{
+        alignSelf: "flex-end",
+        flexShrink: 0,
+        justifyContent: "flex-start",
+        marginLeft: "auto",
+      }}
+    >
+      <Tooltip content={missingRequired ? "Enter the required fields first." : "Save this URL-bound OAuth client."}>
+        <Button size="1" variant="solid" disabled={missingRequired} onClick={onSubmit}>
+          <CheckCircledIcon />
+          Save OAuth client
+        </Button>
+      </Tooltip>
+      <DecisionButton
+        label="Deny"
+        description="Do not save this OAuth client."
+        color="red"
+        icon={<CrossCircledIcon />}
+        onClick={onDeny}
+      />
+      <Tooltip content="Dismiss">
+        <IconButton size="1" variant="ghost" color="gray" onClick={onDismiss}>
+          <Cross2Icon />
+        </IconButton>
+      </Tooltip>
+    </Flex>
   );
 }
 
@@ -279,11 +365,123 @@ function ApprovalDetails({
         />
         {approval.kind === "credential" ? (
           <CredentialDetails approval={approval} />
+        ) : approval.kind === "oauth-client-config" ? (
+          <OAuthClientConfigDetails approval={approval} />
         ) : (
           <CapabilityDetails approval={approval} />
         )}
       </Flex>
     </details>
+  );
+}
+
+function OAuthClientConfigFields({
+  approval,
+  values,
+  onChange,
+}: {
+  approval: PendingOAuthClientConfigApproval;
+  values: Record<string, string>;
+  onChange: (name: string, value: string) => void;
+}) {
+  return (
+    <Flex direction="column" gap="2" pt="1" style={{ maxWidth: 620 }}>
+      <Text size="1" color="gray" style={{ lineHeight: 1.35 }}>
+        Secret fields are stored encrypted and can only be used with the approved OAuth token URL.
+      </Text>
+      {approval.fields.map((field) => (
+        <Flex key={field.name} direction="column" gap="1">
+          <Flex align="center" gap="2" wrap="wrap">
+            <Text size="1" weight="medium">
+              {field.label}
+            </Text>
+            {field.required ? (
+              <Badge color="amber" variant="soft">
+                Required
+              </Badge>
+            ) : null}
+            {field.type === "secret" ? (
+              <Badge color="gray" variant="soft">
+                Secret
+              </Badge>
+            ) : null}
+          </Flex>
+          <TextField.Root
+            size="2"
+            type={field.type === "secret" ? "password" : "text"}
+            value={values[field.name] ?? ""}
+            placeholder={field.label}
+            onChange={(event) => onChange(field.name, event.currentTarget.value)}
+          />
+          {field.description ? (
+            <Text size="1" color="gray">
+              {field.description}
+            </Text>
+          ) : null}
+        </Flex>
+      ))}
+    </Flex>
+  );
+}
+
+function OAuthClientConfigDetails({ approval }: { approval: PendingOAuthClientConfigApproval }) {
+  const authorizeOrigin = originForUrl(approval.authorizeUrl);
+  const tokenOrigin = originForUrl(approval.tokenUrl);
+  return (
+    <>
+      <Detail
+        icon={<LockClosedIcon />}
+        label="Client"
+        value={<InlineCode>{approval.configId}</InlineCode>}
+      />
+      <Detail
+        icon={<GlobeIcon />}
+        label="Authorize"
+        value={
+          <Code size="1" variant="soft" style={{ maxWidth: 520, overflowWrap: "anywhere" }}>
+            {approval.authorizeUrl}
+          </Code>
+        }
+      />
+      <Detail
+        icon={<LockClosedIcon />}
+        label="Token URL"
+        value={
+          <Code size="1" color="amber" variant="soft" style={{ maxWidth: 520, overflowWrap: "anywhere" }}>
+            {approval.tokenUrl}
+          </Code>
+        }
+      />
+      <Detail
+        icon={<LockClosedIcon />}
+        label="Binding"
+        value={
+          <Flex align="center" gap="1" wrap="wrap">
+            <Badge color="amber" variant="soft">
+              Secret use limited to {tokenOrigin}
+            </Badge>
+            {authorizeOrigin !== tokenOrigin ? (
+              <Badge color="gray" variant="outline">
+                Sign-in starts at {authorizeOrigin}
+              </Badge>
+            ) : null}
+          </Flex>
+        }
+      />
+      <Detail
+        icon={<LockClosedIcon />}
+        label="Fields"
+        value={
+          <Flex align="center" gap="1" wrap="wrap">
+            {approval.fields.map((field) => (
+              <Badge key={field.name} color={field.type === "secret" ? "amber" : "gray"} variant="outline">
+                {field.name}{field.type === "secret" ? " (secret)" : ""}
+              </Badge>
+            ))}
+          </Flex>
+        }
+      />
+    </>
   );
 }
 
@@ -416,6 +614,12 @@ function getApprovalCopy(
       summary: `${requester} wants to open ${destination} in your system browser.`,
     };
   }
+  if (approval.kind === "oauth-client-config") {
+    return {
+      title: approval.title,
+      summary: `${requester} wants to save OAuth client material for ${approval.configId}; secrets will be bound to ${originForUrl(approval.tokenUrl)}.`,
+    };
+  }
 
   const audience = formatAudienceSummary(approval);
   return {
@@ -439,7 +643,18 @@ function shouldOpenApprovalDetails(approval: PendingApproval): boolean {
   if (approval.kind === "credential") {
     return approval.oauthAudienceDomainMismatch === true;
   }
+  if (approval.kind === "oauth-client-config") {
+    return true;
+  }
   return approval.details?.some((detail) => detail.label.toLowerCase() === "oauth callback") === true;
+}
+
+function originForUrl(raw: string): string {
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return raw;
+  }
 }
 
 function formatAudienceSummary(approval: PendingCredentialApproval): string {

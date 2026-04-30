@@ -38,8 +38,8 @@ Stages:
 
 | Stage | Meaning | Agent Action |
 |-------|---------|--------------|
-| `needs-setup` | Google OAuth client fields are not saved | Render the SETUP.md workflow UI and use the Desktop app client ID and secret |
-| `ready-to-connect` | Env vars are present but no credential is stored | Run `connectGoogle()` |
+| `needs-setup` | Google OAuth client fields are not saved | Render the SETUP.md workflow UI, then run `configureGoogleOAuthClient()` |
+| `ready-to-connect` | Trusted URL-bound OAuth client config is present but no credential is stored | Run `connectGoogle()` |
 | `connected` | Credential exists but live verification has not run | Run `verifyGoogleConnection(connectionId)` |
 | `verified` | A live Google userinfo request succeeded | Continue onboarding |
 | `error` | Status check failed | Resolve the error and rerun status |
@@ -55,8 +55,8 @@ include these deep-linked actions:
 3. Configure OAuth branding.
 4. Open OAuth audience and publish to Production.
 5. Create OAuth credentials with application type Desktop app.
-6. Return to NatStack with the Desktop app `installed.client_id` and
-   `installed.client_secret`.
+6. Return to NatStack and run `configureGoogleOAuthClient()` so the trusted
+   approval UI can collect `installed.client_id` and `installed.client_secret`.
 
 Do not say that Google verification is required for local development. It is
 not required while under Google's unverified-app user cap. Do say that users may

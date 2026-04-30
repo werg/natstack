@@ -155,9 +155,8 @@ export interface WorkspaceConfig {
    * Example: [{ source: "panels/chat", stateArgs: { initialPrompt: "Hello", systemPrompt: "You are..." } }]
    */
   initPanels?: InitPanelEntry[];
-  /** Per-provider credential overrides (client_id, client_secret) */
+  /** Credential runtime options. OAuth client material is stored through trusted URL-bound config. */
   credentials?: {
-    providers?: Record<string, { clientId?: string; clientSecret?: string }>;
     nonInteractive?: boolean;
     mobileCallbackDomain?: string;
   };

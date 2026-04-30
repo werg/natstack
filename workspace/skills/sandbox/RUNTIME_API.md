@@ -55,7 +55,7 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `oauth` | namespace | `createLoopbackCallback` |  |
 | `adblock` | namespace | `getStats`, `isActive`, `getStatsForPanel`, `isEnabledForPanel`, `setEnabledForPanel`, `resetStatsForPanel`, `getPanelUrl`, `addToWhitelist`, `removeFromWhitelist` |  |
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo`, `openPanel` |  |
-| `credentials` | namespace | `store`, `beginCreateWithOAuthPkce`, `completeCreateWithOAuthPkce`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl` |  |
+| `credentials` | namespace | `store`, `beginCreateWithOAuthPkce`, `beginCreateWithOAuthClientPkce`, `completeCreateWithOAuthPkce`, `requestOAuthClientConfig`, `getOAuthClientConfigStatus`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
 <!-- END GENERATED: panel-runtime-surface -->
@@ -76,6 +76,12 @@ const stored = await credentials.store({
 ```
 
 ## OAuth PKCE Without Returning Tokens
+
+Use `beginCreateWithOAuthPkce` for public-client OAuth. If the provider has
+client secrets or other setup material, collect it with
+`credentials.requestOAuthClientConfig()` and use URL-bound OAuth client config
+PKCE instead of passing secrets through userland. A saved `configId` is bound to
+its OAuth authorize and token URLs.
 
 ```ts
 const begin = await credentials.beginCreateWithOAuthPkce({

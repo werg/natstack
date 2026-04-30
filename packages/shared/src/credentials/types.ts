@@ -59,7 +59,6 @@ export interface CreateOAuthPkceCredentialRequest {
     authorizeUrl: string;
     tokenUrl: string;
     clientId: string;
-    clientSecret?: string;
     scopes?: string[];
     extraAuthorizeParams?: Record<string, string>;
     allowMissingExpiry?: boolean;
@@ -79,6 +78,56 @@ export interface BeginOAuthPkceCredentialResult {
   nonce: string;
   state: string;
   authorizeUrl: string;
+}
+
+export type OAuthClientConfigFieldType = "text" | "secret";
+
+export interface OAuthClientConfigFieldRequest {
+  name: string;
+  label: string;
+  type: OAuthClientConfigFieldType;
+  required?: boolean;
+  description?: string;
+}
+
+export interface OAuthClientConfigFieldStatus {
+  configured: boolean;
+  type: OAuthClientConfigFieldType;
+  updatedAt?: number;
+}
+
+export interface OAuthClientConfigStatus {
+  configId: string;
+  configured: boolean;
+  authorizeUrl?: string;
+  tokenUrl?: string;
+  fields: Record<string, OAuthClientConfigFieldStatus>;
+  updatedAt?: number;
+}
+
+export interface RequestOAuthClientConfigRequest {
+  configId: string;
+  title: string;
+  description?: string;
+  authorizeUrl: string;
+  tokenUrl: string;
+  fields: OAuthClientConfigFieldRequest[];
+}
+
+export interface GetOAuthClientConfigStatusRequest {
+  configId: string;
+  fields?: OAuthClientConfigFieldRequest[];
+}
+
+export interface BeginOAuthClientPkceCredentialRequest {
+  redirectUri: string;
+  oauth: {
+    configId: string;
+    scopes?: string[];
+    extraAuthorizeParams?: Record<string, string>;
+    allowMissingExpiry?: boolean;
+  };
+  credential: CreateOAuthPkceCredentialRequest["credential"];
 }
 
 export interface CompleteOAuthPkceCredentialRequest {
@@ -111,7 +160,7 @@ export interface StoredCredentialSummary {
   metadata?: Record<string, string>;
 }
 
-export type CredentialAuditEvent = AuditEntry | ConnectionCredentialAuditEvent;
+export type CredentialAuditEvent = AuditEntry | ConnectionCredentialAuditEvent | OAuthClientConfigAuditEvent;
 
 export interface ConnectionCredentialAuditEvent {
   type:
@@ -123,6 +172,16 @@ export interface ConnectionCredentialAuditEvent {
   providerId: string;
   connectionId: string;
   storageKind: "connection-credential";
+  fieldNames: string[];
+}
+
+export interface OAuthClientConfigAuditEvent {
+  type: "oauth_client_config.updated" | "oauth_client_config.revoked";
+  ts: number;
+  callerId: string;
+  configId: string;
+  authorizeUrl: string;
+  tokenUrl: string;
   fieldNames: string[];
 }
 

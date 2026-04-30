@@ -1,6 +1,7 @@
 import type { AccountIdentity, CredentialInjection, UrlAudience } from "./credentials/types.js";
 
 export type ApprovalDecision = "session" | "version" | "repo" | "deny" | "dismiss";
+export type ApprovalConfigFieldType = "text" | "secret";
 
 export interface PendingApprovalBase {
   approvalId: string;
@@ -40,4 +41,25 @@ export interface PendingCapabilityApproval extends PendingApprovalBase {
   }>;
 }
 
-export type PendingApproval = PendingCredentialApproval | PendingCapabilityApproval;
+export interface PendingOAuthClientConfigField {
+  name: string;
+  label: string;
+  type: ApprovalConfigFieldType;
+  required: boolean;
+  description?: string;
+}
+
+export interface PendingOAuthClientConfigApproval extends PendingApprovalBase {
+  kind: "oauth-client-config";
+  configId: string;
+  authorizeUrl: string;
+  tokenUrl: string;
+  title: string;
+  description?: string;
+  fields: PendingOAuthClientConfigField[];
+}
+
+export type PendingApproval =
+  | PendingCredentialApproval
+  | PendingCapabilityApproval
+  | PendingOAuthClientConfigApproval;

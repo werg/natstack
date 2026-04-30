@@ -25,8 +25,9 @@ const stored = await credentials.store({
 
 ## Host-Brokered OAuth PKCE
 
-Use this when userland should initiate OAuth but should not receive the access
-token after exchange:
+Use this for public-client OAuth when userland should initiate OAuth but should
+not receive the access token after exchange. Do not pass client secrets through
+this surface; use trusted URL-bound OAuth client config for client material.
 
 ```ts
 const begin = await credentials.beginCreateWithOAuthPkce({
@@ -34,9 +35,6 @@ const begin = await credentials.beginCreateWithOAuthPkce({
     authorizeUrl: "https://auth.example.com/oauth/authorize",
     tokenUrl: "https://auth.example.com/oauth/token",
     clientId: "public-client-id",
-    // Optional. Confidential/native providers that issue one use it only
-    // during the host-side token exchange.
-    clientSecret: "client-secret",
     scopes: ["read"],
   },
   credential: {
@@ -56,6 +54,52 @@ const stored = await credentials.completeCreateWithOAuthPkce({
   nonce: begin.nonce,
   code,
   state,
+});
+```
+
+## Trusted URL-Bound OAuth Client Config
+
+Panels and workers can request a shell-owned input prompt for OAuth client
+config without receiving the entered values. The stored client material is bound
+to the approved authorize and token URLs. Once a `configId` is saved, those URL
+bindings are immutable; changing OAuth endpoints requires a new `configId`.
+
+```ts
+await credentials.requestOAuthClientConfig({
+  configId: "google-workspace",
+  title: "Configure Google Workspace OAuth",
+  authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+  tokenUrl: "https://oauth2.googleapis.com/token",
+  fields: [
+    { name: "clientId", label: "Client ID", type: "text", required: true },
+    { name: "clientSecret", label: "Client secret", type: "secret", required: true },
+  ],
+});
+
+const status = await credentials.getOAuthClientConfigStatus({
+  configId: "google-workspace",
+});
+```
+
+The stored client material can then be injected internally using the stored
+URL-bound OAuth endpoints:
+
+```ts
+const begin = await credentials.beginCreateWithOAuthClientPkce({
+  redirectUri,
+  oauth: {
+    configId: "google-workspace",
+    scopes: ["https://www.googleapis.com/auth/userinfo.email"],
+  },
+  credential: {
+    label: "Google Workspace",
+    audience: [{ url: "https://www.googleapis.com/", match: "origin" }],
+    injection: {
+      type: "header",
+      name: "authorization",
+      valueTemplate: "Bearer {token}",
+    },
+  },
 });
 ```
 

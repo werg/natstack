@@ -86,7 +86,10 @@ export const panelRuntimeSurface: RuntimeSurface = {
     credentials: namespaceEntry([
       "store",
       "beginCreateWithOAuthPkce",
+      "beginCreateWithOAuthClientPkce",
       "completeCreateWithOAuthPkce",
+      "requestOAuthClientConfig",
+      "getOAuthClientConfigStatus",
       "listStoredCredentials",
       "revokeCredential",
       "grantCredential",

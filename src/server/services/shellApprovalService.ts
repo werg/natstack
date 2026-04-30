@@ -14,6 +14,7 @@ import type { ApprovalDecision } from "@natstack/shared/approvals";
 import type { ApprovalQueue } from "./approvalQueue.js";
 
 const DECISION_VALUES = ["session", "version", "repo", "deny", "dismiss"] as const;
+const oauthClientConfigValuesSchema = z.record(z.string().min(1).max(128), z.string().max(4096));
 
 export function createShellApprovalService(deps: {
   approvalQueue: ApprovalQueue;
@@ -26,6 +27,7 @@ export function createShellApprovalService(deps: {
     policy: { allowed: ["shell", "server"] },
     methods: {
       resolve: { args: z.tuple([z.string(), z.enum(DECISION_VALUES)]) },
+      submitOAuthClientConfig: { args: z.tuple([z.string(), oauthClientConfigValuesSchema]) },
       listPending: { args: z.tuple([]) },
     },
     handler: async (_ctx, method, args) => {
@@ -33,6 +35,11 @@ export function createShellApprovalService(deps: {
         case "resolve": {
           const [approvalId, decision] = args as [string, ApprovalDecision];
           approvalQueue.resolve(approvalId, decision);
+          return;
+        }
+        case "submitOAuthClientConfig": {
+          const [approvalId, values] = args as [string, Record<string, string>];
+          approvalQueue.submitOAuthClientConfig(approvalId, values);
           return;
         }
         case "listPending": {

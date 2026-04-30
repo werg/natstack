@@ -43,9 +43,9 @@ application**.
 
 ## Client Secret Is Not Saved
 
-Use the setup workflow/provider setup path for OAuth client material. Do not ask
-the user to paste secrets into chat. If debugging the downloaded Desktop app
-JSON, the relevant Google fields are:
+Run `configureGoogleOAuthClient()` and use the trusted approval UI for OAuth
+client material. Do not ask the user to paste secrets into chat. If debugging
+the downloaded Desktop app JSON, the relevant Google fields are:
 
 - `clientId` from `installed.client_id`
 - `clientSecret` from `installed.client_secret`

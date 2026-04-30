@@ -1,12 +1,12 @@
-import { credentials, oauth, openExternal, workspace } from "@workspace/runtime";
+import { credentials, oauth, openExternal } from "@workspace/runtime";
 import type {
   BeginOAuthPkceCredentialResult,
   CompleteOAuthPkceCredentialRequest,
   StoredCredentialSummary,
-  WorkspaceConfig,
 } from "@workspace/runtime";
 
 const GOOGLE_PROVIDER_ID = "google-workspace";
+const GOOGLE_OAUTH_CLIENT_CONFIG_ID = "google-workspace";
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_SCOPES = [
@@ -73,8 +73,6 @@ export interface GoogleOnboardingStatusOptions {
 }
 
 export interface ConnectGoogleOptions {
-  clientId?: string;
-  clientSecret?: string;
   scopes?: string[];
 }
 
@@ -91,7 +89,10 @@ function getCredentialRuntime(): RuntimeCredentials {
   }
   for (const method of [
     "beginCreateWithOAuthPkce",
+    "beginCreateWithOAuthClientPkce",
     "completeCreateWithOAuthPkce",
+    "requestOAuthClientConfig",
+    "getOAuthClientConfigStatus",
     "listStoredCredentials",
     "revokeCredential",
     "fetch",
@@ -143,26 +144,6 @@ function isGoogleCredential(credential: StoredCredentialSummary): boolean {
   });
 }
 
-interface GoogleOAuthClientMaterial {
-  clientId?: string;
-  clientSecret?: string;
-}
-
-function hasCompleteGoogleOAuthClientMaterial(material: GoogleOAuthClientMaterial): boolean {
-  return !!material.clientId && !!material.clientSecret;
-}
-
-async function getConfiguredClientMaterial(): Promise<GoogleOAuthClientMaterial> {
-  const config = (await workspace.getConfig()) as WorkspaceConfig;
-  const provider =
-    config.credentials?.providers?.[GOOGLE_PROVIDER_ID] ??
-    config.credentials?.providers?.["google"];
-  return {
-    clientId: provider?.clientId,
-    clientSecret: provider?.clientSecret,
-  };
-}
-
 function getPrimaryCredential(
   credentials: StoredCredentialSummary[]
 ): StoredCredentialSummary | undefined {
@@ -180,7 +161,7 @@ function getNextActions(
     case "needs-setup":
       return [
         "Render the Google Workspace setup workflow from SETUP.md.",
-        "Save a Desktop app OAuth client_id and client_secret under credentials.providers.google-workspace.",
+        "Run configureGoogleOAuthClient() and enter the Desktop app client_id and client_secret in the trusted approval UI.",
       ];
     case "ready-to-connect":
       return ["Run connectGoogle() to create the Google Workspace credential."];
@@ -229,18 +210,13 @@ function buildStatus(input: {
 }
 
 export async function beginGoogleCredentialCreation(opts: {
-  clientId: string;
-  clientSecret: string;
   redirectUri: string;
   scopes?: string[];
 }): Promise<BeginOAuthPkceCredentialResult> {
   return withCredentialRuntime((api) =>
-    api.beginCreateWithOAuthPkce({
+    api.beginCreateWithOAuthClientPkce({
       oauth: {
-        authorizeUrl: GOOGLE_AUTH_URL,
-        tokenUrl: GOOGLE_TOKEN_URL,
-        clientId: opts.clientId,
-        clientSecret: opts.clientSecret,
+        configId: GOOGLE_OAUTH_CLIENT_CONFIG_ID,
         scopes: getDefaultScopes(opts.scopes),
         extraAuthorizeParams: {
           access_type: "offline",
@@ -264,6 +240,46 @@ export async function beginGoogleCredentialCreation(opts: {
         },
       },
       redirectUri: opts.redirectUri,
+    })
+  );
+}
+
+export async function configureGoogleOAuthClient() {
+  return withCredentialRuntime((api) =>
+    api.requestOAuthClientConfig({
+      configId: GOOGLE_OAUTH_CLIENT_CONFIG_ID,
+      title: "Configure Google Workspace OAuth",
+      description: "Save the Desktop app OAuth client material for Google Workspace.",
+      authorizeUrl: GOOGLE_AUTH_URL,
+      tokenUrl: GOOGLE_TOKEN_URL,
+      fields: [
+        {
+          name: "clientId",
+          label: "Client ID",
+          type: "text",
+          required: true,
+          description: "Use installed.client_id from the downloaded Desktop app JSON.",
+        },
+        {
+          name: "clientSecret",
+          label: "Client secret",
+          type: "secret",
+          required: true,
+          description: "Use installed.client_secret from the downloaded Desktop app JSON.",
+        },
+      ],
+    })
+  );
+}
+
+export async function getGoogleOAuthClientStatus() {
+  return withCredentialRuntime((api) =>
+    api.getOAuthClientConfigStatus({
+      configId: GOOGLE_OAUTH_CLIENT_CONFIG_ID,
+      fields: [
+        { name: "clientId", label: "Client ID", type: "text", required: true },
+        { name: "clientSecret", label: "Client secret", type: "secret", required: true },
+      ],
     })
   );
 }
@@ -332,12 +348,12 @@ export async function getGoogleOnboardingStatus(
 ): Promise<GoogleOnboardingStatus> {
   const warnings: string[] = [];
   try {
-    let configuredClient: GoogleOAuthClientMaterial = {};
+    let configured = false;
     try {
-      configuredClient = await getConfiguredClientMaterial();
+      configured = (await getGoogleOAuthClientStatus()).configured;
     } catch (error) {
       warnings.push(
-        `Could not read workspace credential provider config: ${error instanceof Error ? error.message : String(error)}`
+        `Could not read Google OAuth client config: ${error instanceof Error ? error.message : String(error)}`
       );
     }
 
@@ -351,7 +367,7 @@ export async function getGoogleOnboardingStatus(
     }
 
     return buildStatus({
-      configured: hasCompleteGoogleOAuthClientMaterial(configuredClient),
+      configured,
       credentials: googleCredentials,
       verification,
       warnings,
@@ -378,30 +394,17 @@ export async function connectGoogle(
 ): Promise<GoogleConnectionResult> {
   let callback: Awaited<ReturnType<typeof oauth.createLoopbackCallback>> | null = null;
   try {
-    const configuredClient = await getConfiguredClientMaterial();
-    const clientId = opts.clientId ?? configuredClient.clientId;
-    const clientSecret = opts.clientSecret ?? configuredClient.clientSecret;
-    if (!clientId) {
+    if (!(await getGoogleOAuthClientStatus()).configured) {
       return {
         success: false,
         error:
-          "Google Workspace OAuth client_id is not configured. " +
-          "Save a Desktop app client_id under credentials.providers.google-workspace.clientId before calling connectGoogle().",
-      };
-    }
-    if (!clientSecret) {
-      return {
-        success: false,
-        error:
-          "Google Workspace OAuth client_secret is not configured. " +
-          "Save the Desktop app client_secret under credentials.providers.google-workspace.clientSecret before calling connectGoogle().",
+          "Google Workspace OAuth client material is not configured. " +
+          "Run configureGoogleOAuthClient() before calling connectGoogle().",
       };
     }
 
     callback = await oauth.createLoopbackCallback();
     const begin = await beginGoogleCredentialCreation({
-      clientId,
-      clientSecret,
       redirectUri: callback.redirectUri,
       scopes: opts.scopes,
     });

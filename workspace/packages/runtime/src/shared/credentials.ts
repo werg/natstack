@@ -1,9 +1,13 @@
 import type { RpcCaller } from "@natstack/rpc";
 import type {
   BeginOAuthPkceCredentialResult,
+  BeginOAuthClientPkceCredentialRequest,
   CompleteOAuthPkceCredentialRequest,
   CreateOAuthPkceCredentialRequest,
+  GetOAuthClientConfigStatusRequest,
   GrantUrlBoundCredentialRequest,
+  OAuthClientConfigStatus,
+  RequestOAuthClientConfigRequest,
   ResolveUrlBoundCredentialRequest,
   StoredCredentialSummary,
   StoreUrlBoundCredentialRequest,
@@ -11,9 +15,13 @@ import type {
 
 export type {
   BeginOAuthPkceCredentialResult,
+  BeginOAuthClientPkceCredentialRequest,
   CompleteOAuthPkceCredentialRequest,
   CreateOAuthPkceCredentialRequest,
+  GetOAuthClientConfigStatusRequest,
   GrantUrlBoundCredentialRequest,
+  OAuthClientConfigStatus,
+  RequestOAuthClientConfigRequest,
   ResolveUrlBoundCredentialRequest,
   StoredCredentialSummary,
   StoreUrlBoundCredentialRequest,
@@ -22,7 +30,10 @@ export type {
 export interface CredentialClient {
   store(input: StoreUrlBoundCredentialRequest): Promise<StoredCredentialSummary>;
   beginCreateWithOAuthPkce(input: CreateOAuthPkceCredentialRequest): Promise<BeginOAuthPkceCredentialResult>;
+  beginCreateWithOAuthClientPkce(input: BeginOAuthClientPkceCredentialRequest): Promise<BeginOAuthPkceCredentialResult>;
   completeCreateWithOAuthPkce(input: CompleteOAuthPkceCredentialRequest): Promise<StoredCredentialSummary>;
+  requestOAuthClientConfig(input: RequestOAuthClientConfigRequest): Promise<OAuthClientConfigStatus>;
+  getOAuthClientConfigStatus(input: GetOAuthClientConfigStatusRequest): Promise<OAuthClientConfigStatus>;
   listStoredCredentials(): Promise<StoredCredentialSummary[]>;
   revokeCredential(credentialId: string): Promise<void>;
   grantCredential(input: GrantUrlBoundCredentialRequest): Promise<StoredCredentialSummary>;
@@ -46,8 +57,17 @@ export function createCredentialClient(rpc: RpcCaller): CredentialClient {
     async beginCreateWithOAuthPkce(input) {
       return rpc.call<BeginOAuthPkceCredentialResult>("main", "credentials.beginCreateWithOAuthPkce", input);
     },
+    async beginCreateWithOAuthClientPkce(input) {
+      return rpc.call<BeginOAuthPkceCredentialResult>("main", "credentials.beginCreateWithOAuthClientPkce", input);
+    },
     async completeCreateWithOAuthPkce(input) {
       return rpc.call<StoredCredentialSummary>("main", "credentials.completeCreateWithOAuthPkce", input);
+    },
+    async requestOAuthClientConfig(input) {
+      return rpc.call<OAuthClientConfigStatus>("main", "credentials.requestOAuthClientConfig", input);
+    },
+    async getOAuthClientConfigStatus(input) {
+      return rpc.call<OAuthClientConfigStatus>("main", "credentials.getOAuthClientConfigStatus", input);
     },
     async listStoredCredentials() {
       return rpc.call<StoredCredentialSummary[]>("main", "credentials.listStoredCredentials");

@@ -5,20 +5,27 @@ import * as path from "node:path";
 import { EventService } from "@natstack/shared/eventsService";
 import { createExternalOpenService } from "./externalOpenService.js";
 import { CapabilityGrantStore } from "./capabilityGrantStore.js";
+import type { ApprovalQueue } from "./approvalQueue.js";
 
 describe("externalOpenService", () => {
   function tempStatePath(): string {
     return fs.mkdtempSync(path.join(os.tmpdir(), "natstack-external-open-"));
   }
 
+  function createApprovalQueueMock(): ApprovalQueue {
+    return {
+      request: vi.fn(async () => "session" as const),
+      requestOAuthClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+      resolve: vi.fn(),
+      submitOAuthClientConfig: vi.fn(),
+      listPending: vi.fn(() => []),
+    };
+  }
+
   it("requests approval for panel opens and emits approved browser events", async () => {
     const eventService = new EventService();
     const emit = vi.spyOn(eventService, "emit");
-    const approvalQueue = {
-      request: vi.fn(async () => "session" as const),
-      resolve: vi.fn(),
-      listPending: vi.fn(() => []),
-    };
+    const approvalQueue = createApprovalQueueMock();
     const grantStore = new CapabilityGrantStore({ statePath: tempStatePath() });
     const service = createExternalOpenService({
       eventService,
@@ -58,11 +65,7 @@ describe("externalOpenService", () => {
 
   it("reuses grants for the same origin", async () => {
     const eventService = new EventService();
-    const approvalQueue = {
-      request: vi.fn(async () => "session" as const),
-      resolve: vi.fn(),
-      listPending: vi.fn(() => []),
-    };
+    const approvalQueue = createApprovalQueueMock();
     const service = createExternalOpenService({
       eventService,
       approvalQueue,
@@ -95,11 +98,7 @@ describe("externalOpenService", () => {
 
   it("validates OAuth authorize URLs when an expected redirect URI is supplied", async () => {
     const eventService = new EventService();
-    const approvalQueue = {
-      request: vi.fn(async () => "session" as const),
-      resolve: vi.fn(),
-      listPending: vi.fn(() => []),
-    };
+    const approvalQueue = createApprovalQueueMock();
     const service = createExternalOpenService({
       eventService,
       approvalQueue,

@@ -396,12 +396,14 @@ async function main() {
   const githubConfig = workspaceConfig.git?.github;
   const tokenManager = new TokenManager();
   const { CredentialStore } = await import("../../packages/shared/src/credentials/store.js");
+  const { OAuthClientConfigStore } = await import("../../packages/shared/src/credentials/oauthClientConfigStore.js");
   const { AuditLog } = await import("../../packages/shared/src/credentials/audit.js");
   const { CodeIdentityResolver } = await import("./services/codeIdentityResolver.js");
   const { createEgressProxy } = await import("./services/egressProxy.js");
   const { CredentialSessionGrantStore } = await import("./services/credentialSessionGrants.js");
 
   const credentialStore = new CredentialStore();
+  const oauthClientConfigStore = new OAuthClientConfigStore();
   const auditLog = new AuditLog({ logDir: path.join(statePath, "credentials-audit") });
   const codeIdentityResolver = new CodeIdentityResolver();
   const credentialSessionGrantStore = new CredentialSessionGrantStore();
@@ -603,6 +605,7 @@ async function main() {
     const { createCredentialService } = await import("./services/credentialService.js");
     container.register(rpcService(createCredentialService({
       credentialStore,
+      oauthClientConfigStore,
       auditLog,
       egressProxy,
       codeIdentityResolver,

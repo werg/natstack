@@ -33,7 +33,10 @@ export const workerRuntimeSurface: RuntimeSurface = {
     credentials: namespaceEntry([
       "store",
       "beginCreateWithOAuthPkce",
+      "beginCreateWithOAuthClientPkce",
       "completeCreateWithOAuthPkce",
+      "requestOAuthClientConfig",
+      "getOAuthClientConfigStatus",
       "listStoredCredentials",
       "revokeCredential",
       "grantCredential",

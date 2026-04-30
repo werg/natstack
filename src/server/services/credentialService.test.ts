@@ -6,6 +6,7 @@ import type {
   CredentialAuditEvent,
   StoredCredentialSummary,
 } from "../../../packages/shared/src/credentials/types.js";
+import type { OAuthClientConfigRecord } from "../../../packages/shared/src/credentials/oauthClientConfigStore.js";
 import { createCredentialService } from "./credentialService.js";
 import { CredentialSessionGrantStore } from "./credentialSessionGrants.js";
 
@@ -60,6 +61,45 @@ class MemoryAuditLog {
 
   async query(): Promise<CredentialAuditEvent[]> {
     return this.entries;
+  }
+}
+
+class MemoryOAuthClientConfigStore {
+  private readonly records = new Map<string, OAuthClientConfigRecord>();
+
+  async save(record: OAuthClientConfigRecord): Promise<void> {
+    this.records.set(record.configId, record);
+  }
+
+  async load(configId: string): Promise<OAuthClientConfigRecord | null> {
+    return this.records.get(configId) ?? null;
+  }
+
+  summarize(
+    configId: string,
+    record: OAuthClientConfigRecord | null,
+    requestedFields?: readonly { name: string; type: "text" | "secret" }[],
+  ) {
+    const fields: Record<string, { configured: boolean; type: "text" | "secret"; updatedAt?: number }> = {};
+    const names = requestedFields?.length
+      ? requestedFields
+      : Object.entries(record?.fields ?? {}).map(([name, field]) => ({ name, type: field.type }));
+    for (const field of names) {
+      const stored = record?.fields[field.name];
+      fields[field.name] = {
+        configured: !!stored?.value,
+        type: field.type,
+        updatedAt: stored?.updatedAt,
+      };
+    }
+    return {
+      configId,
+      configured: Object.values(fields).every((field) => field.configured),
+      authorizeUrl: record?.authorizeUrl,
+      tokenUrl: record?.tokenUrl,
+      fields,
+      updatedAt: record?.updatedAt,
+    };
   }
 }
 
@@ -282,45 +322,6 @@ describe("credentialService", () => {
     expect(JSON.stringify(persisted)).not.toContain("must-not-persist");
   });
 
-  it("uses optional OAuth client secrets only during token exchange", async () => {
-    const service = createCredentialService({ credentialStore: new MemoryCredentialStore() as never });
-    const ctx = { callerId: "panel:test", callerKind: "panel" as const };
-
-    const begin = await service.handler(ctx, "beginCreateWithOAuthPkce", [{
-      oauth: {
-        authorizeUrl: "https://auth.example.test/oauth/authorize",
-        tokenUrl: "https://auth.example.test/oauth/token",
-        clientId: "client-1",
-        clientSecret: "secret-1",
-      },
-      credential: {
-        label: "Example OAuth",
-        audience: [{ url: "https://api.example.test", match: "origin" }],
-        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
-      },
-      redirectUri: "http://127.0.0.1:53123/oauth/callback",
-    }]) as { nonce: string; authorizeUrl: string };
-
-    const authorizeUrl = new URL(begin.authorizeUrl);
-    expect(authorizeUrl.searchParams.get("client_secret")).toBeNull();
-
-    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const body = init?.body as URLSearchParams;
-      expect(body.get("client_id")).toBe("client-1");
-      expect(body.get("client_secret")).toBe("secret-1");
-      return new Response(JSON.stringify({
-        access_token: "token",
-        expires_in: 3600,
-      }), { status: 200, headers: { "content-type": "application/json" } });
-    }));
-
-    await service.handler(ctx, "completeCreateWithOAuthPkce", [{
-      nonce: begin.nonce,
-      state: begin.nonce,
-      code: "code-1",
-    }]);
-  });
-
   it("surfaces sanitized OAuth token endpoint error details", async () => {
     const service = createCredentialService({ credentialStore: new MemoryCredentialStore() as never });
     const ctx = { callerId: "panel:test", callerKind: "panel" as const };
@@ -349,6 +350,193 @@ describe("credentialService", () => {
       state: begin.nonce,
       code: "code-1",
     }])).rejects.toThrow("OAuth token exchange failed: 400 invalid_client: Unauthorized");
+  });
+
+  it("stores URL-bound OAuth client config from approval UI without returning secret values", async () => {
+    const oauthClientConfigStore = new MemoryOAuthClientConfigStore();
+    const approvalQueue = {
+      request: vi.fn(),
+      requestOAuthClientConfig: vi.fn(async () => ({
+        decision: "submit" as const,
+        values: {
+          clientId: "client-1",
+          clientSecret: "secret-1",
+        },
+      })),
+      resolve: vi.fn(),
+      submitOAuthClientConfig: vi.fn(),
+      listPending: vi.fn(() => []),
+    };
+    const service = createCredentialService({
+      credentialStore: new MemoryCredentialStore() as never,
+      oauthClientConfigStore: oauthClientConfigStore as never,
+      approvalQueue: approvalQueue as never,
+    });
+    const ctx = { callerId: "panel:test", callerKind: "panel" as const };
+
+    const status = await service.handler(ctx, "requestOAuthClientConfig", [{
+      configId: "google-workspace",
+      title: "Configure Google Workspace OAuth",
+      authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      fields: [
+        { name: "clientId", label: "Client ID", type: "text", required: true },
+        { name: "clientSecret", label: "Client secret", type: "secret", required: true },
+      ],
+    }]);
+
+    expect(status).toMatchObject({
+      configId: "google-workspace",
+      configured: true,
+      authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      fields: {
+        clientId: { configured: true, type: "text" },
+        clientSecret: { configured: true, type: "secret" },
+      },
+    });
+    expect(JSON.stringify(status)).not.toContain("secret-1");
+    expect((await oauthClientConfigStore.load("google-workspace"))?.fields["clientSecret"]?.value).toBe("secret-1");
+  });
+
+  it("rejects OAuth client config URLs with fragments or token query parameters", async () => {
+    const service = createCredentialService({
+      credentialStore: new MemoryCredentialStore() as never,
+      oauthClientConfigStore: new MemoryOAuthClientConfigStore() as never,
+      approvalQueue: {
+        request: vi.fn(),
+        requestOAuthClientConfig: vi.fn(),
+        resolve: vi.fn(),
+        submitOAuthClientConfig: vi.fn(),
+        listPending: vi.fn(() => []),
+      } as never,
+    });
+    const ctx = { callerId: "panel:test", callerKind: "panel" as const };
+    const baseRequest = {
+      configId: "google-workspace",
+      title: "Configure Google Workspace OAuth",
+      authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      fields: [
+        { name: "clientId", label: "Client ID", type: "text" as const, required: true },
+        { name: "clientSecret", label: "Client secret", type: "secret" as const, required: true },
+      ],
+    };
+
+    await expect(service.handler(ctx, "requestOAuthClientConfig", [{
+      ...baseRequest,
+      authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth#frag",
+    }])).rejects.toThrow("authorizeUrl must not include a fragment");
+    await expect(service.handler(ctx, "requestOAuthClientConfig", [{
+      ...baseRequest,
+      tokenUrl: "https://oauth2.googleapis.com/token?client_secret=inline",
+    }])).rejects.toThrow("tokenUrl must not include query parameters");
+    await expect(service.handler(ctx, "requestOAuthClientConfig", [{
+      ...baseRequest,
+      tokenUrl: "https://oauth2.googleapis.com/token#frag",
+    }])).rejects.toThrow("tokenUrl must not include a fragment");
+  });
+
+  it("builds URL-bound OAuth client config PKCE without exposing client secrets in userland request", async () => {
+    const oauthClientConfigStore = new MemoryOAuthClientConfigStore();
+    await oauthClientConfigStore.save({
+      configId: "google-workspace",
+      authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      fields: {
+        clientId: { value: "client-1", type: "text", updatedAt: 1 },
+        clientSecret: { value: "secret-1", type: "secret", updatedAt: 1 },
+      },
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const service = createCredentialService({
+      credentialStore: new MemoryCredentialStore() as never,
+      oauthClientConfigStore: oauthClientConfigStore as never,
+    });
+    const ctx = { callerId: "panel:test", callerKind: "panel" as const };
+
+    const begin = await service.handler(ctx, "beginCreateWithOAuthClientPkce", [{
+      oauth: {
+        configId: "google-workspace",
+        scopes: ["scope-1"],
+        extraAuthorizeParams: {
+          access_type: "offline",
+          prompt: "consent",
+        },
+      },
+      credential: {
+        label: "Google Workspace",
+        audience: [{ url: "https://www.googleapis.com/", match: "origin" }],
+        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+      },
+      redirectUri: "http://127.0.0.1:53123/oauth/callback",
+    }]) as { authorizeUrl: string; nonce: string };
+
+    const authorizeUrl = new URL(begin.authorizeUrl);
+    expect(authorizeUrl.searchParams.get("client_id")).toBe("client-1");
+    expect(authorizeUrl.searchParams.get("client_secret")).toBeNull();
+    expect(authorizeUrl.searchParams.get("access_type")).toBe("offline");
+
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = init?.body as URLSearchParams;
+      expect(body.get("client_id")).toBe("client-1");
+      expect(body.get("client_secret")).toBe("secret-1");
+      return new Response(JSON.stringify({
+        access_token: "token",
+        expires_in: 3600,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+
+    await service.handler(ctx, "completeCreateWithOAuthPkce", [{
+      nonce: begin.nonce,
+      state: begin.nonce,
+      code: "code-1",
+    }]);
+  });
+
+  it("rejects OAuth client config updates that try to change URL bindings", async () => {
+    const oauthClientConfigStore = new MemoryOAuthClientConfigStore();
+    await oauthClientConfigStore.save({
+      configId: "google-workspace",
+      authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      fields: {
+        clientId: { value: "client-1", type: "text", updatedAt: 1 },
+        clientSecret: { value: "secret-1", type: "secret", updatedAt: 1 },
+      },
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const approvalQueue = {
+      request: vi.fn(),
+      requestOAuthClientConfig: vi.fn(async () => ({
+        decision: "submit" as const,
+        values: {
+          clientId: "client-2",
+          clientSecret: "secret-2",
+        },
+      })),
+      resolve: vi.fn(),
+      submitOAuthClientConfig: vi.fn(),
+      listPending: vi.fn(() => []),
+    };
+    const service = createCredentialService({
+      credentialStore: new MemoryCredentialStore() as never,
+      oauthClientConfigStore: oauthClientConfigStore as never,
+      approvalQueue: approvalQueue as never,
+    });
+
+    await expect(service.handler({ callerId: "panel:test", callerKind: "panel" as const }, "requestOAuthClientConfig", [{
+      configId: "google-workspace",
+      title: "Configure Google Workspace OAuth",
+      authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://evil.example.test/token",
+      fields: [
+        { name: "clientId", label: "Client ID", type: "text", required: true },
+        { name: "clientSecret", label: "Client secret", type: "secret", required: true },
+      ],
+    }])).rejects.toThrow("tokenUrl is immutable");
   });
 
   it("surfaces OAuth origins and domain mismatch in credential approval requests", async () => {

@@ -88,4 +88,49 @@ describe("approvalQueue", () => {
     queue.resolve(queue.listPending()[0]!.approvalId, "session");
     await expect(promise).resolves.toBe("session");
   });
+
+  it("supports OAuth client config approvals with submitted field values", async () => {
+    const { queue } = createQueue();
+    const promise = queue.requestOAuthClientConfig({
+      kind: "oauth-client-config",
+      callerId: "panel:1",
+      callerKind: "panel",
+      repoPath: "panels/example",
+      effectiveVersion: "hash-1",
+      configId: "google-workspace",
+      authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      title: "Configure Google Workspace OAuth",
+      fields: [
+        { name: "clientId", label: "Client ID", type: "text", required: true },
+        { name: "clientSecret", label: "Client secret", type: "secret", required: true },
+      ],
+    });
+
+    const pending = queue.listPending()[0]!;
+    expect(pending).toMatchObject({
+      kind: "oauth-client-config",
+      configId: "google-workspace",
+      authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      fields: [
+        { name: "clientId", type: "text" },
+        { name: "clientSecret", type: "secret" },
+      ],
+    });
+    expect(JSON.stringify(pending)).not.toContain("secret-1");
+
+    queue.submitOAuthClientConfig(pending.approvalId, {
+      clientId: "client-1",
+      clientSecret: "secret-1",
+    });
+
+    await expect(promise).resolves.toEqual({
+      decision: "submit",
+      values: {
+        clientId: "client-1",
+        clientSecret: "secret-1",
+      },
+    });
+  });
 });

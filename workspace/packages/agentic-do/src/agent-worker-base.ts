@@ -85,7 +85,6 @@ interface ModelCredentialOAuthConfig {
   authorizeUrl: string;
   tokenUrl: string;
   clientId: string;
-  clientSecret?: string;
   scopes?: string[];
   extraAuthorizeParams?: Record<string, string>;
   allowMissingExpiry?: boolean;
@@ -115,6 +114,21 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
   const [error, setError] = useState("");
   const [authorizeUrl, setAuthorizeUrl] = useState("");
 
+  const unwrapMethodResult = (value) => {
+    if (
+      value &&
+      typeof value === "object" &&
+      Object.prototype.hasOwnProperty.call(value, "content") &&
+      (
+        Object.prototype.hasOwnProperty.call(value, "attachments") ||
+        Object.prototype.hasOwnProperty.call(value, "contentType")
+      )
+    ) {
+      return value.content;
+    }
+    return value;
+  };
+
   const startOAuth = async (openMode) => {
     if (!oauth || !modelBaseUrl) return;
     setStatus("starting");
@@ -133,10 +147,12 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
       if (!props.agentParticipantId) {
         throw new Error("Missing agent participant for credential setup");
       }
-      const begin = await chat.callMethod(props.agentParticipantId, "beginModelCredentialOAuth", {
-        providerId,
-        redirectUri: callback.redirectUri,
-      });
+      const begin = unwrapMethodResult(
+        await chat.callMethod(props.agentParticipantId, "beginModelCredentialOAuth", {
+          providerId,
+          redirectUri: callback.redirectUri,
+        })
+      );
       if (!begin || typeof begin.authorizeUrl !== "string" || typeof begin.nonce !== "string") {
         throw new Error("Agent did not return OAuth setup details");
       }
@@ -275,10 +291,6 @@ function isModelCredentialOAuthConfig(value: unknown): value is ModelCredentialO
   return typeof config["authorizeUrl"] === "string"
     && typeof config["tokenUrl"] === "string"
     && typeof config["clientId"] === "string"
-    && (
-      config["clientSecret"] === undefined ||
-      typeof config["clientSecret"] === "string"
-    )
     && (
       config["scopes"] === undefined ||
       (Array.isArray(config["scopes"]) && config["scopes"].every((scope) => typeof scope === "string"))

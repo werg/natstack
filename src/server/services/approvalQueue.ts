@@ -12,6 +12,7 @@ import type {
   PendingApproval,
   PendingCapabilityApproval,
   PendingCredentialApproval,
+  PendingOAuthClientConfigApproval,
 } from "@natstack/shared/approvals";
 import type { AccountIdentity, CredentialInjection, UrlAudience } from "@natstack/shared/credentials/types";
 
@@ -48,10 +49,33 @@ export interface CapabilityApprovalQueueRequest extends ApprovalQueueRequestBase
   details?: PendingCapabilityApproval["details"];
 }
 
-export type ApprovalQueueRequest = CredentialApprovalQueueRequest | CapabilityApprovalQueueRequest;
+export interface OAuthClientConfigApprovalQueueRequest extends ApprovalQueueRequestBase {
+  kind: "oauth-client-config";
+  configId: string;
+  authorizeUrl: string;
+  tokenUrl: string;
+  title: string;
+  description?: string;
+  fields: PendingOAuthClientConfigApproval["fields"];
+}
+
+export type ApprovalQueueRequest =
+  | CredentialApprovalQueueRequest
+  | CapabilityApprovalQueueRequest
+  | OAuthClientConfigApprovalQueueRequest;
+
+export type OAuthClientConfigApprovalResult =
+  | { decision: "submit"; values: Record<string, string> }
+  | { decision: "deny" };
 
 interface QueueWaiter {
   resolve: (decision: GrantedDecision) => void;
+  signal?: AbortSignal;
+  onAbort?: () => void;
+}
+
+interface OAuthClientConfigQueueWaiter {
+  resolve: (result: OAuthClientConfigApprovalResult) => void;
   signal?: AbortSignal;
   onAbort?: () => void;
 }
@@ -60,12 +84,15 @@ interface QueueEntry {
   approval: PendingApproval;
   dedupKey: string;
   waiters: Map<number, QueueWaiter>;
+  oauthClientConfigWaiters: Map<number, OAuthClientConfigQueueWaiter>;
   nextWaiterId: number;
 }
 
 export interface ApprovalQueue {
   request(req: ApprovalQueueRequest): Promise<GrantedDecision>;
+  requestOAuthClientConfig(req: OAuthClientConfigApprovalQueueRequest): Promise<OAuthClientConfigApprovalResult>;
   resolve(approvalId: string, decision: ApprovalDecision): void;
+  submitOAuthClientConfig(approvalId: string, values: Record<string, string>): void;
   listPending(): PendingApproval[];
 }
 
@@ -94,6 +121,17 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
         req.resource?.value ?? "",
       ].join("\x00");
     }
+    if (req.kind === "oauth-client-config") {
+      return [
+        "oauth-client-config",
+        req.repoPath,
+        req.effectiveVersion,
+        req.configId,
+        req.authorizeUrl,
+        req.tokenUrl,
+        req.fields.map((field) => field.name).join(","),
+      ].join("\x00");
+    }
     return `${req.repoPath}\x00${req.effectiveVersion}\x00${req.credentialId}`;
   }
 
@@ -116,6 +154,18 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
         resource: req.resource,
         details: req.details,
       } satisfies PendingCapabilityApproval;
+    }
+    if (req.kind === "oauth-client-config") {
+      return {
+        ...base,
+        kind: "oauth-client-config",
+        configId: req.configId,
+        authorizeUrl: req.authorizeUrl,
+        tokenUrl: req.tokenUrl,
+        title: req.title,
+        description: req.description,
+        fields: req.fields,
+      } satisfies PendingOAuthClientConfigApproval;
     }
     return {
       ...base,
@@ -143,6 +193,7 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
           approval,
           dedupKey,
           waiters: new Map(),
+          oauthClientConfigWaiters: new Map(),
           nextWaiterId: 0,
         };
         entriesById.set(approval.approvalId, entry);
@@ -185,6 +236,63 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
       });
     },
 
+    requestOAuthClientConfig(req) {
+      const dedupKey = dedupKeyFor(req);
+      let entry = entriesByDedupKey.get(dedupKey);
+      let newEntry = false;
+      if (!entry) {
+        const approval = createPendingApproval(req);
+        entry = {
+          approval,
+          dedupKey,
+          waiters: new Map(),
+          oauthClientConfigWaiters: new Map(),
+          nextWaiterId: 0,
+        };
+        entriesById.set(approval.approvalId, entry);
+        entriesByDedupKey.set(dedupKey, entry);
+        newEntry = true;
+      }
+
+      if (entry.approval.kind !== "oauth-client-config") {
+        throw new Error("Approval dedup collision for OAuth client config request");
+      }
+
+      const bound = entry;
+      return new Promise<OAuthClientConfigApprovalResult>((resolve) => {
+        const waiterId = bound.nextWaiterId++;
+        const waiter: OAuthClientConfigQueueWaiter = { resolve, signal: req.signal };
+
+        if (req.signal) {
+          const onAbort = () => {
+            const e = entriesById.get(bound.approval.approvalId);
+            if (!e) {
+              resolve({ decision: "deny" });
+              return;
+            }
+            e.oauthClientConfigWaiters.delete(waiterId);
+            if (e.waiters.size === 0 && e.oauthClientConfigWaiters.size === 0) {
+              removeEntry(e);
+              emitPendingChanged();
+            }
+            resolve({ decision: "deny" });
+          };
+          waiter.onAbort = onAbort;
+          if (req.signal.aborted) {
+            queueMicrotask(onAbort);
+          } else {
+            req.signal.addEventListener("abort", onAbort, { once: true });
+          }
+        }
+
+        bound.oauthClientConfigWaiters.set(waiterId, waiter);
+
+        if (newEntry) {
+          emitPendingChanged();
+        }
+      });
+    },
+
     resolve(approvalId, decision) {
       const entry = entriesById.get(approvalId);
       if (!entry) return;
@@ -199,6 +307,37 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
           waiter.signal.removeEventListener("abort", waiter.onAbort);
         }
         waiter.resolve(granted);
+      }
+      entry.waiters.clear();
+      for (const waiter of entry.oauthClientConfigWaiters.values()) {
+        if (waiter.signal && waiter.onAbort) {
+          waiter.signal.removeEventListener("abort", waiter.onAbort);
+        }
+        waiter.resolve({ decision: "deny" });
+      }
+      entry.oauthClientConfigWaiters.clear();
+
+      emitPendingChanged();
+    },
+
+    submitOAuthClientConfig(approvalId, values) {
+      const entry = entriesById.get(approvalId);
+      if (!entry || entry.approval.kind !== "oauth-client-config") return;
+
+      removeEntry(entry);
+
+      for (const waiter of entry.oauthClientConfigWaiters.values()) {
+        if (waiter.signal && waiter.onAbort) {
+          waiter.signal.removeEventListener("abort", waiter.onAbort);
+        }
+        waiter.resolve({ decision: "submit", values });
+      }
+      entry.oauthClientConfigWaiters.clear();
+      for (const waiter of entry.waiters.values()) {
+        if (waiter.signal && waiter.onAbort) {
+          waiter.signal.removeEventListener("abort", waiter.onAbort);
+        }
+        waiter.resolve("deny");
       }
       entry.waiters.clear();
 

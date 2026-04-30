@@ -2,10 +2,14 @@ import type { RpcCaller } from "@natstack/rpc";
 import {
   createCredentialClient,
   type BeginOAuthPkceCredentialResult,
+  type BeginOAuthClientPkceCredentialRequest,
   type CompleteOAuthPkceCredentialRequest,
   type CreateOAuthPkceCredentialRequest,
   type CredentialClient,
+  type GetOAuthClientConfigStatusRequest,
   type GrantUrlBoundCredentialRequest,
+  type OAuthClientConfigStatus,
+  type RequestOAuthClientConfigRequest,
   type ResolveUrlBoundCredentialRequest,
   type StoredCredentialSummary,
   type StoreUrlBoundCredentialRequest,
@@ -36,10 +40,28 @@ export async function beginCreateWithOAuthPkce(
   return requireClient().beginCreateWithOAuthPkce(input);
 }
 
+export async function beginCreateWithOAuthClientPkce(
+  input: BeginOAuthClientPkceCredentialRequest,
+): Promise<BeginOAuthPkceCredentialResult> {
+  return requireClient().beginCreateWithOAuthClientPkce(input);
+}
+
 export async function completeCreateWithOAuthPkce(
   input: CompleteOAuthPkceCredentialRequest,
 ): Promise<StoredCredentialSummary> {
   return requireClient().completeCreateWithOAuthPkce(input);
+}
+
+export async function requestOAuthClientConfig(
+  input: RequestOAuthClientConfigRequest,
+): Promise<OAuthClientConfigStatus> {
+  return requireClient().requestOAuthClientConfig(input);
+}
+
+export async function getOAuthClientConfigStatus(
+  input: GetOAuthClientConfigStatusRequest,
+): Promise<OAuthClientConfigStatus> {
+  return requireClient().getOAuthClientConfigStatus(input);
 }
 
 export async function listStoredCredentials(): Promise<StoredCredentialSummary[]> {
@@ -77,10 +99,14 @@ export function hookForUrl(
 
 export type {
   BeginOAuthPkceCredentialResult,
+  BeginOAuthClientPkceCredentialRequest,
   CompleteOAuthPkceCredentialRequest,
   CreateOAuthPkceCredentialRequest,
   CredentialClient,
+  GetOAuthClientConfigStatusRequest,
   GrantUrlBoundCredentialRequest,
+  OAuthClientConfigStatus,
+  RequestOAuthClientConfigRequest,
   ResolveUrlBoundCredentialRequest,
   StoredCredentialSummary,
   StoreUrlBoundCredentialRequest,

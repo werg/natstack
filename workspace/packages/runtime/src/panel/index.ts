@@ -118,28 +118,38 @@ export const workspace = helpfulNamespace("workspace", workspaceClient);
 
 // Credential handles + universal outbound proxying for panel fetch().
 import {
+  beginCreateWithOAuthClientPkce as beginOAuthClientCredentialPkce,
   beginCreateWithOAuthPkce as beginCredentialOAuthPkce,
   completeCreateWithOAuthPkce as completeCredentialOAuthPkce,
   fetch as credentialFetch,
+  getOAuthClientConfigStatus as getOAuthClientCredentialConfigStatus,
   hookForUrl as credentialHookForUrl,
   initPanelCredentials,
   listStoredCredentials as listUrlBoundCredentials,
+  requestOAuthClientConfig as requestOAuthClientCredentialConfig,
   revokeCredential as revokeUrlBoundCredential,
   store as storeUrlBoundCredential,
 } from "./credentials.js";
 export type {
+  BeginOAuthClientPkceCredentialRequest,
   CredentialClient,
   StoredCredentialSummary,
   StoreUrlBoundCredentialRequest,
   BeginOAuthPkceCredentialResult,
   CompleteOAuthPkceCredentialRequest,
   CreateOAuthPkceCredentialRequest,
+  GetOAuthClientConfigStatusRequest,
+  OAuthClientConfigStatus,
+  RequestOAuthClientConfigRequest,
 } from "../shared/credentials.js";
 initPanelCredentials(rpc);
 const credentialApi = {
   store: storeUrlBoundCredential,
   beginCreateWithOAuthPkce: beginCredentialOAuthPkce,
+  beginCreateWithOAuthClientPkce: beginOAuthClientCredentialPkce,
   completeCreateWithOAuthPkce: completeCredentialOAuthPkce,
+  requestOAuthClientConfig: requestOAuthClientCredentialConfig,
+  getOAuthClientConfigStatus: getOAuthClientCredentialConfigStatus,
   listStoredCredentials: listUrlBoundCredentials,
   revokeCredential: revokeUrlBoundCredential,
   fetch: credentialFetch,

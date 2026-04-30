@@ -40,7 +40,11 @@ const stored = await credentials.store({
 ```
 
 Use host-brokered OAuth PKCE when userland should initiate OAuth but should not
-receive the access token:
+receive the access token. Do not pass client secrets through userland; use
+`credentials.requestOAuthClientConfig()` and URL-bound OAuth client config PKCE
+for flows that need stored OAuth client material. A saved `configId` is bound to
+its OAuth authorize and token URLs; use a new `configId` if those endpoints
+change.
 
 ```ts
 const begin = await credentials.beginCreateWithOAuthPkce({

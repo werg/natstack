@@ -26,11 +26,11 @@ function matchesFilter(
     return false;
   }
 
-  if (filter.providerId !== undefined && entry.providerId !== filter.providerId) {
+  if (filter.providerId !== undefined && (!("providerId" in entry) || entry.providerId !== filter.providerId)) {
     return false;
   }
 
-  if (filter.connectionId !== undefined && entry.connectionId !== filter.connectionId) {
+  if (filter.connectionId !== undefined && (!("connectionId" in entry) || entry.connectionId !== filter.connectionId)) {
     return false;
   }
 

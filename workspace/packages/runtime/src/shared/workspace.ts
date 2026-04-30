@@ -20,7 +20,6 @@ export interface WorkspaceConfig {
   initPanels?: InitPanelEntry[];
   git?: { port?: number };
   credentials?: {
-    providers?: Record<string, { clientId?: string; clientSecret?: string }>;
     nonInteractive?: boolean;
     mobileCallbackDomain?: string;
   };

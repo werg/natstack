@@ -43,9 +43,10 @@ Optional APIs when the user's task needs them:
 2. If setup is missing, show the workflow UI below.
 3. The user uses the UI's deep links to finish Google Cloud Console work.
 4. The user creates a **Desktop app** OAuth client.
-5. The user saves the Desktop app `client_id` and `client_secret` through the
-   credential/provider setup path. Do not ask them to paste secrets into chat.
-6. Run `beginGoogleCredentialCreation({ clientId, clientSecret, redirectUri })`, open the
+5. Run `configureGoogleOAuthClient()` so the trusted approval UI collects the
+   Desktop app `client_id` and `client_secret`. Do not ask the user to paste
+   secrets into chat.
+6. Run `beginGoogleCredentialCreation({ redirectUri })`, open the
    returned authorize URL with `openExternal(begin.authorizeUrl, {
    expectedRedirectUri: redirectUri })`, then complete the PKCE flow.
 7. Run `verifyGoogleCredential(credentialId)`.
@@ -122,7 +123,7 @@ const requiredSteps = [
     id: "client",
     title: "Create a Desktop app OAuth client",
     href: "https://console.cloud.google.com/auth/clients",
-    note: "Choose Application type: Desktop app. Save its client_id and client_secret when connecting.",
+    note: "Choose Application type: Desktop app. You will enter its client_id and client_secret in NatStack's trusted approval UI.",
   },
 ];
 

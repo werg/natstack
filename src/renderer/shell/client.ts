@@ -261,6 +261,8 @@ import type { ApprovalDecision, PendingApproval } from "@natstack/shared/approva
 export const shellApproval = {
   resolve: (approvalId: string, decision: ApprovalDecision) =>
     rpc.call<void>("main", "shellApproval.resolve", approvalId, decision),
+  submitOAuthClientConfig: (approvalId: string, values: Record<string, string>) =>
+    rpc.call("main", "shellApproval.submitOAuthClientConfig", approvalId, values) as Promise<void>,
   listPending: () => rpc.call<PendingApproval[]>("main", "shellApproval.listPending"),
 };
 

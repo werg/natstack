@@ -1,15 +1,20 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { AuditLog } from "../../../packages/shared/src/credentials/audit.js";
+import { OAuthClientConfigStore } from "../../../packages/shared/src/credentials/oauthClientConfigStore.js";
 import { CredentialStore } from "../../../packages/shared/src/credentials/store.js";
 import type {
   AccountIdentity,
   AuditEntry,
+  BeginOAuthClientPkceCredentialRequest,
   CompleteOAuthPkceCredentialRequest,
   Credential,
   CredentialAuditEvent,
   CreateOAuthPkceCredentialRequest,
+  GetOAuthClientConfigStatusRequest,
   GrantUrlBoundCredentialRequest,
+  OAuthClientConfigStatus,
+  RequestOAuthClientConfigRequest,
   ResolveUrlBoundCredentialRequest,
   StoredCredentialSummary,
   StoreUrlBoundCredentialRequest,
@@ -86,7 +91,6 @@ const createOAuthPkceCredentialParamsSchema = z.object({
     authorizeUrl: z.string().url(),
     tokenUrl: z.string().url(),
     clientId: z.string().min(1).max(512),
-    clientSecret: z.string().min(1).max(2048).optional(),
     scopes: z.array(z.string().max(256)).optional(),
     extraAuthorizeParams: z.record(z.string(), z.string()).optional(),
     allowMissingExpiry: z.boolean().optional(),
@@ -106,6 +110,39 @@ const completeOAuthPkceCredentialParamsSchema = z.object({
   nonce: nonceSchema,
   code: z.string().min(1).max(4096),
   state: z.string().min(1).max(4096),
+}).strict();
+
+const oauthClientConfigFieldSchema = z.object({
+  name: identifierSchema,
+  label: z.string().min(1).max(128),
+  type: z.enum(["text", "secret"]),
+  required: z.boolean().optional(),
+  description: z.string().max(512).optional(),
+}).strict();
+
+const requestOAuthClientConfigParamsSchema = z.object({
+  configId: identifierSchema,
+  title: z.string().min(1).max(256),
+  description: z.string().max(1024).optional(),
+  authorizeUrl: z.string().url(),
+  tokenUrl: z.string().url(),
+  fields: z.array(oauthClientConfigFieldSchema).min(1).max(16),
+}).strict();
+
+const getOAuthClientConfigStatusParamsSchema = z.object({
+  configId: identifierSchema,
+  fields: z.array(oauthClientConfigFieldSchema).max(16).optional(),
+}).strict();
+
+const beginOAuthClientPkceCredentialParamsSchema = z.object({
+  redirectUri: z.string().url(),
+  oauth: z.object({
+    configId: identifierSchema,
+    scopes: z.array(z.string().max(256)).optional(),
+    extraAuthorizeParams: z.record(z.string(), z.string()).optional(),
+    allowMissingExpiry: z.boolean().optional(),
+  }).strict(),
+  credential: createOAuthPkceCredentialParamsSchema.shape.credential,
 }).strict();
 
 const credentialIdParamsSchema = z.object({
@@ -145,14 +182,39 @@ const auditParamsSchema = z.object({
 type StoreUrlBoundCredentialParams = z.infer<typeof storeUrlBoundCredentialParamsSchema>;
 type CreateOAuthPkceCredentialParams = z.infer<typeof createOAuthPkceCredentialParamsSchema>;
 type CompleteOAuthPkceCredentialParams = z.infer<typeof completeOAuthPkceCredentialParamsSchema>;
+type RequestOAuthClientConfigParams = z.infer<typeof requestOAuthClientConfigParamsSchema>;
+type GetOAuthClientConfigStatusParams = z.infer<typeof getOAuthClientConfigStatusParamsSchema>;
+type BeginOAuthClientPkceCredentialParams = z.infer<typeof beginOAuthClientPkceCredentialParamsSchema>;
 type CredentialIdParams = z.infer<typeof credentialIdParamsSchema>;
 type GrantCredentialParams = z.infer<typeof grantCredentialParamsSchema>;
 type ResolveCredentialParams = z.infer<typeof resolveCredentialParamsSchema>;
 type ProxyFetchParams = z.infer<typeof proxyFetchParamsSchema>;
 type AuditParams = z.infer<typeof auditParamsSchema>;
+type InternalCreateOAuthPkceCredentialRequest = CreateOAuthPkceCredentialRequest & {
+  oauth: CreateOAuthPkceCredentialRequest["oauth"] & { clientSecret?: string };
+};
+
+function canonicalUrl(raw: string): string {
+  return new URL(raw).toString();
+}
+
+function validateOAuthClientConfigUrls(authorizeUrl: string, tokenUrl: string): void {
+  const authorize = new URL(authorizeUrl);
+  const token = new URL(tokenUrl);
+  if (authorize.hash) {
+    throw new Error("OAuth authorizeUrl must not include a fragment");
+  }
+  if (token.hash) {
+    throw new Error("OAuth tokenUrl must not include a fragment");
+  }
+  if (token.search) {
+    throw new Error("OAuth tokenUrl must not include query parameters");
+  }
+}
 
 interface CredentialServiceDeps {
   credentialStore?: CredentialStore;
+  oauthClientConfigStore?: OAuthClientConfigStore;
   auditLog?: AuditLog;
   egressProxy?: Pick<EgressProxy, "forwardProxyFetch">;
   codeIdentityResolver?: Pick<CodeIdentityResolver, "resolveByCallerId">;
@@ -162,7 +224,7 @@ interface CredentialServiceDeps {
 
 interface PendingOAuthCredentialCreation {
   nonce: string;
-  oauth: CreateOAuthPkceCredentialRequest["oauth"];
+  oauth: InternalCreateOAuthPkceCredentialRequest["oauth"];
   credential: CreateOAuthPkceCredentialRequest["credential"];
   redirectUri: string;
   codeVerifier: string;
@@ -172,6 +234,7 @@ interface PendingOAuthCredentialCreation {
 
 export function createCredentialService(deps: CredentialServiceDeps = {}): ServiceDefinition {
   const credentialStore = deps.credentialStore ?? new CredentialStore();
+  const oauthClientConfigStore = deps.oauthClientConfigStore ?? new OAuthClientConfigStore();
   const auditLog = deps.auditLog;
   const egressProxy = deps.egressProxy;
   const codeIdentityResolver = deps.codeIdentityResolver;
@@ -248,9 +311,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function beginCreateWithOAuthPkce(
     ctx: ServiceContext,
-    params: CreateOAuthPkceCredentialParams,
+    params: CreateOAuthPkceCredentialParams | InternalCreateOAuthPkceCredentialRequest,
   ): Promise<{ nonce: string; state: string; authorizeUrl: string }> {
-    const request = params as CreateOAuthPkceCredentialRequest;
+    const request = params as InternalCreateOAuthPkceCredentialRequest;
     normalizeUrlAudiences(request.credential.audience);
     normalizeCredentialInjection(request.credential.injection);
     normalizeUrlAudiences([
@@ -290,6 +353,130 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     });
 
     return { nonce, state: nonce, authorizeUrl: authorizeUrl.toString() };
+  }
+
+  async function requestOAuthClientConfig(
+    ctx: ServiceContext,
+    params: RequestOAuthClientConfigParams,
+  ): Promise<OAuthClientConfigStatus> {
+    const request = params as RequestOAuthClientConfigRequest;
+    if (!approvalQueue || (ctx.callerKind !== "panel" && ctx.callerKind !== "worker")) {
+      throw new Error("OAuth client config approval is unavailable");
+    }
+    const authorizeUrl = canonicalUrl(request.authorizeUrl);
+    const tokenUrl = canonicalUrl(request.tokenUrl);
+    validateOAuthClientConfigUrls(authorizeUrl, tokenUrl);
+    normalizeUrlAudiences([
+      { url: authorizeUrl, match: "exact" },
+      { url: tokenUrl, match: "exact" },
+    ]);
+    const identity = resolveApprovalIdentity(ctx);
+    const result = await approvalQueue.requestOAuthClientConfig({
+      kind: "oauth-client-config",
+      callerId: ctx.callerId,
+      callerKind: ctx.callerKind,
+      repoPath: identity.repoPath,
+      effectiveVersion: identity.effectiveVersion,
+      configId: request.configId,
+      authorizeUrl,
+      tokenUrl,
+      title: request.title,
+      description: request.description,
+      fields: request.fields.map((field) => ({
+        name: field.name,
+        label: field.label,
+        type: field.type,
+        required: field.required ?? false,
+        description: field.description,
+      })),
+    });
+    if (result.decision !== "submit") {
+      throw new Error("OAuth client config approval denied");
+    }
+
+    const now = Date.now();
+    const existing = await oauthClientConfigStore.load(request.configId);
+    if (existing) {
+      if (canonicalUrl(existing.authorizeUrl) !== authorizeUrl) {
+        throw new Error("OAuth client config authorizeUrl is immutable for this configId");
+      }
+      if (canonicalUrl(existing.tokenUrl) !== tokenUrl) {
+        throw new Error("OAuth client config tokenUrl is immutable for this configId");
+      }
+    }
+    const fields = { ...(existing?.fields ?? {}) };
+    for (const field of request.fields) {
+      const value = result.values[field.name]?.trim() ?? "";
+      if ((field.required ?? false) && !value) {
+        throw new Error(`OAuth client config field is required: ${field.name}`);
+      }
+      if (value) {
+        fields[field.name] = {
+          value,
+          type: field.type,
+          updatedAt: now,
+        };
+      }
+    }
+    const record = {
+      configId: request.configId,
+      authorizeUrl,
+      tokenUrl,
+      fields,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    await oauthClientConfigStore.save(record);
+    await appendAudit({
+      type: "oauth_client_config.updated",
+      ts: now,
+      callerId: ctx.callerId,
+      configId: request.configId,
+      authorizeUrl,
+      tokenUrl,
+      fieldNames: request.fields.map((field) => field.name),
+    });
+    return oauthClientConfigStore.summarize(request.configId, record, request.fields);
+  }
+
+  async function getOAuthClientConfigStatus(
+    _ctx: ServiceContext,
+    params: GetOAuthClientConfigStatusParams,
+  ): Promise<OAuthClientConfigStatus> {
+    const request = params as GetOAuthClientConfigStatusRequest;
+    const record = await oauthClientConfigStore.load(request.configId);
+    return oauthClientConfigStore.summarize(request.configId, record, request.fields);
+  }
+
+  async function beginCreateWithOAuthClientPkce(
+    ctx: ServiceContext,
+    params: BeginOAuthClientPkceCredentialParams,
+  ): Promise<{ nonce: string; state: string; authorizeUrl: string }> {
+    const request = params as BeginOAuthClientPkceCredentialRequest;
+    const config = await oauthClientConfigStore.load(request.oauth.configId);
+    if (!config) {
+      throw new Error(`OAuth client config is missing: ${request.oauth.configId}`);
+    }
+    const authorizeUrl = canonicalUrl(config.authorizeUrl);
+    const tokenUrl = canonicalUrl(config.tokenUrl);
+    const clientId = config.fields["clientId"]?.value;
+    const clientSecret = config.fields["clientSecret"]?.value;
+    if (!clientId) {
+      throw new Error("OAuth client config is missing clientId");
+    }
+    return beginCreateWithOAuthPkce(ctx, {
+      oauth: {
+        authorizeUrl,
+        tokenUrl,
+        clientId,
+        ...(clientSecret ? { clientSecret } : {}),
+        scopes: request.oauth.scopes,
+        extraAuthorizeParams: request.oauth.extraAuthorizeParams,
+        allowMissingExpiry: request.oauth.allowMissingExpiry,
+      },
+      credential: request.credential,
+      redirectUri: request.redirectUri,
+    });
   }
 
   async function completeCreateWithOAuthPkce(
@@ -636,7 +823,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     methods: {
       storeCredential: { args: z.tuple([storeUrlBoundCredentialParamsSchema]) },
       beginCreateWithOAuthPkce: { args: z.tuple([createOAuthPkceCredentialParamsSchema]) },
+      beginCreateWithOAuthClientPkce: { args: z.tuple([beginOAuthClientPkceCredentialParamsSchema]) },
       completeCreateWithOAuthPkce: { args: z.tuple([completeOAuthPkceCredentialParamsSchema]) },
+      requestOAuthClientConfig: { args: z.tuple([requestOAuthClientConfigParamsSchema]) },
+      getOAuthClientConfigStatus: { args: z.tuple([getOAuthClientConfigStatusParamsSchema]) },
       listStoredCredentials: { args: z.tuple([]) },
       revokeCredential: { args: z.tuple([credentialIdParamsSchema]) },
       grantCredential: { args: z.tuple([grantCredentialParamsSchema]) },
@@ -650,8 +840,14 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
           return storeCredential(ctx, (args as [StoreUrlBoundCredentialParams])[0]);
         case "beginCreateWithOAuthPkce":
           return beginCreateWithOAuthPkce(ctx, (args as [CreateOAuthPkceCredentialParams])[0]);
+        case "beginCreateWithOAuthClientPkce":
+          return beginCreateWithOAuthClientPkce(ctx, (args as [BeginOAuthClientPkceCredentialParams])[0]);
         case "completeCreateWithOAuthPkce":
           return completeCreateWithOAuthPkce(ctx, (args as [CompleteOAuthPkceCredentialParams])[0]);
+        case "requestOAuthClientConfig":
+          return requestOAuthClientConfig(ctx, (args as [RequestOAuthClientConfigParams])[0]);
+        case "getOAuthClientConfigStatus":
+          return getOAuthClientConfigStatus(ctx, (args as [GetOAuthClientConfigStatusParams])[0]);
         case "listStoredCredentials":
           return listStoredCredentials(ctx);
         case "revokeCredential":
@@ -714,7 +910,7 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
     const decoded = Buffer.from(padded, "base64").toString("utf8");
     const payload = JSON.parse(decoded);
     return payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
-  } catch (error) {
+  } catch {
     return null;
   }
 }
@@ -803,7 +999,7 @@ function registrableDomainForUrl(raw: string): string | null {
     }
     const parts = hostname.split(".").filter(Boolean);
     return parts.length >= 2 ? parts.slice(-2).join(".") : hostname;
-  } catch (error) {
+  } catch {
     return null;
   }
 }
