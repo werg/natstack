@@ -81,6 +81,27 @@ export interface ModelCredentialSummary {
 
 export type ModelCredentialSetupProps = Record<string, unknown>;
 
+interface ModelCredentialOAuthConfig {
+  authorizeUrl: string;
+  tokenUrl: string;
+  clientId: string;
+  scopes?: string[];
+  extraAuthorizeParams?: Record<string, string>;
+  allowMissingExpiry?: boolean;
+}
+
+interface BeginModelCredentialOAuthArgs {
+  providerId?: unknown;
+  redirectUri?: unknown;
+}
+
+interface CompleteModelCredentialOAuthArgs {
+  providerId?: unknown;
+  nonce?: unknown;
+  code?: unknown;
+  state?: unknown;
+}
+
 const MODEL_CREDENTIAL_REQUIRED_CARD_TSX = `
 import { useState } from "react";
 import { Box, Button, Callout, Card, Code, Flex, Spinner, Text } from "@radix-ui/themes";
@@ -108,26 +129,16 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
         callback = await chat.rpc.call("main", "oauthLoopback.createLoopbackCallback", {});
       }
       callbackId = callback.callbackId;
-      const begin = await chat.rpc.call("main", "credentials.beginCreateWithOAuthPkce", {
-        oauth,
-        credential: {
-          label: props.credentialLabel || "Model credential: " + providerId,
-          audience: [{ url: modelBaseUrl, match: "path-prefix" }],
-          injection: {
-            type: "header",
-            name: "Authorization",
-            valueTemplate: "Bearer {token}",
-            stripIncoming: ["authorization"],
-          },
-          scopes: oauth.scopes || [],
-          metadata: {
-            modelProviderId: providerId,
-            oauthAccountIdentityJwtClaimRoot: props.accountIdentityJwtClaimRoot || "",
-            oauthAccountIdentityJwtClaimField: props.accountIdentityJwtClaimField || "",
-          },
-        },
+      if (!props.agentParticipantId) {
+        throw new Error("Missing agent participant for credential setup");
+      }
+      const begin = await chat.callMethod(props.agentParticipantId, "beginModelCredentialOAuth", {
+        providerId,
         redirectUri: callback.redirectUri,
       });
+      if (!begin || typeof begin.authorizeUrl !== "string" || typeof begin.nonce !== "string") {
+        throw new Error("Agent did not return OAuth setup details");
+      }
       setAuthorizeUrl(begin.authorizeUrl);
       setStatus("waiting");
       if (openMode === "external") {
@@ -142,7 +153,8 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
       }
       const result = await chat.rpc.call("main", "oauthLoopback.waitForLoopbackCallback", callback.callbackId);
       setStatus("approval");
-      await chat.rpc.call("main", "credentials.completeCreateWithOAuthPkce", {
+      await chat.callMethod(props.agentParticipantId, "completeModelCredentialOAuth", {
+        providerId,
         nonce: begin.nonce,
         code: result.code,
         state: result.state,
@@ -256,6 +268,30 @@ function shouldProxyUrlBoundModelFetch(url: URL, baseUrls: readonly string[]): b
   return baseUrls.some((baseUrl) => isUrlWithinBase(url, baseUrl));
 }
 
+function isModelCredentialOAuthConfig(value: unknown): value is ModelCredentialOAuthConfig {
+  if (!value || typeof value !== "object") return false;
+  const config = value as Record<string, unknown>;
+  return typeof config["authorizeUrl"] === "string"
+    && typeof config["tokenUrl"] === "string"
+    && typeof config["clientId"] === "string"
+    && (
+      config["scopes"] === undefined ||
+      (Array.isArray(config["scopes"]) && config["scopes"].every((scope) => typeof scope === "string"))
+    )
+    && (
+      config["extraAuthorizeParams"] === undefined ||
+      (
+        !!config["extraAuthorizeParams"] &&
+        typeof config["extraAuthorizeParams"] === "object" &&
+        Object.values(config["extraAuthorizeParams"]).every((param) => typeof param === "string")
+      )
+    )
+    && (
+      config["allowMissingExpiry"] === undefined ||
+      typeof config["allowMissingExpiry"] === "boolean"
+    );
+}
+
 function isUrlWithinBase(url: URL, rawBaseUrl: string): boolean {
   try {
     const base = new URL(rawBaseUrl);
@@ -319,6 +355,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   /** Last intentional abort reason per channel, used to annotate pi-core's
    *  generic "Request was aborted" terminal event. */
   private abortContexts = new Map<string, AgentAbortContext>();
+
+  /** Last explicit user stop per channel. Suppresses late dispatch continuations. */
+  private lastUserInterruptAt = new Map<string, number>();
 
   /** Channels whose `fs.bindContext` has been called at least once per DO
    *  lifetime. The FsService caller→context map is process-scoped, so we
@@ -473,6 +512,109 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     _credential: ModelCredentialSummary,
   ): Record<string, unknown> {
     return {};
+  }
+
+  protected async handleModelCredentialMethodCall(
+    methodName: string,
+    args: unknown,
+  ): Promise<{ result: unknown; isError?: boolean } | null> {
+    switch (methodName) {
+      case "beginModelCredentialOAuth":
+        return { result: await this.beginModelCredentialOAuth(args as BeginModelCredentialOAuthArgs) };
+      case "completeModelCredentialOAuth":
+        return { result: await this.completeModelCredentialOAuth(args as CompleteModelCredentialOAuthArgs) };
+      default:
+        return null;
+    }
+  }
+
+  private getModelCredentialOAuthConfig(providerId: string): {
+    oauth: ModelCredentialOAuthConfig;
+    credentialLabel: string;
+    accountIdentityJwtClaimRoot: string;
+    accountIdentityJwtClaimField: string;
+  } {
+    if (providerId !== this.getModelProviderId()) {
+      throw new Error(`Model credential provider mismatch: ${providerId}`);
+    }
+    const setup = this.getModelCredentialSetupProps(providerId);
+    const oauth = setup?.["oauth"];
+    if (!isModelCredentialOAuthConfig(oauth)) {
+      throw new Error(`No OAuth setup is available for model provider: ${providerId}`);
+    }
+    const credentialLabel = setup?.["credentialLabel"];
+    const accountIdentityJwtClaimRoot = setup?.["accountIdentityJwtClaimRoot"];
+    const accountIdentityJwtClaimField = setup?.["accountIdentityJwtClaimField"];
+    return {
+      oauth,
+      credentialLabel: typeof credentialLabel === "string"
+        ? credentialLabel
+        : `Model credential: ${providerId}`,
+      accountIdentityJwtClaimRoot: typeof accountIdentityJwtClaimRoot === "string"
+        ? accountIdentityJwtClaimRoot
+        : "",
+      accountIdentityJwtClaimField: typeof accountIdentityJwtClaimField === "string"
+        ? accountIdentityJwtClaimField
+        : "",
+    };
+  }
+
+  private async beginModelCredentialOAuth(
+    args: BeginModelCredentialOAuthArgs,
+  ): Promise<{ nonce: string; state: string; authorizeUrl: string }> {
+    if (typeof args?.providerId !== "string") {
+      throw new Error("beginModelCredentialOAuth requires providerId");
+    }
+    if (typeof args?.redirectUri !== "string") {
+      throw new Error("beginModelCredentialOAuth requires redirectUri");
+    }
+    const modelBaseUrl = this.getModelBaseUrl();
+    const setup = this.getModelCredentialOAuthConfig(args.providerId);
+    return this.rpc.call<{ nonce: string; state: string; authorizeUrl: string }>(
+      "main",
+      "credentials.beginCreateWithOAuthPkce",
+      {
+        oauth: setup.oauth,
+        credential: {
+          label: setup.credentialLabel,
+          audience: [{ url: modelBaseUrl, match: "path-prefix" }],
+          injection: {
+            type: "header",
+            name: "Authorization",
+            valueTemplate: "Bearer {token}",
+            stripIncoming: ["authorization"],
+          },
+          scopes: setup.oauth.scopes ?? [],
+          metadata: {
+            modelProviderId: args.providerId,
+            oauthAccountIdentityJwtClaimRoot: setup.accountIdentityJwtClaimRoot,
+            oauthAccountIdentityJwtClaimField: setup.accountIdentityJwtClaimField,
+          },
+        },
+        redirectUri: args.redirectUri,
+      },
+    );
+  }
+
+  private async completeModelCredentialOAuth(
+    args: CompleteModelCredentialOAuthArgs,
+  ): Promise<ModelCredentialSummary> {
+    if (typeof args?.providerId !== "string") {
+      throw new Error("completeModelCredentialOAuth requires providerId");
+    }
+    this.getModelCredentialOAuthConfig(args.providerId);
+    if (typeof args?.nonce !== "string" || typeof args?.code !== "string" || typeof args?.state !== "string") {
+      throw new Error("completeModelCredentialOAuth requires nonce, code, and state");
+    }
+    return this.rpc.call<ModelCredentialSummary>(
+      "main",
+      "credentials.completeCreateWithOAuthPkce",
+      {
+        nonce: args.nonce,
+        code: args.code,
+        state: args.state,
+      },
+    );
   }
 
   private createModelCredentialSentinel(providerId: string, credential: ModelCredentialSummary): string {
@@ -1461,7 +1603,13 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     runner.replaceHistory(messages);
     this.dispatches.deleteClaimed(breadcrumb.callId, breadcrumb.resolvingToken);
 
-    if (continueWhenClear && this.dispatches.listForChannel(breadcrumb.channelId).length === 0) {
+    const interruptedAfterDispatch =
+      (this.lastUserInterruptAt.get(breadcrumb.channelId) ?? 0) >= breadcrumb.createdAt;
+    if (
+      continueWhenClear &&
+      !interruptedAfterDispatch &&
+      this.dispatches.listForChannel(breadcrumb.channelId).length === 0
+    ) {
       const projector = this.getOrCreateProjector(breadcrumb.channelId);
       const dispatcher = this.getOrCreateDispatcher(breadcrumb.channelId, runner, projector);
       dispatcher.submitContinue();
@@ -1553,7 +1701,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private async sendDispatchCancel(
     channelId: string,
     callId: string,
-    reason: "user-superseded" | "worker-restart",
+    reason: "user-superseded" | "worker-restart" | "user-interrupted",
   ): Promise<void> {
     const participantId = this.subscriptions.getParticipantId(channelId);
     if (!participantId) return;
@@ -1562,6 +1710,22 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       "natstack-dispatch-cancel",
       { callId, reason },
     );
+  }
+
+  private async notifyDispatchesInterrupted(channelId: string): Promise<void> {
+    const pending = this.dispatches.listForChannel(channelId);
+    if (pending.length === 0) return;
+
+    for (const breadcrumb of pending) {
+      try {
+        await this.sendDispatchCancel(channelId, breadcrumb.callId, "user-interrupted");
+      } catch (err) {
+        console.warn(
+          `[AgentWorkerBase] Failed to cancel dispatch ${breadcrumb.callId} on interrupt:`,
+          err,
+        );
+      }
+    }
   }
 
   // ── Default channel event handler ────────────────────────────────────────
@@ -1674,6 +1838,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       const projector = this.projectors.get(channelId);
       if (projector) await projector.closeAll();
       this.dispatchers.get(channelId)?.reset();
+      this.lastUserInterruptAt.set(channelId, Date.now());
+      await this.notifyDispatchesInterrupted(channelId);
       this.recordAbort(channelId, "interrupt-all");
       await entry.runner.interrupt();
     }
@@ -1692,6 +1858,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       // everything stopped, not just the current turn. Dispatcher's reset()
       // also clears pi-core's steering queue.
       this.dispatchers.get(channelId)?.reset();
+      this.lastUserInterruptAt.set(channelId, Date.now());
+      await this.notifyDispatchesInterrupted(channelId);
       this.recordAbort(channelId, "interrupt-channel");
       await entry.runner.interrupt();
     }

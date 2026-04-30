@@ -487,6 +487,55 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
     expect(message.content[0].text).toContain("boom on resume");
   });
 
+  it("records dispatch results after interrupt without auto-continuing", async () => {
+    const { instance, sql } = await createTestDO(TestWorker);
+    await (instance as any).getOrCreateRunner("ch-1");
+    const createdAt = Date.now();
+
+    sql.exec(
+      `INSERT INTO pi_messages (channel_id, idx, content) VALUES (?, ?, ?)`,
+      "ch-1",
+      0,
+      JSON.stringify({
+        role: "toolResult",
+        toolCallId: "tool-1",
+        toolName: "ask_user",
+        content: [{ type: "text", text: "dispatched: ask-user" }],
+        timestamp: 1,
+        isError: false,
+      }),
+    );
+    sql.exec(
+      `INSERT INTO dispatched_calls (
+         call_id, channel_id, kind, tool_call_id, tool_name, params_json,
+         pending_result_json, pending_is_error, abandoned_reason, resolving_token, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)`,
+      "call-1",
+      "ch-1",
+      "ask-user",
+      "tool-1",
+      null,
+      null,
+      createdAt,
+    );
+    (instance as any).lastUserInterruptAt.set("ch-1", createdAt + 1);
+
+    await instance.onCallResult("call-1", "tool completed", false);
+    await flush();
+
+    expect(sql.exec(`SELECT * FROM dispatched_calls WHERE call_id = ?`, "call-1").toArray()).toHaveLength(0);
+    const message = JSON.parse(
+      sql.exec(`SELECT content FROM pi_messages WHERE channel_id = ? AND idx = 0`, "ch-1").one()["content"] as string,
+    );
+    expect(message).toMatchObject({
+      role: "toolResult",
+      toolCallId: "tool-1",
+      isError: false,
+    });
+    expect(message.content[0].text).toBe("tool completed");
+    expect(instance.fakeState!.continueCount).toBe(0);
+  });
+
   it("keeps superseded dispatch rows until the placeholder is persisted, then rewrites them", async () => {
     const { instance, sql } = await createTestDO(TestWorker);
     await (instance as any).getOrCreateRunner("ch-1");

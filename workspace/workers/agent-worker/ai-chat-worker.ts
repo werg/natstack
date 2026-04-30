@@ -90,6 +90,9 @@ export class AiChatWorker extends AgentWorkerBase {
     methodName: string,
     _args: unknown,
   ): Promise<{ result: unknown; isError?: boolean }> {
+    const modelCredentialResult = await this.handleModelCredentialMethodCall(methodName, _args);
+    if (modelCredentialResult) return modelCredentialResult;
+
     switch (methodName) {
       case "pause":
         await this.interruptRunner(channelId);
