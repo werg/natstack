@@ -110,6 +110,48 @@ await credentials.fetch("https://api.example.com/v1/items", undefined, {
 });
 ```
 
+Use `credentials.gitHttp()` for Git smart HTTP traffic. Do not route git
+packfiles through `credentials.fetch()`, and do not expose PATs to userland
+`onAuth` callbacks:
+
+```ts
+import { credentials, fs } from "@workspace/runtime";
+import { GitClient } from "@natstack/git";
+
+const git = new GitClient(fs, { http: credentials.gitHttp() });
+await git.clone({ url: "https://github.com/owner/repo.git", dir: "/repo" });
+```
+
+When the caller just needs a Git client, prefer `git.client()` from the runtime.
+It routes relative NatStack repositories to the internal git server and absolute
+external remotes through credential-gated host git HTTP.
+
+To share a git remote across future contexts, use the runtime git remote API
+instead of editing only the current `.git/config`:
+
+```ts
+import { git } from "@workspace/runtime";
+
+await git.setSharedRemote("panels/my-panel", {
+  name: "origin",
+  url: "https://github.com/owner/my-panel.git",
+});
+```
+
+For an external repository that should live under workspace source, use
+`git.importProject()` with the destination path:
+
+```ts
+await git.importProject({
+  path: "skills/example",
+  remote: { name: "origin", url: "https://github.com/owner/example.git" },
+});
+```
+
+If the workspace already declares shared remotes in `meta/natstack.yml`, call
+`git.completeWorkspaceDependencies()` to import every configured remote whose
+workspace repo is missing.
+
 ## Provider Setup UI Pattern
 
 ```tsx

@@ -7,6 +7,7 @@ import {
   type CreateOAuthPkceCredentialRequest,
   type CredentialClient,
   type GetOAuthClientConfigStatusRequest,
+  type GitHttpClient,
   type GrantUrlBoundCredentialRequest,
   type OAuthClientConfigStatus,
   type RequestCredentialInputRequest,
@@ -104,6 +105,10 @@ export function hookForUrl(
   return requireClient().hookForUrl(url, opts);
 }
 
+export function gitHttp(opts?: { credentialId?: string }): GitHttpClient {
+  return requireClient().gitHttp(opts);
+}
+
 export type {
   BeginOAuthPkceCredentialResult,
   BeginOAuthClientPkceCredentialRequest,
@@ -111,6 +116,7 @@ export type {
   CreateOAuthPkceCredentialRequest,
   CredentialClient,
   GetOAuthClientConfigStatusRequest,
+  GitHttpClient,
   GrantUrlBoundCredentialRequest,
   OAuthClientConfigStatus,
   RequestCredentialInputRequest,

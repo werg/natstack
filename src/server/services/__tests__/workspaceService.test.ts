@@ -75,6 +75,7 @@ function makeWorkspace() {
     gitReposPath: "/tmp/source",
     cachePath: "/tmp/state/.cache",
     agentsPath: "/tmp/source/agents",
+    projectsPath: "/tmp/source/projects",
   };
 }
 
@@ -348,6 +349,7 @@ describe("workspace service agent resources", () => {
         gitReposPath: wsPath,
         cachePath: path.join(wsPath, ".cache"),
         agentsPath: path.join(wsPath, "agents"),
+        projectsPath: path.join(wsPath, "projects"),
       },
       getConfig: () => makeConfig(),
       setConfigField: vi.fn(),

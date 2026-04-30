@@ -3,9 +3,11 @@
  */
 export interface GitClientOptions {
   /** Git server base URL (e.g., http://localhost:63524) */
-  serverUrl: string;
+  serverUrl?: string;
   /** Bearer token for authentication */
-  token: string;
+  token?: string;
+  /** Optional isomorphic-git HTTP client. Use credentials.gitHttp() for URL-bound remote credentials. */
+  http?: import("isomorphic-git").HttpClient;
   /** Author info for commits */
   author?: {
     name: string;

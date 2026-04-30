@@ -69,6 +69,9 @@ describe("github skill facade", () => {
           audience: expect.arrayContaining([
             { url: "https://api.github.com/", match: "origin" },
           ]),
+          bindings: [
+            expect.objectContaining({ use: "fetch" }),
+          ],
           scopes: expect.arrayContaining(["contents:read", "contents:write"]),
         }),
         fields: [expect.objectContaining({ name: "token", type: "secret", required: true })],
@@ -89,6 +92,19 @@ describe("github skill facade", () => {
             permissionPresets: "clone,pull,push",
             gitRemoteOrigin: "https://github.com/",
           }),
+          bindings: expect.arrayContaining([
+            expect.objectContaining({ use: "fetch" }),
+            expect.objectContaining({
+              id: "github-git",
+              use: "git-http",
+              audience: [{ url: "https://github.com/", match: "origin" }],
+              injection: {
+                type: "basic-auth",
+                usernameTemplate: "x-access-token",
+                passwordTemplate: "{token}",
+              },
+            }),
+          ]),
         }),
       })
     );

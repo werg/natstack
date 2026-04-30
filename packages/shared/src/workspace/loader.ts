@@ -19,6 +19,7 @@ import { execFileSync } from "child_process";
 const log = createDevLogger("Workspace");
 import type { Workspace, WorkspaceConfig, CentralConfig, CentralConfigPaths, WorkspaceEntry } from "./types.js";
 import type { CentralDataManager } from "../centralData.js";
+import { WORKSPACE_GIT_INIT_PATTERNS, WORKSPACE_SOURCE_DIRS, WORKSPACE_STATE_DIRS } from "./sourceDirs.js";
 
 const WORKSPACE_CONFIG_FILE = "meta/natstack.yml";
 const CENTRAL_CONFIG_FILE = "config.yml";
@@ -320,12 +321,6 @@ export function resolveWorkspaceTemplateDir(appRoot: string): string | null {
   return fs.existsSync(path.join(prodPath, WORKSPACE_CONFIG_FILE)) ? prodPath : null;
 }
 
-/** Source directories (live under source/) — copied when forking or creating from template. */
-const SOURCE_DIRS = ["meta", "panels", "packages", "agents", "workers", "skills", "about", "templates"];
-
-/** State directories (live under state/) — never copied, always scaffolded fresh. */
-const STATE_DIRS = [".cache", ".databases", ".contexts"];
-
 /**
  * Initialize a new managed workspace directory.
  *
@@ -368,7 +363,7 @@ export function initWorkspace(
   // If we have a local source dir (template or fork), copy source dirs into source/
   if (templateSrc) {
     fs.mkdirSync(sourceRoot, { recursive: true });
-    for (const dir of SOURCE_DIRS) {
+    for (const dir of WORKSPACE_SOURCE_DIRS) {
       const src = path.join(templateSrc, dir);
       if (fs.existsSync(src)) {
         copyDirRecursive(src, path.join(sourceRoot, dir));
@@ -380,13 +375,13 @@ export function initWorkspace(
   }
 
   // Scaffold source directories
-  for (const dir of SOURCE_DIRS) {
+  for (const dir of WORKSPACE_SOURCE_DIRS) {
     fs.mkdirSync(path.join(sourceRoot, dir), { recursive: true });
   }
 
   // Scaffold state directories
   fs.mkdirSync(stateRoot, { recursive: true });
-  for (const dir of STATE_DIRS) {
+  for (const dir of WORKSPACE_STATE_DIRS) {
     fs.mkdirSync(path.join(stateRoot, dir), { recursive: true });
   }
 
@@ -438,8 +433,8 @@ function copyDirRecursive(src: string, dest: string): void {
 
 /**
  * Initialize git repos for all immediate subdirectories within each source dir.
- * Each panel/package/agent/worker/skill/about-page becomes its own git repo
- * with an initial commit.
+ * Each panel/package/agent/worker/skill/about-page/project becomes its own
+ * git repo with an initial commit.
  */
 function initGitRepos(wsDir: string): void {
   // Verify git is available before attempting repo initialization
@@ -449,7 +444,7 @@ function initGitRepos(wsDir: string): void {
     throw new Error("git is required but not found on PATH — cannot initialize workspace");
   }
 
-  for (const sourceDir of SOURCE_DIRS) {
+  for (const sourceDir of WORKSPACE_SOURCE_DIRS) {
     const parentDir = path.join(wsDir, sourceDir);
     if (!fs.existsSync(parentDir)) continue;
 
@@ -474,6 +469,8 @@ function initGitRepos(wsDir: string): void {
     }
   }
 }
+
+export { WORKSPACE_GIT_INIT_PATTERNS, WORKSPACE_SOURCE_DIRS, WORKSPACE_STATE_DIRS };
 
 /**
  * Delete a managed workspace directory.
@@ -522,9 +519,11 @@ export function createWorkspace(wsDir: string): Workspace {
   const gitReposPath = sourceRoot;
   const cachePath = path.join(stateRoot, ".cache");
   const agentsPath = path.join(sourceRoot, "agents");
+  const projectsPath = path.join(sourceRoot, "projects");
 
   // Ensure directory structure exists
   fs.mkdirSync(panelsPath, { recursive: true });
+  fs.mkdirSync(projectsPath, { recursive: true });
   fs.mkdirSync(contextsPath, { recursive: true });
   fs.mkdirSync(cachePath, { recursive: true });
   fs.mkdirSync(stateRoot, { recursive: true });
@@ -541,6 +540,7 @@ export function createWorkspace(wsDir: string): Workspace {
     gitReposPath,
     cachePath,
     agentsPath,
+    projectsPath,
   };
 }
 

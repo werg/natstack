@@ -132,20 +132,53 @@ For each failure, determine the root cause category and act accordingly:
 
 ## Phase 5: Prepare an Editable Checkout
 
-Before you can fix anything, work from an editable NatStack checkout that is
-already available in the workspace. The git server no longer transparently
-clones GitHub repositories; use a local workspace repo or the future host git
-integration for remote sources.
+Pick the checkout type based on what failed.
+
+### Workspace Runtime Repos
+
+If the bug is in workspace-owned runtime source such as `workspace/packages/`,
+`workspace/panels/`, `workspace/workers/`, or `workspace/skills/`, edit the
+existing workspace repo directly in your context and commit/push to the
+internal git server. These repos are live build inputs.
+
+### NatStack Application Source
+
+If the bug is in the NatStack application itself, such as `src/server/`,
+`src/main/`, `packages/git/`, or `packages/git-server/`, use a plain project
+checkout under `projects/natstack`. Plain projects are editable repos, not
+runtime units; changing them prepares a branch/patch, but it does not hot-patch
+the running NatStack server. Verification may require restarting NatStack from
+that checkout or handing the branch to a developer.
+
+Prefer an existing `projects/natstack` workspace repo when it exists. If it
+does not exist yet, import it with `git.importProject()`. That uses targeted
+approval copy, clones into canonical workspace source, records the shared
+remote in `meta/natstack.yml`, and propagates the repo into contexts. The same
+API can import panels, packages, skills, workers, agents, templates, about
+pages, and plain projects by choosing the destination path.
 
 ```
 eval({
   code: `
-    import { fs, gitConfig } from "@workspace/runtime";
-    import { GitClient } from "@natstack/git";
+    import { fs, git } from "@workspace/runtime";
 
-    const git = new GitClient(fs, { serverUrl: gitConfig.serverUrl, token: gitConfig.token });
-    await git.clone({ url: gitConfig.serverUrl + "/path/to/local/repo", dir: "natstack" });
-    scope.git = git;
+    const client = git.client();
+    const dir = "projects/natstack";
+    try {
+      await fs.stat(dir);
+      console.log(dir + " already exists");
+    } catch {
+      await git.importProject({
+        path: dir,
+        remote: {
+          name: "origin",
+          url: "https://github.com/YOUR_ORG/natstack.git",
+        },
+      });
+    }
+
+    scope.git = client;
+    scope.checkoutDir = dir;
   `,
 })
 ```
@@ -154,18 +187,19 @@ eval({
 
 ```typescript
 const branchName = `fix/system-test-${failedTestName}`;
-await scope.git.createBranch("natstack", branchName);  // positional: (dir, name)
-await scope.git.checkout("natstack", branchName);
+await scope.git.createBranch(scope.checkoutDir, branchName);  // positional: (dir, name)
+await scope.git.checkout(scope.checkoutDir, branchName);
 ```
 
 ## Phase 6: Edit and Fix
 
-Edit source files in the `natstack/` clone using fs operations. All paths are relative to `natstack/`:
+Edit source files in the checkout using fs operations. For a NatStack
+application checkout, paths are relative to `projects/natstack/`:
 
 ```typescript
-const content = await fs.readFile("natstack/src/server/services/fsService.ts", "utf-8");
+const content = await fs.readFile("projects/natstack/src/server/services/fsService.ts", "utf-8");
 // ... modify content ...
-await fs.writeFile("natstack/src/server/services/fsService.ts", fixedContent);
+await fs.writeFile("projects/natstack/src/server/services/fsService.ts", fixedContent);
 ```
 
 **Fix checklist:**
@@ -180,13 +214,16 @@ await fs.writeFile("natstack/src/server/services/fsService.ts", fixedContent);
 
 ```typescript
 // First: commit and push your changes
-await scope.git.addAll("natstack");
-await scope.git.commit("natstack", `fix: describe the change`);
-await scope.git.push("natstack", { remote: "origin", ref: branchName });
+await scope.git.addAll(scope.checkoutDir);
+await scope.git.commit(scope.checkoutDir, `fix: describe the change`);
+await scope.git.push(scope.checkoutDir, { remote: "origin", ref: branchName });
 
-// Then rebuild — this picks up the pushed changes
-const buildResult = await chat.rpc.call("main", "build.recompute");
-console.log("Build recomputed:", buildResult);
+// Then rebuild if the fix touched workspace runtime repos.
+// Plain projects such as projects/natstack are not live build inputs.
+if (!scope.checkoutDir.startsWith("projects/")) {
+  const buildResult = await chat.rpc.call("main", "build.recompute");
+  console.log("Build recomputed:", buildResult);
+}
 
 // Check types
 const typecheck = await chat.rpc.call("main", "typecheck.check");
@@ -217,6 +254,19 @@ if (retest.result.passed) {
 - **Always create a branch** before making changes.
 - **Check type errors before committing.** Use `chat.rpc.call("main", "typecheck.check")`.
 - **Re-run the full smoke suite after fixing.** Your fix might break something else.
+- **Use `projects/` for plain external repos.** They are editable and can have
+  shared remotes, but they are not live runtime units.
+- **Shared remotes are not clone declarations.** `git.setSharedRemote()` records
+  and propagates remotes for a workspace repo that exists or will exist later;
+  it does not import external repository contents into workspace source.
+- **Use `git.importProject()` to create a workspace repo from a remote.** It
+  clones into canonical workspace source, records the shared remote, and makes
+  the repo available to future contexts. Use the destination path to choose the
+  category, such as `panels/name`, `skills/name`, `workers/name`, or
+  `projects/name`.
+- **Use `git.completeWorkspaceDependencies()` when shared remotes are already
+  declared.** It imports each configured remote whose workspace repo is missing
+  and reports imported, skipped, and failed paths.
 - **If an API is confusing, fix the API.** Don't add comments explaining the confusion.
 - **If an error message is unhelpful, fix the error message.** Don't add try/catch wrappers that translate it.
 - **If a service is missing a method, add the method.** Don't chain multiple calls to work around it.

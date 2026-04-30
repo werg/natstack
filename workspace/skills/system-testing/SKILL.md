@@ -151,7 +151,12 @@ See `meta/natstack.yml` for the current testing agent configuration.
 
 ## Build Model
 
-**Workspace packages are built from git, not from the working tree.** When fixing bugs in workspace source files (`packages/`, `panels/`, `workers/`, `skills/`), you must **commit and push** changes before they take effect. Editing a file alone does nothing — the build system extracts source from git commits. See [SELF_IMPROVEMENT.md](SELF_IMPROVEMENT.md) for the full workflow.
+**Workspace packages are built from git, not from the working tree.** When fixing bugs in workspace source files (`packages/`, `panels/`, `workers`, `skills/`), you must **commit and push** changes before they take effect. Editing a file alone does nothing — the build system extracts source from git commits.
+
+For NatStack application source (`src/server/`, `src/main/`, root
+`packages/*`), use a plain checkout under `projects/natstack`. That prepares a
+branch/patch but does not hot-patch the running server. See
+[SELF_IMPROVEMENT.md](SELF_IMPROVEMENT.md) for the full workflow.
 
 ## Environment Compatibility
 

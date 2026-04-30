@@ -123,6 +123,7 @@ import {
   completeCreateWithOAuthPkce as completeCredentialOAuthPkce,
   fetch as credentialFetch,
   getOAuthClientConfigStatus as getOAuthClientCredentialConfigStatus,
+  gitHttp as credentialGitHttp,
   hookForUrl as credentialHookForUrl,
   initPanelCredentials,
   listStoredCredentials as listUrlBoundCredentials,
@@ -143,6 +144,7 @@ export type {
   OAuthClientConfigStatus,
   RequestCredentialInputRequest,
   RequestOAuthClientConfigRequest,
+  GitHttpClient,
 } from "../shared/credentials.js";
 initPanelCredentials(rpc);
 const credentialApi = {
@@ -157,8 +159,61 @@ const credentialApi = {
   revokeCredential: revokeUrlBoundCredential,
   fetch: credentialFetch,
   hookForUrl: credentialHookForUrl,
+  gitHttp: credentialGitHttp,
 };
 export const credentials = helpfulNamespace("credentials", credentialApi);
+
+// Git client helper. Relative repo paths route to NatStack's internal git
+// server; absolute external remotes route through host-mediated credentials.
+import { GitClient, createBearerHttpClient, createRoutingHttpClient } from "@natstack/git";
+export type { GitClient, GitClientOptions } from "@natstack/git";
+export interface GitRemoteSpec {
+  name: string;
+  url: string;
+}
+export interface ImportProjectRequest {
+  path: string;
+  remote: GitRemoteSpec;
+  credentialId?: string;
+}
+export interface ImportedWorkspaceRepo {
+  path: string;
+  remote: GitRemoteSpec;
+}
+export interface CompleteWorkspaceDependenciesResult {
+  imported: ImportedWorkspaceRepo[];
+  skipped: Array<{ path: string; reason: "already-present" | "unsupported-path" }>;
+  failed: Array<{ path: string; error: string }>;
+}
+const gitApi = {
+  http: credentialGitHttp,
+  importProject(request: ImportProjectRequest): Promise<ImportedWorkspaceRepo> {
+    return rpc.call("main", "git.importProject", request);
+  },
+  completeWorkspaceDependencies(options: { credentialId?: string } = {}): Promise<CompleteWorkspaceDependenciesResult> {
+    return rpc.call("main", "git.completeWorkspaceDependencies", options);
+  },
+  setSharedRemote(repoPath: string, remote: GitRemoteSpec): Promise<Record<string, unknown> | undefined> {
+    return rpc.call("main", "git.setSharedRemote", repoPath, remote);
+  },
+  removeSharedRemote(repoPath: string, remoteName: string): Promise<Record<string, unknown> | undefined> {
+    return rpc.call("main", "git.removeSharedRemote", repoPath, remoteName);
+  },
+  client(options: { credentialId?: string } = {}) {
+    if (!gitConfig) {
+      return new GitClient(fs, { http: credentialGitHttp({ credentialId: options.credentialId }) });
+    }
+    return new GitClient(fs, {
+      serverUrl: gitConfig.serverUrl,
+      http: createRoutingHttpClient({
+        internalOrigin: gitConfig.serverUrl,
+        internal: createBearerHttpClient(gitConfig.token),
+        external: credentialGitHttp({ credentialId: options.credentialId }),
+      }),
+    });
+  },
+};
+export const git = helpfulNamespace("git", gitApi);
 
 // Generic public webhook ingress.
 import { createWebhookIngressClient } from "../shared/webhooks.js";

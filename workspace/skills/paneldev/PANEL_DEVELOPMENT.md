@@ -204,6 +204,8 @@ for await (const msg of client.messages()) {
 
 `@workspace/*` packages export TypeScript source directly (esbuild transpiles at build time).
 `@natstack/*` packages are pre-compiled and export from `dist/`.
+Repos under `workspace/projects/` are plain editable projects, not import
+scopes and not launchable runtime units.
 
 ---
 

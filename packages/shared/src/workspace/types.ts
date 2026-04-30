@@ -11,6 +11,7 @@
  *    - meta/natstack.yml: Workspace ID, git port, init panels
  *    - meta/AGENTS.md: Agent system prompt
  *    - panels/: Panel source code
+ *    - projects/: Plain editable repositories that are not runtime units
  *    - .cache/: Build cache
  */
 
@@ -116,7 +117,29 @@ export interface GitConfig {
    * to `<devTargetDir>/<repo>/`, keeping a dev template in sync.
    */
   devTargetDir?: string;
+  /**
+   * Shared git remotes declared by workspace repo path.
+   *
+   * Example:
+   * git:
+   *   remotes:
+   *     panels:
+   *       chat:
+   *         origin: https://github.com/example/chat.git
+   *         ci: https://github.com/example/chat-ci.git
+   */
+  remotes?: WorkspaceGitRemotesConfig;
 }
+
+export interface WorkspaceGitRemoteConfig {
+  name: string;
+  url: string;
+}
+
+export type WorkspaceGitRemotesConfig = Record<
+  string,
+  Record<string, Record<string, string | null | undefined> | undefined> | undefined
+>;
 
 /**
  * An entry in the initPanels array — panel source + optional stateArgs.
@@ -174,6 +197,8 @@ export interface Workspace {
   cachePath: string;
   /** Absolute path to agents directory (source/agents) */
   agentsPath: string;
+  /** Absolute path to projects directory (source/projects) */
+  projectsPath: string;
 }
 
 /**

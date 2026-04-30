@@ -16,6 +16,10 @@ export interface WorkerEnv {
   SERVER_URL: string;
   /** Parent panel/worker ID for parent handle */
   PARENT_ID?: string;
+  /** Internal git server base URL, when internal git access is available */
+  GIT_SERVER_URL?: string;
+  /** Internal git server bearer token, when internal git access is available */
+  GIT_AUTH_TOKEN?: string;
   /** Initial state args (parsed object from JSON binding, if provided at instance creation) */
   STATE_ARGS?: Record<string, unknown>;
   /** User-defined bindings */

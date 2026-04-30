@@ -434,9 +434,11 @@ async function main() {
       : (isSourceRun && templateDiffersFromActive ? templateDir : undefined);
 
   const { createGitWriteAuthorizer } = await import("./services/gitWritePermission.js");
+  const { WORKSPACE_GIT_INIT_PATTERNS } = await import("@natstack/shared/workspace/sourceDirs");
   const gitServer = new GitServer(tokenManager, {
     port: workspaceConfig.git?.port,
     reposPath: workspacePath,
+    initPatterns: [...WORKSPACE_GIT_INIT_PATTERNS],
     devTargetDir,
     writeAuthorizer: createGitWriteAuthorizer({
       approvalQueue,
@@ -451,6 +453,43 @@ async function main() {
     sourcePath: workspacePath,
     contextsRoot: path.join(statePath, ".contexts"),
     getWorkspaceTree: () => gitServer.getWorkspaceTree(),
+    getWorkspaceConfig: () => workspaceConfig,
+  });
+
+  const { syncDeclaredRemoteForRepo } = await import("@natstack/shared/workspace/remotes");
+  const { loadWorkspaceConfig } = await import("@natstack/shared/workspace/loader");
+  const syncDeclaredRemotesForSource = async (repoPath?: string): Promise<void> => {
+    const repos = repoPath
+      ? [repoPath]
+      : collectWorkspaceRepoPaths((await gitServer.getWorkspaceTree()).children);
+    await Promise.all(repos.map((repo) => syncDeclaredRemoteForRepo({
+      config: workspaceConfig,
+      workspaceRoot: workspacePath,
+      repoPath: repo,
+    }).catch((err: unknown) => {
+      console.warn(`[GitRemotes] Failed to sync declared remote for ${repo}:`, err);
+    })));
+  };
+  gitServer.onPush((event) => {
+    if (event.repo !== "meta") {
+      queueMicrotask(() => {
+        syncDeclaredRemotesForSource(event.repo)
+          .then(() => contextFolderManager.syncDeclaredRemotes(event.repo))
+          .catch((err: unknown) => console.warn(`[GitRemotes] Failed to sync declared remote after push to ${event.repo}:`, err));
+      });
+      return;
+    }
+    queueMicrotask(() => {
+      try {
+        const nextConfig = loadWorkspaceConfig(workspacePath);
+        replaceWorkspaceConfig(workspaceConfig, nextConfig);
+        syncDeclaredRemotesForSource()
+          .then(() => contextFolderManager.syncDeclaredRemotes())
+          .catch((err: unknown) => console.warn("[GitRemotes] Failed to sync declared remotes after meta push:", err));
+      } catch (err) {
+        console.warn("[GitRemotes] Failed to reload workspace config after meta push:", err);
+      }
+    });
   });
 
   const databaseManager = new DatabaseManager(statePath);
@@ -483,6 +522,7 @@ async function main() {
     name: "gitServer",
     async start() {
       await gitServer.start();
+      await syncDeclaredRemotesForSource();
       return gitServer;
     },
     async stop() { await gitServer.stop(); },
@@ -574,6 +614,9 @@ async function main() {
     gitServer,
     tokenManager,
     workspacePath,
+    workspaceConfig,
+    contextFolderManager,
+    egressProxy,
     approvalQueue,
     grantStore: capabilityGrantStore,
     codeIdentityResolver,
@@ -853,6 +896,10 @@ async function main() {
             return manifest?.routes ?? [];
           },
           getProxyPort: () => egressProxyPort,
+          getGitConfigForCaller: (callerId) => ({
+            serverUrl: gitServer.getBaseUrl(),
+            token: gitServer.getTokenForPanel(callerId),
+          }),
           codeIdentityResolver,
         });
 
@@ -1259,6 +1306,23 @@ async function main() {
     process.on("SIGTERM", () => void shutdown());
     process.on("SIGINT", () => void shutdown());
   }
+}
+
+function collectWorkspaceRepoPaths(nodes: Array<{ path: string; isGitRepo: boolean; children: unknown[] }>): string[] {
+  const repos: string[] = [];
+  for (const node of nodes) {
+    if (node.isGitRepo) repos.push(node.path);
+    repos.push(...collectWorkspaceRepoPaths(node.children as Array<{ path: string; isGitRepo: boolean; children: unknown[] }>));
+  }
+  return repos;
+}
+
+function replaceWorkspaceConfig<T extends object>(target: T, next: T): void {
+  const mutableTarget = target as Record<string, unknown>;
+  for (const key of Object.keys(mutableTarget)) {
+    delete mutableTarget[key];
+  }
+  Object.assign(target, next);
 }
 
 main().catch((err) => {

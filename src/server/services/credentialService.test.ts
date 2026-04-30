@@ -359,7 +359,8 @@ describe("credentialService", () => {
       }],
     ) as StoredCredentialSummary;
 
-    expect((await store.loadUrlBound(stored.id))?.allowedCallers).toEqual([]);
+    expect((await store.loadUrlBound(stored.id))?.grants).toEqual([]);
+    approvalQueue.request.mockClear();
 
     await expect(service.handler(
       { callerId: "do:worker:first", callerKind: "worker" },
@@ -418,7 +419,7 @@ describe("credentialService", () => {
     );
 
     expect(approvalQueue.request).toHaveBeenCalledTimes(2);
-    expect((await store.loadUrlBound(stored.id))?.allowedCallers).toEqual([]);
+    expect((await store.loadUrlBound(stored.id))?.grants).toEqual([]);
   });
 
   it.each(["version", "repo"] as const)("reuses %s credential access grants", async (decision) => {
@@ -463,9 +464,14 @@ describe("credentialService", () => {
     );
 
     expect(approvalQueue.request).toHaveBeenCalledTimes(1);
-    expect((await store.loadUrlBound(stored.id))?.allowedCallers).toContainEqual(
+    expect((await store.loadUrlBound(stored.id))?.grants).toContainEqual(
       expect.objectContaining({
-        callerId: decision === "repo" ? "repo:/consumer" : "version:/consumer:hash-1",
+        bindingId: "fetch",
+        use: "fetch",
+        resource: "https://api.example.test/",
+        action: "use",
+        scope: decision,
+        repoPath: "/consumer",
         grantedBy: decision,
       }),
     );

@@ -81,7 +81,7 @@ describe("runtimeSurface manifests", () => {
     const wrappedNamespaces = extractHelpfulNamespaceTargets(panelSource);
 
     expect(new Set(Object.keys(panelRuntimeSurface.exports))).toEqual(exports);
-    expect(wrappedNamespaces).toEqual(new Set(["workers", "oauth", "adblock", "workspace", "credentials", "webhooks", "notifications"]));
+    expect(wrappedNamespaces).toEqual(new Set(["workers", "oauth", "adblock", "workspace", "credentials", "git", "webhooks", "notifications"]));
   });
 
   it("matches the worker runtime interface, object shape, and wrapped namespaces", () => {
@@ -92,6 +92,6 @@ describe("runtimeSurface manifests", () => {
 
     expect(new Set(Object.keys(workerRuntimeSurface.exports))).toEqual(interfaceMembers);
     expect(runtimeKeys).toEqual(interfaceMembers);
-    expect(wrappedNamespaces).toEqual(new Set(["workers", "workspace", "credentials", "webhooks", "notifications"]));
+    expect(wrappedNamespaces).toEqual(new Set(["workers", "workspace", "credentials", "git", "webhooks", "notifications"]));
   });
 });

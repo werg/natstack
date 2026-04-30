@@ -6,9 +6,8 @@ export interface Credential {
   id?: string;
   label?: string;
   owner?: CredentialOwner;
-  audience?: UrlAudience[];
-  injection?: CredentialInjection;
-  allowedCallers?: CredentialCallerGrant[];
+  bindings?: CredentialBinding[];
+  grants?: CredentialUseGrant[];
   revokedAt?: number;
   providerId: "url-bound" | "passthrough" | string;
   connectionId: string;
@@ -20,6 +19,15 @@ export interface Credential {
   metadata?: Record<string, string>;
 }
 
+export type CredentialBindingUse = "fetch" | "git-http";
+
+export interface CredentialBinding {
+  id: string;
+  use: CredentialBindingUse;
+  audience: UrlAudience[];
+  injection: CredentialInjection;
+}
+
 export interface CredentialOwner {
   userProfileId?: string;
   sourceId: string;
@@ -27,8 +35,18 @@ export interface CredentialOwner {
   label: string;
 }
 
-export interface CredentialCallerGrant {
-  callerId: string;
+export type CredentialGrantScope = "caller" | "version" | "repo";
+export type CredentialGrantAction = "read" | "write" | "use";
+
+export interface CredentialUseGrant {
+  bindingId: string;
+  use: CredentialBindingUse;
+  resource: string;
+  action: CredentialGrantAction;
+  scope: CredentialGrantScope;
+  callerId?: string;
+  repoPath?: string;
+  effectiveVersion?: string;
   grantedAt: number;
   grantedBy: string;
 }
@@ -44,6 +62,7 @@ export interface StoreUrlBoundCredentialRequest {
   label: string;
   audience: UrlAudience[];
   injection: CredentialInjection;
+  bindings?: CredentialBinding[];
   material: {
     type: "bearer-token" | "api-key";
     token: string;
@@ -67,6 +86,7 @@ export interface CreateOAuthPkceCredentialRequest {
     label: string;
     audience: UrlAudience[];
     injection: CredentialInjection;
+    bindings?: CredentialBinding[];
     accountIdentity?: Partial<AccountIdentity>;
     scopes?: string[];
     metadata?: Record<string, string>;
@@ -121,6 +141,7 @@ export interface RequestCredentialInputRequest {
     label: string;
     audience: UrlAudience[];
     injection: CredentialInjection;
+    bindings?: CredentialBinding[];
     accountIdentity?: Partial<AccountIdentity>;
     scopes?: string[];
     metadata?: Record<string, string>;
@@ -167,6 +188,24 @@ export interface GrantUrlBoundCredentialRequest {
 export interface ResolveUrlBoundCredentialRequest {
   url: string;
   credentialId?: string;
+  use?: CredentialBindingUse;
+}
+
+export interface ProxyGitHttpRequest {
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  bodyBase64?: string;
+  credentialId?: string;
+}
+
+export interface ProxyGitHttpResponse {
+  url: string;
+  method: string;
+  statusCode: number;
+  statusMessage: string;
+  headers: Record<string, string>;
+  bodyBase64: string;
 }
 
 export interface StoredCredentialSummary {
@@ -175,6 +214,7 @@ export interface StoredCredentialSummary {
   accountIdentity?: AccountIdentity;
   audience: UrlAudience[];
   injection: CredentialInjection;
+  bindings?: CredentialBinding[];
   owner?: CredentialOwner;
   scopes: string[];
   expiresAt?: number;

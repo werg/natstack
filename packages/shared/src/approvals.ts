@@ -1,4 +1,9 @@
-import type { AccountIdentity, CredentialInjection, UrlAudience } from "./credentials/types.js";
+import type {
+  AccountIdentity,
+  CredentialBindingUse,
+  CredentialInjection,
+  UrlAudience,
+} from "./credentials/types.js";
 
 export type ApprovalDecision = "once" | "session" | "version" | "repo" | "deny" | "dismiss";
 export type ApprovalConfigFieldType = "text" | "secret";
@@ -20,6 +25,13 @@ export interface PendingCredentialApproval extends PendingApprovalBase {
   injection: CredentialInjection;
   accountIdentity: AccountIdentity;
   scopes: string[];
+  credentialUse?: CredentialBindingUse;
+  gitOperation?: {
+    action: "read" | "write";
+    label: string;
+    remote: string;
+    service?: string;
+  };
   oauthAuthorizeOrigin?: string;
   oauthTokenOrigin?: string;
   oauthAudienceDomainMismatch?: boolean;

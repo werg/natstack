@@ -97,6 +97,15 @@ export const panelRuntimeSurface: RuntimeSurface = {
       "resolveCredential",
       "fetch",
       "hookForUrl",
+      "gitHttp",
+    ]),
+    git: namespaceEntry([
+      "http",
+      "importProject",
+      "completeWorkspaceDependencies",
+      "setSharedRemote",
+      "removeSharedRemote",
+      "client",
     ]),
     webhooks: namespaceEntry([
       "createSubscription",

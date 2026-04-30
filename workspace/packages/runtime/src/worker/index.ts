@@ -39,6 +39,7 @@ import { createWorkspaceClient, type WorkspaceClient } from "../shared/workspace
 import { createNotificationClient, type NotificationClient } from "../shared/notifications.js";
 import { createParentHandle } from "../shared/handles.js";
 import { helpfulNamespace } from "../shared/helpfulNamespace.js";
+import { GitClient, createBearerHttpClient, createRoutingHttpClient } from "@natstack/git";
 import type { ParentHandle } from "../core/index.js";
 import type { WorkerEnv } from "./types.js";
 import type { RuntimeFs } from "../types.js";
@@ -52,6 +53,7 @@ export type {
   CompleteOAuthPkceCredentialRequest,
   CreateOAuthPkceCredentialRequest,
   RequestCredentialInputRequest,
+  GitHttpClient,
 } from "../shared/credentials.js";
 export type {
   CreateWebhookIngressSubscriptionRequest,
@@ -69,6 +71,37 @@ export type { DurableObjectContext, SqlStorage, SqlResult, DORef } from "./durab
 // which is a Node.js-only dependency that can't be bundled for workerd.
 // Import directly from "@workspace/runtime/src/worker/durable-test-utils" in tests.
 
+export interface GitRemoteSpec {
+  name: string;
+  url: string;
+}
+
+export interface ImportProjectRequest {
+  path: string;
+  remote: GitRemoteSpec;
+  credentialId?: string;
+}
+
+export interface ImportedWorkspaceRepo {
+  path: string;
+  remote: GitRemoteSpec;
+}
+
+export interface CompleteWorkspaceDependenciesResult {
+  imported: ImportedWorkspaceRepo[];
+  skipped: Array<{ path: string; reason: "already-present" | "unsupported-path" }>;
+  failed: Array<{ path: string; error: string }>;
+}
+
+export interface RuntimeGitApi {
+  http: CredentialClient["gitHttp"];
+  importProject(request: ImportProjectRequest): Promise<ImportedWorkspaceRepo>;
+  completeWorkspaceDependencies(options?: { credentialId?: string }): Promise<CompleteWorkspaceDependenciesResult>;
+  setSharedRemote(repoPath: string, remote: GitRemoteSpec): Promise<Record<string, unknown> | undefined>;
+  removeSharedRemote(repoPath: string, remoteName: string): Promise<Record<string, unknown> | undefined>;
+  client(options?: { credentialId?: string }): GitClient;
+}
+
 // Cache runtime per worker ID to avoid creating multiple bridges
 let cachedRuntime: WorkerRuntime | null = null;
 let cachedWorkerId: string | null = null;
@@ -84,7 +117,8 @@ export interface WorkerRuntime {
   readonly webhooks: WebhookIngressClient;
   readonly notifications: NotificationClient;
   readonly contextId: string;
-  readonly gitConfig: null;
+  readonly gitConfig: { serverUrl: string; token: string } | null;
+  readonly git: RuntimeGitApi;
   readonly pubsubConfig: null;
 
   /** Call a server-side service method via RPC. */
@@ -134,6 +168,37 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
   const workers = helpfulNamespace("workers", createWorkerdClient(rpc));
   const workspaceApi = helpfulNamespace("workspace", createWorkspaceClient(rpc));
   const credentials = helpfulNamespace("credentials", createCredentialClient(rpc));
+  const gitConfig = env.GIT_SERVER_URL && env.GIT_AUTH_TOKEN
+    ? { serverUrl: env.GIT_SERVER_URL, token: env.GIT_AUTH_TOKEN }
+    : null;
+  const git = helpfulNamespace("git", {
+    http: credentials.gitHttp,
+    importProject(request: ImportProjectRequest): Promise<ImportedWorkspaceRepo> {
+      return callMain("git.importProject", request);
+    },
+    completeWorkspaceDependencies(options: { credentialId?: string } = {}): Promise<CompleteWorkspaceDependenciesResult> {
+      return callMain("git.completeWorkspaceDependencies", options);
+    },
+    setSharedRemote(repoPath: string, remote: GitRemoteSpec): Promise<Record<string, unknown> | undefined> {
+      return callMain("git.setSharedRemote", repoPath, remote);
+    },
+    removeSharedRemote(repoPath: string, remoteName: string): Promise<Record<string, unknown> | undefined> {
+      return callMain("git.removeSharedRemote", repoPath, remoteName);
+    },
+    client(options: { credentialId?: string } = {}) {
+      if (!gitConfig) {
+        return new GitClient(fs, { http: credentials.gitHttp({ credentialId: options.credentialId }) });
+      }
+      return new GitClient(fs, {
+        serverUrl: gitConfig.serverUrl,
+        http: createRoutingHttpClient({
+          internalOrigin: gitConfig.serverUrl,
+          internal: createBearerHttpClient(gitConfig.token),
+          external: credentials.gitHttp({ credentialId: options.credentialId }),
+        }),
+      });
+    },
+  });
   const webhooks = helpfulNamespace("webhooks", createWebhookIngressClient(rpc));
   const notifications = helpfulNamespace("notifications", createNotificationClient(rpc));
 
@@ -150,10 +215,11 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     workers,
     workspace: workspaceApi,
     credentials,
+    git,
     webhooks,
     notifications,
     contextId: env.CONTEXT_ID,
-    gitConfig: null,
+    gitConfig,
     pubsubConfig: null,
 
     callMain,

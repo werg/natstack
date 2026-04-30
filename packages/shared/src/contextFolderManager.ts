@@ -14,6 +14,8 @@ import * as path from "path";
 import { createDevLogger } from "@natstack/dev-log";
 
 import type { WorkspaceNode } from "./types.js";
+import type { WorkspaceConfig } from "./workspace/types.js";
+import { syncDeclaredRemoteForRepo } from "./workspace/remotes.js";
 
 const log = createDevLogger("ContextFolderManager");
 
@@ -133,6 +135,7 @@ export class ContextFolderManager {
   private readonly contextsRoot: string;
   private readonly sourcePath: string;
   private readonly getWorkspaceTree: () => Promise<{ children: WorkspaceNode[] }>;
+  private readonly getWorkspaceConfig?: () => WorkspaceConfig;
 
   /** Concurrency guard: in-flight ensureContextFolder promises. */
   private readonly inflight = new Map<string, Promise<string>>();
@@ -143,10 +146,12 @@ export class ContextFolderManager {
     /** Path to the contexts root directory (where context copies are stored) */
     contextsRoot: string;
     getWorkspaceTree: () => Promise<{ children: WorkspaceNode[] }>;
+    getWorkspaceConfig?: () => WorkspaceConfig;
   }) {
     this.sourcePath = opts.sourcePath;
     this.contextsRoot = opts.contextsRoot;
     this.getWorkspaceTree = opts.getWorkspaceTree;
+    this.getWorkspaceConfig = opts.getWorkspaceConfig;
   }
 
   /**
@@ -166,11 +171,16 @@ export class ContextFolderManager {
     const promise = (async () => {
       try {
         // Check if already exists
+        let contextExists = false;
         try {
           await fs.access(contextPath);
-          return contextPath; // Already exists
+          contextExists = true;
         } catch {
           // Does not exist, create it
+        }
+        if (contextExists) {
+          await this.syncDeclaredRemotesForContextPath(contextPath);
+          return contextPath; // Already exists
         }
 
         log.info(`Creating context folder: ${contextId}`);
@@ -182,20 +192,8 @@ export class ContextFolderManager {
 
         // Copy each repo: working tree files + context-local git state
         for (const repoPath of repos) {
-          const src = path.join(this.sourcePath, repoPath);
-          const dest = path.join(contextPath, repoPath);
-          await fs.mkdir(path.dirname(dest), { recursive: true });
-          // Copy working tree (skip .git, node_modules, etc.)
-          await fs.cp(src, dest, { recursive: true, filter: copyFilter });
-          // Set up .git with shared objects + copied mutable state
-          const srcGit = path.join(src, ".git");
           try {
-            await fs.access(srcGit);
-          } catch {
-            continue; // Source repo has no .git (shouldn't happen for isGitRepo, but be safe)
-          }
-          try {
-            await setupContextGit(srcGit, path.join(dest, ".git"));
+            await this.copyRepoIntoContext(contextPath, repoPath);
           } catch (err) {
             console.warn(`[ContextFolder] Failed to setup context git for ${repoPath}:`, err);
           }
@@ -240,6 +238,55 @@ export class ContextFolderManager {
   }
 
   /**
+   * Sync workspace-declared remotes into existing context folders.
+   * If repoPath is provided, only that repo is synced.
+   */
+  async syncDeclaredRemotes(repoPath?: string): Promise<void> {
+    let contextEntries: import("fs").Dirent[];
+    try {
+      contextEntries = await fs.readdir(this.contextsRoot, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    await Promise.all(
+      contextEntries
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => {
+          const contextPath = path.join(this.contextsRoot, entry.name);
+          return repoPath
+            ? this.syncDeclaredRemoteForRepo(contextPath, repoPath)
+            : this.syncDeclaredRemotesForContextPath(contextPath);
+        }),
+    );
+  }
+
+  /**
+   * Copy a repo that appeared after contexts were created into every existing
+   * context. Existing context repos are left in place and only have declared
+   * remotes synced.
+   */
+  async syncRepoToContexts(repoPath: string): Promise<void> {
+    let contextEntries: import("fs").Dirent[];
+    try {
+      contextEntries = await fs.readdir(this.contextsRoot, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    await Promise.all(
+      contextEntries
+        .filter((entry) => entry.isDirectory())
+        .map(async (entry) => {
+          const contextPath = path.join(this.contextsRoot, entry.name);
+          try {
+            await this.copyRepoIntoContext(contextPath, repoPath, { skipIfExists: true });
+          } catch (err) {
+            log.warn(`Failed to copy repo ${repoPath} into context ${entry.name}: ${err}`);
+          }
+        }),
+    );
+  }
+
+  /**
    * Recursively collect repo paths (relative, forward slashes) from workspace tree.
    */
   private collectRepos(nodes: WorkspaceNode[]): string[] {
@@ -253,5 +300,53 @@ export class ContextFolderManager {
       }
     }
     return repos;
+  }
+
+  private async syncDeclaredRemotesForContextPath(contextPath: string): Promise<void> {
+    if (!this.getWorkspaceConfig) return;
+    const tree = await this.getWorkspaceTree();
+    const repos = this.collectRepos(tree.children);
+    await Promise.all(repos.map((repoPath) => this.syncDeclaredRemoteForRepo(contextPath, repoPath)));
+  }
+
+  private async syncDeclaredRemoteForRepo(contextPath: string, repoPath: string): Promise<void> {
+    if (!this.getWorkspaceConfig) return;
+    try {
+      await syncDeclaredRemoteForRepo({
+        config: this.getWorkspaceConfig(),
+        workspaceRoot: contextPath,
+        repoPath,
+      });
+    } catch (err) {
+      log.warn(`Failed to sync declared remote for ${repoPath} in ${contextPath}: ${err}`);
+    }
+  }
+
+  private async copyRepoIntoContext(
+    contextPath: string,
+    repoPath: string,
+    opts: { skipIfExists?: boolean } = {},
+  ): Promise<void> {
+    const src = path.join(this.sourcePath, repoPath);
+    const dest = path.join(contextPath, repoPath);
+    if (opts.skipIfExists) {
+      try {
+        await fs.access(dest);
+        await this.syncDeclaredRemoteForRepo(contextPath, repoPath);
+        return;
+      } catch {
+        // Missing destination; copy it below.
+      }
+    }
+    await fs.mkdir(path.dirname(dest), { recursive: true });
+    await fs.cp(src, dest, { recursive: true, filter: copyFilter });
+    const srcGit = path.join(src, ".git");
+    try {
+      await fs.access(srcGit);
+    } catch {
+      return;
+    }
+    await setupContextGit(srcGit, path.join(dest, ".git"));
+    await this.syncDeclaredRemoteForRepo(contextPath, repoPath);
   }
 }

@@ -132,12 +132,11 @@ function wrapFsForGit(fsPromises: FsPromisesLike): FsClient {
 /**
  * HTTP client for isomorphic-git with bearer token auth
  */
-function createHttpClient(token: string): HttpClient {
+export function createBearerHttpClient(token: string): HttpClient {
   return {
     async request(request: GitHttpRequest): Promise<GitHttpResponse> {
       const { url, method = "GET", headers = {}, body } = request;
 
-      // Add bearer token to all requests
       const authHeaders: Record<string, string> = {
         ...headers,
         Authorization: `Bearer ${token}`,
@@ -184,6 +183,22 @@ function createHttpClient(token: string): HttpClient {
         headers: Object.fromEntries(response.headers.entries()),
         body: responseBody,
       };
+    },
+  };
+}
+
+export function createRoutingHttpClient(options: {
+  internalOrigin: string;
+  internal: HttpClient;
+  external: HttpClient;
+}): HttpClient {
+  const internalOrigin = new URL(options.internalOrigin).origin;
+  return {
+    request(request) {
+      const origin = new URL(request.url).origin;
+      return origin === internalOrigin
+        ? options.internal.request(request)
+        : options.external.request(request);
     },
   };
 }
@@ -763,6 +778,7 @@ function parseConflictMarkers(content: string): {
  * ```typescript
  * import { promises as fsPromises } from "fs";
  * const git = new GitClient(fsPromises, { serverUrl, token });
+ * const externalGit = new GitClient(fsPromises, { http: credentials.gitHttp() });
  * ```
  */
 export class GitClient {
@@ -775,8 +791,14 @@ export class GitClient {
   constructor(fs: FsPromisesLike, options: GitClientOptions) {
     this.fs = wrapFsForGit(fs);
     this.fsPromises = fs;
-    this.serverUrl = options.serverUrl;
-    this.http = createHttpClient(options.token);
+    this.serverUrl = options.serverUrl ?? "";
+    if (options.http) {
+      this.http = options.http;
+    } else if (options.token) {
+      this.http = createBearerHttpClient(options.token);
+    } else {
+      throw new Error("GitClient requires either options.http or options.token");
+    }
     this.author = options.author ?? {
       name: "NatStack Panel",
       email: "panel@natstack.local",
@@ -793,6 +815,9 @@ export class GitClient {
       return repoPath;
     }
     // Remove leading slash if present
+    if (!this.serverUrl) {
+      throw new Error("GitClient cannot resolve relative repo paths without options.serverUrl");
+    }
     const cleanPath = repoPath.startsWith("/") ? repoPath.slice(1) : repoPath;
     return `${this.serverUrl}/${cleanPath}`;
   }

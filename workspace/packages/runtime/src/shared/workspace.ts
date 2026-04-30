@@ -18,7 +18,10 @@ export interface InitPanelEntry {
 export interface WorkspaceConfig {
   id: string;
   initPanels?: InitPanelEntry[];
-  git?: { port?: number };
+  git?: {
+    port?: number;
+    remotes?: Record<string, Record<string, { name: string; url: string } | null | undefined> | undefined>;
+  };
   credentials?: {
     nonInteractive?: boolean;
     mobileCallbackDomain?: string;

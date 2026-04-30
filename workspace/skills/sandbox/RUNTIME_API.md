@@ -55,7 +55,8 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `oauth` | namespace | `createLoopbackCallback` |  |
 | `adblock` | namespace | `getStats`, `isActive`, `getStatsForPanel`, `isEnabledForPanel`, `setEnabledForPanel`, `resetStatsForPanel`, `getPanelUrl`, `addToWhitelist`, `removeFromWhitelist` |  |
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo`, `openPanel` |  |
-| `credentials` | namespace | `store`, `beginCreateWithOAuthPkce`, `beginCreateWithOAuthClientPkce`, `completeCreateWithOAuthPkce`, `requestOAuthClientConfig`, `getOAuthClientConfigStatus`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl` |  |
+| `credentials` | namespace | `store`, `beginCreateWithOAuthPkce`, `beginCreateWithOAuthClientPkce`, `completeCreateWithOAuthPkce`, `requestOAuthClientConfig`, `getOAuthClientConfigStatus`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
+| `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote`, `client` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
 <!-- END GENERATED: panel-runtime-surface -->

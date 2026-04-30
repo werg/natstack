@@ -9,11 +9,17 @@
  * import { GitClient } from "@natstack/git";
  * import { promises as fsPromises } from "fs"; // RPC-backed in panels
  *
- * // Create git client - pass fs/promises directly
+ * // Create git client for the internal git server
  * const git = new GitClient(fsPromises, {
  *   serverUrl: "http://localhost:63524",
  *   token: "your-token",
  * });
+ *
+ * // Or use a host-mediated credential HTTP adapter for external remotes:
+ * const git = new GitClient(fsPromises, { http: credentials.gitHttp() });
+ *
+ * // In NatStack runtime code, prefer @workspace/runtime's git.client(),
+ * // which routes internal and external remotes through the right transport.
  *
  * // Clone a repository
  * await git.clone({
@@ -29,7 +35,13 @@
  * ```
  */
 
-export { GitClient, GitAuthError, type FsPromisesLike } from "./client.js";
+export {
+  GitClient,
+  GitAuthError,
+  createBearerHttpClient,
+  createRoutingHttpClient,
+  type FsPromisesLike,
+} from "./client.js";
 export { initAndPush, type InitAndPushOptions } from "./convenience.js";
 
 export type {

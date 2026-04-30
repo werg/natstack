@@ -93,7 +93,7 @@ export class GitServer {
   constructor(tokenManager: TokenManagerLike, config?: GitServerConfig) {
     this.configuredPort = config?.port ?? DEFAULT_GIT_SERVER_PORT;
     this.configuredReposPath = config?.reposPath ?? null;
-    this.initPatterns = config?.initPatterns ?? ["panels/*", "packages/*"];
+    this.initPatterns = config?.initPatterns ?? ["panels/*", "packages/*", "projects/*"];
     this.devTargetDir = config?.devTargetDir ?? null;
     this.writeAuthorizer = config?.writeAuthorizer ?? null;
     this.authManager = new GitAuthManager(tokenManager);

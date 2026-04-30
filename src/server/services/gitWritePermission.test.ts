@@ -86,6 +86,38 @@ describe("gitWritePermission", () => {
     expect(approvalQueue.request).toHaveBeenCalledTimes(2);
   });
 
+  it("uses sensitive config copy for meta repo pushes", async () => {
+    const approvalQueue = createApprovalQueueMock("once");
+    const authorizer = createGitWriteAuthorizer({
+      approvalQueue,
+      grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
+      codeIdentityResolver: {
+        resolveByCallerId: () => ({
+          callerId: "panel:source",
+          callerKind: "panel",
+          repoPath: "panels/source",
+          effectiveVersion: "version-1",
+        }),
+      },
+    });
+
+    await authorizer({ callerId: "panel:source", callerKind: "panel", repoPath: "meta" });
+
+    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Edit workspace config",
+      description: "Allow this code version to push changes to sensitive workspace configuration.",
+      resource: {
+        type: "git-repo",
+        label: "Config repository",
+        value: "meta",
+      },
+      details: expect.arrayContaining([
+        { label: "Operation", value: "git push to meta" },
+        { label: "Scope", value: "Workspace prompts, settings, and shared git remotes" },
+      ]),
+    }));
+  });
+
   it("denies unknown callers before prompting", async () => {
     const approvalQueue = createApprovalQueueMock("session");
     const authorizer = createGitWriteAuthorizer({

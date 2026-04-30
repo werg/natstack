@@ -170,6 +170,9 @@ Panels have isolated storage based on context ID:
 | `@workspace-about/*` | `workspace/about/` |
 | `@workspace-agents/*` | `workspace/agents/` |
 
+Plain repositories under `workspace/projects/` are editable workspace repos but
+are not import scopes and are not launchable runtime units.
+
 ## Workspace Management
 
 Panels can list, create, configure, and switch workspaces programmatically:

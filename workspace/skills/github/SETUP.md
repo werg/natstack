@@ -20,9 +20,12 @@ prompt.
 5. Choose the token mode:
    - API only: GitHub API calls such as issues, pull requests, contents API, or
      Actions reads.
-   - Git clone/pull/push: direct repository transport through NatStack's
-     host-mediated isomorphic-git adapter.
+   - Git clone/pull/push: direct repository transport through
+     `credentials.gitHttp()`.
    - API and Git: both of the above.
+   Shared workspace remotes can be declared later with
+   `git.setSharedRemote("panels/name", { name: "origin", url })`; that commits
+   `meta/natstack.yml` and propagates the remote into workspace contexts.
 6. Add permissions for the requested workflows:
    - Clone or pull: Metadata read, Contents read.
    - Push: Contents write.

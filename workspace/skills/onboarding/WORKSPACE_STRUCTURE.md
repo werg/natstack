@@ -22,6 +22,7 @@ source/
     agent-worker/       ← (git repo) Default AI chat worker
   about/                ← Built-in about/help pages
   templates/            ← Panel/worker scaffolding templates
+  projects/             ← Plain editable repos, not runtime units
 state/
   .contexts/            ← Per-context folder copies
   .cache/               ← Build cache
@@ -39,6 +40,10 @@ Like every other source directory, `meta/` is a git repo. This means:
 - It gets copied into each context folder by the context folder manager
 - Agents can commit and push changes back to the workspace source via the internal git server
 - Changes pushed to meta/ can trigger rebuilds and config reloads
+- Shared git remotes declared under `git.remotes` are materialized into repo
+  `.git/config` for source repos and context folders. Prefer
+  `git.setSharedRemote(path, { name, url })` for targeted approval and
+  propagation instead of editing a context-local remote by hand.
 
 ## Context Folders
 
@@ -49,6 +54,25 @@ When a panel or agent session starts, it gets a **context folder** — an isolat
 3. Gets its own mutable git state (HEAD, index, refs) so it can commit independently
 
 This means agents can freely read and write files in their context without affecting the workspace source or other contexts. To propagate changes back, agents commit and push through the internal git server.
+
+## Plain Projects
+
+`projects/` is for repositories that should be editable in the workspace but
+are not themselves panels, workers, skills, templates, or packages consumed by
+the workspace build system. Examples include upstream application checkouts,
+third-party libraries, or larger patch branches an agent is preparing.
+
+Plain projects are still normal workspace git repos:
+- They appear in the workspace tree once initialized or cloned.
+- They are copied into context folders like other repos.
+- Shared remotes declared under `git.remotes.projects.<repo>.<remoteName>` are
+  materialized into their `.git/config`.
+- `git.importProject({ path: "projects/name", remote })` creates a canonical
+  workspace repo from a remote and records the shared remote in `meta/natstack.yml`.
+- `git.completeWorkspaceDependencies()` imports configured shared remotes whose
+  workspace repos are currently missing.
+- They are not launchable runtime units and are not auto-imported as
+  `@workspace/*` packages.
 
 ## Template vs Live Workspace
 

@@ -44,6 +44,15 @@ export const workerRuntimeSurface: RuntimeSurface = {
       "resolveCredential",
       "fetch",
       "hookForUrl",
+      "gitHttp",
+    ]),
+    git: namespaceEntry([
+      "http",
+      "importProject",
+      "completeWorkspaceDependencies",
+      "setSharedRemote",
+      "removeSharedRemote",
+      "client",
     ]),
     webhooks: namespaceEntry([
       "createSubscription",

@@ -38,6 +38,8 @@ export interface CredentialApprovalQueueRequest extends ApprovalQueueRequestBase
   injection: CredentialInjection;
   accountIdentity: AccountIdentity;
   scopes: string[];
+  credentialUse?: PendingCredentialApproval["credentialUse"];
+  gitOperation?: PendingCredentialApproval["gitOperation"];
   oauthAuthorizeOrigin?: string;
   oauthTokenOrigin?: string;
   oauthAudienceDomainMismatch?: boolean;
@@ -230,6 +232,8 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
       injection: req.injection,
       accountIdentity: req.accountIdentity,
       scopes: req.scopes,
+      credentialUse: req.credentialUse,
+      gitOperation: req.gitOperation,
       oauthAuthorizeOrigin: req.oauthAuthorizeOrigin,
       oauthTokenOrigin: req.oauthTokenOrigin,
       oauthAudienceDomainMismatch: req.oauthAudienceDomainMismatch,

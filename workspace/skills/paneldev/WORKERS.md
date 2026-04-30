@@ -15,7 +15,8 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 | `fs` | value |  |  |
 | `workers` | namespace | `create`, `destroy`, `update`, `list`, `status`, `listInstanceSources`, `getPort`, `restartAll`, `cloneDO`, `destroyDO` |  |
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo` |  |
-| `credentials` | namespace | `store`, `beginCreateWithOAuthPkce`, `beginCreateWithOAuthClientPkce`, `completeCreateWithOAuthPkce`, `requestOAuthClientConfig`, `getOAuthClientConfigStatus`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl` |  |
+| `credentials` | namespace | `store`, `beginCreateWithOAuthPkce`, `beginCreateWithOAuthClientPkce`, `completeCreateWithOAuthPkce`, `requestOAuthClientConfig`, `getOAuthClientConfigStatus`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
+| `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote`, `client` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
 | `contextId` | value |  |  |

@@ -13,6 +13,6 @@
 Create the PAT with `requestGitHubTokenCredential({ mode: "git" })` or
 `mode: "api-and-git"` so it has repository contents permissions. The internal
 git server does not consume GitHub credentials or transparently proxy GitHub
-repositories. Direct clone, pull, push, or fork workflows should use the
-host-mediated isomorphic-git credential adapter so the PAT is not exposed to
-panels or workers.
+repositories. Direct clone, pull, push, or fork workflows should use
+`git.client()` from `@workspace/runtime`, or `credentials.gitHttp()` with raw
+isomorphic-git, so the PAT is not exposed to panels or workers.

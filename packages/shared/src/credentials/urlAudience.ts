@@ -17,7 +17,17 @@ export interface CredentialQueryParamInjection {
   name: string;
 }
 
-export type CredentialInjection = CredentialHeaderInjection | CredentialQueryParamInjection;
+export interface CredentialBasicAuthInjection {
+  type: "basic-auth";
+  usernameTemplate: string;
+  passwordTemplate: string;
+  stripIncoming?: string[];
+}
+
+export type CredentialInjection =
+  | CredentialHeaderInjection
+  | CredentialQueryParamInjection
+  | CredentialBasicAuthInjection;
 
 const DEFAULT_PORTS: Record<string, string> = {
   "http:": "80",
@@ -123,6 +133,17 @@ export function normalizeCredentialInjection(injection: CredentialInjection): Cr
     return { type: "query-param", name: injection.name };
   }
 
+  if (injection.type === "basic-auth") {
+    validateCredentialPartTemplate(injection.usernameTemplate, { requireToken: false });
+    validateCredentialPartTemplate(injection.passwordTemplate, { requireToken: true });
+    return {
+      type: "basic-auth",
+      usernameTemplate: injection.usernameTemplate,
+      passwordTemplate: injection.passwordTemplate,
+      stripIncoming: normalizeStripIncoming(injection.stripIncoming ?? []),
+    };
+  }
+
   const name = injection.name.toLowerCase();
   validateHeaderName(name);
   validateHeaderTemplate(injection.valueTemplate);
@@ -142,10 +163,20 @@ export function renderCredentialHeaderValue(template: string, token: string): st
   return rendered;
 }
 
+export function renderCredentialBasicAuthValue(injection: CredentialBasicAuthInjection, token: string): string {
+  const username = renderCredentialHeaderValue(injection.usernameTemplate, token);
+  const password = renderCredentialHeaderValue(injection.passwordTemplate, token);
+  return `Basic ${base64EncodeUtf8(`${username}:${password}`)}`;
+}
+
 export function credentialCarrierStripHeaders(injection: CredentialInjection): string[] {
   const headers = new Set(["authorization", "proxy-authorization", "x-api-key"]);
   if (injection.type === "header") {
     headers.add(injection.name.toLowerCase());
+    for (const name of injection.stripIncoming ?? []) {
+      headers.add(name.toLowerCase());
+    }
+  } else if (injection.type === "basic-auth") {
     for (const name of injection.stripIncoming ?? []) {
       headers.add(name.toLowerCase());
     }
@@ -220,6 +251,10 @@ function validateHeaderName(name: string): void {
 }
 
 function validateHeaderTemplate(template: string): void {
+  validateCredentialPartTemplate(template, { requireToken: true });
+}
+
+function validateCredentialPartTemplate(template: string, opts: { requireToken: boolean }): void {
   if (template.length === 0 || template.length > 256) {
     throw new Error("Credential header template must be between 1 and 256 characters");
   }
@@ -227,9 +262,39 @@ function validateHeaderTemplate(template: string): void {
     throw new Error("Credential header template contains control characters");
   }
   const placeholders = template.match(/\{token\}/g) ?? [];
-  if (placeholders.length !== 1) {
+  if (opts.requireToken && placeholders.length !== 1) {
     throw new Error("Credential header template must contain exactly one {token} placeholder");
   }
+  if (!opts.requireToken && placeholders.length > 1) {
+    throw new Error("Credential header template must contain at most one {token} placeholder");
+  }
+}
+
+function base64EncodeUtf8(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  if (typeof btoa === "function") {
+    return btoa(binary);
+  }
+  const maybeBuffer = (globalThis as { Buffer?: { from(input: string, encoding: "binary"): { toString(encoding: "base64"): string } } }).Buffer;
+  if (maybeBuffer) {
+    return maybeBuffer.from(binary, "binary").toString("base64");
+  }
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  let output = "";
+  for (let index = 0; index < bytes.length; index += 3) {
+    const a = bytes[index]!;
+    const b = bytes[index + 1];
+    const c = bytes[index + 2];
+    output += alphabet[a >> 2];
+    output += alphabet[((a & 0x03) << 4) | ((b ?? 0) >> 4)];
+    output += b === undefined ? "=" : alphabet[((b & 0x0f) << 2) | ((c ?? 0) >> 6)];
+    output += c === undefined ? "=" : alphabet[c & 0x3f];
+  }
+  return output;
 }
 
 function validateQueryParamName(name: string): void {

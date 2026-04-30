@@ -123,6 +123,7 @@ export interface WorkerdManagerDeps {
   /** Manifest-route lookup, keyed by source. Used alongside routeRegistry. */
   getManifestRoutes?: (source: string) => ManifestRouteDecl[];
   getProxyPort: () => number | null;
+  getGitConfigForCaller?: (callerId: string) => { serverUrl: string; token: string } | null;
   codeIdentityResolver: Pick<CodeIdentityResolver, "upsertCallerIdentity" | "unregisterCaller">;
   cleanupWebhookSubscriptions?: (callerId: string) => Promise<void>;
 }
@@ -436,6 +437,11 @@ export class WorkerdManager {
 
       // Server URL for RPC bridge (DOs use HttpRpcBridge via POST /rpc)
       bindings.push({ name: "SERVER_URL", text: this.deps.getServerUrl() });
+      const doGitConfig = this.deps.getGitConfigForCaller?.(serviceCallerId);
+      if (doGitConfig) {
+        bindings.push({ name: "GIT_SERVER_URL", text: doGitConfig.serverUrl });
+        bindings.push({ name: "GIT_AUTH_TOKEN", text: doGitConfig.token });
+      }
 
       // DO storage: create a disk service and reference it by name
       const diskServiceName = `${doService.serviceName}_disk`;
@@ -505,6 +511,11 @@ export class WorkerdManager {
         { name: "CONTEXT_ID", text: instance.contextId },
         { name: "SERVER_URL", text: this.deps.getServerUrl() },
       ];
+      const gitConfig = this.deps.getGitConfigForCaller?.(instance.callerId);
+      if (gitConfig) {
+        bindings.push({ name: "GIT_SERVER_URL", text: gitConfig.serverUrl });
+        bindings.push({ name: "GIT_AUTH_TOKEN", text: gitConfig.token });
+      }
 
       // Inject stateArgs as a JSON binding so workers can access initial state
       if (instance.stateArgs && Object.keys(instance.stateArgs).length > 0) {

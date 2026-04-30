@@ -3,6 +3,7 @@ import type { RequestCredentialInputRequest, StoredCredentialSummary } from "@wo
 
 const GITHUB_PROVIDER_ID = "github";
 const GITHUB_API_ORIGIN = "https://api.github.com";
+const GITHUB_GIT_ORIGIN = "https://github.com";
 const GITHUB_PAT_NEW_URL = "https://github.com/settings/personal-access-tokens/new";
 const GITHUB_PAT_LIST_URL = "https://github.com/settings/personal-access-tokens";
 
@@ -147,6 +148,30 @@ function buildCredentialRequest(opts: RequestGitHubTokenCredentialOptions = {}):
   const mode = opts.mode ?? "api";
   const scopes = getPresetScopes(mode, opts.presets, opts.scopes);
   const defaultPresets = opts.presets?.length ? opts.presets : getDefaultPresets(mode);
+  const fetchBinding = {
+    id: "github-api",
+    use: "fetch" as const,
+    audience: [
+      { url: `${GITHUB_API_ORIGIN}/`, match: "origin" as const },
+    ],
+    injection: {
+      type: "header" as const,
+      name: "authorization",
+      valueTemplate: "Bearer {token}",
+    },
+  };
+  const gitBinding = {
+    id: "github-git",
+    use: "git-http" as const,
+    audience: [
+      { url: `${GITHUB_GIT_ORIGIN}/`, match: "origin" as const },
+    ],
+    injection: {
+      type: "basic-auth" as const,
+      usernameTemplate: "x-access-token",
+      passwordTemplate: "{token}",
+    },
+  };
   return {
     title: "Add GitHub",
     description: mode === "api"
@@ -154,14 +179,9 @@ function buildCredentialRequest(opts: RequestGitHubTokenCredentialOptions = {}):
       : "Save a GitHub fine-grained personal access token with repository contents permissions for direct git workflows.",
     credential: {
       label: opts.label ?? "GitHub",
-      audience: [
-        { url: `${GITHUB_API_ORIGIN}/`, match: "origin" },
-      ],
-      injection: {
-        type: "header",
-        name: "authorization",
-        valueTemplate: "Bearer {token}",
-      },
+      audience: fetchBinding.audience,
+      injection: fetchBinding.injection,
+      bindings: mode === "api" ? [fetchBinding] : [fetchBinding, gitBinding],
       accountIdentity: { providerUserId: "github-pat" },
       scopes,
       metadata: {
@@ -169,7 +189,7 @@ function buildCredentialRequest(opts: RequestGitHubTokenCredentialOptions = {}):
         providerKind: "fine-grained-pat",
         credentialMode: mode,
         permissionPresets: defaultPresets.join(","),
-        ...(mode === "api" ? {} : { gitRemoteOrigin: "https://github.com/" }),
+        ...(mode === "api" ? {} : { gitRemoteOrigin: `${GITHUB_GIT_ORIGIN}/` }),
       },
     },
     fields: [

@@ -644,6 +644,20 @@ function CredentialDetails({ approval }: { approval: PendingCredentialApproval }
         label="Injects as"
         value={<InlineCode>{formatInjection(approval)}</InlineCode>}
       />
+      {approval.gitOperation ? (
+        <>
+          <Detail
+            icon={<LockClosedIcon />}
+            label="Operation"
+            value={<InlineCode>{approval.gitOperation.label}</InlineCode>}
+          />
+          <Detail
+            icon={<GlobeIcon />}
+            label="Remote"
+            value={<InlineCode>{approval.gitOperation.remote}</InlineCode>}
+          />
+        </>
+      ) : null}
       <Detail
         icon={<GlobeIcon />}
         label="Audience"
@@ -746,6 +760,9 @@ function InlineCode({ children }: { children: ReactNode }) {
 
 function getApprovalCategoryLabel(approval: PendingApproval): string {
   if (approval.kind === "credential") {
+    if (approval.credentialUse === "git-http") {
+      return approval.gitOperation?.action === "write" ? "Git write" : "Git read";
+    }
     return "Access request";
   }
   if (approval.kind === "oauth-client-config") {
@@ -755,7 +772,13 @@ function getApprovalCategoryLabel(approval: PendingApproval): string {
     return "Service setup";
   }
   if (approval.capability === "internal-git-write") {
-    return "Write request";
+    return approval.resource?.value === "meta" ? "Config edit" : "Write request";
+  }
+  if (approval.capability === "workspace-shared-git-remote") {
+    return "Remote config";
+  }
+  if (approval.capability === "workspace-project-import") {
+    return "Project import";
   }
   return isOAuthExternalApproval(approval) ? "Sign-in action" : "Browser action";
 }
@@ -768,6 +791,34 @@ function getStandardActionCopy(approval: PendingCredentialApproval | PendingCapa
   denyDescription: string;
 } {
   if (approval.kind === "credential") {
+    if (approval.credentialUse === "git-http") {
+      const isWrite = approval.gitOperation?.action === "write";
+      return {
+        once: {
+          label: isWrite ? "Push once" : "Read once",
+          description: isWrite ? "Allow this git push once." : "Allow this git read once.",
+        },
+        session: {
+          label: isWrite ? "Push this session" : "Read this session",
+          description: isWrite
+            ? "Allow git pushes to this remote until NatStack restarts."
+            : "Allow git reads from this remote until NatStack restarts.",
+        },
+        version: {
+          label: "Trust version",
+          description: isWrite
+            ? "Allow this exact code version to push to this remote."
+            : "Allow this exact code version to read from this remote.",
+        },
+        repo: {
+          label: "Trust repo",
+          description: isWrite
+            ? "Allow this workspace project to push to this remote."
+            : "Allow this workspace project to read from this remote.",
+        },
+        denyDescription: isWrite ? "Do not allow this git push." : "Do not allow this git read.",
+      };
+    }
     return {
       once: { label: "Use once", description: "Use this service for this request only." },
       session: { label: "Use this session", description: "Reuse this service until NatStack restarts." },
@@ -786,12 +837,49 @@ function getStandardActionCopy(approval: PendingCredentialApproval | PendingCapa
     };
   }
   if (approval.capability === "internal-git-write") {
+    const isMeta = approval.resource?.value === "meta";
     return {
-      once: { label: "Write once", description: "Allow this git write once." },
-      session: { label: "Write this session", description: "Allow writes to this repository until NatStack restarts." },
-      version: { label: "Trust version", description: "Allow this code version to write to this repository." },
-      repo: { label: "Trust repo", description: "Allow this workspace project to write to this repository." },
-      denyDescription: "Do not allow this git write.",
+      once: {
+        label: isMeta ? "Edit once" : "Write once",
+        description: isMeta ? "Allow this config push once." : "Allow this git write once.",
+      },
+      session: {
+        label: isMeta ? "Edit this session" : "Write this session",
+        description: isMeta
+          ? "Allow config pushes until NatStack restarts."
+          : "Allow writes to this repository until NatStack restarts.",
+      },
+      version: {
+        label: "Trust version",
+        description: isMeta
+          ? "Allow this code version to edit workspace config."
+          : "Allow this code version to write to this repository.",
+      },
+      repo: {
+        label: "Trust repo",
+        description: isMeta
+          ? "Allow this workspace project to edit workspace config."
+          : "Allow this workspace project to write to this repository.",
+      },
+      denyDescription: isMeta ? "Do not allow this config edit." : "Do not allow this git write.",
+    };
+  }
+  if (approval.capability === "workspace-shared-git-remote") {
+    return {
+      once: { label: "Change once", description: "Allow this shared remote change once." },
+      session: { label: "Change this session", description: "Allow shared remote changes until NatStack restarts." },
+      version: { label: "Trust version", description: "Allow this code version to change shared remotes." },
+      repo: { label: "Trust repo", description: "Allow this workspace project to change shared remotes." },
+      denyDescription: "Do not change this shared remote.",
+    };
+  }
+  if (approval.capability === "workspace-project-import") {
+    return {
+      once: { label: "Import once", description: "Allow this project import once." },
+      session: { label: "Import this session", description: "Allow project imports until NatStack restarts." },
+      version: { label: "Trust version", description: "Allow this code version to import project repos." },
+      repo: { label: "Trust repo", description: "Allow this workspace project to import project repos." },
+      denyDescription: "Do not import this project.",
     };
   }
   return {
@@ -811,9 +899,30 @@ function getApprovalCopy(
   if (approval.kind === "capability") {
     if (approval.capability === "internal-git-write") {
       const destination = approval.resource?.value ?? "this repository";
+      if (destination === "meta") {
+        return {
+          title: "Edit workspace config",
+          summary: `${requester} wants to push changes to sensitive workspace config.`,
+        };
+      }
       return {
         title: "Write project files",
         summary: `${requester} wants to push changes to ${destination}.`,
+      };
+    }
+    if (approval.capability === "workspace-shared-git-remote") {
+      const destination = approval.resource?.value ?? "this repository";
+      const operation = approval.details?.find((detail) => detail.label === "Operation")?.value ?? "change a shared remote";
+      return {
+        title: approval.title || "Configure shared remote",
+        summary: `${requester} wants to ${operation.toLowerCase()} for ${destination}.`,
+      };
+    }
+    if (approval.capability === "workspace-project-import") {
+      const destination = approval.resource?.value ?? "this project";
+      return {
+        title: approval.title || "Add project repo",
+        summary: `${requester} wants to import ${destination} from a remote git repository.`,
       };
     }
     const isOAuth = isOAuthExternalApproval(approval);
@@ -844,6 +953,15 @@ function getApprovalCopy(
   }
 
   const audience = formatAudienceSummary(approval);
+  if (approval.credentialUse === "git-http") {
+    const operation = approval.gitOperation;
+    const remote = operation?.remote ? formatGitRemoteSummary(operation.remote) : audience;
+    const label = operation?.label ?? "git operation";
+    return {
+      title: operation?.action === "write" ? "Push to remote" : "Read from remote",
+      summary: `${requester} wants to ${label} on ${remote} using ${approval.credentialLabel}.`,
+    };
+  }
   return {
     title: "Use connected service",
     summary: `${requester} wants to use ${approval.credentialLabel} with ${audience}.`,
@@ -883,6 +1001,16 @@ function formatAudienceSummary(approval: PendingCredentialApproval): string {
   return extraCount > 0 ? `${audience} and ${extraCount} more` : audience;
 }
 
+function formatGitRemoteSummary(raw: string): string {
+  try {
+    const url = new URL(raw);
+    const path = url.pathname.replace(/^\/+/, "").replace(/\.git$/, "");
+    return path ? `${url.hostname}/${path}` : url.hostname;
+  } catch {
+    return raw;
+  }
+}
+
 function formatAccount(approval: PendingCredentialApproval): string {
   const identity = approval.accountIdentity;
   return (
@@ -907,6 +1035,9 @@ function formatInjection(approval: PendingCredentialApproval | PendingCredential
   const injection = approval.injection;
   if (injection.type === "query-param") {
     return `query ${injection.name}`;
+  }
+  if (injection.type === "basic-auth") {
+    return "basic auth";
   }
   return `header ${injection.name}`;
 }
