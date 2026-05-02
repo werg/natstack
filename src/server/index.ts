@@ -355,7 +355,7 @@ async function main() {
     });
     workspace = startup.resolved.workspace;
     workspaceName = startup.resolved.name;
-    workspaceIsEphemeral = startup.isEphemeral;
+    workspaceIsEphemeral = startup.isEphemeral || process.env["NATSTACK_WORKSPACE_EPHEMERAL"] === "1";
   } catch (error) {
     const msg = `Workspace resolution failed: ${error}`;
     if (ipcChannel) {
@@ -420,18 +420,18 @@ async function main() {
   });
   const egressProxyPort = await egressProxy.start();
 
-  // Auto-default devTargetDir: when running from a natstack source checkout,
-  // mirror pushes back to `<appRoot>/workspace` so edits made inside ephemeral
-  // dev workspaces persist into the repo. Explicit config wins (empty string disables).
-  const explicitDevTarget = workspaceConfig.git?.devTargetDir;
+  // In pnpm dev mode, the app runs from a throwaway workspace copied from
+  // `<appRoot>/workspace`. Mirror accepted pushes back to that template so
+  // edits made in the generated workspace persist into the source checkout.
   const templateDir = path.join(appRoot, "workspace");
-  const isSourceRun = fs.existsSync(path.join(templateDir, "meta", "natstack.yml"));
+  const isPnpmDevMode = process.env["NODE_ENV"] === "development";
+  const hasDevTemplate = fs.existsSync(path.join(templateDir, "meta", "natstack.yml"));
   const templateDiffersFromActive =
     templateDir !== workspacePath && !workspacePath.startsWith(templateDir + path.sep);
   const devTargetDir =
-    explicitDevTarget !== undefined
-      ? (explicitDevTarget || undefined)
-      : (isSourceRun && templateDiffersFromActive ? templateDir : undefined);
+    isPnpmDevMode && workspaceIsEphemeral && hasDevTemplate && templateDiffersFromActive
+      ? templateDir
+      : undefined;
 
   const { createGitWriteAuthorizer } = await import("./services/gitWritePermission.js");
   const { WORKSPACE_GIT_INIT_PATTERNS } = await import("@natstack/shared/workspace/sourceDirs");

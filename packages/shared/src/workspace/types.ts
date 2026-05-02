@@ -111,12 +111,6 @@ export interface CentralConfig {
  */
 export interface GitConfig {
   /**
-   * Absolute path to a directory where pushed changes are mirrored.
-   * When set, every push copies the updated working tree (excluding .git)
-   * to `<devTargetDir>/<repo>/`, keeping a dev template in sync.
-   */
-  devTargetDir?: string;
-  /**
    * Shared git remotes declared by workspace repo path.
    *
    * Example:

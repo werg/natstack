@@ -149,6 +149,7 @@ export async function establishServerSession(args: {
     serverProcessManager = new ServerProcessManager({
       wsDir: mode.wsDir,
       appRoot: getAppRoot(),
+      isEphemeral: mode.isEphemeral,
       onCrash: (code) => {
         console.error(`[App] Server process crashed with code ${code}`);
         dialog.showErrorBox(

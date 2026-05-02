@@ -34,6 +34,7 @@ export class ServerProcessManager {
     /** Managed workspace root directory (contains source/ and state/) */
     wsDir: string;
     appRoot: string;
+    isEphemeral?: boolean;
     logLevel?: string;
     /** Called if the server process exits unexpectedly */
     onCrash: (code: number | null) => void;
@@ -157,6 +158,7 @@ export class ServerProcessManager {
       ...process.env,
       NATSTACK_WORKSPACE_DIR: this.config.wsDir,
       NATSTACK_APP_ROOT: this.config.appRoot,
+      ...(this.config.isEphemeral ? { NATSTACK_WORKSPACE_EPHEMERAL: "1" } : {}),
       ...(this.config.logLevel ? { NATSTACK_LOG_LEVEL: this.config.logLevel } : {}),
     };
 
