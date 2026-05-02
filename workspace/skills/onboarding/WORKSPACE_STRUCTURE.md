@@ -7,7 +7,7 @@ A NatStack workspace is organized into source directories, each of which becomes
 ```
 source/
   meta/                 ← Workspace metadata (git repo)
-    natstack.yml        ← Workspace config: ID, git port, init panels, OAuth
+    natstack.yml        ← Workspace config: init panels, shared git remotes
     AGENTS.md           ← Agent system prompt
   panels/               ← Panel source code
     chat/               ← (git repo) Default chat panel
@@ -33,7 +33,7 @@ state/
 
 `meta/` contains workspace-level configuration that agents need access to:
 
-- **natstack.yml** — Workspace configuration (ID, git server port, OAuth settings, initial panels). Read by the server at startup; agents can read it via `workspace.getConfig()`.
+- **natstack.yml** — Workspace configuration (initial panels and shared git remotes). Read by the server at startup; agents can read it via `workspace.getConfig()`.
 - **AGENTS.md** — The system prompt injected into every agent session. Loaded by the resource loader at agent startup. Agents can also read it directly from `meta/AGENTS.md` in their context folder.
 
 Like every other source directory, `meta/` is a git repo. This means:

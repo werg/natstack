@@ -194,7 +194,7 @@ const active = await workspace.getActiveEntry();
 
 // Read workspace config (meta/natstack.yml)
 const config = await workspace.getConfig();
-// => { id: "default", initPanels: [{ source: "panels/chat" }], git: { port: 63524 } }
+// => { id: "default", initPanels: [{ source: "panels/chat" }] }
 
 // Create a new workspace (fork from current)
 const entry = await workspace.create("experiment", { forkFrom: name });
@@ -216,7 +216,7 @@ If no option is given, creates an empty workspace.
 
 ### workspace.setInitPanels
 
-Updates `meta/natstack.yml` safely, preserving all other config. The workspace `id` and `git` config are not writable via RPC.
+Updates `meta/natstack.yml` safely, preserving all other config.
 
 ### Restrictions
 

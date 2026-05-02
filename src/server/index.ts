@@ -436,7 +436,6 @@ async function main() {
   const { createGitWriteAuthorizer } = await import("./services/gitWritePermission.js");
   const { WORKSPACE_GIT_INIT_PATTERNS } = await import("@natstack/shared/workspace/sourceDirs");
   const gitServer = new GitServer(tokenManager, {
-    port: workspaceConfig.git?.port,
     reposPath: workspacePath,
     initPatterns: [...WORKSPACE_GIT_INIT_PATTERNS],
     devTargetDir,

@@ -24,7 +24,7 @@ const helpSections: HelpSection[] = [
     title: "Workspaces",
     content:
       "A workspace is a directory containing your panels and configuration. " +
-      "Each workspace has a meta/natstack.yml file that defines settings like the git server port. " +
+      "Each workspace has a meta/natstack.yml file that defines settings like initial panels and shared git remotes. " +
       "Use Cmd/Ctrl+Shift+O to switch between workspaces.",
   },
   {

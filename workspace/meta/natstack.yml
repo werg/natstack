@@ -1,8 +1,6 @@
 # NatStack Workspace Configuration
 # This file configures the workspace for development
 
-id: natstack-dev
-
 initPanels:
   - source: panels/chat
     stateArgs:
@@ -112,10 +110,9 @@ initPanels:
       systemPromptMode: append
 
 # Git server configuration
-git:
-  port: 63524
-  # Mirror pushed changes back to a dev template directory (excluding .git).
-  # When running from a natstack source checkout, defaults to `<appRoot>/workspace`
-  # so panel/worker edits persist into the repo across ephemeral dev workspaces.
-  # Uncomment to override (or set to an empty string to disable the default):
-  # devTargetDir: /absolute/path/to/template
+# git:
+#   Mirror pushed changes back to a dev template directory (excluding .git).
+#   When running from a natstack source checkout, defaults to `<appRoot>/workspace`
+#   so panel/worker edits persist into the repo across ephemeral dev workspaces.
+#   Uncomment to override (or set to an empty string to disable the default):
+#   devTargetDir: /absolute/path/to/template

@@ -102,7 +102,7 @@ export function getBuildArtifactsDirectory(): string {
  * Replaces slashes with double underscores to avoid directory traversal.
  */
 function escapeIdForPath(id: string): string {
-  return id.replace(/\//g, "__");
+  return id.replace(/[\\/:]/g, "__");
 }
 
 /**
@@ -118,8 +118,9 @@ function escapeIdForPath(id: string): string {
  */
 export function getContextScopePath(workspaceId: string, contextId: string): string {
   const configDir = getCentralConfigDirectory();
+  const escapedWorkspaceId = escapeIdForPath(workspaceId);
   const escapedContextId = escapeIdForPath(contextId);
-  const scopePath = path.join(configDir, "context-scopes", workspaceId, escapedContextId);
+  const scopePath = path.join(configDir, "context-scopes", escapedWorkspaceId, escapedContextId);
 
   // Create the directory if it doesn't exist
   fs.mkdirSync(scopePath, { recursive: true });
@@ -296,4 +297,3 @@ export function getAppNodeModules(): string {
 export function getAboutPagesDir(): string {
   return path.join(getAppRoot(), "src", "about-pages");
 }
-

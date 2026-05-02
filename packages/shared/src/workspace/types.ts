@@ -8,7 +8,7 @@
  *    - .env: Environment variables
  *
  * 2. Workspace (project directory):
- *    - meta/natstack.yml: Workspace ID, git port, init panels
+ *    - meta/natstack.yml: Init panels and shared git remotes
  *    - meta/AGENTS.md: Agent system prompt
  *    - panels/: Panel source code
  *    - projects/: Plain editable repositories that are not runtime units
@@ -110,7 +110,6 @@ export interface CentralConfig {
  * Git server configuration
  */
 export interface GitConfig {
-  port?: number;
   /**
    * Absolute path to a directory where pushed changes are mirrored.
    * When set, every push copies the updated working tree (excluding .git)
@@ -154,7 +153,7 @@ export interface InitPanelEntry {
  * This is specific to each workspace/project.
  */
 export interface WorkspaceConfig {
-  /** Unique workspace identifier, prepended to panel IDs */
+  /** Resolved workspace identifier. If omitted on disk, derived from the workspace location. */
   id: string;
   /** Git server configuration */
   git?: GitConfig;
@@ -164,11 +163,6 @@ export interface WorkspaceConfig {
    * Example: [{ source: "panels/chat", stateArgs: { initialPrompt: "Hello", systemPrompt: "You are..." } }]
    */
   initPanels?: InitPanelEntry[];
-  /** Credential runtime options. OAuth client material is stored through trusted URL-bound config. */
-  credentials?: {
-    nonInteractive?: boolean;
-    mobileCallbackDomain?: string;
-  };
 }
 
 /**

@@ -385,26 +385,14 @@ export function initWorkspace(
     fs.mkdirSync(path.join(stateRoot, dir), { recursive: true });
   }
 
-  // Write/rewrite natstack.yml — always regenerate instance-specific fields
+  // Write natstack.yml for bare workspaces. Template/forked workspaces keep
+  // their copied config as-is.
   const configPath = path.join(sourceRoot, WORKSPACE_CONFIG_FILE);
-  const randomPort = 49152 + Math.floor(Math.random() * 16383);
 
-  if (fs.existsSync(configPath)) {
-    const content = fs.readFileSync(configPath, "utf-8");
-    const config = YAML.parse(content) as WorkspaceConfig;
-    config.id = name;
-    if (!config.git) config.git = {};
-    config.git.port = randomPort;
-    fs.writeFileSync(configPath, YAML.stringify(config), "utf-8");
-  } else {
+  if (!fs.existsSync(configPath)) {
     const configContent = `# NatStack Workspace Configuration
-id: ${name}
-
 initPanels:
   - source: panels/chat
-
-git:
-  port: ${randomPort}
 `;
     fs.writeFileSync(configPath, configContent, "utf-8");
   }
@@ -496,12 +484,25 @@ export function loadWorkspaceConfig(workspacePath: string): WorkspaceConfig {
   const content = fs.readFileSync(configPath, "utf-8");
   const config = YAML.parse(content) as WorkspaceConfig;
 
-  // Ensure required fields
-  if (!config.id) {
-    config.id = `workspace-${Date.now().toString(36)}`;
-  }
+  // Workspace id is not read from disk. Managed workspaces derive it from the
+  // data-dir folder name; explicit external workspaces derive it from their
+  // absolute workspace root path.
+  config.id = deriveWorkspaceId(workspacePath);
 
   return config;
+}
+
+function deriveWorkspaceId(workspacePath: string): string {
+  const sourceRoot = path.resolve(workspacePath);
+  const workspaceRoot = path.basename(sourceRoot) === "source"
+    ? path.dirname(sourceRoot)
+    : sourceRoot;
+  const workspacesDir = path.resolve(getWorkspacesDir());
+
+  if (path.dirname(workspaceRoot) === workspacesDir) {
+    return path.basename(workspaceRoot);
+  }
+  return workspaceRoot;
 }
 
 /**

@@ -16,7 +16,7 @@ describe("createWorkspaceConfigManager", () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    config = { id: "test-ws", initPanels: [{ source: "panels/chat" }], git: { port: 63524 } };
+    config = { id: "test-ws", initPanels: [{ source: "panels/chat" }] };
   });
 
   it("get() returns the live config object", () => {
@@ -27,7 +27,7 @@ describe("createWorkspaceConfigManager", () => {
   });
 
   it("set() writes disk then updates in-memory", () => {
-    const onDisk: Record<string, unknown> = { id: "test-ws", initPanels: [{ source: "panels/chat" }], git: { port: 63524 } };
+    const onDisk: Record<string, unknown> = { initPanels: [{ source: "panels/chat" }] };
     mockFs.readFileSync.mockReturnValue("yaml-content");
     mockYAML.parse.mockReturnValue(onDisk);
     mockYAML.stringify.mockReturnValue("new-yaml");
