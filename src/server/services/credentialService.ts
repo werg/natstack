@@ -138,6 +138,7 @@ const completeOAuthPkceCredentialParamsSchema = z.object({
   nonce: nonceSchema,
   code: z.string().min(1).max(4096),
   state: z.string().min(1).max(4096),
+  approvalDecision: z.enum(["once", "session", "version", "repo"]).optional(),
 }).strict();
 
 const oauthClientConfigFieldSchema = z.object({
@@ -316,7 +317,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   async function storeCredential(
     ctx: ServiceContext,
     params: StoreUrlBoundCredentialParams,
-    opts: { approvalDecision?: Exclude<GrantedDecision, "deny"> } = {},
+    opts: {
+      approvalDecision?: Exclude<GrantedDecision, "deny">;
+      preapprovedUseDecision?: Exclude<GrantedDecision, "deny">;
+    } = {},
   ): Promise<StoredCredentialSummary> {
     const request = params as StoreUrlBoundCredentialRequest;
     const id = randomUUID();
@@ -362,6 +366,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         materialType: request.material.type,
       },
     };
+
+    if (opts.preapprovedUseDecision) {
+      applyPreapprovedCredentialUseGrants(ctx, credential as Credential & { id: string }, bindings, opts.preapprovedUseDecision, now);
+    }
 
     await credentialStore.saveUrlBound(credential as Credential & { id: string });
     await appendAudit({
@@ -692,6 +700,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         oauthTokenOrigin: new URL(pending.oauth.tokenUrl).origin,
         oauthScopes: (pending.oauth.scopes ?? []).join(" "),
       },
+    }, {
+      approvalDecision: request.approvalDecision,
+      preapprovedUseDecision: request.approvalDecision,
     });
   }
 
@@ -977,6 +988,30 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     sessionGrantStore.grant(credentialId, identity, resource);
   }
 
+  function applyPreapprovedCredentialUseGrants(
+    ctx: ServiceContext,
+    credential: Credential & { id: string },
+    bindings: CredentialBinding[],
+    decision: Exclude<GrantedDecision, "deny">,
+    now: number,
+  ): void {
+    const identity = resolveApprovalIdentity(ctx);
+    const usageContexts = bindings.flatMap(preapprovedUseContextsForBinding);
+    if (decision === "once" || decision === "session") {
+      for (const usage of usageContexts) {
+        grantSessionCredentialUse(credential.id, identity, usage.sessionResource);
+      }
+      return;
+    }
+    credential.grants = usageContexts.reduce(
+      (grants, usage) => upsertCredentialUseGrant(
+        grants,
+        grantForDecision(ctx.callerId, identity, decision, now, usage),
+      ),
+      credential.grants ?? [],
+    );
+  }
+
   function hasSessionCredentialUse(
     ctx: ServiceContext,
     credential: Credential,
@@ -1190,6 +1225,23 @@ function credentialUseContext(
     },
     gitOperation,
   };
+}
+
+function preapprovedUseContextsForBinding(binding: CredentialBinding): CredentialUseContext[] {
+  return binding.audience.map((audience) => {
+    const action: CredentialGrantAction = binding.use === "git-http" ? "read" : "use";
+    return {
+      binding,
+      resource: audience.url,
+      action,
+      sessionResource: {
+        bindingId: binding.id,
+        resource: audience.url,
+        action,
+      },
+      gitOperation: undefined,
+    };
+  });
 }
 
 function describeGitHttpOperation(targetUrl: URL, method: string): CredentialUseContext["gitOperation"] {

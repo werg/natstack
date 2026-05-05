@@ -2,6 +2,10 @@ export interface OpenExternalOptions {
   expectedRedirectUri?: string;
 }
 
+export interface OpenExternalResult {
+  approvalDecision?: "once" | "session" | "version" | "repo";
+}
+
 export function assertAllowedOAuthExternalUrl(
   rawUrl: string,
   expectedRedirectUri: string,

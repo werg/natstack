@@ -177,6 +177,7 @@ export interface CompleteOAuthPkceCredentialRequest {
   nonce: string;
   code: string;
   state: string;
+  approvalDecision?: "once" | "session" | "version" | "repo";
 }
 
 export interface GrantUrlBoundCredentialRequest {

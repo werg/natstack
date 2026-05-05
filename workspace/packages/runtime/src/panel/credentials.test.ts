@@ -45,7 +45,7 @@ describe("panel credential OAuth helpers", () => {
       }),
       close: vi.fn().mockResolvedValue(undefined),
     });
-    mocks.openExternal.mockResolvedValue(undefined);
+    mocks.openExternal.mockResolvedValue({ approvalDecision: "session" });
   });
 
   it("owns the full browser-backed PKCE credential flow", async () => {
@@ -102,6 +102,7 @@ describe("panel credential OAuth helpers", () => {
       nonce: "nonce-1",
       code: "code-1",
       state: "state-1",
+      approvalDecision: "session",
     });
     expect(callback.close).toHaveBeenCalled();
   });

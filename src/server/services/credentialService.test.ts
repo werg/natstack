@@ -528,6 +528,7 @@ describe("credentialService", () => {
       nonce: begin.nonce,
       state: begin.nonce,
       code: "code-1",
+      approvalDecision: "version",
     }]) as StoredCredentialSummary;
 
     expect(completed).toMatchObject({
@@ -540,6 +541,18 @@ describe("credentialService", () => {
 
     const persisted = await store.loadUrlBound(completed.id);
     expect(persisted?.accessToken).toBe("oauth-access-token");
+    expect(persisted?.grants).toEqual([
+      expect.objectContaining({
+        bindingId: "fetch",
+        use: "fetch",
+        resource: "https://api.example.test/v1",
+        action: "use",
+        scope: "version",
+        repoPath: "panel:test",
+        effectiveVersion: "unknown",
+        grantedBy: "version",
+      }),
+    ]);
     expect(JSON.stringify(persisted)).not.toContain("must-not-persist");
   });
 

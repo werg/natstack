@@ -1,5 +1,6 @@
 import type { RpcCaller } from "@natstack/rpc";
 import { openExternal } from "./browser.js";
+import type { OpenExternalResult } from "@natstack/shared/externalOpen";
 import { createLoopbackCallback } from "./oauth.js";
 import {
   createCredentialClient,
@@ -155,12 +156,13 @@ async function runOAuthPkceCredentialFlow(
   try {
     const started = await begin(callback.redirectUri);
     await callback.expectState(started.state);
-    await openOAuthAuthorizeUrl(started.authorizeUrl, callback.redirectUri, input.openMode ?? "external");
+    const openResult = await openOAuthAuthorizeUrl(started.authorizeUrl, callback.redirectUri, input.openMode ?? "external");
     const result = await callback.waitForCallback();
     return await requireClient().completeCreateWithOAuthPkce({
       nonce: started.nonce,
       code: result.code,
       state: result.state,
+      approvalDecision: openResult.approvalDecision,
     });
   } finally {
     await callback.close().catch(() => {});
@@ -171,16 +173,15 @@ async function openOAuthAuthorizeUrl(
   authorizeUrl: string,
   redirectUri: string,
   mode: OAuthAuthorizeOpenMode,
-): Promise<void> {
+): Promise<OpenExternalResult> {
   switch (mode) {
     case "external":
-      await openExternal(authorizeUrl, { expectedRedirectUri: redirectUri });
-      return;
+      return (await openExternal(authorizeUrl, { expectedRedirectUri: redirectUri })) ?? {};
     case "panel":
       window.open(authorizeUrl, "_blank", "noopener,noreferrer");
-      return;
+      return {};
     case "manual":
-      return;
+      return {};
     default:
       throw new Error(`Unsupported OAuth authorize open mode: ${String(mode)}`);
   }

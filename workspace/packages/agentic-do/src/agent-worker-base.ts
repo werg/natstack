@@ -100,6 +100,7 @@ interface CompleteModelCredentialOAuthArgs {
   nonce?: unknown;
   code?: unknown;
   state?: unknown;
+  approvalDecision?: unknown;
 }
 
 const MODEL_CREDENTIAL_REQUIRED_CARD_TSX = `
@@ -162,8 +163,9 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
       });
       setAuthorizeUrl(begin.authorizeUrl);
       setStatus("waiting");
+      let openResult = {};
       if (openMode === "external") {
-        await chat.rpc.call("main", "externalOpen.openExternal", begin.authorizeUrl, {
+        openResult = await chat.rpc.call("main", "externalOpen.openExternal", begin.authorizeUrl, {
           expectedRedirectUri: callback.redirectUri,
         });
       } else {
@@ -176,6 +178,7 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
         nonce: begin.nonce,
         code: result.code,
         state: result.state,
+        approvalDecision: openResult && typeof openResult === "object" ? openResult.approvalDecision : undefined,
       });
       setStatus("done");
       if (props.agentParticipantId) {
@@ -631,6 +634,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         nonce: args.nonce,
         code: args.code,
         state: args.state,
+        approvalDecision: args.approvalDecision,
       },
     );
   }

@@ -48,7 +48,7 @@ describe("externalOpenService", () => {
       },
     });
 
-    await service.handler(
+    const result = await service.handler(
       { callerId: "panel-1", callerKind: "panel" },
       "openExternal",
       ["https://example.com/path?q=1#fragment"],
@@ -68,6 +68,7 @@ describe("externalOpenService", () => {
       callerId: "panel-1",
       callerKind: "panel",
     });
+    expect(result).toEqual({ approvalDecision: "session" });
   });
 
   it("reuses grants for the same origin", async () => {

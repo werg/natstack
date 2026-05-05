@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { EventService } from "@natstack/shared/eventsService";
 import { assertAllowedOAuthExternalUrl } from "@natstack/shared/externalOpen";
-import type { OpenExternalOptions } from "@natstack/shared/externalOpen";
+import type { OpenExternalOptions, OpenExternalResult } from "@natstack/shared/externalOpen";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
 import type { ApprovalQueue } from "./approvalQueue.js";
@@ -23,13 +23,14 @@ export interface ExternalOpenServiceDeps {
 }
 
 export function createExternalOpenService(deps: ExternalOpenServiceDeps): ServiceDefinition {
-  async function requestOpen(ctx: ServiceContext, rawUrl: string, options?: OpenExternalOptions): Promise<void> {
+  async function requestOpen(ctx: ServiceContext, rawUrl: string, options?: OpenExternalOptions): Promise<OpenExternalResult> {
     const url = normalizeExternalUrl(rawUrl);
     if (options?.expectedRedirectUri) {
       assertAllowedOAuthExternalUrl(url.toString(), options.expectedRedirectUri);
     }
     const resource = resourceForExternalUrl(url);
 
+    let approvalDecision: OpenExternalResult["approvalDecision"];
     if (ctx.callerKind === "panel" || ctx.callerKind === "worker") {
       if (!deps.grantStore || !deps.approvalQueue || !deps.codeIdentityResolver) {
         throw new Error("External browser open approval is unavailable");
@@ -51,6 +52,7 @@ export function createExternalOpenService(deps: ExternalOpenServiceDeps): Servic
       if (!authorization.allowed) {
         throw new Error(authorization.reason ?? "External browser open denied");
       }
+      approvalDecision = authorization.decision;
     }
 
     deps.eventService.emit("external-open:open", {
@@ -58,6 +60,7 @@ export function createExternalOpenService(deps: ExternalOpenServiceDeps): Servic
       callerId: ctx.callerId,
       callerKind: ctx.callerKind,
     });
+    return approvalDecision ? { approvalDecision } : {};
   }
 
   return {
