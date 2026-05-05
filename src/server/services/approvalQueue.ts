@@ -42,7 +42,9 @@ export interface CredentialApprovalQueueRequest extends ApprovalQueueRequestBase
   gitOperation?: PendingCredentialApproval["gitOperation"];
   oauthAuthorizeOrigin?: string;
   oauthTokenOrigin?: string;
+  oauthUserinfoOrigin?: string;
   oauthAudienceDomainMismatch?: boolean;
+  replacementCredentialLabel?: string;
 }
 
 export interface CapabilityApprovalQueueRequest extends ApprovalQueueRequestBase {
@@ -236,7 +238,9 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
       gitOperation: req.gitOperation,
       oauthAuthorizeOrigin: req.oauthAuthorizeOrigin,
       oauthTokenOrigin: req.oauthTokenOrigin,
+      oauthUserinfoOrigin: req.oauthUserinfoOrigin,
       oauthAudienceDomainMismatch: req.oauthAudienceDomainMismatch,
+      replacementCredentialLabel: req.replacementCredentialLabel,
     } satisfies PendingCredentialApproval;
   }
 

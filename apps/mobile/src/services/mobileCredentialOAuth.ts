@@ -1,14 +1,14 @@
 /**
  * Mobile URL-bound credential OAuth helper.
  *
- * Userland still calls the server-supported PKCE credential APIs. This helper
- * only owns the mobile browser/deep-link choreography around those APIs.
+ * Userland calls the host-owned credential OAuth transaction. The server owns
+ * browser handoff and callback validation; mobile only forwards browser-open
+ * events through the shell bridge.
  */
 
 import { Linking } from "react-native";
 import type {
-  BeginOAuthPkceCredentialResult,
-  CreateOAuthPkceCredentialRequest,
+  ConnectOAuthCredentialRequest,
   StoredCredentialSummary,
 } from "@natstack/shared/credentials/types";
 import { registerPendingFlow, dropPendingFlow } from "./authCallbackRegistry";
@@ -19,7 +19,7 @@ const CALLBACK_PATH_PREFIX = "/oauth/callback";
 const DEFAULT_FLOW_TIMEOUT_MS = 10 * 60 * 1000;
 
 export interface ConnectMobileOAuthCredentialRequest
-  extends Omit<CreateOAuthPkceCredentialRequest, "redirectUri"> {
+  extends ConnectOAuthCredentialRequest {
   providerId: string;
   redirectUri?: string;
   callbackOrigin?: string;
@@ -45,24 +45,18 @@ export async function connectMobileOAuthCredential(
 ): Promise<StoredCredentialSummary> {
   const redirectUri = request.redirectUri
     ?? buildMobileOAuthRedirectUri(request.providerId, request.callbackOrigin);
-  const begin = await shellClient.transport.call<BeginOAuthPkceCredentialResult>(
+  return shellClient.transport.call<StoredCredentialSummary>(
     "main",
-    "credentials.beginCreateWithOAuthPkce",
+    "credentials.connectOAuth",
     {
       oauth: request.oauth,
       credential: request.credential,
-      redirectUri,
-    },
-  );
-  const state = begin.state || begin.nonce;
-  const code = await waitForMobileOAuthCode(begin.authorizeUrl, state, request.timeoutMs);
-  return shellClient.transport.call<StoredCredentialSummary>(
-    "main",
-    "credentials.completeCreateWithOAuthPkce",
-    {
-      nonce: begin.nonce,
-      code,
-      state,
+      redirect: {
+        ...(request.redirect ?? {}),
+        type: "client-forwarded",
+        callbackUri: redirectUri,
+      },
+      browser: request.browser ?? "external",
     },
   );
 }

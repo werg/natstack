@@ -209,6 +209,7 @@ function StandardApprovalActions({
   decide: (decision: ApprovalDecision) => void;
 }) {
   const copy = getStandardActionCopy(approval);
+  const versionDisabled = !isStableEffectiveVersion(approval.effectiveVersion);
   return (
     <Flex
       align="center"
@@ -235,7 +236,8 @@ function StandardApprovalActions({
       />
       <DecisionButton
         label={copy.version.label}
-        description={copy.version.description}
+        description={versionDisabled ? "Trust version is unavailable for unstable or unversioned code." : copy.version.description}
+        disabled={versionDisabled}
         onClick={() => decide("version")}
       />
       <DecisionButton
@@ -365,6 +367,7 @@ function DecisionButton({
   variant = "soft",
   icon = <CheckCircledIcon />,
   style,
+  disabled,
   onClick,
 }: {
   label: string;
@@ -373,16 +376,26 @@ function DecisionButton({
   variant?: "solid" | "soft";
   icon?: ReactNode;
   style?: CSSProperties;
+  disabled?: boolean;
   onClick: () => void;
 }) {
   return (
     <Tooltip content={description}>
-      <Button size="1" variant={variant} color={color} style={style} onClick={onClick}>
+      <Button size="1" variant={variant} color={color} style={style} disabled={disabled} onClick={onClick}>
         {icon}
         {label}
       </Button>
     </Tooltip>
   );
+}
+
+function isStableEffectiveVersion(version: string): boolean {
+  const normalized = version.trim().toLowerCase();
+  return !!normalized
+    && normalized !== "unknown"
+    && normalized !== "unversioned"
+    && !normalized.includes("dirty")
+    && !normalized.includes("unstable");
 }
 
 function Detail({ icon, label, value }: { icon: ReactNode; label: string; value: ReactNode }) {
@@ -628,7 +641,11 @@ function CredentialInputDetails({ approval }: { approval: PendingCredentialInput
 }
 
 function CredentialDetails({ approval }: { approval: PendingCredentialApproval }) {
-  const oauthOrigins = [approval.oauthAuthorizeOrigin, approval.oauthTokenOrigin].filter(
+  const oauthOrigins = [
+    approval.oauthAuthorizeOrigin,
+    approval.oauthTokenOrigin,
+    approval.oauthUserinfoOrigin,
+  ].filter(
     (origin): origin is string => typeof origin === "string" && origin.length > 0
   );
 
@@ -760,6 +777,9 @@ function InlineCode({ children }: { children: ReactNode }) {
 
 function getApprovalCategoryLabel(approval: PendingApproval): string {
   if (approval.kind === "credential") {
+    if (isOAuthCredentialConnectionApproval(approval)) {
+      return "Connection request";
+    }
     if (approval.credentialUse === "git-http") {
       return approval.gitOperation?.action === "write" ? "Git write" : "Git read";
     }
@@ -791,6 +811,27 @@ function getStandardActionCopy(approval: PendingCredentialApproval | PendingCapa
   denyDescription: string;
 } {
   if (approval.kind === "credential") {
+    if (isOAuthCredentialConnectionApproval(approval)) {
+      return {
+        once: {
+          label: "Connect once",
+          description: "Save this credential, use it for this request, and ask again before future use.",
+        },
+        session: {
+          label: "Connect this session",
+          description: "Save and allow use until NatStack restarts.",
+        },
+        version: {
+          label: "Trust version",
+          description: "Save and allow this exact stable code version to use it.",
+        },
+        repo: {
+          label: "Trust repo",
+          description: "Save and allow this workspace repo to use it.",
+        },
+        denyDescription: "Do not connect this service.",
+      };
+    }
     if (approval.credentialUse === "git-http") {
       const isWrite = approval.gitOperation?.action === "write";
       return {
@@ -940,8 +981,8 @@ function getApprovalCopy(
   }
   if (approval.kind === "oauth-client-config") {
     return {
-      title: "Add service",
-      summary: `${requester} wants to add ${formatServiceName(approval.configId)} as a connected service. Secrets stay encrypted and are only sent to ${formatUrlForSummary(approval.tokenUrl, "origin")}.`,
+      title: "Configure service",
+      summary: "Save OAuth client settings. Secrets stay encrypted and are only used for OAuth token exchange and refresh.",
     };
   }
   if (approval.kind === "credential-input") {
@@ -960,6 +1001,17 @@ function getApprovalCopy(
     return {
       title: operation?.action === "write" ? "Push to remote" : "Read from remote",
       summary: `${requester} wants to ${label} on ${remote} using ${approval.credentialLabel}.`,
+    };
+  }
+  if (isOAuthCredentialConnectionApproval(approval)) {
+    return {
+      title: "Connect service",
+      summary: approval.replacementCredentialLabel
+        ? `${requester} wants to replace your existing ${approval.replacementCredentialLabel} credential with ${approval.credentialLabel} and use it with ${audience}.`
+        : `${requester} wants to connect ${approval.credentialLabel} and use it with ${audience}.`,
+      warning: approval.oauthAudienceDomainMismatch
+        ? "The sign-in domain differs from the service domain."
+        : undefined,
     };
   }
   return {
@@ -1040,6 +1092,10 @@ function formatInjection(approval: PendingCredentialApproval | PendingCredential
     return "basic auth";
   }
   return `header ${injection.name}`;
+}
+
+function isOAuthCredentialConnectionApproval(approval: PendingCredentialApproval): boolean {
+  return !!approval.oauthAuthorizeOrigin && !!approval.oauthTokenOrigin && !approval.credentialUse;
 }
 
 function isOAuthExternalApproval(approval: PendingCapabilityApproval): boolean {

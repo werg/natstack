@@ -48,20 +48,13 @@ describe("mobileCredentialOAuth", () => {
     expect(openURL).not.toHaveBeenCalled();
   });
 
-  it("runs begin/open/complete through the server credential APIs", async () => {
+  it("delegates credential OAuth connection to the server transaction API", async () => {
     const calls: Array<{ method: string; args: unknown[] }> = [];
     const shellClient = {
       transport: {
         call: vi.fn(async (_target: string, method: string, ...args: unknown[]) => {
           calls.push({ method, args });
-          if (method === "credentials.beginCreateWithOAuthPkce") {
-            return {
-              nonce: "state-1",
-              state: "state-1",
-              authorizeUrl: "https://auth.example.test/oauth?state=state-1",
-            };
-          }
-          if (method === "credentials.completeCreateWithOAuthPkce") {
+          if (method === "credentials.connectOAuth") {
             return { id: "cred-1" };
           }
           throw new Error(`unexpected method: ${method}`);
@@ -69,7 +62,7 @@ describe("mobileCredentialOAuth", () => {
       },
     };
 
-    const pending = connectMobileOAuthCredential(shellClient as never, {
+    await expect(connectMobileOAuthCredential(shellClient as never, {
       providerId: "example",
       oauth: {
         authorizeUrl: "https://auth.example.test/oauth",
@@ -85,20 +78,18 @@ describe("mobileCredentialOAuth", () => {
           valueTemplate: "Bearer {token}",
         },
       },
-    });
-
-    await vi.waitFor(() => expect(openURL).toHaveBeenCalled());
-    consumePendingFlow("state-1")!.resolve({ code: "code-1", state: "state-1" });
-    await expect(pending).resolves.toEqual({ id: "cred-1" });
-    expect(calls[0]).toMatchObject({
-      method: "credentials.beginCreateWithOAuthPkce",
-      args: [expect.objectContaining({
-        redirectUri: "https://auth.snugenv.com/oauth/callback/example",
-      })],
-    });
-    expect(calls[1]).toEqual({
-      method: "credentials.completeCreateWithOAuthPkce",
-      args: [{ nonce: "state-1", code: "code-1", state: "state-1" }],
-    });
-  });
+    })).resolves.toEqual({ id: "cred-1" });
+    expect(openURL).not.toHaveBeenCalled();
+	    expect(calls[0]).toMatchObject({
+	      method: "credentials.connectOAuth",
+	      args: [expect.objectContaining({
+	        oauth: expect.objectContaining({ clientId: "client" }),
+	        browser: "external",
+	        redirect: {
+	          type: "client-forwarded",
+	          callbackUri: "https://auth.snugenv.com/oauth/callback/example",
+	        },
+	      })],
+	    });
+	  });
 });

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AuditEntry, Credential } from "../../../packages/shared/src/credentials/types.js";
 import { EgressProxy } from "./egressProxy.js";
 import { CredentialSessionGrantStore } from "./credentialSessionGrants.js";
+import { OAuthLifecycleError } from "./oauthCredentialLifecycle.js";
 
 class MemoryCredentialStore {
   constructor(private readonly credentials = new Map<string, Credential>()) {}
@@ -212,6 +213,75 @@ describe("EgressProxy", () => {
       status: 200,
       scopesUsed: ["read"],
     });
+  });
+
+  it("refreshes expired OAuth credentials before injection", async () => {
+    const auditLog = new MemoryAuditLog();
+    const credential = createCredential({
+      accessToken: "expired-token",
+      refreshToken: "refresh-token",
+      expiresAt: Date.now() - 1,
+      metadata: { oauthClientConfigId: "google", oauthClientConfigVersion: "v1" },
+    });
+    const store = new MemoryCredentialStore(new Map([[credential.id!, credential]]));
+    const oauthLifecycle = {
+      refreshIfNeeded: vi.fn(async (current: Credential & { id: string }) => {
+        const updated = { ...current, accessToken: "fresh-token", expiresAt: Date.now() + 3_600_000 };
+        store.saveUrlBound(updated);
+        return updated;
+      }),
+    };
+    const proxy = new EgressProxy({
+      credentialStore: store,
+      auditLog: auditLog as never,
+      oauthLifecycle: oauthLifecycle as never,
+      codeIdentityResolver: {
+        resolveByCallerId: () => ({ callerId: "worker:test", callerKind: "worker", repoPath: "/repo", effectiveVersion: "hash-1" }),
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer fresh-token");
+      return new Response("ok", { status: 200, statusText: "OK" });
+    }));
+
+    await proxy.forwardProxyFetch({
+      callerId: "worker:test",
+      credentialId: "cred-1",
+      url: "https://api.example.test/v1/items",
+      method: "GET",
+    });
+
+    expect(oauthLifecycle.refreshIfNeeded).toHaveBeenCalled();
+    expect(store.loadUrlBound("cred-1")?.accessToken).toBe("fresh-token");
+  });
+
+  it("surfaces stable OAuth refresh errors from egress", async () => {
+    const credential = createCredential({
+      refreshToken: "refresh-token",
+      expiresAt: Date.now() - 1,
+      metadata: { oauthClientConfigId: "google", oauthClientConfigVersion: "missing" },
+    });
+    const proxy = new EgressProxy({
+      credentialStore: new MemoryCredentialStore(new Map([[credential.id!, credential]])),
+      auditLog: new MemoryAuditLog() as never,
+      oauthLifecycle: {
+        refreshIfNeeded: vi.fn(async () => {
+          throw new OAuthLifecycleError("client_not_authorized");
+        }),
+      } as never,
+      codeIdentityResolver: {
+        resolveByCallerId: () => ({ callerId: "worker:test", callerKind: "worker", repoPath: "/repo", effectiveVersion: "hash-1" }),
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn());
+
+    await expect(proxy.forwardProxyFetch({
+      callerId: "worker:test",
+      credentialId: "cred-1",
+      url: "https://api.example.test/v1/items",
+      method: "GET",
+    })).rejects.toThrow("client_not_authorized");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("forwards git HTTP requests through git-http bindings", async () => {

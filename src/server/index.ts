@@ -399,6 +399,7 @@ async function main() {
   const { AuditLog } = await import("../../packages/shared/src/credentials/audit.js");
   const { CodeIdentityResolver } = await import("./services/codeIdentityResolver.js");
   const { createEgressProxy } = await import("./services/egressProxy.js");
+  const { OAuthCredentialLifecycle } = await import("./services/oauthCredentialLifecycle.js");
   const { CredentialSessionGrantStore } = await import("./services/credentialSessionGrants.js");
 
   const credentialStore = new CredentialStore();
@@ -410,6 +411,10 @@ async function main() {
   const capabilityGrantStore = new CapabilityGrantStore({ statePath });
   const { createApprovalQueue } = await import("./services/approvalQueue.js");
   const approvalQueue = createApprovalQueue({ eventService });
+  const oauthLifecycle = new OAuthCredentialLifecycle({
+    credentialStore,
+    oauthClientConfigStore,
+  });
 
   const egressProxy = createEgressProxy({
     credentialStore,
@@ -417,6 +422,7 @@ async function main() {
     codeIdentityResolver,
     approvalQueue,
     sessionGrantStore: credentialSessionGrantStore,
+    oauthLifecycle,
   });
   const egressProxyPort = await egressProxy.start();
 
@@ -658,15 +664,23 @@ async function main() {
   // ── Credential service ──
   {
     const { createCredentialService } = await import("./services/credentialService.js");
-    container.register(rpcService(createCredentialService({
+    const { rpcServiceWithRoutes } = await import("./rpcServiceWithRoutes.js");
+    const credentialService = createCredentialService({
       credentialStore,
       oauthClientConfigStore,
       auditLog,
+      eventService,
+      tokenManager,
       egressProxy,
       codeIdentityResolver,
       approvalQueue,
       sessionGrantStore: credentialSessionGrantStore,
-    })));
+      oauthLifecycle,
+    }) as ReturnType<typeof createCredentialService> & { routes?: import("./routeRegistry.js").ServiceRouteDecl[] };
+    container.register(rpcServiceWithRoutes({
+      definition: credentialService,
+      routes: credentialService.routes,
+    }, routeRegistry));
   }
 
   // ── Generic public webhook ingress ──

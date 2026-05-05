@@ -14,6 +14,7 @@ export interface Credential {
   connectionLabel: string;
   accountIdentity: AccountIdentity;
   accessToken: string;
+  refreshToken?: string;
   scopes: string[];
   expiresAt?: number;
   metadata?: Record<string, string>;
@@ -73,15 +74,47 @@ export interface StoreUrlBoundCredentialRequest {
   metadata?: Record<string, string>;
 }
 
-export interface CreateOAuthPkceCredentialRequest {
-  oauth: {
-    authorizeUrl: string;
-    tokenUrl: string;
-    clientId: string;
-    scopes?: string[];
-    extraAuthorizeParams?: Record<string, string>;
-    allowMissingExpiry?: boolean;
+export interface OAuthInlineClientSpec {
+  authorizeUrl: string;
+  tokenUrl: string;
+  clientId: string;
+  scopes?: string[];
+  extraAuthorizeParams?: Record<string, string>;
+  allowMissingExpiry?: boolean;
+  persistRefreshToken?: boolean;
+  accountValidation?: OAuthAccountValidationSpec;
+}
+
+export interface OAuthStoredClientSpec {
+  clientConfigId: string;
+  scopes?: string[];
+  extraAuthorizeParams?: Record<string, string>;
+  allowMissingExpiry?: boolean;
+  persistRefreshToken?: boolean;
+  accountValidation?: OAuthAccountValidationSpec;
+}
+
+export interface OAuthAccountValidationSpec {
+  userinfo?: {
+    url: string;
+    idField?: string;
+    emailField?: string;
+    usernameField?: string;
+    workspaceField?: string;
   };
+}
+
+export interface OAuthLoopbackRedirectStrategy {
+  type?: "loopback" | "public" | "client-forwarded";
+  host?: string;
+  port?: number;
+  callbackPath?: string;
+  callbackUri?: string;
+  fallback?: "dynamic-port";
+}
+
+export interface ConnectOAuthCredentialRequest {
+  oauth: OAuthInlineClientSpec | OAuthStoredClientSpec;
   credential: {
     label: string;
     audience: UrlAudience[];
@@ -91,13 +124,15 @@ export interface CreateOAuthPkceCredentialRequest {
     scopes?: string[];
     metadata?: Record<string, string>;
   };
-  redirectUri: string;
+  redirect?: OAuthLoopbackRedirectStrategy;
+  browser?: "external" | "internal";
 }
 
-export interface BeginOAuthPkceCredentialResult {
-  nonce: string;
-  state: string;
-  authorizeUrl: string;
+export interface ForwardOAuthCallbackRequest {
+  transactionId?: string;
+  url?: string;
+  code?: string;
+  state?: string;
 }
 
 export type OAuthClientConfigFieldType = "text" | "secret";
@@ -125,7 +160,7 @@ export interface OAuthClientConfigStatus {
   updatedAt?: number;
 }
 
-export interface RequestOAuthClientConfigRequest {
+export interface ConfigureOAuthClientRequest {
   configId: string;
   title: string;
   description?: string;
@@ -133,6 +168,9 @@ export interface RequestOAuthClientConfigRequest {
   tokenUrl: string;
   fields: OAuthClientConfigFieldRequest[];
 }
+
+/** @internal Pre-release alias retained only for server-internal tests. */
+export type RequestOAuthClientConfigRequest = ConfigureOAuthClientRequest;
 
 export interface RequestCredentialInputRequest {
   title: string;
@@ -162,22 +200,8 @@ export interface GetOAuthClientConfigStatusRequest {
   fields?: OAuthClientConfigFieldRequest[];
 }
 
-export interface BeginOAuthClientPkceCredentialRequest {
-  redirectUri: string;
-  oauth: {
-    configId: string;
-    scopes?: string[];
-    extraAuthorizeParams?: Record<string, string>;
-    allowMissingExpiry?: boolean;
-  };
-  credential: CreateOAuthPkceCredentialRequest["credential"];
-}
-
-export interface CompleteOAuthPkceCredentialRequest {
-  nonce: string;
-  code: string;
-  state: string;
-  approvalDecision?: "once" | "session" | "version" | "repo";
+export interface DeleteOAuthClientConfigRequest {
+  configId: string;
 }
 
 export interface GrantUrlBoundCredentialRequest {
@@ -223,7 +247,11 @@ export interface StoredCredentialSummary {
   metadata?: Record<string, string>;
 }
 
-export type CredentialAuditEvent = AuditEntry | ConnectionCredentialAuditEvent | OAuthClientConfigAuditEvent;
+export type CredentialAuditEvent =
+  | AuditEntry
+  | ConnectionCredentialAuditEvent
+  | OAuthClientConfigAuditEvent
+  | OAuthConnectionTransactionAuditEvent;
 
 export interface ConnectionCredentialAuditEvent {
   type:
@@ -247,6 +275,43 @@ export interface OAuthClientConfigAuditEvent {
   tokenUrl: string;
   fieldNames: string[];
 }
+
+export interface OAuthConnectionTransactionAuditEvent {
+  type: "oauth_connection_transaction.transition";
+  ts: number;
+  callerId: string;
+  transactionId: string;
+  from?: OAuthConnectionTransactionState;
+  to: OAuthConnectionTransactionState;
+  errorCode?: OAuthConnectionErrorCode;
+}
+
+export type OAuthConnectionTransactionState =
+  | "created"
+  | "approved"
+  | "browser_open_requested"
+  | "callback_received"
+  | "exchanging"
+  | "validating_account"
+  | "stored"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "expired";
+
+export type OAuthConnectionErrorCode =
+  | "approval_denied"
+  | "browser_unavailable"
+  | "callback_timeout"
+  | "state_mismatch"
+  | "redirect_mismatch"
+  | "token_exchange_failed"
+  | "invalid_token_response"
+  | "account_validation_failed"
+  | "transaction_replayed"
+  | "transaction_expired"
+  | "client_not_authorized"
+  | "redirect_unavailable";
 
 export interface AuditEntry {
   ts: number;

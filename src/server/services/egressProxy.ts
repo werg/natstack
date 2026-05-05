@@ -29,6 +29,7 @@ import {
 import type { CodeIdentityResolver, ResolvedCodeIdentity } from "./codeIdentityResolver.js";
 import type { ApprovalQueue, GrantedDecision } from "./approvalQueue.js";
 import { CredentialSessionGrantStore, type CredentialSessionGrantResource } from "./credentialSessionGrants.js";
+import { OAuthLifecycleError, type OAuthCredentialLifecycle } from "./oauthCredentialLifecycle.js";
 
 const HOP_BY_HOP_REQUEST_HEADERS = new Set([
   "connection",
@@ -62,6 +63,7 @@ export interface EgressProxyDeps {
   codeIdentityResolver: Pick<CodeIdentityResolver, "resolveByCallerId">;
   approvalQueue?: ApprovalQueue;
   sessionGrantStore?: CredentialSessionGrantStore;
+  oauthLifecycle?: Pick<OAuthCredentialLifecycle, "refreshIfNeeded">;
 }
 
 interface RequestAttribution extends ResolvedCodeIdentity {
@@ -463,10 +465,11 @@ export class EgressProxy {
       };
     }
 
-    const credential = await Promise.resolve(this.deps.credentialStore.loadUrlBound(params.credentialId));
+    let credential = await Promise.resolve(this.deps.credentialStore.loadUrlBound(params.credentialId));
     if (!credential || !credential.bindings?.length || credential.revokedAt) {
       throw new ForwardRejection(403, "credential-unavailable", "credential-unavailable");
     }
+    credential = await this.refreshCredentialForUse(credential);
     if (credential.expiresAt && credential.expiresAt <= Date.now()) {
       throw new ForwardRejection(403, "credential-expired", "credential-expired");
     }
@@ -521,12 +524,29 @@ export class EgressProxy {
           });
         }
       }
-      return credential;
+      return credential ? this.refreshCredentialForUse(credential) : null;
     }
     if (credentials.length > 1) {
       throw new ForwardRejection(409, "credential-selection-required", "credential-selection-required");
     }
     return null;
+  }
+
+  private async refreshCredentialForUse(credential: Credential): Promise<Credential> {
+    if (!credential.id || !credential.expiresAt || credential.expiresAt > Date.now() + 30_000) {
+      return credential;
+    }
+    if (!credential.refreshToken || !this.deps.oauthLifecycle) {
+      return credential;
+    }
+    try {
+      return await this.deps.oauthLifecycle.refreshIfNeeded(credential as Credential & { id: string });
+    } catch (error) {
+      if (error instanceof OAuthLifecycleError) {
+        throw new ForwardRejection(403, error.code, error.code);
+      }
+      throw new ForwardRejection(403, "oauth-refresh-failed", "oauth-refresh-failed");
+    }
   }
 
   private async requestCredentialUseGrant(

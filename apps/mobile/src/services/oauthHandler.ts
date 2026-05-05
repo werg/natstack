@@ -50,6 +50,7 @@ interface ParsedCallback {
   provider: string;
   code: string;
   state: string;
+  rawUrl: string;
   /** True if the URL came over the unverified custom scheme. */
   viaCustomScheme: boolean;
 }
@@ -71,7 +72,7 @@ function parseCallback(rawUrl: string): ParsedCallback | null {
     const host = slash >= 0 ? noScheme.slice(0, slash) : noScheme;
     if (host.toLowerCase() !== UNIVERSAL_LINK_HOST) return null;
     const pathAndQuery = slash >= 0 ? noScheme.slice(slash) : "/";
-    return parsePathAndQuery(pathAndQuery, /* viaCustomScheme */ false);
+    return parsePathAndQuery(rawUrl, pathAndQuery, /* viaCustomScheme */ false);
   }
   // Custom scheme fallback: natstack://oauth/callback/<provider>?…
   // React Native delivers these as `natstack://oauth/callback/...`, where
@@ -81,12 +82,13 @@ function parseCallback(rawUrl: string): ParsedCallback | null {
     if (rest.startsWith("//")) rest = rest.slice(2);
     // Treat the entire remainder after the scheme as a `/path?query`.
     const pathAndQuery = rest.startsWith("/") ? rest : `/${rest}`;
-    return parsePathAndQuery(pathAndQuery, /* viaCustomScheme */ true);
+    return parsePathAndQuery(rawUrl, pathAndQuery, /* viaCustomScheme */ true);
   }
   return null;
 }
 
 function parsePathAndQuery(
+  rawUrl: string,
   pathAndQuery: string,
   viaCustomScheme: boolean,
 ): ParsedCallback | null {
@@ -123,12 +125,12 @@ function parsePathAndQuery(
     // synthesise a parsed callback with empty code so the dispatcher
     // can reject the registry entry.
     if (state) {
-      return { provider, code: "", state, viaCustomScheme };
+      return { provider, code: "", state, rawUrl, viaCustomScheme };
     }
     return null;
   }
   if (!code || !state) return null;
-  return { provider, code, state, viaCustomScheme };
+  return { provider, code, state, rawUrl, viaCustomScheme };
 }
 
 /**
@@ -170,7 +172,7 @@ class StateDedupe {
 
 const dedupe = new StateDedupe();
 
-function dispatch(parsed: ParsedCallback): void {
+function dispatch(shellClient: ShellClient, parsed: ParsedCallback): void {
   if (parsed.viaCustomScheme) {
     // Loud signal so we can drive the custom-scheme retirement. Do NOT
     // include `code` or `state` in the log (they're secrets / one-shot
@@ -190,14 +192,15 @@ function dispatch(parsed: ParsedCallback): void {
 
   const entry = consumePendingFlow(parsed.state);
   if (!entry) {
-    // No pending flow matches this state. Either the app was killed
-    // mid-flow (registry is module-scoped and cleared on cold start),
-    // the user clicked a stale authorize URL, or a malicious party
-    // tried to inject a callback. Drop it; never resolve unsolicited
-    // promises.
-    console.warn(
-      `[oauthHandler] No pending OAuth flow matches state for provider=${parsed.provider}. Dropping callback.`,
-    );
+    void shellClient.transport.call("main", "credentials.forwardOAuthCallback", {
+      url: parsed.rawUrl,
+      state: parsed.state,
+    }).catch((err: unknown) => {
+      console.warn(
+        `[oauthHandler] Failed to forward OAuth callback for provider=${parsed.provider}:`,
+        err,
+      );
+    });
     return;
   }
 
@@ -209,11 +212,11 @@ function dispatch(parsed: ParsedCallback): void {
   entry.resolve({ code: parsed.code, state: parsed.state });
 }
 
-function handleUrl(rawUrl: string | null): void {
+function handleUrl(shellClient: ShellClient, rawUrl: string | null): void {
   if (!rawUrl) return;
   const parsed = parseCallback(rawUrl);
   if (!parsed) return; // Not for us — let other deep-link handlers see it.
-  dispatch(parsed);
+  dispatch(shellClient, parsed);
 }
 
 /**
@@ -228,21 +231,19 @@ function handleUrl(rawUrl: string | null): void {
  * a breaking API change. Mark with `void` so eslint/no-unused stays
  * quiet without changing the signature.
  */
-export function setupOAuthHandler(_shellClient: ShellClient): () => void {
-  void _shellClient;
-
+export function setupOAuthHandler(shellClient: ShellClient): () => void {
   // Cold-start path: if the OS launched the app *because* of a deep
   // link, `getInitialURL` returns it once. Subsequent foreground
   // re-deliveries arrive via the `url` event.
   void Linking.getInitialURL()
-    .then((url) => handleUrl(url))
+    .then((url) => handleUrl(shellClient, url))
     .catch((err: unknown) => {
       console.warn("[oauthHandler] getInitialURL failed", err);
     });
 
   let subscription: EmitterSubscription | null = Linking.addEventListener(
     "url",
-    ({ url }: { url: string }) => handleUrl(url),
+    ({ url }: { url: string }) => handleUrl(shellClient, url),
   );
 
   return () => {

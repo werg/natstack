@@ -34,7 +34,9 @@ export interface PendingCredentialApproval extends PendingApprovalBase {
   };
   oauthAuthorizeOrigin?: string;
   oauthTokenOrigin?: string;
+  oauthUserinfoOrigin?: string;
   oauthAudienceDomainMismatch?: boolean;
+  replacementCredentialLabel?: string;
 }
 
 export interface PendingCapabilityApproval extends PendingApprovalBase {
