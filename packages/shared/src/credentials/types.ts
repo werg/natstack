@@ -17,6 +17,10 @@ export interface Credential {
   refreshToken?: string;
   oauth1ConsumerSecret?: string;
   oauth1TokenSecret?: string;
+  awsSecretAccessKey?: string;
+  awsSessionToken?: string;
+  sshPrivateKey?: string;
+  sshPublicKey?: string;
   cookieHeader?: string;
   cookieSession?: CookieSessionMaterial;
   samlAssertion?: string;
@@ -42,7 +46,7 @@ export interface CookieSessionMaterial {
   cookies: CookieSessionCookie[];
 }
 
-export type CredentialBindingUse = "fetch" | "git-http";
+export type CredentialBindingUse = "fetch" | "git-http" | "git-ssh";
 
 export interface CredentialBinding {
   id: string;
@@ -87,7 +91,7 @@ export interface StoreUrlBoundCredentialRequest {
   injection: CredentialInjection;
   bindings?: CredentialBinding[];
   material: {
-    type: "bearer-token" | "api-key" | "oauth1-token" | "cookie-session" | "saml-session";
+    type: "bearer-token" | "api-key" | "oauth1-token" | "cookie-session" | "saml-session" | "aws-sigv4" | "ssh-key";
     token: string;
   };
   accountIdentity?: Partial<AccountIdentity>;
@@ -103,6 +107,10 @@ export type CredentialFlowType =
   | "oauth2-client-credentials"
   | "oauth1a"
   | "api-key"
+  | "aws-sigv4"
+  | "ssh-key"
+  | "oauth2-jwt-bearer"
+  | "oauth2-token-exchange"
   | "browser-cookie-session"
   | "saml-browser-session";
 
@@ -115,6 +123,7 @@ export interface OAuthInlineClientSpec {
   allowMissingExpiry?: boolean;
   persistRefreshToken?: boolean;
   accountValidation?: OAuthAccountValidationSpec;
+  revocationUrl?: string;
 }
 
 export interface OAuthStoredClientSpec {
@@ -124,9 +133,10 @@ export interface OAuthStoredClientSpec {
   allowMissingExpiry?: boolean;
   persistRefreshToken?: boolean;
   accountValidation?: OAuthAccountValidationSpec;
+  revocationUrl?: string;
 }
 
-export type OAuthTokenAuthMethod = "none" | "client_secret_post" | "client_secret_basic";
+export type OAuthTokenAuthMethod = "none" | "client_secret_post" | "client_secret_basic" | "private_key_jwt";
 
 export interface OAuth2AuthCodePkceFlowSpec {
   type: "oauth2-auth-code-pkce";
@@ -140,6 +150,7 @@ export interface OAuth2AuthCodePkceFlowSpec {
   persistRefreshToken?: boolean;
   accountValidation?: OAuthAccountValidationSpec;
   tokenAuth?: OAuthTokenAuthMethod;
+  revocationUrl?: string;
 }
 
 export interface OAuth2AuthCodeFlowSpec {
@@ -153,6 +164,7 @@ export interface OAuth2AuthCodeFlowSpec {
   tokenAuth?: OAuthTokenAuthMethod;
   persistRefreshToken?: boolean;
   accountValidation?: OAuthAccountValidationSpec;
+  revocationUrl?: string;
   pkce: false;
   compatibilityReason: string;
   requiresConfidentialClient?: boolean;
@@ -170,6 +182,7 @@ export interface OAuth2DeviceCodeFlowSpec {
   expiresInSeconds?: number;
   accountValidation?: OAuthAccountValidationSpec;
   persistRefreshToken?: boolean;
+  revocationUrl?: string;
 }
 
 export interface OAuth2ClientCredentialsFlowSpec {
@@ -181,6 +194,36 @@ export interface OAuth2ClientCredentialsFlowSpec {
   audienceParam?: string;
   resourceParam?: string;
   accountValidation?: OAuthAccountValidationSpec;
+  revocationUrl?: string;
+}
+
+export interface OAuth2JwtBearerFlowSpec {
+  type: "oauth2-jwt-bearer";
+  tokenUrl: string;
+  clientConfigId: string;
+  issuer?: string;
+  subject?: string;
+  audience?: string;
+  scopes?: string[];
+  accountValidation?: OAuthAccountValidationSpec;
+  persistRefreshToken?: boolean;
+  revocationUrl?: string;
+}
+
+export interface OAuth2TokenExchangeFlowSpec {
+  type: "oauth2-token-exchange";
+  tokenUrl: string;
+  clientConfigId: string;
+  subjectCredentialId: string;
+  subjectTokenType?: "access_token" | "jwt";
+  requestedTokenType?: string;
+  scopes?: string[];
+  audience?: string;
+  resource?: string;
+  tokenAuth?: Exclude<OAuthTokenAuthMethod, "none">;
+  accountValidation?: OAuthAccountValidationSpec;
+  persistRefreshToken?: boolean;
+  revocationUrl?: string;
 }
 
 export interface OAuth1aFlowSpec {
@@ -204,6 +247,22 @@ export interface ApiKeyFlowSpec {
     valueTemplate: string;
   };
   accountValidation?: "http-probe" | "none";
+}
+
+export interface AwsSigV4FlowSpec {
+  type: "aws-sigv4";
+  title?: string;
+  description?: string;
+  accountValidation?: "http-probe" | "none";
+}
+
+export interface SshKeyFlowSpec {
+  type: "ssh-key";
+  mode?: "generate" | "import";
+  algorithm?: "ed25519";
+  title?: string;
+  description?: string;
+  accountValidation?: "none";
 }
 
 export interface BrowserCookieSessionFlowSpec {
@@ -241,8 +300,12 @@ export type CredentialFlowSpec =
   | OAuth2AuthCodeFlowSpec
   | OAuth2DeviceCodeFlowSpec
   | OAuth2ClientCredentialsFlowSpec
+  | OAuth2JwtBearerFlowSpec
+  | OAuth2TokenExchangeFlowSpec
   | OAuth1aFlowSpec
   | ApiKeyFlowSpec
+  | AwsSigV4FlowSpec
+  | SshKeyFlowSpec
   | BrowserCookieSessionFlowSpec
   | SamlBrowserSessionFlowSpec;
 
@@ -427,7 +490,8 @@ export interface ConnectionCredentialAuditEvent {
   type:
     | "connection_credential.created"
     | "connection_credential.replaced"
-    | "connection_credential.revoked";
+    | "connection_credential.revoked"
+    | "connection_credential.revocation_failed";
   ts: number;
   callerId: string;
   providerId: string;

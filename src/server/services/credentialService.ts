@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, createPublicKey, createSign, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import * as http from "node:http";
 import { z } from "zod";
 import type { EventService } from "@natstack/shared/eventsService";
@@ -100,11 +100,19 @@ const credentialInjectionSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("cookie"),
   }).strict(),
+  z.object({
+    type: z.literal("aws-sigv4"),
+    service: identifierSchema,
+    region: identifierSchema,
+  }).strict(),
+  z.object({
+    type: z.literal("ssh-key"),
+  }).strict(),
 ]);
 
 const credentialBindingSchema = z.object({
   id: identifierSchema,
-  use: z.enum(["fetch", "git-http"]),
+  use: z.enum(["fetch", "git-http", "git-ssh"]),
   audience: z.array(urlAudienceSchema).min(1).max(16),
   injection: credentialInjectionSchema,
 }).strict();
@@ -132,7 +140,7 @@ const storeUrlBoundCredentialParamsSchema = z.object({
   injection: credentialInjectionSchema,
   bindings: z.array(credentialBindingSchema).min(1).max(8).optional(),
   material: z.object({
-    type: z.enum(["bearer-token", "api-key", "oauth1-token", "cookie-session", "saml-session"]),
+    type: z.enum(["bearer-token", "api-key", "oauth1-token", "cookie-session", "saml-session", "aws-sigv4", "ssh-key"]),
     token: z.string().min(1).max(65536),
   }).strict(),
   accountIdentity: accountIdentitySchema.optional(),
@@ -175,6 +183,10 @@ const credentialFlowTypeSchema = z.enum([
   "oauth2-client-credentials",
   "oauth1a",
   "api-key",
+  "aws-sigv4",
+  "ssh-key",
+  "oauth2-jwt-bearer",
+  "oauth2-token-exchange",
   "browser-cookie-session",
   "saml-browser-session",
 ]);
@@ -218,7 +230,7 @@ const oauthRedirectStrategySchema = z.object({
   fallback: z.literal("dynamic-port").optional(),
 }).strict();
 
-const tokenAuthSchema = z.enum(["none", "client_secret_post", "client_secret_basic"]);
+const tokenAuthSchema = z.enum(["none", "client_secret_post", "client_secret_basic", "private_key_jwt"]);
 
 const browserHandoffTargetSchema = z.object({
   callerId: z.string().min(1).max(512),
@@ -239,6 +251,7 @@ const connectCredentialSpecSchema = z.object({
       persistRefreshToken: z.boolean().optional(),
       allowMissingExpiry: z.boolean().optional(),
       accountValidation: oauthAccountValidationSchema.optional(),
+      revocationUrl: z.string().url().optional(),
     }).strict(),
     z.object({
       type: z.literal("oauth2-auth-code"),
@@ -251,6 +264,7 @@ const connectCredentialSpecSchema = z.object({
       tokenAuth: tokenAuthSchema.optional(),
       persistRefreshToken: z.boolean().optional(),
       accountValidation: oauthAccountValidationSchema.optional(),
+      revocationUrl: z.string().url().optional(),
       pkce: z.literal(false),
       compatibilityReason: z.string().min(1).max(1024),
       requiresConfidentialClient: z.boolean().optional(),
@@ -267,16 +281,45 @@ const connectCredentialSpecSchema = z.object({
       expiresInSeconds: z.number().int().positive().optional(),
       accountValidation: oauthAccountValidationSchema.optional(),
       persistRefreshToken: z.boolean().optional(),
+      revocationUrl: z.string().url().optional(),
     }).strict(),
     z.object({
       type: z.literal("oauth2-client-credentials"),
       tokenUrl: z.string().url(),
       clientConfigId: identifierSchema,
-      tokenAuth: z.enum(["client_secret_post", "client_secret_basic"]),
+      tokenAuth: z.enum(["client_secret_post", "client_secret_basic", "private_key_jwt"]),
       scopes: z.array(z.string().max(256)).optional(),
       audienceParam: z.string().max(512).optional(),
       resourceParam: z.string().max(512).optional(),
       accountValidation: oauthAccountValidationSchema.optional(),
+      revocationUrl: z.string().url().optional(),
+    }).strict(),
+    z.object({
+      type: z.literal("oauth2-jwt-bearer"),
+      tokenUrl: z.string().url(),
+      clientConfigId: identifierSchema,
+      issuer: z.string().min(1).max(512).optional(),
+      subject: z.string().min(1).max(512).optional(),
+      audience: z.string().min(1).max(2048).optional(),
+      scopes: z.array(z.string().max(256)).optional(),
+      accountValidation: oauthAccountValidationSchema.optional(),
+      persistRefreshToken: z.boolean().optional(),
+      revocationUrl: z.string().url().optional(),
+    }).strict(),
+    z.object({
+      type: z.literal("oauth2-token-exchange"),
+      tokenUrl: z.string().url(),
+      clientConfigId: identifierSchema,
+      subjectCredentialId: identifierSchema,
+      subjectTokenType: z.enum(["access_token", "jwt"]).optional(),
+      requestedTokenType: z.string().min(1).max(512).optional(),
+      scopes: z.array(z.string().max(256)).optional(),
+      audience: z.string().min(1).max(2048).optional(),
+      resource: z.string().min(1).max(2048).optional(),
+      tokenAuth: z.enum(["client_secret_post", "client_secret_basic", "private_key_jwt"]).optional(),
+      accountValidation: oauthAccountValidationSchema.optional(),
+      persistRefreshToken: z.boolean().optional(),
+      revocationUrl: z.string().url().optional(),
     }).strict(),
     z.object({
       type: z.literal("oauth1a"),
@@ -298,6 +341,20 @@ const connectCredentialSpecSchema = z.object({
         valueTemplate: z.string().min(1).max(4096),
       }).strict(),
       accountValidation: z.enum(["http-probe", "none"]).optional(),
+    }).strict(),
+    z.object({
+      type: z.literal("aws-sigv4"),
+      title: z.string().min(1).max(256).optional(),
+      description: z.string().max(1024).optional(),
+      accountValidation: z.enum(["http-probe", "none"]).optional(),
+    }).strict(),
+    z.object({
+      type: z.literal("ssh-key"),
+      mode: z.enum(["generate", "import"]).optional(),
+      algorithm: z.literal("ed25519").optional(),
+      title: z.string().min(1).max(256).optional(),
+      description: z.string().max(1024).optional(),
+      accountValidation: z.literal("none").optional(),
     }).strict(),
     z.object({
       type: z.literal("browser-cookie-session"),
@@ -365,7 +422,7 @@ const grantCredentialParamsSchema = z.object({
 const resolveCredentialParamsSchema = z.object({
   url: z.string().url(),
   credentialId: identifierSchema.optional(),
-  use: z.enum(["fetch", "git-http"]).optional(),
+  use: z.enum(["fetch", "git-http", "git-ssh"]).optional(),
 }).strict();
 
 const proxyFetchParamsSchema = z.object({
@@ -420,12 +477,13 @@ type AuthCodeConnectRequest = {
     allowMissingExpiry?: boolean;
     persistRefreshToken?: boolean;
     accountValidation?: OAuthAccountValidationSpec;
+    revocationUrl?: string;
   };
   credential: ConnectCredentialRequest["credential"];
   redirect?: ConnectCredentialRequest["redirect"];
   browser?: ConnectCredentialRequest["browser"];
   pkce: boolean;
-  tokenAuth: "none" | "client_secret_post" | "client_secret_basic";
+  tokenAuth: "none" | "client_secret_post" | "client_secret_basic" | "private_key_jwt";
 };
 type InternalOAuthConnectionRequest = {
   flow: {
@@ -433,16 +491,20 @@ type InternalOAuthConnectionRequest = {
     tokenUrl: string;
     clientId: string;
     clientSecret?: string;
+    privateKeyPem?: string;
+    keyId?: string;
+    keyAlgorithm?: string;
     scopes?: string[];
     extraAuthorizeParams?: Record<string, string>;
     allowMissingExpiry?: boolean;
     persistRefreshToken?: boolean;
     accountValidation?: AuthCodeConnectRequest["flow"]["accountValidation"];
+    revocationUrl?: string;
   };
   credential: ConnectCredentialRequest["credential"];
   redirectUri: string;
   pkce: boolean;
-  tokenAuth: "none" | "client_secret_post" | "client_secret_basic";
+  tokenAuth: "none" | "client_secret_post" | "client_secret_basic" | "private_key_jwt";
 };
 
 interface CredentialUseContext {
@@ -1028,8 +1090,16 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         return connectOAuthDeviceCode(ctx, request);
       case "oauth2-client-credentials":
         return connectOAuthClientCredentials(ctx, request);
+      case "oauth2-jwt-bearer":
+        return connectOAuthJwtBearer(ctx, request);
+      case "oauth2-token-exchange":
+        return connectOAuthTokenExchange(ctx, request);
       case "oauth1a":
         return connectOAuth1a(ctx, request, handoffTarget);
+      case "aws-sigv4":
+        return connectAwsSigV4(ctx, request);
+      case "ssh-key":
+        return connectSshKey(ctx, request);
       case "browser-cookie-session":
         return connectBrowserCookieSession(ctx, request);
       case "saml-browser-session":
@@ -1068,9 +1138,6 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     if (flow.type !== "oauth2-auth-code-pkce") {
       throw new OAuthConnectionError("unsupported_flow");
     }
-    if (flow.tokenAuth && flow.tokenAuth !== "none") {
-      throw new OAuthConnectionError("unsupported_token_auth_method");
-    }
     if (flow.clientConfigId) {
       return {
         flow: {
@@ -1080,6 +1147,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
           allowMissingExpiry: flow.allowMissingExpiry,
           persistRefreshToken: flow.persistRefreshToken,
           accountValidation: flow.accountValidation,
+          revocationUrl: flow.revocationUrl,
         },
         credential: request.credential,
         redirect: request.redirect,
@@ -1087,6 +1155,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         pkce: true,
         tokenAuth: flow.tokenAuth ?? "none",
       };
+    }
+    if (flow.tokenAuth && flow.tokenAuth !== "none") {
+      throw new OAuthConnectionError("unsupported_token_auth_method");
     }
     if (!flow.authorizeUrl || !flow.tokenUrl || !flow.clientId) {
       throw new OAuthConnectionError(
@@ -1104,6 +1175,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         allowMissingExpiry: flow.allowMissingExpiry,
         persistRefreshToken: flow.persistRefreshToken,
         accountValidation: flow.accountValidation,
+        revocationUrl: flow.revocationUrl,
       },
       credential: request.credential,
       redirect: request.redirect,
@@ -1132,6 +1204,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
           extraAuthorizeParams: flow.extraAuthorizeParams,
           persistRefreshToken: flow.persistRefreshToken,
           accountValidation: flow.accountValidation,
+          revocationUrl: flow.revocationUrl,
         },
         credential: request.credential,
         redirect: request.redirect,
@@ -1152,6 +1225,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         extraAuthorizeParams: flow.extraAuthorizeParams,
         persistRefreshToken: flow.persistRefreshToken,
         accountValidation: flow.accountValidation,
+        revocationUrl: flow.revocationUrl,
       },
       credential: request.credential,
       redirect: request.redirect,
@@ -1230,6 +1304,181 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     }, { approvalDecision: "session" });
   }
 
+  async function connectAwsSigV4(
+    ctx: ServiceContext,
+    request: ConnectCredentialRequest,
+  ): Promise<StoredCredentialSummary> {
+    if (request.flow.type !== "aws-sigv4") {
+      throw new OAuthConnectionError("unsupported_flow");
+    }
+    if (request.credential.injection.type !== "aws-sigv4") {
+      throw new OAuthConnectionError("unsupported_injection");
+    }
+    if (!approvalQueue || (ctx.callerKind !== "panel" && ctx.callerKind !== "worker")) {
+      throw new Error("Credential input approval is unavailable");
+    }
+    const audience = normalizeUrlAudiences(request.credential.audience);
+    const injection = normalizeCredentialInjection(request.credential.injection);
+    const accountIdentity = normalizeAccountIdentity(request.credential.accountIdentity, ctx.callerId);
+    const identity = resolveApprovalIdentity(ctx);
+    const fields = [
+      { name: "accessKeyId", label: "Access key ID", type: "secret" as const, required: true },
+      { name: "secretAccessKey", label: "Secret access key", type: "secret" as const, required: true },
+      { name: "sessionToken", label: "Session token", type: "secret" as const, required: false },
+    ];
+    const result = await approvalQueue.requestCredentialInput({
+      kind: "credential-input",
+      callerId: ctx.callerId,
+      callerKind: ctx.callerKind,
+      repoPath: identity.repoPath,
+      effectiveVersion: identity.effectiveVersion,
+      title: request.flow.title ?? request.credential.label,
+      description: request.flow.description,
+      credentialLabel: request.credential.label,
+      audience,
+      injection,
+      accountIdentity,
+      scopes: request.credential.scopes ?? [],
+      fields,
+    });
+    if (result.decision !== "submit") {
+      throw new OAuthConnectionError("approval_denied");
+    }
+    const accessKeyId = result.values["accessKeyId"]?.trim() ?? "";
+    const secretAccessKey = result.values["secretAccessKey"]?.trim() ?? "";
+    const sessionToken = result.values["sessionToken"]?.trim() ?? "";
+    if (!accessKeyId || !secretAccessKey) {
+      throw new OAuthConnectionError("invalid_connection_spec", "AWS SigV4 credentials require access key ID and secret access key");
+    }
+    const stored = await storeCredential(ctx, {
+      label: request.credential.label,
+      audience,
+      injection,
+      bindings: request.credential.bindings,
+      material: { type: "aws-sigv4", token: accessKeyId },
+      accountIdentity: request.credential.accountIdentity ?? { providerUserId: `aws:${accessKeyId}` },
+      scopes: request.credential.scopes ?? [],
+      metadata: {
+        ...(request.credential.metadata ?? {}),
+        flowType: "aws-sigv4",
+        awsAccessKeyId: accessKeyId,
+        awsService: request.credential.injection.service,
+        awsRegion: request.credential.injection.region,
+      },
+    }, { approvalDecision: "session" });
+    const persisted = await credentialStore.loadUrlBound(stored.id);
+    if (persisted?.id) {
+      await credentialStore.saveUrlBound({
+        ...persisted,
+        awsSecretAccessKey: secretAccessKey,
+        ...(sessionToken ? { awsSessionToken: sessionToken } : {}),
+      } as Credential & { id: string });
+    }
+    return stored;
+  }
+
+  async function connectSshKey(
+    ctx: ServiceContext,
+    request: ConnectCredentialRequest,
+  ): Promise<StoredCredentialSummary> {
+    if (request.flow.type !== "ssh-key") {
+      throw new OAuthConnectionError("unsupported_flow");
+    }
+    const bindings = request.credential.bindings;
+    if (!bindings?.length || bindings.some((binding) => binding.use !== "git-ssh")) {
+      throw new OAuthConnectionError("invalid_connection_spec", "ssh-key credentials require explicit git-ssh bindings");
+    }
+    if (request.credential.injection.type !== "ssh-key") {
+      throw new OAuthConnectionError("unsupported_injection");
+    }
+    const audience = normalizeUrlAudiences(request.credential.audience);
+    const injection = normalizeCredentialInjection(request.credential.injection);
+    const identity = resolveApprovalIdentity(ctx);
+    const approvalAccount = normalizeAccountIdentity(request.credential.accountIdentity, ctx.callerId);
+    const approvalDecision = await requestCredentialApproval(ctx, {
+      credentialId: randomUUID(),
+      credentialLabel: request.credential.label,
+      audience,
+      injection,
+      accountIdentity: approvalAccount,
+      scopes: request.credential.scopes ?? [],
+      identity,
+      metadata: {
+        ...(request.credential.metadata ?? {}),
+        flowType: "ssh-key",
+      },
+    });
+    const mode = request.flow.mode ?? "generate";
+    let privateKey: string;
+    let publicKey: string;
+    if (mode === "generate") {
+      const pair = generateKeyPairSync("ed25519", {
+        privateKeyEncoding: { type: "pkcs8", format: "pem" },
+        publicKeyEncoding: { type: "spki", format: "der" },
+      });
+      privateKey = pair.privateKey;
+      publicKey = openSshEd25519PublicKey(pair.publicKey);
+    } else {
+      if (!approvalQueue || (ctx.callerKind !== "panel" && ctx.callerKind !== "worker")) {
+        throw new Error("Credential input approval is unavailable");
+      }
+      const result = await approvalQueue.requestCredentialInput({
+        kind: "credential-input",
+        callerId: ctx.callerId,
+        callerKind: ctx.callerKind,
+        repoPath: identity.repoPath,
+        effectiveVersion: identity.effectiveVersion,
+        title: request.flow.title ?? request.credential.label,
+        description: request.flow.description,
+        credentialLabel: request.credential.label,
+        audience,
+        injection,
+        accountIdentity: approvalAccount,
+        scopes: request.credential.scopes ?? [],
+        fields: [
+          { name: "privateKey", label: "SSH private key", type: "secret", required: true },
+        ],
+      });
+      if (result.decision !== "submit") {
+        throw new OAuthConnectionError("approval_denied");
+      }
+      privateKey = result.values["privateKey"]?.trim() ?? "";
+      if (!privateKey) {
+        throw new OAuthConnectionError("invalid_connection_spec", "SSH private key is required");
+      }
+      publicKey = openSshEd25519PublicKey(createPublicKey(privateKey).export({ type: "spki", format: "der" }));
+    }
+    const fingerprint = sshPublicKeyFingerprint(publicKey);
+    const stored = await storeCredential(ctx, {
+      label: request.credential.label,
+      audience,
+      injection,
+      bindings,
+      material: { type: "ssh-key", token: publicKey },
+      accountIdentity: request.credential.accountIdentity ?? { providerUserId: `ssh:${fingerprint}` },
+      scopes: request.credential.scopes ?? [],
+      metadata: {
+        ...(request.credential.metadata ?? {}),
+        flowType: "ssh-key",
+        sshAlgorithm: "ed25519",
+        sshPublicKeyFingerprint: fingerprint,
+        sshPublicKey: publicKey,
+      },
+    }, {
+      approvalDecision,
+      preapprovedUseDecision: approvalDecision,
+    });
+    const persisted = await credentialStore.loadUrlBound(stored.id);
+    if (persisted?.id) {
+      await credentialStore.saveUrlBound({
+        ...persisted,
+        sshPrivateKey: privateKey,
+        sshPublicKey: publicKey,
+      } as Credential & { id: string });
+    }
+    return stored;
+  }
+
   async function connectOAuthClientCredentials(
     ctx: ServiceContext,
     request: ConnectCredentialRequest,
@@ -1240,7 +1489,8 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     const config = await loadClientConfigForFlow(request.flow.clientConfigId, "oauth2-client-credentials");
     const clientId = config.fields["clientId"]?.value;
     const clientSecret = config.fields["clientSecret"]?.value;
-    if (!clientId || !clientSecret) {
+    const privateKeyPem = config.fields["privateKeyPem"]?.value;
+    if (!clientId || (request.flow.tokenAuth === "private_key_jwt" ? !privateKeyPem : !clientSecret)) {
       throw new OAuthConnectionError("client_config_unavailable");
     }
     const audience = normalizeUrlAudiences(request.credential.audience);
@@ -1264,6 +1514,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       tokenUrl: request.flow.tokenUrl,
       clientId,
       clientSecret,
+      privateKeyPem,
+      keyId: config.fields["keyId"]?.value,
+      keyAlgorithm: config.fields["algorithm"]?.value,
       tokenAuth: request.flow.tokenAuth,
       scopes: request.flow.scopes,
       audienceParam: request.flow.audienceParam,
@@ -1285,12 +1538,175 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         flowType: request.flow.type,
         clientConfigId: request.flow.clientConfigId,
         clientConfigVersion: config.currentVersion ?? String(config.updatedAt),
+        oauthTokenAuth: request.flow.tokenAuth,
         oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
+        ...(request.flow.revocationUrl ? { oauthRevocationUrl: request.flow.revocationUrl } : {}),
       },
     }, {
       approvalDecision,
       preapprovedUseDecision: approvalDecision,
     });
+  }
+
+  async function connectOAuthJwtBearer(
+    ctx: ServiceContext,
+    request: ConnectCredentialRequest,
+  ): Promise<StoredCredentialSummary> {
+    if (request.flow.type !== "oauth2-jwt-bearer") {
+      throw new OAuthConnectionError("unsupported_flow");
+    }
+    const config = await loadClientConfigForFlow(request.flow.clientConfigId, "oauth2-jwt-bearer");
+    const clientId = config.fields["clientId"]?.value;
+    const privateKeyPem = config.fields["privateKeyPem"]?.value;
+    if (!clientId || !privateKeyPem) {
+      throw new OAuthConnectionError("client_config_unavailable");
+    }
+    const audience = normalizeUrlAudiences(request.credential.audience);
+    const injection = normalizeCredentialInjection(request.credential.injection);
+    const identity = resolveApprovalIdentity(ctx);
+    const approvalDecision = await requestCredentialApproval(ctx, {
+      credentialId: randomUUID(),
+      credentialLabel: request.credential.label,
+      audience,
+      injection,
+      accountIdentity: normalizeAccountIdentity(request.credential.accountIdentity, request.flow.subject ?? clientId),
+      scopes: request.credential.scopes ?? request.flow.scopes ?? [],
+      identity,
+      metadata: {
+        ...(request.credential.metadata ?? {}),
+        flowType: request.flow.type,
+        oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
+      },
+    });
+    const token = await exchangeJwtBearerToken({
+      tokenUrl: request.flow.tokenUrl,
+      clientId,
+      privateKeyPem,
+      keyId: config.fields["keyId"]?.value,
+      keyAlgorithm: config.fields["algorithm"]?.value,
+      issuer: request.flow.issuer ?? clientId,
+      subject: request.flow.subject ?? clientId,
+      audience: request.flow.audience ?? request.flow.tokenUrl,
+      scopes: request.flow.scopes,
+      persistRefreshToken: request.flow.persistRefreshToken,
+    });
+    const stored = await storeCredential(ctx, {
+      label: request.credential.label,
+      audience,
+      injection,
+      bindings: request.credential.bindings,
+      material: { type: "bearer-token", token: token.accessToken },
+      accountIdentity: request.credential.accountIdentity ?? { providerUserId: request.flow.subject ?? clientId },
+      scopes: request.credential.scopes ?? request.flow.scopes ?? token.scopes ?? [],
+      expiresAt: token.expiresAt,
+      metadata: {
+        ...(request.credential.metadata ?? {}),
+        flowType: request.flow.type,
+        clientConfigId: request.flow.clientConfigId,
+        clientConfigVersion: config.currentVersion ?? String(config.updatedAt),
+        oauthTokenAuth: "private_key_jwt",
+        oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
+        ...(request.flow.revocationUrl ? { oauthRevocationUrl: request.flow.revocationUrl } : {}),
+      },
+    }, { approvalDecision, preapprovedUseDecision: approvalDecision });
+    if (token.refreshToken) {
+      const persisted = await credentialStore.loadUrlBound(stored.id);
+      if (persisted?.id) {
+        await credentialStore.saveUrlBound({ ...persisted, refreshToken: token.refreshToken } as Credential & { id: string });
+      }
+    }
+    return stored;
+  }
+
+  async function connectOAuthTokenExchange(
+    ctx: ServiceContext,
+    request: ConnectCredentialRequest,
+  ): Promise<StoredCredentialSummary> {
+    if (request.flow.type !== "oauth2-token-exchange") {
+      throw new OAuthConnectionError("unsupported_flow");
+    }
+    const config = await loadClientConfigForFlow(request.flow.clientConfigId, "oauth2-token-exchange");
+    const clientId = config.fields["clientId"]?.value;
+    const tokenAuth = request.flow.tokenAuth ?? (config.fields["privateKeyPem"]?.value ? "private_key_jwt" : "client_secret_post");
+    const clientSecret = config.fields["clientSecret"]?.value;
+    const privateKeyPem = config.fields["privateKeyPem"]?.value;
+    if (!clientId || (tokenAuth === "private_key_jwt" ? !privateKeyPem : !clientSecret)) {
+      throw new OAuthConnectionError("client_config_unavailable");
+    }
+    const subject = await loadActiveCredential(request.flow.subjectCredentialId);
+    if (subject.revokedAt || !subject.accessToken) {
+      throw new OAuthConnectionError("credential_expired_reauth_required");
+    }
+    const subjectBinding = subject.bindings?.[0];
+    const subjectAudience = subjectBinding?.audience[0]?.url;
+    if (!subjectBinding || !subjectAudience) {
+      throw new OAuthConnectionError("client_not_authorized", "Subject credential has no usable binding");
+    }
+    const subjectUsage = credentialUseContext(subject, new URL(subjectAudience), subjectBinding.use);
+    if (!subjectUsage) {
+      throw new OAuthConnectionError("client_not_authorized", "Subject credential binding cannot be authorized");
+    }
+    await authorizeCredentialUse(ctx, subject, subjectUsage);
+    const audience = normalizeUrlAudiences(request.credential.audience);
+    const injection = normalizeCredentialInjection(request.credential.injection);
+    const identity = resolveApprovalIdentity(ctx);
+    const approvalDecision = await requestCredentialApproval(ctx, {
+      credentialId: randomUUID(),
+      credentialLabel: request.credential.label,
+      audience,
+      injection,
+      accountIdentity: subject.accountIdentity ?? normalizeAccountIdentity(request.credential.accountIdentity, ctx.callerId),
+      scopes: request.credential.scopes ?? request.flow.scopes ?? [],
+      identity,
+      metadata: {
+        ...(request.credential.metadata ?? {}),
+        flowType: request.flow.type,
+        oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
+      },
+    });
+    const token = await exchangeOAuthToken({
+      tokenUrl: request.flow.tokenUrl,
+      clientId,
+      clientSecret,
+      privateKeyPem,
+      keyId: config.fields["keyId"]?.value,
+      keyAlgorithm: config.fields["algorithm"]?.value,
+      tokenAuth,
+      subjectToken: subject.accessToken,
+      subjectTokenType: request.flow.subjectTokenType ?? "access_token",
+      requestedTokenType: request.flow.requestedTokenType,
+      scopes: request.flow.scopes,
+      audience: request.flow.audience,
+      resource: request.flow.resource,
+      persistRefreshToken: request.flow.persistRefreshToken,
+    });
+    const stored = await storeCredential(ctx, {
+      label: request.credential.label,
+      audience,
+      injection,
+      bindings: request.credential.bindings,
+      material: { type: "bearer-token", token: token.accessToken },
+      accountIdentity: request.credential.accountIdentity ?? subject.accountIdentity,
+      scopes: request.credential.scopes ?? request.flow.scopes ?? token.scopes ?? [],
+      expiresAt: token.expiresAt,
+      metadata: {
+        ...(request.credential.metadata ?? {}),
+        flowType: request.flow.type,
+        clientConfigId: request.flow.clientConfigId,
+        clientConfigVersion: config.currentVersion ?? String(config.updatedAt),
+        subjectCredentialId: request.flow.subjectCredentialId,
+        oauthTokenAuth: tokenAuth,
+        oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
+        ...(request.flow.revocationUrl ? { oauthRevocationUrl: request.flow.revocationUrl } : {}),
+      },
+    }, { approvalDecision, preapprovedUseDecision: approvalDecision });
+    if (token.refreshToken) {
+      const persisted = await credentialStore.loadUrlBound(stored.id);
+      if (persisted?.id) {
+        await credentialStore.saveUrlBound({ ...persisted, refreshToken: token.refreshToken } as Credential & { id: string });
+      }
+    }
+    return stored;
   }
 
   async function connectBrowserCookieSession(
@@ -1299,9 +1715,6 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   ): Promise<StoredCredentialSummary> {
     if (request.flow.type !== "browser-cookie-session") {
       throw new OAuthConnectionError("unsupported_flow");
-    }
-    if (request.browser === "external") {
-      throw new OAuthConnectionError("unsupported_browser_mode");
     }
     if (request.credential.injection.type !== "cookie") {
       throw new OAuthConnectionError("unsupported_injection");
@@ -1377,9 +1790,6 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   ): Promise<StoredCredentialSummary> {
     if (request.flow.type !== "saml-browser-session") {
       throw new OAuthConnectionError("unsupported_flow");
-    }
-    if (request.browser === "external") {
-      throw new OAuthConnectionError("unsupported_browser_mode");
     }
     if (request.credential.injection.type !== "cookie") {
       throw new OAuthConnectionError("unsupported_injection");
@@ -1469,11 +1879,12 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       : null;
     const clientId = request.flow.clientId ?? config?.fields["clientId"]?.value;
     const clientSecret = config?.fields["clientSecret"]?.value;
+    const privateKeyPem = config?.fields["privateKeyPem"]?.value;
     const tokenAuth = request.flow.tokenAuth ?? (clientSecret ? "client_secret_post" : "none");
     if (!clientId) {
       throw new OAuthConnectionError("client_config_unavailable");
     }
-    if (tokenAuth !== "none" && !clientSecret) {
+    if (tokenAuth !== "none" && (tokenAuth === "private_key_jwt" ? !privateKeyPem : !clientSecret)) {
       throw new OAuthConnectionError("client_config_unavailable");
     }
     const audience = normalizeUrlAudiences(request.credential.audience);
@@ -1497,6 +1908,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       deviceAuthorizationUrl: request.flow.deviceAuthorizationUrl,
       clientId,
       clientSecret,
+      privateKeyPem,
+      keyId: config?.fields["keyId"]?.value,
+      keyAlgorithm: config?.fields["algorithm"]?.value,
       tokenAuth,
       scopes: request.flow.scopes,
     });
@@ -1516,6 +1930,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       tokenUrl: request.flow.tokenUrl,
       clientId,
       clientSecret,
+      privateKeyPem,
+      keyId: config?.fields["keyId"]?.value,
+      keyAlgorithm: config?.fields["algorithm"]?.value,
       tokenAuth,
       deviceCode: device.deviceCode,
       intervalSeconds: request.flow.pollIntervalSeconds ?? device.intervalSeconds,
@@ -1536,8 +1953,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         flowType: request.flow.type,
         ...(request.flow.clientConfigId ? { clientConfigId: request.flow.clientConfigId } : {}),
         ...(config?.currentVersion ? { clientConfigVersion: config.currentVersion } : {}),
+        oauthTokenAuth: tokenAuth,
         oauthDeviceVerificationOrigin: new URL(verificationUrl).origin,
         oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
+        ...(request.flow.revocationUrl ? { oauthRevocationUrl: request.flow.revocationUrl } : {}),
       },
     }, {
       approvalDecision,
@@ -1822,8 +2241,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         metadata: {
           ...(oauthRequest.credential.metadata ?? {}),
           ...(token.refreshToken ? { oauthRefreshTokenStored: "true" } : {}),
+          oauthTokenAuth: oauthRequest.tokenAuth,
           oauthAuthorizeOrigin: new URL(oauthRequest.flow.authorizeUrl).origin,
           oauthTokenOrigin: new URL(oauthRequest.flow.tokenUrl).origin,
+          ...(oauthRequest.flow.revocationUrl ? { oauthRevocationUrl: oauthRequest.flow.revocationUrl } : {}),
           ...(oauthRequest.flow.accountValidation?.userinfo?.url
             ? { oauthUserinfoOrigin: new URL(oauthRequest.flow.accountValidation.userinfo.url).origin }
             : {}),
@@ -1863,10 +2284,42 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       const config = await loadClientConfigForFlow(request.flow.clientConfigId, request.pkce ? "oauth2-auth-code-pkce" : "oauth2-auth-code");
       const clientId = config.fields["clientId"]?.value;
       const clientSecret = config.fields["clientSecret"]?.value;
+      const privateKeyPem = config.fields["privateKeyPem"]?.value;
+      const keyId = config.fields["keyId"]?.value;
+      const keyAlgorithm = config.fields["algorithm"]?.value;
       if (!clientId) {
         throw new OAuthConnectionError("client_config_unavailable");
       }
       if (request.tokenAuth !== "none" && !clientSecret) {
+        if (request.tokenAuth === "private_key_jwt" && privateKeyPem) {
+          return {
+            flow: {
+              authorizeUrl: canonicalUrl(config.authorizeUrl),
+              tokenUrl: canonicalUrl(config.tokenUrl),
+              clientId,
+              privateKeyPem,
+              ...(keyId ? { keyId } : {}),
+              ...(keyAlgorithm ? { keyAlgorithm } : {}),
+              scopes: request.flow.scopes,
+              extraAuthorizeParams: request.flow.extraAuthorizeParams,
+              allowMissingExpiry: request.flow.allowMissingExpiry,
+              persistRefreshToken: request.flow.persistRefreshToken,
+              accountValidation: request.flow.accountValidation,
+              revocationUrl: request.flow.revocationUrl,
+            },
+            credential: {
+              ...request.credential,
+              metadata: {
+                ...(request.credential.metadata ?? {}),
+                clientConfigId: request.flow.clientConfigId,
+                clientConfigVersion: config.currentVersion ?? String(config.updatedAt),
+              },
+            },
+            redirectUri,
+            pkce: request.pkce,
+            tokenAuth: request.tokenAuth,
+          };
+        }
         throw new OAuthConnectionError("client_config_unavailable");
       }
       return {
@@ -1880,6 +2333,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
           allowMissingExpiry: request.flow.allowMissingExpiry,
           persistRefreshToken: request.flow.persistRefreshToken,
           accountValidation: request.flow.accountValidation,
+          revocationUrl: request.flow.revocationUrl,
         },
         credential: {
           ...request.credential,
@@ -1907,6 +2361,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         allowMissingExpiry: request.flow.allowMissingExpiry,
         persistRefreshToken: request.flow.persistRefreshToken,
         accountValidation: request.flow.accountValidation,
+        revocationUrl: request.flow.revocationUrl,
       },
       credential: request.credential,
       redirectUri,
@@ -1941,7 +2396,15 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       body.set("code_verifier", codeVerifier);
     }
     body.set("client_id", request.flow.clientId);
-    if (request.flow.clientSecret && request.tokenAuth !== "client_secret_basic") {
+    applyOAuthClientAssertion(body, {
+      tokenUrl: request.flow.tokenUrl,
+      clientId: request.flow.clientId,
+      privateKeyPem: request.flow.privateKeyPem,
+      keyId: request.flow.keyId,
+      keyAlgorithm: request.flow.keyAlgorithm,
+      tokenAuth: request.tokenAuth,
+    });
+    if (request.flow.clientSecret && request.tokenAuth === "client_secret_post") {
       body.set("client_secret", request.flow.clientSecret);
     }
     body.set("redirect_uri", request.redirectUri);
@@ -1973,8 +2436,11 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   async function exchangeClientCredentialsToken(params: {
     tokenUrl: string;
     clientId: string;
-    clientSecret: string;
-    tokenAuth: "client_secret_post" | "client_secret_basic";
+    clientSecret?: string;
+    privateKeyPem?: string;
+    keyId?: string;
+    keyAlgorithm?: string;
+    tokenAuth: "client_secret_post" | "client_secret_basic" | "private_key_jwt";
     scopes?: string[];
     audienceParam?: string;
     resourceParam?: string;
@@ -1982,7 +2448,8 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     const body = new URLSearchParams();
     body.set("grant_type", "client_credentials");
     body.set("client_id", params.clientId);
-    if (params.tokenAuth === "client_secret_post") {
+    applyOAuthClientAssertion(body, params);
+    if (params.tokenAuth === "client_secret_post" && params.clientSecret) {
       body.set("client_secret", params.clientSecret);
     }
     if (params.scopes?.length) {
@@ -1995,7 +2462,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       body.set("resource", params.resourceParam);
     }
     const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded" };
-    if (params.tokenAuth === "client_secret_basic") {
+    if (params.tokenAuth === "client_secret_basic" && params.clientSecret) {
       headers["authorization"] = basicAuthHeader(params.clientId, params.clientSecret);
     }
     const response = await fetch(params.tokenUrl, { method: "POST", headers, body });
@@ -2012,11 +2479,101 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     };
   }
 
+  async function exchangeJwtBearerToken(params: {
+    tokenUrl: string;
+    clientId: string;
+    privateKeyPem: string;
+    keyId?: string;
+    keyAlgorithm?: string;
+    issuer: string;
+    subject: string;
+    audience: string;
+    scopes?: string[];
+    persistRefreshToken?: boolean;
+  }): Promise<{ accessToken: string; refreshToken?: string; expiresAt?: number; scopes?: string[] }> {
+    const assertion = signJwtAssertion({
+      issuer: params.issuer,
+      subject: params.subject,
+      audience: params.audience,
+      privateKeyPem: params.privateKeyPem,
+      keyId: params.keyId,
+      keyAlgorithm: params.keyAlgorithm,
+    });
+    const body = new URLSearchParams();
+    body.set("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer");
+    body.set("assertion", assertion);
+    body.set("client_id", params.clientId);
+    if (params.scopes?.length) {
+      body.set("scope", params.scopes.join(" "));
+    }
+    const response = await fetch(params.tokenUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    const text = await response.text();
+    const data = parseJsonObject(text, { strict: response.ok });
+    if (!response.ok || typeof data?.["error"] === "string") {
+      throw oauthConnectionError("token_exchange_failed", formatOAuthTokenExchangeError(response.status, data, text));
+    }
+    return parseBearerTokenResponse(data, { allowMissingExpiry: false, persistRefreshToken: params.persistRefreshToken });
+  }
+
+  async function exchangeOAuthToken(params: {
+    tokenUrl: string;
+    clientId: string;
+    clientSecret?: string;
+    privateKeyPem?: string;
+    keyId?: string;
+    keyAlgorithm?: string;
+    tokenAuth: "client_secret_post" | "client_secret_basic" | "private_key_jwt";
+    subjectToken: string;
+    subjectTokenType: "access_token" | "jwt";
+    requestedTokenType?: string;
+    scopes?: string[];
+    audience?: string;
+    resource?: string;
+    persistRefreshToken?: boolean;
+  }): Promise<{ accessToken: string; refreshToken?: string; expiresAt?: number; scopes?: string[] }> {
+    const body = new URLSearchParams();
+    body.set("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange");
+    body.set("subject_token", params.subjectToken);
+    body.set(
+      "subject_token_type",
+      params.subjectTokenType === "jwt"
+        ? "urn:ietf:params:oauth:token-type:jwt"
+        : "urn:ietf:params:oauth:token-type:access_token",
+    );
+    body.set("client_id", params.clientId);
+    if (params.requestedTokenType) body.set("requested_token_type", params.requestedTokenType);
+    if (params.scopes?.length) body.set("scope", params.scopes.join(" "));
+    if (params.audience) body.set("audience", params.audience);
+    if (params.resource) body.set("resource", params.resource);
+    applyOAuthClientAssertion(body, params);
+    if (params.tokenAuth === "client_secret_post" && params.clientSecret) {
+      body.set("client_secret", params.clientSecret);
+    }
+    const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded" };
+    if (params.tokenAuth === "client_secret_basic" && params.clientSecret) {
+      headers["authorization"] = basicAuthHeader(params.clientId, params.clientSecret);
+    }
+    const response = await fetch(params.tokenUrl, { method: "POST", headers, body });
+    const text = await response.text();
+    const data = parseJsonObject(text, { strict: response.ok });
+    if (!response.ok || typeof data?.["error"] === "string") {
+      throw oauthConnectionError("token_exchange_failed", formatOAuthTokenExchangeError(response.status, data, text));
+    }
+    return parseBearerTokenResponse(data, { allowMissingExpiry: false, persistRefreshToken: params.persistRefreshToken });
+  }
+
   async function requestDeviceAuthorization(params: {
     deviceAuthorizationUrl: string;
     clientId: string;
     clientSecret?: string;
-    tokenAuth: "none" | "client_secret_post" | "client_secret_basic";
+    privateKeyPem?: string;
+    keyId?: string;
+    keyAlgorithm?: string;
+    tokenAuth: "none" | "client_secret_post" | "client_secret_basic" | "private_key_jwt";
     scopes?: string[];
   }): Promise<{
     deviceCode: string;
@@ -2031,6 +2588,14 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     if (params.scopes?.length) {
       body.set("scope", params.scopes.join(" "));
     }
+    applyOAuthClientAssertion(body, {
+      tokenUrl: params.deviceAuthorizationUrl,
+      clientId: params.clientId,
+      privateKeyPem: params.privateKeyPem,
+      keyId: params.keyId,
+      keyAlgorithm: params.keyAlgorithm,
+      tokenAuth: params.tokenAuth,
+    });
     if (params.clientSecret && params.tokenAuth === "client_secret_post") {
       body.set("client_secret", params.clientSecret);
     }
@@ -2065,7 +2630,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     tokenUrl: string;
     clientId: string;
     clientSecret?: string;
-    tokenAuth: "none" | "client_secret_post" | "client_secret_basic";
+    privateKeyPem?: string;
+    keyId?: string;
+    keyAlgorithm?: string;
+    tokenAuth: "none" | "client_secret_post" | "client_secret_basic" | "private_key_jwt";
     deviceCode: string;
     intervalSeconds: number;
     expiresInSeconds: number;
@@ -2079,6 +2647,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       body.set("grant_type", "urn:ietf:params:oauth:grant-type:device_code");
       body.set("device_code", params.deviceCode);
       body.set("client_id", params.clientId);
+      applyOAuthClientAssertion(body, params);
       if (params.clientSecret && params.tokenAuth === "client_secret_post") {
         body.set("client_secret", params.clientSecret);
       }
@@ -2189,11 +2758,56 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     if (!canCallerAdministerStoredCredential(ctx, credential)) {
       throw new Error("Credential caller is not authorized to revoke");
     }
+    try {
+      await revokeProviderTokenIfConfigured(credential);
+    } catch (error) {
+      await appendAudit({
+        type: "connection_credential.revocation_failed",
+        ts: Date.now(),
+        callerId: ctx.callerId,
+        providerId: credential.providerId,
+        connectionId: credential.connectionId,
+        storageKind: "connection-credential",
+        fieldNames: ["revocation"],
+      });
+      void error;
+    }
     await credentialStore.saveUrlBound({
       ...credential,
       id: credential.id ?? params.credentialId,
       revokedAt: Date.now(),
     } as Credential & { id: string });
+  }
+
+  async function revokeProviderTokenIfConfigured(credential: Credential): Promise<void> {
+    const revocationUrl = credential.metadata?.["oauthRevocationUrl"];
+    if (!revocationUrl) return;
+    const token = credential.refreshToken ?? credential.accessToken;
+    if (!token) return;
+    const body = new URLSearchParams();
+    body.set("token", token);
+    body.set("token_type_hint", credential.refreshToken ? "refresh_token" : "access_token");
+    const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded" };
+    const configId = credential.metadata?.["clientConfigId"];
+    const configVersion = credential.metadata?.["clientConfigVersion"];
+    if (configId) {
+      const config = configVersion
+        ? await clientConfigStore.loadVersion(configId, configVersion)
+        : await clientConfigStore.load(configId);
+      const clientId = config?.fields["clientId"]?.value;
+      const clientSecret = config?.fields["clientSecret"]?.value;
+      const tokenAuth = credential.metadata?.["oauthTokenAuth"];
+      if (clientId) body.set("client_id", clientId);
+      if (tokenAuth === "client_secret_basic" && clientId && clientSecret) {
+        headers["authorization"] = basicAuthHeader(clientId, clientSecret);
+      } else if (clientSecret) {
+        body.set("client_secret", clientSecret);
+      }
+    }
+    const response = await fetch(revocationUrl, { method: "POST", headers, body });
+    if (!response.ok) {
+      throw new OAuthConnectionError("token_exchange_failed", "Provider token revocation failed");
+    }
   }
 
   async function grantCredential(ctx: ServiceContext, params: GrantCredentialParams): Promise<StoredCredentialSummary> {
@@ -2840,6 +3454,96 @@ function basicAuthHeader(username: string, password: string): string {
   return `Basic ${Buffer.from(`${encodeURIComponent(username)}:${encodeURIComponent(password)}`).toString("base64")}`;
 }
 
+function applyOAuthClientAssertion(
+  body: URLSearchParams,
+  params: {
+    tokenUrl: string;
+    clientId: string;
+    privateKeyPem?: string;
+    keyId?: string;
+    keyAlgorithm?: string;
+    tokenAuth: "none" | "client_secret_post" | "client_secret_basic" | "private_key_jwt";
+  },
+): void {
+  if (params.tokenAuth !== "private_key_jwt") {
+    return;
+  }
+  if (!params.privateKeyPem) {
+    throw new OAuthConnectionError("client_config_unavailable", "private_key_jwt requires a configured private key");
+  }
+  body.set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
+  body.set("client_assertion", signJwtAssertion({
+    issuer: params.clientId,
+    subject: params.clientId,
+    audience: params.tokenUrl,
+    privateKeyPem: params.privateKeyPem,
+    keyId: params.keyId,
+    keyAlgorithm: params.keyAlgorithm,
+  }));
+}
+
+function signJwtAssertion(params: {
+  issuer: string;
+  subject: string;
+  audience: string;
+  privateKeyPem: string;
+  keyId?: string;
+  keyAlgorithm?: string;
+}): string {
+  const algorithm = params.keyAlgorithm || "RS256";
+  if (algorithm !== "RS256") {
+    throw new OAuthConnectionError("unsupported_token_auth_method", "Only RS256 JWT client assertions are supported");
+  }
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const header = {
+    alg: algorithm,
+    typ: "JWT",
+    ...(params.keyId ? { kid: params.keyId } : {}),
+  };
+  const payload = {
+    iss: params.issuer,
+    sub: params.subject,
+    aud: params.audience,
+    iat: nowSeconds,
+    exp: nowSeconds + 300,
+    jti: randomUUID(),
+  };
+  const signingInput = `${base64UrlJson(header)}.${base64UrlJson(payload)}`;
+  const signer = createSign("RSA-SHA256");
+  signer.update(signingInput);
+  signer.end();
+  return `${signingInput}.${signer.sign(params.privateKeyPem).toString("base64url")}`;
+}
+
+function base64UrlJson(value: Record<string, unknown>): string {
+  return Buffer.from(JSON.stringify(value)).toString("base64url");
+}
+
+function sshPublicKeyFingerprint(publicKey: string): string {
+  return `SHA256:${createHash("sha256").update(publicKey).digest("base64url")}`;
+}
+
+function openSshEd25519PublicKey(spkiDer: Buffer): string {
+  const keyBytes = spkiDer.subarray(-32);
+  if (keyBytes.length !== 32) {
+    throw new OAuthConnectionError("invalid_connection_spec", "Unable to derive Ed25519 public key");
+  }
+  const type = Buffer.from("ssh-ed25519");
+  const wire = Buffer.concat([
+    uint32(type.length),
+    type,
+    uint32(keyBytes.length),
+    keyBytes,
+  ]);
+  return `ssh-ed25519 ${wire.toString("base64")}`;
+}
+
+function uint32(value: number): Buffer {
+  const buffer = Buffer.alloc(4);
+  buffer.writeUInt32BE(value, 0);
+  return buffer;
+}
+
 function oauth1AuthorizationHeader(params: {
   method: string;
   url: URL;
@@ -3067,10 +3771,10 @@ function credentialUseContext(
   if (!binding) {
     return null;
   }
-  const resource = binding.use === "git-http"
+  const resource = binding.use === "git-http" || binding.use === "git-ssh"
     ? gitRemoteFromUrl(targetUrl)
     : findMatchingUrlAudience(targetUrl, binding.audience)?.url ?? targetUrl.origin;
-  const gitOperation = binding.use === "git-http" ? describeGitHttpOperation(targetUrl, "GET") : undefined;
+  const gitOperation = binding.use === "git-http" || binding.use === "git-ssh" ? describeGitHttpOperation(targetUrl, "GET") : undefined;
   const action: CredentialGrantAction = gitOperation?.action ?? "use";
   return {
     binding,
@@ -3087,7 +3791,7 @@ function credentialUseContext(
 
 function preapprovedUseContextsForBinding(binding: CredentialBinding): CredentialUseContext[] {
   return binding.audience.map((audience) => {
-    const action: CredentialGrantAction = binding.use === "git-http" ? "read" : "use";
+    const action: CredentialGrantAction = binding.use === "git-http" || binding.use === "git-ssh" ? "read" : "use";
     return {
       binding,
       resource: audience.url,

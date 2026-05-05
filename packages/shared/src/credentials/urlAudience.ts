@@ -32,12 +32,24 @@ export interface CredentialCookieInjection {
   type: "cookie";
 }
 
+export interface CredentialAwsSigV4Injection {
+  type: "aws-sigv4";
+  service: string;
+  region: string;
+}
+
+export interface CredentialSshKeyInjection {
+  type: "ssh-key";
+}
+
 export type CredentialInjection =
   | CredentialHeaderInjection
   | CredentialQueryParamInjection
   | CredentialBasicAuthInjection
   | CredentialOAuth1SignatureInjection
-  | CredentialCookieInjection;
+  | CredentialCookieInjection
+  | CredentialAwsSigV4Injection
+  | CredentialSshKeyInjection;
 
 const DEFAULT_PORTS: Record<string, string> = {
   "http:": "80",
@@ -138,8 +150,14 @@ export function findMatchingUrlAudience(targetUrl: string | URL, audiences: read
 }
 
 export function normalizeCredentialInjection(injection: CredentialInjection): CredentialInjection {
-  if (injection.type === "oauth1-signature" || injection.type === "cookie") {
+  if (injection.type === "oauth1-signature" || injection.type === "cookie" || injection.type === "ssh-key") {
     return { type: injection.type };
+  }
+
+  if (injection.type === "aws-sigv4") {
+    validateIdentifierPart("AWS SigV4 service", injection.service);
+    validateIdentifierPart("AWS SigV4 region", injection.region);
+    return { type: "aws-sigv4", service: injection.service, region: injection.region };
   }
 
   if (injection.type === "query-param") {
@@ -194,6 +212,9 @@ export function credentialCarrierStripHeaders(injection: CredentialInjection): s
     for (const name of injection.stripIncoming ?? []) {
       headers.add(name.toLowerCase());
     }
+  } else if (injection.type === "aws-sigv4") {
+    headers.add("x-amz-date");
+    headers.add("x-amz-security-token");
   }
   return Array.from(headers);
 }
@@ -314,6 +335,12 @@ function base64EncodeUtf8(value: string): string {
 function validateQueryParamName(name: string): void {
   if (!name || CONTROL_CHAR_RE.test(name) || /[&=#/\\?]/.test(name)) {
     throw new Error(`Invalid credential query parameter name: ${name}`);
+  }
+}
+
+function validateIdentifierPart(label: string, value: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value)) {
+    throw new Error(`${label} must be a safe identifier`);
   }
 }
 

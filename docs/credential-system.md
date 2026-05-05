@@ -52,6 +52,11 @@ const stored = await credentials.connect({
 });
 ```
 
+Supported OAuth flows include PKCE/auth-code, compatibility auth-code,
+device-code, client-credentials, JWT bearer, and token exchange. Stored client
+configs support `client_secret_post`, `client_secret_basic`, and
+`private_key_jwt`; private keys and client secrets stay in the host config.
+
 ## Trusted URL-Bound OAuth Client Config
 
 Panels and workers can request a shell-owned input prompt for OAuth client
@@ -97,6 +102,41 @@ const stored = await credentials.connect({
   },
 });
 ```
+
+## Non-OAuth Provider Credentials
+
+API keys, AWS SigV4, SSH keys, OAuth1a, and browser session credentials also go
+through `credentials.connect()` so userland never receives the submitted secret.
+
+```ts
+const aws = await credentials.connect({
+  flow: { type: "aws-sigv4" },
+  credential: {
+    label: "AWS S3",
+    audience: [{ url: "https://s3.us-east-1.amazonaws.com/", match: "origin" }],
+    injection: { type: "aws-sigv4", service: "s3", region: "us-east-1" },
+  },
+});
+
+const git = await credentials.connect({
+  flow: { type: "ssh-key" },
+  credential: {
+    label: "GitHub SSH",
+    audience: [{ url: "https://github.com/acme/project", match: "path-prefix" }],
+    injection: { type: "ssh-key" },
+    bindings: [{
+      id: "git",
+      use: "git-ssh",
+      audience: [{ url: "https://github.com/acme/project", match: "path-prefix" }],
+      injection: { type: "ssh-key" },
+    }],
+  },
+});
+```
+
+Browser-cookie and SAML cookie-session flows can use `browser: "internal"` or
+`browser: "external"`. External mode is backed by the shell-owned browser import
+store and captures only the declared origins and cookie names.
 
 ## Use
 

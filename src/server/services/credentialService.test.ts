@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as http from "node:http";
+import { generateKeyPairSync } from "node:crypto";
 
 import type {
   AuditEntry,
@@ -1240,6 +1241,7 @@ describe("credentialService", () => {
       flow: {
         type: "oauth2-auth-code-pkce",
         clientConfigId: "google-workspace",
+        tokenAuth: "client_secret_post",
         scopes: ["scope-1"],
         extraAuthorizeParams: {
           access_type: "offline",
@@ -1262,6 +1264,56 @@ describe("credentialService", () => {
       const body = init?.body as URLSearchParams;
       expect(body.get("client_id")).toBe("client-1");
       expect(body.get("client_secret")).toBe("secret-1");
+      return new Response(JSON.stringify({
+        access_token: "token",
+        expires_in: 3600,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+
+    await deliverOAuthCallback(started.redirectUri, new URLSearchParams({
+      code: "code-1",
+      state: started.state,
+    }));
+    await started.pending;
+  });
+
+  it("uses public-client token exchange by default for client-config PKCE", async () => {
+    const clientConfigStore = new MemoryClientConfigStore();
+    await clientConfigStore.save({
+      configId: "public-app",
+      authorizeUrl: "https://auth.example.test/oauth/authorize",
+      tokenUrl: "https://auth.example.test/oauth/token",
+      fields: {
+        clientId: { value: "client-1", type: "text", updatedAt: 1 },
+      },
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const emit = vi.fn();
+    const service = createCredentialService({
+      credentialStore: new MemoryCredentialStore() as never,
+      clientConfigStore: clientConfigStore as never,
+      eventService: targetedOpenEventService(emit) as never,
+      approvalQueue: approvingQueue() as never,
+    });
+
+    const started = await startOAuthConnection(service, emit, { callerId: "panel:test", callerKind: "panel" }, {
+      flow: {
+        type: "oauth2-auth-code-pkce",
+        clientConfigId: "public-app",
+      },
+      credential: {
+        label: "Public App",
+        audience: [{ url: "https://api.example.test/", match: "origin" }],
+        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+      },
+    });
+
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = init?.body as URLSearchParams;
+      expect(body.get("client_id")).toBe("client-1");
+      expect(body.get("client_secret")).toBeNull();
+      expect(body.get("client_assertion")).toBeNull();
       return new Response(JSON.stringify({
         access_token: "token",
         expires_in: 3600,
@@ -1650,6 +1702,195 @@ describe("credentialService", () => {
     expect((await store.loadUrlBound(stored.id))?.accessToken).toBe("service-token");
   });
 
+  it("connects OAuth2 client credentials with private_key_jwt", async () => {
+    const store = new MemoryCredentialStore();
+    const clientConfigStore = new MemoryClientConfigStore();
+    const keyPair = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" },
+    });
+    await clientConfigStore.save({
+      configId: "svc-jwt",
+      currentVersion: "v1",
+      owner: { callerId: "worker:test", callerKind: "worker", repoPath: "worker:test", effectiveVersion: "unknown" },
+      authorizeUrl: "https://auth.example.test/oauth/authorize",
+      tokenUrl: "https://auth.example.test/oauth/token",
+      status: "active",
+      flowTypes: ["oauth2-client-credentials"],
+      fields: {
+        clientId: { value: "client-1", type: "text", updatedAt: 1 },
+        privateKeyPem: { value: keyPair.privateKey, type: "secret", updatedAt: 1 },
+        keyId: { value: "kid-1", type: "text", updatedAt: 1 },
+      },
+      versions: {},
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = init?.body as URLSearchParams;
+      expect(body.get("client_assertion_type")).toBe("urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
+      expect(body.get("client_assertion")?.split(".")).toHaveLength(3);
+      expect(body.get("client_secret")).toBeNull();
+      return new Response(JSON.stringify({
+        access_token: "service-token",
+        token_type: "Bearer",
+        expires_in: 3600,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+    const service = createCredentialService({
+      credentialStore: store as never,
+      clientConfigStore: clientConfigStore as never,
+      approvalQueue: approvingQueue("session") as never,
+    });
+    const stored = await service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
+      flow: {
+        type: "oauth2-client-credentials",
+        tokenUrl: "https://auth.example.test/oauth/token",
+        clientConfigId: "svc-jwt",
+        tokenAuth: "private_key_jwt",
+      },
+      credential: {
+        label: "Service API",
+        audience: [{ url: "https://api.example.test/", match: "origin" }],
+        injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
+      },
+    }]) as StoredCredentialSummary;
+
+    expect((await store.loadUrlBound(stored.id))?.metadata?.["oauthTokenAuth"]).toBe("private_key_jwt");
+    expect(JSON.stringify(stored)).not.toContain("PRIVATE KEY");
+  });
+
+  it("authenticates device authorization requests with private_key_jwt", async () => {
+    const store = new MemoryCredentialStore();
+    const clientConfigStore = new MemoryClientConfigStore();
+    const keyPair = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" },
+    });
+    await clientConfigStore.save({
+      configId: "device-jwt",
+      currentVersion: "v1",
+      owner: { callerId: "panel:test", callerKind: "panel", repoPath: "panel:test", effectiveVersion: "unknown" },
+      authorizeUrl: "https://auth.example.test/device",
+      tokenUrl: "https://auth.example.test/token",
+      status: "active",
+      flowTypes: ["oauth2-device-code"],
+      fields: {
+        clientId: { value: "client-1", type: "text", updatedAt: 1 },
+        privateKeyPem: { value: keyPair.privateKey, type: "secret", updatedAt: 1 },
+      },
+      versions: {},
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const emit = vi.fn();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const body = init?.body as URLSearchParams;
+      expect(body.get("client_assertion_type")).toBe("urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
+      expect(body.get("client_assertion")?.split(".")).toHaveLength(3);
+      expect(body.get("client_secret")).toBeNull();
+      if (url === "https://auth.example.test/device") {
+        return new Response(JSON.stringify({
+          device_code: "device-1",
+          verification_uri: "https://auth.example.test/verify",
+          interval: 1,
+          expires_in: 5,
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        access_token: "device-token",
+        token_type: "Bearer",
+        expires_in: 3600,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+    const service = createCredentialService({
+      credentialStore: store as never,
+      clientConfigStore: clientConfigStore as never,
+      eventService: targetedOpenEventService(emit) as never,
+      approvalQueue: approvingQueue("session") as never,
+    });
+
+    const stored = await service.handler({ callerId: "panel:test", callerKind: "panel" }, "connect", [{
+      flow: {
+        type: "oauth2-device-code",
+        deviceAuthorizationUrl: "https://auth.example.test/device",
+        tokenUrl: "https://auth.example.test/token",
+        clientConfigId: "device-jwt",
+        tokenAuth: "private_key_jwt",
+        pollIntervalSeconds: 1,
+      },
+      credential: {
+        label: "Device API",
+        audience: [{ url: "https://api.example.test/", match: "origin" }],
+        injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
+      },
+    }]) as StoredCredentialSummary;
+
+    expect(stored.id).toBeTruthy();
+    expect((await store.loadUrlBound(stored.id))?.accessToken).toBe("device-token");
+  });
+
+  it("connects AWS SigV4 credentials through host-owned input", async () => {
+    const store = new MemoryCredentialStore();
+    const approvalQueue = approvingQueue("session");
+    approvalQueue.requestCredentialInput = vi.fn(async () => ({
+      decision: "submit" as const,
+      values: {
+        accessKeyId: "AKIATEST",
+        secretAccessKey: "aws-secret",
+        sessionToken: "session-token",
+      },
+    })) as never;
+    const service = createCredentialService({
+      credentialStore: store as never,
+      approvalQueue: approvalQueue as never,
+    });
+    const stored = await service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
+      flow: { type: "aws-sigv4" },
+      credential: {
+        label: "AWS",
+        audience: [{ url: "https://s3.us-east-1.amazonaws.com/", match: "origin" }],
+        injection: { type: "aws-sigv4", service: "s3", region: "us-east-1" },
+      },
+    }]) as StoredCredentialSummary;
+
+    const persisted = await store.loadUrlBound(stored.id);
+    expect(persisted?.accessToken).toBe("AKIATEST");
+    expect(persisted?.awsSecretAccessKey).toBe("aws-secret");
+    expect(JSON.stringify(stored)).not.toContain("aws-secret");
+  });
+
+  it("generates SSH key credentials for git-ssh bindings", async () => {
+    const store = new MemoryCredentialStore();
+    const service = createCredentialService({
+      credentialStore: store as never,
+      approvalQueue: approvingQueue("session") as never,
+    });
+    const stored = await service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
+      flow: { type: "ssh-key" },
+      credential: {
+        label: "Git SSH",
+        audience: [{ url: "https://github.com/example/repo", match: "path-prefix" }],
+        injection: { type: "ssh-key" },
+        bindings: [{
+          id: "git",
+          use: "git-ssh",
+          audience: [{ url: "https://github.com/example/repo", match: "path-prefix" }],
+          injection: { type: "ssh-key" },
+        }],
+      },
+    }]) as StoredCredentialSummary;
+
+    const persisted = await store.loadUrlBound(stored.id);
+    expect(persisted?.sshPrivateKey).toContain("PRIVATE KEY");
+    expect(persisted?.sshPublicKey).toMatch(/^ssh-ed25519 /);
+    expect(stored.metadata?.["sshPublicKeyFingerprint"]).toMatch(/^SHA256:/);
+    expect(JSON.stringify(stored)).not.toContain("PRIVATE KEY");
+  });
+
   it("stores captured browser cookie sessions through the platform capture hook", async () => {
     const store = new MemoryCredentialStore();
     const service = createCredentialService({
@@ -1673,12 +1914,13 @@ describe("credentialService", () => {
         audience: [{ url: "https://app.example.test/", match: "origin" }],
         injection: { type: "cookie" },
       },
-      browser: "internal",
+      browser: "external",
     }]) as StoredCredentialSummary;
 
     expect(stored.injection).toEqual({ type: "cookie" });
     expect((await store.loadUrlBound(stored.id))?.cookieHeader).toBe("sid=secret");
     expect(JSON.stringify(stored)).not.toContain("sid=secret");
+    expect((service as never)).toBeTruthy();
   });
 
   it("stores SAML browser sessions captured as scoped cookies", async () => {

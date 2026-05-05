@@ -112,6 +112,20 @@ let mainWindow: BaseWindow | null = null;
 let viewManager: ViewManager | null = null;
 let isCleaningUp = false; // Prevent re-entry in will-quit handler
 let autofillManager: import("./autofill/autofillManager.js").AutofillManager | null = null;
+let browserDataStoreForCredentialCapture: {
+  cookies: {
+    getByDomain(domain?: string): Array<{
+      name: string;
+      value: string;
+      domain: string;
+      path: string;
+      expiration_date: number | null;
+      secure: number;
+      http_only: number;
+      same_site: string;
+    }>;
+  };
+} | null = null;
 
 log.info(` Starting in main mode`);
 
@@ -185,15 +199,79 @@ function buildCookieHeader(cookies: Electron.Cookie[], cookieNames: string[]): {
   };
 }
 
+function buildImportedCookieHeader(
+  cookies: Array<{
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+    expiration_date: number | null;
+    secure: number;
+    http_only: number;
+    same_site: string;
+  }>,
+  cookieNames: string[],
+  origins: string[],
+): {
+  header: string;
+  expiresAt?: number;
+  cookies: Record<string, unknown>[];
+} | null {
+  const selected: typeof cookies = [];
+  for (const name of cookieNames) {
+    const cookie = cookies.find((entry) =>
+      entry.name === name
+      && !!entry.value
+      && origins.some((origin) => importedCookieMatchesOrigin(entry, origin))
+    );
+    if (!cookie) return null;
+    selected.push(cookie);
+  }
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const expiringCookies = selected
+    .map((cookie) => cookie.expiration_date ?? undefined)
+    .filter((value): value is number => typeof value === "number" && value > nowSeconds);
+  if (selected.some((cookie) => typeof cookie.expiration_date === "number" && cookie.expiration_date <= nowSeconds)) {
+    return null;
+  }
+  return {
+    header: selected.map((cookie) => `${cookie.name}=${cookie.value}`).join("; "),
+    expiresAt: expiringCookies.length > 0 ? Math.min(...expiringCookies) * 1000 : undefined,
+    cookies: selected.map((cookie) => ({
+      name: cookie.name,
+      value: cookie.value,
+      domain: cookie.domain,
+      path: cookie.path,
+      secure: cookie.secure === 1,
+      httpOnly: cookie.http_only === 1,
+      sameSite: cookie.same_site,
+      expirationDate: cookie.expiration_date ?? undefined,
+    })),
+  };
+}
+
+function importedCookieMatchesOrigin(
+  cookie: { domain: string; path: string; secure: number },
+  origin: string,
+): boolean {
+  const url = new URL(origin);
+  if (cookie.secure === 1 && url.protocol !== "https:") return false;
+  const cookieDomain = cookie.domain.replace(/^\./, "").toLowerCase();
+  const host = url.hostname.toLowerCase();
+  const domainMatches = cookie.domain.startsWith(".")
+    ? host === cookieDomain || host.endsWith(`.${cookieDomain}`)
+    : host === cookieDomain;
+  if (!domainMatches) return false;
+  const cookiePath = cookie.path || "/";
+  return url.pathname === cookiePath || url.pathname.startsWith(cookiePath.endsWith("/") ? cookiePath : `${cookiePath}/`);
+}
+
 async function handleCredentialSessionCaptureRequest(
   msg: CredentialSessionCaptureRequest,
 ): Promise<Record<string, unknown>> {
   try {
     if (msg.kind !== "cookies" && msg.kind !== "saml") {
       return { error: "unsupported session capture kind" };
-    }
-    if (msg.browser === "external") {
-      return { error: "external browser session capture is not supported" };
     }
     if (typeof msg.signInUrl !== "string") {
       return { error: "missing signInUrl" };
@@ -209,6 +287,30 @@ async function handleCredentialSessionCaptureRequest(
     const origins = msg.kind === "cookies" ? normalizeCaptureOrigins(msg.origins) : [signInUrl.origin];
     if (msg.kind === "saml" && msg.assertion && cookieNames.length === 0) {
       return { error: "raw SAML assertion capture is not supported by this host adapter" };
+    }
+    if (msg.browser === "external") {
+      if (!browserDataStoreForCredentialCapture) {
+        return { error: "external browser cookie import is unavailable" };
+      }
+      const imported = browserDataStoreForCredentialCapture.cookies.getByDomain();
+      const material = buildImportedCookieHeader(imported, cookieNames, origins);
+      if (!material) {
+        return { error: "external browser cookie import did not contain the declared session cookies" };
+      }
+      const maxTtlSeconds = typeof msg.maxTtlSeconds === "number" && msg.maxTtlSeconds > 0
+        ? Math.floor(msg.maxTtlSeconds)
+        : undefined;
+      const maxExpiresAt = maxTtlSeconds ? Date.now() + (maxTtlSeconds * 1000) : undefined;
+      return {
+        cookieHeader: material.header,
+        cookieSession: {
+          origins,
+          cookies: material.cookies,
+        },
+        expiresAt: material.expiresAt && maxExpiresAt
+          ? Math.min(material.expiresAt, maxExpiresAt)
+          : material.expiresAt ?? maxExpiresAt,
+      };
     }
     if (!panelOrchestrator || !viewManager) {
       return { error: "internal browser is unavailable" };
@@ -816,6 +918,7 @@ app.on("ready", async () => {
         name: "browser-data",
         async start() {
           browserDataStore = new BrowserDataStore(getCentralConfigDirectory());
+          browserDataStoreForCredentialCapture = browserDataStore;
 
           // Initialize autofill manager with password store
           autofillManager = new AutofillManager({
@@ -828,6 +931,7 @@ app.on("ready", async () => {
           return browserDataStore;
         },
         async stop(store: InstanceType<typeof BrowserDataStore>) {
+          browserDataStoreForCredentialCapture = null;
           if (autofillManager) {
             autofillManager.destroy();
             autofillManager = null;

@@ -2,6 +2,7 @@ import type { Credential } from "../../../packages/shared/src/credentials/types.
 import type { CredentialStore } from "../../../packages/shared/src/credentials/store.js";
 import type { ClientConfigStore } from "../../../packages/shared/src/credentials/clientConfigStore.js";
 import type { OAuthConnectionErrorCode } from "../../../packages/shared/src/credentials/types.js";
+import { createSign, randomUUID } from "node:crypto";
 
 export class CredentialLifecycleError extends Error {
   constructor(public readonly code: OAuthConnectionErrorCode, message: string = code) {
@@ -48,21 +49,41 @@ export class CredentialLifecycle {
 
     const clientId = config.fields["clientId"]?.value;
     const clientSecret = config.fields["clientSecret"]?.value;
+    const privateKeyPem = config.fields["privateKeyPem"]?.value;
+    const tokenAuth = credential.metadata?.["oauthTokenAuth"] ?? (clientSecret ? "client_secret_post" : "none");
     if (!clientId) {
       throw new CredentialLifecycleError("client_not_authorized");
+    }
+    if (tokenAuth === "private_key_jwt" && !privateKeyPem) {
+      throw new CredentialLifecycleError("client_config_unavailable", "private_key_jwt config is unavailable for refresh");
     }
 
     const body = new URLSearchParams();
     body.set("grant_type", "refresh_token");
     body.set("refresh_token", refreshToken);
     body.set("client_id", clientId);
-    if (clientSecret) {
+    if (tokenAuth === "private_key_jwt" && privateKeyPem) {
+      body.set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
+      body.set("client_assertion", signJwtAssertion({
+        clientId,
+        tokenUrl: config.tokenUrl,
+        privateKeyPem,
+        keyId: config.fields["keyId"]?.value,
+        keyAlgorithm: config.fields["algorithm"]?.value,
+      }));
+    } else if (tokenAuth === "client_secret_basic" && clientSecret) {
+      // Sent as an Authorization header below.
+    } else if (clientSecret) {
       body.set("client_secret", clientSecret);
+    }
+    const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded" };
+    if (tokenAuth === "client_secret_basic" && clientSecret) {
+      headers["authorization"] = basicAuthHeader(clientId, clientSecret);
     }
 
     const response = await fetch(config.tokenUrl, {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
+      headers,
       body,
     });
     const text = await response.text();
@@ -123,6 +144,46 @@ function readNumericField(value: unknown): number | undefined {
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
   }
   return undefined;
+}
+
+function basicAuthHeader(username: string, password: string): string {
+  return `Basic ${Buffer.from(`${encodeURIComponent(username)}:${encodeURIComponent(password)}`).toString("base64")}`;
+}
+
+function signJwtAssertion(params: {
+  clientId: string;
+  tokenUrl: string;
+  privateKeyPem: string;
+  keyId?: string;
+  keyAlgorithm?: string;
+}): string {
+  const algorithm = params.keyAlgorithm || "RS256";
+  if (algorithm !== "RS256") {
+    throw new CredentialLifecycleError("unsupported_token_auth_method", "Only RS256 JWT client assertions are supported");
+  }
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const header = {
+    alg: algorithm,
+    typ: "JWT",
+    ...(params.keyId ? { kid: params.keyId } : {}),
+  };
+  const payload = {
+    iss: params.clientId,
+    sub: params.clientId,
+    aud: params.tokenUrl,
+    iat: nowSeconds,
+    exp: nowSeconds + 300,
+    jti: randomUUID(),
+  };
+  const signingInput = `${base64UrlJson(header)}.${base64UrlJson(payload)}`;
+  const signer = createSign("RSA-SHA256");
+  signer.update(signingInput);
+  signer.end();
+  return `${signingInput}.${signer.sign(params.privateKeyPem).toString("base64url")}`;
+}
+
+function base64UrlJson(value: Record<string, unknown>): string {
+  return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
 
 function formatOAuthTokenExchangeError(status: number, data: Record<string, unknown> | null, text: string): string {

@@ -1,6 +1,6 @@
 import { createServer, request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import type {
   IncomingHttpHeaders,
   IncomingMessage,
@@ -294,6 +294,20 @@ export class EgressProxy {
           consumerSecret: credential.oauth1ConsumerSecret ?? "",
           token: credential.accessToken,
           tokenSecret: credential.oauth1TokenSecret,
+        });
+      } else if (injection.type === "aws-sigv4") {
+        if (!credential.awsSecretAccessKey) {
+          throw new Error("AWS SigV4 credential is missing secret access key");
+        }
+        applyAwsSigV4Authorization({
+          method,
+          targetUrl,
+          headers,
+          accessKeyId: credential.accessToken,
+          secretAccessKey: credential.awsSecretAccessKey,
+          sessionToken: credential.awsSessionToken,
+          service: injection.service,
+          region: injection.region,
         });
       } else {
         throw new Error("Unsupported credential injection type");
@@ -590,7 +604,7 @@ export class EgressProxy {
       accountIdentity: credential.accountIdentity,
       scopes: credential.scopes,
       credentialUse: binding.use,
-      gitOperation: binding.use === "git-http"
+      gitOperation: binding.use === "git-http" || binding.use === "git-ssh"
         ? describeGitHttpOperation(operation.targetUrl, operation.method)
         : undefined,
       oauthAuthorizeOrigin: credential.metadata?.["oauthAuthorizeOrigin"],
@@ -963,10 +977,10 @@ function credentialUseResource(
   action: CredentialGrantAction;
   sessionResource: CredentialSessionGrantResource;
 } {
-  const resource = binding.use === "git-http"
+  const resource = binding.use === "git-http" || binding.use === "git-ssh"
     ? gitRemoteFromUrl(targetUrl)
     : findMatchingUrlAudience(targetUrl, binding.audience)?.url ?? targetUrl.origin;
-  const action: CredentialGrantAction = binding.use === "git-http"
+  const action: CredentialGrantAction = binding.use === "git-http" || binding.use === "git-ssh"
     ? describeGitHttpOperation(targetUrl, method).action
     : "use";
   return {
@@ -1089,6 +1103,83 @@ function cookiePathMatches(cookiePath: string | undefined, requestPath: string):
   if (normalizedCookiePath === "/") return true;
   return requestPath === normalizedCookiePath || requestPath.startsWith(
     normalizedCookiePath.endsWith("/") ? normalizedCookiePath : `${normalizedCookiePath}/`,
+  );
+}
+
+function applyAwsSigV4Authorization(params: {
+  method: string;
+  targetUrl: URL;
+  headers: OutgoingHttpHeaders;
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
+  service: string;
+  region: string;
+}): void {
+  const now = new Date();
+  const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, "");
+  const dateStamp = amzDate.slice(0, 8);
+  params.headers.host = params.targetUrl.host;
+  params.headers["x-amz-date"] = amzDate;
+  params.headers["x-amz-content-sha256"] = "UNSIGNED-PAYLOAD";
+  if (params.sessionToken) {
+    params.headers["x-amz-security-token"] = params.sessionToken;
+  }
+  const canonicalHeaders = canonicalAwsHeaders(params.headers);
+  const canonicalQuery = Array.from(params.targetUrl.searchParams.entries())
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) =>
+      leftKey === rightKey ? leftValue.localeCompare(rightValue) : leftKey.localeCompare(rightKey)
+    )
+    .map(([key, value]) => `${awsPercentEncode(key)}=${awsPercentEncode(value)}`)
+    .join("&");
+  const canonicalRequest = [
+    params.method.toUpperCase(),
+    params.targetUrl.pathname || "/",
+    canonicalQuery,
+    canonicalHeaders.headerBlock,
+    canonicalHeaders.signedHeaders,
+    "UNSIGNED-PAYLOAD",
+  ].join("\n");
+  const credentialScope = `${dateStamp}/${params.region}/${params.service}/aws4_request`;
+  const stringToSign = [
+    "AWS4-HMAC-SHA256",
+    amzDate,
+    credentialScope,
+    createHash("sha256").update(canonicalRequest).digest("hex"),
+  ].join("\n");
+  const signingKey = awsSigningKey(params.secretAccessKey, dateStamp, params.region, params.service);
+  const signature = createHmac("sha256", signingKey).update(stringToSign).digest("hex");
+  params.headers.authorization = [
+    `AWS4-HMAC-SHA256 Credential=${params.accessKeyId}/${credentialScope}`,
+    `SignedHeaders=${canonicalHeaders.signedHeaders}`,
+    `Signature=${signature}`,
+  ].join(", ");
+}
+
+function canonicalAwsHeaders(headers: OutgoingHttpHeaders): { headerBlock: string; signedHeaders: string } {
+  const entries = Object.entries(headers)
+    .flatMap(([name, value]) => {
+      if (value === undefined) return [];
+      const rendered = Array.isArray(value) ? value.join(",") : String(value);
+      return [[name.toLowerCase(), rendered.trim().replace(/\s+/g, " ")] as const];
+    })
+    .sort(([left], [right]) => left.localeCompare(right));
+  return {
+    headerBlock: entries.map(([name, value]) => `${name}:${value}\n`).join(""),
+    signedHeaders: entries.map(([name]) => name).join(";"),
+  };
+}
+
+function awsSigningKey(secretAccessKey: string, dateStamp: string, region: string, service: string): Buffer {
+  const dateKey = createHmac("sha256", `AWS4${secretAccessKey}`).update(dateStamp).digest();
+  const regionKey = createHmac("sha256", dateKey).update(region).digest();
+  const serviceKey = createHmac("sha256", regionKey).update(service).digest();
+  return createHmac("sha256", serviceKey).update("aws4_request").digest();
+}
+
+function awsPercentEncode(value: string): string {
+  return encodeURIComponent(value).replace(/[!'()*]/g, (char) =>
+    `%${char.charCodeAt(0).toString(16).toUpperCase()}`
   );
 }
 

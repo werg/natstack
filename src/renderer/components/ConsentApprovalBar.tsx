@@ -1097,6 +1097,12 @@ function formatInjection(approval: PendingCredentialApproval | PendingCredential
   if (injection.type === "cookie") {
     return "cookie";
   }
+  if (injection.type === "aws-sigv4") {
+    return `AWS SigV4 ${injection.service}/${injection.region}`;
+  }
+  if (injection.type === "ssh-key") {
+    return "SSH key";
+  }
   return `header ${injection.name}`;
 }
 

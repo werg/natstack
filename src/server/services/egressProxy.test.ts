@@ -199,6 +199,33 @@ describe("EgressProxy", () => {
     expect(prepared.headers.authorization).toBe("Basic eC1hY2Nlc3MtdG9rZW46c2VjcmV0LXRva2Vu");
   });
 
+  it("signs AWS SigV4 requests at egress time", () => {
+    const credential = createCredential({
+      accessToken: "AKIATEST",
+      awsSecretAccessKey: "aws-secret",
+      awsSessionToken: "session-token",
+      bindings: [{
+        id: "aws",
+        use: "fetch",
+        audience: [{ url: "https://s3.us-east-1.amazonaws.com/", match: "origin" }],
+        injection: { type: "aws-sigv4", service: "s3", region: "us-east-1" },
+      }],
+    });
+    const proxy = createProxy(credential);
+    const prepared = proxy.prepareForwardRequest(
+      new URL("https://s3.us-east-1.amazonaws.com/bucket/key"),
+      { authorization: "Bearer attacker" },
+      credential,
+      credential.bindings![0],
+      "GET",
+    );
+
+    expect(prepared.headers.authorization).toMatch(/^AWS4-HMAC-SHA256 Credential=AKIATEST\//);
+    expect(prepared.headers.authorization).toContain("SignedHeaders=");
+    expect(prepared.headers["x-amz-date"]).toBeTypeOf("string");
+    expect(prepared.headers["x-amz-security-token"]).toBe("session-token");
+  });
+
   it("redacts query-param credentials from audit URLs", async () => {
     const auditLog = new MemoryAuditLog();
     const credential = createCredential({
