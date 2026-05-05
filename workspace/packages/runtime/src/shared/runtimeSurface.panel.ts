@@ -88,6 +88,8 @@ export const panelRuntimeSurface: RuntimeSurface = {
       "beginCreateWithOAuthPkce",
       "beginCreateWithOAuthClientPkce",
       "completeCreateWithOAuthPkce",
+      "connectWithOAuthPkce",
+      "connectWithOAuthClientPkce",
       "requestOAuthClientConfig",
       "requestCredentialInput",
       "getOAuthClientConfigStatus",

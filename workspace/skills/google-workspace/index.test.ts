@@ -6,6 +6,7 @@ const runtimeMock = vi.hoisted(() => ({
     beginCreateWithOAuthPkce: vi.fn(),
     beginCreateWithOAuthClientPkce: vi.fn(),
     completeCreateWithOAuthPkce: vi.fn(),
+    connectWithOAuthClientPkce: vi.fn(),
     requestOAuthClientConfig: vi.fn(),
     getOAuthClientConfigStatus: vi.fn(),
     listStoredCredentials: vi.fn(),
@@ -79,6 +80,7 @@ describe("google-workspace skill facade", () => {
       authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth?client_id=client-1",
     });
     runtimeMock.credentials.completeCreateWithOAuthPkce.mockResolvedValue(googleCredential);
+    runtimeMock.credentials.connectWithOAuthClientPkce.mockResolvedValue(googleCredential);
     runtimeMock.credentials.fetch.mockResolvedValue(
       new Response(JSON.stringify({ email: "user@example.com" }), {
         status: 200,
@@ -229,7 +231,7 @@ describe("google-workspace skill facade", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("client material is not configured");
-    expect(runtimeMock.oauth.createLoopbackCallback).not.toHaveBeenCalled();
+    expect(runtimeMock.credentials.connectWithOAuthClientPkce).not.toHaveBeenCalled();
   });
 
   it("connectGoogle uses stored OAuth client config without exposing client secret to userland", async () => {
@@ -245,7 +247,7 @@ describe("google-workspace skill facade", () => {
     const result = await connectGoogle();
 
     expect(result.success).toBe(true);
-    expect(runtimeMock.credentials.beginCreateWithOAuthClientPkce).toHaveBeenCalledWith(
+    expect(runtimeMock.credentials.connectWithOAuthClientPkce).toHaveBeenCalledWith(
       expect.objectContaining({
         oauth: expect.objectContaining({ configId: "google-workspace" }),
       })

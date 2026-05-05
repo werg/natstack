@@ -120,6 +120,8 @@ export const workspace = helpfulNamespace("workspace", workspaceClient);
 import {
   beginCreateWithOAuthClientPkce as beginOAuthClientCredentialPkce,
   beginCreateWithOAuthPkce as beginCredentialOAuthPkce,
+  connectWithOAuthClientPkce as connectOAuthClientCredentialPkce,
+  connectWithOAuthPkce as connectCredentialOAuthPkce,
   completeCreateWithOAuthPkce as completeCredentialOAuthPkce,
   fetch as credentialFetch,
   getOAuthClientConfigStatus as getOAuthClientCredentialConfigStatus,
@@ -146,12 +148,20 @@ export type {
   RequestOAuthClientConfigRequest,
   GitHttpClient,
 } from "../shared/credentials.js";
+export type {
+  ConnectOAuthClientPkceCredentialRequest,
+  ConnectOAuthPkceCredentialRequest,
+  OAuthAuthorizeOpenMode,
+  OAuthLoopbackOptions,
+} from "./credentials.js";
 initPanelCredentials(rpc);
 const credentialApi = {
   store: storeUrlBoundCredential,
   beginCreateWithOAuthPkce: beginCredentialOAuthPkce,
   beginCreateWithOAuthClientPkce: beginOAuthClientCredentialPkce,
   completeCreateWithOAuthPkce: completeCredentialOAuthPkce,
+  connectWithOAuthPkce: connectCredentialOAuthPkce,
+  connectWithOAuthClientPkce: connectOAuthClientCredentialPkce,
   requestOAuthClientConfig: requestOAuthClientCredentialConfig,
   requestCredentialInput: requestCredentialSecretInput,
   getOAuthClientConfigStatus: getOAuthClientCredentialConfigStatus,

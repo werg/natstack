@@ -1,4 +1,6 @@
 import type { RpcCaller } from "@natstack/rpc";
+import { openExternal } from "./browser.js";
+import { createLoopbackCallback } from "./oauth.js";
 import {
   createCredentialClient,
   type BeginOAuthPkceCredentialResult,
@@ -16,6 +18,24 @@ import {
   type StoredCredentialSummary,
   type StoreUrlBoundCredentialRequest,
 } from "../shared/credentials.js";
+
+export interface OAuthLoopbackOptions {
+  host?: string;
+  port?: number;
+  callbackPath?: string;
+}
+
+export type OAuthAuthorizeOpenMode = "external" | "panel" | "manual";
+
+export interface ConnectOAuthPkceCredentialRequest extends Omit<CreateOAuthPkceCredentialRequest, "redirectUri"> {
+  loopback?: OAuthLoopbackOptions;
+  openMode?: OAuthAuthorizeOpenMode;
+}
+
+export interface ConnectOAuthClientPkceCredentialRequest extends Omit<BeginOAuthClientPkceCredentialRequest, "redirectUri"> {
+  loopback?: OAuthLoopbackOptions;
+  openMode?: OAuthAuthorizeOpenMode;
+}
 
 let client: CredentialClient | null = null;
 
@@ -52,6 +72,24 @@ export async function completeCreateWithOAuthPkce(
   input: CompleteOAuthPkceCredentialRequest,
 ): Promise<StoredCredentialSummary> {
   return requireClient().completeCreateWithOAuthPkce(input);
+}
+
+export async function connectWithOAuthPkce(
+  input: ConnectOAuthPkceCredentialRequest,
+): Promise<StoredCredentialSummary> {
+  return runOAuthPkceCredentialFlow(
+    input,
+    (redirectUri) => requireClient().beginCreateWithOAuthPkce({ ...input, redirectUri }),
+  );
+}
+
+export async function connectWithOAuthClientPkce(
+  input: ConnectOAuthClientPkceCredentialRequest,
+): Promise<StoredCredentialSummary> {
+  return runOAuthPkceCredentialFlow(
+    input,
+    (redirectUri) => requireClient().beginCreateWithOAuthClientPkce({ ...input, redirectUri }),
+  );
 }
 
 export async function requestOAuthClientConfig(
@@ -107,6 +145,45 @@ export function hookForUrl(
 
 export function gitHttp(opts?: { credentialId?: string }): GitHttpClient {
   return requireClient().gitHttp(opts);
+}
+
+async function runOAuthPkceCredentialFlow(
+  input: { loopback?: OAuthLoopbackOptions; openMode?: OAuthAuthorizeOpenMode },
+  begin: (redirectUri: string) => Promise<BeginOAuthPkceCredentialResult>,
+): Promise<StoredCredentialSummary> {
+  const callback = await createLoopbackCallback(input.loopback);
+  try {
+    const started = await begin(callback.redirectUri);
+    await callback.expectState(started.state);
+    await openOAuthAuthorizeUrl(started.authorizeUrl, callback.redirectUri, input.openMode ?? "external");
+    const result = await callback.waitForCallback();
+    return await requireClient().completeCreateWithOAuthPkce({
+      nonce: started.nonce,
+      code: result.code,
+      state: result.state,
+    });
+  } finally {
+    await callback.close().catch(() => {});
+  }
+}
+
+async function openOAuthAuthorizeUrl(
+  authorizeUrl: string,
+  redirectUri: string,
+  mode: OAuthAuthorizeOpenMode,
+): Promise<void> {
+  switch (mode) {
+    case "external":
+      await openExternal(authorizeUrl, { expectedRedirectUri: redirectUri });
+      return;
+    case "panel":
+      window.open(authorizeUrl, "_blank", "noopener,noreferrer");
+      return;
+    case "manual":
+      return;
+    default:
+      throw new Error(`Unsupported OAuth authorize open mode: ${String(mode)}`);
+  }
 }
 
 export type {

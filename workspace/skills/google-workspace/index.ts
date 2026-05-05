@@ -1,4 +1,4 @@
-import { credentials, oauth, openExternal } from "@workspace/runtime";
+import { credentials } from "@workspace/runtime";
 import type {
   BeginOAuthPkceCredentialResult,
   CompleteOAuthPkceCredentialRequest,
@@ -392,7 +392,6 @@ export async function getGoogleOnboardingStatus(
 export async function connectGoogle(
   opts: ConnectGoogleOptions = {}
 ): Promise<GoogleConnectionResult> {
-  let callback: Awaited<ReturnType<typeof oauth.createLoopbackCallback>> | null = null;
   try {
     if (!(await getGoogleOAuthClientStatus()).configured) {
       return {
@@ -403,18 +402,35 @@ export async function connectGoogle(
       };
     }
 
-    callback = await oauth.createLoopbackCallback();
-    const begin = await beginGoogleCredentialCreation({
-      redirectUri: callback.redirectUri,
-      scopes: opts.scopes,
-    });
-    await openExternal(begin.authorizeUrl, { expectedRedirectUri: callback.redirectUri });
-    const callbackResult = await callback.waitForCallback();
-    const stored = await completeGoogleCredentialCreation({
-      nonce: begin.nonce,
-      code: callbackResult.code,
-      state: callbackResult.state,
-    });
+    const scopes = getDefaultScopes(opts.scopes);
+    const stored = await withCredentialRuntime((api) =>
+      api.connectWithOAuthClientPkce({
+        oauth: {
+          configId: GOOGLE_OAUTH_CLIENT_CONFIG_ID,
+          scopes,
+          extraAuthorizeParams: {
+            access_type: "offline",
+            prompt: "consent",
+          },
+        },
+        credential: {
+          label: "Google Workspace",
+          audience: [
+            { url: "https://gmail.googleapis.com/", match: "origin" },
+            { url: "https://www.googleapis.com/", match: "origin" },
+          ],
+          injection: {
+            type: "header",
+            name: "authorization",
+            valueTemplate: "Bearer {token}",
+          },
+          scopes,
+          metadata: {
+            providerId: GOOGLE_PROVIDER_ID,
+          },
+        },
+      })
+    );
     const verification = await verifyGoogleCredential(stored.id);
     return {
       success: verification.valid,
@@ -426,8 +442,6 @@ export async function connectGoogle(
   } catch (error) {
     const normalized = normalizeCredentialRuntimeError(error);
     return { success: false, error: normalized.message };
-  } finally {
-    await callback?.close().catch(() => {});
   }
 }
 
