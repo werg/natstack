@@ -39,6 +39,8 @@ export class TokenManager {
   private callerIdToToken = new Map<string, string>();
   // panelId -> parent panel id (null for roots)
   private panelParentIds = new Map<string, string | null>();
+  // panelId -> authenticated shell/client caller id that owns browser handoff
+  private panelOwnerCallerIds = new Map<string, string>();
   // revocation listeners
   private revokeListeners: ((callerId: string) => void)[] = [];
   // admin token for privileged operations
@@ -109,6 +111,7 @@ export class TokenManager {
     this.callerIdToToken.delete(callerId);
     this.tokenToEntry.delete(token);
     this.panelParentIds.delete(callerId);
+    this.panelOwnerCallerIds.delete(callerId);
 
     for (const listener of this.revokeListeners) {
       listener(callerId);
@@ -132,6 +135,7 @@ export class TokenManager {
     this.tokenToEntry.clear();
     this.callerIdToToken.clear();
     this.panelParentIds.clear();
+    this.panelOwnerCallerIds.clear();
 
     for (const callerId of callerIds) {
       for (const listener of this.revokeListeners) {
@@ -168,6 +172,14 @@ export class TokenManager {
 
   getPanelParent(panelId: string): string | null | undefined {
     return this.panelParentIds.get(panelId);
+  }
+
+  setPanelOwner(panelId: string, ownerCallerId: string): void {
+    this.panelOwnerCallerIds.set(panelId, ownerCallerId);
+  }
+
+  getPanelOwner(panelId: string): string | undefined {
+    return this.panelOwnerCallerIds.get(panelId);
   }
 
   isPanelDescendantOf(panelId: string, ancestorId: string): boolean {

@@ -42,7 +42,7 @@ function InlineUiErrorCallout({
   return (
     <Callout.Root color="red" size="1">
       <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
-      <Callout.Text>
+      <Text as="div" size="2" className="rt-CalloutText">
         <Flex direction="column" gap="2">
           <Text size="1">Component error: {error.message || "Unknown error"}</Text>
           <Box>
@@ -57,7 +57,7 @@ function InlineUiErrorCallout({
             </Button>
           </Box>
         </Flex>
-      </Callout.Text>
+      </Text>
     </Callout.Root>
   );
 }

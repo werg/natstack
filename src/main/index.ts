@@ -444,6 +444,14 @@ app.on("ready", async () => {
           });
         }
       }
+      if (bareEvent === "browser-panel:open") {
+        const { url, parentPanelId } = payload as { url?: string; parentPanelId?: string };
+        if (typeof url === "string" && typeof parentPanelId === "string") {
+          void panelOrchestrator?.createBrowserPanel(parentPanelId, url, { focus: true }).catch((err: unknown) => {
+            log.warn(`[browserPanel] createBrowserPanel failed: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
+      }
       if (isValidEventName(bareEvent)) {
         (eventService.emit as (e: EventName, d: unknown) => void)(bareEvent, payload);
       }
@@ -489,6 +497,7 @@ app.on("ready", async () => {
     });
     serverClientRef = serverSession.serverClient;
     shellEventSubscriptions.add("external-open:open");
+    shellEventSubscriptions.add("browser-panel:open");
     await replayShellSubscriptionsToServer();
     workspaceId = serverSession.workspaceId;
 
@@ -608,7 +617,6 @@ app.on("ready", async () => {
     const { createSettingsService } = await import("./services/settingsService.js");
     const { createAdblockService } = await import("./services/adblockService.js");
     const { createBrowserService } = await import("./services/browserService.js");
-    const { createOAuthLoopbackService } = await import("./services/oauthLoopbackService.js");
     // FS and git-local services removed — server owns these via panel service
     const { createBrowserDataService } = await import("./services/browserDataService.js");
     const { BrowserDataStore } = await import("@natstack/browser-data");
@@ -642,7 +650,6 @@ app.on("ready", async () => {
     electronContainer.register(rpcService(createSettingsService({ serverClient: sc })));
     const { createRemoteCredService } = await import("./services/remoteCredService.js");
     electronContainer.register(rpcService(createRemoteCredService({ startupMode })));
-    electronContainer.register(rpcService(createOAuthLoopbackService()));
     electronContainer.register(rpcService(createAdblockService({ adBlockManager })));
     // Locally-hosted services
     electronContainer.register(rpcService(createBrowserService({

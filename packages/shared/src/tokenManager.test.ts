@@ -107,6 +107,17 @@ describe("TokenManager", () => {
 
     expect(tm.getPanelParent("panel-1")).toBeUndefined();
   });
+
+  it("tracks and clears panel browser handoff owners", () => {
+    tm.createToken("panel-1", "panel");
+    tm.setPanelOwner("panel-1", "shell:owner");
+
+    expect(tm.getPanelOwner("panel-1")).toBe("shell:owner");
+
+    tm.revokeToken("panel-1");
+
+    expect(tm.getPanelOwner("panel-1")).toBeUndefined();
+  });
 });
 
 describe("GitAuthManager", () => {

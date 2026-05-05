@@ -49,7 +49,7 @@ export function createTokensService(deps: {
        */
       rotateAdmin: { args: z.tuple([]) },
     },
-    handler: async (_ctx, method, args) => {
+    handler: async (ctx, method, args) => {
       const tm = deps.tokenManager;
       switch (method) {
         case "create": return tm.createToken(args[0] as string, args[1] as CallerKind);
@@ -60,6 +60,9 @@ export function createTokensService(deps: {
           const [panelId, contextId, parentId, source] = args as [string, string, string | null | undefined, string | undefined];
           const token = tm.ensureToken(panelId, "panel");
           tm.setPanelParent(panelId, parentId ?? null);
+          if (ctx.callerKind === "shell" || ctx.callerKind === "server") {
+            tm.setPanelOwner(panelId, ctx.callerId);
+          }
           deps.fsService.registerCallerContext(panelId, contextId);
           if (source && deps.codeIdentityResolver) {
             const effectiveVersion = source.startsWith("browser:")
