@@ -46,12 +46,13 @@ import type { RuntimeFs } from "../types.js";
 
 export type { WorkerEnv, ExecutionContext } from "./types.js";
 export type {
+  ClientConfigStatus,
   CredentialClient,
   StoredCredentialSummary,
   StoreUrlBoundCredentialRequest,
-  ConfigureOAuthClientRequest,
-  ConnectOAuthCredentialRequest,
-  DeleteOAuthClientConfigRequest,
+  ConfigureClientRequest,
+  ConnectCredentialRequest,
+  DeleteClientConfigRequest,
   RequestCredentialInputRequest,
   GitHttpClient,
 } from "../shared/credentials.js";

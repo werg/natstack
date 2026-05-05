@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import * as http from "node:http";
 import { z } from "zod";
 import type { EventService } from "@natstack/shared/eventsService";
@@ -6,30 +6,32 @@ import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { ServiceRouteDecl } from "../routeRegistry.js";
 import { buildPublicUrl } from "../publicUrl.js";
 import type { AuditLog } from "../../../packages/shared/src/credentials/audit.js";
-import { OAuthClientConfigStore, type OAuthClientConfigRecord } from "../../../packages/shared/src/credentials/oauthClientConfigStore.js";
+import { ClientConfigStore, type ClientConfigRecord } from "../../../packages/shared/src/credentials/clientConfigStore.js";
 import { CredentialStore } from "../../../packages/shared/src/credentials/store.js";
 import type {
   AccountIdentity,
   AuditEntry,
-  ConnectOAuthCredentialRequest,
+  ClientConfigStatus,
+  ConnectCredentialRequest,
   Credential,
   CredentialAuditEvent,
   CredentialBinding,
   CredentialBindingUse,
+  CredentialFlowType,
   CredentialGrantAction,
   CredentialGrantScope,
   CredentialUseGrant,
-  DeleteOAuthClientConfigRequest,
+  DeleteClientConfigRequest,
   ForwardOAuthCallbackRequest,
-  GetOAuthClientConfigStatusRequest,
+  GetClientConfigStatusRequest,
   GrantUrlBoundCredentialRequest,
-  OAuthClientConfigStatus,
   OAuthConnectionErrorCode,
   OAuthConnectionTransactionState,
+  OAuthAccountValidationSpec,
   ProxyGitHttpRequest,
   ProxyGitHttpResponse,
   RequestCredentialInputRequest,
-  RequestOAuthClientConfigRequest,
+  ConfigureClientRequest,
   ResolveUrlBoundCredentialRequest,
   StoredCredentialSummary,
   StoreUrlBoundCredentialRequest,
@@ -45,7 +47,7 @@ import type { ServiceDefinition } from "../../../packages/shared/src/serviceDefi
 import type { CodeIdentityResolver } from "./codeIdentityResolver.js";
 import type { EgressProxy } from "./egressProxy.js";
 import type { ApprovalQueue, GrantedDecision } from "./approvalQueue.js";
-import { OAuthCredentialLifecycle, OAuthLifecycleError } from "./oauthCredentialLifecycle.js";
+import { CredentialLifecycle, CredentialLifecycleError } from "./credentialLifecycle.js";
 import {
   CredentialSessionGrantStore,
   type CredentialSessionGrantResource,
@@ -92,6 +94,12 @@ const credentialInjectionSchema = z.discriminatedUnion("type", [
     passwordTemplate: z.string().min(1).max(256),
     stripIncoming: z.array(z.string().min(1).max(128)).optional(),
   }).strict(),
+  z.object({
+    type: z.literal("oauth1-signature"),
+  }).strict(),
+  z.object({
+    type: z.literal("cookie"),
+  }).strict(),
 ]);
 
 const credentialBindingSchema = z.object({
@@ -124,7 +132,7 @@ const storeUrlBoundCredentialParamsSchema = z.object({
   injection: credentialInjectionSchema,
   bindings: z.array(credentialBindingSchema).min(1).max(8).optional(),
   material: z.object({
-    type: z.enum(["bearer-token", "api-key"]),
+    type: z.enum(["bearer-token", "api-key", "oauth1-token", "cookie-session", "saml-session"]),
     token: z.string().min(1).max(65536),
   }).strict(),
   accountIdentity: accountIdentitySchema.optional(),
@@ -133,30 +141,17 @@ const storeUrlBoundCredentialParamsSchema = z.object({
   metadata: z.record(z.string(), z.string()).optional(),
 }).strict();
 
-const createOAuthPkceCredentialParamsSchema = z.object({
-  oauth: z.object({
-    authorizeUrl: z.string().url(),
-    tokenUrl: z.string().url(),
-    clientId: z.string().min(1).max(512),
-    scopes: z.array(z.string().max(256)).optional(),
-    extraAuthorizeParams: z.record(z.string(), z.string()).optional(),
-    allowMissingExpiry: z.boolean().optional(),
-    persistRefreshToken: z.boolean().optional(),
-    accountValidation: oauthAccountValidationSchema.optional(),
-  }).strict(),
-  credential: z.object({
-    label: z.string().min(1).max(256),
-    audience: z.array(urlAudienceSchema).min(1).max(16),
-    injection: credentialInjectionSchema,
-    bindings: z.array(credentialBindingSchema).min(1).max(8).optional(),
-    accountIdentity: accountIdentitySchema.optional(),
-    scopes: z.array(z.string().max(256)).optional(),
-    metadata: z.record(z.string(), z.string()).optional(),
-  }).strict(),
-  redirectUri: z.string().url(),
+const connectCredentialDetailsSchema = z.object({
+  label: z.string().min(1).max(256),
+  audience: z.array(urlAudienceSchema).min(1).max(16),
+  injection: credentialInjectionSchema,
+  bindings: z.array(credentialBindingSchema).min(1).max(8).optional(),
+  accountIdentity: accountIdentitySchema.optional(),
+  scopes: z.array(z.string().max(256)).optional(),
+  metadata: z.record(z.string(), z.string()).optional(),
 }).strict();
 
-const oauthClientConfigFieldSchema = z.object({
+const clientConfigFieldSchema = z.object({
   name: identifierSchema,
   label: z.string().min(1).max(128),
   type: z.enum(["text", "secret"]),
@@ -164,13 +159,30 @@ const oauthClientConfigFieldSchema = z.object({
   description: z.string().max(512).optional(),
 }).strict();
 
-const requestOAuthClientConfigParamsSchema = z.object({
+const requestClientConfigParamsSchema = z.object({
   configId: identifierSchema,
   title: z.string().min(1).max(256),
   description: z.string().max(1024).optional(),
   authorizeUrl: z.string().url(),
   tokenUrl: z.string().url(),
-  fields: z.array(oauthClientConfigFieldSchema).min(1).max(16),
+  fields: z.array(clientConfigFieldSchema).min(1).max(16),
+}).strict();
+
+const credentialFlowTypeSchema = z.enum([
+  "oauth2-auth-code-pkce",
+  "oauth2-auth-code",
+  "oauth2-device-code",
+  "oauth2-client-credentials",
+  "oauth1a",
+  "api-key",
+  "browser-cookie-session",
+  "saml-browser-session",
+]);
+
+const configureClientParamsSchema = requestClientConfigParamsSchema.extend({
+  flowTypes: z.array(credentialFlowTypeSchema).min(1).max(8).optional(),
+  status: z.enum(["active", "disabled"]).optional(),
+  allowRefreshWhenDisabled: z.boolean().optional(),
 }).strict();
 
 const requestCredentialInputParamsSchema = z.object({
@@ -185,16 +197,16 @@ const requestCredentialInputParamsSchema = z.object({
     scopes: z.array(z.string().max(256)).optional(),
     metadata: z.record(z.string(), z.string()).optional(),
   }).strict(),
-  fields: z.array(oauthClientConfigFieldSchema).length(1),
+  fields: z.array(clientConfigFieldSchema).length(1),
   material: z.object({
     type: z.enum(["bearer-token", "api-key"]),
     tokenField: identifierSchema,
   }).strict(),
 }).strict();
 
-const getOAuthClientConfigStatusParamsSchema = z.object({
+const getClientConfigStatusParamsSchema = z.object({
   configId: identifierSchema,
-  fields: z.array(oauthClientConfigFieldSchema).max(16).optional(),
+  fields: z.array(clientConfigFieldSchema).max(16).optional(),
 }).strict();
 
 const oauthRedirectStrategySchema = z.object({
@@ -206,46 +218,130 @@ const oauthRedirectStrategySchema = z.object({
   fallback: z.literal("dynamic-port").optional(),
 }).strict();
 
-const connectOAuthCredentialSpecSchema = z.object({
-  oauth: z.union([
-    z.object({
-      authorizeUrl: z.string().url(),
-      tokenUrl: z.string().url(),
-      clientId: z.string().min(1).max(512),
-      scopes: z.array(z.string().max(256)).optional(),
-      extraAuthorizeParams: z.record(z.string(), z.string()).optional(),
-      allowMissingExpiry: z.boolean().optional(),
-      persistRefreshToken: z.boolean().optional(),
-      accountValidation: oauthAccountValidationSchema.optional(),
-    }).strict(),
-    z.object({
-      clientConfigId: identifierSchema,
-      scopes: z.array(z.string().max(256)).optional(),
-      extraAuthorizeParams: z.record(z.string(), z.string()).optional(),
-      allowMissingExpiry: z.boolean().optional(),
-      persistRefreshToken: z.boolean().optional(),
-      accountValidation: oauthAccountValidationSchema.optional(),
-    }).strict(),
-  ]),
-  credential: createOAuthPkceCredentialParamsSchema.shape.credential,
-  redirect: oauthRedirectStrategySchema.optional(),
-  browser: z.enum(["external", "internal"]).optional(),
-}).strict();
+const tokenAuthSchema = z.enum(["none", "client_secret_post", "client_secret_basic"]);
 
-const oauthBrowserHandoffTargetSchema = z.object({
+const browserHandoffTargetSchema = z.object({
   callerId: z.string().min(1).max(512),
   callerKind: z.enum(["panel", "shell"]),
 }).strict();
 
-const connectOAuthCredentialParamsSchema = z.union([
-  connectOAuthCredentialSpecSchema,
+const connectCredentialSpecSchema = z.object({
+  flow: z.discriminatedUnion("type", [
+    z.object({
+      type: z.literal("oauth2-auth-code-pkce"),
+      authorizeUrl: z.string().url().optional(),
+      tokenUrl: z.string().url().optional(),
+      clientId: z.string().min(1).max(512).optional(),
+      clientConfigId: identifierSchema.optional(),
+      scopes: z.array(z.string().max(256)).optional(),
+      extraAuthorizeParams: z.record(z.string(), z.string()).optional(),
+      tokenAuth: tokenAuthSchema.optional(),
+      persistRefreshToken: z.boolean().optional(),
+      allowMissingExpiry: z.boolean().optional(),
+      accountValidation: oauthAccountValidationSchema.optional(),
+    }).strict(),
+    z.object({
+      type: z.literal("oauth2-auth-code"),
+      authorizeUrl: z.string().url().optional(),
+      tokenUrl: z.string().url().optional(),
+      clientId: z.string().min(1).max(512).optional(),
+      clientConfigId: identifierSchema.optional(),
+      scopes: z.array(z.string().max(256)).optional(),
+      extraAuthorizeParams: z.record(z.string(), z.string()).optional(),
+      tokenAuth: tokenAuthSchema.optional(),
+      persistRefreshToken: z.boolean().optional(),
+      accountValidation: oauthAccountValidationSchema.optional(),
+      pkce: z.literal(false),
+      compatibilityReason: z.string().min(1).max(1024),
+      requiresConfidentialClient: z.boolean().optional(),
+    }).strict(),
+    z.object({
+      type: z.literal("oauth2-device-code"),
+      deviceAuthorizationUrl: z.string().url(),
+      tokenUrl: z.string().url(),
+      clientId: z.string().min(1).max(512).optional(),
+      clientConfigId: identifierSchema.optional(),
+      scopes: z.array(z.string().max(256)).optional(),
+      tokenAuth: tokenAuthSchema.optional(),
+      pollIntervalSeconds: z.number().int().positive().optional(),
+      expiresInSeconds: z.number().int().positive().optional(),
+      accountValidation: oauthAccountValidationSchema.optional(),
+      persistRefreshToken: z.boolean().optional(),
+    }).strict(),
+    z.object({
+      type: z.literal("oauth2-client-credentials"),
+      tokenUrl: z.string().url(),
+      clientConfigId: identifierSchema,
+      tokenAuth: z.enum(["client_secret_post", "client_secret_basic"]),
+      scopes: z.array(z.string().max(256)).optional(),
+      audienceParam: z.string().max(512).optional(),
+      resourceParam: z.string().max(512).optional(),
+      accountValidation: oauthAccountValidationSchema.optional(),
+    }).strict(),
+    z.object({
+      type: z.literal("oauth1a"),
+      requestTokenUrl: z.string().url(),
+      authorizeUrl: z.string().url(),
+      accessTokenUrl: z.string().url(),
+      clientConfigId: identifierSchema,
+      callbackConfirmedParam: z.string().max(128).optional(),
+      signatureMethod: z.literal("HMAC-SHA1").optional(),
+      accountValidation: z.enum(["none", "http-probe"]).optional(),
+    }).strict(),
+    z.object({
+      type: z.literal("api-key"),
+      title: z.string().min(1).max(256).optional(),
+      description: z.string().max(1024).optional(),
+      fields: z.array(clientConfigFieldSchema).min(1).max(16),
+      materialTemplate: z.object({
+        type: z.enum(["bearer-token", "api-key"]),
+        valueTemplate: z.string().min(1).max(4096),
+      }).strict(),
+      accountValidation: z.enum(["http-probe", "none"]).optional(),
+    }).strict(),
+    z.object({
+      type: z.literal("browser-cookie-session"),
+      signInUrl: z.string().url(),
+      capture: z.object({
+        cookies: z.array(z.string().min(1).max(256)).min(1).max(64),
+        origins: z.array(z.string().url()).min(1).max(16),
+      }).strict(),
+      completionUrlPattern: z.string().max(1024).optional(),
+      accountValidation: z.enum(["http-probe", "none"]).optional(),
+      maxTtlSeconds: z.number().int().positive().optional(),
+    }).strict(),
+    z.object({
+      type: z.literal("saml-browser-session"),
+      signInUrl: z.string().url(),
+      spAudience: z.string().min(1).max(2048),
+      capture: z.object({
+        cookies: z.array(z.string().min(1).max(256)).min(1).max(64).optional(),
+        assertion: z.object({
+          issuer: z.string().min(1).max(2048),
+          audience: z.string().min(1).max(2048),
+          recipient: z.string().min(1).max(2048),
+          persistAssertion: z.boolean().optional(),
+        }).strict().optional(),
+      }).strict(),
+      completionUrlPattern: z.string().max(1024).optional(),
+      maxTtlSeconds: z.number().int().positive().optional(),
+      accountValidation: z.enum(["saml-assertion-claims", "http-probe", "none"]).optional(),
+    }).strict(),
+  ]),
+  credential: connectCredentialDetailsSchema,
+  redirect: oauthRedirectStrategySchema.optional(),
+  browser: z.enum(["external", "internal"]).optional(),
+}).strict();
+
+const connectCredentialParamsSchema = z.union([
+  connectCredentialSpecSchema,
   z.object({
-    spec: connectOAuthCredentialSpecSchema,
-    handoffTarget: oauthBrowserHandoffTargetSchema,
+    spec: connectCredentialSpecSchema,
+    handoffTarget: browserHandoffTargetSchema,
   }).strict(),
 ]);
 
-const deleteOAuthClientConfigParamsSchema = z.object({
+const deleteClientConfigParamsSchema = z.object({
   configId: identifierSchema,
 }).strict();
 
@@ -300,11 +396,12 @@ const auditParamsSchema = z.object({
 }).strict();
 
 type StoreUrlBoundCredentialParams = z.infer<typeof storeUrlBoundCredentialParamsSchema>;
-type RequestOAuthClientConfigParams = z.infer<typeof requestOAuthClientConfigParamsSchema>;
+type RequestClientConfigParams = z.infer<typeof requestClientConfigParamsSchema>;
+type ConfigureClientParams = z.infer<typeof configureClientParamsSchema>;
 type RequestCredentialInputParams = z.infer<typeof requestCredentialInputParamsSchema>;
-type GetOAuthClientConfigStatusParams = z.infer<typeof getOAuthClientConfigStatusParamsSchema>;
-type ConnectOAuthCredentialParams = z.infer<typeof connectOAuthCredentialParamsSchema>;
-type DeleteOAuthClientConfigParams = z.infer<typeof deleteOAuthClientConfigParamsSchema>;
+type GetClientConfigStatusParams = z.infer<typeof getClientConfigStatusParamsSchema>;
+type ConnectCredentialParams = z.infer<typeof connectCredentialParamsSchema>;
+type DeleteClientConfigParams = z.infer<typeof deleteClientConfigParamsSchema>;
 type ForwardOAuthCallbackParams = z.infer<typeof forwardOAuthCallbackParamsSchema>;
 type CredentialIdParams = z.infer<typeof credentialIdParamsSchema>;
 type GrantCredentialParams = z.infer<typeof grantCredentialParamsSchema>;
@@ -312,10 +409,40 @@ type ResolveCredentialParams = z.infer<typeof resolveCredentialParamsSchema>;
 type ProxyFetchParams = z.infer<typeof proxyFetchParamsSchema>;
 type ProxyGitHttpParams = z.infer<typeof proxyGitHttpParamsSchema>;
 type AuditParams = z.infer<typeof auditParamsSchema>;
+type AuthCodeConnectRequest = {
+  flow: {
+    authorizeUrl?: string;
+    tokenUrl?: string;
+    clientId?: string;
+    clientConfigId?: string;
+    scopes?: string[];
+    extraAuthorizeParams?: Record<string, string>;
+    allowMissingExpiry?: boolean;
+    persistRefreshToken?: boolean;
+    accountValidation?: OAuthAccountValidationSpec;
+  };
+  credential: ConnectCredentialRequest["credential"];
+  redirect?: ConnectCredentialRequest["redirect"];
+  browser?: ConnectCredentialRequest["browser"];
+  pkce: boolean;
+  tokenAuth: "none" | "client_secret_post" | "client_secret_basic";
+};
 type InternalOAuthConnectionRequest = {
-  oauth: Extract<ConnectOAuthCredentialRequest["oauth"], { authorizeUrl: string }> & { clientSecret?: string };
-  credential: ConnectOAuthCredentialRequest["credential"];
+  flow: {
+    authorizeUrl: string;
+    tokenUrl: string;
+    clientId: string;
+    clientSecret?: string;
+    scopes?: string[];
+    extraAuthorizeParams?: Record<string, string>;
+    allowMissingExpiry?: boolean;
+    persistRefreshToken?: boolean;
+    accountValidation?: AuthCodeConnectRequest["flow"]["accountValidation"];
+  };
+  credential: ConnectCredentialRequest["credential"];
   redirectUri: string;
+  pkce: boolean;
+  tokenAuth: "none" | "client_secret_post" | "client_secret_basic";
 };
 
 interface CredentialUseContext {
@@ -335,7 +462,7 @@ function canonicalUrl(raw: string): string {
   return new URL(raw).toString();
 }
 
-function validateOAuthClientConfigUrls(authorizeUrl: string, tokenUrl: string): void {
+function validateClientConfigUrls(authorizeUrl: string, tokenUrl: string): void {
   const authorize = new URL(authorizeUrl);
   const token = new URL(tokenUrl);
   if (authorize.protocol !== "https:") {
@@ -356,7 +483,7 @@ function validateOAuthClientConfigUrls(authorizeUrl: string, tokenUrl: string): 
 }
 
 function validateOAuthCredentialRequest(request: InternalOAuthConnectionRequest): void {
-  validateOAuthClientConfigUrls(canonicalUrl(request.oauth.authorizeUrl), canonicalUrl(request.oauth.tokenUrl));
+  validateClientConfigUrls(canonicalUrl(request.flow.authorizeUrl), canonicalUrl(request.flow.tokenUrl));
   const redirect = new URL(request.redirectUri);
   if (!((redirect.protocol === "http:" && isLoopbackHost(redirect.hostname)) || redirect.protocol === "https:")) {
     throw new Error("OAuth redirectUri must be host-created loopback HTTP or public HTTPS");
@@ -370,8 +497,8 @@ function validateOAuthCredentialRequest(request: InternalOAuthConnectionRequest)
     throw new Error("OAuth credentials only support constrained header injection");
   }
   normalizeCredentialBindings(request.credential.bindings, { audience, injection });
-  if (request.oauth.accountValidation?.userinfo?.url) {
-    const userinfo = new URL(request.oauth.accountValidation.userinfo.url);
+  if (request.flow.accountValidation?.userinfo?.url) {
+    const userinfo = new URL(request.flow.accountValidation.userinfo.url);
     if (userinfo.protocol !== "https:") {
       throw new Error("OAuth userinfo url must use https");
     }
@@ -392,7 +519,7 @@ function isLoopbackHost(hostname: string): boolean {
 
 interface CredentialServiceDeps {
   credentialStore?: CredentialStore;
-  oauthClientConfigStore?: OAuthClientConfigStore;
+  clientConfigStore?: ClientConfigStore;
   auditLog?: AuditLog;
   eventService?: Pick<EventService, "emit" | "emitTo">;
   tokenManager?: Pick<TokenManager, "getPanelOwner">;
@@ -400,7 +527,44 @@ interface CredentialServiceDeps {
   codeIdentityResolver?: Pick<CodeIdentityResolver, "resolveByCallerId">;
   approvalQueue?: ApprovalQueue;
   sessionGrantStore?: CredentialSessionGrantStore;
-  oauthLifecycle?: OAuthCredentialLifecycle;
+  credentialLifecycle?: CredentialLifecycle;
+  sessionCredentialCapture?: SessionCredentialCapture;
+}
+
+interface SessionCredentialCapture {
+  captureCookies(params: {
+    signInUrl: string;
+    origins: string[];
+    cookieNames: string[];
+    completionUrlPattern?: string;
+    maxTtlSeconds?: number;
+    browser?: "internal" | "external";
+  }): Promise<{
+    cookieHeader: string;
+    cookieSession?: Credential["cookieSession"];
+    expiresAt?: number;
+    accountIdentity?: Partial<AccountIdentity>;
+  }>;
+  captureSamlSession?(params: {
+    signInUrl: string;
+    spAudience: string;
+    cookieNames?: string[];
+    assertion?: {
+      issuer: string;
+      audience: string;
+      recipient: string;
+      persistAssertion?: boolean;
+    };
+    completionUrlPattern?: string;
+    maxTtlSeconds?: number;
+    browser?: "internal" | "external";
+  }): Promise<{
+    cookieHeader?: string;
+    cookieSession?: Credential["cookieSession"];
+    assertion?: string;
+    expiresAt?: number;
+    accountIdentity?: Partial<AccountIdentity>;
+  }>;
 }
 
 interface OAuthConnectionTransaction {
@@ -433,7 +597,7 @@ class OAuthConnectionError extends Error {
 
 export function createCredentialService(deps: CredentialServiceDeps = {}): ServiceDefinition {
   const credentialStore = deps.credentialStore ?? new CredentialStore();
-  const oauthClientConfigStore = deps.oauthClientConfigStore ?? new OAuthClientConfigStore();
+  const clientConfigStore = deps.clientConfigStore ?? new ClientConfigStore();
   const auditLog = deps.auditLog;
   const eventService = deps.eventService;
   const tokenManager = deps.tokenManager;
@@ -441,9 +605,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   const codeIdentityResolver = deps.codeIdentityResolver;
   const approvalQueue = deps.approvalQueue;
   const sessionGrantStore = deps.sessionGrantStore ?? new CredentialSessionGrantStore();
-  const oauthLifecycle = deps.oauthLifecycle ?? new OAuthCredentialLifecycle({
+  const sessionCredentialCapture = deps.sessionCredentialCapture;
+  const credentialLifecycle = deps.credentialLifecycle ?? new CredentialLifecycle({
     credentialStore,
-    oauthClientConfigStore,
+    clientConfigStore,
   });
   const oauthTransactions = new Map<string, OAuthConnectionTransaction>();
 
@@ -548,20 +713,22 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   function createOAuthAuthorizeRequest(
     request: InternalOAuthConnectionRequest,
     state: string,
-  ): { state: string; authorizeUrl: string; codeVerifier: string } {
-    const codeVerifier = randomBytes(32).toString("base64url");
-    const codeChallenge = createHash("sha256").update(codeVerifier).digest("base64url");
-    const authorizeUrl = new URL(request.oauth.authorizeUrl);
+  ): { state: string; authorizeUrl: string; codeVerifier?: string } {
+    const codeVerifier = request.pkce ? randomBytes(32).toString("base64url") : undefined;
+    const codeChallenge = codeVerifier ? createHash("sha256").update(codeVerifier).digest("base64url") : undefined;
+    const authorizeUrl = new URL(request.flow.authorizeUrl);
     authorizeUrl.searchParams.set("response_type", "code");
-    authorizeUrl.searchParams.set("client_id", request.oauth.clientId);
+    authorizeUrl.searchParams.set("client_id", request.flow.clientId);
     authorizeUrl.searchParams.set("redirect_uri", request.redirectUri);
-    authorizeUrl.searchParams.set("code_challenge", codeChallenge);
-    authorizeUrl.searchParams.set("code_challenge_method", "S256");
-    authorizeUrl.searchParams.set("state", state);
-    if (request.oauth.scopes?.length) {
-      authorizeUrl.searchParams.set("scope", request.oauth.scopes.join(" "));
+    if (codeChallenge) {
+      authorizeUrl.searchParams.set("code_challenge", codeChallenge);
+      authorizeUrl.searchParams.set("code_challenge_method", "S256");
     }
-    for (const [key, value] of Object.entries(request.oauth.extraAuthorizeParams ?? {})) {
+    authorizeUrl.searchParams.set("state", state);
+    if (request.flow.scopes?.length) {
+      authorizeUrl.searchParams.set("scope", request.flow.scopes.join(" "));
+    }
+    for (const [key, value] of Object.entries(request.flow.extraAuthorizeParams ?? {})) {
       if (RESERVED_OAUTH_AUTHORIZE_PARAMS.has(key.toLowerCase())) {
         throw new Error(`OAuth extraAuthorizeParams cannot override ${key}`);
       }
@@ -570,24 +737,24 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     return { state, authorizeUrl: authorizeUrl.toString(), codeVerifier };
   }
 
-  async function requestOAuthClientConfig(
+  async function requestClientConfig(
     ctx: ServiceContext,
-    params: RequestOAuthClientConfigParams,
-  ): Promise<OAuthClientConfigStatus> {
-    const request = params as RequestOAuthClientConfigRequest;
+    params: RequestClientConfigParams,
+  ): Promise<ClientConfigStatus> {
+    const request = params as ConfigureClientRequest;
     if (!approvalQueue || (ctx.callerKind !== "panel" && ctx.callerKind !== "worker")) {
-      throw new Error("OAuth client config approval is unavailable");
+      throw new Error("client config approval is unavailable");
     }
     const authorizeUrl = canonicalUrl(request.authorizeUrl);
     const tokenUrl = canonicalUrl(request.tokenUrl);
-    validateOAuthClientConfigUrls(authorizeUrl, tokenUrl);
+    validateClientConfigUrls(authorizeUrl, tokenUrl);
     normalizeUrlAudiences([
       { url: authorizeUrl, match: "exact" },
       { url: tokenUrl, match: "exact" },
     ]);
     const identity = resolveApprovalIdentity(ctx);
-    const result = await approvalQueue.requestOAuthClientConfig({
-      kind: "oauth-client-config",
+    const result = await approvalQueue.requestClientConfig({
+      kind: "client-config",
       callerId: ctx.callerId,
       callerKind: ctx.callerKind,
       repoPath: identity.repoPath,
@@ -606,24 +773,24 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       })),
     });
     if (result.decision !== "submit") {
-      throw new Error("OAuth client config approval denied");
+      throw new Error("client config approval denied");
     }
 
     const now = Date.now();
-    const existing = await oauthClientConfigStore.load(request.configId);
+    const existing = await clientConfigStore.load(request.configId);
     if (existing) {
       if (canonicalUrl(existing.authorizeUrl) !== authorizeUrl) {
-        throw new Error("OAuth client config authorizeUrl is immutable for this configId");
+        throw new Error("client config authorizeUrl is immutable for this configId");
       }
       if (canonicalUrl(existing.tokenUrl) !== tokenUrl) {
-        throw new Error("OAuth client config tokenUrl is immutable for this configId");
+        throw new Error("client config tokenUrl is immutable for this configId");
       }
     }
     const fields = { ...(existing?.fields ?? {}) };
     for (const field of request.fields) {
       const value = result.values[field.name]?.trim() ?? "";
       if ((field.required ?? false) && !value) {
-        throw new Error(`OAuth client config field is required: ${field.name}`);
+        throw new Error(`client config field is required: ${field.name}`);
       }
       if (value) {
         fields[field.name] = {
@@ -635,10 +802,16 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     }
     const version = randomUUID();
     const versions = { ...(existing?.versions ?? {}) };
+    const requestFlowTypes = (params as ConfigureClientRequest).flowTypes;
+    const requestStatus = (params as ConfigureClientRequest).status;
+    const allowRefreshWhenDisabled = (params as ConfigureClientRequest).allowRefreshWhenDisabled;
     versions[version] = {
       version,
       authorizeUrl,
       tokenUrl,
+      status: requestStatus ?? existing?.status ?? "active",
+      flowTypes: requestFlowTypes ?? existing?.flowTypes ?? ["oauth2-auth-code-pkce"],
+      allowRefreshWhenDisabled: allowRefreshWhenDisabled ?? existing?.allowRefreshWhenDisabled,
       fields,
       createdAt: now,
     };
@@ -653,15 +826,18 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       },
       authorizeUrl,
       tokenUrl,
+      status: requestStatus ?? existing?.status ?? "active",
+      flowTypes: requestFlowTypes ?? existing?.flowTypes ?? ["oauth2-auth-code-pkce"],
+      allowRefreshWhenDisabled: allowRefreshWhenDisabled ?? existing?.allowRefreshWhenDisabled,
       fields,
       versions,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
-    await pruneOAuthClientConfigVersions(record);
-    await oauthClientConfigStore.save(record);
+    await pruneClientConfigVersions(record);
+    await clientConfigStore.save(record);
     await appendAudit({
-      type: "oauth_client_config.updated",
+      type: "client_config.updated",
       ts: now,
       callerId: ctx.callerId,
       configId: request.configId,
@@ -669,44 +845,58 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       tokenUrl,
       fieldNames: request.fields.map((field) => field.name),
     });
-    return oauthClientConfigStore.summarize(request.configId, record, request.fields);
+    return clientConfigStore.summarize(request.configId, record, request.fields);
   }
 
-  async function getOAuthClientConfigStatus(
+  async function configureClient(
     ctx: ServiceContext,
-    params: GetOAuthClientConfigStatusParams,
-  ): Promise<OAuthClientConfigStatus> {
-    const request = params as GetOAuthClientConfigStatusRequest;
-    const record = await oauthClientConfigStore.load(request.configId);
+    params: ConfigureClientParams,
+  ): Promise<ClientConfigStatus> {
+    const request = params as ConfigureClientRequest;
+    const status = await requestClientConfig(ctx, request);
+    return {
+      ...status,
+      flowTypes: request.flowTypes ?? status.flowTypes,
+      status: request.status ?? status.status ?? "active",
+    };
+  }
+
+  async function getClientConfigStatus(
+    ctx: ServiceContext,
+    params: GetClientConfigStatusParams,
+  ): Promise<ClientConfigStatus> {
+    const request = params as GetClientConfigStatusRequest;
+    const record = await clientConfigStore.load(request.configId);
     if (record?.owner && !isSameConfigTrustScope({ ...resolveApprovalIdentity(ctx), callerId: ctx.callerId }, record.owner)) {
       throw new OAuthConnectionError("client_not_authorized");
     }
-    return oauthClientConfigStore.summarize(request.configId, record, request.fields);
+    return clientConfigStore.summarize(request.configId, record, request.fields);
   }
 
-  async function deleteOAuthClientConfig(
+  async function deleteClientConfig(
     ctx: ServiceContext,
-    params: DeleteOAuthClientConfigParams,
+    params: DeleteClientConfigParams,
   ): Promise<void> {
-    const request = params as DeleteOAuthClientConfigRequest;
-    const existing = await oauthClientConfigStore.load(request.configId);
-    if (existing?.owner && !isSameConfigTrustScope({ ...resolveApprovalIdentity(ctx), callerId: ctx.callerId }, existing.owner)) {
-      throw new Error("OAuth client config deletion is not authorized for this caller");
+    const request = params as DeleteClientConfigRequest;
+    const existing = await clientConfigStore.load(request.configId);
+    if (!existing) return;
+    if (existing.owner && !isSameConfigTrustScope({ ...resolveApprovalIdentity(ctx), callerId: ctx.callerId }, existing.owner)) {
+      throw new Error("Client config deletion is not authorized for this caller");
     }
-    if (existing && approvalQueue && (ctx.callerKind === "panel" || ctx.callerKind === "worker")) {
+    if (approvalQueue && (ctx.callerKind === "panel" || ctx.callerKind === "worker")) {
       const identity = resolveApprovalIdentity(ctx);
       const decision = await approvalQueue.request({
         kind: "capability",
-        dedupKey: `delete-oauth-client-config:${request.configId}`,
+        dedupKey: `delete-client-config:${request.configId}`,
         callerId: ctx.callerId,
         callerKind: ctx.callerKind,
         repoPath: identity.repoPath,
         effectiveVersion: identity.effectiveVersion,
-        capability: "oauth-client-config-delete",
+        capability: "client-config-delete",
         title: "Disable service configuration",
-        description: "Disable this OAuth client config for new connections and future refreshes.",
+        description: "Delete this client config for new connections and future refreshes.",
         resource: {
-          type: "oauth-client-config",
+          type: "client-config",
           label: "Config",
           value: request.configId,
         },
@@ -716,21 +906,14 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         ],
       });
       if (decision === "deny") {
-        throw new Error("OAuth client config deletion denied");
+        throw new Error("Client config deletion denied");
       }
     }
-    await oauthClientConfigStore.remove(request.configId);
-    if (existing) {
-      await appendAudit({
-        type: "oauth_client_config.revoked",
-        ts: Date.now(),
-        callerId: ctx.callerId,
-        configId: request.configId,
-        authorizeUrl: existing.authorizeUrl,
-        tokenUrl: existing.tokenUrl,
-        fieldNames: Object.keys(existing.fields),
-      });
-    }
+    await clientConfigStore.save({
+      ...existing,
+      status: "deleted",
+      updatedAt: Date.now(),
+    });
   }
 
   async function forwardOAuthCallback(
@@ -830,12 +1013,695 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     }, { approvalDecision: "session" });
   }
 
-  async function connectOAuth(
+  async function connectCredential(
     ctx: ServiceContext,
-    params: ConnectOAuthCredentialParams,
+    params: ConnectCredentialParams,
   ): Promise<StoredCredentialSummary> {
-    const parsedParams = connectOAuthCredentialParamsSchema.parse(params);
-    const { request, handoffTarget } = normalizeConnectOAuthInvocation(ctx, parsedParams);
+    const parsedParams = connectCredentialParamsSchema.parse(params);
+    const { request, handoffTarget } = normalizeConnectInvocation(ctx, parsedParams);
+      switch (request.flow.type) {
+      case "oauth2-auth-code-pkce":
+        return connectOAuth2AuthCode(ctx, normalizePkceConnectRequest(request), handoffTarget);
+      case "oauth2-auth-code":
+        return connectOAuth2AuthCode(ctx, normalizeAuthCodeConnectRequest(request), handoffTarget);
+      case "oauth2-device-code":
+        return connectOAuthDeviceCode(ctx, request);
+      case "oauth2-client-credentials":
+        return connectOAuthClientCredentials(ctx, request);
+      case "oauth1a":
+        return connectOAuth1a(ctx, request, handoffTarget);
+      case "browser-cookie-session":
+        return connectBrowserCookieSession(ctx, request);
+      case "saml-browser-session":
+        return connectSamlBrowserSession(ctx, request);
+      case "api-key":
+        return connectApiKey(ctx, request);
+      default:
+        throw new OAuthConnectionError("unsupported_flow");
+    }
+  }
+
+  function normalizeConnectInvocation(
+    ctx: ServiceContext,
+    params: ConnectCredentialParams,
+  ): {
+    request: ConnectCredentialRequest;
+    handoffTarget?: { callerId: string; callerKind: "panel" | "shell" };
+  } {
+    if ("spec" in params) {
+      if (ctx.callerKind === "panel") {
+        throw new OAuthConnectionError(
+          "client_not_authorized",
+          "Panel callers cannot specify a credential browser handoff target",
+        );
+      }
+      return {
+        request: params.spec as ConnectCredentialRequest,
+        handoffTarget: params.handoffTarget,
+      };
+    }
+    return { request: params as ConnectCredentialRequest };
+  }
+
+  function normalizePkceConnectRequest(request: ConnectCredentialRequest): AuthCodeConnectRequest {
+    const flow = request.flow;
+    if (flow.type !== "oauth2-auth-code-pkce") {
+      throw new OAuthConnectionError("unsupported_flow");
+    }
+    if (flow.tokenAuth && flow.tokenAuth !== "none") {
+      throw new OAuthConnectionError("unsupported_token_auth_method");
+    }
+    if (flow.clientConfigId) {
+      return {
+        flow: {
+          clientConfigId: flow.clientConfigId,
+          scopes: flow.scopes,
+          extraAuthorizeParams: flow.extraAuthorizeParams,
+          allowMissingExpiry: flow.allowMissingExpiry,
+          persistRefreshToken: flow.persistRefreshToken,
+          accountValidation: flow.accountValidation,
+        },
+        credential: request.credential,
+        redirect: request.redirect,
+        browser: request.browser,
+        pkce: true,
+        tokenAuth: flow.tokenAuth ?? "none",
+      };
+    }
+    if (!flow.authorizeUrl || !flow.tokenUrl || !flow.clientId) {
+      throw new OAuthConnectionError(
+        "invalid_connection_spec",
+        "oauth2-auth-code-pkce requires authorizeUrl, tokenUrl, and clientId or a clientConfigId",
+      );
+    }
+    return {
+      flow: {
+        authorizeUrl: flow.authorizeUrl,
+        tokenUrl: flow.tokenUrl,
+        clientId: flow.clientId,
+        scopes: flow.scopes,
+        extraAuthorizeParams: flow.extraAuthorizeParams,
+        allowMissingExpiry: flow.allowMissingExpiry,
+        persistRefreshToken: flow.persistRefreshToken,
+        accountValidation: flow.accountValidation,
+      },
+      credential: request.credential,
+      redirect: request.redirect,
+      browser: request.browser,
+      pkce: true,
+      tokenAuth: flow.tokenAuth ?? "none",
+    };
+  }
+
+  function normalizeAuthCodeConnectRequest(request: ConnectCredentialRequest): AuthCodeConnectRequest {
+    const flow = request.flow;
+    if (flow.type !== "oauth2-auth-code") {
+      throw new OAuthConnectionError("unsupported_flow");
+    }
+    if (flow.pkce !== false || !flow.compatibilityReason) {
+      throw new OAuthConnectionError("invalid_connection_spec");
+    }
+    if (!flow.clientConfigId && flow.tokenAuth !== "none") {
+      throw new OAuthConnectionError("client_config_unavailable");
+    }
+    if (flow.clientConfigId) {
+      return {
+        flow: {
+          clientConfigId: flow.clientConfigId,
+          scopes: flow.scopes,
+          extraAuthorizeParams: flow.extraAuthorizeParams,
+          persistRefreshToken: flow.persistRefreshToken,
+          accountValidation: flow.accountValidation,
+        },
+        credential: request.credential,
+        redirect: request.redirect,
+        browser: request.browser,
+        pkce: false,
+        tokenAuth: flow.tokenAuth ?? "client_secret_post",
+      };
+    }
+    if (flow.tokenAuth !== "none" || !flow.authorizeUrl || !flow.tokenUrl || !flow.clientId) {
+      throw new OAuthConnectionError("invalid_connection_spec");
+    }
+    return {
+      flow: {
+        authorizeUrl: flow.authorizeUrl,
+        tokenUrl: flow.tokenUrl,
+        clientId: flow.clientId,
+        scopes: flow.scopes,
+        extraAuthorizeParams: flow.extraAuthorizeParams,
+        persistRefreshToken: flow.persistRefreshToken,
+        accountValidation: flow.accountValidation,
+      },
+      credential: request.credential,
+      redirect: request.redirect,
+      browser: request.browser,
+      pkce: false,
+      tokenAuth: "none",
+    };
+  }
+
+  async function connectApiKey(
+    ctx: ServiceContext,
+    request: ConnectCredentialRequest,
+  ): Promise<StoredCredentialSummary> {
+    if (request.flow.type !== "api-key") {
+      throw new OAuthConnectionError("unsupported_flow");
+    }
+    if (!approvalQueue || (ctx.callerKind !== "panel" && ctx.callerKind !== "worker")) {
+      throw new Error("Credential input approval is unavailable");
+    }
+    for (const field of request.flow.fields) {
+      if (field.type !== "secret" || field.required !== true) {
+        throw new OAuthConnectionError(
+          "invalid_connection_spec",
+          "api-key fields must be required secret fields",
+        );
+      }
+    }
+    const audience = normalizeUrlAudiences(request.credential.audience);
+    const injection = normalizeCredentialInjection(request.credential.injection);
+    const accountIdentity = normalizeAccountIdentity(request.credential.accountIdentity, ctx.callerId);
+    const identity = resolveApprovalIdentity(ctx);
+    validateApiKeyMaterialTemplate(request.flow.materialTemplate.valueTemplate, request.flow.fields.map((field) => field.name));
+    const result = await approvalQueue.requestCredentialInput({
+      kind: "credential-input",
+      callerId: ctx.callerId,
+      callerKind: ctx.callerKind,
+      repoPath: identity.repoPath,
+      effectiveVersion: identity.effectiveVersion,
+      title: request.flow.title ?? request.credential.label,
+      description: request.flow.description,
+      credentialLabel: request.credential.label,
+      audience,
+      injection,
+      accountIdentity,
+      scopes: request.credential.scopes ?? [],
+      fields: request.flow.fields.map((field) => ({
+        name: field.name,
+        label: field.label,
+        type: field.type,
+        required: field.required ?? false,
+        description: field.description,
+      })),
+    });
+    if (result.decision !== "submit") {
+      throw new OAuthConnectionError("approval_denied");
+    }
+    const material = renderApiKeyMaterialTemplate(request.flow.materialTemplate.valueTemplate, result.values);
+    if (!material) {
+      throw new OAuthConnectionError("invalid_connection_spec", "api-key material template produced empty material");
+    }
+    return storeCredential(ctx, {
+      label: request.credential.label,
+      audience,
+      injection,
+      bindings: request.credential.bindings,
+      material: {
+        type: request.flow.materialTemplate.type,
+        token: material,
+      },
+      accountIdentity,
+      scopes: request.credential.scopes ?? [],
+      metadata: {
+        ...(request.credential.metadata ?? {}),
+        flowType: "api-key",
+      },
+    }, { approvalDecision: "session" });
+  }
+
+  async function connectOAuthClientCredentials(
+    ctx: ServiceContext,
+    request: ConnectCredentialRequest,
+  ): Promise<StoredCredentialSummary> {
+    if (request.flow.type !== "oauth2-client-credentials") {
+      throw new OAuthConnectionError("unsupported_flow");
+    }
+    const config = await loadClientConfigForFlow(request.flow.clientConfigId, "oauth2-client-credentials");
+    const clientId = config.fields["clientId"]?.value;
+    const clientSecret = config.fields["clientSecret"]?.value;
+    if (!clientId || !clientSecret) {
+      throw new OAuthConnectionError("client_config_unavailable");
+    }
+    const audience = normalizeUrlAudiences(request.credential.audience);
+    const injection = normalizeCredentialInjection(request.credential.injection);
+    const identity = resolveApprovalIdentity(ctx);
+    const approvalDecision = await requestCredentialApproval(ctx, {
+      credentialId: randomUUID(),
+      credentialLabel: request.credential.label,
+      audience,
+      injection,
+      accountIdentity: normalizeAccountIdentity(request.credential.accountIdentity, request.flow.clientConfigId),
+      scopes: request.credential.scopes ?? request.flow.scopes ?? [],
+      identity,
+      metadata: {
+        ...(request.credential.metadata ?? {}),
+        flowType: request.flow.type,
+        oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
+      },
+    });
+    const token = await exchangeClientCredentialsToken({
+      tokenUrl: request.flow.tokenUrl,
+      clientId,
+      clientSecret,
+      tokenAuth: request.flow.tokenAuth,
+      scopes: request.flow.scopes,
+      audienceParam: request.flow.audienceParam,
+      resourceParam: request.flow.resourceParam,
+    });
+    return storeCredential(ctx, {
+      label: request.credential.label,
+      audience,
+      injection,
+      bindings: request.credential.bindings,
+      material: { type: "bearer-token", token: token.accessToken },
+      accountIdentity: request.credential.accountIdentity ?? {
+        providerUserId: `service:${request.flow.clientConfigId}`,
+      },
+      scopes: request.credential.scopes ?? request.flow.scopes ?? token.scopes ?? [],
+      expiresAt: token.expiresAt,
+      metadata: {
+        ...(request.credential.metadata ?? {}),
+        flowType: request.flow.type,
+        clientConfigId: request.flow.clientConfigId,
+        clientConfigVersion: config.currentVersion ?? String(config.updatedAt),
+        oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
+      },
+    }, {
+      approvalDecision,
+      preapprovedUseDecision: approvalDecision,
+    });
+  }
+
+  async function connectBrowserCookieSession(
+    ctx: ServiceContext,
+    request: ConnectCredentialRequest,
+  ): Promise<StoredCredentialSummary> {
+    if (request.flow.type !== "browser-cookie-session") {
+      throw new OAuthConnectionError("unsupported_flow");
+    }
+    if (request.browser === "external") {
+      throw new OAuthConnectionError("unsupported_browser_mode");
+    }
+    if (request.credential.injection.type !== "cookie") {
+      throw new OAuthConnectionError("unsupported_injection");
+    }
+    if (!sessionCredentialCapture) {
+      throw new OAuthConnectionError("browser_unavailable", "Session credential capture is unavailable on this platform");
+    }
+    const audience = normalizeUrlAudiences(request.credential.audience);
+    const injection = normalizeCredentialInjection(request.credential.injection);
+    const identity = resolveApprovalIdentity(ctx);
+    const approvalDecision = await requestCredentialApproval(ctx, {
+      credentialId: randomUUID(),
+      credentialLabel: request.credential.label,
+      audience,
+      injection,
+      accountIdentity: normalizeAccountIdentity(request.credential.accountIdentity, ctx.callerId),
+      scopes: request.credential.scopes ?? [],
+      identity,
+      metadata: {
+        ...(request.credential.metadata ?? {}),
+        flowType: request.flow.type,
+        sessionSignInOrigin: new URL(request.flow.signInUrl).origin,
+        capturedCookieNames: request.flow.capture.cookies.join(","),
+      },
+    });
+    const captured = await sessionCredentialCapture.captureCookies({
+      signInUrl: request.flow.signInUrl,
+      origins: request.flow.capture.origins,
+      cookieNames: request.flow.capture.cookies,
+      completionUrlPattern: request.flow.completionUrlPattern,
+      maxTtlSeconds: request.flow.maxTtlSeconds,
+      browser: request.browser ?? "internal",
+    });
+    if (!captured.cookieHeader) {
+      throw new OAuthConnectionError("session_capture_failed");
+    }
+    const stored = await storeCredential(ctx, {
+      label: request.credential.label,
+      audience,
+      injection,
+      bindings: request.credential.bindings,
+      material: { type: "cookie-session", token: captured.cookieHeader },
+      accountIdentity: {
+        ...(captured.accountIdentity ?? {}),
+        ...(request.credential.accountIdentity ?? {}),
+      },
+      scopes: request.credential.scopes ?? [],
+      expiresAt: captured.expiresAt,
+      metadata: {
+        ...(request.credential.metadata ?? {}),
+        flowType: request.flow.type,
+        sessionSignInOrigin: new URL(request.flow.signInUrl).origin,
+        capturedCookieNames: request.flow.capture.cookies.join(","),
+      },
+    }, {
+      approvalDecision,
+      preapprovedUseDecision: approvalDecision,
+    });
+    const persisted = await credentialStore.loadUrlBound(stored.id);
+    if (persisted?.id) {
+      await credentialStore.saveUrlBound({
+        ...persisted,
+        cookieHeader: captured.cookieHeader,
+        ...(captured.cookieSession ? { cookieSession: captured.cookieSession } : {}),
+      } as Credential & { id: string });
+    }
+    return stored;
+  }
+
+  async function connectSamlBrowserSession(
+    ctx: ServiceContext,
+    request: ConnectCredentialRequest,
+  ): Promise<StoredCredentialSummary> {
+    if (request.flow.type !== "saml-browser-session") {
+      throw new OAuthConnectionError("unsupported_flow");
+    }
+    if (request.browser === "external") {
+      throw new OAuthConnectionError("unsupported_browser_mode");
+    }
+    if (request.credential.injection.type !== "cookie") {
+      throw new OAuthConnectionError("unsupported_injection");
+    }
+    if (!sessionCredentialCapture?.captureSamlSession) {
+      throw new OAuthConnectionError("browser_unavailable", "SAML session capture is unavailable on this platform");
+    }
+    if (!request.flow.capture.cookies?.length && !request.flow.capture.assertion) {
+      throw new OAuthConnectionError("invalid_connection_spec");
+    }
+    const audience = normalizeUrlAudiences(request.credential.audience);
+    const injection = normalizeCredentialInjection(request.credential.injection);
+    const identity = resolveApprovalIdentity(ctx);
+    const approvalDecision = await requestCredentialApproval(ctx, {
+      credentialId: randomUUID(),
+      credentialLabel: request.credential.label,
+      audience,
+      injection,
+      accountIdentity: normalizeAccountIdentity(request.credential.accountIdentity, ctx.callerId),
+      scopes: request.credential.scopes ?? [],
+      identity,
+      metadata: {
+        ...(request.credential.metadata ?? {}),
+        flowType: request.flow.type,
+        sessionSignInOrigin: new URL(request.flow.signInUrl).origin,
+        spAudience: request.flow.spAudience,
+        capturedCookieNames: request.flow.capture.cookies?.join(",") ?? "",
+      },
+    });
+    const captured = await sessionCredentialCapture.captureSamlSession({
+      signInUrl: request.flow.signInUrl,
+      spAudience: request.flow.spAudience,
+      cookieNames: request.flow.capture.cookies,
+      assertion: request.flow.capture.assertion,
+      completionUrlPattern: request.flow.completionUrlPattern,
+      maxTtlSeconds: request.flow.maxTtlSeconds,
+      browser: request.browser ?? "internal",
+    });
+    if (!captured.cookieHeader && !captured.assertion) {
+      throw new OAuthConnectionError("saml_assertion_failed");
+    }
+    const material = captured.cookieHeader ?? captured.assertion ?? "";
+    const stored = await storeCredential(ctx, {
+      label: request.credential.label,
+      audience,
+      injection,
+      bindings: request.credential.bindings,
+      material: { type: "saml-session", token: material },
+      accountIdentity: {
+        ...(captured.accountIdentity ?? {}),
+        ...(request.credential.accountIdentity ?? {}),
+      },
+      scopes: request.credential.scopes ?? [],
+      expiresAt: captured.expiresAt,
+      metadata: {
+        ...(request.credential.metadata ?? {}),
+        flowType: request.flow.type,
+        sessionSignInOrigin: new URL(request.flow.signInUrl).origin,
+        spAudience: request.flow.spAudience,
+        capturedCookieNames: request.flow.capture.cookies?.join(",") ?? "",
+      },
+    }, {
+      approvalDecision,
+      preapprovedUseDecision: approvalDecision,
+    });
+    const persisted = await credentialStore.loadUrlBound(stored.id);
+    if (persisted?.id) {
+      await credentialStore.saveUrlBound({
+        ...persisted,
+        ...(captured.cookieHeader ? { cookieHeader: captured.cookieHeader } : {}),
+        ...(captured.cookieSession ? { cookieSession: captured.cookieSession } : {}),
+        ...(captured.assertion ? { samlAssertion: captured.assertion } : {}),
+      } as Credential & { id: string });
+    }
+    return stored;
+  }
+
+  async function connectOAuthDeviceCode(
+    ctx: ServiceContext,
+    request: ConnectCredentialRequest,
+  ): Promise<StoredCredentialSummary> {
+    if (request.flow.type !== "oauth2-device-code") {
+      throw new OAuthConnectionError("unsupported_flow");
+    }
+    const config = request.flow.clientConfigId
+      ? await loadClientConfigForFlow(request.flow.clientConfigId, "oauth2-device-code")
+      : null;
+    const clientId = request.flow.clientId ?? config?.fields["clientId"]?.value;
+    const clientSecret = config?.fields["clientSecret"]?.value;
+    const tokenAuth = request.flow.tokenAuth ?? (clientSecret ? "client_secret_post" : "none");
+    if (!clientId) {
+      throw new OAuthConnectionError("client_config_unavailable");
+    }
+    if (tokenAuth !== "none" && !clientSecret) {
+      throw new OAuthConnectionError("client_config_unavailable");
+    }
+    const audience = normalizeUrlAudiences(request.credential.audience);
+    const injection = normalizeCredentialInjection(request.credential.injection);
+    const identity = resolveApprovalIdentity(ctx);
+    const approvalDecision = await requestCredentialApproval(ctx, {
+      credentialId: randomUUID(),
+      credentialLabel: request.credential.label,
+      audience,
+      injection,
+      accountIdentity: normalizeAccountIdentity(request.credential.accountIdentity, ctx.callerId),
+      scopes: request.credential.scopes ?? request.flow.scopes ?? [],
+      identity,
+      metadata: {
+        ...(request.credential.metadata ?? {}),
+        flowType: request.flow.type,
+        oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
+      },
+    });
+    const device = await requestDeviceAuthorization({
+      deviceAuthorizationUrl: request.flow.deviceAuthorizationUrl,
+      clientId,
+      clientSecret,
+      tokenAuth,
+      scopes: request.flow.scopes,
+    });
+    const verificationUrl = device.verificationUriComplete ?? device.verificationUri;
+    if (!eventService || !verificationUrl) {
+      throw new OAuthConnectionError("browser_unavailable");
+    }
+    const browserTarget = resolveBrowserHandoffTarget(ctx);
+    if (!browserTarget || !eventService.emitTo(browserTarget.deliveryCallerId, "external-open:open", {
+      url: verificationUrl,
+      callerId: ctx.callerId,
+      callerKind: ctx.callerKind,
+    })) {
+      throw new OAuthConnectionError("browser_unavailable");
+    }
+    const token = await pollDeviceToken({
+      tokenUrl: request.flow.tokenUrl,
+      clientId,
+      clientSecret,
+      tokenAuth,
+      deviceCode: device.deviceCode,
+      intervalSeconds: request.flow.pollIntervalSeconds ?? device.intervalSeconds,
+      expiresInSeconds: request.flow.expiresInSeconds ?? device.expiresInSeconds,
+      persistRefreshToken: request.flow.persistRefreshToken,
+    });
+    const stored = await storeCredential(ctx, {
+      label: request.credential.label,
+      audience,
+      injection,
+      bindings: request.credential.bindings,
+      material: { type: "bearer-token", token: token.accessToken },
+      accountIdentity: request.credential.accountIdentity,
+      scopes: request.credential.scopes ?? request.flow.scopes ?? token.scopes ?? [],
+      expiresAt: token.expiresAt,
+      metadata: {
+        ...(request.credential.metadata ?? {}),
+        flowType: request.flow.type,
+        ...(request.flow.clientConfigId ? { clientConfigId: request.flow.clientConfigId } : {}),
+        ...(config?.currentVersion ? { clientConfigVersion: config.currentVersion } : {}),
+        oauthDeviceVerificationOrigin: new URL(verificationUrl).origin,
+        oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
+      },
+    }, {
+      approvalDecision,
+      preapprovedUseDecision: approvalDecision,
+    });
+    if (token.refreshToken) {
+      const persisted = await credentialStore.loadUrlBound(stored.id);
+      if (persisted?.id) {
+        await credentialStore.saveUrlBound({ ...persisted, refreshToken: token.refreshToken } as Credential & { id: string });
+      }
+    }
+    return stored;
+  }
+
+  async function connectOAuth1a(
+    ctx: ServiceContext,
+    request: ConnectCredentialRequest,
+    handoffTarget?: { callerId: string; callerKind: "panel" | "shell" },
+  ): Promise<StoredCredentialSummary> {
+    if (request.flow.type !== "oauth1a") {
+      throw new OAuthConnectionError("unsupported_flow");
+    }
+    if (request.credential.injection.type !== "oauth1-signature") {
+      throw new OAuthConnectionError("unsupported_injection");
+    }
+    const config = await loadClientConfigForFlow(request.flow.clientConfigId, "oauth1a");
+    const consumerKey = config.fields["consumerKey"]?.value ?? config.fields["clientId"]?.value;
+    const consumerSecret = config.fields["consumerSecret"]?.value ?? config.fields["clientSecret"]?.value;
+    if (!consumerKey || !consumerSecret) {
+      throw new OAuthConnectionError("client_config_unavailable");
+    }
+    const redirect = request.redirect ?? {};
+    const redirectStrategy = redirect.type ?? "loopback";
+    let callback: HostOAuthCallback | null = null;
+    let tx: OAuthConnectionTransaction | null = null;
+    try {
+      const stateParam = randomBytes(16).toString("base64url");
+      let redirectUri: string;
+      let transactionId: string | undefined;
+      if (redirectStrategy === "loopback") {
+        callback = await createLoopbackOAuthCallback({
+          host: redirect.host ?? DEFAULT_LOOPBACK_HOST,
+          port: redirect.port ?? 0,
+          callbackPath: redirect.callbackPath ?? DEFAULT_CALLBACK_PATH,
+          allowDynamicPortFallback: redirect.fallback === "dynamic-port",
+        });
+        redirectUri = callback.redirectUri;
+      } else if (redirectStrategy === "public") {
+        transactionId = randomUUID();
+        redirectUri = buildPublicUrl(`/_r/s/credentials/oauth/callback/${transactionId}`);
+      } else if (redirectStrategy === "client-forwarded") {
+        transactionId = randomUUID();
+        redirectUri = redirect.callbackUri ?? buildPublicUrl(`/_r/s/credentials/oauth/callback/${transactionId}`);
+      } else {
+        throw new OAuthConnectionError("redirect_unavailable");
+      }
+      const callbackUrl = new URL(redirectUri);
+      callbackUrl.searchParams.set("state", stateParam);
+      tx = await createOAuthTransaction(ctx, {
+        id: transactionId,
+        redirectUri,
+        redirectStrategy,
+        stateParam,
+      });
+      const audience = normalizeUrlAudiences(request.credential.audience);
+      const injection = normalizeCredentialInjection(request.credential.injection);
+      const identity = resolveApprovalIdentity(ctx);
+      const approvalDecision = await requestCredentialApproval(ctx, {
+        credentialId: randomUUID(),
+        credentialLabel: request.credential.label,
+        audience,
+        injection,
+        accountIdentity: normalizeAccountIdentity(request.credential.accountIdentity, ctx.callerId),
+        scopes: request.credential.scopes ?? [],
+        identity,
+        metadata: {
+          ...(request.credential.metadata ?? {}),
+          flowType: request.flow.type,
+          oauthAuthorizeOrigin: new URL(request.flow.authorizeUrl).origin,
+        },
+      });
+      await transitionOAuthTransaction(tx, "approved");
+      const requestToken = await exchangeOAuth1RequestToken({
+        requestTokenUrl: request.flow.requestTokenUrl,
+        consumerKey,
+        consumerSecret,
+        callbackUrl: callbackUrl.toString(),
+      });
+      callback?.expectState(stateParam);
+      const authorizeUrl = new URL(request.flow.authorizeUrl);
+      authorizeUrl.searchParams.set("oauth_token", requestToken.token);
+      if (!eventService) {
+        throw new OAuthConnectionError("browser_unavailable");
+      }
+      const browserTarget = resolveBrowserHandoffTarget(ctx, handoffTarget);
+      if (!browserTarget || !eventService.emitTo(browserTarget.deliveryCallerId, "external-open:open", {
+        url: authorizeUrl.toString(),
+        callerId: ctx.callerId,
+        callerKind: ctx.callerKind,
+      })) {
+        throw new OAuthConnectionError("browser_unavailable");
+      }
+      await transitionOAuthTransaction(tx, "handoff_requested");
+      if (callback) {
+        const callbackResult = await callback.wait;
+        await receiveOAuthCallback(tx, callbackResult);
+      }
+      const result = await tx.wait;
+      await transitionOAuthTransaction(tx, "exchanging");
+      const access = await exchangeOAuth1AccessToken({
+        accessTokenUrl: request.flow.accessTokenUrl,
+        consumerKey,
+        consumerSecret,
+        requestToken: requestToken.token,
+        requestTokenSecret: requestToken.secret,
+        verifier: result.code,
+      });
+      const stored = await storeCredential(ctx, {
+        label: request.credential.label,
+        audience,
+        injection,
+        bindings: request.credential.bindings,
+        material: { type: "bearer-token", token: access.token },
+        accountIdentity: request.credential.accountIdentity,
+        scopes: request.credential.scopes ?? [],
+        metadata: {
+          ...(request.credential.metadata ?? {}),
+          flowType: request.flow.type,
+          clientConfigId: request.flow.clientConfigId,
+          clientConfigVersion: config.currentVersion ?? String(config.updatedAt),
+          oauth1ConsumerKey: consumerKey,
+          oauthAuthorizeOrigin: new URL(request.flow.authorizeUrl).origin,
+        },
+      }, {
+        approvalDecision,
+        preapprovedUseDecision: approvalDecision,
+      });
+      const persisted = await credentialStore.loadUrlBound(stored.id);
+      if (persisted?.id) {
+        await credentialStore.saveUrlBound({
+          ...persisted,
+          oauth1ConsumerSecret: consumerSecret,
+          oauth1TokenSecret: access.secret,
+        } as Credential & { id: string });
+      }
+      await transitionOAuthTransaction(tx, "stored");
+      await transitionOAuthTransaction(tx, "completed");
+      oauthTransactions.delete(tx.id);
+      return stored;
+    } catch (error) {
+      if (tx && !["completed", "failed", "expired", "cancelled"].includes(tx.state)) {
+        await transitionOAuthTransaction(tx, "failed", errorCodeForOAuthError(error));
+      }
+      throw error;
+    } finally {
+      callback?.close();
+    }
+  }
+
+  async function connectOAuth2AuthCode(
+    ctx: ServiceContext,
+    request: AuthCodeConnectRequest,
+    explicitHandoffTarget?: { callerId: string; callerKind: "panel" | "shell" },
+  ): Promise<StoredCredentialSummary> {
     const redirect = request.redirect ?? {};
     const redirectStrategy = redirect.type ?? "loopback";
     let callback: HostOAuthCallback | null = null;
@@ -867,17 +1733,17 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         redirectStrategy,
         stateParam,
       });
-      const oauthRequest = await resolveConnectOAuthRequest(request, redirectUri);
+      const oauthRequest = await resolveAuthCodeConnectionRequest(request, redirectUri);
       validateOAuthCredentialRequest(oauthRequest);
       const identity = resolveApprovalIdentity(ctx);
       const audience = normalizeUrlAudiences(oauthRequest.credential.audience);
       const injection = normalizeCredentialInjection(oauthRequest.credential.injection);
       const metadata = {
         ...(oauthRequest.credential.metadata ?? {}),
-        oauthAuthorizeOrigin: new URL(oauthRequest.oauth.authorizeUrl).origin,
-        oauthTokenOrigin: new URL(oauthRequest.oauth.tokenUrl).origin,
-        ...(oauthRequest.oauth.accountValidation?.userinfo?.url
-          ? { oauthUserinfoOrigin: new URL(oauthRequest.oauth.accountValidation.userinfo.url).origin }
+        oauthAuthorizeOrigin: new URL(oauthRequest.flow.authorizeUrl).origin,
+        oauthTokenOrigin: new URL(oauthRequest.flow.tokenUrl).origin,
+        ...(oauthRequest.flow.accountValidation?.userinfo?.url
+          ? { oauthUserinfoOrigin: new URL(oauthRequest.flow.accountValidation.userinfo.url).origin }
           : {}),
       };
       const approvalDecision = await requestCredentialApproval(ctx, {
@@ -886,7 +1752,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         audience,
         injection,
         accountIdentity: normalizeAccountIdentity(oauthRequest.credential.accountIdentity, ctx.callerId),
-        scopes: oauthRequest.credential.scopes ?? oauthRequest.oauth.scopes ?? [],
+        scopes: oauthRequest.credential.scopes ?? oauthRequest.flow.scopes ?? [],
         identity,
         metadata,
       });
@@ -897,7 +1763,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         throw new OAuthConnectionError("browser_unavailable");
       }
       const openMode = request.browser ?? "external";
-      const browserTarget = resolveBrowserHandoffTarget(ctx, handoffTarget);
+      const browserTarget = resolveBrowserHandoffTarget(ctx, explicitHandoffTarget);
       if (!browserTarget) {
         throw new OAuthConnectionError("browser_unavailable", "OAuth browser handoff target is not connected");
       }
@@ -951,17 +1817,17 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         bindings: oauthRequest.credential.bindings,
         material: { type: "bearer-token", token: token.accessToken },
         accountIdentity,
-        scopes: oauthRequest.credential.scopes ?? oauthRequest.oauth.scopes ?? token.scopes ?? [],
+        scopes: oauthRequest.credential.scopes ?? oauthRequest.flow.scopes ?? token.scopes ?? [],
         expiresAt: token.expiresAt,
         metadata: {
           ...(oauthRequest.credential.metadata ?? {}),
           ...(token.refreshToken ? { oauthRefreshTokenStored: "true" } : {}),
-          oauthAuthorizeOrigin: new URL(oauthRequest.oauth.authorizeUrl).origin,
-          oauthTokenOrigin: new URL(oauthRequest.oauth.tokenUrl).origin,
-          ...(oauthRequest.oauth.accountValidation?.userinfo?.url
-            ? { oauthUserinfoOrigin: new URL(oauthRequest.oauth.accountValidation.userinfo.url).origin }
+          oauthAuthorizeOrigin: new URL(oauthRequest.flow.authorizeUrl).origin,
+          oauthTokenOrigin: new URL(oauthRequest.flow.tokenUrl).origin,
+          ...(oauthRequest.flow.accountValidation?.userinfo?.url
+            ? { oauthUserinfoOrigin: new URL(oauthRequest.flow.accountValidation.userinfo.url).origin }
             : {}),
-          oauthScopes: (oauthRequest.oauth.scopes ?? []).join(" "),
+          oauthScopes: (oauthRequest.flow.scopes ?? []).join(" "),
         },
       }, {
         approvalDecision: duplicate ? undefined : approvalDecision,
@@ -989,90 +1855,104 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     }
   }
 
-  function normalizeConnectOAuthInvocation(
-    ctx: ServiceContext,
-    params: ConnectOAuthCredentialParams,
-  ): {
-    request: ConnectOAuthCredentialRequest;
-    handoffTarget?: { callerId: string; callerKind: "panel" | "shell" };
-  } {
-    if ("spec" in params) {
-      if (ctx.callerKind === "panel") {
-        throw new OAuthConnectionError(
-          "client_not_authorized",
-          "Panel callers cannot specify an OAuth browser handoff target",
-        );
-      }
-      return {
-        request: params.spec as ConnectOAuthCredentialRequest,
-        handoffTarget: params.handoffTarget,
-      };
-    }
-    return { request: params as ConnectOAuthCredentialRequest };
-  }
-
-  async function resolveConnectOAuthRequest(
-    request: ConnectOAuthCredentialRequest,
+  async function resolveAuthCodeConnectionRequest(
+    request: AuthCodeConnectRequest,
     redirectUri: string,
   ): Promise<InternalOAuthConnectionRequest> {
-    if ("clientConfigId" in request.oauth) {
-      const config = await oauthClientConfigStore.load(request.oauth.clientConfigId);
-      if (!config) {
-        throw new Error("client_not_authorized");
-      }
+    if (request.flow.clientConfigId) {
+      const config = await loadClientConfigForFlow(request.flow.clientConfigId, request.pkce ? "oauth2-auth-code-pkce" : "oauth2-auth-code");
       const clientId = config.fields["clientId"]?.value;
       const clientSecret = config.fields["clientSecret"]?.value;
       if (!clientId) {
-        throw new Error("client_not_authorized");
+        throw new OAuthConnectionError("client_config_unavailable");
+      }
+      if (request.tokenAuth !== "none" && !clientSecret) {
+        throw new OAuthConnectionError("client_config_unavailable");
       }
       return {
-        oauth: {
+        flow: {
           authorizeUrl: canonicalUrl(config.authorizeUrl),
           tokenUrl: canonicalUrl(config.tokenUrl),
           clientId,
           ...(clientSecret ? { clientSecret } : {}),
-          scopes: request.oauth.scopes,
-          extraAuthorizeParams: request.oauth.extraAuthorizeParams,
-          allowMissingExpiry: request.oauth.allowMissingExpiry,
-          persistRefreshToken: request.oauth.persistRefreshToken,
-          accountValidation: request.oauth.accountValidation,
+          scopes: request.flow.scopes,
+          extraAuthorizeParams: request.flow.extraAuthorizeParams,
+          allowMissingExpiry: request.flow.allowMissingExpiry,
+          persistRefreshToken: request.flow.persistRefreshToken,
+          accountValidation: request.flow.accountValidation,
         },
         credential: {
           ...request.credential,
           metadata: {
             ...(request.credential.metadata ?? {}),
-            oauthClientConfigId: request.oauth.clientConfigId,
-            oauthClientConfigVersion: config.currentVersion ?? String(config.updatedAt),
+            clientConfigId: request.flow.clientConfigId,
+            clientConfigVersion: config.currentVersion ?? String(config.updatedAt),
           },
         },
         redirectUri,
+        pkce: request.pkce,
+        tokenAuth: request.tokenAuth,
       };
     }
+    if (request.tokenAuth !== "none") {
+      throw new OAuthConnectionError("unsupported_token_auth_method");
+    }
     return {
-      oauth: request.oauth,
+      flow: {
+        authorizeUrl: request.flow.authorizeUrl ?? "",
+        tokenUrl: request.flow.tokenUrl ?? "",
+        clientId: request.flow.clientId ?? "",
+        scopes: request.flow.scopes,
+        extraAuthorizeParams: request.flow.extraAuthorizeParams,
+        allowMissingExpiry: request.flow.allowMissingExpiry,
+        persistRefreshToken: request.flow.persistRefreshToken,
+        accountValidation: request.flow.accountValidation,
+      },
       credential: request.credential,
       redirectUri,
+      pkce: request.pkce,
+      tokenAuth: request.tokenAuth,
     };
+  }
+
+  async function loadClientConfigForFlow(
+    configId: string,
+    flowType: CredentialFlowType,
+  ): Promise<ClientConfigRecord> {
+    const config = await clientConfigStore.load(configId);
+    if (!config || config.status === "deleted" || config.status === "disabled") {
+      throw new OAuthConnectionError("client_config_unavailable");
+    }
+    if (config.flowTypes?.length && !config.flowTypes.includes(flowType)) {
+      throw new OAuthConnectionError("client_not_authorized");
+    }
+    return config;
   }
 
   async function exchangeOAuthCode(
     request: InternalOAuthConnectionRequest,
     code: string,
-    codeVerifier: string,
+    codeVerifier: string | undefined,
   ): Promise<{ accessToken: string; refreshToken?: string; expiresAt?: number; scopes?: string[] }> {
     const body = new URLSearchParams();
     body.set("grant_type", "authorization_code");
     body.set("code", code);
-    body.set("code_verifier", codeVerifier);
-    body.set("client_id", request.oauth.clientId);
-    if (request.oauth.clientSecret) {
-      body.set("client_secret", request.oauth.clientSecret);
+    if (codeVerifier) {
+      body.set("code_verifier", codeVerifier);
+    }
+    body.set("client_id", request.flow.clientId);
+    if (request.flow.clientSecret && request.tokenAuth !== "client_secret_basic") {
+      body.set("client_secret", request.flow.clientSecret);
     }
     body.set("redirect_uri", request.redirectUri);
+    const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded" };
+    if (request.flow.clientSecret && request.tokenAuth === "client_secret_basic") {
+      headers["authorization"] = basicAuthHeader(request.flow.clientId, request.flow.clientSecret);
+    }
 
-    const tokenResponse = await fetch(request.oauth.tokenUrl, {
+    const tokenResponse = await fetch(request.flow.tokenUrl, {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
+      headers,
       body,
     });
     const tokenText = await tokenResponse.text();
@@ -1084,26 +1964,214 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       throw oauthConnectionError("token_exchange_failed", `OAuth token exchange failed: ${tokenData["error"]}`);
     }
 
-    const accessToken = tokenData?.["access_token"];
-    const tokenType = tokenData?.["token_type"];
-    if (typeof accessToken !== "string") {
-      throw oauthConnectionError("invalid_token_response", "OAuth token exchange did not return an access_token");
+    return parseBearerTokenResponse(tokenData, {
+      allowMissingExpiry: request.flow.allowMissingExpiry,
+      persistRefreshToken: request.flow.persistRefreshToken,
+    });
+  }
+
+  async function exchangeClientCredentialsToken(params: {
+    tokenUrl: string;
+    clientId: string;
+    clientSecret: string;
+    tokenAuth: "client_secret_post" | "client_secret_basic";
+    scopes?: string[];
+    audienceParam?: string;
+    resourceParam?: string;
+  }): Promise<{ accessToken: string; expiresAt?: number; scopes?: string[] }> {
+    const body = new URLSearchParams();
+    body.set("grant_type", "client_credentials");
+    body.set("client_id", params.clientId);
+    if (params.tokenAuth === "client_secret_post") {
+      body.set("client_secret", params.clientSecret);
     }
-    if (typeof tokenType === "string" && tokenType.toLowerCase() !== "bearer") {
-      throw oauthConnectionError("invalid_token_response", "OAuth token exchange did not return bearer token_type");
+    if (params.scopes?.length) {
+      body.set("scope", params.scopes.join(" "));
     }
-    const expiresIn = readNumericField(tokenData?.["expires_in"]);
-    if (expiresIn === undefined && !request.oauth.allowMissingExpiry) {
-      throw oauthConnectionError("invalid_token_response", "OAuth token exchange did not return expires_in");
+    if (params.audienceParam) {
+      body.set("audience", params.audienceParam);
     }
-    const refreshToken = tokenData?.["refresh_token"];
-    const scope = tokenData?.["scope"];
+    if (params.resourceParam) {
+      body.set("resource", params.resourceParam);
+    }
+    const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded" };
+    if (params.tokenAuth === "client_secret_basic") {
+      headers["authorization"] = basicAuthHeader(params.clientId, params.clientSecret);
+    }
+    const response = await fetch(params.tokenUrl, { method: "POST", headers, body });
+    const text = await response.text();
+    const data = parseJsonObject(text, { strict: response.ok });
+    if (!response.ok || typeof data?.["error"] === "string") {
+      throw oauthConnectionError("token_exchange_failed", formatOAuthTokenExchangeError(response.status, data, text));
+    }
+    const parsed = parseBearerTokenResponse(data, { allowMissingExpiry: false });
     return {
-      accessToken,
-      ...(request.oauth.persistRefreshToken && typeof refreshToken === "string" && refreshToken.length > 0 ? { refreshToken } : {}),
-      ...(typeof expiresIn === "number" ? { expiresAt: Date.now() + expiresIn * 1000 } : {}),
-      ...(typeof scope === "string" && scope.trim() ? { scopes: scope.trim().split(/\s+/) } : {}),
+      accessToken: parsed.accessToken,
+      expiresAt: parsed.expiresAt,
+      scopes: parsed.scopes,
     };
+  }
+
+  async function requestDeviceAuthorization(params: {
+    deviceAuthorizationUrl: string;
+    clientId: string;
+    clientSecret?: string;
+    tokenAuth: "none" | "client_secret_post" | "client_secret_basic";
+    scopes?: string[];
+  }): Promise<{
+    deviceCode: string;
+    userCode?: string;
+    verificationUri: string;
+    verificationUriComplete?: string;
+    intervalSeconds: number;
+    expiresInSeconds: number;
+  }> {
+    const body = new URLSearchParams();
+    body.set("client_id", params.clientId);
+    if (params.scopes?.length) {
+      body.set("scope", params.scopes.join(" "));
+    }
+    if (params.clientSecret && params.tokenAuth === "client_secret_post") {
+      body.set("client_secret", params.clientSecret);
+    }
+    const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded" };
+    if (params.clientSecret && params.tokenAuth === "client_secret_basic") {
+      headers["authorization"] = basicAuthHeader(params.clientId, params.clientSecret);
+    }
+    const response = await fetch(params.deviceAuthorizationUrl, { method: "POST", headers, body });
+    const text = await response.text();
+    const data = parseJsonObject(text, { strict: response.ok });
+    if (!response.ok || typeof data?.["error"] === "string") {
+      throw oauthConnectionError("device_authorization_failed", formatOAuthTokenExchangeError(response.status, data, text));
+    }
+    const deviceCode = data?.["device_code"];
+    const verificationUri = data?.["verification_uri"] ?? data?.["verification_url"];
+    if (typeof deviceCode !== "string" || typeof verificationUri !== "string") {
+      throw new OAuthConnectionError("invalid_token_response");
+    }
+    const userCode = data?.["user_code"];
+    const verificationUriComplete = data?.["verification_uri_complete"];
+    return {
+      deviceCode,
+      ...(typeof userCode === "string" ? { userCode } : {}),
+      verificationUri,
+      ...(typeof verificationUriComplete === "string" ? { verificationUriComplete } : {}),
+      intervalSeconds: readNumericField(data?.["interval"]) ?? 5,
+      expiresInSeconds: readNumericField(data?.["expires_in"]) ?? 900,
+    };
+  }
+
+  async function pollDeviceToken(params: {
+    tokenUrl: string;
+    clientId: string;
+    clientSecret?: string;
+    tokenAuth: "none" | "client_secret_post" | "client_secret_basic";
+    deviceCode: string;
+    intervalSeconds: number;
+    expiresInSeconds: number;
+    persistRefreshToken?: boolean;
+  }): Promise<{ accessToken: string; refreshToken?: string; expiresAt?: number; scopes?: string[] }> {
+    let intervalMs = Math.max(1, params.intervalSeconds) * 1000;
+    const deadline = Date.now() + Math.max(1, params.expiresInSeconds) * 1000;
+    while (Date.now() < deadline) {
+      await delay(intervalMs);
+      const body = new URLSearchParams();
+      body.set("grant_type", "urn:ietf:params:oauth:grant-type:device_code");
+      body.set("device_code", params.deviceCode);
+      body.set("client_id", params.clientId);
+      if (params.clientSecret && params.tokenAuth === "client_secret_post") {
+        body.set("client_secret", params.clientSecret);
+      }
+      const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded" };
+      if (params.clientSecret && params.tokenAuth === "client_secret_basic") {
+        headers["authorization"] = basicAuthHeader(params.clientId, params.clientSecret);
+      }
+      const response = await fetch(params.tokenUrl, { method: "POST", headers, body });
+      const text = await response.text();
+      const data = parseJsonObject(text, { strict: response.ok });
+      const error = data?.["error"];
+      if (response.ok && typeof error !== "string") {
+        return parseBearerTokenResponse(data, {
+          allowMissingExpiry: false,
+          persistRefreshToken: params.persistRefreshToken,
+        });
+      }
+      if (error === "authorization_pending") {
+        continue;
+      }
+      if (error === "slow_down") {
+        intervalMs += 5_000;
+        continue;
+      }
+      if (error === "access_denied") {
+        throw new OAuthConnectionError("approval_denied");
+      }
+      if (error === "expired_token") {
+        throw new OAuthConnectionError("device_code_expired");
+      }
+      throw oauthConnectionError("token_exchange_failed", formatOAuthTokenExchangeError(response.status, data, text));
+    }
+    throw new OAuthConnectionError("device_code_expired");
+  }
+
+  async function exchangeOAuth1RequestToken(params: {
+    requestTokenUrl: string;
+    consumerKey: string;
+    consumerSecret: string;
+    callbackUrl: string;
+  }): Promise<{ token: string; secret: string }> {
+    const url = new URL(params.requestTokenUrl);
+    const auth = oauth1AuthorizationHeader({
+      method: "POST",
+      url,
+      consumerKey: params.consumerKey,
+      consumerSecret: params.consumerSecret,
+      extraOAuthParams: { oauth_callback: params.callbackUrl },
+    });
+    const response = await fetch(url, { method: "POST", headers: { authorization: auth } });
+    const text = await response.text();
+    if (!response.ok) {
+      throw oauthConnectionError("token_exchange_failed", sanitizeOAuthErrorText(text));
+    }
+    const data = new URLSearchParams(text);
+    const token = data.get("oauth_token");
+    const secret = data.get("oauth_token_secret");
+    if (!token || !secret) {
+      throw new OAuthConnectionError("invalid_token_response");
+    }
+    return { token, secret };
+  }
+
+  async function exchangeOAuth1AccessToken(params: {
+    accessTokenUrl: string;
+    consumerKey: string;
+    consumerSecret: string;
+    requestToken: string;
+    requestTokenSecret: string;
+    verifier: string;
+  }): Promise<{ token: string; secret: string }> {
+    const url = new URL(params.accessTokenUrl);
+    const auth = oauth1AuthorizationHeader({
+      method: "POST",
+      url,
+      consumerKey: params.consumerKey,
+      consumerSecret: params.consumerSecret,
+      token: params.requestToken,
+      tokenSecret: params.requestTokenSecret,
+      extraOAuthParams: { oauth_verifier: params.verifier },
+    });
+    const response = await fetch(url, { method: "POST", headers: { authorization: auth } });
+    const text = await response.text();
+    if (!response.ok) {
+      throw oauthConnectionError("token_exchange_failed", sanitizeOAuthErrorText(text));
+    }
+    const data = new URLSearchParams(text);
+    const token = data.get("oauth_token");
+    const secret = data.get("oauth_token_secret");
+    if (!token || !secret) {
+      throw new OAuthConnectionError("invalid_token_response");
+    }
+    return { token, secret };
   }
 
   async function listStoredCredentials(ctx: ServiceContext): Promise<StoredCredentialSummary[]> {
@@ -1333,7 +2401,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       throw new Error("Credential is unavailable");
     }
     if (credential.expiresAt && credential.expiresAt <= Date.now() + 30_000 && credential.refreshToken) {
-      credential = await oauthLifecycle.refreshOAuthCredential(credential as Credential & { id: string });
+      credential = await credentialLifecycle.refreshCredential(credential as Credential & { id: string });
     }
     return credential as Credential & { id: string };
   }
@@ -1450,14 +2518,14 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     ) ?? null;
   }
 
-  async function pruneOAuthClientConfigVersions(record: OAuthClientConfigRecord): Promise<void> {
+  async function pruneClientConfigVersions(record: ClientConfigRecord): Promise<void> {
     if (!record.versions) return;
     const keep = new Set<string>();
     if (record.currentVersion) keep.add(record.currentVersion);
     const credentials = await credentialStore.listUrlBound();
     for (const credential of credentials) {
-      if (credential.metadata?.["oauthClientConfigId"] === record.configId) {
-        const version = credential.metadata["oauthClientConfigVersion"];
+      if (credential.metadata?.["clientConfigId"] === record.configId) {
+        const version = credential.metadata["clientConfigVersion"];
         if (version) keep.add(version);
       }
     }
@@ -1624,11 +2692,11 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     policy: { allowed: ["shell", "panel", "server", "worker"] },
     methods: {
       storeCredential: { args: z.tuple([storeUrlBoundCredentialParamsSchema]) },
-      connectOAuth: { args: z.tuple([connectOAuthCredentialParamsSchema]) },
-      configureOAuthClient: { args: z.tuple([requestOAuthClientConfigParamsSchema]) },
+      connect: { args: z.tuple([connectCredentialParamsSchema]) },
+      configureClient: { args: z.tuple([configureClientParamsSchema]) },
       requestCredentialInput: { args: z.tuple([requestCredentialInputParamsSchema]) },
-      getOAuthClientConfigStatus: { args: z.tuple([getOAuthClientConfigStatusParamsSchema]) },
-      deleteOAuthClientConfig: { args: z.tuple([deleteOAuthClientConfigParamsSchema]) },
+      getClientConfigStatus: { args: z.tuple([getClientConfigStatusParamsSchema]) },
+      deleteClientConfig: { args: z.tuple([deleteClientConfigParamsSchema]) },
       forwardOAuthCallback: { args: z.tuple([forwardOAuthCallbackParamsSchema]) },
       listStoredCredentials: { args: z.tuple([]) },
       revokeCredential: { args: z.tuple([credentialIdParamsSchema]) },
@@ -1642,16 +2710,16 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       switch (method) {
         case "storeCredential":
           return storeCredential(ctx, (args as [StoreUrlBoundCredentialParams])[0]);
-        case "connectOAuth":
-          return connectOAuth(ctx, (args as [ConnectOAuthCredentialParams])[0]);
-        case "configureOAuthClient":
-          return requestOAuthClientConfig(ctx, (args as [RequestOAuthClientConfigParams])[0]);
+        case "connect":
+          return connectCredential(ctx, (args as [ConnectCredentialParams])[0]);
+        case "configureClient":
+          return configureClient(ctx, (args as [ConfigureClientParams])[0]);
         case "requestCredentialInput":
           return requestCredentialInput(ctx, (args as [RequestCredentialInputParams])[0]);
-        case "getOAuthClientConfigStatus":
-          return getOAuthClientConfigStatus(ctx, (args as [GetOAuthClientConfigStatusParams])[0]);
-        case "deleteOAuthClientConfig":
-          return deleteOAuthClientConfig(ctx, (args as [DeleteOAuthClientConfigParams])[0]);
+        case "getClientConfigStatus":
+          return getClientConfigStatus(ctx, (args as [GetClientConfigStatusParams])[0]);
+        case "deleteClientConfig":
+          return deleteClientConfig(ctx, (args as [DeleteClientConfigParams])[0]);
         case "forwardOAuthCallback":
           return forwardOAuthCallback(ctx, (args as [ForwardOAuthCallbackParams])[0]);
         case "listStoredCredentials":
@@ -1688,7 +2756,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       const url = new URL(req.url ?? "/", tx.redirectUri);
       const providerError = url.searchParams.get("error");
       await receiveOAuthCallback(tx, {
-        code: url.searchParams.get("code"),
+        code: url.searchParams.get("code") ?? url.searchParams.get("oauth_verifier"),
         state: url.searchParams.get("state"),
         error: providerError,
         url: url.toString(),
@@ -1719,6 +2787,115 @@ function normalizeAccountIdentity(input: Partial<AccountIdentity> | undefined, c
   };
 }
 
+function validateApiKeyMaterialTemplate(template: string, fieldNames: readonly string[]): void {
+  const declared = new Set(fieldNames);
+  const placeholders = template.match(/\{[a-zA-Z0-9._@+=:-]+\}/g) ?? [];
+  if (placeholders.length === 0) {
+    throw new OAuthConnectionError("invalid_connection_spec", "api-key materialTemplate must reference at least one field");
+  }
+  for (const placeholder of placeholders) {
+    const name = placeholder.slice(1, -1);
+    if (!declared.has(name)) {
+      throw new OAuthConnectionError(
+        "invalid_connection_spec",
+        `api-key materialTemplate references undeclared field: ${name}`,
+      );
+    }
+  }
+}
+
+function renderApiKeyMaterialTemplate(template: string, values: Record<string, string>): string {
+  return template.replace(/\{([a-zA-Z0-9._@+=:-]+)\}/g, (_match, name: string) => {
+    return values[name]?.trim() ?? "";
+  });
+}
+
+function parseBearerTokenResponse(
+  tokenData: Record<string, unknown> | null,
+  options: { allowMissingExpiry?: boolean; persistRefreshToken?: boolean },
+): { accessToken: string; refreshToken?: string; expiresAt?: number; scopes?: string[] } {
+  const accessToken = tokenData?.["access_token"];
+  const tokenType = tokenData?.["token_type"];
+  if (typeof accessToken !== "string") {
+    throw oauthConnectionError("invalid_token_response", "OAuth token exchange did not return an access_token");
+  }
+  if (typeof tokenType === "string" && tokenType.toLowerCase() !== "bearer") {
+    throw oauthConnectionError("invalid_token_response", "OAuth token exchange did not return bearer token_type");
+  }
+  const expiresIn = readNumericField(tokenData?.["expires_in"]);
+  if (expiresIn === undefined && !options.allowMissingExpiry) {
+    throw oauthConnectionError("invalid_token_response", "OAuth token exchange did not return expires_in");
+  }
+  const refreshToken = tokenData?.["refresh_token"];
+  const scope = tokenData?.["scope"];
+  return {
+    accessToken,
+    ...(options.persistRefreshToken && typeof refreshToken === "string" && refreshToken.length > 0 ? { refreshToken } : {}),
+    ...(typeof expiresIn === "number" ? { expiresAt: Date.now() + expiresIn * 1000 } : {}),
+    ...(typeof scope === "string" && scope.trim() ? { scopes: scope.trim().split(/\s+/) } : {}),
+  };
+}
+
+function basicAuthHeader(username: string, password: string): string {
+  return `Basic ${Buffer.from(`${encodeURIComponent(username)}:${encodeURIComponent(password)}`).toString("base64")}`;
+}
+
+function oauth1AuthorizationHeader(params: {
+  method: string;
+  url: URL;
+  consumerKey: string;
+  consumerSecret: string;
+  token?: string;
+  tokenSecret?: string;
+  extraOAuthParams?: Record<string, string>;
+}): string {
+  const oauthParams: Record<string, string> = {
+    oauth_consumer_key: params.consumerKey,
+    oauth_nonce: randomBytes(16).toString("hex"),
+    oauth_signature_method: "HMAC-SHA1",
+    oauth_timestamp: String(Math.floor(Date.now() / 1000)),
+    oauth_version: "1.0",
+    ...(params.token ? { oauth_token: params.token } : {}),
+    ...(params.extraOAuthParams ?? {}),
+  };
+  const signatureParams = new URLSearchParams(params.url.search);
+  for (const [key, value] of Object.entries(oauthParams)) {
+    signatureParams.append(key, value);
+  }
+  const normalizedParams = Array.from(signatureParams.entries())
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) =>
+      leftKey === rightKey ? leftValue.localeCompare(rightValue) : leftKey.localeCompare(rightKey)
+    )
+    .map(([key, value]) => `${oauthPercentEncode(key)}=${oauthPercentEncode(value)}`)
+    .join("&");
+  const baseUrl = new URL(params.url.toString());
+  baseUrl.search = "";
+  const signatureBase = [
+    params.method.toUpperCase(),
+    oauthPercentEncode(baseUrl.toString()),
+    oauthPercentEncode(normalizedParams),
+  ].join("&");
+  const signingKey = `${oauthPercentEncode(params.consumerSecret)}&${oauthPercentEncode(params.tokenSecret ?? "")}`;
+  oauthParams["oauth_signature"] = createHmacSha1(signingKey, signatureBase);
+  return "OAuth " + Object.entries(oauthParams)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${oauthPercentEncode(key)}="${oauthPercentEncode(value)}"`)
+    .join(", ");
+}
+
+function createHmacSha1(key: string, value: string): string {
+  return createHmac("sha1", key).update(value).digest("base64");
+}
+
+function oauthPercentEncode(value: string): string {
+  return encodeURIComponent(value)
+    .replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function isSameConfigTrustScope(
   identity: { repoPath: string; effectiveVersion: string; callerId: string },
   owner: { repoPath: string; effectiveVersion: string; callerId: string },
@@ -1731,8 +2908,8 @@ function deriveAccountIdentityFromJwt(
   accessToken: string,
   metadata: Record<string, string> | undefined,
 ): Partial<AccountIdentity> {
-  const root = metadata?.["oauthAccountIdentityJwtClaimRoot"];
-  const field = metadata?.["oauthAccountIdentityJwtClaimField"];
+  const root = metadata?.["accountIdentityJwtClaimRoot"];
+  const field = metadata?.["accountIdentityJwtClaimField"];
   if (!field) {
     return {};
   }
@@ -1754,7 +2931,7 @@ async function validateOAuthAccountIdentity(
   request: InternalOAuthConnectionRequest,
   accessToken: string,
 ): Promise<Partial<AccountIdentity>> {
-  const spec = request.oauth.accountValidation?.userinfo;
+  const spec = request.flow.accountValidation?.userinfo;
   if (!spec) {
     return {};
   }
@@ -2131,7 +3308,7 @@ async function bindLoopbackOAuthCallback(host: string, port: number, callbackPat
       }
       return;
     }
-    const code = url.searchParams.get("code");
+    const code = url.searchParams.get("code") ?? url.searchParams.get("oauth_verifier");
     if (!code) {
       respondOAuthCallback(res, 400, "Missing authorization code.");
       if (!settled) {
@@ -2209,7 +3386,7 @@ function errorCodeForOAuthError(error: unknown): OAuthConnectionErrorCode {
   if (error instanceof OAuthConnectionError) {
     return error.code;
   }
-  if (error instanceof OAuthLifecycleError) {
+  if (error instanceof CredentialLifecycleError) {
     return error.code;
   }
   const code = error instanceof Error ? (error as Error & { code?: unknown }).code : undefined;
@@ -2225,17 +3402,32 @@ function oauthConnectionError(code: OAuthConnectionErrorCode, message: string): 
 
 function isOAuthConnectionErrorCode(value: string): value is OAuthConnectionErrorCode {
   return [
+    "unsupported_flow",
+    "invalid_connection_spec",
     "approval_denied",
     "browser_unavailable",
+    "unsupported_browser_mode",
     "callback_timeout",
     "state_mismatch",
     "redirect_mismatch",
     "token_exchange_failed",
     "invalid_token_response",
+    "unsupported_token_auth_method",
     "account_validation_failed",
     "transaction_replayed",
     "transaction_expired",
+    "client_config_unavailable",
     "client_not_authorized",
+    "device_authorization_failed",
+    "device_code_expired",
+    "oauth1_signature_failed",
+    "session_capture_failed",
+    "saml_assertion_failed",
+    "unsupported_account_validation",
+    "unsupported_injection",
+    "ambiguous_credential",
+    "credential_conflict",
+    "credential_expired_reauth_required",
     "redirect_unavailable",
   ].includes(value);
 }

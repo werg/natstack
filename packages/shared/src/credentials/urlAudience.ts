@@ -24,10 +24,20 @@ export interface CredentialBasicAuthInjection {
   stripIncoming?: string[];
 }
 
+export interface CredentialOAuth1SignatureInjection {
+  type: "oauth1-signature";
+}
+
+export interface CredentialCookieInjection {
+  type: "cookie";
+}
+
 export type CredentialInjection =
   | CredentialHeaderInjection
   | CredentialQueryParamInjection
-  | CredentialBasicAuthInjection;
+  | CredentialBasicAuthInjection
+  | CredentialOAuth1SignatureInjection
+  | CredentialCookieInjection;
 
 const DEFAULT_PORTS: Record<string, string> = {
   "http:": "80",
@@ -128,6 +138,10 @@ export function findMatchingUrlAudience(targetUrl: string | URL, audiences: read
 }
 
 export function normalizeCredentialInjection(injection: CredentialInjection): CredentialInjection {
+  if (injection.type === "oauth1-signature" || injection.type === "cookie") {
+    return { type: injection.type };
+  }
+
   if (injection.type === "query-param") {
     validateQueryParamName(injection.name);
     return { type: "query-param", name: injection.name };

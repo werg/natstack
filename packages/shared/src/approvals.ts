@@ -55,7 +55,7 @@ export interface PendingCapabilityApproval extends PendingApprovalBase {
   }>;
 }
 
-export interface PendingOAuthClientConfigField {
+export interface PendingClientConfigField {
   name: string;
   label: string;
   type: ApprovalConfigFieldType;
@@ -63,14 +63,14 @@ export interface PendingOAuthClientConfigField {
   description?: string;
 }
 
-export interface PendingOAuthClientConfigApproval extends PendingApprovalBase {
-  kind: "oauth-client-config";
+export interface PendingClientConfigApproval extends PendingApprovalBase {
+  kind: "client-config";
   configId: string;
   authorizeUrl: string;
   tokenUrl: string;
   title: string;
   description?: string;
-  fields: PendingOAuthClientConfigField[];
+  fields: PendingClientConfigField[];
 }
 
 export interface PendingCredentialInputApproval extends PendingApprovalBase {
@@ -82,11 +82,11 @@ export interface PendingCredentialInputApproval extends PendingApprovalBase {
   injection: CredentialInjection;
   accountIdentity: AccountIdentity;
   scopes: string[];
-  fields: PendingOAuthClientConfigField[];
+  fields: PendingClientConfigField[];
 }
 
 export type PendingApproval =
   | PendingCredentialApproval
   | PendingCapabilityApproval
-  | PendingOAuthClientConfigApproval
+  | PendingClientConfigApproval
   | PendingCredentialInputApproval;

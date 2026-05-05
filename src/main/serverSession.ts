@@ -92,6 +92,7 @@ export async function establishServerSession(args: {
   centralData: CentralDataManager;
   onServerEvent: (event: string, payload: unknown) => void;
   onConnectionStatusChanged?: (status: ConnectionStatus) => void;
+  onIpcRequest?: (type: string, msg: Record<string, unknown>) => Promise<Record<string, unknown> | null>;
 }): Promise<SessionConnection> {
   const { mode, onServerEvent } = args;
 
@@ -159,10 +160,12 @@ export async function establishServerSession(args: {
         app.relaunch();
         app.exit(1);
       },
-      onIpcRequest: async (type) => {
+      onIpcRequest: async (type, msg) => {
         if (type === "workspace-list-request") {
           return { workspaces: args.centralData.listWorkspaces() };
         }
+        const delegated = await args.onIpcRequest?.(type, msg);
+        if (delegated) return delegated;
         return null;
       },
       onRelaunch: (name) => {

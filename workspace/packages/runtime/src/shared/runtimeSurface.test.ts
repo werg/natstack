@@ -94,4 +94,16 @@ describe("runtimeSurface manifests", () => {
     expect(runtimeKeys).toEqual(interfaceMembers);
     expect(wrappedNamespaces).toEqual(new Set(["workers", "workspace", "credentials", "git", "webhooks", "notifications"]));
   });
+
+  it("exposes only the provider-agnostic credential connection API", () => {
+    for (const surface of [panelRuntimeSurface, workerRuntimeSurface]) {
+      const members = surface.exports["credentials"]?.members ?? [];
+      expect(members).toEqual(expect.arrayContaining([
+        "connect",
+        "configureClient",
+        "getClientConfigStatus",
+        "deleteClientConfig",
+      ]));
+    }
+  });
 });

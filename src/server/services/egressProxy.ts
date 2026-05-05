@@ -1,5 +1,6 @@
 import { createServer, request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
+import { createHmac, randomBytes } from "node:crypto";
 import type {
   IncomingHttpHeaders,
   IncomingMessage,
@@ -29,7 +30,7 @@ import {
 import type { CodeIdentityResolver, ResolvedCodeIdentity } from "./codeIdentityResolver.js";
 import type { ApprovalQueue, GrantedDecision } from "./approvalQueue.js";
 import { CredentialSessionGrantStore, type CredentialSessionGrantResource } from "./credentialSessionGrants.js";
-import { OAuthLifecycleError, type OAuthCredentialLifecycle } from "./oauthCredentialLifecycle.js";
+import { CredentialLifecycleError, type CredentialLifecycle } from "./credentialLifecycle.js";
 
 const HOP_BY_HOP_REQUEST_HEADERS = new Set([
   "connection",
@@ -63,7 +64,7 @@ export interface EgressProxyDeps {
   codeIdentityResolver: Pick<CodeIdentityResolver, "resolveByCallerId">;
   approvalQueue?: ApprovalQueue;
   sessionGrantStore?: CredentialSessionGrantStore;
-  oauthLifecycle?: Pick<OAuthCredentialLifecycle, "refreshIfNeeded">;
+  credentialLifecycle?: Pick<CredentialLifecycle, "refreshIfNeeded">;
 }
 
 interface RequestAttribution extends ResolvedCodeIdentity {
@@ -252,6 +253,7 @@ export class EgressProxy {
     inputHeaders: IncomingHttpHeaders | Headers | Record<string, string | string[] | undefined>,
     credential?: Credential,
     binding?: CredentialBinding | null,
+    method = "GET",
   ): { headers: OutgoingHttpHeaders; targetUrl: URL } {
     const headers: OutgoingHttpHeaders = {};
 
@@ -274,11 +276,27 @@ export class EgressProxy {
         targetUrl = modified;
       } else if (injection.type === "basic-auth") {
         headers.authorization = renderCredentialBasicAuthValue(injection, credential.accessToken);
-      } else {
+      } else if (injection.type === "header") {
         headers[injection.name] = renderCredentialHeaderValue(
           injection.valueTemplate,
           credential.accessToken,
         );
+      } else if (injection.type === "cookie") {
+        headers.cookie = renderCookieSessionHeader(credential, targetUrl);
+      } else if (injection.type === "oauth1-signature") {
+        if (!credential.oauth1TokenSecret) {
+          throw new Error("OAuth1 credential is missing token secret");
+        }
+        headers.authorization = renderOAuth1AuthorizationHeader({
+          method,
+          targetUrl,
+          consumerKey: credential.metadata?.["oauth1ConsumerKey"] ?? "",
+          consumerSecret: credential.oauth1ConsumerSecret ?? "",
+          token: credential.accessToken,
+          tokenSecret: credential.oauth1TokenSecret,
+        });
+      } else {
+        throw new Error("Unsupported credential injection type");
       }
     }
 
@@ -383,6 +401,7 @@ export class EgressProxy {
           params.inputHeaders,
           authorization.credential ?? undefined,
           authorization.binding,
+          params.method,
         );
         targetUrl = prepared.targetUrl;
         try {
@@ -536,13 +555,13 @@ export class EgressProxy {
     if (!credential.id || !credential.expiresAt || credential.expiresAt > Date.now() + 30_000) {
       return credential;
     }
-    if (!credential.refreshToken || !this.deps.oauthLifecycle) {
+    if (!credential.refreshToken || !this.deps.credentialLifecycle) {
       return credential;
     }
     try {
-      return await this.deps.oauthLifecycle.refreshIfNeeded(credential as Credential & { id: string });
+      return await this.deps.credentialLifecycle.refreshIfNeeded(credential as Credential & { id: string });
     } catch (error) {
-      if (error instanceof OAuthLifecycleError) {
+      if (error instanceof CredentialLifecycleError) {
         throw new ForwardRejection(403, error.code, error.code);
       }
       throw new ForwardRejection(403, "oauth-refresh-failed", "oauth-refresh-failed");
@@ -807,6 +826,55 @@ export class EgressProxy {
   }
 }
 
+function renderOAuth1AuthorizationHeader(params: {
+  method: string;
+  targetUrl: URL;
+  consumerKey: string;
+  consumerSecret: string;
+  token: string;
+  tokenSecret: string;
+}): string {
+  if (!params.consumerKey || !params.consumerSecret) {
+    throw new Error("OAuth1 credential is missing consumer material");
+  }
+  const oauthParams: Record<string, string> = {
+    oauth_consumer_key: params.consumerKey,
+    oauth_nonce: randomBytes(16).toString("hex"),
+    oauth_signature_method: "HMAC-SHA1",
+    oauth_timestamp: String(Math.floor(Date.now() / 1000)),
+    oauth_token: params.token,
+    oauth_version: "1.0",
+  };
+  const signatureParams = new URLSearchParams(params.targetUrl.search);
+  for (const [key, value] of Object.entries(oauthParams)) {
+    signatureParams.append(key, value);
+  }
+  const normalizedParams = Array.from(signatureParams.entries())
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) =>
+      leftKey === rightKey ? leftValue.localeCompare(rightValue) : leftKey.localeCompare(rightKey)
+    )
+    .map(([key, value]) => `${oauthPercentEncode(key)}=${oauthPercentEncode(value)}`)
+    .join("&");
+  const baseUrl = new URL(params.targetUrl.toString());
+  baseUrl.search = "";
+  const signatureBase = [
+    params.method.toUpperCase(),
+    oauthPercentEncode(baseUrl.toString()),
+    oauthPercentEncode(normalizedParams),
+  ].join("&");
+  const signingKey = `${oauthPercentEncode(params.consumerSecret)}&${oauthPercentEncode(params.tokenSecret)}`;
+  oauthParams["oauth_signature"] = createHmac("sha1", signingKey).update(signatureBase).digest("base64");
+  return "OAuth " + Object.entries(oauthParams)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${oauthPercentEncode(key)}="${oauthPercentEncode(value)}"`)
+    .join(", ");
+}
+
+function oauthPercentEncode(value: string): string {
+  return encodeURIComponent(value)
+    .replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
 export function createEgressProxy(deps: EgressProxyDeps): EgressProxy {
   return new EgressProxy(deps);
 }
@@ -989,6 +1057,39 @@ function recordCircuitFailure(circuits: Map<string, CircuitState>, key: string):
   circuits.set(key, failures >= CIRCUIT_FAILURE_THRESHOLD
     ? { failures, state: "open", openedAt: Date.now() }
     : { failures, state: current.state === "half-open" ? "open" : "closed", openedAt: current.openedAt });
+}
+
+function renderCookieSessionHeader(credential: Credential, targetUrl: URL): string {
+  if (!credential.cookieSession?.cookies?.length) {
+    return credential.cookieHeader ?? credential.accessToken;
+  }
+  const nowSeconds = Date.now() / 1000;
+  const pairs = credential.cookieSession.cookies
+    .filter((cookie) => {
+      if (!cookie.name || !cookie.value) return false;
+      if (cookie.secure && targetUrl.protocol !== "https:") return false;
+      if (typeof cookie.expirationDate === "number" && cookie.expirationDate > 0 && cookie.expirationDate <= nowSeconds) {
+        return false;
+      }
+      return cookieDomainMatches(cookie.domain, targetUrl.hostname) && cookiePathMatches(cookie.path, targetUrl.pathname);
+    })
+    .map((cookie) => `${cookie.name}=${cookie.value}`);
+  return pairs.join("; ");
+}
+
+function cookieDomainMatches(domain: string | undefined, hostname: string): boolean {
+  if (!domain) return true;
+  const normalizedDomain = domain.replace(/^\./, "").toLowerCase();
+  const normalizedHost = hostname.toLowerCase();
+  return normalizedHost === normalizedDomain || normalizedHost.endsWith(`.${normalizedDomain}`);
+}
+
+function cookiePathMatches(cookiePath: string | undefined, requestPath: string): boolean {
+  const normalizedCookiePath = cookiePath && cookiePath.startsWith("/") ? cookiePath : "/";
+  if (normalizedCookiePath === "/") return true;
+  return requestPath === normalizedCookiePath || requestPath.startsWith(
+    normalizedCookiePath.endsWith("/") ? normalizedCookiePath : `${normalizedCookiePath}/`,
+  );
 }
 
 function grantForDecision(

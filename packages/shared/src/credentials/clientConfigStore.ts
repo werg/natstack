@@ -5,12 +5,13 @@ import {
   EncryptedJsonStore,
 } from "./encryptedJsonStore.js";
 import type {
-  OAuthClientConfigFieldStatus,
-  OAuthClientConfigFieldType,
-  OAuthClientConfigStatus,
+  CredentialFlowType,
+  ClientConfigFieldStatus,
+  ClientConfigFieldType,
+  ClientConfigStatus,
 } from "./types.js";
 
-export interface OAuthClientConfigRecord {
+export interface ClientConfigRecord {
   configId: string;
   currentVersion?: string;
   owner?: {
@@ -21,40 +22,46 @@ export interface OAuthClientConfigRecord {
   };
   authorizeUrl: string;
   tokenUrl: string;
+  status?: "active" | "disabled" | "deleted";
+  flowTypes?: CredentialFlowType[];
+  allowRefreshWhenDisabled?: boolean;
   fields: Record<string, {
     value: string;
-    type: OAuthClientConfigFieldType;
+    type: ClientConfigFieldType;
     updatedAt: number;
   }>;
-  versions?: Record<string, OAuthClientConfigVersionRecord>;
+  versions?: Record<string, ClientConfigVersionRecord>;
   createdAt: number;
   updatedAt: number;
 }
 
-export interface OAuthClientConfigVersionRecord {
+export interface ClientConfigVersionRecord {
   version: string;
   authorizeUrl: string;
   tokenUrl: string;
-  fields: OAuthClientConfigRecord["fields"];
+  status?: "active" | "disabled" | "deleted";
+  flowTypes?: CredentialFlowType[];
+  allowRefreshWhenDisabled?: boolean;
+  fields: ClientConfigRecord["fields"];
   createdAt: number;
 }
 
-export class OAuthClientConfigStore extends EncryptedJsonStore<OAuthClientConfigRecord> {
+export class ClientConfigStore extends EncryptedJsonStore<ClientConfigRecord> {
   constructor(options: { basePath?: string } = {}) {
-    super({ basePath: options.basePath, defaultBasePath: getDefaultOAuthClientConfigStorePath() });
+    super({ basePath: options.basePath, defaultBasePath: getDefaultClientConfigStorePath() });
   }
 
-  async save(record: OAuthClientConfigRecord): Promise<void> {
+  async save(record: ClientConfigRecord): Promise<void> {
     assertValidStoreIdentifier("configId", record.configId);
-    await this.saveRecord("oauth-client-config", record.configId, record);
+    await this.saveRecord("client-config", record.configId, record);
   }
 
-  async load(configId: string): Promise<OAuthClientConfigRecord | null> {
+  async load(configId: string): Promise<ClientConfigRecord | null> {
     assertValidStoreIdentifier("configId", configId);
-    return this.loadRecord("oauth-client-config", configId);
+    return this.loadRecord("client-config", configId);
   }
 
-  async loadVersion(configId: string, version: string): Promise<OAuthClientConfigVersionRecord | null> {
+  async loadVersion(configId: string, version: string): Promise<ClientConfigVersionRecord | null> {
     assertValidStoreIdentifier("configId", configId);
     assertValidStoreIdentifier("version", version);
     const record = await this.load(configId);
@@ -74,15 +81,15 @@ export class OAuthClientConfigStore extends EncryptedJsonStore<OAuthClientConfig
 
   async remove(configId: string): Promise<void> {
     assertValidStoreIdentifier("configId", configId);
-    await this.removeRecord("oauth-client-config", configId);
+    await this.removeRecord("client-config", configId);
   }
 
   summarize(
     configId: string,
-    record: OAuthClientConfigRecord | null,
-    requestedFields?: readonly { name: string; type: OAuthClientConfigFieldType }[],
-  ): OAuthClientConfigStatus {
-    const fields: Record<string, OAuthClientConfigFieldStatus> = {};
+    record: ClientConfigRecord | null,
+    requestedFields?: readonly { name: string; type: ClientConfigFieldType }[],
+  ): ClientConfigStatus {
+    const fields: Record<string, ClientConfigFieldStatus> = {};
     const names = requestedFields?.length
       ? requestedFields
       : Object.entries(record?.fields ?? {}).map(([name, field]) => ({ name, type: field.type }));
@@ -102,11 +109,13 @@ export class OAuthClientConfigStore extends EncryptedJsonStore<OAuthClientConfig
       authorizeUrl: record?.authorizeUrl,
       tokenUrl: record?.tokenUrl,
       fields,
+      status: record?.status,
+      flowTypes: record?.flowTypes,
       updatedAt: record?.updatedAt,
     };
   }
 }
 
-export function getDefaultOAuthClientConfigStorePath(): string {
-  return path.join(getCentralDataPath(), "oauth-client-config");
+export function getDefaultClientConfigStorePath(): string {
+  return path.join(getCentralDataPath(), "client-config");
 }

@@ -15,7 +15,7 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 | `fs` | value |  |  |
 | `workers` | namespace | `create`, `destroy`, `update`, `list`, `status`, `listInstanceSources`, `getPort`, `restartAll`, `cloneDO`, `destroyDO` |  |
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo` |  |
-| `credentials` | namespace | `store`, `connectOAuth`, `configureOAuthClient`, `requestCredentialInput`, `getOAuthClientConfigStatus`, `deleteOAuthClientConfig`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
+| `credentials` | namespace | `store`, `connect`, `configureClient`, `requestCredentialInput`, `getClientConfigStatus`, `deleteClientConfig`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
 | `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote`, `client` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
@@ -50,14 +50,15 @@ const stored = await credentials.store({
 
 ## OAuth Without Returning Tokens
 
-Use `credentials.connectOAuth()` for OAuth. The host owns the redirect,
+Use `credentials.connect()` for OAuth. The host owns the redirect,
 browser handoff, callback validation, token exchange, encrypted storage, and
 initial use grant. For provider secrets/config, use
-`credentials.configureOAuthClient()` and pass `clientConfigId`.
+`credentials.configureClient()` and pass `clientConfigId`.
 
 ```ts
-const stored = await credentials.connectOAuth({
-  oauth: {
+const stored = await credentials.connect({
+  flow: {
+    type: "oauth2-auth-code-pkce",
     authorizeUrl: "https://auth.example.com/oauth/authorize",
     tokenUrl: "https://auth.example.com/oauth/token",
     clientId: "public-client-id",

@@ -81,14 +81,18 @@ if (ipcChannel) {
  * Send a typed request to the parent process and await a correlated response.
  * Returns null if no IPC channel or if the parent doesn't respond within 5s.
  */
-function ipcRequest<T = unknown>(type: string, payload?: Record<string, unknown>): Promise<T | null> {
+function ipcRequest<T = unknown>(
+  type: string,
+  payload?: Record<string, unknown>,
+  timeoutMs: number = 5_000,
+): Promise<T | null> {
   if (!ipcChannel) return Promise.resolve(null);
   const id = randomBytes(8).toString("hex");
   return new Promise<T | null>((resolve) => {
     const timeout = setTimeout(() => {
       pendingIpcResponses.delete(id);
       resolve(null);
-    }, 5000);
+    }, timeoutMs);
     pendingIpcResponses.set(id, (response: unknown) => {
       clearTimeout(timeout);
       resolve(response as T);
@@ -395,15 +399,15 @@ async function main() {
 
   const tokenManager = new TokenManager();
   const { CredentialStore } = await import("../../packages/shared/src/credentials/store.js");
-  const { OAuthClientConfigStore } = await import("../../packages/shared/src/credentials/oauthClientConfigStore.js");
+  const { ClientConfigStore } = await import("../../packages/shared/src/credentials/clientConfigStore.js");
   const { AuditLog } = await import("../../packages/shared/src/credentials/audit.js");
   const { CodeIdentityResolver } = await import("./services/codeIdentityResolver.js");
   const { createEgressProxy } = await import("./services/egressProxy.js");
-  const { OAuthCredentialLifecycle } = await import("./services/oauthCredentialLifecycle.js");
+  const { CredentialLifecycle } = await import("./services/credentialLifecycle.js");
   const { CredentialSessionGrantStore } = await import("./services/credentialSessionGrants.js");
 
   const credentialStore = new CredentialStore();
-  const oauthClientConfigStore = new OAuthClientConfigStore();
+  const clientConfigStore = new ClientConfigStore();
   const auditLog = new AuditLog({ logDir: path.join(statePath, "credentials-audit") });
   const codeIdentityResolver = new CodeIdentityResolver();
   const credentialSessionGrantStore = new CredentialSessionGrantStore();
@@ -411,9 +415,9 @@ async function main() {
   const capabilityGrantStore = new CapabilityGrantStore({ statePath });
   const { createApprovalQueue } = await import("./services/approvalQueue.js");
   const approvalQueue = createApprovalQueue({ eventService });
-  const oauthLifecycle = new OAuthCredentialLifecycle({
+  const credentialLifecycle = new CredentialLifecycle({
     credentialStore,
-    oauthClientConfigStore,
+    clientConfigStore,
   });
 
   const egressProxy = createEgressProxy({
@@ -422,7 +426,7 @@ async function main() {
     codeIdentityResolver,
     approvalQueue,
     sessionGrantStore: credentialSessionGrantStore,
-    oauthLifecycle,
+    credentialLifecycle,
   });
   const egressProxyPort = await egressProxy.start();
 
@@ -665,9 +669,23 @@ async function main() {
   {
     const { createCredentialService } = await import("./services/credentialService.js");
     const { rpcServiceWithRoutes } = await import("./rpcServiceWithRoutes.js");
+    const captureSessionCredential = async <T extends Record<string, unknown>>(payload: Record<string, unknown>): Promise<T> => {
+      const response = await ipcRequest<T & { error?: unknown }>(
+        "credential-session-capture-request",
+        payload,
+        300_000,
+      );
+      if (!response) {
+        throw new Error("Session credential capture timed out or is unavailable");
+      }
+      if (response.error) {
+        throw new Error(String(response.error));
+      }
+      return response;
+    };
     const credentialService = createCredentialService({
       credentialStore,
-      oauthClientConfigStore,
+      clientConfigStore,
       auditLog,
       eventService,
       tokenManager,
@@ -675,7 +693,65 @@ async function main() {
       codeIdentityResolver,
       approvalQueue,
       sessionGrantStore: credentialSessionGrantStore,
-      oauthLifecycle,
+      credentialLifecycle,
+      sessionCredentialCapture: {
+        captureCookies: async (params) => {
+          const response = await captureSessionCredential<{
+            cookieHeader?: string;
+            cookieSession?: {
+              origins?: unknown;
+              cookies?: unknown;
+            };
+            expiresAt?: number;
+            accountIdentity?: Record<string, string>;
+          }>({
+            kind: "cookies",
+            signInUrl: params.signInUrl,
+            origins: params.origins,
+            cookieNames: params.cookieNames,
+            completionUrlPattern: params.completionUrlPattern,
+            maxTtlSeconds: params.maxTtlSeconds,
+            browser: params.browser,
+          });
+          if (!response.cookieHeader) {
+            throw new Error("Session credential capture returned no cookies");
+          }
+          return {
+            cookieHeader: response.cookieHeader,
+            cookieSession: response.cookieSession as never,
+            expiresAt: response.expiresAt,
+            accountIdentity: response.accountIdentity,
+          };
+        },
+        captureSamlSession: async (params) => {
+          const response = await captureSessionCredential<{
+            cookieHeader?: string;
+            cookieSession?: {
+              origins?: unknown;
+              cookies?: unknown;
+            };
+            assertion?: string;
+            expiresAt?: number;
+            accountIdentity?: Record<string, string>;
+          }>({
+            kind: "saml",
+            signInUrl: params.signInUrl,
+            spAudience: params.spAudience,
+            cookieNames: params.cookieNames,
+            assertion: params.assertion,
+            completionUrlPattern: params.completionUrlPattern,
+            maxTtlSeconds: params.maxTtlSeconds,
+            browser: params.browser,
+          });
+          return {
+            cookieHeader: response.cookieHeader,
+            cookieSession: response.cookieSession as never,
+            assertion: response.assertion,
+            expiresAt: response.expiresAt,
+            accountIdentity: response.accountIdentity,
+          };
+        },
+      },
     }) as ReturnType<typeof createCredentialService> & { routes?: import("./routeRegistry.js").ServiceRouteDecl[] };
     container.register(rpcServiceWithRoutes({
       definition: credentialService,

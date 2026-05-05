@@ -3,9 +3,9 @@ import type { StoredCredentialSummary } from "@workspace/runtime";
 
 const runtimeMock = vi.hoisted(() => ({
   credentials: {
-    connectOAuth: vi.fn(),
-    configureOAuthClient: vi.fn(),
-    getOAuthClientConfigStatus: vi.fn(),
+    connect: vi.fn(),
+    configureClient: vi.fn(),
+    getClientConfigStatus: vi.fn(),
     listStoredCredentials: vi.fn(),
     revokeCredential: vi.fn(),
     fetch: vi.fn(),
@@ -50,7 +50,7 @@ describe("google-workspace skill facade", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     runtimeMock.credentials.listStoredCredentials.mockResolvedValue([]);
-    runtimeMock.credentials.getOAuthClientConfigStatus.mockResolvedValue({
+    runtimeMock.credentials.getClientConfigStatus.mockResolvedValue({
       configId: "google-workspace",
       configured: false,
       fields: {
@@ -58,7 +58,7 @@ describe("google-workspace skill facade", () => {
         clientSecret: { configured: false, type: "secret" },
       },
     });
-    runtimeMock.credentials.configureOAuthClient.mockResolvedValue({
+    runtimeMock.credentials.configureClient.mockResolvedValue({
       configId: "google-workspace",
       configured: true,
       fields: {
@@ -66,7 +66,7 @@ describe("google-workspace skill facade", () => {
         clientSecret: { configured: true, type: "secret" },
       },
     });
-    runtimeMock.credentials.connectOAuth.mockResolvedValue(googleCredential);
+    runtimeMock.credentials.connect.mockResolvedValue(googleCredential);
     runtimeMock.credentials.fetch.mockResolvedValue(
       new Response(JSON.stringify({ email: "user@example.com" }), {
         status: 200,
@@ -75,7 +75,7 @@ describe("google-workspace skill facade", () => {
     );
   });
 
-  it("reports needs-setup when no OAuth client or Google credential exists", async () => {
+  it("reports needs-setup when no client or Google credential exists", async () => {
     const status = await getGoogleOnboardingStatus();
 
     expect(status.stage).toBe("needs-setup");
@@ -84,8 +84,8 @@ describe("google-workspace skill facade", () => {
     expect(status.nextActions.join(" ")).toContain("SETUP.md");
   });
 
-  it("reports needs-setup when only a Google OAuth client id is configured", async () => {
-    runtimeMock.credentials.getOAuthClientConfigStatus.mockResolvedValue({
+  it("reports needs-setup when only a Google client id is configured", async () => {
+    runtimeMock.credentials.getClientConfigStatus.mockResolvedValue({
       configId: "google-workspace",
       configured: false,
       fields: {
@@ -101,8 +101,8 @@ describe("google-workspace skill facade", () => {
     expect(status.readyToConnect).toBe(false);
   });
 
-  it("reports ready-to-connect when Google OAuth client id and secret are configured", async () => {
-    runtimeMock.credentials.getOAuthClientConfigStatus.mockResolvedValue({
+  it("reports ready-to-connect when Google client id and secret are configured", async () => {
+    runtimeMock.credentials.getClientConfigStatus.mockResolvedValue({
       configId: "google-workspace",
       configured: true,
       fields: {
@@ -155,10 +155,10 @@ describe("google-workspace skill facade", () => {
     expect(status.error).toContain("Original error");
   });
 
-  it("requests Google OAuth client material through privileged OAuth client config UI", async () => {
+  it("requests Google client material through privileged client config UI", async () => {
     await configureGoogleOAuthClient();
 
-    expect(runtimeMock.credentials.configureOAuthClient).toHaveBeenCalledWith(
+    expect(runtimeMock.credentials.configureClient).toHaveBeenCalledWith(
       expect.objectContaining({
         configId: "google-workspace",
         authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
@@ -171,8 +171,8 @@ describe("google-workspace skill facade", () => {
     );
   });
 
-  it("connectGoogle uses host-owned OAuth with Google scopes and URL-bound audiences", async () => {
-    runtimeMock.credentials.getOAuthClientConfigStatus.mockResolvedValue({
+  it("connectGoogle uses host-owned connection with Google scopes and URL-bound audiences", async () => {
+    runtimeMock.credentials.getClientConfigStatus.mockResolvedValue({
       configId: "google-workspace",
       configured: true,
       fields: {
@@ -183,9 +183,10 @@ describe("google-workspace skill facade", () => {
 
     await connectGoogle();
 
-    expect(runtimeMock.credentials.connectOAuth).toHaveBeenCalledWith(
+    expect(runtimeMock.credentials.connect).toHaveBeenCalledWith(
       expect.objectContaining({
-        oauth: expect.objectContaining({
+        flow: expect.objectContaining({
+          type: "oauth2-auth-code-pkce",
           clientConfigId: "google-workspace",
           scopes: expect.arrayContaining([
             "https://www.googleapis.com/auth/gmail.modify",
@@ -209,16 +210,16 @@ describe("google-workspace skill facade", () => {
     );
   });
 
-  it("connectGoogle returns a setup error instead of starting OAuth without OAuth client config", async () => {
+  it("connectGoogle returns a setup error instead of starting connection without client config", async () => {
     const result = await connectGoogle();
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("client material is not configured");
-    expect(runtimeMock.credentials.connectOAuth).not.toHaveBeenCalled();
+    expect(runtimeMock.credentials.connect).not.toHaveBeenCalled();
   });
 
-  it("connectGoogle uses stored OAuth client config without exposing client secret to userland", async () => {
-    runtimeMock.credentials.getOAuthClientConfigStatus.mockResolvedValue({
+  it("connectGoogle uses stored client config without exposing client secret to userland", async () => {
+    runtimeMock.credentials.getClientConfigStatus.mockResolvedValue({
       configId: "google-workspace",
       configured: true,
       fields: {
@@ -230,9 +231,9 @@ describe("google-workspace skill facade", () => {
     const result = await connectGoogle();
 
     expect(result.success).toBe(true);
-    expect(runtimeMock.credentials.connectOAuth).toHaveBeenCalledWith(
+    expect(runtimeMock.credentials.connect).toHaveBeenCalledWith(
       expect.objectContaining({
-        oauth: expect.objectContaining({ clientConfigId: "google-workspace" }),
+        flow: expect.objectContaining({ clientConfigId: "google-workspace" }),
       })
     );
   });

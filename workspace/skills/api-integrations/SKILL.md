@@ -42,7 +42,7 @@ const stored = await credentials.store({
 When a static token or API key must be entered by the user, do not collect it in
 chat or panel-owned React state. Use the host-owned credential input prompt.
 This prompt currently supports one required secret field; multi-field setup
-material belongs in OAuth client config or another provider-specific setup API.
+material belongs in client config or another provider-specific setup API.
 The secret is entered in NatStack's shell UI and stored encrypted after
 submission, but it is not exposed to panels, workers, or chat state.
 
@@ -68,13 +68,14 @@ const stored = await credentials.requestCredentialInput({
 
 Use host-owned OAuth when userland should connect an OAuth provider but should
 not compose redirects or receive the access token. Do not pass client secrets
-through userland; use `credentials.configureOAuthClient()` for flows that need
+through userland; use `credentials.configureClient()` for flows that need
 stored OAuth client material. A saved `configId` is bound to its OAuth authorize
 and token URLs; use a new `configId` if those endpoints change.
 
 ```ts
-const stored = await credentials.connectOAuth({
-  oauth: {
+const stored = await credentials.connect({
+  flow: {
+    type: "oauth2-auth-code-pkce",
     authorizeUrl: "https://auth.example.com/oauth/authorize",
     tokenUrl: "https://auth.example.com/oauth/token",
     clientId: "public-client-id",

@@ -86,9 +86,9 @@ function getCredentialRuntime(): RuntimeCredentials {
     );
   }
   for (const method of [
-    "connectOAuth",
-    "configureOAuthClient",
-    "getOAuthClientConfigStatus",
+    "connect",
+    "configureClient",
+    "getClientConfigStatus",
     "listStoredCredentials",
     "revokeCredential",
     "fetch",
@@ -157,7 +157,7 @@ function getNextActions(
     case "needs-setup":
       return [
         "Render the Google Workspace setup workflow from SETUP.md.",
-        "Run configureGoogleOAuthClient() and enter the Desktop app client_id and client_secret in the trusted approval UI.",
+    "Run configureGoogleOAuthClient() and enter the Desktop app client_id and client_secret in the trusted approval UI.",
       ];
     case "ready-to-connect":
       return ["Run connectGoogle() to create the Google Workspace credential."];
@@ -207,7 +207,7 @@ function buildStatus(input: {
 
 export async function configureGoogleOAuthClient() {
   return withCredentialRuntime((api) =>
-    api.configureOAuthClient({
+    api.configureClient({
       configId: GOOGLE_OAUTH_CLIENT_CONFIG_ID,
       title: "Configure Google Workspace OAuth",
       description: "Save the Desktop app OAuth client material for Google Workspace.",
@@ -235,7 +235,7 @@ export async function configureGoogleOAuthClient() {
 
 export async function getGoogleOAuthClientStatus() {
   return withCredentialRuntime((api) =>
-    api.getOAuthClientConfigStatus({
+    api.getClientConfigStatus({
       configId: GOOGLE_OAUTH_CLIENT_CONFIG_ID,
       fields: [
         { name: "clientId", label: "Client ID", type: "text", required: true },
@@ -308,7 +308,7 @@ export async function getGoogleOnboardingStatus(
       configured = (await getGoogleOAuthClientStatus()).configured;
     } catch (error) {
       warnings.push(
-        `Could not read Google OAuth client config: ${error instanceof Error ? error.message : String(error)}`
+        `Could not read Google client config: ${error instanceof Error ? error.message : String(error)}`
       );
     }
 
@@ -359,8 +359,9 @@ export async function connectGoogle(
 
     const scopes = getDefaultScopes(opts.scopes);
     const stored = await withCredentialRuntime((api) =>
-      api.connectOAuth({
-        oauth: {
+      api.connect({
+        flow: {
+          type: "oauth2-auth-code-pkce",
           clientConfigId: GOOGLE_OAUTH_CLIENT_CONFIG_ID,
           scopes,
           extraAuthorizeParams: {

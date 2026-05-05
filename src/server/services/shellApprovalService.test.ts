@@ -6,10 +6,10 @@ describe("shellApprovalService", () => {
     const service = createShellApprovalService({
       approvalQueue: {
         request: vi.fn(),
-        requestOAuthClientConfig: vi.fn(),
+        requestClientConfig: vi.fn(),
         requestCredentialInput: vi.fn(),
         resolve: vi.fn(),
-        submitOAuthClientConfig: vi.fn(),
+        submitClientConfig: vi.fn(),
         submitCredentialInput: vi.fn(),
         listPending: vi.fn(() => []),
       },

@@ -54,7 +54,7 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `openPanel` | value |  |  |
 | `adblock` | namespace | `getStats`, `isActive`, `getStatsForPanel`, `isEnabledForPanel`, `setEnabledForPanel`, `resetStatsForPanel`, `getPanelUrl`, `addToWhitelist`, `removeFromWhitelist` |  |
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo`, `openPanel` |  |
-| `credentials` | namespace | `store`, `connectOAuth`, `configureOAuthClient`, `requestCredentialInput`, `getOAuthClientConfigStatus`, `deleteOAuthClientConfig`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
+| `credentials` | namespace | `store`, `connect`, `configureClient`, `requestCredentialInput`, `getClientConfigStatus`, `deleteClientConfig`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
 | `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote`, `client` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
@@ -77,15 +77,16 @@ const stored = await credentials.store({
 
 ## OAuth Without Returning Tokens
 
-Use `credentials.connectOAuth()` for OAuth. The host owns the redirect,
+Use `credentials.connect()` for OAuth. The host owns the redirect,
 browser handoff, callback validation, token exchange, encrypted storage, and
 initial use grant. If the provider has client secrets or other setup material,
-collect it with `credentials.configureOAuthClient()` and pass `clientConfigId`
-to `connectOAuth`.
+collect it with `credentials.configureClient()` and pass `clientConfigId`
+to `connect`.
 
 ```ts
-const stored = await credentials.connectOAuth({
-  oauth: {
+const stored = await credentials.connect({
+  flow: {
+    type: "oauth2-auth-code-pkce",
     authorizeUrl: "https://auth.example.com/oauth/authorize",
     tokenUrl: "https://auth.example.com/oauth/token",
     clientId: "public-client-id",

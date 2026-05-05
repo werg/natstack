@@ -13,10 +13,10 @@ function tempStatePath(): string {
 function createApprovalQueueMock(): ApprovalQueue {
   return {
     request: vi.fn(async () => "deny" as const),
-    requestOAuthClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+    requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
     requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
     resolve: vi.fn(),
-    submitOAuthClientConfig: vi.fn(),
+    submitClientConfig: vi.fn(),
     submitCredentialInput: vi.fn(),
     listPending: vi.fn(() => []),
   };

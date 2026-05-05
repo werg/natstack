@@ -54,7 +54,7 @@ describe("mobileCredentialOAuth", () => {
       transport: {
         call: vi.fn(async (_target: string, method: string, ...args: unknown[]) => {
           calls.push({ method, args });
-          if (method === "credentials.connectOAuth") {
+          if (method === "credentials.connect") {
             return { id: "cred-1" };
           }
           throw new Error(`unexpected method: ${method}`);
@@ -64,7 +64,8 @@ describe("mobileCredentialOAuth", () => {
 
     await expect(connectMobileOAuthCredential(shellClient as never, {
       providerId: "example",
-      oauth: {
+      flow: {
+        type: "oauth2-auth-code-pkce",
         authorizeUrl: "https://auth.example.test/oauth",
         tokenUrl: "https://auth.example.test/token",
         clientId: "client",
@@ -81,9 +82,9 @@ describe("mobileCredentialOAuth", () => {
     })).resolves.toEqual({ id: "cred-1" });
     expect(openURL).not.toHaveBeenCalled();
 	    expect(calls[0]).toMatchObject({
-	      method: "credentials.connectOAuth",
+	      method: "credentials.connect",
 	      args: [expect.objectContaining({
-	        oauth: expect.objectContaining({ clientId: "client" }),
+	        flow: expect.objectContaining({ clientId: "client" }),
 	        browser: "external",
 	        redirect: {
 	          type: "client-forwarded",

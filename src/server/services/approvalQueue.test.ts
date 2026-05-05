@@ -133,10 +133,10 @@ describe("approvalQueue", () => {
     await expect(second).resolves.toBe("deny");
   });
 
-  it("supports OAuth client config approvals with submitted field values", async () => {
+  it("supports client config approvals with submitted field values", async () => {
     const { queue } = createQueue();
-    const promise = queue.requestOAuthClientConfig({
-      kind: "oauth-client-config",
+    const promise = queue.requestClientConfig({
+      kind: "client-config",
       callerId: "panel:1",
       callerKind: "panel",
       repoPath: "panels/example",
@@ -153,7 +153,7 @@ describe("approvalQueue", () => {
 
     const pending = queue.listPending()[0]!;
     expect(pending).toMatchObject({
-      kind: "oauth-client-config",
+      kind: "client-config",
       configId: "google-workspace",
       authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
       tokenUrl: "https://oauth2.googleapis.com/token",
@@ -164,7 +164,7 @@ describe("approvalQueue", () => {
     });
     expect(JSON.stringify(pending)).not.toContain("secret-1");
 
-    queue.submitOAuthClientConfig(pending.approvalId, {
+    queue.submitClientConfig(pending.approvalId, {
       clientId: "client-1",
       clientSecret: "secret-1",
     });

@@ -14,8 +14,8 @@ import type { ApprovalDecision } from "@natstack/shared/approvals";
 import type { ApprovalQueue } from "./approvalQueue.js";
 
 const DECISION_VALUES = ["once", "session", "version", "repo", "deny", "dismiss"] as const;
-const oauthClientConfigValuesSchema = z.record(z.string().min(1).max(128), z.string().max(4096));
-const credentialInputValuesSchema = oauthClientConfigValuesSchema;
+const clientConfigValuesSchema = z.record(z.string().min(1).max(128), z.string().max(4096));
+const credentialInputValuesSchema = clientConfigValuesSchema;
 
 export function createShellApprovalService(deps: {
   approvalQueue: ApprovalQueue;
@@ -28,7 +28,7 @@ export function createShellApprovalService(deps: {
     policy: { allowed: ["shell", "server"] },
     methods: {
       resolve: { args: z.tuple([z.string(), z.enum(DECISION_VALUES)]) },
-      submitOAuthClientConfig: { args: z.tuple([z.string(), oauthClientConfigValuesSchema]) },
+      submitClientConfig: { args: z.tuple([z.string(), clientConfigValuesSchema]) },
       submitCredentialInput: { args: z.tuple([z.string(), credentialInputValuesSchema]) },
       listPending: { args: z.tuple([]) },
     },
@@ -39,9 +39,9 @@ export function createShellApprovalService(deps: {
           approvalQueue.resolve(approvalId, decision);
           return;
         }
-        case "submitOAuthClientConfig": {
+        case "submitClientConfig": {
           const [approvalId, values] = args as [string, Record<string, string>];
-          approvalQueue.submitOAuthClientConfig(approvalId, values);
+          approvalQueue.submitClientConfig(approvalId, values);
           return;
         }
         case "submitCredentialInput": {

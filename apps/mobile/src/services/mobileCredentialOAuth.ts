@@ -8,7 +8,7 @@
 
 import { Linking } from "react-native";
 import type {
-  ConnectOAuthCredentialRequest,
+  ConnectCredentialRequest,
   StoredCredentialSummary,
 } from "@natstack/shared/credentials/types";
 import { registerPendingFlow, dropPendingFlow } from "./authCallbackRegistry";
@@ -19,7 +19,7 @@ const CALLBACK_PATH_PREFIX = "/oauth/callback";
 const DEFAULT_FLOW_TIMEOUT_MS = 10 * 60 * 1000;
 
 export interface ConnectMobileOAuthCredentialRequest
-  extends ConnectOAuthCredentialRequest {
+  extends ConnectCredentialRequest {
   providerId: string;
   redirectUri?: string;
   callbackOrigin?: string;
@@ -47,9 +47,9 @@ export async function connectMobileOAuthCredential(
     ?? buildMobileOAuthRedirectUri(request.providerId, request.callbackOrigin);
   return shellClient.transport.call<StoredCredentialSummary>(
     "main",
-    "credentials.connectOAuth",
+    "credentials.connect",
     {
-      oauth: request.oauth,
+      flow: request.flow,
       credential: request.credential,
       redirect: {
         ...(request.redirect ?? {}),

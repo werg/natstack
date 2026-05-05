@@ -1,14 +1,14 @@
 import type { RpcCaller } from "@natstack/rpc";
 import {
   createCredentialClient,
-  type ConfigureOAuthClientRequest,
-  type ConnectOAuthCredentialRequest,
+  type ClientConfigStatus,
+  type ConfigureClientRequest,
+  type ConnectCredentialRequest,
   type CredentialClient,
-  type DeleteOAuthClientConfigRequest,
-  type GetOAuthClientConfigStatusRequest,
+  type DeleteClientConfigRequest,
+  type GetClientConfigStatusRequest,
   type GitHttpClient,
   type GrantUrlBoundCredentialRequest,
-  type OAuthClientConfigStatus,
   type RequestCredentialInputRequest,
   type ResolveUrlBoundCredentialRequest,
   type StoredCredentialSummary,
@@ -34,16 +34,16 @@ export async function store(input: StoreUrlBoundCredentialRequest): Promise<Stor
   return requireClient().store(input);
 }
 
-export async function connectOAuth(
-  input: ConnectOAuthCredentialRequest,
+export async function connect(
+  input: ConnectCredentialRequest,
 ): Promise<StoredCredentialSummary> {
-  return requireClient().connectOAuth(input);
+  return requireClient().connect(input);
 }
 
-export async function configureOAuthClient(
-  input: ConfigureOAuthClientRequest,
-): Promise<OAuthClientConfigStatus> {
-  return requireClient().configureOAuthClient(input);
+export async function configureClient(
+  input: ConfigureClientRequest,
+): Promise<ClientConfigStatus> {
+  return requireClient().configureClient(input);
 }
 
 export async function requestCredentialInput(
@@ -52,16 +52,16 @@ export async function requestCredentialInput(
   return requireClient().requestCredentialInput(input);
 }
 
-export async function getOAuthClientConfigStatus(
-  input: GetOAuthClientConfigStatusRequest,
-): Promise<OAuthClientConfigStatus> {
-  return requireClient().getOAuthClientConfigStatus(input);
+export async function getClientConfigStatus(
+  input: GetClientConfigStatusRequest,
+): Promise<ClientConfigStatus> {
+  return requireClient().getClientConfigStatus(input);
 }
 
-export async function deleteOAuthClientConfig(
-  input: DeleteOAuthClientConfigRequest | string,
+export async function deleteClientConfig(
+  input: DeleteClientConfigRequest | string,
 ): Promise<void> {
-  return requireClient().deleteOAuthClientConfig(input);
+  return requireClient().deleteClientConfig(input);
 }
 
 export async function listStoredCredentials(): Promise<StoredCredentialSummary[]> {
@@ -102,14 +102,14 @@ export function gitHttp(opts?: { credentialId?: string }): GitHttpClient {
 }
 
 export type {
-  ConfigureOAuthClientRequest,
-  ConnectOAuthCredentialRequest,
+  ClientConfigStatus,
+  ConfigureClientRequest,
+  ConnectCredentialRequest,
   CredentialClient,
-  DeleteOAuthClientConfigRequest,
-  GetOAuthClientConfigStatusRequest,
+  DeleteClientConfigRequest,
+  GetClientConfigStatusRequest,
   GitHttpClient,
   GrantUrlBoundCredentialRequest,
-  OAuthClientConfigStatus,
   RequestCredentialInputRequest,
   ResolveUrlBoundCredentialRequest,
   StoredCredentialSummary,

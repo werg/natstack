@@ -39,7 +39,7 @@ Stages:
 | Stage | Meaning | Agent Action |
 |-------|---------|--------------|
 | `needs-setup` | Google OAuth client fields are not saved | Render the SETUP.md workflow UI, then run `configureGoogleOAuthClient()` |
-| `ready-to-connect` | Trusted URL-bound OAuth client config is present but no credential is stored | Run `connectGoogle()` |
+| `ready-to-connect` | Trusted URL-bound client config is present but no credential is stored | Run `connectGoogle()` |
 | `connected` | Credential exists but live verification has not run | Run `verifyGoogleConnection(connectionId)` |
 | `verified` | A live Google userinfo request succeeded | Continue onboarding |
 | `error` | Status check failed | Resolve the error and rerun status |

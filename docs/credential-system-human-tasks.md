@@ -37,7 +37,7 @@ routes, not on provider-facing URLs directly.
 
 Implemented in the repo:
 
-- Mobile credential OAuth now starts through `credentials.connectOAuth`; the
+- Mobile credential OAuth now starts through `credentials.connect`; the
   host owns redirect creation, browser handoff, callback validation, and token
   exchange.
 - The webhook relay accepts `POST /i/:subscriptionId`, preserves the raw body,
@@ -140,10 +140,10 @@ Provider webhooks must use `https://hooks.snugenv.com/i/:subscriptionId`.
 
 Done:
 
-1. Mobile credential OAuth helper delegates to `credentials.connectOAuth`.
+1. Mobile credential OAuth helper delegates to `credentials.connect`.
 2. The helper uses
    `https://auth.snugenv.com/oauth/callback/:providerId` by default on mobile.
-3. Desktop loopback is host-owned. Panels and workers use `connectOAuth` and do
+3. Desktop loopback is host-owned. Panels and workers use `connect` and do
    not receive raw tokens or compose redirects.
 
 Follow-up:

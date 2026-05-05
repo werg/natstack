@@ -44,7 +44,8 @@ describe("AiChatWorker model credential defaults", () => {
         port: 1455,
         callbackPath: "/auth/callback",
       },
-      oauth: {
+      flow: {
+        type: "oauth2-auth-code-pkce",
         authorizeUrl: "https://auth.openai.com/oauth/authorize",
         tokenUrl: "https://auth.openai.com/oauth/token",
         clientId: "app_EMoamEEZ73f0CkXaXp7hrann",
@@ -66,10 +67,13 @@ describe("AiChatWorker model credential defaults", () => {
     });
     expect(worker.rpcCall).toHaveBeenCalledWith(
       "main",
-      "credentials.connectOAuth",
+      "credentials.connect",
       expect.objectContaining({
         spec: expect.objectContaining({
           browser: "external",
+          flow: expect.objectContaining({
+            type: "oauth2-auth-code-pkce",
+          }),
           redirect: {
             host: "localhost",
             port: 1455,

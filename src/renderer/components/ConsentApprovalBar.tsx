@@ -18,7 +18,7 @@ import type {
   PendingCapabilityApproval,
   PendingCredentialApproval,
   PendingCredentialInputApproval,
-  PendingOAuthClientConfigApproval,
+  PendingClientConfigApproval,
 } from "@natstack/shared/approvals";
 import { useShellEvent } from "../shell/useShellEvent";
 import { shellApproval, view } from "../shell/client";
@@ -78,11 +78,11 @@ export function ConsentApprovalBar() {
       .resolve(current.approvalId, decision)
       .catch((err: unknown) => console.error("[ConsentApprovalBar] resolve failed:", err));
   };
-  const submitOAuthClientConfig = () => {
-    if (current?.kind !== "oauth-client-config") return;
+  const submitClientConfig = () => {
+    if (current?.kind !== "client-config") return;
     void shellApproval
-      .submitOAuthClientConfig(current.approvalId, secretConfigValues)
-      .catch((err: unknown) => console.error("[ConsentApprovalBar] submitOAuthClientConfig failed:", err));
+      .submitClientConfig(current.approvalId, secretConfigValues)
+      .catch((err: unknown) => console.error("[ConsentApprovalBar] submitClientConfig failed:", err));
   };
   const submitCredentialInput = () => {
     if (current?.kind !== "credential-input") return;
@@ -165,7 +165,7 @@ export function ConsentApprovalBar() {
               callerLabel={callerLabel}
               defaultOpen={shouldOpenApprovalDetails(current)}
             />
-            {current.kind === "oauth-client-config" || current.kind === "credential-input" ? (
+            {current.kind === "client-config" || current.kind === "credential-input" ? (
               <SecretConfigFields
                 approval={current}
                 values={secretConfigValues}
@@ -177,11 +177,11 @@ export function ConsentApprovalBar() {
           </Flex>
         </Flex>
 
-        {current.kind === "oauth-client-config" ? (
-          <OAuthClientConfigActions
+        {current.kind === "client-config" ? (
+          <ClientConfigActions
             approval={current}
             values={secretConfigValues}
-            onSubmit={submitOAuthClientConfig}
+            onSubmit={submitClientConfig}
             onDeny={() => decide("deny")}
             onDismiss={() => decide("dismiss")}
           />
@@ -262,14 +262,14 @@ function StandardApprovalActions({
   );
 }
 
-function OAuthClientConfigActions({
+function ClientConfigActions({
   approval,
   values,
   onSubmit,
   onDeny,
   onDismiss,
 }: {
-  approval: PendingOAuthClientConfigApproval;
+  approval: PendingClientConfigApproval;
   values: Record<string, string>;
   onSubmit: () => void;
   onDeny: () => void;
@@ -455,8 +455,8 @@ function ApprovalDetails({
         />
         {approval.kind === "credential" ? (
           <CredentialDetails approval={approval} />
-        ) : approval.kind === "oauth-client-config" ? (
-          <OAuthClientConfigDetails approval={approval} />
+        ) : approval.kind === "client-config" ? (
+          <ClientConfigDetails approval={approval} />
         ) : approval.kind === "credential-input" ? (
           <CredentialInputDetails approval={approval} />
         ) : (
@@ -472,7 +472,7 @@ function SecretConfigFields({
   values,
   onChange,
 }: {
-  approval: PendingOAuthClientConfigApproval | PendingCredentialInputApproval;
+  approval: PendingClientConfigApproval | PendingCredentialInputApproval;
   values: Record<string, string>;
   onChange: (name: string, value: string) => void;
 }) {
@@ -516,7 +516,7 @@ function SecretConfigFields({
   );
 }
 
-function OAuthClientConfigDetails({ approval }: { approval: PendingOAuthClientConfigApproval }) {
+function ClientConfigDetails({ approval }: { approval: PendingClientConfigApproval }) {
   const authorizeOrigin = originForUrl(approval.authorizeUrl);
   const tokenOrigin = originForUrl(approval.tokenUrl);
   return (
@@ -785,7 +785,7 @@ function getApprovalCategoryLabel(approval: PendingApproval): string {
     }
     return "Access request";
   }
-  if (approval.kind === "oauth-client-config") {
+  if (approval.kind === "client-config") {
     return "Service setup";
   }
   if (approval.kind === "credential-input") {
@@ -979,7 +979,7 @@ function getApprovalCopy(
       summary: `${requester} wants to open ${destination} in your system browser.`,
     };
   }
-  if (approval.kind === "oauth-client-config") {
+  if (approval.kind === "client-config") {
     return {
       title: "Configure service",
       summary: "Save OAuth client settings. Secrets stay encrypted and are only used for OAuth token exchange and refresh.",
@@ -1090,6 +1090,12 @@ function formatInjection(approval: PendingCredentialApproval | PendingCredential
   }
   if (injection.type === "basic-auth") {
     return "basic auth";
+  }
+  if (injection.type === "oauth1-signature") {
+    return "OAuth 1 signature";
+  }
+  if (injection.type === "cookie") {
+    return "cookie";
   }
   return `header ${injection.name}`;
 }

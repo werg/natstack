@@ -114,11 +114,11 @@ export const workspace = helpfulNamespace("workspace", workspaceClient);
 
 // Credential handles + universal outbound proxying for panel fetch().
 import {
-  configureOAuthClient as configureOAuthCredentialClient,
-  connectOAuth as connectOAuthCredential,
-  deleteOAuthClientConfig as deleteOAuthCredentialClientConfig,
+  configureClient as configureCredentialClient,
+  connect as connectCredential,
+  deleteClientConfig as deleteCredentialClientConfig,
   fetch as credentialFetch,
-  getOAuthClientConfigStatus as getOAuthClientCredentialConfigStatus,
+  getClientConfigStatus as getCredentialClientConfigStatus,
   gitHttp as credentialGitHttp,
   hookForUrl as credentialHookForUrl,
   initPanelCredentials,
@@ -128,25 +128,25 @@ import {
   store as storeUrlBoundCredential,
 } from "./credentials.js";
 export type {
-  ConfigureOAuthClientRequest,
-  ConnectOAuthCredentialRequest,
+  ClientConfigStatus,
+  ConfigureClientRequest,
+  ConnectCredentialRequest,
   CredentialClient,
   StoredCredentialSummary,
   StoreUrlBoundCredentialRequest,
-  DeleteOAuthClientConfigRequest,
-  GetOAuthClientConfigStatusRequest,
-  OAuthClientConfigStatus,
+  DeleteClientConfigRequest,
+  GetClientConfigStatusRequest,
   RequestCredentialInputRequest,
   GitHttpClient,
 } from "../shared/credentials.js";
 initPanelCredentials(rpc);
 const credentialApi = {
   store: storeUrlBoundCredential,
-  connectOAuth: connectOAuthCredential,
-  configureOAuthClient: configureOAuthCredentialClient,
+  connect: connectCredential,
+  configureClient: configureCredentialClient,
   requestCredentialInput: requestCredentialSecretInput,
-  getOAuthClientConfigStatus: getOAuthClientCredentialConfigStatus,
-  deleteOAuthClientConfig: deleteOAuthCredentialClientConfig,
+  getClientConfigStatus: getCredentialClientConfigStatus,
+  deleteClientConfig: deleteCredentialClientConfig,
   listStoredCredentials: listUrlBoundCredentials,
   revokeCredential: revokeUrlBoundCredential,
   fetch: credentialFetch,

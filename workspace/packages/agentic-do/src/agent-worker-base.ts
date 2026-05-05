@@ -82,6 +82,7 @@ export interface ModelCredentialSummary {
 export type ModelCredentialSetupProps = Record<string, unknown>;
 
 interface ModelCredentialOAuthConfig {
+  type: "oauth2-auth-code-pkce";
   authorizeUrl: string;
   tokenUrl: string;
   clientId: string;
@@ -112,12 +113,12 @@ import { Box, Button, Callout, Card, Code, Flex, Spinner, Text } from "@radix-ui
 export default function ModelCredentialRequiredCard({ props, chat }) {
   const providerId = props.providerId;
   const modelBaseUrl = props.modelBaseUrl;
-  const oauth = props.oauth;
+  const flow = props.flow;
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");
 
   const startOAuth = async (openMode) => {
-    if (!oauth || !modelBaseUrl) return;
+    if (!flow || !modelBaseUrl) return;
     setStatus("starting");
     setError("");
     try {
@@ -145,7 +146,7 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
   };
 
   const busy = status === "starting" || status === "waiting" || status === "approval";
-  const unsupported = !oauth || !modelBaseUrl;
+  const unsupported = !flow || !modelBaseUrl;
 
   return (
     <Card variant="surface" size="2">
@@ -229,7 +230,8 @@ function shouldProxyUrlBoundModelFetch(url: URL, baseUrls: readonly string[]): b
 function isModelCredentialOAuthConfig(value: unknown): value is ModelCredentialOAuthConfig {
   if (!value || typeof value !== "object") return false;
   const config = value as Record<string, unknown>;
-  return typeof config["authorizeUrl"] === "string"
+  return config["type"] === "oauth2-auth-code-pkce"
+    && typeof config["authorizeUrl"] === "string"
     && typeof config["tokenUrl"] === "string"
     && typeof config["clientId"] === "string"
     && (
@@ -500,7 +502,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   }
 
   private getModelCredentialOAuthConfig(providerId: string): {
-    oauth: ModelCredentialOAuthConfig;
+    flow: ModelCredentialOAuthConfig & { type: "oauth2-auth-code-pkce" };
     redirect?: ModelCredentialRedirectConfig;
     credentialLabel: string;
     accountIdentityJwtClaimRoot: string;
@@ -510,8 +512,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       throw new Error(`Model credential provider mismatch: ${providerId}`);
     }
     const setup = this.getModelCredentialSetupProps(providerId);
-    const oauth = setup?.["oauth"];
-    if (!isModelCredentialOAuthConfig(oauth)) {
+    const flow = setup?.["flow"];
+    if (!isModelCredentialOAuthConfig(flow)) {
       throw new Error(`No OAuth setup is available for model provider: ${providerId}`);
     }
     const credentialLabel = setup?.["credentialLabel"];
@@ -519,7 +521,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const accountIdentityJwtClaimRoot = setup?.["accountIdentityJwtClaimRoot"];
     const accountIdentityJwtClaimField = setup?.["accountIdentityJwtClaimField"];
     return {
-      oauth,
+      flow,
       ...(isModelCredentialRedirectConfig(redirect) ? { redirect } : {}),
       credentialLabel: typeof credentialLabel === "string"
         ? credentialLabel
@@ -549,7 +551,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const modelBaseUrl = this.getModelBaseUrl();
     const setup = this.getModelCredentialOAuthConfig(args.providerId);
     const spec = {
-      oauth: setup.oauth,
+      flow: {
+        ...setup.flow,
+      },
       credential: {
         label: setup.credentialLabel,
         audience: [{ url: modelBaseUrl, match: "path-prefix" }],
@@ -559,11 +563,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           valueTemplate: "Bearer {token}",
           stripIncoming: ["authorization"],
         },
-        scopes: setup.oauth.scopes ?? [],
+        scopes: setup.flow.scopes ?? [],
         metadata: {
           modelProviderId: args.providerId,
-          oauthAccountIdentityJwtClaimRoot: setup.accountIdentityJwtClaimRoot,
-          oauthAccountIdentityJwtClaimField: setup.accountIdentityJwtClaimField,
+          accountIdentityJwtClaimRoot: setup.accountIdentityJwtClaimRoot,
+          accountIdentityJwtClaimField: setup.accountIdentityJwtClaimField,
         },
       },
       browser: browserOpenMode,
@@ -571,7 +575,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     };
     return this.rpc.call<ModelCredentialSummary>(
       "main",
-      "credentials.connectOAuth",
+      "credentials.connect",
       browserHandoffCallerId
         ? {
           spec,

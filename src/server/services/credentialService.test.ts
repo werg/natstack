@@ -7,7 +7,7 @@ import type {
   CredentialAuditEvent,
   StoredCredentialSummary,
 } from "../../../packages/shared/src/credentials/types.js";
-import type { OAuthClientConfigRecord } from "../../../packages/shared/src/credentials/oauthClientConfigStore.js";
+import type { ClientConfigRecord } from "../../../packages/shared/src/credentials/clientConfigStore.js";
 import { createCredentialService } from "./credentialService.js";
 import { CredentialSessionGrantStore } from "./credentialSessionGrants.js";
 
@@ -65,14 +65,14 @@ class MemoryAuditLog {
   }
 }
 
-class MemoryOAuthClientConfigStore {
-  private readonly records = new Map<string, OAuthClientConfigRecord>();
+class MemoryClientConfigStore {
+  private readonly records = new Map<string, ClientConfigRecord>();
 
-  async save(record: OAuthClientConfigRecord): Promise<void> {
+  async save(record: ClientConfigRecord): Promise<void> {
     this.records.set(record.configId, record);
   }
 
-  async load(configId: string): Promise<OAuthClientConfigRecord | null> {
+  async load(configId: string): Promise<ClientConfigRecord | null> {
     return this.records.get(configId) ?? null;
   }
 
@@ -87,7 +87,7 @@ class MemoryOAuthClientConfigStore {
 
   summarize(
     configId: string,
-    record: OAuthClientConfigRecord | null,
+    record: ClientConfigRecord | null,
     requestedFields?: readonly { name: string; type: "text" | "secret" }[],
   ) {
     const fields: Record<string, { configured: boolean; type: "text" | "secret"; updatedAt?: number }> = {};
@@ -124,10 +124,10 @@ function jwtWithPayload(payload: Record<string, unknown>): string {
 function approvingQueue(decision: "once" | "session" | "version" | "repo" = "version") {
   return {
     request: vi.fn(async () => decision),
-    requestOAuthClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+    requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
     requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
     resolve: vi.fn(),
-    submitOAuthClientConfig: vi.fn(),
+    submitClientConfig: vi.fn(),
     submitCredentialInput: vi.fn(),
     listPending: vi.fn(() => []),
   };
@@ -149,7 +149,7 @@ async function startOAuthConnection(
   ctx: { callerId: string; callerKind: "panel" },
   request: unknown,
 ) {
-  const pending = service.handler(ctx, "connectOAuth", [request]) as Promise<StoredCredentialSummary>;
+  const pending = service.handler(ctx, "connect", [request]) as Promise<StoredCredentialSummary>;
   await vi.waitFor(() => expect(emit).toHaveBeenCalledWith(
     "external-open:open",
     expect.objectContaining({ callerId: ctx.callerId }),
@@ -238,13 +238,13 @@ describe("credentialService", () => {
     const store = new MemoryCredentialStore();
     const approvalQueue = {
       request: vi.fn(async () => "deny" as const),
-      requestOAuthClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+      requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
       requestCredentialInput: vi.fn(async () => ({
         decision: "submit" as const,
         values: { token: "github_pat_secret" },
       })),
       resolve: vi.fn(),
-      submitOAuthClientConfig: vi.fn(),
+      submitClientConfig: vi.fn(),
       submitCredentialInput: vi.fn(),
       listPending: vi.fn(() => []),
     };
@@ -301,13 +301,13 @@ describe("credentialService", () => {
   it("only accepts one required secret field for privileged credential input", async () => {
     const approvalQueue = {
       request: vi.fn(async () => "deny" as const),
-      requestOAuthClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+      requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
       requestCredentialInput: vi.fn(async () => ({
         decision: "submit" as const,
         values: { token: "github_pat_secret" },
       })),
       resolve: vi.fn(),
-      submitOAuthClientConfig: vi.fn(),
+      submitClientConfig: vi.fn(),
       submitCredentialInput: vi.fn(),
       listPending: vi.fn(() => []),
     };
@@ -549,7 +549,8 @@ describe("credentialService", () => {
     const ctx = { callerId: "panel:test", callerKind: "panel" as const };
 
     const started = await startOAuthConnection(service, emit, ctx, {
-      oauth: {
+      flow: {
+        type: "oauth2-auth-code-pkce",
         authorizeUrl: "https://auth.example.test/oauth/authorize",
         tokenUrl: "https://auth.example.test/oauth/token",
         clientId: "client-1",
@@ -620,15 +621,15 @@ describe("credentialService", () => {
     expect(JSON.stringify(persisted)).not.toContain("must-not-persist");
   });
 
-  it("connectOAuth owns browser handoff, callback validation, token exchange, and initial grant", async () => {
+  it("credentials.connect owns browser handoff, callback validation, token exchange, and initial grant", async () => {
     const store = new MemoryCredentialStore();
     const emit = vi.fn();
     const approvalQueue = {
       request: vi.fn(async () => "session" as const),
-      requestOAuthClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+      requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
       requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
       resolve: vi.fn(),
-      submitOAuthClientConfig: vi.fn(),
+      submitClientConfig: vi.fn(),
       submitCredentialInput: vi.fn(),
       listPending: vi.fn(() => []),
     };
@@ -652,8 +653,9 @@ describe("credentialService", () => {
       });
     }));
 
-    const pending = service.handler(ctx, "connectOAuth", [{
-      oauth: {
+    const pending = service.handler(ctx, "connect", [{
+      flow: {
+        type: "oauth2-auth-code-pkce",
         authorizeUrl: "https://auth.example.test/oauth/authorize",
         tokenUrl: "https://auth.example.test/oauth/token",
         clientId: "client-1",
@@ -693,7 +695,7 @@ describe("credentialService", () => {
     }));
   });
 
-  it("connectOAuth can open OAuth externally for a worker-requested panel handoff", async () => {
+  it("credentials.connect can open OAuth externally for a worker-requested panel handoff", async () => {
     const emit = vi.fn();
     const eventService = targetedOpenEventService(emit);
     const service = createCredentialService({
@@ -707,9 +709,10 @@ describe("credentialService", () => {
       expires_in: 3600,
     }), { status: 200, headers: { "content-type": "application/json" } })));
 
-    const pending = service.handler({ callerId: "worker:test", callerKind: "worker" }, "connectOAuth", [{
+    const pending = service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
       spec: {
-        oauth: {
+        flow: {
+        type: "oauth2-auth-code-pkce",
           authorizeUrl: "https://auth.example.test/oauth/authorize",
           tokenUrl: "https://auth.example.test/oauth/token",
           clientId: "client-1",
@@ -743,7 +746,7 @@ describe("credentialService", () => {
     await pending;
   });
 
-  it("connectOAuth can open OAuth in an internal browser panel for a worker-requested panel handoff", async () => {
+  it("credentials.connect can open OAuth in an internal browser panel for a worker-requested panel handoff", async () => {
     const emit = vi.fn();
     const eventService = targetedOpenEventService(emit);
     const service = createCredentialService({
@@ -757,9 +760,10 @@ describe("credentialService", () => {
       expires_in: 3600,
     }), { status: 200, headers: { "content-type": "application/json" } })));
 
-    const pending = service.handler({ callerId: "worker:test", callerKind: "worker" }, "connectOAuth", [{
+    const pending = service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
       spec: {
-        oauth: {
+        flow: {
+        type: "oauth2-auth-code-pkce",
           authorizeUrl: "https://auth.example.test/oauth/authorize",
           tokenUrl: "https://auth.example.test/oauth/token",
           clientId: "client-1",
@@ -804,9 +808,10 @@ describe("credentialService", () => {
       approvalQueue: approvingQueue() as never,
     });
 
-    await expect(service.handler({ callerId: "worker:test", callerKind: "worker" }, "connectOAuth", [{
+    await expect(service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
       spec: {
-        oauth: {
+        flow: {
+        type: "oauth2-auth-code-pkce",
           authorizeUrl: "https://auth.example.test/oauth/authorize",
           tokenUrl: "https://auth.example.test/oauth/token",
           clientId: "client-1",
@@ -836,9 +841,10 @@ describe("credentialService", () => {
       approvalQueue: approvingQueue() as never,
     });
 
-    await expect(service.handler({ callerId: "worker:test", callerKind: "worker" }, "connectOAuth", [{
+    await expect(service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
       spec: {
-        oauth: {
+        flow: {
+        type: "oauth2-auth-code-pkce",
           authorizeUrl: "https://auth.example.test/oauth/authorize",
           tokenUrl: "https://auth.example.test/oauth/token",
           clientId: "client-1",
@@ -870,8 +876,9 @@ describe("credentialService", () => {
       expires_in: 3600,
     }), { status: 200, headers: { "content-type": "application/json" } })));
 
-    const pending = service.handler({ callerId: "shell", callerKind: "shell" }, "connectOAuth", [{
-      oauth: {
+    const pending = service.handler({ callerId: "shell", callerKind: "shell" }, "connect", [{
+      flow: {
+        type: "oauth2-auth-code-pkce",
         authorizeUrl: "https://auth.example.test/oauth/authorize",
         tokenUrl: "https://auth.example.test/oauth/token",
         clientId: "client-1",
@@ -910,8 +917,9 @@ describe("credentialService", () => {
       approvalQueue: approvingQueue() as never,
     });
 
-    const pending = service.handler({ callerId: "shell", callerKind: "shell" }, "connectOAuth", [{
-      oauth: {
+    const pending = service.handler({ callerId: "shell", callerKind: "shell" }, "connect", [{
+      flow: {
+        type: "oauth2-auth-code-pkce",
         authorizeUrl: "https://auth.example.test/oauth/authorize",
         tokenUrl: "https://auth.example.test/oauth/token",
         clientId: "client-1",
@@ -943,8 +951,9 @@ describe("credentialService", () => {
       approvalQueue: approvingQueue() as never,
     });
 
-    await expect(service.handler({ callerId: "panel:test", callerKind: "panel" }, "connectOAuth", [{
-      oauth: {
+    await expect(service.handler({ callerId: "panel:test", callerKind: "panel" }, "connect", [{
+      flow: {
+        type: "oauth2-auth-code-pkce",
         authorizeUrl: "https://auth.example.test/oauth/authorize",
         tokenUrl: "https://auth.example.test/oauth/token",
         clientId: "client-1",
@@ -969,9 +978,10 @@ describe("credentialService", () => {
       approvalQueue: approvingQueue() as never,
     });
 
-    await expect(service.handler({ callerId: "panel:test", callerKind: "panel" }, "connectOAuth", [{
+    await expect(service.handler({ callerId: "panel:test", callerKind: "panel" }, "connect", [{
       spec: {
-        oauth: {
+        flow: {
+        type: "oauth2-auth-code-pkce",
           authorizeUrl: "https://auth.example.test/oauth/authorize",
           tokenUrl: "https://auth.example.test/oauth/token",
           clientId: "client-1",
@@ -998,7 +1008,8 @@ describe("credentialService", () => {
     });
     const ctx = { callerId: "panel:test", callerKind: "panel" as const };
     const started = await startOAuthConnection(service, emit, ctx, {
-      oauth: {
+      flow: {
+        type: "oauth2-auth-code-pkce",
         authorizeUrl: "https://auth.example.test/oauth/authorize",
         tokenUrl: "https://auth.example.test/oauth/token",
         clientId: "client-1",
@@ -1036,7 +1047,8 @@ describe("credentialService", () => {
     });
     const ctx = { callerId: "panel:test", callerKind: "panel" as const };
     const started = await startOAuthConnection(service, emit, ctx, {
-      oauth: {
+      flow: {
+        type: "oauth2-auth-code-pkce",
         authorizeUrl: "https://auth.example.test/oauth/authorize",
         tokenUrl: "https://auth.example.test/oauth/token",
         clientId: "client-1",
@@ -1060,11 +1072,11 @@ describe("credentialService", () => {
     await expect(pendingError).resolves.toMatchObject({ code: "approval_denied" });
   });
 
-  it("stores URL-bound OAuth client config from approval UI without returning secret values", async () => {
-    const oauthClientConfigStore = new MemoryOAuthClientConfigStore();
+  it("stores URL-bound client config from approval UI without returning secret values", async () => {
+    const clientConfigStore = new MemoryClientConfigStore();
     const approvalQueue = {
       request: vi.fn(),
-      requestOAuthClientConfig: vi.fn(async () => ({
+      requestClientConfig: vi.fn(async () => ({
         decision: "submit" as const,
         values: {
           clientId: "client-1",
@@ -1073,18 +1085,18 @@ describe("credentialService", () => {
       })),
       requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
       resolve: vi.fn(),
-      submitOAuthClientConfig: vi.fn(),
+      submitClientConfig: vi.fn(),
       submitCredentialInput: vi.fn(),
       listPending: vi.fn(() => []),
     };
     const service = createCredentialService({
       credentialStore: new MemoryCredentialStore() as never,
-      oauthClientConfigStore: oauthClientConfigStore as never,
+      clientConfigStore: clientConfigStore as never,
       approvalQueue: approvalQueue as never,
     });
     const ctx = { callerId: "panel:test", callerKind: "panel" as const };
 
-    const status = await service.handler(ctx, "configureOAuthClient", [{
+    const status = await service.handler(ctx, "configureClient", [{
       configId: "google-workspace",
       title: "Configure Google Workspace OAuth",
       authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
@@ -1106,12 +1118,12 @@ describe("credentialService", () => {
       },
     });
     expect(JSON.stringify(status)).not.toContain("secret-1");
-    expect((await oauthClientConfigStore.load("google-workspace"))?.fields["clientSecret"]?.value).toBe("secret-1");
+    expect((await clientConfigStore.load("google-workspace"))?.fields["clientSecret"]?.value).toBe("secret-1");
   });
 
-  it("authorizes OAuth client config status and prompts before deletion", async () => {
-    const oauthClientConfigStore = new MemoryOAuthClientConfigStore();
-    await oauthClientConfigStore.save({
+  it("authorizes client config status and prompts before deletion", async () => {
+    const clientConfigStore = new MemoryClientConfigStore();
+    await clientConfigStore.save({
       configId: "google-workspace",
       currentVersion: "v1",
       owner: {
@@ -1133,7 +1145,7 @@ describe("credentialService", () => {
     const approvalQueue = approvingQueue("once");
     const service = createCredentialService({
       credentialStore: new MemoryCredentialStore() as never,
-      oauthClientConfigStore: oauthClientConfigStore as never,
+      clientConfigStore: clientConfigStore as never,
       approvalQueue: approvalQueue as never,
       codeIdentityResolver: {
         resolveByCallerId: (callerId: string) => callerId === "panel:owner"
@@ -1144,34 +1156,34 @@ describe("credentialService", () => {
 
     await expect(service.handler(
       { callerId: "panel:other", callerKind: "panel" },
-      "getOAuthClientConfigStatus",
+      "getClientConfigStatus",
       [{ configId: "google-workspace" }],
     )).rejects.toThrow("client_not_authorized");
 
     await service.handler(
       { callerId: "panel:owner", callerKind: "panel" },
-      "deleteOAuthClientConfig",
+      "deleteClientConfig",
       [{ configId: "google-workspace" }],
     );
 
     expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
       kind: "capability",
-      capability: "oauth-client-config-delete",
+      capability: "client-config-delete",
       title: "Disable service configuration",
     }));
-    expect(await oauthClientConfigStore.load("google-workspace")).toBeNull();
+    expect(await clientConfigStore.load("google-workspace")).toMatchObject({ status: "deleted" });
   });
 
-  it("rejects OAuth client config URLs with fragments or token query parameters", async () => {
+  it("rejects client config URLs with fragments or token query parameters", async () => {
     const service = createCredentialService({
       credentialStore: new MemoryCredentialStore() as never,
-      oauthClientConfigStore: new MemoryOAuthClientConfigStore() as never,
+      clientConfigStore: new MemoryClientConfigStore() as never,
       approvalQueue: {
         request: vi.fn(),
-        requestOAuthClientConfig: vi.fn(),
+        requestClientConfig: vi.fn(),
         requestCredentialInput: vi.fn(),
         resolve: vi.fn(),
-        submitOAuthClientConfig: vi.fn(),
+        submitClientConfig: vi.fn(),
         submitCredentialInput: vi.fn(),
         listPending: vi.fn(() => []),
       } as never,
@@ -1188,23 +1200,23 @@ describe("credentialService", () => {
       ],
     };
 
-    await expect(service.handler(ctx, "configureOAuthClient", [{
+    await expect(service.handler(ctx, "configureClient", [{
       ...baseRequest,
       authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth#frag",
     }])).rejects.toThrow("authorizeUrl must not include a fragment");
-    await expect(service.handler(ctx, "configureOAuthClient", [{
+    await expect(service.handler(ctx, "configureClient", [{
       ...baseRequest,
       tokenUrl: "https://oauth2.googleapis.com/token?client_secret=inline",
     }])).rejects.toThrow("tokenUrl must not include query parameters");
-    await expect(service.handler(ctx, "configureOAuthClient", [{
+    await expect(service.handler(ctx, "configureClient", [{
       ...baseRequest,
       tokenUrl: "https://oauth2.googleapis.com/token#frag",
     }])).rejects.toThrow("tokenUrl must not include a fragment");
   });
 
-  it("builds URL-bound OAuth client config PKCE without exposing client secrets in userland request", async () => {
-    const oauthClientConfigStore = new MemoryOAuthClientConfigStore();
-    await oauthClientConfigStore.save({
+  it("builds URL-bound client config PKCE without exposing client secrets in userland request", async () => {
+    const clientConfigStore = new MemoryClientConfigStore();
+    await clientConfigStore.save({
       configId: "google-workspace",
       authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
       tokenUrl: "https://oauth2.googleapis.com/token",
@@ -1218,14 +1230,15 @@ describe("credentialService", () => {
     const emit = vi.fn();
     const service = createCredentialService({
       credentialStore: new MemoryCredentialStore() as never,
-      oauthClientConfigStore: oauthClientConfigStore as never,
+      clientConfigStore: clientConfigStore as never,
       eventService: targetedOpenEventService(emit) as never,
       approvalQueue: approvingQueue() as never,
     });
     const ctx = { callerId: "panel:test", callerKind: "panel" as const };
 
     const started = await startOAuthConnection(service, emit, ctx, {
-      oauth: {
+      flow: {
+        type: "oauth2-auth-code-pkce",
         clientConfigId: "google-workspace",
         scopes: ["scope-1"],
         extraAuthorizeParams: {
@@ -1262,9 +1275,9 @@ describe("credentialService", () => {
     await started.pending;
   });
 
-  it("rejects OAuth client config updates that try to change URL bindings", async () => {
-    const oauthClientConfigStore = new MemoryOAuthClientConfigStore();
-    await oauthClientConfigStore.save({
+  it("rejects client config updates that try to change URL bindings", async () => {
+    const clientConfigStore = new MemoryClientConfigStore();
+    await clientConfigStore.save({
       configId: "google-workspace",
       authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
       tokenUrl: "https://oauth2.googleapis.com/token",
@@ -1277,7 +1290,7 @@ describe("credentialService", () => {
     });
     const approvalQueue = {
       request: vi.fn(),
-      requestOAuthClientConfig: vi.fn(async () => ({
+      requestClientConfig: vi.fn(async () => ({
         decision: "submit" as const,
         values: {
           clientId: "client-2",
@@ -1286,17 +1299,17 @@ describe("credentialService", () => {
       })),
       requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
       resolve: vi.fn(),
-      submitOAuthClientConfig: vi.fn(),
+      submitClientConfig: vi.fn(),
       submitCredentialInput: vi.fn(),
       listPending: vi.fn(() => []),
     };
     const service = createCredentialService({
       credentialStore: new MemoryCredentialStore() as never,
-      oauthClientConfigStore: oauthClientConfigStore as never,
+      clientConfigStore: clientConfigStore as never,
       approvalQueue: approvalQueue as never,
     });
 
-    await expect(service.handler({ callerId: "panel:test", callerKind: "panel" as const }, "configureOAuthClient", [{
+    await expect(service.handler({ callerId: "panel:test", callerKind: "panel" as const }, "configureClient", [{
       configId: "google-workspace",
       title: "Configure Google Workspace OAuth",
       authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
@@ -1313,10 +1326,10 @@ describe("credentialService", () => {
     const emit = vi.fn();
     const approvalQueue = {
       request: vi.fn(async () => "session" as const),
-      requestOAuthClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
+      requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
       requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
       resolve: vi.fn(),
-      submitOAuthClientConfig: vi.fn(),
+      submitClientConfig: vi.fn(),
       submitCredentialInput: vi.fn(),
       listPending: vi.fn(() => []),
     };
@@ -1328,7 +1341,8 @@ describe("credentialService", () => {
     const ctx = { callerId: "panel:test", callerKind: "panel" as const };
 
     const started = await startOAuthConnection(service, emit, ctx, {
-      oauth: {
+      flow: {
+        type: "oauth2-auth-code-pkce",
         authorizeUrl: "https://accounts.example-login.test/oauth/authorize",
         tokenUrl: "https://accounts.example-login.test/oauth/token",
         clientId: "client-1",
@@ -1366,8 +1380,9 @@ describe("credentialService", () => {
     });
     const ctx = { callerId: "panel:test", callerKind: "panel" as const };
 
-    await expect(service.handler(ctx, "connectOAuth", [{
-      oauth: {
+    await expect(service.handler(ctx, "connect", [{
+      flow: {
+        type: "oauth2-auth-code-pkce",
         authorizeUrl: "https://auth.example.test/oauth/authorize",
         tokenUrl: "https://auth.example.test/oauth/token",
         clientId: "client-1",
@@ -1391,7 +1406,8 @@ describe("credentialService", () => {
     });
     const ctx = { callerId: "panel:test", callerKind: "panel" as const };
     const started = await startOAuthConnection(service, emit, ctx, {
-      oauth: {
+      flow: {
+        type: "oauth2-auth-code-pkce",
         authorizeUrl: "https://auth.example.test/oauth/authorize",
         tokenUrl: "https://auth.example.test/oauth/token",
         clientId: "client-1",
@@ -1427,7 +1443,8 @@ describe("credentialService", () => {
     });
     const ctx = { callerId: "panel:test", callerKind: "panel" as const };
     const started = await startOAuthConnection(service, emit, ctx, {
-      oauth: {
+      flow: {
+        type: "oauth2-auth-code-pkce",
         authorizeUrl: "https://auth.example.test/oauth/authorize",
         tokenUrl: "https://auth.example.test/oauth/token",
         clientId: "client-1",
@@ -1437,8 +1454,8 @@ describe("credentialService", () => {
         audience: [{ url: "https://api.example.test", match: "origin" }],
         injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
         metadata: {
-          oauthAccountIdentityJwtClaimRoot: "https://api.example.test/auth",
-          oauthAccountIdentityJwtClaimField: "account_id",
+          accountIdentityJwtClaimRoot: "https://api.example.test/auth",
+          accountIdentityJwtClaimField: "account_id",
         },
       },
     });
@@ -1469,7 +1486,8 @@ describe("credentialService", () => {
     });
     const ctx = { callerId: "panel:test", callerKind: "panel" as const };
     const started = await startOAuthConnection(service, emit, ctx, {
-      oauth: {
+      flow: {
+        type: "oauth2-auth-code-pkce",
         authorizeUrl: "https://auth.example.test/oauth/authorize",
         tokenUrl: "https://auth.example.test/oauth/token",
         clientId: "client-1",
@@ -1523,7 +1541,8 @@ describe("credentialService", () => {
     });
     const ctx = { callerId: "panel:test", callerKind: "panel" as const };
     const started = await startOAuthConnection(service, emit, ctx, {
-      oauth: {
+      flow: {
+        type: "oauth2-auth-code-pkce",
         authorizeUrl: "https://auth.example.test/oauth/authorize",
         tokenUrl: "https://auth.example.test/oauth/token",
         clientId: "client-1",
@@ -1549,7 +1568,8 @@ describe("credentialService", () => {
 
     emit.mockClear();
     const started2 = await startOAuthConnection(service, emit, ctx, {
-      oauth: {
+      flow: {
+        type: "oauth2-auth-code-pkce",
         authorizeUrl: "https://auth.example.test/oauth/authorize",
         tokenUrl: "https://auth.example.test/oauth/token",
         clientId: "client-1",
@@ -1578,6 +1598,125 @@ describe("credentialService", () => {
       if (error.code !== "ECONNRESET" && !/ECONNRESET/.test(error.message)) throw error;
     });
     expect((await tokenTypeError).message).toMatch(/bearer token_type/);
+  });
+
+  it("connects OAuth2 client credentials through a stored client config", async () => {
+    const store = new MemoryCredentialStore();
+    const clientConfigStore = new MemoryClientConfigStore();
+    await clientConfigStore.save({
+      configId: "svc",
+      currentVersion: "v1",
+      owner: { callerId: "worker:test", callerKind: "worker", repoPath: "worker:test", effectiveVersion: "unknown" },
+      authorizeUrl: "https://auth.example.test/oauth/authorize",
+      tokenUrl: "https://auth.example.test/oauth/token",
+      status: "active",
+      flowTypes: ["oauth2-client-credentials"],
+      fields: {
+        clientId: { value: "client-1", type: "text", updatedAt: 1 },
+        clientSecret: { value: "secret-1", type: "secret", updatedAt: 1 },
+      },
+      versions: {},
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect((init?.body as URLSearchParams).get("grant_type")).toBe("client_credentials");
+      return new Response(JSON.stringify({
+        access_token: "service-token",
+        token_type: "Bearer",
+        expires_in: 3600,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+    const service = createCredentialService({
+      credentialStore: store as never,
+      clientConfigStore: clientConfigStore as never,
+      approvalQueue: approvingQueue("session") as never,
+    });
+    const stored = await service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
+      flow: {
+        type: "oauth2-client-credentials",
+        tokenUrl: "https://auth.example.test/oauth/token",
+        clientConfigId: "svc",
+        tokenAuth: "client_secret_post",
+      },
+      credential: {
+        label: "Service API",
+        audience: [{ url: "https://api.example.test/", match: "origin" }],
+        injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
+      },
+    }]) as StoredCredentialSummary;
+
+    expect(stored.id).toBeTruthy();
+    expect((await store.loadUrlBound(stored.id))?.accessToken).toBe("service-token");
+  });
+
+  it("stores captured browser cookie sessions through the platform capture hook", async () => {
+    const store = new MemoryCredentialStore();
+    const service = createCredentialService({
+      credentialStore: store as never,
+      approvalQueue: approvingQueue("session") as never,
+      sessionCredentialCapture: {
+        captureCookies: vi.fn(async () => ({ cookieHeader: "sid=secret", expiresAt: Date.now() + 60_000 })),
+      },
+    });
+    const stored = await service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
+      flow: {
+        type: "browser-cookie-session",
+        signInUrl: "https://app.example.test/login",
+        capture: {
+          cookies: ["sid"],
+          origins: ["https://app.example.test"],
+        },
+      },
+      credential: {
+        label: "App session",
+        audience: [{ url: "https://app.example.test/", match: "origin" }],
+        injection: { type: "cookie" },
+      },
+      browser: "internal",
+    }]) as StoredCredentialSummary;
+
+    expect(stored.injection).toEqual({ type: "cookie" });
+    expect((await store.loadUrlBound(stored.id))?.cookieHeader).toBe("sid=secret");
+    expect(JSON.stringify(stored)).not.toContain("sid=secret");
+  });
+
+  it("stores SAML browser sessions captured as scoped cookies", async () => {
+    const store = new MemoryCredentialStore();
+    const service = createCredentialService({
+      credentialStore: store as never,
+      approvalQueue: approvingQueue("session") as never,
+      sessionCredentialCapture: {
+        captureCookies: vi.fn(),
+        captureSamlSession: vi.fn(async () => ({
+          cookieHeader: "saml_sid=secret",
+          cookieSession: {
+            origins: ["https://idp.example.test"],
+            cookies: [{ name: "saml_sid", value: "secret", domain: "sp.example.test", path: "/", secure: true }],
+          },
+          expiresAt: Date.now() + 60_000,
+        })),
+      },
+    });
+    const stored = await service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
+      flow: {
+        type: "saml-browser-session",
+        signInUrl: "https://idp.example.test/login",
+        spAudience: "https://sp.example.test/metadata",
+        capture: { cookies: ["saml_sid"] },
+      },
+      credential: {
+        label: "SAML session",
+        audience: [{ url: "https://sp.example.test/", match: "origin" }],
+        injection: { type: "cookie" },
+      },
+      browser: "internal",
+    }]) as StoredCredentialSummary;
+
+    const persisted = await store.loadUrlBound(stored.id);
+    expect(persisted?.cookieHeader).toBe("saml_sid=secret");
+    expect(persisted?.cookieSession?.cookies[0]?.name).toBe("saml_sid");
+    expect(JSON.stringify(stored)).not.toContain("saml_sid=secret");
   });
 
   it("returns only egress audit entries from audit queries", async () => {

@@ -15,7 +15,7 @@ import type {
   PendingCapabilityApproval,
   PendingCredentialApproval,
   PendingCredentialInputApproval,
-  PendingOAuthClientConfigApproval,
+  PendingClientConfigApproval,
 } from "@natstack/shared/approvals";
 import type { AccountIdentity, CredentialInjection, UrlAudience } from "@natstack/shared/credentials/types";
 
@@ -62,14 +62,14 @@ export interface CapabilityApprovalQueueRequest extends ApprovalQueueRequestBase
   details?: PendingCapabilityApproval["details"];
 }
 
-export interface OAuthClientConfigApprovalQueueRequest extends ApprovalQueueRequestBase {
-  kind: "oauth-client-config";
+export interface ClientConfigApprovalQueueRequest extends ApprovalQueueRequestBase {
+  kind: "client-config";
   configId: string;
   authorizeUrl: string;
   tokenUrl: string;
   title: string;
   description?: string;
-  fields: PendingOAuthClientConfigApproval["fields"];
+  fields: PendingClientConfigApproval["fields"];
 }
 
 export interface CredentialInputApprovalQueueRequest extends ApprovalQueueRequestBase {
@@ -87,14 +87,14 @@ export interface CredentialInputApprovalQueueRequest extends ApprovalQueueReques
 export type ApprovalQueueRequest =
   | CredentialApprovalQueueRequest
   | CapabilityApprovalQueueRequest
-  | OAuthClientConfigApprovalQueueRequest
+  | ClientConfigApprovalQueueRequest
   | CredentialInputApprovalQueueRequest;
 export type DecisionApprovalQueueRequest = CredentialApprovalQueueRequest | CapabilityApprovalQueueRequest;
 
-export type OAuthClientConfigApprovalResult =
+export type ClientConfigApprovalResult =
   | { decision: "submit"; values: Record<string, string> }
   | { decision: "deny" };
-export type FieldInputApprovalResult = OAuthClientConfigApprovalResult;
+export type FieldInputApprovalResult = ClientConfigApprovalResult;
 
 interface QueueWaiter {
   resolve: (decision: GrantedDecision) => void;
@@ -118,10 +118,10 @@ interface QueueEntry {
 
 export interface ApprovalQueue {
   request(req: DecisionApprovalQueueRequest): Promise<GrantedDecision>;
-  requestOAuthClientConfig(req: OAuthClientConfigApprovalQueueRequest): Promise<OAuthClientConfigApprovalResult>;
+  requestClientConfig(req: ClientConfigApprovalQueueRequest): Promise<ClientConfigApprovalResult>;
   requestCredentialInput(req: CredentialInputApprovalQueueRequest): Promise<FieldInputApprovalResult>;
   resolve(approvalId: string, decision: ApprovalDecision): void;
-  submitOAuthClientConfig(approvalId: string, values: Record<string, string>): void;
+  submitClientConfig(approvalId: string, values: Record<string, string>): void;
   submitCredentialInput(approvalId: string, values: Record<string, string>): void;
   listPending(): PendingApproval[];
 }
@@ -159,9 +159,9 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
         req.resource?.value ?? "",
       ].join("\x00");
     }
-    if (req.kind === "oauth-client-config") {
+    if (req.kind === "client-config") {
       return [
-        "oauth-client-config",
+        "client-config",
         req.repoPath,
         req.effectiveVersion,
         req.configId,
@@ -199,17 +199,17 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
         details: req.details,
       } satisfies PendingCapabilityApproval;
     }
-    if (req.kind === "oauth-client-config") {
+    if (req.kind === "client-config") {
       return {
         ...base,
-        kind: "oauth-client-config",
+        kind: "client-config",
         configId: req.configId,
         authorizeUrl: req.authorizeUrl,
         tokenUrl: req.tokenUrl,
         title: req.title,
         description: req.description,
         fields: req.fields,
-      } satisfies PendingOAuthClientConfigApproval;
+      } satisfies PendingClientConfigApproval;
     }
     if (req.kind === "credential-input") {
       return {
@@ -245,8 +245,8 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
   }
 
   function enqueueFieldInputRequest(
-    req: OAuthClientConfigApprovalQueueRequest | CredentialInputApprovalQueueRequest,
-    expectedKind: "oauth-client-config" | "credential-input",
+    req: ClientConfigApprovalQueueRequest | CredentialInputApprovalQueueRequest,
+    expectedKind: "client-config" | "credential-input",
     collisionMessage: string,
   ): Promise<FieldInputApprovalResult> {
     const dedupKey = dedupKeyFor(req);
@@ -305,7 +305,7 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
     });
   }
 
-  function submitFieldInput(approvalId: string, expectedKind: "oauth-client-config" | "credential-input", values: Record<string, string>): void {
+  function submitFieldInput(approvalId: string, expectedKind: "client-config" | "credential-input", values: Record<string, string>): void {
     const entry = entriesById.get(approvalId);
     if (!entry || entry.approval.kind !== expectedKind) return;
 
@@ -383,11 +383,11 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
       });
     },
 
-    requestOAuthClientConfig(req) {
+    requestClientConfig(req) {
       return enqueueFieldInputRequest(
         req,
-        "oauth-client-config",
-        "Approval dedup collision for OAuth client config request",
+        "client-config",
+        "Approval dedup collision for client config request",
       );
     },
 
@@ -426,8 +426,8 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
       emitPendingChanged();
     },
 
-    submitOAuthClientConfig(approvalId, values) {
-      submitFieldInput(approvalId, "oauth-client-config", values);
+    submitClientConfig(approvalId, values) {
+      submitFieldInput(approvalId, "client-config", values);
     },
 
     submitCredentialInput(approvalId, values) {

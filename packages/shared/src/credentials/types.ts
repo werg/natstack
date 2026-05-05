@@ -15,9 +15,31 @@ export interface Credential {
   accountIdentity: AccountIdentity;
   accessToken: string;
   refreshToken?: string;
+  oauth1ConsumerSecret?: string;
+  oauth1TokenSecret?: string;
+  cookieHeader?: string;
+  cookieSession?: CookieSessionMaterial;
+  samlAssertion?: string;
   scopes: string[];
   expiresAt?: number;
   metadata?: Record<string, string>;
+}
+
+export interface CookieSessionCookie {
+  name: string;
+  value: string;
+  domain?: string;
+  path?: string;
+  secure?: boolean;
+  httpOnly?: boolean;
+  sameSite?: "unspecified" | "no_restriction" | "lax" | "strict";
+  expirationDate?: number;
+  partitionKey?: string;
+}
+
+export interface CookieSessionMaterial {
+  origins: string[];
+  cookies: CookieSessionCookie[];
 }
 
 export type CredentialBindingUse = "fetch" | "git-http";
@@ -65,7 +87,7 @@ export interface StoreUrlBoundCredentialRequest {
   injection: CredentialInjection;
   bindings?: CredentialBinding[];
   material: {
-    type: "bearer-token" | "api-key";
+    type: "bearer-token" | "api-key" | "oauth1-token" | "cookie-session" | "saml-session";
     token: string;
   };
   accountIdentity?: Partial<AccountIdentity>;
@@ -73,6 +95,16 @@ export interface StoreUrlBoundCredentialRequest {
   expiresAt?: number;
   metadata?: Record<string, string>;
 }
+
+export type CredentialFlowType =
+  | "oauth2-auth-code-pkce"
+  | "oauth2-auth-code"
+  | "oauth2-device-code"
+  | "oauth2-client-credentials"
+  | "oauth1a"
+  | "api-key"
+  | "browser-cookie-session"
+  | "saml-browser-session";
 
 export interface OAuthInlineClientSpec {
   authorizeUrl: string;
@@ -94,6 +126,134 @@ export interface OAuthStoredClientSpec {
   accountValidation?: OAuthAccountValidationSpec;
 }
 
+export type OAuthTokenAuthMethod = "none" | "client_secret_post" | "client_secret_basic";
+
+export interface OAuth2AuthCodePkceFlowSpec {
+  type: "oauth2-auth-code-pkce";
+  authorizeUrl?: string;
+  tokenUrl?: string;
+  clientId?: string;
+  clientConfigId?: string;
+  scopes?: string[];
+  extraAuthorizeParams?: Record<string, string>;
+  allowMissingExpiry?: boolean;
+  persistRefreshToken?: boolean;
+  accountValidation?: OAuthAccountValidationSpec;
+  tokenAuth?: OAuthTokenAuthMethod;
+}
+
+export interface OAuth2AuthCodeFlowSpec {
+  type: "oauth2-auth-code";
+  authorizeUrl?: string;
+  tokenUrl?: string;
+  clientId?: string;
+  clientConfigId?: string;
+  scopes?: string[];
+  extraAuthorizeParams?: Record<string, string>;
+  tokenAuth?: OAuthTokenAuthMethod;
+  persistRefreshToken?: boolean;
+  accountValidation?: OAuthAccountValidationSpec;
+  pkce: false;
+  compatibilityReason: string;
+  requiresConfidentialClient?: boolean;
+}
+
+export interface OAuth2DeviceCodeFlowSpec {
+  type: "oauth2-device-code";
+  deviceAuthorizationUrl: string;
+  tokenUrl: string;
+  clientId?: string;
+  clientConfigId?: string;
+  scopes?: string[];
+  tokenAuth?: OAuthTokenAuthMethod;
+  pollIntervalSeconds?: number;
+  expiresInSeconds?: number;
+  accountValidation?: OAuthAccountValidationSpec;
+  persistRefreshToken?: boolean;
+}
+
+export interface OAuth2ClientCredentialsFlowSpec {
+  type: "oauth2-client-credentials";
+  tokenUrl: string;
+  clientConfigId: string;
+  tokenAuth: Exclude<OAuthTokenAuthMethod, "none">;
+  scopes?: string[];
+  audienceParam?: string;
+  resourceParam?: string;
+  accountValidation?: OAuthAccountValidationSpec;
+}
+
+export interface OAuth1aFlowSpec {
+  type: "oauth1a";
+  requestTokenUrl: string;
+  authorizeUrl: string;
+  accessTokenUrl: string;
+  clientConfigId: string;
+  callbackConfirmedParam?: string;
+  signatureMethod?: "HMAC-SHA1";
+  accountValidation?: AccountValidationSpec;
+}
+
+export interface ApiKeyFlowSpec {
+  type: "api-key";
+  title?: string;
+  description?: string;
+  fields: ClientConfigFieldRequest[];
+  materialTemplate: {
+    type: "bearer-token" | "api-key";
+    valueTemplate: string;
+  };
+  accountValidation?: "http-probe" | "none";
+}
+
+export interface BrowserCookieSessionFlowSpec {
+  type: "browser-cookie-session";
+  signInUrl: string;
+  capture: {
+    cookies: string[];
+    origins: string[];
+  };
+  completionUrlPattern?: string;
+  accountValidation?: "http-probe" | "none";
+  maxTtlSeconds?: number;
+}
+
+export interface SamlBrowserSessionFlowSpec {
+  type: "saml-browser-session";
+  signInUrl: string;
+  spAudience: string;
+  capture: {
+    cookies?: string[];
+    assertion?: {
+      issuer: string;
+      audience: string;
+      recipient: string;
+      persistAssertion?: boolean;
+    };
+  };
+  completionUrlPattern?: string;
+  maxTtlSeconds?: number;
+  accountValidation?: "saml-assertion-claims" | "http-probe" | "none";
+}
+
+export type CredentialFlowSpec =
+  | OAuth2AuthCodePkceFlowSpec
+  | OAuth2AuthCodeFlowSpec
+  | OAuth2DeviceCodeFlowSpec
+  | OAuth2ClientCredentialsFlowSpec
+  | OAuth1aFlowSpec
+  | ApiKeyFlowSpec
+  | BrowserCookieSessionFlowSpec
+  | SamlBrowserSessionFlowSpec;
+
+export type AccountValidationSpec =
+  | "none"
+  | "oauth2-userinfo"
+  | "oauth2-introspection"
+  | "http-probe"
+  | "saml-assertion-claims"
+  | "jwt-claims";
+
 export interface OAuthAccountValidationSpec {
   userinfo?: {
     url: string;
@@ -113,8 +273,8 @@ export interface OAuthLoopbackRedirectStrategy {
   fallback?: "dynamic-port";
 }
 
-export interface ConnectOAuthCredentialRequest {
-  oauth: OAuthInlineClientSpec | OAuthStoredClientSpec;
+export interface ConnectCredentialRequest {
+  flow: CredentialFlowSpec;
   credential: {
     label: string;
     audience: UrlAudience[];
@@ -128,6 +288,14 @@ export interface ConnectOAuthCredentialRequest {
   browser?: "external" | "internal";
 }
 
+export interface ConnectCredentialEnvelope {
+  spec: ConnectCredentialRequest;
+  handoffTarget: {
+    callerId: string;
+    callerKind: "panel" | "shell";
+  };
+}
+
 export interface ForwardOAuthCallbackRequest {
   transactionId?: string;
   url?: string;
@@ -135,42 +303,44 @@ export interface ForwardOAuthCallbackRequest {
   state?: string;
 }
 
-export type OAuthClientConfigFieldType = "text" | "secret";
+export type ClientConfigFieldType = "text" | "secret";
 
-export interface OAuthClientConfigFieldRequest {
+export interface ClientConfigFieldRequest {
   name: string;
   label: string;
-  type: OAuthClientConfigFieldType;
+  type: ClientConfigFieldType;
   required?: boolean;
   description?: string;
 }
 
-export interface OAuthClientConfigFieldStatus {
+export interface ClientConfigFieldStatus {
   configured: boolean;
-  type: OAuthClientConfigFieldType;
+  type: ClientConfigFieldType;
   updatedAt?: number;
 }
 
-export interface OAuthClientConfigStatus {
+export interface ClientConfigStatus {
   configId: string;
   configured: boolean;
   authorizeUrl?: string;
   tokenUrl?: string;
-  fields: Record<string, OAuthClientConfigFieldStatus>;
+  status?: "active" | "disabled" | "deleted";
+  flowTypes?: CredentialFlowType[];
+  fields: Record<string, ClientConfigFieldStatus>;
   updatedAt?: number;
 }
 
-export interface ConfigureOAuthClientRequest {
+export interface ConfigureClientRequest {
   configId: string;
   title: string;
   description?: string;
   authorizeUrl: string;
   tokenUrl: string;
-  fields: OAuthClientConfigFieldRequest[];
+  fields: ClientConfigFieldRequest[];
+  flowTypes?: CredentialFlowType[];
+  status?: "active" | "disabled";
+  allowRefreshWhenDisabled?: boolean;
 }
-
-/** @internal Pre-release alias retained only for server-internal tests. */
-export type RequestOAuthClientConfigRequest = ConfigureOAuthClientRequest;
 
 export interface RequestCredentialInputRequest {
   title: string;
@@ -186,21 +356,21 @@ export interface RequestCredentialInputRequest {
   };
   /**
    * Static credential input currently supports exactly one required secret
-   * field. Use OAuth client config for multi-field provider setup material.
+   * field. Use client config for multi-field provider setup material.
    */
-  fields: OAuthClientConfigFieldRequest[];
+  fields: ClientConfigFieldRequest[];
   material: {
     type: "bearer-token" | "api-key";
     tokenField: string;
   };
 }
 
-export interface GetOAuthClientConfigStatusRequest {
+export interface GetClientConfigStatusRequest {
   configId: string;
-  fields?: OAuthClientConfigFieldRequest[];
+  fields?: ClientConfigFieldRequest[];
 }
 
-export interface DeleteOAuthClientConfigRequest {
+export interface DeleteClientConfigRequest {
   configId: string;
 }
 
@@ -250,7 +420,7 @@ export interface StoredCredentialSummary {
 export type CredentialAuditEvent =
   | AuditEntry
   | ConnectionCredentialAuditEvent
-  | OAuthClientConfigAuditEvent
+  | ClientConfigAuditEvent
   | OAuthConnectionTransactionAuditEvent;
 
 export interface ConnectionCredentialAuditEvent {
@@ -266,8 +436,8 @@ export interface ConnectionCredentialAuditEvent {
   fieldNames: string[];
 }
 
-export interface OAuthClientConfigAuditEvent {
-  type: "oauth_client_config.updated" | "oauth_client_config.revoked";
+export interface ClientConfigAuditEvent {
+  type: "client_config.updated" | "client_config.revoked";
   ts: number;
   callerId: string;
   configId: string;
@@ -289,10 +459,14 @@ export interface OAuthConnectionTransactionAuditEvent {
 export type OAuthConnectionTransactionState =
   | "created"
   | "approved"
+  | "handoff_requested"
+  | "waiting_for_user"
   | "browser_open_requested"
   | "callback_received"
+  | "polling"
   | "exchanging"
   | "validating_account"
+  | "capturing_material"
   | "stored"
   | "completed"
   | "failed"
@@ -300,17 +474,32 @@ export type OAuthConnectionTransactionState =
   | "expired";
 
 export type OAuthConnectionErrorCode =
+  | "unsupported_flow"
+  | "invalid_connection_spec"
   | "approval_denied"
   | "browser_unavailable"
+  | "unsupported_browser_mode"
   | "callback_timeout"
   | "state_mismatch"
   | "redirect_mismatch"
   | "token_exchange_failed"
   | "invalid_token_response"
+  | "unsupported_token_auth_method"
   | "account_validation_failed"
   | "transaction_replayed"
   | "transaction_expired"
+  | "client_config_unavailable"
   | "client_not_authorized"
+  | "device_authorization_failed"
+  | "device_code_expired"
+  | "oauth1_signature_failed"
+  | "session_capture_failed"
+  | "saml_assertion_failed"
+  | "unsupported_account_validation"
+  | "unsupported_injection"
+  | "ambiguous_credential"
+  | "credential_conflict"
+  | "credential_expired_reauth_required"
   | "redirect_unavailable";
 
 export interface AuditEntry {

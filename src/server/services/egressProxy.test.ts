@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AuditEntry, Credential } from "../../../packages/shared/src/credentials/types.js";
 import { EgressProxy } from "./egressProxy.js";
 import { CredentialSessionGrantStore } from "./credentialSessionGrants.js";
-import { OAuthLifecycleError } from "./oauthCredentialLifecycle.js";
+import { CredentialLifecycleError } from "./credentialLifecycle.js";
 
 class MemoryCredentialStore {
   constructor(private readonly credentials = new Map<string, Credential>()) {}
@@ -127,6 +127,44 @@ describe("EgressProxy", () => {
     expect(prepared.headers.authorization).toBeUndefined();
   });
 
+  it("injects only cookie-session cookies matching request domain and path", () => {
+    const credential = createCredential({
+      bindings: [{
+        id: "app",
+        use: "fetch",
+        audience: [{ url: "https://app.example.test/", match: "origin" }],
+        injection: { type: "cookie" },
+      }],
+      grants: [{
+        bindingId: "app",
+        use: "fetch",
+        resource: "https://app.example.test/",
+        action: "use",
+        scope: "caller",
+        callerId: "worker:test",
+        grantedAt: 1,
+        grantedBy: "self",
+      }],
+      cookieHeader: "sid=secret; admin=wrong-path",
+      cookieSession: {
+        origins: ["https://app.example.test"],
+        cookies: [
+          { name: "sid", value: "secret", domain: "app.example.test", path: "/", secure: true },
+          { name: "admin", value: "wrong-path", domain: "app.example.test", path: "/admin", secure: true },
+          { name: "other", value: "wrong-domain", domain: "other.example.test", path: "/", secure: true },
+        ],
+      },
+    });
+    const proxy = createProxy(credential);
+    const prepared = proxy.prepareForwardRequest(
+      new URL("https://app.example.test/dashboard"),
+      {},
+      credential,
+    );
+
+    expect(prepared.headers.cookie).toBe("sid=secret");
+  });
+
   it("injects basic auth credentials for git-http bindings", () => {
     const credential = createCredential({
       bindings: [{
@@ -221,10 +259,10 @@ describe("EgressProxy", () => {
       accessToken: "expired-token",
       refreshToken: "refresh-token",
       expiresAt: Date.now() - 1,
-      metadata: { oauthClientConfigId: "google", oauthClientConfigVersion: "v1" },
+      metadata: { clientConfigId: "google", clientConfigVersion: "v1" },
     });
     const store = new MemoryCredentialStore(new Map([[credential.id!, credential]]));
-    const oauthLifecycle = {
+    const credentialLifecycle = {
       refreshIfNeeded: vi.fn(async (current: Credential & { id: string }) => {
         const updated = { ...current, accessToken: "fresh-token", expiresAt: Date.now() + 3_600_000 };
         store.saveUrlBound(updated);
@@ -234,7 +272,7 @@ describe("EgressProxy", () => {
     const proxy = new EgressProxy({
       credentialStore: store,
       auditLog: auditLog as never,
-      oauthLifecycle: oauthLifecycle as never,
+      credentialLifecycle: credentialLifecycle as never,
       codeIdentityResolver: {
         resolveByCallerId: () => ({ callerId: "worker:test", callerKind: "worker", repoPath: "/repo", effectiveVersion: "hash-1" }),
       },
@@ -251,7 +289,7 @@ describe("EgressProxy", () => {
       method: "GET",
     });
 
-    expect(oauthLifecycle.refreshIfNeeded).toHaveBeenCalled();
+    expect(credentialLifecycle.refreshIfNeeded).toHaveBeenCalled();
     expect(store.loadUrlBound("cred-1")?.accessToken).toBe("fresh-token");
   });
 
@@ -259,14 +297,14 @@ describe("EgressProxy", () => {
     const credential = createCredential({
       refreshToken: "refresh-token",
       expiresAt: Date.now() - 1,
-      metadata: { oauthClientConfigId: "google", oauthClientConfigVersion: "missing" },
+      metadata: { clientConfigId: "google", clientConfigVersion: "missing" },
     });
     const proxy = new EgressProxy({
       credentialStore: new MemoryCredentialStore(new Map([[credential.id!, credential]])),
       auditLog: new MemoryAuditLog() as never,
-      oauthLifecycle: {
+      credentialLifecycle: {
         refreshIfNeeded: vi.fn(async () => {
-          throw new OAuthLifecycleError("client_not_authorized");
+          throw new CredentialLifecycleError("client_not_authorized");
         }),
       } as never,
       codeIdentityResolver: {

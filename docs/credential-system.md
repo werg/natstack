@@ -31,8 +31,9 @@ callback, exchanges the token, stores allowlisted token material, and grants the
 initial use scope selected by the user.
 
 ```ts
-const stored = await credentials.connectOAuth({
-  oauth: {
+const stored = await credentials.connect({
+  flow: {
+    type: "oauth2-auth-code-pkce",
     authorizeUrl: "https://auth.example.com/oauth/authorize",
     tokenUrl: "https://auth.example.com/oauth/token",
     clientId: "public-client-id",
@@ -59,7 +60,7 @@ to the approved authorize and token URLs. Once a `configId` is saved, those URL
 bindings are immutable; changing OAuth endpoints requires a new `configId`.
 
 ```ts
-await credentials.configureOAuthClient({
+await credentials.configureClient({
   configId: "google-workspace",
   title: "Configure Google Workspace OAuth",
   authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
@@ -70,7 +71,7 @@ await credentials.configureOAuthClient({
   ],
 });
 
-const status = await credentials.getOAuthClientConfigStatus({
+const status = await credentials.getClientConfigStatus({
   configId: "google-workspace",
 });
 ```
@@ -79,8 +80,9 @@ The stored client material can then be injected internally using the stored
 URL-bound OAuth endpoints:
 
 ```ts
-const stored = await credentials.connectOAuth({
-  oauth: {
+const stored = await credentials.connect({
+  flow: {
+    type: "oauth2-auth-code-pkce",
     clientConfigId: "google-workspace",
     scopes: ["https://www.googleapis.com/auth/userinfo.email"],
   },

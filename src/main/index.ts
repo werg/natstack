@@ -25,6 +25,7 @@ import { TokenManager } from "@natstack/shared/tokenManager";
 import { EventService } from "@natstack/shared/eventsService";
 import { isValidEventName, type EventName } from "@natstack/shared/events";
 import { installPinnedTlsForAllPartitions, pemFileFingerprint } from "./tlsPinning.js";
+import { BROWSER_SESSION_PARTITION } from "@natstack/shared/panelInterfaces";
 
 const eventService = new EventService();
 import { ViewManager } from "./viewManager.js";
@@ -113,6 +114,153 @@ let isCleaningUp = false; // Prevent re-entry in will-quit handler
 let autofillManager: import("./autofill/autofillManager.js").AutofillManager | null = null;
 
 log.info(` Starting in main mode`);
+
+type CredentialSessionCaptureRequest = Record<string, unknown> & {
+  kind?: unknown;
+  signInUrl?: unknown;
+  origins?: unknown;
+  cookieNames?: unknown;
+  completionUrlPattern?: unknown;
+  maxTtlSeconds?: unknown;
+  browser?: unknown;
+  assertion?: unknown;
+};
+
+function toStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0) : [];
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function globMatches(pattern: string, value: string): boolean {
+  if (pattern === value) return true;
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
+  return new RegExp(`^${escaped}$`).test(value);
+}
+
+function normalizeCaptureOrigins(value: unknown): string[] {
+  const origins = toStringArray(value).map((entry) => {
+    const url = new URL(entry);
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      throw new Error("capture origin must use http or https");
+    }
+    return url.origin;
+  });
+  return [...new Set(origins)];
+}
+
+function buildCookieHeader(cookies: Electron.Cookie[], cookieNames: string[]): {
+  header: string;
+  expiresAt?: number;
+  cookies: Record<string, unknown>[];
+} | null {
+  const byName = new Map(cookies.map((cookie) => [cookie.name, cookie]));
+  const selected: Electron.Cookie[] = [];
+  for (const name of cookieNames) {
+    const cookie = byName.get(name);
+    if (!cookie || !cookie.value) return null;
+    selected.push(cookie);
+  }
+  const expiringCookies = selected
+    .map((cookie) => typeof cookie.expirationDate === "number" ? Math.floor(cookie.expirationDate * 1000) : undefined)
+    .filter((value): value is number => typeof value === "number" && value > 0);
+  return {
+    header: selected.map((cookie) => `${cookie.name}=${cookie.value}`).join("; "),
+    expiresAt: expiringCookies.length > 0 ? Math.min(...expiringCookies) : undefined,
+    cookies: selected.map((cookie) => ({
+      name: cookie.name,
+      value: cookie.value,
+      domain: cookie.domain,
+      path: cookie.path,
+      secure: cookie.secure,
+      httpOnly: cookie.httpOnly,
+      sameSite: cookie.sameSite,
+      expirationDate: cookie.expirationDate,
+      partitionKey: typeof (cookie as { partitionKey?: unknown }).partitionKey === "string"
+        ? (cookie as { partitionKey?: string }).partitionKey
+        : undefined,
+    })),
+  };
+}
+
+async function handleCredentialSessionCaptureRequest(
+  msg: CredentialSessionCaptureRequest,
+): Promise<Record<string, unknown>> {
+  try {
+    if (msg.kind !== "cookies" && msg.kind !== "saml") {
+      return { error: "unsupported session capture kind" };
+    }
+    if (msg.browser === "external") {
+      return { error: "external browser session capture is not supported" };
+    }
+    if (typeof msg.signInUrl !== "string") {
+      return { error: "missing signInUrl" };
+    }
+    const signInUrl = new URL(msg.signInUrl);
+    if (signInUrl.protocol !== "https:" && signInUrl.protocol !== "http:") {
+      return { error: "signInUrl must use http or https" };
+    }
+    const cookieNames = toStringArray(msg.cookieNames);
+    if (cookieNames.length === 0) {
+      return { error: "cookie capture requires declared cookie names" };
+    }
+    const origins = msg.kind === "cookies" ? normalizeCaptureOrigins(msg.origins) : [signInUrl.origin];
+    if (msg.kind === "saml" && msg.assertion && cookieNames.length === 0) {
+      return { error: "raw SAML assertion capture is not supported by this host adapter" };
+    }
+    if (!panelOrchestrator || !viewManager) {
+      return { error: "internal browser is unavailable" };
+    }
+
+    const panel = await panelOrchestrator.createBrowserPanel("shell", signInUrl.href, {
+      name: "Credential sign-in",
+      focus: true,
+    });
+    const webContents = viewManager.getWebContents(panel.id);
+    const browserSession = session.fromPartition(BROWSER_SESSION_PARTITION);
+    const completionPattern = typeof msg.completionUrlPattern === "string" ? msg.completionUrlPattern : undefined;
+    const deadline = Date.now() + 300_000;
+
+    while (Date.now() < deadline) {
+      const currentUrl = webContents && !webContents.isDestroyed() ? webContents.getURL() : "";
+      const completionSatisfied = !completionPattern || (currentUrl && globMatches(completionPattern, currentUrl));
+      if (completionSatisfied) {
+        const captured: Electron.Cookie[] = [];
+        for (const origin of origins) {
+          const originCookies = await browserSession.cookies.get({ url: origin });
+          for (const cookie of originCookies) {
+            if (cookieNames.includes(cookie.name)) {
+              captured.push(cookie);
+            }
+          }
+        }
+        const material = buildCookieHeader(captured, cookieNames);
+        if (material) {
+          const maxTtlSeconds = typeof msg.maxTtlSeconds === "number" && msg.maxTtlSeconds > 0
+            ? Math.floor(msg.maxTtlSeconds)
+            : undefined;
+          const maxExpiresAt = maxTtlSeconds ? Date.now() + (maxTtlSeconds * 1000) : undefined;
+          return {
+            cookieHeader: material.header,
+            cookieSession: {
+              origins,
+              cookies: material.cookies,
+            },
+            expiresAt: material.expiresAt && maxExpiresAt
+              ? Math.min(material.expiresAt, maxExpiresAt)
+              : material.expiresAt ?? maxExpiresAt,
+          };
+        }
+      }
+      await wait(1_000);
+    }
+    return { error: "session capture timed out" };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 /**
  * Install TLS fingerprint pinning across the default session AND every
@@ -478,6 +626,12 @@ app.on("ready", async () => {
       mode: startupMode,
       centralData,
       onServerEvent: handleServerEvent,
+      onIpcRequest: async (type, msg) => {
+        if (type === "credential-session-capture-request") {
+          return handleCredentialSessionCaptureRequest(msg);
+        }
+        return null;
+      },
       onConnectionStatusChanged: (status) => {
         eventService.emit("server-connection-changed", {
           status,
