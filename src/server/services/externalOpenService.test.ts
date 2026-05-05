@@ -3,11 +3,16 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { EventService } from "@natstack/shared/eventsService";
+import { SERVER_SERVICE_NAMES } from "@natstack/rpc";
 import { createExternalOpenService } from "./externalOpenService.js";
 import { CapabilityGrantStore } from "./capabilityGrantStore.js";
 import type { ApprovalQueue } from "./approvalQueue.js";
 
 describe("externalOpenService", () => {
+  it("is routed to the server from panel RPC", () => {
+    expect((SERVER_SERVICE_NAMES as readonly string[]).includes("externalOpen")).toBe(true);
+  });
+
   function tempStatePath(): string {
     return fs.mkdtempSync(path.join(os.tmpdir(), "natstack-external-open-"));
   }

@@ -156,15 +156,16 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
       if (!begin || typeof begin.authorizeUrl !== "string" || typeof begin.nonce !== "string") {
         throw new Error("Agent did not return OAuth setup details");
       }
+      await chat.rpc.call("main", "oauthLoopback.expectLoopbackCallbackState", {
+        callbackId: callback.callbackId,
+        state: begin.nonce,
+      });
       setAuthorizeUrl(begin.authorizeUrl);
       setStatus("waiting");
       if (openMode === "external") {
-        const shell = globalThis.__natstackShell || globalThis.__natstackElectron;
-        if (shell && typeof shell.openExternal === "function") {
-          await shell.openExternal(begin.authorizeUrl, { expectedRedirectUri: callback.redirectUri });
-        } else {
-          window.open(begin.authorizeUrl, "_blank", "noopener,noreferrer");
-        }
+        await chat.rpc.call("main", "externalOpen.openExternal", begin.authorizeUrl, {
+          expectedRedirectUri: callback.redirectUri,
+        });
       } else {
         window.open(begin.authorizeUrl, "_blank", "noopener,noreferrer");
       }

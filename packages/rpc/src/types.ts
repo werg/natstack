@@ -157,6 +157,7 @@ export const SERVER_SERVICE_NAMES = [
   "capabilities",
   "credentials",
   "db",
+  "externalOpen",
   "fs",
   "git",
   "harness",
@@ -168,7 +169,9 @@ export const SERVER_SERVICE_NAMES = [
   "test",
   "tokens",
   "typecheck",
+  "webhookIngress",
   "workerd",
+  "workerLog",
   "workers",
   "workspace",
 ] as const;

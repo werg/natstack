@@ -71,7 +71,12 @@ describe("PanelManager", () => {
 
     expect(created.title).toBe("Example Panel");
     expect(registry.getRootPanels()).toHaveLength(1);
-    expect(tokenClient.ensurePanelToken).toHaveBeenCalledWith(created.panelId, created.contextId, null);
+    expect(tokenClient.ensurePanelToken).toHaveBeenCalledWith(
+      created.panelId,
+      created.contextId,
+      null,
+      "panels/example",
+    );
 
     const init = await manager.getPanelInit(created.panelId) as {
       panelId: string;

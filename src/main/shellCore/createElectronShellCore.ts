@@ -46,8 +46,8 @@ export function createElectronShellCore(deps: {
       pubsubUrl: deps.pubsubUrl,
     },
     tokenClient: {
-      ensurePanelToken: (panelId, contextId, parentId) =>
-        deps.serverClient.call("tokens", "ensurePanelToken", [panelId, contextId, parentId]) as Promise<{ token: string; gitToken: string }>,
+      ensurePanelToken: (panelId, contextId, parentId, source) =>
+        deps.serverClient.call("tokens", "ensurePanelToken", [panelId, contextId, parentId, source]) as Promise<{ token: string; gitToken: string }>,
       revokePanelToken: (panelId) =>
         deps.serverClient.call("tokens", "revokePanelToken", [panelId]) as Promise<void>,
       updatePanelContext: (panelId, contextId) =>

@@ -9,9 +9,24 @@ const DEFAULT_LOOPBACK_HOST = "127.0.0.1";
 const DEFAULT_CALLBACK_PATH = "/oauth/callback";
 
 interface LoopbackCallback {
-  server: http.Server;
   redirectUri: string;
   wait: Promise<{ code: string; state: string; url: string }>;
+}
+
+interface PendingLoopbackCallback extends LoopbackCallback {
+  expectedState?: string;
+  resolve: (value: { code: string; state: string; url: string }) => void;
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
+}
+
+interface LoopbackListener {
+  server: http.Server;
+  host: string;
+  port: number;
+  callbackPath: string;
+  redirectUri: string;
+  pending: Map<string, PendingLoopbackCallback>;
 }
 
 const createLoopbackCallbackParamsSchema = z.object({
@@ -20,19 +35,42 @@ const createLoopbackCallbackParamsSchema = z.object({
   callbackPath: z.string().optional(),
 }).strict();
 
+const expectLoopbackCallbackStateParamsSchema = z.object({
+  callbackId: z.string(),
+  state: z.string().min(1),
+}).strict();
+
 export function createOAuthLoopbackService(): ServiceDefinition {
   const callbacks = new Map<string, LoopbackCallback>();
+  const listeners = new Map<string, LoopbackListener>();
 
   async function createLoopbackCallback(opts: z.infer<typeof createLoopbackCallbackParamsSchema>) {
     const callbackId = randomUUID();
-    const callback = await bindLoopbackCallback({
+    const listener = await ensureLoopbackListener(listeners, {
       host: opts.host ?? DEFAULT_LOOPBACK_HOST,
       port: opts.port ?? 0,
       callbackPath: normalizeCallbackPath(opts.callbackPath ?? DEFAULT_CALLBACK_PATH),
     });
+    let resolve!: PendingLoopbackCallback["resolve"];
+    let reject!: PendingLoopbackCallback["reject"];
+    const wait = new Promise<{ code: string; state: string; url: string }>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    const callback: PendingLoopbackCallback = {
+      redirectUri: listener.redirectUri,
+      wait,
+      resolve,
+      reject,
+      timer: setTimeout(() => {
+        closeCallback(callbacks, listeners, callbackId);
+        reject(new Error("OAuth flow timed out after 10 minutes"));
+      }, FLOW_TIMEOUT_MS),
+    };
+    listener.pending.set(callbackId, callback);
     callbacks.set(callbackId, callback);
     callback.wait.finally(() => {
-      closeCallback(callbacks, callbackId);
+      closeCallback(callbacks, listeners, callbackId);
     }).catch(() => undefined);
     return { callbackId, redirectUri: callback.redirectUri };
   }
@@ -45,8 +83,16 @@ export function createOAuthLoopbackService(): ServiceDefinition {
     return callback.wait;
   }
 
+  async function expectLoopbackCallbackState(params: z.infer<typeof expectLoopbackCallbackStateParamsSchema>): Promise<void> {
+    const callback = callbacks.get(params.callbackId);
+    if (!callback) {
+      throw new Error("Unknown OAuth loopback callback");
+    }
+    (callback as PendingLoopbackCallback).expectedState = params.state;
+  }
+
   async function closeLoopbackCallback(callbackId: string): Promise<void> {
-    closeCallback(callbacks, callbackId);
+    closeCallback(callbacks, listeners, callbackId);
   }
 
   return {
@@ -55,6 +101,7 @@ export function createOAuthLoopbackService(): ServiceDefinition {
     policy: { allowed: ["panel", "shell"] },
     methods: {
       createLoopbackCallback: { args: z.tuple([createLoopbackCallbackParamsSchema]) },
+      expectLoopbackCallbackState: { args: z.tuple([expectLoopbackCallbackStateParamsSchema]) },
       waitForLoopbackCallback: { args: z.tuple([z.string()]) },
       closeLoopbackCallback: { args: z.tuple([z.string()]) },
     },
@@ -62,6 +109,8 @@ export function createOAuthLoopbackService(): ServiceDefinition {
       switch (method) {
         case "createLoopbackCallback":
           return createLoopbackCallback((args as [z.infer<typeof createLoopbackCallbackParamsSchema>])[0]);
+        case "expectLoopbackCallbackState":
+          return expectLoopbackCallbackState((args as [z.infer<typeof expectLoopbackCallbackStateParamsSchema>])[0]);
         case "waitForLoopbackCallback":
           return waitForLoopbackCallback((args as [string])[0]);
         case "closeLoopbackCallback":
@@ -73,16 +122,31 @@ export function createOAuthLoopbackService(): ServiceDefinition {
   };
 }
 
-async function bindLoopbackCallback(binding: {
+async function ensureLoopbackListener(
+  listeners: Map<string, LoopbackListener>,
+  binding: {
   host: string;
   port: number;
   callbackPath: string;
-}): Promise<LoopbackCallback> {
+  },
+): Promise<LoopbackListener> {
+  const requestedKey = listenerKey(binding.host, binding.port, binding.callbackPath);
+  const existing = listeners.get(requestedKey);
+  if (existing) return existing;
+
   const server = http.createServer();
   await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
+    server.once("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EADDRINUSE") {
+        reject(new Error(
+          `OAuth loopback port ${binding.host}:${binding.port} is already in use. ` +
+          "Stop the other NatStack instance or complete/cancel the existing sign-in first.",
+        ));
+        return;
+      }
+      reject(err);
+    });
     server.listen(binding.port, binding.host, () => {
-      server.off("error", reject);
       resolve();
     });
   });
@@ -94,62 +158,100 @@ async function bindLoopbackCallback(binding: {
   }
 
   const redirectUri = `http://${binding.host}:${address.port}${binding.callbackPath}`;
-  const wait = new Promise<{ code: string; state: string; url: string }>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error("OAuth flow timed out after 10 minutes"));
-    }, FLOW_TIMEOUT_MS);
+  const listener: LoopbackListener = {
+    server,
+    host: binding.host,
+    port: address.port,
+    callbackPath: binding.callbackPath,
+    redirectUri,
+    pending: new Map(),
+  };
 
-    const onRequest = (req: http.IncomingMessage, res: http.ServerResponse) => {
-      const url = new URL(req.url ?? "/", redirectUri);
-      if (url.pathname !== binding.callbackPath) {
-        respondHtml(res, 404, "not found");
-        return;
-      }
+  const actualKey = listenerKey(binding.host, address.port, binding.callbackPath);
+  listeners.set(requestedKey, listener);
+  listeners.set(actualKey, listener);
 
-      const error = url.searchParams.get("error");
-      const errorDescription = url.searchParams.get("error_description");
-      if (error) {
-        const message = errorDescription
-          ? `Provider returned an error: ${error} (${errorDescription})`
-          : `Provider returned an error: ${error}`;
-        respondHtml(res, 400, errorPage(message));
-        cleanup();
-        reject(new Error(message));
-        return;
-      }
-
-      const code = url.searchParams.get("code");
-      const state = url.searchParams.get("state");
-      if (!code || !state) {
-        respondHtml(res, 400, errorPage("Missing authorization code or state."));
-        cleanup();
-        reject(new Error("OAuth callback missing code or state"));
-        return;
-      }
-
-      respondHtml(res, 200, successPage());
-      cleanup();
-      resolve({ code, state, url: url.toString() });
-    };
-
-    function cleanup() {
-      clearTimeout(timer);
-      server.off("request", onRequest);
-    }
-
-    server.on("request", onRequest);
+  server.on("request", (req, res) => handleLoopbackRequest(listener, req, res));
+  server.on("close", () => {
+    listeners.delete(requestedKey);
+    listeners.delete(actualKey);
   });
 
-  return { server, redirectUri, wait };
+  return listener;
 }
 
-function closeCallback(callbacks: Map<string, LoopbackCallback>, callbackId: string): void {
+function handleLoopbackRequest(
+  listener: LoopbackListener,
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): void {
+  const url = new URL(req.url ?? "/", listener.redirectUri);
+  if (url.pathname !== listener.callbackPath) {
+    respondHtml(res, 404, "not found");
+    return;
+  }
+
+  const state = url.searchParams.get("state");
+  const callback = findPendingCallbackForState(listener, state);
+  if (!callback) {
+    respondHtml(res, 400, errorPage("No matching OAuth sign-in is waiting for this callback."));
+    return;
+  }
+
+  const error = url.searchParams.get("error");
+  const errorDescription = url.searchParams.get("error_description");
+  if (error) {
+    const message = errorDescription
+      ? `Provider returned an error: ${error} (${errorDescription})`
+      : `Provider returned an error: ${error}`;
+    respondHtml(res, 400, errorPage(message));
+    callback.reject(new Error(message));
+    return;
+  }
+
+  const code = url.searchParams.get("code");
+  if (!code || !state) {
+    respondHtml(res, 400, errorPage("Missing authorization code or state."));
+    callback.reject(new Error("OAuth callback missing code or state"));
+    return;
+  }
+
+  respondHtml(res, 200, successPage());
+  callback.resolve({ code, state, url: url.toString() });
+}
+
+function findPendingCallbackForState(listener: LoopbackListener, state: string | null): PendingLoopbackCallback | undefined {
+  if (state) {
+    for (const callback of listener.pending.values()) {
+      if (callback.expectedState === state) return callback;
+    }
+  }
+  for (const callback of listener.pending.values()) {
+    if (!callback.expectedState) return callback;
+  }
+  return undefined;
+}
+
+function closeCallback(
+  callbacks: Map<string, LoopbackCallback>,
+  listeners: Map<string, LoopbackListener>,
+  callbackId: string,
+): void {
   const callback = callbacks.get(callbackId);
   callbacks.delete(callbackId);
   if (callback) {
-    callback.server.close();
+    clearTimeout((callback as PendingLoopbackCallback).timer);
+    for (const listener of new Set(listeners.values())) {
+      listener.pending.delete(callbackId);
+      if (listener.pending.size === 0) {
+        listener.server.close();
+      }
+    }
   }
+}
+
+function listenerKey(host: string, port: number, callbackPath: string): string {
+  return `${host}:${port}${callbackPath}`;
 }
 
 function normalizeCallbackPath(path: string): string {

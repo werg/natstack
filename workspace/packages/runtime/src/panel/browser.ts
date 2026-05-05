@@ -66,7 +66,7 @@ export async function createBrowserPanel(
  * Open a URL in the system browser (no CDP access).
  */
 export async function openExternal(url: string, options?: OpenExternalOptions): Promise<void> {
-  await shell.openExternal(url, options);
+  await getRpc().call("main", "externalOpen.openExternal", url, options);
 }
 
 /**

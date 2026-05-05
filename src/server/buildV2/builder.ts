@@ -502,12 +502,16 @@ export default pathe;`,
   };
 }
 
-function createCryptoShimPlugin(): esbuild.Plugin {
+function createCryptoShimPlugin(
+  options: { includeNodePrefix?: boolean; resolveDir?: string } = {},
+): esbuild.Plugin {
+  const includeNodePrefix = options.includeNodePrefix ?? true;
+  const resolveDir = options.resolveDir ?? process.cwd();
   return {
     name: "crypto-shim",
     setup(build) {
       build.onResolve(
-        { filter: /^(crypto|node:crypto)$/ },
+        { filter: includeNodePrefix ? /^(crypto|node:crypto)$/ : /^crypto$/ },
         (args) => ({
           path: args.path,
           namespace: "workspace-crypto-shim",
@@ -517,12 +521,14 @@ function createCryptoShimPlugin(): esbuild.Plugin {
       build.onLoad(
         { filter: /.*/, namespace: "workspace-crypto-shim" },
         () => ({
-          contents: `/* Shim: Node crypto → Web Crypto API for browser panel builds.
+          contents: `/* Shim: Node crypto → Web Crypto API / sha.js for browser-like builds.
  *
  * Only the subset needed by bundled dependencies (e.g. isomorphic-git) is
  * provided.  Everything else throws so we notice quickly if a new call-site
  * appears.
  */
+import Hash from "sha.js/sha1.js";
+
 export function getRandomValues(arr) { return globalThis.crypto.getRandomValues(arr); }
 
 export function randomBytes(size) {
@@ -535,28 +541,21 @@ export function createHash(algorithm) {
   if (algorithm !== "sha1" && algorithm !== "sha-1") {
     throw new Error("crypto shim: unsupported algorithm " + algorithm);
   }
-  const chunks = [];
+  const hash = new Hash();
   return {
     update(data) {
-      if (typeof data === "string") data = new TextEncoder().encode(data);
-      chunks.push(data instanceof Uint8Array ? data : new Uint8Array(data));
+      hash.update(data);
       return this;
     },
-    async digest(encoding) {
-      let total = 0;
-      for (const c of chunks) total += c.length;
-      const merged = new Uint8Array(total);
-      let offset = 0;
-      for (const c of chunks) { merged.set(c, offset); offset += c.length; }
-      const hash = await globalThis.crypto.subtle.digest("SHA-1", merged);
-      const hex = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, "0")).join("");
-      return encoding === "hex" ? hex : new Uint8Array(hash);
+    digest(encoding) {
+      return hash.digest(encoding);
     },
   };
 }
 
 export default { getRandomValues, randomBytes, createHash };`,
           loader: "js",
+          resolveDir,
         }),
       );
     },
@@ -1039,7 +1038,7 @@ async function buildPanel(
     createTsExtensionPlugin(sourceRoot),
     createFsShimPlugin(resolveDir),
     createPathShimPlugin(resolveDir),
-    createCryptoShimPlugin(),
+    createCryptoShimPlugin({ resolveDir }),
   ];
   const dedupePlugin = createDedupePlugin(resolveDir, dedupePackages);
   if (dedupePlugin) {
@@ -1383,10 +1382,11 @@ const WORKER_NODE_BUILTIN_EXTERNALS: readonly string[] = [
   "node:util/types",
   "node:zlib",
   // Bare (non-prefixed) builtins — same deal, stay external so workerd
-  // can satisfy them via nodejs_compat.
+  // can satisfy them via nodejs_compat. `crypto` is intentionally omitted:
+  // CommonJS dependencies such as isomorphic-git use require("crypto"), and
+  // workerd rejects dynamic require at module startup.
   "assert",
   "console",
-  "crypto",
   "events",
   "fs",
   "fs/promises",
@@ -1447,6 +1447,11 @@ async function buildWorker(
     createWorkspaceResolvePlugin(graph, workspaceRoot, sourceRoot, WORKER_CONDITIONS),
     createTsExtensionPlugin(sourceRoot),
     createWorkerBufferShimPlugin(resolveDir),
+    // CommonJS dependencies such as isomorphic-git use require("crypto").
+    // workerd's nodejs_compat can satisfy ESM imports of node:crypto, but
+    // dynamic CommonJS require is rejected at module startup, so bundle the
+    // bare specifier through the same small sync shim used by panel builds.
+    createCryptoShimPlugin({ includeNodePrefix: false, resolveDir }),
     // Stub Node built-ins that workerd's nodejs_compat does NOT provide
     // (e.g. child_process, worker_threads) so the bundle links even when
     // transitive SDK deps import them for dead code paths.

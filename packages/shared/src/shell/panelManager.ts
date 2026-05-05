@@ -19,7 +19,12 @@ import type { PanelStore } from "./panelStore.js";
 const log = createDevLogger("PanelManager");
 
 export interface TokenClient {
-  ensurePanelToken(panelId: string, contextId: string, parentId: string | null): Promise<{ token: string; gitToken: string }>;
+  ensurePanelToken(
+    panelId: string,
+    contextId: string,
+    parentId: string | null,
+    source?: string,
+  ): Promise<{ token: string; gitToken: string }>;
   revokePanelToken(panelId: string): Promise<void>;
   updatePanelContext(panelId: string, contextId: string): Promise<void>;
   updatePanelParent(panelId: string, parentId: string | null): Promise<void>;
@@ -103,7 +108,7 @@ export class PanelManager {
     });
     const contextId = opts?.contextId ?? generateContextId(panelId);
 
-    await this.tokenClient.ensurePanelToken(panelId, contextId, opts?.parentId ?? null);
+    await this.tokenClient.ensurePanelToken(panelId, contextId, opts?.parentId ?? null, relativePath);
 
     const snapshot = createSnapshot(relativePath, contextId, { env: opts?.env }, validatedStateArgs);
     if (opts?.autoArchiveWhenEmpty || manifest.autoArchiveWhenEmpty) {
@@ -165,7 +170,7 @@ export class PanelManager {
     });
     const contextId = generateContextId(panelId);
 
-    await this.tokenClient.ensurePanelToken(panelId, contextId, parentId);
+    await this.tokenClient.ensurePanelToken(panelId, contextId, parentId, `browser:${url}`);
 
     const snapshot = createSnapshot(`browser:${url}`, contextId, {});
     let createdInStore = false;
@@ -383,6 +388,7 @@ export class PanelManager {
       panelId,
       getPanelContextId(panel),
       this.registry.findParentId(panelId) ?? await this.store.getParentId(panelId),
+      getPanelSource(panel),
     );
 
     return buildBootstrapConfig({
