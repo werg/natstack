@@ -37,11 +37,9 @@ routes, not on provider-facing URLs directly.
 
 Implemented in the repo:
 
-- Mobile OAuth helpers default to
-  `https://auth.snugenv.com/oauth/callback/:providerId` and complete through the
-  server-supported PKCE credential APIs.
-- `beginCreateWithOAuthPkce` returns an explicit `state` alias so mobile can
-  register the pending callback without deriving host internals.
+- Mobile credential OAuth now starts through `credentials.connectOAuth`; the
+  host owns redirect creation, browser handoff, callback validation, and token
+  exchange.
 - The webhook relay accepts `POST /i/:subscriptionId`, preserves the raw body,
   signs the relay envelope, and forwards to the private server ingress route.
 - The server verifies the relay envelope before provider verification, applies
@@ -142,16 +140,11 @@ Provider webhooks must use `https://hooks.snugenv.com/i/:subscriptionId`.
 
 Done:
 
-1. Mobile OAuth helper wraps:
-   - `credentials.beginCreateWithOAuthPkce`
-   - system-browser open
-   - mobile deep-link pending-flow registration
-   - `credentials.completeCreateWithOAuthPkce`
+1. Mobile credential OAuth helper delegates to `credentials.connectOAuth`.
 2. The helper uses
    `https://auth.snugenv.com/oauth/callback/:providerId` by default on mobile.
-3. `beginCreateWithOAuthPkce` returns a `state` field that aliases the nonce.
-4. Desktop loopback remains unchanged. Panels and workers continue using the
-   server-supported PKCE APIs and do not receive raw tokens.
+3. Desktop loopback is host-owned. Panels and workers use `connectOAuth` and do
+   not receive raw tokens or compose redirects.
 
 Follow-up:
 

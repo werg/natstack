@@ -16,17 +16,15 @@ type WorkerGlobals = typeof globalThis & {
 
 import {
   createCredentialClient,
-  type BeginOAuthPkceCredentialResult,
-  type BeginOAuthClientPkceCredentialRequest,
-  type CompleteOAuthPkceCredentialRequest,
-  type CreateOAuthPkceCredentialRequest,
+  type ConfigureOAuthClientRequest,
+  type ConnectOAuthCredentialRequest,
   type CredentialClient,
+  type DeleteOAuthClientConfigRequest,
   type GetOAuthClientConfigStatusRequest,
   type GitHttpClient,
   type GrantUrlBoundCredentialRequest,
   type OAuthClientConfigStatus,
   type RequestCredentialInputRequest,
-  type RequestOAuthClientConfigRequest,
   type ResolveUrlBoundCredentialRequest,
   type StoredCredentialSummary,
   type StoreUrlBoundCredentialRequest,
@@ -86,28 +84,16 @@ export async function store(input: StoreUrlBoundCredentialRequest): Promise<Stor
   return client.store(input);
 }
 
-export async function beginCreateWithOAuthPkce(
-  input: CreateOAuthPkceCredentialRequest,
-): Promise<BeginOAuthPkceCredentialResult> {
-  return client.beginCreateWithOAuthPkce(input);
-}
-
-export async function beginCreateWithOAuthClientPkce(
-  input: BeginOAuthClientPkceCredentialRequest,
-): Promise<BeginOAuthPkceCredentialResult> {
-  return client.beginCreateWithOAuthClientPkce(input);
-}
-
-export async function completeCreateWithOAuthPkce(
-  input: CompleteOAuthPkceCredentialRequest,
+export async function connectOAuth(
+  input: ConnectOAuthCredentialRequest,
 ): Promise<StoredCredentialSummary> {
-  return client.completeCreateWithOAuthPkce(input);
+  return client.connectOAuth(input);
 }
 
-export async function requestOAuthClientConfig(
-  input: RequestOAuthClientConfigRequest,
+export async function configureOAuthClient(
+  input: ConfigureOAuthClientRequest,
 ): Promise<OAuthClientConfigStatus> {
-  return client.requestOAuthClientConfig(input);
+  return client.configureOAuthClient(input);
 }
 
 export async function requestCredentialInput(
@@ -120,6 +106,12 @@ export async function getOAuthClientConfigStatus(
   input: GetOAuthClientConfigStatusRequest,
 ): Promise<OAuthClientConfigStatus> {
   return client.getOAuthClientConfigStatus(input);
+}
+
+export async function deleteOAuthClientConfig(
+  input: DeleteOAuthClientConfigRequest | string,
+): Promise<void> {
+  await client.deleteOAuthClientConfig(input);
 }
 
 export async function listStoredCredentials(): Promise<StoredCredentialSummary[]> {
@@ -160,17 +152,15 @@ export function gitHttp(opts?: { credentialId?: string }): GitHttpClient {
 }
 
 export type {
-  BeginOAuthPkceCredentialResult,
-  BeginOAuthClientPkceCredentialRequest,
-  CompleteOAuthPkceCredentialRequest,
-  CreateOAuthPkceCredentialRequest,
+  ConfigureOAuthClientRequest,
+  ConnectOAuthCredentialRequest,
   CredentialClient,
+  DeleteOAuthClientConfigRequest,
   GetOAuthClientConfigStatusRequest,
   GitHttpClient,
   GrantUrlBoundCredentialRequest,
   OAuthClientConfigStatus,
   RequestCredentialInputRequest,
-  RequestOAuthClientConfigRequest,
   ResolveUrlBoundCredentialRequest,
   StoredCredentialSummary,
   StoreUrlBoundCredentialRequest,

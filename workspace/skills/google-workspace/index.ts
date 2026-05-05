@@ -1,7 +1,5 @@
 import { credentials } from "@workspace/runtime";
 import type {
-  BeginOAuthPkceCredentialResult,
-  CompleteOAuthPkceCredentialRequest,
   StoredCredentialSummary,
 } from "@workspace/runtime";
 
@@ -88,10 +86,8 @@ function getCredentialRuntime(): RuntimeCredentials {
     );
   }
   for (const method of [
-    "beginCreateWithOAuthPkce",
-    "beginCreateWithOAuthClientPkce",
-    "completeCreateWithOAuthPkce",
-    "requestOAuthClientConfig",
+    "connectOAuth",
+    "configureOAuthClient",
     "getOAuthClientConfigStatus",
     "listStoredCredentials",
     "revokeCredential",
@@ -209,44 +205,9 @@ function buildStatus(input: {
   return status;
 }
 
-export async function beginGoogleCredentialCreation(opts: {
-  redirectUri: string;
-  scopes?: string[];
-}): Promise<BeginOAuthPkceCredentialResult> {
-  return withCredentialRuntime((api) =>
-    api.beginCreateWithOAuthClientPkce({
-      oauth: {
-        configId: GOOGLE_OAUTH_CLIENT_CONFIG_ID,
-        scopes: getDefaultScopes(opts.scopes),
-        extraAuthorizeParams: {
-          access_type: "offline",
-          prompt: "consent",
-        },
-      },
-      credential: {
-        label: "Google Workspace",
-        audience: [
-          { url: "https://gmail.googleapis.com/", match: "origin" },
-          { url: "https://www.googleapis.com/", match: "origin" },
-        ],
-        injection: {
-          type: "header",
-          name: "authorization",
-          valueTemplate: "Bearer {token}",
-        },
-        scopes: getDefaultScopes(opts.scopes),
-        metadata: {
-          providerId: GOOGLE_PROVIDER_ID,
-        },
-      },
-      redirectUri: opts.redirectUri,
-    })
-  );
-}
-
 export async function configureGoogleOAuthClient() {
   return withCredentialRuntime((api) =>
-    api.requestOAuthClientConfig({
+    api.configureOAuthClient({
       configId: GOOGLE_OAUTH_CLIENT_CONFIG_ID,
       title: "Configure Google Workspace OAuth",
       description: "Save the Desktop app OAuth client material for Google Workspace.",
@@ -282,12 +243,6 @@ export async function getGoogleOAuthClientStatus() {
       ],
     })
   );
-}
-
-export async function completeGoogleCredentialCreation(
-  params: CompleteOAuthPkceCredentialRequest
-): Promise<StoredCredentialSummary> {
-  return withCredentialRuntime((api) => api.completeCreateWithOAuthPkce(params));
 }
 
 export async function listGoogleCredentials(): Promise<StoredCredentialSummary[]> {
@@ -404,9 +359,9 @@ export async function connectGoogle(
 
     const scopes = getDefaultScopes(opts.scopes);
     const stored = await withCredentialRuntime((api) =>
-      api.connectWithOAuthClientPkce({
+      api.connectOAuth({
         oauth: {
-          configId: GOOGLE_OAUTH_CLIENT_CONFIG_ID,
+          clientConfigId: GOOGLE_OAUTH_CLIENT_CONFIG_ID,
           scopes,
           extraAuthorizeParams: {
             access_type: "offline",

@@ -66,15 +66,14 @@ const stored = await credentials.requestCredentialInput({
 });
 ```
 
-Use host-brokered OAuth PKCE when userland should initiate OAuth but should not
-receive the access token. Do not pass client secrets through userland; use
-`credentials.requestOAuthClientConfig()` and URL-bound OAuth client config PKCE
-for flows that need stored OAuth client material. A saved `configId` is bound to
-its OAuth authorize and token URLs; use a new `configId` if those endpoints
-change.
+Use host-owned OAuth when userland should connect an OAuth provider but should
+not compose redirects or receive the access token. Do not pass client secrets
+through userland; use `credentials.configureOAuthClient()` for flows that need
+stored OAuth client material. A saved `configId` is bound to its OAuth authorize
+and token URLs; use a new `configId` if those endpoints change.
 
 ```ts
-const begin = await credentials.beginCreateWithOAuthPkce({
+const stored = await credentials.connectOAuth({
   oauth: {
     authorizeUrl: "https://auth.example.com/oauth/authorize",
     tokenUrl: "https://auth.example.com/oauth/token",
@@ -90,15 +89,7 @@ const begin = await credentials.beginCreateWithOAuthPkce({
       valueTemplate: "Bearer {token}",
     },
   },
-  redirectUri,
-});
-
-await openExternal(begin.authorizeUrl, { expectedRedirectUri: redirectUri });
-
-const stored = await credentials.completeCreateWithOAuthPkce({
-  nonce: begin.nonce,
-  code,
-  state,
+  browser: "external", // or "internal" for an app browser panel
 });
 ```
 

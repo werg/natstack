@@ -90,17 +90,19 @@ interface ModelCredentialOAuthConfig {
   allowMissingExpiry?: boolean;
 }
 
-interface BeginModelCredentialOAuthArgs {
-  providerId?: unknown;
-  redirectUri?: unknown;
+interface ModelCredentialRedirectConfig {
+  type?: "loopback" | "public" | "client-forwarded";
+  host?: string;
+  port?: number;
+  callbackPath?: string;
+  fallback?: "dynamic-port";
 }
 
-interface CompleteModelCredentialOAuthArgs {
+interface ConnectModelCredentialOAuthArgs {
   providerId?: unknown;
-  nonce?: unknown;
-  code?: unknown;
-  state?: unknown;
-  approvalDecision?: unknown;
+  browserOpenMode?: unknown;
+  browserHandoffCallerId?: unknown;
+  browserHandoffCallerKind?: unknown;
 }
 
 const MODEL_CREDENTIAL_REQUIRED_CARD_TSX = `
@@ -113,72 +115,21 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
   const oauth = props.oauth;
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");
-  const [authorizeUrl, setAuthorizeUrl] = useState("");
-
-  const unwrapMethodResult = (value) => {
-    if (
-      value &&
-      typeof value === "object" &&
-      Object.prototype.hasOwnProperty.call(value, "content") &&
-      (
-        Object.prototype.hasOwnProperty.call(value, "attachments") ||
-        Object.prototype.hasOwnProperty.call(value, "contentType")
-      )
-    ) {
-      return value.content;
-    }
-    return value;
-  };
 
   const startOAuth = async (openMode) => {
     if (!oauth || !modelBaseUrl) return;
     setStatus("starting");
     setError("");
-    setAuthorizeUrl("");
-    let callbackId = "";
     try {
-      let callback;
-      try {
-        callback = await chat.rpc.call("main", "oauthLoopback.createLoopbackCallback", props.loopback || {});
-      } catch (loopbackErr) {
-        if (!props.loopback || !props.loopback.port) throw loopbackErr;
-        callback = await chat.rpc.call("main", "oauthLoopback.createLoopbackCallback", {});
-      }
-      callbackId = callback.callbackId;
       if (!props.agentParticipantId) {
         throw new Error("Missing agent participant for credential setup");
       }
-      const begin = unwrapMethodResult(
-        await chat.callMethod(props.agentParticipantId, "beginModelCredentialOAuth", {
-          providerId,
-          redirectUri: callback.redirectUri,
-        })
-      );
-      if (!begin || typeof begin.authorizeUrl !== "string" || typeof begin.nonce !== "string") {
-        throw new Error("Agent did not return OAuth setup details");
-      }
-      await chat.rpc.call("main", "oauthLoopback.expectLoopbackCallbackState", {
-        callbackId: callback.callbackId,
-        state: begin.nonce,
-      });
-      setAuthorizeUrl(begin.authorizeUrl);
       setStatus("waiting");
-      let openResult = {};
-      if (openMode === "external") {
-        openResult = await chat.rpc.call("main", "externalOpen.openExternal", begin.authorizeUrl, {
-          expectedRedirectUri: callback.redirectUri,
-        });
-      } else {
-        window.open(begin.authorizeUrl, "_blank", "noopener,noreferrer");
-      }
-      const result = await chat.rpc.call("main", "oauthLoopback.waitForLoopbackCallback", callback.callbackId);
-      setStatus("approval");
-      await chat.callMethod(props.agentParticipantId, "completeModelCredentialOAuth", {
+      await chat.callMethod(props.agentParticipantId, "connectModelCredentialOAuth", {
         providerId,
-        nonce: begin.nonce,
-        code: result.code,
-        state: result.state,
-        approvalDecision: openResult && typeof openResult === "object" ? openResult.approvalDecision : undefined,
+        browserOpenMode: openMode,
+        browserHandoffCallerId: props.browserHandoffCallerId,
+        browserHandoffCallerKind: props.browserHandoffCallerKind,
       });
       setStatus("done");
       if (props.agentParticipantId) {
@@ -190,10 +141,6 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setStatus("error");
-    } finally {
-      if (callbackId) {
-        await chat.rpc.call("main", "oauthLoopback.closeLoopbackCallback", callbackId).catch(() => {});
-      }
     }
   };
 
@@ -214,16 +161,6 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
             <Callout.Text>No built-in OAuth setup is available for this model provider.</Callout.Text>
           </Callout.Root>
         ) : null}
-        {status === "waiting" && authorizeUrl ? (
-          <Text size="1" color="gray">
-            Browser did not open? <a href={authorizeUrl} target="_blank" rel="noreferrer">Open sign-in</a>.
-          </Text>
-        ) : null}
-        {status === "approval" ? (
-          <Callout.Root color="blue" size="1">
-            <Callout.Text>Approve the credential request to finish connecting.</Callout.Text>
-          </Callout.Root>
-        ) : null}
         {status === "done" ? (
           <Callout.Root color="green" size="1">
             <Callout.Text>Credential connected. Continuing...</Callout.Text>
@@ -235,9 +172,9 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
           </Callout.Root>
         ) : null}
         <Flex gap="2" wrap="wrap">
-          <Button size="1" onClick={() => startOAuth("panel")} disabled={busy || unsupported || status === "done"}>
+          <Button size="1" onClick={() => startOAuth("internal")} disabled={busy || unsupported || status === "done"}>
             {busy ? <Spinner size="1" /> : null}
-            {status === "done" ? "Connected" : status === "error" ? "Try Again" : "Connect"}
+            {status === "done" ? "Connected" : status === "error" ? "Try Again" : "Internal Browser"}
           </Button>
           <Button size="1" variant="soft" onClick={() => startOAuth("external")} disabled={busy || unsupported || status === "done"}>
             External Browser
@@ -311,6 +248,21 @@ function isModelCredentialOAuthConfig(value: unknown): value is ModelCredentialO
       config["allowMissingExpiry"] === undefined ||
       typeof config["allowMissingExpiry"] === "boolean"
     );
+}
+
+function isModelCredentialRedirectConfig(value: unknown): value is ModelCredentialRedirectConfig {
+  if (!value || typeof value !== "object") return false;
+  const config = value as Record<string, unknown>;
+  return (
+    (config["type"] === undefined ||
+      config["type"] === "loopback" ||
+      config["type"] === "public" ||
+      config["type"] === "client-forwarded") &&
+    (config["host"] === undefined || typeof config["host"] === "string") &&
+    (config["port"] === undefined || typeof config["port"] === "number") &&
+    (config["callbackPath"] === undefined || typeof config["callbackPath"] === "string") &&
+    (config["fallback"] === undefined || config["fallback"] === "dynamic-port")
+  );
 }
 
 function isUrlWithinBase(url: URL, rawBaseUrl: string): boolean {
@@ -515,7 +467,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         url: modelBaseUrl,
       });
       if (!credential) {
-        this.emitModelCredentialRequiredCard(channelId, providerId, modelBaseUrl);
+        await this.emitModelCredentialRequiredCard(channelId, providerId, modelBaseUrl);
         throw new Error(
           `No URL-bound model credential is configured for model provider: ${providerId}`,
         );
@@ -540,10 +492,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     args: unknown,
   ): Promise<{ result: unknown; isError?: boolean } | null> {
     switch (methodName) {
-      case "beginModelCredentialOAuth":
-        return { result: await this.beginModelCredentialOAuth(args as BeginModelCredentialOAuthArgs) };
-      case "completeModelCredentialOAuth":
-        return { result: await this.completeModelCredentialOAuth(args as CompleteModelCredentialOAuthArgs) };
+      case "connectModelCredentialOAuth":
+        return { result: await this.connectModelCredentialOAuth(args as ConnectModelCredentialOAuthArgs) };
       default:
         return null;
     }
@@ -551,6 +501,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   private getModelCredentialOAuthConfig(providerId: string): {
     oauth: ModelCredentialOAuthConfig;
+    redirect?: ModelCredentialRedirectConfig;
     credentialLabel: string;
     accountIdentityJwtClaimRoot: string;
     accountIdentityJwtClaimField: string;
@@ -564,10 +515,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       throw new Error(`No OAuth setup is available for model provider: ${providerId}`);
     }
     const credentialLabel = setup?.["credentialLabel"];
+    const redirect = setup?.["loopback"];
     const accountIdentityJwtClaimRoot = setup?.["accountIdentityJwtClaimRoot"];
     const accountIdentityJwtClaimField = setup?.["accountIdentityJwtClaimField"];
     return {
       oauth,
+      ...(isModelCredentialRedirectConfig(redirect) ? { redirect } : {}),
       credentialLabel: typeof credentialLabel === "string"
         ? credentialLabel
         : `Model credential: ${providerId}`,
@@ -580,62 +533,54 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     };
   }
 
-  private async beginModelCredentialOAuth(
-    args: BeginModelCredentialOAuthArgs,
-  ): Promise<{ nonce: string; state: string; authorizeUrl: string }> {
-    if (typeof args?.providerId !== "string") {
-      throw new Error("beginModelCredentialOAuth requires providerId");
-    }
-    if (typeof args?.redirectUri !== "string") {
-      throw new Error("beginModelCredentialOAuth requires redirectUri");
-    }
-    const modelBaseUrl = this.getModelBaseUrl();
-    const setup = this.getModelCredentialOAuthConfig(args.providerId);
-    return this.rpc.call<{ nonce: string; state: string; authorizeUrl: string }>(
-      "main",
-      "credentials.beginCreateWithOAuthPkce",
-      {
-        oauth: setup.oauth,
-        credential: {
-          label: setup.credentialLabel,
-          audience: [{ url: modelBaseUrl, match: "path-prefix" }],
-          injection: {
-            type: "header",
-            name: "Authorization",
-            valueTemplate: "Bearer {token}",
-            stripIncoming: ["authorization"],
-          },
-          scopes: setup.oauth.scopes ?? [],
-          metadata: {
-            modelProviderId: args.providerId,
-            oauthAccountIdentityJwtClaimRoot: setup.accountIdentityJwtClaimRoot,
-            oauthAccountIdentityJwtClaimField: setup.accountIdentityJwtClaimField,
-          },
-        },
-        redirectUri: args.redirectUri,
-      },
-    );
-  }
-
-  private async completeModelCredentialOAuth(
-    args: CompleteModelCredentialOAuthArgs,
+  private async connectModelCredentialOAuth(
+    args: ConnectModelCredentialOAuthArgs,
   ): Promise<ModelCredentialSummary> {
     if (typeof args?.providerId !== "string") {
-      throw new Error("completeModelCredentialOAuth requires providerId");
+      throw new Error("connectModelCredentialOAuth requires providerId");
     }
-    this.getModelCredentialOAuthConfig(args.providerId);
-    if (typeof args?.nonce !== "string" || typeof args?.code !== "string" || typeof args?.state !== "string") {
-      throw new Error("completeModelCredentialOAuth requires nonce, code, and state");
-    }
+    const browserOpenMode = args.browserOpenMode === "external" ? "external" : "internal";
+    const browserHandoffCallerId = typeof args.browserHandoffCallerId === "string"
+      ? args.browserHandoffCallerId
+      : undefined;
+    const browserHandoffCallerKind = args.browserHandoffCallerKind === "shell"
+      ? "shell"
+      : "panel";
+    const modelBaseUrl = this.getModelBaseUrl();
+    const setup = this.getModelCredentialOAuthConfig(args.providerId);
+    const spec = {
+      oauth: setup.oauth,
+      credential: {
+        label: setup.credentialLabel,
+        audience: [{ url: modelBaseUrl, match: "path-prefix" }],
+        injection: {
+          type: "header",
+          name: "Authorization",
+          valueTemplate: "Bearer {token}",
+          stripIncoming: ["authorization"],
+        },
+        scopes: setup.oauth.scopes ?? [],
+        metadata: {
+          modelProviderId: args.providerId,
+          oauthAccountIdentityJwtClaimRoot: setup.accountIdentityJwtClaimRoot,
+          oauthAccountIdentityJwtClaimField: setup.accountIdentityJwtClaimField,
+        },
+      },
+      browser: browserOpenMode,
+      ...(setup.redirect ? { redirect: setup.redirect } : {}),
+    };
     return this.rpc.call<ModelCredentialSummary>(
       "main",
-      "credentials.completeCreateWithOAuthPkce",
-      {
-        nonce: args.nonce,
-        code: args.code,
-        state: args.state,
-        approvalDecision: args.approvalDecision,
-      },
+      "credentials.connectOAuth",
+      browserHandoffCallerId
+        ? {
+          spec,
+          handoffTarget: {
+            callerId: browserHandoffCallerId,
+            callerKind: browserHandoffCallerKind,
+          },
+        }
+        : spec,
     );
   }
 
@@ -1483,7 +1428,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     };
   }
 
-  private emitModelCredentialRequiredCard(channelId: string, providerId: string, modelBaseUrl: string): void {
+  private async emitModelCredentialRequiredCard(channelId: string, providerId: string, modelBaseUrl: string): Promise<void> {
     const participantId = this.subscriptions.getParticipantId(channelId);
     if (!participantId) return;
     const key = `${channelId}::model-credential::${providerId}`;
@@ -1491,6 +1436,17 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.credentialPromptCardsEmitted.add(key);
 
     const channel = this.createChannelClient(channelId);
+    let browserHandoffCallerId: string | undefined;
+    try {
+      const participants = await channel.getParticipants();
+      const panel = participants.find((p) => {
+        const t = p.metadata["type"] as string | undefined;
+        return t === "panel" || t === "client";
+      });
+      browserHandoffCallerId = panel?.participantId;
+    } catch (err) {
+      console.warn(`[AgentWorkerBase] Failed to resolve browser handoff panel for ${providerId}:`, err);
+    }
     const messageId = crypto.randomUUID();
     const content = JSON.stringify({
       id: `model-credential-${providerId}-${messageId}`,
@@ -1499,6 +1455,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         providerId,
         modelBaseUrl,
         agentParticipantId: participantId,
+        browserHandoffCallerId,
+        browserHandoffCallerKind: browserHandoffCallerId ? "panel" : undefined,
         ...(this.getModelCredentialSetupProps(providerId) ?? {}),
       },
     });

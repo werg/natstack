@@ -52,10 +52,9 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `onChildCreated` | value |  |  |
 | `getBrowserHandle` | value |  |  |
 | `openPanel` | value |  |  |
-| `oauth` | namespace | `createLoopbackCallback` |  |
 | `adblock` | namespace | `getStats`, `isActive`, `getStatsForPanel`, `isEnabledForPanel`, `setEnabledForPanel`, `resetStatsForPanel`, `getPanelUrl`, `addToWhitelist`, `removeFromWhitelist` |  |
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo`, `openPanel` |  |
-| `credentials` | namespace | `store`, `beginCreateWithOAuthPkce`, `beginCreateWithOAuthClientPkce`, `completeCreateWithOAuthPkce`, `requestOAuthClientConfig`, `getOAuthClientConfigStatus`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
+| `credentials` | namespace | `store`, `connectOAuth`, `configureOAuthClient`, `requestCredentialInput`, `getOAuthClientConfigStatus`, `deleteOAuthClientConfig`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
 | `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote`, `client` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
@@ -76,16 +75,16 @@ const stored = await credentials.store({
 });
 ```
 
-## OAuth PKCE Without Returning Tokens
+## OAuth Without Returning Tokens
 
-Use `beginCreateWithOAuthPkce` for public-client OAuth. If the provider has
-client secrets or other setup material, collect it with
-`credentials.requestOAuthClientConfig()` and use URL-bound OAuth client config
-PKCE instead of passing secrets through userland. A saved `configId` is bound to
-its OAuth authorize and token URLs.
+Use `credentials.connectOAuth()` for OAuth. The host owns the redirect,
+browser handoff, callback validation, token exchange, encrypted storage, and
+initial use grant. If the provider has client secrets or other setup material,
+collect it with `credentials.configureOAuthClient()` and pass `clientConfigId`
+to `connectOAuth`.
 
 ```ts
-const begin = await credentials.beginCreateWithOAuthPkce({
+const stored = await credentials.connectOAuth({
   oauth: {
     authorizeUrl: "https://auth.example.com/oauth/authorize",
     tokenUrl: "https://auth.example.com/oauth/token",
@@ -101,13 +100,7 @@ const begin = await credentials.beginCreateWithOAuthPkce({
       valueTemplate: "Bearer {token}",
     },
   },
-  redirectUri,
-});
-
-const stored = await credentials.completeCreateWithOAuthPkce({
-  nonce: begin.nonce,
-  code,
-  state,
+  browser: "external", // or "internal" for an app browser panel
 });
 ```
 

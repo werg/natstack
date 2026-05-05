@@ -49,9 +49,9 @@ export type {
   CredentialClient,
   StoredCredentialSummary,
   StoreUrlBoundCredentialRequest,
-  BeginOAuthPkceCredentialResult,
-  CompleteOAuthPkceCredentialRequest,
-  CreateOAuthPkceCredentialRequest,
+  ConfigureOAuthClientRequest,
+  ConnectOAuthCredentialRequest,
+  DeleteOAuthClientConfigRequest,
   RequestCredentialInputRequest,
   GitHttpClient,
 } from "../shared/credentials.js";

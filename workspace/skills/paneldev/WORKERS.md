@@ -15,7 +15,7 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 | `fs` | value |  |  |
 | `workers` | namespace | `create`, `destroy`, `update`, `list`, `status`, `listInstanceSources`, `getPort`, `restartAll`, `cloneDO`, `destroyDO` |  |
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo` |  |
-| `credentials` | namespace | `store`, `beginCreateWithOAuthPkce`, `beginCreateWithOAuthClientPkce`, `completeCreateWithOAuthPkce`, `requestOAuthClientConfig`, `getOAuthClientConfigStatus`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
+| `credentials` | namespace | `store`, `connectOAuth`, `configureOAuthClient`, `requestCredentialInput`, `getOAuthClientConfigStatus`, `deleteOAuthClientConfig`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
 | `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote`, `client` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
@@ -48,15 +48,15 @@ const stored = await credentials.store({
 });
 ```
 
-## OAuth PKCE Without Returning Tokens
+## OAuth Without Returning Tokens
 
-Use this public-client flow only when no client secret or provider setup
-material needs to pass through userland. For provider secrets/config, use
-`credentials.requestOAuthClientConfig()` and URL-bound OAuth client config PKCE.
-A saved `configId` is bound to its OAuth authorize and token URLs.
+Use `credentials.connectOAuth()` for OAuth. The host owns the redirect,
+browser handoff, callback validation, token exchange, encrypted storage, and
+initial use grant. For provider secrets/config, use
+`credentials.configureOAuthClient()` and pass `clientConfigId`.
 
 ```ts
-const begin = await credentials.beginCreateWithOAuthPkce({
+const stored = await credentials.connectOAuth({
   oauth: {
     authorizeUrl: "https://auth.example.com/oauth/authorize",
     tokenUrl: "https://auth.example.com/oauth/token",
@@ -72,13 +72,7 @@ const begin = await credentials.beginCreateWithOAuthPkce({
       valueTemplate: "Bearer {token}",
     },
   },
-  redirectUri,
-});
-
-const stored = await credentials.completeCreateWithOAuthPkce({
-  nonce: begin.nonce,
-  code,
-  state,
+  browser: "external", // or "internal" for an app browser panel
 });
 ```
 

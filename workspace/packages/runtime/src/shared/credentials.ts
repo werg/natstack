@@ -1,33 +1,29 @@
 import type { RpcCaller } from "@natstack/rpc";
 import type {
-  BeginOAuthPkceCredentialResult,
-  BeginOAuthClientPkceCredentialRequest,
-  CompleteOAuthPkceCredentialRequest,
-  CreateOAuthPkceCredentialRequest,
+  ConfigureOAuthClientRequest,
+  ConnectOAuthCredentialRequest,
+  DeleteOAuthClientConfigRequest,
   GetOAuthClientConfigStatusRequest,
   GrantUrlBoundCredentialRequest,
   OAuthClientConfigStatus,
   ProxyGitHttpRequest,
   ProxyGitHttpResponse,
   RequestCredentialInputRequest,
-  RequestOAuthClientConfigRequest,
   ResolveUrlBoundCredentialRequest,
   StoredCredentialSummary,
   StoreUrlBoundCredentialRequest,
 } from "@natstack/shared/credentials/types";
 
 export type {
-  BeginOAuthPkceCredentialResult,
-  BeginOAuthClientPkceCredentialRequest,
-  CompleteOAuthPkceCredentialRequest,
-  CreateOAuthPkceCredentialRequest,
+  ConfigureOAuthClientRequest,
+  ConnectOAuthCredentialRequest,
+  DeleteOAuthClientConfigRequest,
   GetOAuthClientConfigStatusRequest,
   GrantUrlBoundCredentialRequest,
   OAuthClientConfigStatus,
   ProxyGitHttpRequest,
   ProxyGitHttpResponse,
   RequestCredentialInputRequest,
-  RequestOAuthClientConfigRequest,
   ResolveUrlBoundCredentialRequest,
   StoredCredentialSummary,
   StoreUrlBoundCredentialRequest,
@@ -35,12 +31,11 @@ export type {
 
 export interface CredentialClient {
   store(input: StoreUrlBoundCredentialRequest): Promise<StoredCredentialSummary>;
-  beginCreateWithOAuthPkce(input: CreateOAuthPkceCredentialRequest): Promise<BeginOAuthPkceCredentialResult>;
-  beginCreateWithOAuthClientPkce(input: BeginOAuthClientPkceCredentialRequest): Promise<BeginOAuthPkceCredentialResult>;
-  completeCreateWithOAuthPkce(input: CompleteOAuthPkceCredentialRequest): Promise<StoredCredentialSummary>;
-  requestOAuthClientConfig(input: RequestOAuthClientConfigRequest): Promise<OAuthClientConfigStatus>;
+  connectOAuth(input: ConnectOAuthCredentialRequest): Promise<StoredCredentialSummary>;
+  configureOAuthClient(input: ConfigureOAuthClientRequest): Promise<OAuthClientConfigStatus>;
   requestCredentialInput(input: RequestCredentialInputRequest): Promise<StoredCredentialSummary>;
   getOAuthClientConfigStatus(input: GetOAuthClientConfigStatusRequest): Promise<OAuthClientConfigStatus>;
+  deleteOAuthClientConfig(input: DeleteOAuthClientConfigRequest | string): Promise<void>;
   listStoredCredentials(): Promise<StoredCredentialSummary[]>;
   revokeCredential(credentialId: string): Promise<void>;
   grantCredential(input: GrantUrlBoundCredentialRequest): Promise<StoredCredentialSummary>;
@@ -82,23 +77,21 @@ export function createCredentialClient(rpc: RpcCaller): CredentialClient {
     async store(input) {
       return rpc.call<StoredCredentialSummary>("main", "credentials.storeCredential", input);
     },
-    async beginCreateWithOAuthPkce(input) {
-      return rpc.call<BeginOAuthPkceCredentialResult>("main", "credentials.beginCreateWithOAuthPkce", input);
+    async connectOAuth(input) {
+      return rpc.call<StoredCredentialSummary>("main", "credentials.connectOAuth", input);
     },
-    async beginCreateWithOAuthClientPkce(input) {
-      return rpc.call<BeginOAuthPkceCredentialResult>("main", "credentials.beginCreateWithOAuthClientPkce", input);
-    },
-    async completeCreateWithOAuthPkce(input) {
-      return rpc.call<StoredCredentialSummary>("main", "credentials.completeCreateWithOAuthPkce", input);
-    },
-    async requestOAuthClientConfig(input) {
-      return rpc.call<OAuthClientConfigStatus>("main", "credentials.requestOAuthClientConfig", input);
+    async configureOAuthClient(input) {
+      return rpc.call<OAuthClientConfigStatus>("main", "credentials.configureOAuthClient", input);
     },
     async requestCredentialInput(input) {
       return rpc.call<StoredCredentialSummary>("main", "credentials.requestCredentialInput", input);
     },
     async getOAuthClientConfigStatus(input) {
       return rpc.call<OAuthClientConfigStatus>("main", "credentials.getOAuthClientConfigStatus", input);
+    },
+    async deleteOAuthClientConfig(input) {
+      const request = typeof input === "string" ? { configId: input } : input;
+      await rpc.call<void>("main", "credentials.deleteOAuthClientConfig", request);
     },
     async listStoredCredentials() {
       return rpc.call<StoredCredentialSummary[]>("main", "credentials.listStoredCredentials");

@@ -92,10 +92,6 @@ _initBrowserBridge(rpc);
 export { createBrowserPanel, openExternal, onChildCreated, getBrowserHandle, openPanel } from "./browser.js";
 export type { BrowserHandle } from "./browser.js";
 
-import { _initOAuthBridge, createLoopbackCallback } from "./oauth.js";
-_initOAuthBridge(rpc);
-export const oauth = helpfulNamespace("oauth", { createLoopbackCallback });
-
 // Ad blocking programmatic interface
 import { createAdBlockApi } from "./adblock.js";
 export type { AdBlockStats, AdBlockApi } from "./adblock.js";
@@ -118,11 +114,9 @@ export const workspace = helpfulNamespace("workspace", workspaceClient);
 
 // Credential handles + universal outbound proxying for panel fetch().
 import {
-  beginCreateWithOAuthClientPkce as beginOAuthClientCredentialPkce,
-  beginCreateWithOAuthPkce as beginCredentialOAuthPkce,
-  connectWithOAuthClientPkce as connectOAuthClientCredentialPkce,
-  connectWithOAuthPkce as connectCredentialOAuthPkce,
-  completeCreateWithOAuthPkce as completeCredentialOAuthPkce,
+  configureOAuthClient as configureOAuthCredentialClient,
+  connectOAuth as connectOAuthCredential,
+  deleteOAuthClientConfig as deleteOAuthCredentialClientConfig,
   fetch as credentialFetch,
   getOAuthClientConfigStatus as getOAuthClientCredentialConfigStatus,
   gitHttp as credentialGitHttp,
@@ -130,41 +124,29 @@ import {
   initPanelCredentials,
   listStoredCredentials as listUrlBoundCredentials,
   requestCredentialInput as requestCredentialSecretInput,
-  requestOAuthClientConfig as requestOAuthClientCredentialConfig,
   revokeCredential as revokeUrlBoundCredential,
   store as storeUrlBoundCredential,
 } from "./credentials.js";
 export type {
-  BeginOAuthClientPkceCredentialRequest,
+  ConfigureOAuthClientRequest,
+  ConnectOAuthCredentialRequest,
   CredentialClient,
   StoredCredentialSummary,
   StoreUrlBoundCredentialRequest,
-  BeginOAuthPkceCredentialResult,
-  CompleteOAuthPkceCredentialRequest,
-  CreateOAuthPkceCredentialRequest,
+  DeleteOAuthClientConfigRequest,
   GetOAuthClientConfigStatusRequest,
   OAuthClientConfigStatus,
   RequestCredentialInputRequest,
-  RequestOAuthClientConfigRequest,
   GitHttpClient,
 } from "../shared/credentials.js";
-export type {
-  ConnectOAuthClientPkceCredentialRequest,
-  ConnectOAuthPkceCredentialRequest,
-  OAuthAuthorizeOpenMode,
-  OAuthLoopbackOptions,
-} from "./credentials.js";
 initPanelCredentials(rpc);
 const credentialApi = {
   store: storeUrlBoundCredential,
-  beginCreateWithOAuthPkce: beginCredentialOAuthPkce,
-  beginCreateWithOAuthClientPkce: beginOAuthClientCredentialPkce,
-  completeCreateWithOAuthPkce: completeCredentialOAuthPkce,
-  connectWithOAuthPkce: connectCredentialOAuthPkce,
-  connectWithOAuthClientPkce: connectOAuthClientCredentialPkce,
-  requestOAuthClientConfig: requestOAuthClientCredentialConfig,
+  connectOAuth: connectOAuthCredential,
+  configureOAuthClient: configureOAuthCredentialClient,
   requestCredentialInput: requestCredentialSecretInput,
   getOAuthClientConfigStatus: getOAuthClientCredentialConfigStatus,
+  deleteOAuthClientConfig: deleteOAuthCredentialClientConfig,
   listStoredCredentials: listUrlBoundCredentials,
   revokeCredential: revokeUrlBoundCredential,
   fetch: credentialFetch,

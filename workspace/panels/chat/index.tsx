@@ -92,6 +92,7 @@ export default function ChatPanel() {
   const theme = usePanelTheme();
   const stateArgs = useStateArgs<ChatStateArgs>();
   const resolvedContextId = resolveChatContextId(stateArgs.contextId, contextId);
+  const initialPromptCaptured = useRef(stateArgs.initialPrompt);
 
   // Auto-bootstrap: when no channelName, generate one and spawn the default agent
   const [bootstrapChannel, setBootstrapChannel] = useState<string | null>(null);
@@ -132,9 +133,9 @@ export default function ChatPanel() {
     stateArgs.systemPromptMode,
   ]);
 
-  // Clear initialPrompt from persisted stateArgs after capture.
-  // useChatCore captures the value in a ref on first render, so this
-  // won't interfere with the auto-send — but prevents re-send on reload.
+  // Clear initialPrompt from persisted stateArgs after local capture.
+  // AgenticChat may not mount until the channel bootstrap finishes, so the
+  // panel must retain the prompt locally instead of relying on child capture.
   // Use null (not undefined) because undefined is dropped by JSON serialization.
   const initialPromptCleared = useRef(false);
   useEffect(() => {
@@ -289,7 +290,7 @@ export default function ChatPanel() {
         actions={chatActions}
         theme={theme}
         pendingAgents={pendingAgents}
-        initialPrompt={stateArgs.initialPrompt}
+        initialPrompt={initialPromptCaptured.current}
         sandbox={sandboxConfig}
       />
     </>

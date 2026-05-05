@@ -59,9 +59,6 @@ export const panelRuntimeSurface: RuntimeSurface = {
     onChildCreated: valueEntry(),
     getBrowserHandle: valueEntry(),
     openPanel: valueEntry(),
-    oauth: namespaceEntry([
-      "createLoopbackCallback",
-    ]),
     adblock: namespaceEntry([
       "getStats",
       "isActive",
@@ -85,14 +82,11 @@ export const panelRuntimeSurface: RuntimeSurface = {
     ]),
     credentials: namespaceEntry([
       "store",
-      "beginCreateWithOAuthPkce",
-      "beginCreateWithOAuthClientPkce",
-      "completeCreateWithOAuthPkce",
-      "connectWithOAuthPkce",
-      "connectWithOAuthClientPkce",
-      "requestOAuthClientConfig",
+      "connectOAuth",
+      "configureOAuthClient",
       "requestCredentialInput",
       "getOAuthClientConfigStatus",
+      "deleteOAuthClientConfig",
       "listStoredCredentials",
       "revokeCredential",
       "grantCredential",

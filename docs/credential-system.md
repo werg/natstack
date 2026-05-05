@@ -23,14 +23,15 @@ const stored = await credentials.store({
 });
 ```
 
-## Host-Brokered OAuth PKCE
+## Host-Owned OAuth Connection
 
-Use this for public-client OAuth when userland should initiate OAuth but should
-not receive the access token after exchange. Do not pass client secrets through
-this surface; use trusted URL-bound OAuth client config for client material.
+Use this for OAuth providers. Userland declares provider metadata; the host
+creates the callback, opens the browser for the initiating client, validates the
+callback, exchanges the token, stores allowlisted token material, and grants the
+initial use scope selected by the user.
 
 ```ts
-const begin = await credentials.beginCreateWithOAuthPkce({
+const stored = await credentials.connectOAuth({
   oauth: {
     authorizeUrl: "https://auth.example.com/oauth/authorize",
     tokenUrl: "https://auth.example.com/oauth/token",
@@ -46,14 +47,7 @@ const begin = await credentials.beginCreateWithOAuthPkce({
       valueTemplate: "Bearer {token}",
     },
   },
-  redirectUri,
-});
-
-// Open begin.authorizeUrl, collect the OAuth callback, then:
-const stored = await credentials.completeCreateWithOAuthPkce({
-  nonce: begin.nonce,
-  code,
-  state,
+  browser: "external", // or "internal" for an app browser panel
 });
 ```
 
@@ -65,7 +59,7 @@ to the approved authorize and token URLs. Once a `configId` is saved, those URL
 bindings are immutable; changing OAuth endpoints requires a new `configId`.
 
 ```ts
-await credentials.requestOAuthClientConfig({
+await credentials.configureOAuthClient({
   configId: "google-workspace",
   title: "Configure Google Workspace OAuth",
   authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
@@ -85,10 +79,9 @@ The stored client material can then be injected internally using the stored
 URL-bound OAuth endpoints:
 
 ```ts
-const begin = await credentials.beginCreateWithOAuthClientPkce({
-  redirectUri,
+const stored = await credentials.connectOAuth({
   oauth: {
-    configId: "google-workspace",
+    clientConfigId: "google-workspace",
     scopes: ["https://www.googleapis.com/auth/userinfo.email"],
   },
   credential: {

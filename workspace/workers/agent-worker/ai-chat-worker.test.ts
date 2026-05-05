@@ -1,10 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createTestDO } from "@workspace/runtime/worker/test-utils";
 
 import { AiChatWorker } from "./ai-chat-worker.js";
 
 class TestAiChatWorker extends AiChatWorker {
+  rpcCall = vi.fn(async () => ({ id: "cred-1" }));
+
+  protected override get rpc(): never {
+    return { call: this.rpcCall } as never;
+  }
+
   model(): string {
     return this.getModel();
   }
@@ -51,5 +57,30 @@ describe("AiChatWorker model credential defaults", () => {
     });
     expect(worker.setupProps("other-provider")).toBeNull();
     expect(worker.tokenClaims("other-provider", "acct-1")).toEqual({});
+
+    await worker.onMethodCall("ch-1", "call-1", "connectModelCredentialOAuth", {
+      providerId: "openai-codex",
+      browserOpenMode: "external",
+      browserHandoffCallerId: "panel-1",
+      browserHandoffCallerKind: "panel",
+    });
+    expect(worker.rpcCall).toHaveBeenCalledWith(
+      "main",
+      "credentials.connectOAuth",
+      expect.objectContaining({
+        spec: expect.objectContaining({
+          browser: "external",
+          redirect: {
+            host: "localhost",
+            port: 1455,
+            callbackPath: "/auth/callback",
+          },
+        }),
+        handoffTarget: {
+          callerId: "panel-1",
+          callerKind: "panel",
+        },
+      }),
+    );
   });
 });

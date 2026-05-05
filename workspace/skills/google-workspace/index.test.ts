@@ -3,26 +3,18 @@ import type { StoredCredentialSummary } from "@workspace/runtime";
 
 const runtimeMock = vi.hoisted(() => ({
   credentials: {
-    beginCreateWithOAuthPkce: vi.fn(),
-    beginCreateWithOAuthClientPkce: vi.fn(),
-    completeCreateWithOAuthPkce: vi.fn(),
-    connectWithOAuthClientPkce: vi.fn(),
-    requestOAuthClientConfig: vi.fn(),
+    connectOAuth: vi.fn(),
+    configureOAuthClient: vi.fn(),
     getOAuthClientConfigStatus: vi.fn(),
     listStoredCredentials: vi.fn(),
     revokeCredential: vi.fn(),
     fetch: vi.fn(),
   },
-  oauth: {
-    createLoopbackCallback: vi.fn(),
-  },
-  openExternal: vi.fn(),
 }));
 
 vi.mock("@workspace/runtime", () => runtimeMock);
 
 import {
-  beginGoogleCredentialCreation,
   configureGoogleOAuthClient,
   connectGoogle,
   getGoogleOnboardingStatus,
@@ -66,7 +58,7 @@ describe("google-workspace skill facade", () => {
         clientSecret: { configured: false, type: "secret" },
       },
     });
-    runtimeMock.credentials.requestOAuthClientConfig.mockResolvedValue({
+    runtimeMock.credentials.configureOAuthClient.mockResolvedValue({
       configId: "google-workspace",
       configured: true,
       fields: {
@@ -74,28 +66,13 @@ describe("google-workspace skill facade", () => {
         clientSecret: { configured: true, type: "secret" },
       },
     });
-    runtimeMock.credentials.beginCreateWithOAuthClientPkce.mockResolvedValue({
-      nonce: "nonce-1",
-      state: "nonce-1",
-      authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth?client_id=client-1",
-    });
-    runtimeMock.credentials.completeCreateWithOAuthPkce.mockResolvedValue(googleCredential);
-    runtimeMock.credentials.connectWithOAuthClientPkce.mockResolvedValue(googleCredential);
+    runtimeMock.credentials.connectOAuth.mockResolvedValue(googleCredential);
     runtimeMock.credentials.fetch.mockResolvedValue(
       new Response(JSON.stringify({ email: "user@example.com" }), {
         status: 200,
         headers: { "content-type": "application/json" },
       })
     );
-    runtimeMock.oauth.createLoopbackCallback.mockResolvedValue({
-      redirectUri: "http://127.0.0.1:12345/oauth/callback",
-      waitForCallback: vi.fn().mockResolvedValue({
-        code: "code-1",
-        state: "nonce-1",
-        url: "http://127.0.0.1:12345/oauth/callback?code=code-1&state=nonce-1",
-      }),
-      close: vi.fn().mockResolvedValue(undefined),
-    });
   });
 
   it("reports needs-setup when no OAuth client or Google credential exists", async () => {
@@ -181,7 +158,7 @@ describe("google-workspace skill facade", () => {
   it("requests Google OAuth client material through privileged OAuth client config UI", async () => {
     await configureGoogleOAuthClient();
 
-    expect(runtimeMock.credentials.requestOAuthClientConfig).toHaveBeenCalledWith(
+    expect(runtimeMock.credentials.configureOAuthClient).toHaveBeenCalledWith(
       expect.objectContaining({
         configId: "google-workspace",
         authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
@@ -194,15 +171,22 @@ describe("google-workspace skill facade", () => {
     );
   });
 
-  it("uses host-brokered OAuth client config PKCE with Google scopes and URL-bound audiences", async () => {
-    await beginGoogleCredentialCreation({
-      redirectUri: "http://127.0.0.1:12345/oauth/callback",
+  it("connectGoogle uses host-owned OAuth with Google scopes and URL-bound audiences", async () => {
+    runtimeMock.credentials.getOAuthClientConfigStatus.mockResolvedValue({
+      configId: "google-workspace",
+      configured: true,
+      fields: {
+        clientId: { configured: true, type: "text" },
+        clientSecret: { configured: true, type: "secret" },
+      },
     });
 
-    expect(runtimeMock.credentials.beginCreateWithOAuthClientPkce).toHaveBeenCalledWith(
+    await connectGoogle();
+
+    expect(runtimeMock.credentials.connectOAuth).toHaveBeenCalledWith(
       expect.objectContaining({
         oauth: expect.objectContaining({
-          configId: "google-workspace",
+          clientConfigId: "google-workspace",
           scopes: expect.arrayContaining([
             "https://www.googleapis.com/auth/gmail.modify",
             "https://www.googleapis.com/auth/calendar",
@@ -223,7 +207,6 @@ describe("google-workspace skill facade", () => {
         }),
       })
     );
-    expect(runtimeMock.credentials.beginCreateWithOAuthPkce).not.toHaveBeenCalled();
   });
 
   it("connectGoogle returns a setup error instead of starting OAuth without OAuth client config", async () => {
@@ -231,7 +214,7 @@ describe("google-workspace skill facade", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("client material is not configured");
-    expect(runtimeMock.credentials.connectWithOAuthClientPkce).not.toHaveBeenCalled();
+    expect(runtimeMock.credentials.connectOAuth).not.toHaveBeenCalled();
   });
 
   it("connectGoogle uses stored OAuth client config without exposing client secret to userland", async () => {
@@ -247,9 +230,9 @@ describe("google-workspace skill facade", () => {
     const result = await connectGoogle();
 
     expect(result.success).toBe(true);
-    expect(runtimeMock.credentials.connectWithOAuthClientPkce).toHaveBeenCalledWith(
+    expect(runtimeMock.credentials.connectOAuth).toHaveBeenCalledWith(
       expect.objectContaining({
-        oauth: expect.objectContaining({ configId: "google-workspace" }),
+        oauth: expect.objectContaining({ clientConfigId: "google-workspace" }),
       })
     );
   });
