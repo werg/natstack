@@ -44,7 +44,8 @@ eval({ code: `
     browserImportCount: importHistory.length,
     panelCount: panels.length,
   };
-`, timeout: 10000 })
+`
+})
 ```
 
 - **`workspaceCount <= 1`** → new user. Start from Step 1, explain concepts thoroughly. Note: in IPC/remote mode `workspace.list()` may return `[]` even when an active workspace exists — treat `workspaceCount === 0` with a valid `active` as a new user too.
@@ -165,7 +166,8 @@ eval({ code: `
     console.log("No stored provider credentials are configured yet.");
   }
   return { configured: providerIds.length > 0 || googleStatus.connected, providerIds, googleStatus };
-`, timeout: 10000 })
+`
+})
 ```
 
 ## Step 4: Import Browser Data
@@ -186,7 +188,8 @@ eval({ code: `
     }
   }
   return browsers;
-`, timeout: 30000 })
+`
+})
 ```
 
 Then ask the user which browser/profile to import from and which data types they want. See the `browser-import` skill docs for:
@@ -259,7 +262,8 @@ Quick version:
 eval({ code: `
   import { createProject } from "@workspace-skills/paneldev";
   await createProject({ projectType: "panel", name: "hello", title: "Hello World" });
-`, timeout: 30000 })
+`
+})
 ```
 
 Then edit the generated files with Read/Edit/Write tools and launch:
@@ -270,7 +274,8 @@ eval({ code: `
   import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/hello", "Initial launch");
   await openPanel("panels/hello");
-`, timeout: 30000 })
+`
+})
 ```
 
 ## Step 7: Explore the Runtime

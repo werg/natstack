@@ -66,7 +66,8 @@ eval({ code: `
     browserImportCount: importHistory.length,
     panelCount: panels.length,
   };
-`, timeout: 10000 })
+`
+})
 ```
 
 - **New user** (`workspaceCount <= 1`, or `workspaceCount === 0` with an active workspace) — give the full walkthrough with explanations of key concepts. These users need context on what NatStack is and what it can do. Note: in some runtime modes `workspace.list()` may return an empty array even when an active workspace exists — treat this as a new user.

@@ -68,7 +68,7 @@ Full RPC bridge to all server and main-process services. Same as `rpc` from `@wo
 const content = await chat.rpc.call("main", "fs.readFile", "/src/index.ts", "utf-8");
 
 // Database
-const handle = await chat.rpc.call("main", "db.open", "my-data");
+Call a Durable Object method that stores data with `this.sql`.
 const rows = await chat.rpc.call("main", "db.query", handle, "SELECT * FROM items");
 
 // Build

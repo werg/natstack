@@ -148,22 +148,29 @@ await setStateArgs({ mode: "expanded" });
 
 ---
 
-## Database
+## Persistent State
 
-SQLite database access via `db` from the runtime:
+Persistent state belongs in Durable Objects. Use `this.sql` inside a DO and expose the operations your panel needs through RPC:
 
 ```typescript
-import { db } from "@workspace/runtime";
+import { DurableObjectBase } from "@workspace/runtime/worker";
 
-const database = await db.open("my-data");
-await database.exec("CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT)");
-await database.run("INSERT INTO items (name) VALUES (?)", ["example"]);
-const rows = await database.query("SELECT * FROM items");
-const one = await database.get("SELECT * FROM items WHERE id = ?", [1]);
-await database.close();
+export class ItemsDO extends DurableObjectBase {
+  protected createTables() {
+    this.sql.exec("CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT)");
+  }
+
+  addItem(name: string) {
+    return this.sql.exec("INSERT INTO items (name) VALUES (?) RETURNING id", name).one();
+  }
+
+  listItems() {
+    return this.sql.exec("SELECT * FROM items ORDER BY id").toArray();
+  }
+}
 ```
 
-Databases are stored at `<workspace>/.databases/<name>.db`.
+workerd stores DO SQL state under the workspace state directory in `.databases/workerd-do/`.
 
 ---
 

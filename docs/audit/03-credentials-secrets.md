@@ -847,7 +847,7 @@ is the standard to measure other secret-bearing files against.
 | `src/main/tlsPinning.ts` | Fingerprint pinning primitives |
 | `src/main/serverClient.ts` | WebSocket client with TLS pinning |
 | `packages/shared/src/credentials/store.ts` | Plaintext JSON credential store |
-| `packages/shared/src/credentials/consent.ts` | SQLite-backed consent grants |
+| `packages/shared/src/credentials/consent.ts` | Consent grant records |
 | `packages/shared/src/credentials/audit.ts` | Append-only JSONL audit log |
 | `packages/shared/src/credentials/registry.ts` | Provider manifest registry |
 | `packages/shared/src/credentials/refresh.ts` | Token refresh scheduler |
@@ -892,7 +892,7 @@ is the standard to measure other secret-bearing files against.
   (F-10).
 - Mobile universal-link hijack surface on real iOS / Android devices
   (F-13).
-- `server-native` — not inspected beyond confirming it ships no custom
+- Historical native module directory — not inspected beyond confirming it shipped no custom
   secret-handling code (contents are npm `node_modules` only).
 - `packages/browser-data/` — uses the documented Chromium / Firefox legacy
   crypto (`pbkdf2-sha1` @ 1 iter, fixed salt `saltysalt`). That is the

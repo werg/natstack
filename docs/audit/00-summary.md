@@ -36,7 +36,7 @@ a live web page) today has trivial paths to:
 - read every stored OAuth / API token the user has granted the product,
 - read the imported browser password / cookie / history store in plaintext,
 - pivot its fs context to any other panel's folder and read/write its files,
-- run arbitrary SQL against any other panel's SQLite databases,
+- tamper with another panel's durable state if a separate authorization bug exposes it,
 - silently force navigation of the shell or any sibling panel to an
   attacker-controlled URL,
 - exfiltrate data over unscoped outbound network (the egress proxy does
@@ -464,9 +464,9 @@ finding(s) it closes.
     [06]
 29. Symlink-safe `gitService.createRepo` (lstat the target, reject if
     symlink). [05, 07]
-30. Single `better-sqlite3` connection per caller, not per db name.
+30. Superseded legacy host SQL pooling issue; current storage uses Durable Objects.
     [07]
-31. Refuse `dbName` inputs that would collide after `sanitizeDbName`.
+31. Superseded legacy database-name collision issue; current storage uses DO object keys.
     [07]
 32. ReDoS mitigation in `grep` / `find`: switch to `re2` or cap the
     regex source complexity. [05, 07]
@@ -495,8 +495,7 @@ regresses, alarms should fire":
 - **`crypto.timingSafeEqual`** is used correctly in the webhook verifier
   library (just not invoked from any ingress path). [06]
 - **Deep-link trust-scoping** in `deepLinkConnect`. [02]
-- **`pnpm.onlyBuiltDependencies`** correctly whitelists just
-  `electron`, `esbuild`, `node-git-server`, `better-sqlite3`. [08]
+- **`pnpm.onlyBuiltDependencies`** is limited to the remaining platform/build tools. [08]
 - **TypeScript `strict` + `noUncheckedIndexedAccess`** enabled root-wide
   and on mobile. [08]
 - **No committed `.env` or secrets**; no `AKIA*`, `sk_live_*`,
@@ -538,6 +537,5 @@ regresses, alarms should fire":
   cover third-party provider endpoints (Slack, GitHub, Linear, Google,
   Anthropic, OpenAI) themselves; only the code NatStack ships that
   interacts with them.
-- Not yet covered in any report: the `server-native` native-module
-  surface (beyond its build config); `extension/` Chrome extension in
+- Not yet covered in any report: `extension/` Chrome extension in
   depth; `dist/` build artifacts; Playwright e2e fixtures.

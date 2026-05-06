@@ -18,7 +18,7 @@ const session = await HeadlessSession.createWithAgent({
 
 // Send a message and wait for the agent's response
 await session.send("Calculate the first 10 fibonacci numbers using eval");
-const response = await session.waitForAgentMessage({ timeout: 30_000 });
+const response = await session.waitForAgentMessage();
 console.log(response.content);
 
 // Clean up
@@ -128,9 +128,9 @@ const session = await HeadlessSession.createWithAgent({
 
 ## SandboxConfig Factories
 
-| Factory | Context | db.open behavior |
+| Factory | Context | persistence behavior |
 |---------|---------|-----------------|
-| `createPanelSandboxConfig(rpc, db)` | Panel (browser) | Direct DB handle from panel runtime |
-| `createRpcSandboxConfig(rpc)` | Worker/DO or Node server | RPC handle → DbHandle proxy (exec/run/get/query/close via RPC) |
+| `createPanelSandboxConfig(rpc)` | Panel (browser) | Scope persistence through the `scope` RPC service |
+| `createRpcSandboxConfig(rpc)` | Worker/DO or Node server | Scope persistence through the `scope` RPC service |
 
 Both route `loadImport` through `build.getBuild` / `build.getBuildNpm` RPC calls.

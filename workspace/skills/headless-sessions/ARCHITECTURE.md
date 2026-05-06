@@ -10,7 +10,7 @@
   - method history tracking (with auto-pruning)
   - event dispatch routing (middleware pipeline)
   - roster tracking (disconnect detection, typing cleanup, expected stops)
-  - pending agent timeouts (45s)
+  - pending agent completion waits
   - typed event emitter for state changes
   - scope management (scopeDirty events, persist lifecycle)
   - types: ChatMessage, ChatParticipantMetadata, ConnectionConfig, etc.
@@ -45,7 +45,7 @@
 - `TypedEmitter` — lightweight typed event emitter
 - `messageWindowReducer` — pure reducer (also used by React adapter)
 - Headless-safe types: `ChatMessage`, `ChatParticipantMetadata`, `ConnectionConfig`, `SandboxConfig`, `ToolProviderDeps`, `MethodHistoryEntry`, etc.
-- `createPanelSandboxConfig(rpc, db)` — panel SandboxConfig factory
+- `createPanelSandboxConfig(rpc)` — panel SandboxConfig factory
 
 **agentic-session** (no React, no browser APIs):
 - `HeadlessSession` — SessionManager + headless defaults
@@ -85,7 +85,7 @@ React components re-render
 SessionManager provides two teardown paths:
 
 - **`dispose(): void`** — synchronous best-effort. Scope persist is fire-and-forget. Use for browser panels where the tab is closing.
-- **`close(): Promise<void>`** — awaitable. Flushes dirty scope to DB, then disconnects. Use for headless consumers (workers, tests, servers).
+- **`close(): Promise<void>`** — awaitable. Flushes dirty scope through the `scope` RPC service, then disconnects. Use for headless consumers (workers, tests, servers).
 - **`Symbol.asyncDispose`** — supports `await using session = ...` syntax.
 
 ## Scope Ownership
@@ -96,3 +96,6 @@ SessionManager owns the ScopeManager when provided. It:
 - Does NOT register browser lifecycle listeners (`beforeunload`, `visibilitychange`) — those belong in the React adapter layer
 
 The React adapter (`useAgenticChat`) adds browser lifecycle persistence on top.
+
+Scope snapshots are persisted by the server-side `scope` service backed by
+`ScopeStoreDO`; sessions no longer use a userland database proxy.

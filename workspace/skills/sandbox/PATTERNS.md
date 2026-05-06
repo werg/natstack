@@ -53,7 +53,8 @@ eval({ code: `
   const matches = await grep("/src", "TODO");
   console.log(matches);
   return matches;
-`, timeout: 30000 })
+`
+})
 ```
 
 ## Use an npm Package (lodash)
@@ -70,8 +71,7 @@ eval({
     console.log("Grouped by age > 28:", _.groupBy(data, d => d.age > 28 ? "senior" : "junior"));
     console.log("Sorted by age:", _.sortBy(data, "age").map(d => d.name));
   `,
-  imports: { "lodash": "npm:^4.17.21" },
-  timeout: 30000
+  imports: { "lodash": "npm:^4.17.21" }
 })
 ```
 
@@ -87,8 +87,7 @@ eval({
     console.log("Next week:", format(nextWeek, "yyyy-MM-dd"));
     console.log("Days between:", differenceInDays(nextWeek, today));
   `,
-  imports: { "date-fns": "npm:^3.6.0" },
-  timeout: 30000
+  imports: { "date-fns": "npm:^3.6.0" }
 })
 ```
 
@@ -102,8 +101,7 @@ eval({
       console.log(faker.person.fullName(), "-", faker.internet.email());
     }
   `,
-  imports: { "@faker-js/faker": "npm:^9.0.0" },
-  timeout: 30000
+  imports: { "@faker-js/faker": "npm:^9.0.0" }
 })
 ```
 
@@ -117,8 +115,7 @@ npm packages aren't directly available in `inline_ui`. Preload via `eval` first 
 // Step 1: preload
 eval({
   code: `import _ from "lodash"; console.log("lodash loaded");`,
-  imports: { "lodash": "npm:^4.17.21" },
-  timeout: 30000
+  imports: { "lodash": "npm:^4.17.21" }
 })
 
 // Step 2: use in inline_ui (lodash is now in the module map)
@@ -171,8 +168,7 @@ eval({
         console.log("-", page.properties?.Name?.title?.[0]?.text?.content ?? page.id);
       }
     }
-  `,
-  timeout: 60000
+  `
 })
 ```
 
@@ -195,7 +191,8 @@ eval({ code: `
   });
   console.log("Import result:", result);
   return result;
-`, timeout: 60000 })
+`
+})
 ```
 
 ## Export All Browser Data
@@ -206,19 +203,8 @@ eval({ code: `
   const dump = await browserData.exportAll();
   console.log("Exported " + dump.length + " bytes");
   return JSON.parse(dump);
-`, timeout: 30000 })
-```
-
-## Sync Cookies to Browser Session
-
-Cookies are auto-synced after `startImport`. Use this to re-sync after manual changes, or to sync only a specific domain:
-
-```
-eval({ code: `
-  import { browserData } from "@workspace/panel-browser";
-  const result = await browserData.syncCookiesToSession("github.com");
-  console.log("Synced:", result.synced, "Failed:", result.failed);
-` })
+`
+})
 ```
 
 ## Interactive Cookie Manager (Inline UI)
@@ -243,16 +229,10 @@ export default function CookieManager({ props, chat }) {
     load();
   };
 
-  const handleSync = async () => {
-    const result = await browserData.syncCookiesToSession(filter || undefined);
-    chat.publish("message", { content: "Synced " + result.synced + " cookies to session" });
-  };
-
   return (
     <Flex direction="column" gap="2">
       <Flex gap="2" align="center">
         <TextField.Root placeholder="Filter by domain..." value={filter} onChange={e => setFilter(e.target.value)} style={{ flex: 1 }} />
-        <Button size="1" onClick={handleSync}>Sync to Session</Button>
       </Flex>
       <Text size="1" color="gray">{cookies.length} cookies</Text>
       <Table.Root size="1">
@@ -303,7 +283,7 @@ export default function SqlRunner({ props, chat }) {
   const run = useCallback(async () => {
     setError(null);
     try {
-      const h = handle || await chat.rpc.call("main", "db.open", props.dbName || "default");
+      Use a Durable Object method backed by `this.sql` for persistent data.
       if (!handle) setHandle(h);
       const result = await chat.rpc.call("main", "db.query", h, sql);
       setRows(result);
@@ -357,9 +337,8 @@ eval({ code: `
       profile: chrome.profiles[0] ?? chrome.dataDir,
       dataTypes: ["cookies"],
     });
-    // Sync to the browser session
-    await browserData.syncCookiesToSession("github.com");
-    console.log("Cookies synced — reload the browser panel to use them");
+    console.log("Cookies imported — Electron syncs imported cookies to browser panels automatically");
   }
-`, timeout: 60000 })
+`
+})
 ```

@@ -6,7 +6,6 @@ export type { SessionSnapshot } from "@workspace/agentic-session";
 // Test suite exports
 export { smokeTests } from "./tests/smoke.js";
 export { filesystemTests } from "./tests/filesystem.js";
-export { databaseTests } from "./tests/database.js";
 export { gitTests } from "./tests/git.js";
 export { panelTests } from "./tests/panels.js";
 export { workerTests } from "./tests/workers.js";
@@ -22,7 +21,6 @@ export { edgeCaseTests } from "./tests/edge-cases.js";
 // Convenience: all tests combined
 import { smokeTests as _smoke } from "./tests/smoke.js";
 import { filesystemTests as _fs } from "./tests/filesystem.js";
-import { databaseTests as _db } from "./tests/database.js";
 import { gitTests as _git } from "./tests/git.js";
 import { panelTests as _panels } from "./tests/panels.js";
 import { workerTests as _workers } from "./tests/workers.js";
@@ -38,7 +36,7 @@ import type { TestCase } from "./types.js";
 
 export function allTests(): TestCase[] {
   return [
-    ..._smoke, ..._fs, ..._db, ..._git, ..._panels, ..._workers,
+    ..._smoke, ..._fs, ..._git, ..._panels, ..._workers,
     ..._build, ..._oauth, ..._ws, ..._notif, ..._skills,
     ..._agent, ..._rpc, ..._edge,
   ];

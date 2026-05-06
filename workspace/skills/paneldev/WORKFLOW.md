@@ -18,7 +18,8 @@ Scaffold a new project via eval with the `imports` parameter. This writes templa
 eval({ code: `
   import { createProject } from "@workspace-skills/paneldev";
   await createProject({ projectType: "panel", name: "my-app", title: "My App" });
-`, timeout: 30000 })
+`
+})
 ```
 
 After creation, the files are available in your working directory at `panels/my-app/`.
@@ -46,13 +47,15 @@ eval({ code: `
   import { rpc } from "@workspace/runtime";
   const result = await rpc.call("main", "typecheck.check", "panels/my-app");
   console.log(result);
-`, timeout: 30000 })
+`
+})
 
 eval({ code: `
   import { rpc } from "@workspace/runtime";
   const result = await rpc.call("main", "test.run", contextId, "panels/my-app");
   console.log(result);
-`, timeout: 60000 })
+`
+})
 ```
 
 ### 4. Launch
@@ -65,7 +68,8 @@ eval({ code: `
   import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/my-app", "Initial launch");
   await openPanel("panels/my-app");
-`, timeout: 30000 })
+`
+})
 ```
 
 ### 5. Iterate
@@ -78,7 +82,8 @@ eval({ code: `
   import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/my-app", "Update");
   await openPanel("panels/my-app");
-`, timeout: 30000 })
+`
+})
 ```
 
 ---

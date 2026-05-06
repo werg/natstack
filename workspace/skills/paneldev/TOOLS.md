@@ -72,7 +72,8 @@ Supported types: `panel`, `package`, `skill`, `agent`, `worker`. Each scaffolds 
 eval({ code: `
   import { createProject } from "@workspace-skills/paneldev";
   await createProject({ projectType: "panel", name: "my-app", title: "My App" });
-`, timeout: 30000 })
+`
+})
 ```
 
 **`createProject(params)` parameters:**
@@ -96,7 +97,6 @@ Execute TypeScript/JavaScript code in the panel runtime. Runtime APIs are availa
 |------|------|----------|-------------|
 | `code` | string | Yes | Code to execute |
 | `syntax` | `"typescript"` \| `"tsx"` \| `"jsx"` | No | Syntax mode (default: `"tsx"`) |
-| `timeout` | number | No | Max async wait in ms (default: 10000, max: 90000) |
 | `imports` | `Record<string, string>` | No | Packages to build on-demand. Workspace packages: `"latest"` or a git ref. npm packages: `"npm:<version>"` (e.g. `"npm:^4.17.21"`, `"npm:latest"`) |
 
 ### Runtime APIs
@@ -133,20 +133,23 @@ eval({ code: `
     contextId,
   });
   console.log("Worker started:", instance.name, "on port", await workers.getPort());
-`, timeout: 30000 })
+`
+})
 
 // List running workers
 eval({ code: `
   import { workers } from "@workspace/runtime";
   const list = await workers.list();
   console.log(list.map(w => w.name + " (" + w.status + ")"));
-`, timeout: 10000 })
+`
+})
 
 // Destroy a worker
 eval({ code: `
   import { workers } from "@workspace/runtime";
   await workers.destroy("my-worker");
-`, timeout: 10000 })
+`
+})
 ```
 
 Methods: `create(options)`, `destroy(name)`, `update(name, updates)`, `list()`, `status(name)`, `listInstanceSources()`, `getPort()`, `restartAll()`. See [WORKERS.md](WORKERS.md) for full API.
@@ -161,7 +164,8 @@ eval({ code: `
   import { commitAndPush } from "@workspace-skills/paneldev";
   const result = await commitAndPush("panels/my-app", "Update");
   console.log(result);
-`, timeout: 30000 })
+`
+})
 ```
 
 **`commitAndPush(dir, message)`** — stages all changes, commits, and pushes. Auto-initializes git if the directory doesn't have `.git` yet.
@@ -185,7 +189,8 @@ eval({ code: `
   } else {
     console.log("No type errors");
   }
-`, timeout: 30000 })
+`
+})
 ```
 
 #### typecheck.check (advanced)
@@ -197,7 +202,8 @@ eval({ code: `
   import { rpc } from "@workspace/runtime";
   const result = await rpc.call("main", "typecheck.check", "panels/my-app");
   console.log(result);
-`, timeout: 30000 })
+`
+})
 ```
 
 #### test.run
@@ -209,7 +215,8 @@ eval({ code: `
   import { rpc } from "@workspace/runtime";
   const result = await rpc.call("main", "test.run", contextId, "panels/my-app");
   console.log(result);
-`, timeout: 60000 })
+`
+})
 ```
 
 ### Browser Data
@@ -237,8 +244,6 @@ Available methods:
 | `browserData.addPassword(pw)` | Add a password |
 | `browserData.getCookies(domain?)` | Get cookies, optionally filtered by domain |
 | `browserData.clearCookies(domain?)` | Clear cookies |
-| `browserData.syncCookiesToSession(domain?)` | Push stored cookies into the Electron session |
-| `browserData.syncCookiesFromSession(domain?)` | Pull Electron session cookies into the store |
 | `browserData.getSearchEngines()` | Get configured search engines |
 | `browserData.setDefaultEngine(id)` | Set the default search engine |
 | `browserData.getAutofillSuggestions(field, prefix?)` | Get autofill suggestions |
@@ -256,7 +261,8 @@ eval({ code: `
   import { browserData } from "@workspace/panel-browser";
   const browsers = await browserData.detectBrowsers();
   console.log(browsers.map(b => b.displayName + ": " + b.profiles.length + " profiles"));
-`, timeout: 15000 })
+`
+})
 ```
 
 #### Import from Chrome
@@ -277,7 +283,8 @@ eval({ code: `
     console.log(r.dataType + ": " + r.itemCount + " imported, " + r.skippedCount + " skipped");
     if (r.warnings.length) console.log("  warnings:", r.warnings);
   }
-`, timeout: 60000 })
+`
+})
 ```
 
 #### Search and export
@@ -289,7 +296,8 @@ eval({ code: `
   console.log("Found", bookmarks.length, "bookmarks");
   const html = await browserData.exportBookmarks("html");
   console.log("Exported", html.length, "bytes of HTML");
-`, timeout: 15000 })
+`
+})
 ```
 
 ### Panel Lifecycle
@@ -302,7 +310,8 @@ eval({ code: `
   import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/my-app", "Initial");
   await openPanel("panels/my-app");
-`, timeout: 30000 })
+`
+})
 ```
 
 #### Rebuild after edits
@@ -313,7 +322,8 @@ eval({ code: `
   import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/my-app", "Update");
   await openPanel("panels/my-app");
-`, timeout: 30000 })
+`
+})
 ```
 
 ---

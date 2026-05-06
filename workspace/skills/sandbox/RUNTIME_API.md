@@ -19,7 +19,6 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `getInstanceId` | value |  |  |
 | `id` | value |  |  |
 | `rpc` | value |  |  |
-| `db` | value |  |  |
 | `parent` | value |  |  |
 | `getParent` | value |  |  |
 | `getParentWithContract` | value |  |  |

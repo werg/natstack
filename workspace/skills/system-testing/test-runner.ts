@@ -63,7 +63,7 @@ export class TestRunner {
     try {
       session = await this.runner.spawn();
 
-      await session.sendAndWait(test.prompt, { timeout: test.timeout });
+      await session.sendAndWait(test.prompt);
 
       const messages = [...session.messages] as ChatMessage[];
       const snapshot = session.snapshot();

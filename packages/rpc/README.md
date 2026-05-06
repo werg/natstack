@@ -231,7 +231,7 @@ Workers also import from `@workspace/runtime`:
 
 ```typescript
 import { rpc } from "@workspace/runtime";
-await rpc.call("main", "db.open", "mydb");
+Use `this.sql` inside a Durable Object for persistent SQLite state.
 ```
 
 ### Shell

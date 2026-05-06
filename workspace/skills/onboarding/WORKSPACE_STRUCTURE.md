@@ -26,7 +26,7 @@ source/
 state/
   .contexts/            ← Per-context folder copies
   .cache/               ← Build cache
-  .databases/           ← SQLite databases
+  .databases/           ← workerd Durable Object SQL state
 ```
 
 ## The meta/ Directory

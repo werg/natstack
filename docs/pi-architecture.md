@@ -157,7 +157,7 @@ A panel forks at a specific message. The chat panel calls
 `worker.canFork()` then `worker.postClone(parentObjectKey, newChannelId, oldChannelId, forkPointMessageId)`.
 
 The cloned worker:
-1. Inherits the parent's SQLite via cloneDO
+1. Inherits the parent's Durable Object SQL storage via cloneDO
 2. Migrates the parent's `pi_sessions` row from `oldChannelId` to `newChannelId`
 3. Resubscribes to the new channel
 4. On the next user message, lazily constructs a fresh `PiRunner` with
@@ -198,3 +198,16 @@ runner.subscribe((event) => {
 The worker's default behavior forwards a subset to the channel as ephemeral
 streams. To inspect the event flow, log inside `forwardPiEvent` in
 `agent-worker-base.ts` or attach a second listener via `runner.subscribe()`.
+
+## Where State Lives
+
+Pi session state is owned by Pi's `AgentSession` and persisted by the worker
+DO. NatStack framework state uses internal Durable Objects:
+
+- `ScopeStoreDO` for REPL scopes.
+- `PanelStoreDO` for panel tree and search.
+- `BrowserDataDO` for imported browser data.
+- `WebhookStoreDO` for webhook subscriptions.
+
+Userland persistence should be modeled as a Durable Object with `this.sql`.
+There is no host database RPC service.

@@ -1,6 +1,6 @@
 # 04 — RPC / IPC Transport & Service Authorization Audit
 
-Scope: `packages/rpc/`, `src/server/rpcServer*`, `src/server/wsServerTransport*`, `src/server/doDispatch*`, `src/server/gateway*`, `src/server/routeRegistry*`, `src/server/panelHttpServer*`, `src/server/headlessServiceRegistration*`, `src/server/panelRuntimeRegistration*`, `src/server/browserTransportEntry*`, `src/preload/{ipcTransport,wsTransport}*`, `src/main/ipcDispatcher*`, `src/main/ipc/*`, a sample of server services (`gitService`, `buildService`, `workspaceService`, `workerService`, `webhookService`, `pushService`, `settingsServiceStandalone`, `credentialService`, `authService`, `tokensService`, `fsService`, `dbService`), plus `packages/shared/src/{serviceDispatcher,servicePolicy,serviceDefinition,tokenManager}.ts`.
+Scope: `packages/rpc/`, `src/server/rpcServer*`, `src/server/wsServerTransport*`, `src/server/doDispatch*`, `src/server/gateway*`, `src/server/routeRegistry*`, `src/server/panelHttpServer*`, `src/server/headlessServiceRegistration*`, `src/server/panelRuntimeRegistration*`, `src/server/browserTransportEntry*`, `src/preload/{ipcTransport,wsTransport}*`, `src/main/ipcDispatcher*`, `src/main/ipc/*`, a sample of server services (`gitService`, `buildService`, `workspaceService`, `workerService`, `webhookService`, `pushService`, `settingsServiceStandalone`, `credentialService`, `authService`, `tokensService`, `fsService`), plus `packages/shared/src/{serviceDispatcher,servicePolicy,serviceDefinition,tokenManager}.ts`.
 
 Date: 2026-04-23 · Branch: audit · Auditor: Claude (Opus 4.7 1M) · Mode: read-only.
 
@@ -32,7 +32,7 @@ However, the implementation has substantive gaps between the declared policy mod
 
 10. **`panelHttpServer`'s management API uses a static bearer token and adds `Access-Control-Allow-Origin: *`** (`panelHttpServer.ts:506`). Because the `Authorization` header is not a cookie, CSRF is unlikely; but the `*` plus wildcard `Access-Control-Allow-Headers: Authorization` lets any site harvest `/api/panels` via `fetch(…, { headers: { Authorization } })` if it can obtain or brute-force the token.
 
-11. **`db` handles are unscoped after `open`.** `ownerId` is recorded at open time but `query`/`run`/`exec`/`close` do not re-check ownership (`dbService.ts` + `databaseManager.ts:127-188`). Handles are UUIDs so guessing is infeasible, but a malicious panel that observes or is leaked another panel's handle gets full SQL on that DB.
+11. **Superseded:** the former host-owned SQL handle surface was removed. User persistence now lives in workerd Durable Objects.
 
 Nothing in this report is a panic-level remote code execution, but several items together enable trivial cross-panel credential theft and escalation to `shell`-only services from sandboxed panels.
 
@@ -395,12 +395,12 @@ Severity scale: **Critical / High / Medium / Low / Informational**. Line numbers
   - Deriving a separate "extension-facing" token with a narrower policy (only allow the few RPC methods extensions need) and excluding the master admin token from `connection.json`.
   - At minimum, narrow the `allowed_origins` list and verify the native host's request envelope is from a known-valid Chrome/Firefox extension version.
 
-### 4.17 MEDIUM — `db` handles are ownerless after open
+### 4.17 MEDIUM — Superseded host SQL handle finding
 
-- Files: `src/server/services/dbService.ts`, `packages/shared/src/db/databaseManager.ts:127-188`.
-- Once `open(ownerId, dbName)` returns a UUID handle, subsequent `query/run/get/exec/close` take the handle and do NOT re-check `ownerId` against `ctx.callerId`.
-- Attack path: if a handle value leaks (logs, debugger, panel UI, shared component), any caller can use it to SELECT/INSERT/UPDATE/DROP on that DB. Because handles are UUIDs, this is unlikely in practice but a single logged handle is enough.
-- Remediation: in `DatabaseManager.query/run/get/exec/close`, accept a `callerId` and compare to `handleToOwner.get(handle)`. In `dbService`, pass `ctx.callerId` to every method.
+- Status: superseded by the Durable Object storage architecture.
+- Current model: persistence is scoped to DO object identity and reached through
+  service methods with caller-kind policies.
+- Remediation: do not reintroduce shared host SQL handles.
 
 ### 4.18 MEDIUM — `credentials.revokeConsent` with empty `connectionId` wipes all
 
@@ -542,7 +542,7 @@ Severity scale: **Critical / High / Medium / Low / Informational**. Line numbers
 
 16. **Prohibit `.` in method names** inside `ServiceDispatcher.registerService`.
 
-17. **Check handle ownership on every DB op** — pass `ctx.callerId` into `DatabaseManager.query/run/get/exec/close`.
+17. **Superseded:** do not reintroduce shared host SQL handles; use DO object identity and service policies.
 
 18. **Close unauthenticated sockets faster** (2-3 s) and cap simultaneous pre-auth sockets (64).
 
@@ -607,7 +607,7 @@ Services sampled:
 - `/home/werg/natstack/src/server/services/metaService.ts`
 - `/home/werg/natstack/src/server/services/workerLogService.ts`
 - `/home/werg/natstack/src/server/services/imageService.ts` (partial)
-- `/home/werg/natstack/src/server/services/dbService.ts`
+- `docs/architecture/storage.md`
 - `/home/werg/natstack/src/server/services/panelService.ts` (partial)
 - Main-service policy headers: `menuService.ts`, `settingsService.ts`, `adblockService.ts`, `appService.ts`, `panelShellService.ts`, `viewService.ts`, `remoteCredService.ts`, `authService.ts`, `browserService.ts`, `browserDataService.ts` (policy lines only).
 

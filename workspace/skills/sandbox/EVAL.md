@@ -14,7 +14,6 @@ eval({ code: `console.log("hello")` })
 |-------|------|---------|-------------|
 | `code` | string | required | TypeScript/JavaScript code to execute |
 | `syntax` | `"typescript" \| "jsx" \| "tsx"` | `"tsx"` | Source syntax |
-| `timeout` | number (ms) | 10000 | Async timeout (0 = skip async, max 90000) |
 | `imports` | `Record<string, string>` | — | Packages to build on-demand (workspace or npm) |
 
 ## Top-level Await
@@ -27,7 +26,8 @@ eval({ code: `
   const data = await response.json();
   console.log(data);
   return data;
-`, timeout: 30000 })
+`
+})
 ```
 
 ## Console Streaming
@@ -44,7 +44,8 @@ Workspace packages (`@workspace/*`, `@workspace-skills/*`, `@natstack/*`) are **
 eval({ code: `
   import { createProject } from "@workspace-skills/paneldev";
   await createProject({ projectType: "panel", name: "my-app", title: "My App" });
-`, timeout: 30000 })
+`
+})
 ```
 
 The first import triggers an on-demand build from git (a few seconds). Subsequent imports use the cached build.
@@ -67,8 +68,7 @@ eval({
     import _ from "lodash";
     console.log(_.chunk([1, 2, 3, 4, 5, 6], 2));
   `,
-  imports: { "lodash": "npm:^4.17.21" },
-  timeout: 30000
+  imports: { "lodash": "npm:^4.17.21" }
 })
 ```
 
@@ -80,8 +80,7 @@ eval({
     console.log("mean:", d3.mean(data));
     console.log("deviation:", d3.deviation(data));
   `,
-  imports: { "d3-array": "npm:3" },
-  timeout: 30000
+  imports: { "d3-array": "npm:3" }
 })
 ```
 
@@ -89,7 +88,7 @@ Version values follow npm semver conventions: `"npm:^1.0.0"`, `"npm:~2.3.0"`, `"
 
 Packages are installed with `--ignore-scripts` for security (no postinstall hooks). Specifiers are validated against npm naming rules — only standard package names are accepted (no URLs, file paths, or git refs). Native addon packages (those requiring `.node` binary files) are not supported.
 
-Installed packages and their bundles are both cached, so subsequent imports of the same package/version are fast. The first install of a new package may take 10–30 seconds (npm download + esbuild bundle), so use `timeout: 30000` or higher for initial imports.
+Installed packages and their bundles are both cached, so subsequent imports of the same package/version are fast. The first install of a new package may take 10-30 seconds (npm download + esbuild bundle); eval waits for that work to complete.
 
 ### Mixing workspace and npm imports
 
@@ -104,8 +103,7 @@ eval({
   imports: {
     "@workspace-skills/paneldev": "latest",
     "ajv": "npm:^8.12.0"
-  },
-  timeout: 30000
+  }
 })
 ```
 
@@ -207,7 +205,7 @@ eval({ code: `
 ```
 eval({ code: `
   import { db } from "@workspace/runtime";
-  const conn = await db.open("my-data");
+  Use `this.sql` inside a Durable Object for persistent state.
   await conn.exec("CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT)");
   await conn.run("INSERT INTO items (name) VALUES (?)", ["test"]);
   const rows = await conn.query("SELECT * FROM items");
@@ -278,7 +276,8 @@ eval({ code: `
     });
     console.log("Import result:", result);
   }
-`, timeout: 60000 })
+`
+})
 ```
 
 ## Panel Navigation
@@ -320,7 +319,8 @@ eval({ code: `
   // Check effective version
   const ev = await rpc.call("main", "build.getEffectiveVersion", "panels/my-app");
   console.log("Effective version:", ev);
-`, timeout: 30000 })
+`
+})
 ```
 
 ## Type Checking
@@ -330,7 +330,8 @@ eval({ code: `
   import { rpc } from "@workspace/runtime";
   const result = await rpc.call("main", "typecheck.check", "panels/my-app");
   console.log("Type errors:", result);
-`, timeout: 30000 })
+`
+})
 ```
 
 ## Return Values

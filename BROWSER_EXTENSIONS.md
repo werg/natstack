@@ -117,7 +117,6 @@ layer is swapped transparently.
 
 ### Server won't start
 
-- Run `pnpm server:install` first (compiles better-sqlite3 for system Node)
 - Ensure `natstack.yml` exists in the workspace directory
 - Check for port conflicts if using a fixed `--panel-port`
 

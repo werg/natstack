@@ -11,7 +11,6 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 |--------|------|---------|-------------|
 | `id` | value |  |  |
 | `rpc` | value |  |  |
-| `db` | value |  |  |
 | `fs` | value |  |  |
 | `workers` | namespace | `create`, `destroy`, `update`, `list`, `status`, `listInstanceSources`, `getPort`, `restartAll`, `cloneDO`, `destroyDO` |  |
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo` |  |

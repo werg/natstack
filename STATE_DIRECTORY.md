@@ -43,6 +43,35 @@ Stores external dependency installs (npm `node_modules`) for panels and agents, 
 
 Per-workspace, per-context filesystem scopes at `{userData}/context-scopes/{workspaceId}/{contextId}/`. Each context gets an isolated filesystem root.
 
+### `.databases/workerd-do/`
+
+The only SQLite files NatStack owns are workerd Durable Object databases:
+
+```
+.databases/
+  workerd-do/
+    natstack_internal:ScopeStoreDO/
+      <object-hash>.sqlite
+    natstack_internal:WebhookStoreDO/
+      <object-hash>.sqlite
+    natstack_internal:PanelStoreDO/
+      <object-hash>.sqlite
+    natstack_internal:BrowserDataDO/
+      <object-hash>.sqlite
+    <workspace-source>:<WorkspaceDOClass>/
+      <object-hash>.sqlite
+```
+
+The internal stores are:
+
+- `ScopeStoreDO` (`objectKey: "global"`) for REPL scope snapshots.
+- `WebhookStoreDO` (`objectKey: "global"`) for webhook ingress subscriptions.
+- `PanelStoreDO` (`objectKey: <workspaceId>`) for panel tree and panel FTS.
+- `BrowserDataDO` (`objectKey: "global"`) for imported browser data.
+
+Legacy host-owned SQLite files are removed on server startup. There are no
+other NatStack-managed SQLite files outside `workerd-do/`.
+
 ### `ev-map.json`
 
 Persisted effective version map — derived state, safe to delete (triggers full recompute on next startup).
@@ -63,4 +92,6 @@ This ensures the app continues to work even in restricted environments.
 
 ## Implementation
 
-See [`src/main/paths.ts`](src/main/paths.ts) for the implementation details.
+See [`src/main/paths.ts`](src/main/paths.ts) and
+[`docs/architecture/storage.md`](docs/architecture/storage.md) for the
+implementation details.

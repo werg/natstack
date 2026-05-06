@@ -40,7 +40,8 @@ Create a project via eval with the `imports` parameter:
 eval({ code: `
   import { createProject } from "@workspace-skills/paneldev";
   await createProject({ projectType: "panel", name: "my-app", title: "My App" });
-`, timeout: 30000 })
+`
+})
 ```
 
 Edit the generated files, then commit, push, and launch:
@@ -51,7 +52,8 @@ eval({ code: `
   import { openPanel } from "@workspace/runtime";
   await commitAndPush("panels/my-app", "Initial launch");
   await openPanel("panels/my-app");
-`, timeout: 30000 })
+`
+})
 ```
 
 ## Common Tasks

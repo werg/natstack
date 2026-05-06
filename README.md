@@ -138,17 +138,16 @@ pnpm start
 ## Headless Server
 
 NatStack can run without Electron as a standalone Node.js server. All core
-services — build, git, channels, AI, agents, database, tokens — are available
-over WebSocket RPC. Panels can optionally be served to a regular web browser
-over HTTP.
+services — build, git, channels, AI, agents, tokens — are available over
+WebSocket RPC. Persistent storage lives inside workerd Durable Objects (each
+DO owns its own SQLite-backed `this.sql`); the server has no native module
+dependencies. Panels can optionally be served to a regular web browser over
+HTTP.
 
 ### Prerequisites
 
-The standalone server requires native dependencies (better-sqlite3 compiled
-for system Node, not Electron's Node):
-
 ```bash
-pnpm server:install
+pnpm install
 pnpm build
 ```
 
@@ -223,4 +222,4 @@ instructions, configuration, and the full connection flow.
 ### In-Process Agents
 
 Agents run as in-process services managed by AgentManager. They have direct
-access to DatabaseManager and AIHandler, and communicate via channels.
+access to the server service registry and AIHandler, and communicate via channels.

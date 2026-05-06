@@ -15,8 +15,6 @@ For standard forms with typed fields. No code needed.
 | `values` | Record | Pre-populated values |
 | `submitLabel` | string | Submit button text (default: "Submit") |
 | `cancelLabel` | string | Cancel button text (default: "Cancel") |
-| `timeout` | number (ms) | Auto-action after timeout |
-| `timeoutAction` | `"cancel" \| "submit"` | What happens on timeout |
 | `severity` | `"info" \| "warning" \| "danger"` | Visual severity |
 | `hideSubmit` | boolean | Hide submit button |
 | `hideCancel` | boolean | Hide cancel button |

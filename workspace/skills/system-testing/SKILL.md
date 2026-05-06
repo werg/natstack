@@ -83,7 +83,7 @@ if (fail.execution.snapshot) {
 
 ### Debug events (harness lifecycle)
 
-See if the agent's harness spawned, crashed, timed out, or had warnings:
+See if the agent's harness spawned, crashed, stalled, or had warnings:
 
 ```typescript
 if (fail.execution.snapshot) {
@@ -109,9 +109,8 @@ if (fail.execution.snapshot) {
 
 | Suite | Tests | What it covers |
 |-------|-------|---------------|
-| `smokeTests` | 4 | Basic sanity: eval, fs, db, package import |
+| `smokeTests` | 3 | Basic sanity: eval, fs, package import |
 | `filesystemTests` | 9 | All fs operations: read/write, dirs, stats, symlinks, handles |
-| `databaseTests` | 6 | SQLite: CRUD, params, multiple DBs, migration, persistence |
 | `gitTests` | 6 | init, branch, diff, log, stash, push |
 | `panelTests` | 6 | Open, browser panels, navigate, screenshot, evaluate, list sources |
 | `workerTests` | 6 | Create, list, callDO, destroy, env bindings, list sources |
@@ -122,9 +121,11 @@ if (fail.execution.snapshot) {
 | `skillTests` | 4 | Load sandbox, paneldev, api-integrations, headless-sessions |
 | `agentCapabilityTests` | 6 | Multi-turn, error recovery, large output, dynamic import |
 | `rpcTests` | 2 | Cross-service calls |
-| `edgeCaseTests` | 5 | Timeouts, invalid imports, bad SQL, missing files |
+| `edgeCaseTests` | 3 | Invalid eval args, invalid imports, missing files |
 
-Use `allTests()` to get all 66 tests combined.
+Use `allTests()` to get all 57 tests combined.
+
+For SQLite-backed userland storage, the canonical pattern is `this.sql` inside a Durable Object. See `workspace/workers/sample-do/index.ts` for the minimal example and `workspace/workers/sample-do/sampleDo.test.ts` for an end-to-end round-trip exercised via `createTestDO`.
 
 ## Filtering
 

@@ -41,7 +41,6 @@ export default function PasswordVault({ props, chat }) {
   const copyToClipboard = async (text, id) => {
     await navigator.clipboard.writeText(text);
     setCopied(id);
-    setTimeout(() => setCopied(null), 2000);
   };
 
   const filtered = filter

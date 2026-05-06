@@ -108,7 +108,7 @@ For each failure, determine the root cause category and act accordingly:
 ### Test bugs (fix the test — last resort)
 - **Validation too strict** → loosen the validator, but only after confirming the agent's response is correct
 - **Prompt ambiguous** → clarify the prompt, but only if the underlying API works correctly
-- **Timeout too short** → increase, but investigate why it's slow first
+- **Long-running task** → inspect where progress stopped and fix the blocked operation
 
 **Default assumption: the infrastructure is wrong, not the test.** Only classify as a test bug after reading the service code and confirming the API works correctly.
 
@@ -117,7 +117,7 @@ For each failure, determine the root cause category and act accordingly:
 | Symptom | Likely files |
 |---------|-------------|
 | fs operation failed | `src/server/services/fsService.ts`, `workspace/packages/runtime/src/panel/fs.ts` |
-| db operation failed | `src/server/services/dbService.ts`, `workspace/packages/runtime/src/shared/database.ts` |
+| DO storage operation failed | `src/server/internalDOs/*`, `workspace/packages/runtime/src/worker/durable-base.ts` |
 | git operation failed | `packages/git/src/client.ts`, `src/server/services/gitService.ts` |
 | Build failed | `src/server/buildV2/`, `build.mjs` |
 | Worker/DO issue | `src/server/services/workerService.ts`, `workspace/packages/runtime/src/worker/` |

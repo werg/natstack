@@ -13,7 +13,8 @@ eval({ code: `
   scope.browser = await createBrowserPanel("https://example.com");
   scope.page = await scope.browser.page();
   console.log("Opened:", await scope.page.title());
-`, timeout: 30000 })
+`
+})
 
 // Call 2: Reuse — no new panel, same page
 eval({ code: `
@@ -22,7 +23,8 @@ eval({ code: `
   await scope.page.click('button[type="submit"]');
   await scope.page.waitForSelector(".dashboard");
   console.log("Logged in!");
-`, timeout: 30000 })
+`
+})
 
 // Call 3: Continue with same page
 eval({ code: `
@@ -30,7 +32,8 @@ eval({ code: `
     Array.from(document.querySelectorAll(".item")).map(el => el.textContent)
   );
   console.log("Scraped", scope.results.length, "items");
-`, timeout: 30000 })
+`
+})
 ```
 
 Two lines to get started:
@@ -49,7 +52,8 @@ eval({ code: `
   scope.browser = getBrowserHandle(scope.browser.id);  // id survived serialization
   scope.page = await scope.browser.page();
   console.log("Reconnected:", await scope.page.title());
-`, timeout: 30000 })
+`
+})
 ```
 
 No need for a separate `scope.browserId` — per-property serialization means `scope.browser.id` and `scope.browser.title` survive even though the methods are lost.
@@ -67,7 +71,7 @@ scope.page = await scope.browser.page();
 await scope.page.goto(url)                              // navigate (waits for load)
 await scope.page.goto(url, { waitUntil: "networkidle" }) // wait for network quiet
 await scope.page.goto(url, { waitUntil: "domcontentloaded" })
-await scope.page.goto(url, { timeout: 10000 })          // custom timeout
+await scope.page.goto(url)
 scope.page.url()                                         // current URL (sync)
 await scope.page.title()                                 // page title
 await scope.page.content()                               // full HTML source
@@ -85,7 +89,7 @@ await scope.page.type('input[name="search"]', "query")  // types character by ch
 
 ```typescript
 await scope.page.waitForSelector(".loaded")              // wait for element to appear
-await scope.page.waitForSelector(".modal", { timeout: 5000 })
+await scope.page.waitForSelector(".modal")
 await scope.page.querySelector(".result")                // check if element exists
 ```
 
@@ -157,7 +161,8 @@ eval({ code: `
   scope.browser = await createBrowserPanel("https://news.ycombinator.com");
   scope.page = await scope.browser.page();
   console.log("Opened HN");
-`, timeout: 30000 })
+`
+})
 
 // Step 2: Scrape data
 eval({ code: `
@@ -168,14 +173,16 @@ eval({ code: `
     }))
   );
   console.log("Scraped", scope.stories.length, "stories");
-`, timeout: 30000 })
+`
+})
 
 // Step 3: Process results (scope.stories persists!)
 eval({ code: `
   const top5 = scope.stories.slice(0, 5);
   console.log("Top 5:", JSON.stringify(top5, null, 2));
   return top5;
-`, timeout: 10000 })
+`
+})
 ```
 
 ### Login Flow Across Multiple Calls
@@ -185,7 +192,8 @@ eval({ code: `
   import { createBrowserPanel } from "@workspace/runtime";
   scope.browser = await createBrowserPanel("https://example.com/login");
   scope.page = await scope.browser.page();
-`, timeout: 30000 })
+`
+})
 
 eval({ code: `
   await scope.page.fill('input[name="email"]', 'user@example.com');
@@ -193,7 +201,8 @@ eval({ code: `
   await scope.page.click('button[type="submit"]');
   await scope.page.waitForSelector(".dashboard");
   console.log("Logged in, now at:", scope.page.url());
-`, timeout: 30000 })
+`
+})
 
 eval({ code: `
   // Still logged in — same page, same session
@@ -201,7 +210,8 @@ eval({ code: `
     document.querySelector(".stats")?.textContent
   );
   console.log("Dashboard:", scope.dashboardData);
-`, timeout: 30000 })
+`
+})
 ```
 
 ### Combined: Import Cookies + Authenticate
@@ -235,7 +245,8 @@ eval({ code: `
     document.querySelector("img.avatar") !== null
   );
   console.log(isLoggedIn ? "Logged in!" : "Not logged in");
-`, timeout: 60000 })
+`
+})
 ```
 
 ### Inline UI: Browser Control Panel
@@ -304,6 +315,6 @@ export default function BrowserController({ props, chat }) {
 - **Use `page.evaluate()` for complex DOM queries** — it's more reliable than individual selector methods and gives you full DOM API access.
 - **Use `page.goto(url, { waitUntil: "networkidle" })` for SPAs** — waits for AJAX requests to finish.
 - **Use `page.waitForSelector()` before interacting** — ensures elements exist before clicking/filling.
-- **Pass `timeout: 60000` for slow pages** — the default eval timeout may be too short for pages that load slowly.
+- **Wait on the page condition you need** — eval waits for the automation code to complete, so prefer explicit page state checks over wall-clock limits.
 - **Imported cookies are auto-synced** — if you imported browser data via the browser-import skill, browser panels will have those cookies available automatically.
 - **After reload, reconnect via `scope.browser.id`** — the ID survives serialization, so you can reconnect without re-opening the panel.

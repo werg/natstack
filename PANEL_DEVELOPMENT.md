@@ -488,22 +488,17 @@ await setStateArgs({ mode: "expanded" });
 
 ---
 
-## Database
+## Persistent storage
 
-SQLite database access via `db` from the runtime:
+There is no panel-facing `db` API. Persistent SQL storage lives inside Durable
+Objects: every DO has a `this.sql` handle on its own private SQLite-backed
+storage. To persist state from a panel, dispatch to a worker DO that owns the
+schema. See `docs/architecture/storage.md` for the storage primitive and
+`workspace/workers/sample-do/index.ts` for a minimal example.
 
-```typescript
-import { db } from "@workspace/runtime";
-
-const database = await db.open("my-data");
-await database.exec("CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, name TEXT)");
-await database.run("INSERT INTO items (name) VALUES (?)", ["example"]);
-const rows = await database.query<{ id: number; name: string }>("SELECT * FROM items");
-const one = await database.get<{ id: number; name: string }>("SELECT * FROM items WHERE id = ?", [1]);
-await database.close();
-```
-
-Databases are stored at `<workspace>/.databases/<name>.db` and backed by `better-sqlite3`.
+For ephemeral or per-panel state, prefer `useStateArgs`/`setStateArgs` (above)
+or the panel scope persistence (`scope` RPC service) used by the agentic-chat
+REPL.
 
 ---
 
@@ -535,7 +530,7 @@ Key PubSub client APIs:
 - `messages()` -- Async iterator for incoming messages
 - `onRoster(handler)` -- Track connected participants
 - `updateMetadata(meta)` -- Update participant metadata
-- `ready(timeoutMs?)` -- Wait for replay completion
+- `ready()` -- Wait for replay completion
 
 ---
 

@@ -258,6 +258,18 @@ In remote mode, the Electron app automatically reconnects if the WebSocket conne
 - **Exponential backoff**: 1s, 2s, 4s, 8s, ... up to 30s between attempts
 - **Up to 10 reconnection attempts** before giving up
 - **Pending RPC calls** are rejected on disconnect (callers should retry)
+
+## Browser-Data Import Limitation
+
+Browser-data persistence is server-owned and stored in `BrowserDataDO`. In the
+current single-host architecture, server-side import readers can read local
+Chrome, Firefox, and Safari profile SQLite files directly.
+
+For a true remote-server deployment, those profile files live on the Electron
+host, not on the remote server. Supporting browser import there requires a
+host-callback primitive over the trusted Electron bridge so the server can ask a
+specific host to read profile files and stream the results back for storage in
+`BrowserDataDO`.
 - **Status indicator** in the title bar shows connection state:
   - Green dot: connected
   - Yellow dot: reconnecting

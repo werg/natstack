@@ -25,7 +25,7 @@ Panel (browser)          Channel DO (workerd)     Worker DO (workerd, embeds Pi)
 ```
 
 - **Channel DO** — `workspace/workers/pubsub-channel/channel-do.ts`. Forkable
-  history, SQLite-backed message storage, participant roster, ephemeral and
+  history, `this.sql`-backed message storage, participant roster, ephemeral and
   persisted message routing. Enforces participant handle uniqueness so the
   channel-tools extension can use bare method names without collision.
 - **Worker DO** — `workspace/packages/agentic-do/src/agent-worker-base.ts`.
@@ -78,7 +78,7 @@ The final prompt is composed from the NatStack base prompt,
 subscription prompt config. Workspace skills live under `workspace/skills/`
 and are discovered through the `workspace.*` RPC service.
 
-### SQLite tables
+### Durable Object SQL Tables
 
 | Table | Purpose |
 |-------|---------|
@@ -92,6 +92,19 @@ That's it. Pi tracks turn state, message state, and session branching itself
 inside `AgentSession`. The previous architecture's `harnesses`, `active_turns`,
 `in_flight_turns`, `queued_turns`, `checkpoints`, and `turn_map` tables are
 gone.
+
+## Where State Lives
+
+Workspace and framework state lives in Durable Objects:
+
+- Agent and channel workers own their own `this.sql` schema.
+- `ScopeStoreDO` stores REPL scope snapshots for agentic eval.
+- `PanelStoreDO` stores panel tree state and panel search FTS.
+- `BrowserDataDO` stores imported browser data and history FTS.
+- `WebhookStoreDO` stores webhook ingress subscriptions.
+
+See `docs/architecture/storage.md` for object key conventions and internal DO
+registration details.
 
 ## Hermetic sandbox
 

@@ -33,21 +33,6 @@ export const smokeTests: TestCase[] = [
     },
   },
   {
-    name: "db-crud",
-    description: "Agent performs basic database CRUD operations",
-    category: "smoke",
-    prompt: "Create a database, set up a table, insert some data, and query it back to verify. Tell me what you stored and retrieved.",
-    validate: (result) => {
-      const msg = findLastAgentMessage(result);
-      const lower = msg.toLowerCase();
-      const hasData = lower.includes("insert") || lower.includes("stor") || lower.includes("retriev") || lower.includes("query") || lower.includes("data") || lower.includes("row");
-      return {
-        passed: hasData,
-        reason: hasData ? undefined : `Expected store/retrieve confirmation, got: ${msg.slice(0, 200)}`,
-      };
-    },
-  },
-  {
     name: "build-service",
     description: "Agent imports a workspace package and inspects exports",
     category: "smoke",

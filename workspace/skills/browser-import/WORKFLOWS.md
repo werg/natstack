@@ -40,7 +40,8 @@ eval({ code: `
     console.log((r.success ? "✅" : "❌") + " " + r.dataType + ": " + r.itemCount + " items");
   }
   return results;
-`, timeout: 60000 })
+`
+})
 ```
 
 ### Step 3: Verify in browser panel
@@ -61,7 +62,8 @@ eval({ code: `
     document.querySelector("img.avatar") !== null
   );
   console.log(isLoggedIn ? "Logged in to GitHub!" : "Not logged in");
-`, timeout: 30000 })
+`
+})
 ```
 
 ### Step 4: Leave management UI
@@ -106,7 +108,8 @@ eval({ code: `
   console.log("Found", cookies.length, "GitHub cookies (auto-synced to browser session)");
 
   return { browser: browser.displayName, profile: profile.displayName, cookieCount: cookies.length };
-`, timeout: 60000 })
+`
+})
 ```
 
 ## Workflow: Cross-Browser Comparison
@@ -150,7 +153,8 @@ eval({ code: `
   })));
 
   return comparison;
-`, timeout: 120000 })
+`
+})
 ```
 
 Then show as inline UI:
@@ -207,7 +211,8 @@ eval({ code: `
   await fs.writeFile(path, dump);
   console.log("Exported to", path, "(" + dump.length + " bytes)");
   return { path, size: dump.length };
-`, timeout: 30000 })
+`
+})
 ```
 
 ## Adapting Dynamically

@@ -156,8 +156,8 @@ filtering them out — channel membership is the trust boundary.
 
 | Method | Description |
 |--------|-------------|
-| `waitForAgentMessage(opts?)` | Wait for a complete agent message. Options: `timeout` (default 60s) |
-| `waitForIdle(opts?)` | Wait for the conversation to settle. Options: `timeout`, `debounce` |
+| `waitForAgentMessage()` | Wait for a complete agent message |
+| `waitForIdle(opts?)` | Wait for the conversation to settle. Options: `debounce` |
 | `sendAndWait(text, opts?)` | Send a message and wait for the agent to finish responding |
 | `getRecommendedChannelConfig()` | Returns `{ approvalLevel: 2 }` (full-auto) |
 | `manager` | Access the underlying SessionManager |

@@ -47,8 +47,6 @@ import { browserData } from "@workspace/panel-browser";
 | `browserData.startImport({ browser, profile, dataTypes })` | Import data from a browser profile → `ImportResult[]` (use `profile: detectedProfile` from detectBrowsers) |
 | `browserData.getImportHistory()` | Past import results |
 | `browserData.getCookies(domain?)` | Browse stored cookies |
-| `browserData.syncCookiesToSession(domain?)` | Push cookies to active browser session |
-| `browserData.syncCookiesFromSession(domain?)` | Pull cookies from active session |
 | `browserData.getPasswords()` | Get all stored passwords |
 | `browserData.getPasswordForSite(url)` | Find password for a URL |
 | `browserData.getBookmarks(folder?)` | Browse bookmarks by folder |
@@ -166,10 +164,9 @@ for (const r of results) {
 
 Imported cookies are **automatically synced** to the shared browser session (`persist:browser`) after `startImport` completes. Browser panels use this session, so they get imported cookies immediately — no manual sync needed.
 
-`syncCookiesToSession` / `syncCookiesFromSession` exist for:
-- **User-defined panels** that run in a different session and need cookies pushed explicitly
-- **Re-syncing** after manually adding/deleting cookies in the store
-- **Domain-scoped sync** when you only want to push cookies for a specific domain
+Manual cookie session sync is host-owned and is not exposed through the server
+`browser-data` service. In Electron, imported cookies are synced automatically by
+the main-process host adapter after a successful cookie import.
 
 ## Typical Agent Workflow
 

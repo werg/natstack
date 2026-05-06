@@ -1,6 +1,6 @@
 # Worker Authoring Guide
 
-This guide covers building Durable Object (DO) workers that participate in AI chat channels. Workers run in workerd (Cloudflare's V8 isolate runtime) and use SQLite-backed state that survives across invocations.
+This guide covers building Durable Object (DO) workers that participate in AI chat channels. Workers run in workerd (Cloudflare's V8 isolate runtime) and use `this.sql` state that survives across invocations.
 
 NatStack runs Pi (`@mariozechner/pi-agent-core` + `@mariozechner/pi-ai`)
 in-process inside each agent worker DO — there is no harness child process

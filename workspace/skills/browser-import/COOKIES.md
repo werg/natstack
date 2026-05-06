@@ -1,8 +1,8 @@
 # Cookie Management
 
-Browse, search, delete, sync, and export imported cookies.
+Browse, search, delete, and export imported cookies.
 
-> **Note:** Imported cookies are automatically synced to the shared browser session after `startImport`. Browser panels get them immediately. The manual sync operations below are only needed for user-defined panels (which use a different session) or after modifying cookies in the store directly.
+> **Note:** Imported cookies are automatically synced to the shared Electron browser session after `startImport`. Browser panels get them immediately.
 
 ## Interactive Cookie Manager (Inline UI)
 
@@ -13,14 +13,13 @@ inline_ui({
   code: `
 import { useState, useEffect, useCallback } from "react";
 import { Button, Flex, Text, Table, Badge, TextField, Box, Separator, Spinner } from "@radix-ui/themes";
-import { TrashIcon, UpdateIcon, MagnifyingGlassIcon } from "@radix-ui/react-icons";
+import { TrashIcon, MagnifyingGlassIcon } from "@radix-ui/react-icons";
 import { browserData } from "@workspace/panel-browser";
 
 export default function CookieManager({ props, chat }) {
   const [cookies, setCookies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState(props.domain || "");
-  const [syncStatus, setSyncStatus] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -42,13 +41,6 @@ export default function CookieManager({ props, chat }) {
     load();
   };
 
-  const handleSync = async () => {
-    setSyncStatus("syncing");
-    const result = await browserData.syncCookiesToSession(filter || undefined);
-    setSyncStatus("Synced " + result.synced + (result.failed > 0 ? ", " + result.failed + " failed" : ""));
-    setTimeout(() => setSyncStatus(null), 3000);
-  };
-
   // Group by domain for summary
   const domainCounts = {};
   cookies.forEach(c => { domainCounts[c.domain] = (domainCounts[c.domain] || 0) + 1; });
@@ -63,13 +55,8 @@ export default function CookieManager({ props, chat }) {
             onChange={e => setFilter(e.target.value)}
             style={{ paddingLeft: 28 }} />
         </Box>
-        <Button size="1" variant="soft" onClick={handleSync} disabled={syncStatus === "syncing"}>
-          <UpdateIcon /> Sync to Session
-        </Button>
         <Button size="1" variant="soft" color="red" onClick={handleClear}>Clear</Button>
       </Flex>
-
-      {syncStatus && <Badge size="1" color="green">{syncStatus}</Badge>}
 
       <Flex gap="1" wrap="wrap">
         {topDomains.map(([domain, count]) => (
@@ -139,28 +126,6 @@ eval({ code: `
     console.log("  " + c.name + " = " + (c.value?.slice(0, 20) || "(empty)") + "...");
   }
   return { count: cookies.length, sample: cookies.slice(0, 5) };
-` })
-```
-
-### Sync cookies to browser session
-
-```
-eval({ code: `
-  import { browserData } from "@workspace/panel-browser";
-  const result = await browserData.syncCookiesToSession("github.com");
-  console.log("Synced:", result.synced, "Failed:", result.failed);
-  return result;
-` })
-```
-
-### Pull cookies from active session back to storage
-
-```
-eval({ code: `
-  import { browserData } from "@workspace/panel-browser";
-  const result = await browserData.syncCookiesFromSession("github.com");
-  console.log("Captured", result.synced, "cookies from browser session");
-  return result;
 ` })
 ```
 

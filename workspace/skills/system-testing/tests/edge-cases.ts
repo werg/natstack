@@ -3,18 +3,19 @@ import { findLastAgentMessage } from "./_helpers.js";
 
 export const edgeCaseTests: TestCase[] = [
   {
-    name: "eval-timeout",
-    description: "Handle a timeout for long-running code",
+    name: "eval-extra-argument",
+    description: "Reject unsupported eval arguments clearly",
     category: "edge-cases",
-    prompt: "Run some code with a very short timeout so it times out. Tell me how the timeout was handled.",
+    prompt: "Call eval with an unsupported extra argument named bogusOption, then explain the validation error and retry correctly without that argument.",
     validate: (result) => {
       const msg = findLastAgentMessage(result);
       const lower = msg.toLowerCase();
-      const hasTimeout = lower.includes("timeout") || lower.includes("timed out") || lower.includes("exceeded") ||
-        lower.includes("limit") || lower.includes("error") || lower.includes("kill");
+      const hasValidation = lower.includes("validation") || lower.includes("additional properties") ||
+        lower.includes("unsupported") || lower.includes("extra argument");
+      const retried = lower.includes("retry") || lower.includes("without") || lower.includes("correct");
       return {
-        passed: hasTimeout,
-        reason: hasTimeout ? undefined : `Expected timeout handling, got: ${msg.slice(0, 200)}`,
+        passed: hasValidation && retried,
+        reason: hasValidation && retried ? undefined : `Expected validation handling and a retry, got: ${msg.slice(0, 200)}`,
       };
     },
   },
@@ -35,22 +36,6 @@ export const edgeCaseTests: TestCase[] = [
     },
   },
   {
-    name: "malformed-sql",
-    description: "Graceful error for invalid SQL syntax",
-    category: "edge-cases",
-    prompt: "Open a database and run some intentionally invalid SQL. Tell me the error.",
-    validate: (result) => {
-      const msg = findLastAgentMessage(result);
-      const lower = msg.toLowerCase();
-      const hasError = lower.includes("error") || lower.includes("syntax") || lower.includes("invalid") ||
-        lower.includes("near") || lower.includes("parse");
-      return {
-        passed: hasError,
-        reason: hasError ? undefined : `Expected SQL error, got: ${msg.slice(0, 200)}`,
-      };
-    },
-  },
-  {
     name: "fs-not-found",
     description: "Graceful error for reading a nonexistent file",
     category: "edge-cases",
@@ -63,22 +48,6 @@ export const edgeCaseTests: TestCase[] = [
       return {
         passed: hasError,
         reason: hasError ? undefined : `Expected file-not-found error, got: ${msg.slice(0, 200)}`,
-      };
-    },
-  },
-  {
-    name: "double-close",
-    description: "Closing a database twice does not crash",
-    category: "edge-cases",
-    prompt: "Open a database, close it, then try to close it again. Tell me what happens.",
-    validate: (result) => {
-      const msg = findLastAgentMessage(result);
-      const lower = msg.toLowerCase();
-      const hasResult = lower.includes("close") || lower.includes("error") || lower.includes("already") ||
-        lower.includes("twice") || lower.includes("second") || lower.includes("no-op");
-      return {
-        passed: hasResult,
-        reason: hasResult ? undefined : `Expected double-close result, got: ${msg.slice(0, 200)}`,
       };
     },
   },

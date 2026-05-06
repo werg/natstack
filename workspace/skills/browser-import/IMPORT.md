@@ -21,7 +21,8 @@ eval({ code: `
     if (r.error) console.log("  Error:", r.error);
   }
   return results;
-`, timeout: 60000 })
+`
+})
 ```
 
 ## Import with Auto-Detection
@@ -48,7 +49,8 @@ eval({ code: `
   });
 
   return results;
-`, timeout: 60000 })
+`
+})
 ```
 
 ## Firefox with Master Password
@@ -67,7 +69,8 @@ eval({ code: `
   });
 
   return results;
-`, timeout: 60000 })
+`
+})
 ```
 
 To prompt the user for the master password first:
@@ -98,7 +101,8 @@ eval({ code: `
   });
 
   return results;
-`, timeout: 60000 })
+`
+})
 ```
 
 ## Two-Step Import: Ask Then Run
@@ -124,7 +128,8 @@ eval({ code: `
   await chat.publish("message", { content: "Import complete:\\n" + summary });
 
   return results;
-`, timeout: 60000 })
+`
+})
 ```
 
 ## Import History
