@@ -1277,6 +1277,56 @@ describe("credentialService", () => {
     await started.pending;
   });
 
+  it("includes stored client secrets by default for client-config PKCE when configured", async () => {
+    const clientConfigStore = new MemoryClientConfigStore();
+    await clientConfigStore.save({
+      configId: "google-workspace",
+      authorizeUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      fields: {
+        clientId: { value: "client-1", type: "text", updatedAt: 1 },
+        clientSecret: { value: "secret-1", type: "secret", updatedAt: 1 },
+      },
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const emit = vi.fn();
+    const service = createCredentialService({
+      credentialStore: new MemoryCredentialStore() as never,
+      clientConfigStore: clientConfigStore as never,
+      eventService: targetedOpenEventService(emit) as never,
+      approvalQueue: approvingQueue() as never,
+    });
+
+    const started = await startOAuthConnection(service, emit, { callerId: "panel:test", callerKind: "panel" }, {
+      flow: {
+        type: "oauth2-auth-code-pkce",
+        clientConfigId: "google-workspace",
+      },
+      credential: {
+        label: "Google Workspace",
+        audience: [{ url: "https://www.googleapis.com/", match: "origin" }],
+        injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+      },
+    });
+
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = init?.body as URLSearchParams;
+      expect(body.get("client_id")).toBe("client-1");
+      expect(body.get("client_secret")).toBe("secret-1");
+      return new Response(JSON.stringify({
+        access_token: "token",
+        expires_in: 3600,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+
+    await deliverOAuthCallback(started.redirectUri, new URLSearchParams({
+      code: "code-1",
+      state: started.state,
+    }));
+    await started.pending;
+  });
+
   it("uses public-client token exchange by default for client-config PKCE", async () => {
     const clientConfigStore = new MemoryClientConfigStore();
     await clientConfigStore.save({

@@ -483,7 +483,7 @@ type AuthCodeConnectRequest = {
   redirect?: ConnectCredentialRequest["redirect"];
   browser?: ConnectCredentialRequest["browser"];
   pkce: boolean;
-  tokenAuth: "none" | "client_secret_post" | "client_secret_basic" | "private_key_jwt";
+  tokenAuth?: "none" | "client_secret_post" | "client_secret_basic" | "private_key_jwt";
 };
 type InternalOAuthConnectionRequest = {
   flow: {
@@ -1153,7 +1153,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         redirect: request.redirect,
         browser: request.browser,
         pkce: true,
-        tokenAuth: flow.tokenAuth ?? "none",
+        tokenAuth: flow.tokenAuth,
       };
     }
     if (flow.tokenAuth && flow.tokenAuth !== "none") {
@@ -1210,7 +1210,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         redirect: request.redirect,
         browser: request.browser,
         pkce: false,
-        tokenAuth: flow.tokenAuth ?? "client_secret_post",
+        tokenAuth: flow.tokenAuth,
       };
     }
     if (flow.tokenAuth !== "none" || !flow.authorizeUrl || !flow.tokenUrl || !flow.clientId) {
@@ -2287,11 +2287,12 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       const privateKeyPem = config.fields["privateKeyPem"]?.value;
       const keyId = config.fields["keyId"]?.value;
       const keyAlgorithm = config.fields["algorithm"]?.value;
+      const tokenAuth = request.tokenAuth ?? (request.pkce && !clientSecret ? "none" : "client_secret_post");
       if (!clientId) {
         throw new OAuthConnectionError("client_config_unavailable");
       }
-      if (request.tokenAuth !== "none" && !clientSecret) {
-        if (request.tokenAuth === "private_key_jwt" && privateKeyPem) {
+      if (tokenAuth !== "none" && !clientSecret) {
+        if (tokenAuth === "private_key_jwt" && privateKeyPem) {
           return {
             flow: {
               authorizeUrl: canonicalUrl(config.authorizeUrl),
@@ -2317,7 +2318,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
             },
             redirectUri,
             pkce: request.pkce,
-            tokenAuth: request.tokenAuth,
+            tokenAuth,
           };
         }
         throw new OAuthConnectionError("client_config_unavailable");
@@ -2345,7 +2346,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         },
         redirectUri,
         pkce: request.pkce,
-        tokenAuth: request.tokenAuth,
+        tokenAuth,
       };
     }
     if (request.tokenAuth !== "none") {

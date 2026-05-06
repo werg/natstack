@@ -209,7 +209,6 @@ function StandardApprovalActions({
   decide: (decision: ApprovalDecision) => void;
 }) {
   const copy = getStandardActionCopy(approval);
-  const versionDisabled = !isStableEffectiveVersion(approval.effectiveVersion);
   return (
     <Flex
       align="center"
@@ -236,8 +235,7 @@ function StandardApprovalActions({
       />
       <DecisionButton
         label={copy.version.label}
-        description={versionDisabled ? "Trust version is unavailable for unstable or unversioned code." : copy.version.description}
-        disabled={versionDisabled}
+        description={copy.version.description}
         onClick={() => decide("version")}
       />
       <DecisionButton
@@ -367,7 +365,6 @@ function DecisionButton({
   variant = "soft",
   icon = <CheckCircledIcon />,
   style,
-  disabled,
   onClick,
 }: {
   label: string;
@@ -376,26 +373,16 @@ function DecisionButton({
   variant?: "solid" | "soft";
   icon?: ReactNode;
   style?: CSSProperties;
-  disabled?: boolean;
   onClick: () => void;
 }) {
   return (
     <Tooltip content={description}>
-      <Button size="1" variant={variant} color={color} style={style} disabled={disabled} onClick={onClick}>
+      <Button size="1" variant={variant} color={color} style={style} onClick={onClick}>
         {icon}
         {label}
       </Button>
     </Tooltip>
   );
-}
-
-function isStableEffectiveVersion(version: string): boolean {
-  const normalized = version.trim().toLowerCase();
-  return !!normalized
-    && normalized !== "unknown"
-    && normalized !== "unversioned"
-    && !normalized.includes("dirty")
-    && !normalized.includes("unstable");
 }
 
 function Detail({ icon, label, value }: { icon: ReactNode; label: string; value: ReactNode }) {
