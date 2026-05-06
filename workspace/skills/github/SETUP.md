@@ -1,23 +1,75 @@
 # GitHub Setup Workflow
 
-Render this as an interactive checklist. Provide both internal and external
-open buttons for GitHub settings links. Collect the final token only with
-`requestGitHubTokenCredential()`, which opens the shell-owned credential input
-prompt.
+Use this when the user wants guided help choosing repository access and
+permissions. For routine GitHub access, the simpler default is: open the
+token page the user chose, generate a token, save it with
+`requestGitHubTokenCredential()`, and verify it.
+
+If rendering this as an interactive checklist, provide both internal and
+external open buttons for GitHub settings links. Collect the final token only
+with `requestGitHubTokenCredential()`, which opens the shell-owned credential
+input prompt.
 
 ## Deep Links
 
 - New fine-grained token: `https://github.com/settings/personal-access-tokens/new`
 - Existing fine-grained tokens: `https://github.com/settings/personal-access-tokens`
+- New classic token: `https://github.com/settings/tokens/new`
+- Existing classic tokens: `https://github.com/settings/tokens`
+
+## Token Choice
+
+Always let the user choose the token style before opening GitHub:
+
+- **Fine-grained PAT (recommended)**: use for least-privilege access. Select
+  repositories or All repositories, then grant specific permission categories.
+- **Classic PAT (broad)**: use when the user explicitly wants blanket/higher
+  permissions. Select broad scopes such as `repo`.
 
 ## Steps
 
-1. Open GitHub's fine-grained personal access token page.
+1. Open the chosen GitHub token page.
 2. Set a token name such as `NatStack`.
 3. Choose an expiration that matches the user's tolerance for rotation.
 4. Select repository access. Prefer selected repositories unless the user wants
    broad personal sandbox access.
-5. Choose the token mode:
+5. Add permissions for the requested workflow:
+   - API-only default: Metadata read, Contents read, Issues read/write, Pull
+     requests read/write.
+   - Clone or pull: Metadata read, Contents read.
+   - Push: Metadata read, Contents write.
+   - Actions reads: Metadata read, Actions read.
+   - Workflow editing: Metadata read, Contents write, Workflows write.
+6. Generate the token.
+7. Run `requestGitHubTokenCredential()` and let the user enter the token in the
+   host approval UI.
+8. Run `getGitHubOnboardingStatus({ verify: true })`.
+
+## Broad Access
+
+If the user wants blanket or higher permissions, do not force them through the
+least-privilege checklist.
+
+- Fine-grained broad token: choose **All repositories**, then grant the
+  repository permissions needed for the work, such as Contents read/write,
+  Issues read/write, Pull requests read/write, Actions read, or Workflows write.
+- Classic broad token: create a classic PAT and choose broad scopes such as
+  `repo` when the user explicitly accepts broad private-repository access.
+
+When saving a classic PAT, call:
+
+```ts
+await requestGitHubTokenCredential({
+  mode: "api-and-git",
+  tokenKind: "classic",
+});
+```
+
+## Advanced Modes
+
+Choose the token mode only when the user needs something other than the
+API-only default:
+
    - API only: GitHub API calls such as issues, pull requests, contents API, or
      Actions reads.
    - Git clone/pull/push: direct repository transport through
@@ -26,19 +78,6 @@ prompt.
    Shared workspace remotes can be declared later with
    `git.setSharedRemote("panels/name", { name: "origin", url })`; that commits
    `meta/natstack.yml` and propagates the remote into workspace contexts.
-6. Add permissions for the requested workflows:
-   - Clone or pull: Metadata read, Contents read.
-   - Push: Contents write.
-   - Contents read: Metadata read, Contents read.
-   - Contents write: Contents write.
-   - Issues: Issues read/write.
-   - Pull requests: Pull requests read/write.
-   - Actions read: Actions read.
-   - Workflow editing: Workflows write.
-7. Generate the token.
-8. Run `requestGitHubTokenCredential()` and let the user enter the token in the
-   host approval UI.
-9. Run `getGitHubOnboardingStatus({ verify: true })`.
 
 ## Example Eval
 
@@ -69,22 +108,37 @@ checklist rows, direct deep-link buttons, and a final `Save token` action that
 calls the helper. Do not create a custom password field in panel state for the
 PAT; the helper delegates that to the privileged shell prompt.
 
+For every GitHub settings link, offer both:
+
+- **Internal** opens a NatStack browser panel with
+  `createBrowserPanel(url, { focus: true })`. Prefer this when the user wants
+  to keep setup inside the workspace or may want the agent to inspect page
+  state.
+- **External** opens the system browser through approval-gated
+  `openExternal(url)`. Prefer this when the user is already signed into GitHub
+  in their normal browser or needs password-manager/passkey/device auth.
+
+If using the helper instead of custom buttons, call
+`openGitHubTokenSettings({ tokenKind, accessLevel, browser: "internal" })` or
+`openGitHubTokenSettings({ tokenKind, accessLevel, browser: "external" })`
+based on the user's choice. Fine-grained token URLs are prefilled from the
+selected access level where GitHub supports URL parameters.
+
 ## Workflow UI
 
 Render this with `feedback_custom` when `getGitHubOnboardingStatus()` reports
 `needs-token`. Keep the surrounding assistant response short.
 
 ```tsx
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import {
   Badge,
   Box,
   Button,
-  Checkbox,
   Flex,
   Grid,
   Heading,
-  Link,
+  RadioCards,
   Separator,
   Text,
 } from "@radix-ui/themes";
@@ -93,80 +147,34 @@ import {
   GlobeIcon,
   OpenInNewWindowIcon,
 } from "@radix-ui/react-icons";
-import { createBrowserPanel, openExternal } from "@workspace/runtime";
-import { requestGitHubTokenCredential } from "@workspace-skills/github";
+import {
+  buildGitHubTokenSettingsUrl,
+  openGitHubTokenSettings,
+  requestGitHubTokenCredential,
+} from "@workspace-skills/github";
 
-const tokenUrl = "https://github.com/settings/personal-access-tokens/new";
-const tokenListUrl = "https://github.com/settings/personal-access-tokens";
-
-const steps = [
-  {
-    id: "open",
-    title: "Open GitHub fine-grained tokens",
-    href: tokenUrl,
-    note: "Create a fine-grained personal access token for NatStack.",
-  },
-  {
-    id: "repos",
-    title: "Choose repository access",
-    href: tokenUrl,
-    note: "Use selected repositories unless you want broad sandbox access.",
-  },
-  {
-    id: "mode",
-    title: "Choose token mode",
-    href: tokenUrl,
-    note: "Use API only for issues and PRs, Git for clone/pull/push, or API and Git when this workspace needs both.",
-  },
-  {
-    id: "contents",
-    title: "Add Contents permissions",
-    href: tokenUrl,
-    note: "Use Read for clone/pull or contents reads. Add Write for push or repository contents writes.",
-  },
-  {
-    id: "collaboration",
-    title: "Add collaboration permissions",
-    href: tokenUrl,
-    note: "Add Issues and Pull requests read/write if this workspace should manage them.",
-  },
-  {
-    id: "generate",
-    title: "Generate the token",
-    href: tokenListUrl,
-    note: "Copy it once. GitHub will not show it again.",
-    important: true,
-  },
+const accessLevels = [
+  ["read-only", "Read Only", "Inspect repositories, issues, PRs, and Actions without changing code."],
+  ["collaborate", "Collaborate", "Make normal code/content changes and work with issues and PRs."],
+  ["code-workflows", "Code + Workflows", "Collaborate and edit GitHub Actions workflow files."],
+  ["broad", "Broad", "High-trust access. Use with All repositories or a classic PAT."],
 ];
 
 export default function GitHubSetup({ onSubmit, onCancel }) {
-  const [done, setDone] = useState({});
-  const [mode, setMode] = useState("api");
+  const [tokenKind, setTokenKind] = useState("fine-grained");
+  const [accessLevel, setAccessLevel] = useState("collaborate");
   const [saving, setSaving] = useState(false);
-  const completed = useMemo(() => steps.filter((step) => done[step.id]).length, [done]);
-  const allDone = completed === steps.length;
+  const tokenUrl = buildGitHubTokenSettingsUrl({ tokenKind, accessLevel });
 
-  const openInside = async (href) => {
-    await createBrowserPanel(href, { focus: true, name: "GitHub settings" });
-  };
-
-  const openOutside = async (href) => {
-    await openExternal(href);
+  const openTokenPage = async (browser) => {
+    await openGitHubTokenSettings({ tokenKind, accessLevel, browser });
   };
 
   const saveToken = async () => {
     setSaving(true);
     try {
-      const stored = await requestGitHubTokenCredential({
-        mode,
-        presets:
-          mode === "git"
-            ? ["clone", "pull", "push"]
-            : mode === "api-and-git"
-              ? ["clone", "push", "issues", "pull-requests"]
-              : ["contents-read", "issues", "pull-requests"],
-      });
-      onSubmit({ credentialId: stored.id, mode, completed: Object.keys(done).filter((id) => done[id]) });
+      const stored = await requestGitHubTokenCredential({ tokenKind, accessLevel });
+      onSubmit({ credentialId: stored.id, tokenKind, accessLevel });
     } finally {
       setSaving(false);
     }
@@ -176,70 +184,69 @@ export default function GitHubSetup({ onSubmit, onCancel }) {
     <Flex direction="column" gap="4" p="2">
       <Flex align="start" justify="between" gap="3" wrap="wrap">
         <Box>
-          <Heading size="4">GitHub setup</Heading>
+          <Heading size="4">GitHub access</Heading>
           <Text size="2" color="gray">
-            Generate a fine-grained token, then save it in NatStack's trusted credential prompt.
+            Choose a token style and access level, then save the generated token in NatStack's trusted prompt.
           </Text>
         </Box>
-        <Badge color={allDone ? "green" : "blue"} variant="soft">
-          {completed}/{steps.length} done
+        <Badge color={tokenKind === "classic" ? "amber" : "green"} variant="soft">
+          {tokenKind === "classic" ? "Classic broad" : "Fine-grained"}
         </Badge>
       </Flex>
 
-      <Grid columns={{ initial: "1", md: "2" }} gap="3">
-        {steps.map((step, index) => (
-          <Box
-            key={step.id}
-            style={{
-              border: "1px solid var(--gray-6)",
-              borderRadius: 8,
-              padding: 12,
-              background: step.important ? "var(--amber-2)" : "var(--gray-1)",
-            }}
-          >
-            <Flex direction="column" gap="3">
-              <Flex align="start" gap="2">
-                <Checkbox
-                  checked={Boolean(done[step.id])}
-                  onCheckedChange={(checked) => setDone((prev) => ({ ...prev, [step.id]: checked === true }))}
-                />
-                <Box>
-                  <Text size="2" weight="bold">{index + 1}. {step.title}</Text>
-                  <Text as="p" size="1" color="gray" mt="1">{step.note}</Text>
-                  <Link size="1" href={step.href} target="_blank">{step.href}</Link>
-                </Box>
-              </Flex>
-              <Flex gap="2" wrap="wrap">
-                <Button size="1" variant="soft" onClick={() => openInside(step.href)}>
-                  <GlobeIcon /> Internal
-                </Button>
-                <Button size="1" variant="soft" onClick={() => openOutside(step.href)}>
-                  <OpenInNewWindowIcon /> External
-                </Button>
-              </Flex>
+      <Box>
+        <Text size="2" weight="bold">Token style</Text>
+        <RadioCards.Root value={tokenKind} onValueChange={setTokenKind} columns={{ initial: "1", sm: "2" }} mt="2">
+          <RadioCards.Item value="fine-grained">
+            <Flex direction="column" gap="1">
+              <Text size="2" weight="bold">Fine-grained</Text>
+              <Text size="1" color="gray">Recommended. Prefills GitHub's permission fields.</Text>
             </Flex>
-          </Box>
-        ))}
-      </Grid>
+          </RadioCards.Item>
+          <RadioCards.Item value="classic">
+            <Flex direction="column" gap="1">
+              <Text size="2" weight="bold">Classic broad</Text>
+              <Text size="1" color="gray">Legacy blanket scopes such as repo. Choose only when needed.</Text>
+            </Flex>
+          </RadioCards.Item>
+        </RadioCards.Root>
+      </Box>
+
+      <Box>
+        <Text size="2" weight="bold">Access level</Text>
+        <Grid columns={{ initial: "1", sm: "2" }} gap="2" mt="2">
+          {accessLevels.map(([value, label, description]) => (
+            <Button
+              key={value}
+              variant={accessLevel === value ? "solid" : "soft"}
+              onClick={() => setAccessLevel(value)}
+              style={{ justifyContent: "flex-start", minHeight: 52 }}
+            >
+              <Flex direction="column" align="start" gap="1">
+                <Text size="2" weight="bold">{label}</Text>
+                <Text size="1">{description}</Text>
+              </Flex>
+            </Button>
+          ))}
+        </Grid>
+      </Box>
 
       <Box style={{ border: "1px solid var(--gray-6)", borderRadius: 8, padding: 12 }}>
         <Flex direction="column" gap="2">
-          <Text size="2" weight="bold">Token mode</Text>
+          <Text size="2" weight="bold">GitHub page</Text>
+          <Text size="1" color="gray" style={{ overflowWrap: "anywhere" }}>{tokenUrl}</Text>
+          {tokenKind === "classic" ? (
+            <Text size="1" color="amber">On GitHub, select the repo scope for broad private-repository access.</Text>
+          ) : (
+            <Text size="1" color="gray">GitHub will prefill the supported permission fields. Choose selected repositories or All repositories on GitHub.</Text>
+          )}
           <Flex gap="2" wrap="wrap">
-            {[
-              ["api", "API only"],
-              ["git", "Git clone/push"],
-              ["api-and-git", "API and Git"],
-            ].map(([value, label]) => (
-              <Button
-                key={value}
-                size="1"
-                variant={mode === value ? "solid" : "soft"}
-                onClick={() => setMode(value)}
-              >
-                {label}
-              </Button>
-            ))}
+            <Button size="1" variant="soft" onClick={() => openTokenPage("internal")}>
+              <GlobeIcon /> Internal
+            </Button>
+            <Button size="1" variant="soft" onClick={() => openTokenPage("external")}>
+              <OpenInNewWindowIcon /> External
+            </Button>
           </Flex>
         </Flex>
       </Box>
@@ -248,7 +255,7 @@ export default function GitHubSetup({ onSubmit, onCancel }) {
 
       <Flex justify="end" gap="2" wrap="wrap">
         <Button variant="soft" color="gray" onClick={onCancel}>Cancel</Button>
-        <Button disabled={!allDone || saving} onClick={saveToken}>
+        <Button disabled={saving} onClick={saveToken}>
           <CheckCircledIcon /> Save token
         </Button>
       </Flex>

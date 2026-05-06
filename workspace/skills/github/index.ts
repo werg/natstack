@@ -1,4 +1,4 @@
-import { credentials, openExternal } from "@workspace/runtime";
+import { createBrowserPanel, credentials, openExternal } from "@workspace/runtime";
 import type { RequestCredentialInputRequest, StoredCredentialSummary } from "@workspace/runtime";
 
 const GITHUB_PROVIDER_ID = "github";
@@ -6,11 +6,15 @@ const GITHUB_API_ORIGIN = "https://api.github.com";
 const GITHUB_GIT_ORIGIN = "https://github.com";
 const GITHUB_PAT_NEW_URL = "https://github.com/settings/personal-access-tokens/new";
 const GITHUB_PAT_LIST_URL = "https://github.com/settings/personal-access-tokens";
+const GITHUB_CLASSIC_PAT_NEW_URL = "https://github.com/settings/tokens/new";
+const GITHUB_CLASSIC_PAT_LIST_URL = "https://github.com/settings/tokens";
 
 type RuntimeCredentials = typeof credentials;
 
 export type GitHubOnboardingStage = "needs-token" | "connected" | "verified" | "error";
 export type GitHubCredentialMode = "api" | "git" | "api-and-git";
+export type GitHubTokenKind = "fine-grained" | "classic";
+export type GitHubAccessLevel = "read-only" | "collaborate" | "code-workflows" | "broad";
 export type GitHubPermissionPreset =
   | "clone"
   | "pull"
@@ -51,8 +55,20 @@ export interface GitHubOnboardingStatusOptions {
 export interface RequestGitHubTokenCredentialOptions {
   label?: string;
   mode?: GitHubCredentialMode;
+  tokenKind?: GitHubTokenKind;
+  accessLevel?: GitHubAccessLevel;
   presets?: GitHubPermissionPreset[];
   scopes?: string[];
+}
+
+export interface OpenGitHubTokenSettingsOptions {
+  browser?: "internal" | "external";
+  tokenKind?: GitHubTokenKind;
+  accessLevel?: GitHubAccessLevel;
+  name?: string;
+  description?: string;
+  expiresIn?: number | "none";
+  targetName?: string;
 }
 
 export const GITHUB_PERMISSION_PRESETS: Record<GitHubPermissionPreset, string[]> = {
@@ -65,6 +81,91 @@ export const GITHUB_PERMISSION_PRESETS: Record<GitHubPermissionPreset, string[]>
   "pull-requests": ["metadata:read", "pull_requests:read", "pull_requests:write"],
   "actions-read": ["metadata:read", "actions:read"],
   workflows: ["metadata:read", "contents:write", "workflows:write"],
+};
+
+export const GITHUB_ACCESS_LEVELS: Record<GitHubAccessLevel, {
+  label: string;
+  mode: GitHubCredentialMode;
+  presets: GitHubPermissionPreset[];
+  scopes: string[];
+  fineGrainedPermissions: Record<string, "read" | "write">;
+}> = {
+  "read-only": {
+    label: "Read Only",
+    mode: "api",
+    presets: ["contents-read", "issues", "pull-requests", "actions-read"],
+    scopes: ["metadata:read", "contents:read", "issues:read", "pull_requests:read", "actions:read"],
+    fineGrainedPermissions: {
+      contents: "read",
+      issues: "read",
+      pull_requests: "read",
+      actions: "read",
+    },
+  },
+  collaborate: {
+    label: "Collaborate",
+    mode: "api-and-git",
+    presets: ["push", "issues", "pull-requests", "actions-read"],
+    scopes: [
+      "metadata:read",
+      "contents:write",
+      "issues:read",
+      "issues:write",
+      "pull_requests:read",
+      "pull_requests:write",
+      "actions:read",
+    ],
+    fineGrainedPermissions: {
+      contents: "write",
+      issues: "write",
+      pull_requests: "write",
+      actions: "read",
+    },
+  },
+  "code-workflows": {
+    label: "Code + Workflows",
+    mode: "api-and-git",
+    presets: ["push", "issues", "pull-requests", "actions-read", "workflows"],
+    scopes: [
+      "metadata:read",
+      "contents:write",
+      "issues:read",
+      "issues:write",
+      "pull_requests:read",
+      "pull_requests:write",
+      "actions:read",
+      "workflows:write",
+    ],
+    fineGrainedPermissions: {
+      contents: "write",
+      issues: "write",
+      pull_requests: "write",
+      actions: "read",
+      workflows: "write",
+    },
+  },
+  broad: {
+    label: "Broad",
+    mode: "api-and-git",
+    presets: ["push", "issues", "pull-requests", "actions-read", "workflows"],
+    scopes: [
+      "metadata:read",
+      "contents:write",
+      "issues:read",
+      "issues:write",
+      "pull_requests:read",
+      "pull_requests:write",
+      "actions:read",
+      "workflows:write",
+    ],
+    fineGrainedPermissions: {
+      contents: "write",
+      issues: "write",
+      pull_requests: "write",
+      actions: "read",
+      workflows: "write",
+    },
+  },
 };
 
 function getCredentialRuntime(): RuntimeCredentials {
@@ -145,9 +246,12 @@ function getPresetScopes(
 }
 
 function buildCredentialRequest(opts: RequestGitHubTokenCredentialOptions = {}): RequestCredentialInputRequest {
-  const mode = opts.mode ?? "api";
-  const scopes = getPresetScopes(mode, opts.presets, opts.scopes);
-  const defaultPresets = opts.presets?.length ? opts.presets : getDefaultPresets(mode);
+  const access = opts.accessLevel ? GITHUB_ACCESS_LEVELS[opts.accessLevel] : undefined;
+  const mode = opts.mode ?? access?.mode ?? "api";
+  const tokenKind = opts.tokenKind ?? "fine-grained";
+  const presets = opts.presets ?? access?.presets;
+  const scopes = opts.scopes?.length ? opts.scopes : access?.scopes ?? getPresetScopes(mode, presets, undefined);
+  const defaultPresets = presets?.length ? presets : getDefaultPresets(mode);
   const fetchBinding = {
     id: "github-api",
     use: "fetch" as const,
@@ -174,9 +278,11 @@ function buildCredentialRequest(opts: RequestGitHubTokenCredentialOptions = {}):
   };
   return {
     title: "Add GitHub",
-    description: mode === "api"
-      ? "Save a GitHub fine-grained personal access token for GitHub API calls."
-      : "Save a GitHub fine-grained personal access token with repository contents permissions for direct git workflows.",
+    description: tokenKind === "classic"
+      ? "Save a GitHub classic personal access token for broad GitHub access."
+      : mode === "api"
+        ? "Save a GitHub fine-grained personal access token for GitHub API calls."
+        : "Save a GitHub fine-grained personal access token with repository contents permissions for direct git workflows.",
     credential: {
       label: opts.label ?? "GitHub",
       audience: fetchBinding.audience,
@@ -186,8 +292,9 @@ function buildCredentialRequest(opts: RequestGitHubTokenCredentialOptions = {}):
       scopes,
       metadata: {
         providerId: GITHUB_PROVIDER_ID,
-        providerKind: "fine-grained-pat",
+        providerKind: tokenKind === "classic" ? "classic-pat" : "fine-grained-pat",
         credentialMode: mode,
+        ...(opts.accessLevel ? { accessLevel: opts.accessLevel } : {}),
         permissionPresets: defaultPresets.join(","),
         ...(mode === "api" ? {} : { gitRemoteOrigin: `${GITHUB_GIT_ORIGIN}/` }),
       },
@@ -198,7 +305,9 @@ function buildCredentialRequest(opts: RequestGitHubTokenCredentialOptions = {}):
         label: "Token",
         type: "secret",
         required: true,
-        description: "Paste the generated fine-grained personal access token.",
+        description: tokenKind === "classic"
+          ? "Paste the generated classic personal access token."
+          : "Paste the generated fine-grained personal access token.",
       },
     ],
     material: {
@@ -212,9 +321,10 @@ function getNextActions(status: Pick<GitHubOnboardingStatus, "stage">): string[]
   switch (status.stage) {
     case "needs-token":
       return [
-        "Render the GitHub setup workflow from SETUP.md.",
-        "Generate a fine-grained personal access token in GitHub.",
+        "Ask the user to choose fine-grained (recommended) or classic broad PAT access.",
+        "Open the chosen GitHub token page, offering Internal and External browser options.",
         "Run requestGitHubTokenCredential() and enter the token in the trusted approval UI.",
+        "Use SETUP.md only if the user wants step-by-step permission guidance.",
       ];
     case "connected":
       return ["Run verifyGitHubCredential(connectionId) before declaring onboarding complete."];
@@ -249,14 +359,41 @@ function buildStatus(input: {
   return status;
 }
 
-export async function openGitHubTokenSettings(): Promise<void> {
-  await openExternal(GITHUB_PAT_NEW_URL);
+export async function openGitHubTokenSettings(opts: OpenGitHubTokenSettingsOptions = {}): Promise<void> {
+  const url = buildGitHubTokenSettingsUrl(opts);
+  if (opts.browser === "internal") {
+    await createBrowserPanel(url, { focus: true, name: "GitHub settings" });
+    return;
+  }
+  await openExternal(url);
+}
+
+export function buildGitHubTokenSettingsUrl(opts: Omit<OpenGitHubTokenSettingsOptions, "browser"> = {}): string {
+  const tokenKind = opts.tokenKind ?? "fine-grained";
+  if (tokenKind === "classic") {
+    return GITHUB_CLASSIC_PAT_NEW_URL;
+  }
+
+  const access = GITHUB_ACCESS_LEVELS[opts.accessLevel ?? "collaborate"];
+  const url = new URL(GITHUB_PAT_NEW_URL);
+  url.searchParams.set("name", opts.name ?? "NatStack");
+  url.searchParams.set("description", opts.description ?? `${access.label} access for NatStack`);
+  url.searchParams.set("expires_in", opts.expiresIn === "none" ? "none" : String(opts.expiresIn ?? 90));
+  if (opts.targetName) {
+    url.searchParams.set("target_name", opts.targetName);
+  }
+  for (const [permission, level] of Object.entries(access.fineGrainedPermissions)) {
+    url.searchParams.set(permission, level);
+  }
+  return url.toString();
 }
 
 export function getGitHubTokenSetupLinks() {
   return {
-    newFineGrainedToken: GITHUB_PAT_NEW_URL,
+    newFineGrainedToken: buildGitHubTokenSettingsUrl({ accessLevel: "collaborate" }),
     fineGrainedTokens: GITHUB_PAT_LIST_URL,
+    newClassicToken: GITHUB_CLASSIC_PAT_NEW_URL,
+    classicTokens: GITHUB_CLASSIC_PAT_LIST_URL,
   };
 }
 

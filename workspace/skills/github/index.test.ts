@@ -8,12 +8,14 @@ const runtimeMock = vi.hoisted(() => ({
     revokeCredential: vi.fn(),
     fetch: vi.fn(),
   },
+  createBrowserPanel: vi.fn(),
   openExternal: vi.fn(),
 }));
 
 vi.mock("@workspace/runtime", () => runtimeMock);
 
 import {
+  buildGitHubTokenSettingsUrl,
   getGitHubOnboardingStatus,
   openGitHubTokenSettings,
   requestGitHubTokenCredential,
@@ -110,6 +112,35 @@ describe("github skill facade", () => {
     );
   });
 
+  it("can label broad classic PATs separately from fine-grained PATs", async () => {
+    await requestGitHubTokenCredential({ accessLevel: "broad", tokenKind: "classic" });
+
+    expect(runtimeMock.credentials.requestCredentialInput).toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: "Save a GitHub classic personal access token for broad GitHub access.",
+        credential: expect.objectContaining({
+          metadata: expect.objectContaining({ accessLevel: "broad", providerKind: "classic-pat" }),
+        }),
+      })
+    );
+  });
+
+  it("builds a prefilled fine-grained token URL from access level", () => {
+    const url = new URL(buildGitHubTokenSettingsUrl({
+      accessLevel: "code-workflows",
+      expiresIn: 30,
+      targetName: "octo-org",
+    }));
+
+    expect(url.origin + url.pathname).toBe("https://github.com/settings/personal-access-tokens/new");
+    expect(url.searchParams.get("name")).toBe("NatStack");
+    expect(url.searchParams.get("target_name")).toBe("octo-org");
+    expect(url.searchParams.get("expires_in")).toBe("30");
+    expect(url.searchParams.get("contents")).toBe("write");
+    expect(url.searchParams.get("pull_requests")).toBe("write");
+    expect(url.searchParams.get("workflows")).toBe("write");
+  });
+
   it("reports verified after a live user check succeeds", async () => {
     runtimeMock.credentials.listStoredCredentials.mockResolvedValue([githubCredential]);
 
@@ -136,8 +167,25 @@ describe("github skill facade", () => {
   it("opens the fine-grained token page externally", async () => {
     await openGitHubTokenSettings();
 
+    const opened = new URL(runtimeMock.openExternal.mock.calls[0]![0]);
+    expect(opened.origin + opened.pathname).toBe("https://github.com/settings/personal-access-tokens/new");
+    expect(opened.searchParams.get("contents")).toBe("write");
+  });
+
+  it("can open the fine-grained token page internally", async () => {
+    await openGitHubTokenSettings({ browser: "internal" });
+
+    const [opened, options] = runtimeMock.createBrowserPanel.mock.calls[0]!;
+    expect(new URL(opened).origin + new URL(opened).pathname).toBe("https://github.com/settings/personal-access-tokens/new");
+    expect(options).toEqual({ focus: true, name: "GitHub settings" });
+    expect(runtimeMock.openExternal).not.toHaveBeenCalled();
+  });
+
+  it("can open the classic token page externally", async () => {
+    await openGitHubTokenSettings({ tokenKind: "classic", browser: "external" });
+
     expect(runtimeMock.openExternal).toHaveBeenCalledWith(
-      "https://github.com/settings/personal-access-tokens/new"
+      "https://github.com/settings/tokens/new"
     );
   });
 });

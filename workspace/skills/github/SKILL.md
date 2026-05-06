@@ -15,6 +15,18 @@ Use a GitHub fine-grained personal access token. This is the simplest approach
 that requires no centralized NatStack server, no app registration controlled by
 NatStack, and no OAuth callback infrastructure.
 
+If the user wants blanket or higher-trust access instead of least-privilege
+setup, say so plainly and offer the broad route:
+
+- Fine-grained PAT: choose **All repositories**, then grant the repository
+  permissions needed for the requested work.
+- Classic PAT: use broader scopes such as `repo` when the user explicitly wants
+  broad access and accepts the larger blast radius.
+
+`requestGitHubTokenCredential()` can store either token style. Use
+`tokenKind: "classic"` when the user chose a classic PAT so the credential
+metadata matches what was saved.
+
 GitHub Apps are more granular for multi-user products, but they require app
 registration and installation flows. OAuth apps can work, but for this personal
 sandbox they add more moving pieces than a user-owned fine-grained PAT and still
@@ -23,34 +35,70 @@ do not avoid broad user authorization concerns.
 ## Workflow
 
 1. Run `getGitHubOnboardingStatus()` from `@workspace-skills/github`.
-2. If the stage is `needs-token`, render the setup workflow from `SETUP.md`.
-3. Send users to GitHub's fine-grained token creation page with the deep links
-   in `getGitHubTokenSetupLinks()` or `openGitHubTokenSettings()`.
-4. Call `requestGitHubTokenCredential()` so the shell-owned approval UI collects
+2. If the stage is `needs-token`, ask the user to choose token style:
+   - **Fine-grained PAT (recommended)**: narrower, can still choose All
+     repositories, but GitHub requires selecting permission categories.
+   - **Classic PAT (broad)**: faster blanket access with broad scopes such as
+     `repo`; use only when the user explicitly accepts the larger blast radius.
+3. Ask for a broad-strokes access level instead of exposing every GitHub
+   permission:
+   - **Read Only**: inspect repositories, issues, PRs, and Actions.
+   - **Collaborate**: normal code/content changes plus issues and PRs.
+   - **Code + Workflows**: collaborate plus GitHub Actions workflow edits.
+   - **Broad**: high-trust access; pair with All repositories or classic `repo`.
+4. Open the chosen GitHub token page and offer both browser options:
+   - Internal: `openGitHubTokenSettings({ tokenKind, accessLevel, browser: "internal" })` or
+     `createBrowserPanel(url, { focus: true })`.
+   - External: `openGitHubTokenSettings({ tokenKind, accessLevel, browser: "external" })` or
+     `openExternal(url)`.
+5. Call `requestGitHubTokenCredential()` so the shell-owned approval UI collects
    the PAT. Do not ask the user to paste the PAT into chat or a panel-owned form.
    Use `mode: "api"` for API-only access, `mode: "git"` for clone/pull/push
    permissions, or `mode: "api-and-git"` when the user wants both.
-5. Run `verifyGitHubCredential(credentialId)` or
+   If the user chose a broad classic token, pass `tokenKind: "classic"`.
+6. Run `verifyGitHubCredential(credentialId)` or
    `getGitHubOnboardingStatus({ verify: true })`.
+
+Only render the full [SETUP.md](SETUP.md) checklist when the user asks for
+guided setup or needs help choosing repository access and permissions. Do not
+lead with the checklist for routine GitHub access.
 
 ## Runtime Helpers
 
 ```ts
 import {
   getGitHubOnboardingStatus,
+  openGitHubTokenSettings,
   requestGitHubTokenCredential,
   verifyGitHubCredential,
 } from "@workspace-skills/github";
 
 const status = await getGitHubOnboardingStatus();
 if (status.stage === "needs-token") {
+  const tokenKind = "fine-grained"; // or "classic" if the user chose broad access
+  const accessLevel = "collaborate";
+  await openGitHubTokenSettings({ tokenKind, accessLevel, browser: "internal" });
   const stored = await requestGitHubTokenCredential({
-    mode: "api",
-    presets: ["contents-read", "issues", "pull-requests"],
+    tokenKind,
+    accessLevel,
   });
   await verifyGitHubCredential(stored.id);
 }
 ```
+
+For broad access, the storage call is still simple:
+
+```ts
+const stored = await requestGitHubTokenCredential({
+  accessLevel: "broad",
+  tokenKind: "classic",
+});
+```
+
+For setup links, use Internal when the user wants to keep setup inside NatStack;
+use External when their normal browser already has GitHub auth, passkeys, or
+password-manager state. The full workflow UI in `SETUP.md` is optional guidance,
+not the default happy path.
 
 The stored credential is URL-bound to `https://api.github.com/`. API requests
 should use `credentials.fetch()`. For direct GitHub clone/pull/push, request
