@@ -343,8 +343,8 @@ export class PubSubChannel extends DurableObjectBase {
     // typically parked on this very subscribe call's reply). FIFO order is
     // enforced by `queueEmit`, so `update-message` always lands after its
     // parent `message` and `ready` lands after the whole replay batch.
-    this.sendRosterReplay(participantId);
-    this.sendMessageReplay(participantId, sinceId, replayMessageLimit);
+    const rosterReplay = this.sendRosterReplay(participantId);
+    const messageReplay = this.sendMessageReplay(participantId, sinceId, replayMessageLimit);
     // Re-emit any still-pending method-calls to the new session. Gated on
     // session-replacement: a same-session resubscribe already has the
     // handler in flight (or done), so redelivering would cause a second
@@ -352,7 +352,7 @@ export class PubSubChannel extends DurableObjectBase {
     if (sessionReplaced) {
       this.redeliverPendingCallsTo(participantId);
     }
-    sendReady(this.broadcastDeps, participantId, this.sql, this.getStateValue("contextId"), this.getChannelConfig());
+    const ready = sendReady(this.broadcastDeps, participantId, this.sql, this.getStateValue("contextId"), this.getChannelConfig());
 
     // Schedule stale participant cleanup for RPC participants
     if (transport !== "do") {
@@ -362,6 +362,8 @@ export class PubSubChannel extends DurableObjectBase {
     return {
       ok: true,
       channelConfig: this.getChannelConfig() ?? undefined,
+      initialReplay: [...rosterReplay, ...messageReplay],
+      ready,
       replay,
       replayTruncated,
     };
@@ -374,13 +376,14 @@ export class PubSubChannel extends DurableObjectBase {
    * state (e.g. typing indicators) that was broadcast ephemerally is visible
    * to reconnecting clients.
    */
-  private sendRosterReplay(subscriberId: string): void {
+  private sendRosterReplay(subscriberId: string): Array<Record<string, unknown>> {
     const onFatal = (err: { code?: string }) => {
       if (err?.code === "TARGET_NOT_REACHABLE" || err?.code === "RECONNECT_GRACE_EXPIRED") {
         this.sql.exec(`DELETE FROM participants WHERE id = ?`, subscriberId);
         cleanupDeliveryChain(subscriberId);
       }
     };
+    const replayMessages: Array<Record<string, unknown>> = [];
 
     // 1. Replay persisted presence history (join/leave/update events).
     const rows = this.sql.exec(
@@ -390,6 +393,7 @@ export class PubSubChannel extends DurableObjectBase {
     for (const row of rows) {
       const event = parseRowToChannelEvent(row);
       const msg = channelEventToWsJson(event, "replay");
+      replayMessages.push(msg);
       void queueEmit(this.broadcastDeps, subscriberId, {
         channelId: this.objectKey,
         message: msg,
@@ -413,18 +417,20 @@ export class PubSubChannel extends DurableObjectBase {
         JSON.stringify(payload), pid, metadata, ts, false,
       );
       const msg = channelEventToWsJson(event, "replay");
+      replayMessages.push(msg);
       void queueEmit(this.broadcastDeps, subscriberId, {
         channelId: this.objectKey,
         message: msg,
       });
     }
+    return replayMessages;
   }
 
   /**
    * Send message replay to a newly subscribed participant via RPC emit.
    * Honors sinceId and replayMessageLimit for reconnect/history.
    */
-  private sendMessageReplay(subscriberId: string, sinceId?: number, replayMessageLimit?: number): void {
+  private sendMessageReplay(subscriberId: string, sinceId?: number, replayMessageLimit?: number): Array<Record<string, unknown>> {
     let rows: Record<string, unknown>[];
 
     if (sinceId && sinceId > 0) {
@@ -454,7 +460,7 @@ export class PubSubChannel extends DurableObjectBase {
         ).toArray();
       }
     } else {
-      return; // No replay requested
+      return []; // No replay requested
     }
 
     const onFatal = (err: { code?: string }) => {
@@ -463,14 +469,17 @@ export class PubSubChannel extends DurableObjectBase {
         cleanupDeliveryChain(subscriberId);
       }
     };
+    const replayMessages: Array<Record<string, unknown>> = [];
     for (const row of rows) {
       const event = parseRowToChannelEvent(row);
       const msg = channelEventToWsJson(event, "replay");
+      replayMessages.push(msg);
       void queueEmit(this.broadcastDeps, subscriberId, {
         channelId: this.objectKey,
         message: msg,
       }, onFatal);
     }
+    return replayMessages;
   }
 
   /**

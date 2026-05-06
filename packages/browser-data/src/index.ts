@@ -65,8 +65,9 @@ export { copyDatabaseToTemp, copyFileToTemp, cleanupTempCopy } from "./import/fi
 export { ProgressEmitter } from "./import/progressEmitter.js";
 export type { ProgressCallback } from "./import/progressEmitter.js";
 
-// Storage
-export { BrowserDataStore } from "./storage/index.js";
+// Storage / RPC client
+export { createBrowserDataRpcClient } from "./client/browserDataRpcClient.js";
+export type { BrowserDataClient } from "./client/browserDataRpcClient.js";
 export { BROWSER_DATA_SCHEMA } from "./storage/index.js";
 export type {
   StoredBookmark,

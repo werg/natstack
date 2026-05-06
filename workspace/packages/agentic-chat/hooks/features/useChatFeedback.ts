@@ -88,8 +88,7 @@ export function useChatFeedback({
         const feedback: ActiveFeedbackSchema = {
           type: "schema", callId, title: args.title, fields: args.fields, values: args.values ?? {},
           submitLabel: args.submitLabel, cancelLabel: args.cancelLabel,
-          timeout: args.timeout, timeoutAction: args.timeoutAction, severity: args.severity,
-          hideSubmit: args.hideSubmit, hideCancel: args.hideCancel, createdAt: Date.now(),
+          severity: args.severity, hideSubmit: args.hideSubmit, hideCancel: args.hideCancel, createdAt: Date.now(),
           complete: (feedbackResult: FeedbackResult) => {
             removeFeedback(callId); handleFeedbackResult(callId, feedbackResult); resolve(feedbackResult);
           },

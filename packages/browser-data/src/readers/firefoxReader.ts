@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
-import Database from "better-sqlite3";
+import type { Database } from "./sqlJsReader.js";
+import { openReadonlySqlite } from "./sqlJsReader.js";
 import type {
   BrowserDataReader,
   ImportedBookmark,
@@ -152,11 +153,11 @@ export function decompressMozLz4(data: Buffer): Buffer {
 async function openProfileDb(
   profilePath: string,
   dbName: string,
-): Promise<[Database.Database, string]> {
+): Promise<[Database, string]> {
   const dbPath = path.join(profilePath, dbName);
   const tempPath = await copyDatabaseToTemp(dbPath);
   try {
-    const db = new Database(tempPath, { readonly: true });
+    const db = await openReadonlySqlite(fs.readFileSync(tempPath));
     return [db, tempPath];
   } catch (err: unknown) {
     cleanupTempCopy(tempPath);

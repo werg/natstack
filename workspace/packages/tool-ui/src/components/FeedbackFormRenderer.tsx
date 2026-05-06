@@ -3,14 +3,14 @@
  *
  * Renders schema-based feedback forms using FormRenderer.
  * Handles submit/cancel/error callbacks and required field validation.
- * Supports timeout, severity, and hide submit/cancel options.
+ * Supports severity and hide submit/cancel options.
  *
  * Custom field types:
  * - toolPreview: Rich previews (Monaco diffs, git previews, etc.) via ToolPreviewField
  * - approvalHeader: Tool approval header (first-time grant or per-call) via ApprovalHeaderField
  */
 
-import { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { Box, Button, Flex, Heading } from "@radix-ui/themes";
 import { InfoCircledIcon, ExclamationTriangleIcon } from "@radix-ui/react-icons";
 import { FormRenderer, type CustomFieldRendererProps } from "@workspace/react";
@@ -25,8 +25,6 @@ export interface FeedbackFormRendererProps extends FeedbackCallbacks {
   initialValues?: Record<string, FieldValue>;
   submitLabel?: string;
   cancelLabel?: string;
-  timeout?: number;
-  timeoutAction?: "cancel" | "submit";
   severity?: "info" | "warning" | "danger";
   hideSubmit?: boolean;
   hideCancel?: boolean;
@@ -65,8 +63,6 @@ export function FeedbackFormRenderer({
   initialValues = {},
   submitLabel = "Save",
   cancelLabel = "Cancel",
-  timeout,
-  timeoutAction = "cancel",
   severity,
   hideSubmit = false,
   hideCancel = false,
@@ -85,10 +81,6 @@ export function FeedbackFormRenderer({
     return { ...defaults, ...initialValues };
   });
 
-  // Track latest values for timeout handler
-  const valuesRef = useRef(values);
-  valuesRef.current = values;
-
   const handleChange = useCallback((key: string, value: FieldValue) => {
     setValues((prev) => ({ ...prev, [key]: value }));
   }, []);
@@ -97,30 +89,15 @@ export function FeedbackFormRenderer({
     // Validate required fields
     for (const field of fields) {
       if (field.required) {
-        const value = valuesRef.current[field.key];
+        const value = values[field.key];
         if (value === undefined || value === "") {
           onError(`Required field "${field.label}" is missing`);
           return;
         }
       }
     }
-    onSubmit(valuesRef.current);
-  }, [fields, onSubmit, onError]);
-
-  // Handle timeout
-  useEffect(() => {
-    if (!timeout || timeout <= 0) return;
-
-    const timer = setTimeout(() => {
-      if (timeoutAction === "submit") {
-        handleSubmit();
-      } else {
-        onCancel();
-      }
-    }, timeout);
-
-    return () => clearTimeout(timer);
-  }, [timeout, timeoutAction, handleSubmit, onCancel]);
+    onSubmit(values);
+  }, [fields, values, onSubmit, onError]);
 
   // Check if we should show any buttons
   const showButtons = !hideSubmit || !hideCancel;

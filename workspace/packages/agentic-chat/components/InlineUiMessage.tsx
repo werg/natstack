@@ -89,18 +89,18 @@ export function InlineUiMessage({ data, compiledComponent: CompiledComponent, co
     [scopes, onAsyncError],
   );
 
-  // Subscribe to scope changes — debounced re-render
+  // Subscribe to scope changes.
   useEffect(() => {
     if (!scopeManager) return;
-    let timer: ReturnType<typeof setTimeout>;
-    return scopeManager.onChange(() => {
-      clearTimeout(timer);
-      timer = setTimeout(forceUpdate, 100);
-    });
+    return scopeManager.onChange(forceUpdate);
   }, [scopeManager]);
 
-  // DOM event delegation — silent best-effort persist after user interaction
-  const onInteraction = useCallback(() => scopeManager?.schedulePersist(2000), [scopeManager]);
+  // DOM event delegation — silent best-effort persist after user interaction.
+  const onInteraction = useCallback(() => {
+    void scopeManager?.persist().catch((err) => {
+      console.warn("[InlineUiMessage] Scope persist after interaction failed:", err);
+    });
+  }, [scopeManager]);
   const [expanded, setExpanded] = useState(true);
 
   // Reset async error when props change (same trigger as EventErrorBoundary's resetKey)

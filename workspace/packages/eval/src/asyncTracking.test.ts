@@ -172,12 +172,12 @@ describe("createFallbackAsyncTracking", () => {
   describe("waitAll", () => {
     it("resolves immediately with no context", async () => {
       tracking.exit(); // Ensure no current context
-      await expect(tracking.waitAll(1000)).resolves.toBeUndefined();
+      await expect(tracking.waitAll()).resolves.toBeUndefined();
     });
 
     it("resolves immediately in fallback mode (no actual tracking)", async () => {
       tracking.start();
-      await expect(tracking.waitAll(1000)).resolves.toBeUndefined();
+      await expect(tracking.waitAll()).resolves.toBeUndefined();
     });
   });
 
@@ -271,7 +271,7 @@ describe("integration: using tracking API", () => {
     const tracking = createFallbackAsyncTracking();
 
     // Start tracking
-    const ctx = tracking.start({ maxTimeout: 5000 });
+    const ctx = tracking.start();
     expect(ctx.id).toBeGreaterThan(0);
 
     // Pause/resume around ignored operations
@@ -283,7 +283,7 @@ describe("integration: using tracking API", () => {
     await expect(ignoredPromise).resolves.toBe("ignored");
 
     // Wait for tracked promises (instant in fallback)
-    await tracking.waitAll(1000);
+    await tracking.waitAll();
 
     // Stop tracking
     tracking.stop();

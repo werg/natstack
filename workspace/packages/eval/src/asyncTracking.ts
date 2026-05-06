@@ -1,12 +1,10 @@
 /**
  * Unified async tracking API for both panels and workers.
  *
- * When running in a NatStack panel or worker, this uses the built-in
- * __natstackAsyncTracking__ global which wraps Promise and other async APIs.
- *
- * When running in other environments (tests, Node.js CLI), it provides
- * a fallback implementation that doesn't actually track async operations
- * but maintains the same API contract.
+ * If a runtime provides __natstackAsyncTracking__, this module uses it.
+ * Otherwise it provides a no-op implementation that preserves the same API
+ * shape. The no-op implementation cannot discover unawaited promises; callers
+ * should await the work they start.
  */
 
 /**
@@ -19,20 +17,13 @@ export interface TrackingContext {
 }
 
 /**
- * Options for creating a tracking context.
- */
-export interface TrackingContextOptions {
-  /** Auto-cleanup after this many milliseconds (0 = disabled) */
-  maxTimeout?: number;
-}
-
-/**
  * The async tracking API interface.
- * This is implemented by the runtime banner and accessed via globalThis.__natstackAsyncTracking__.
+ * This is accessed via globalThis.__natstackAsyncTracking__ when a runtime
+ * provides one.
  */
 export interface AsyncTrackingAPI {
   /** Create a new tracking context and set it as current */
-  start: (options?: TrackingContextOptions) => TrackingContext;
+  start: () => TrackingContext;
   /** Enter an existing tracking context (set as current) */
   enter: (ctx: TrackingContext) => void;
   /** Exit the current tracking context */
@@ -46,7 +37,7 @@ export interface AsyncTrackingAPI {
   /** Mark a promise as ignored (never tracked in any context) */
   ignore: <T>(promise: T) => T;
   /** Wait for all promises in a context to settle */
-  waitAll: (timeoutMs: number, ctx?: TrackingContext) => Promise<void>;
+  waitAll: (ctx?: TrackingContext) => Promise<void>;
   /** Get pending promise count for a context */
   pending: (ctx?: TrackingContext) => number;
   /** Get all active context IDs (for debugging) */
@@ -77,21 +68,12 @@ let fallbackContextId = 0;
  * Create a fallback tracking context for environments without native async tracking.
  * This doesn't actually track promises but provides API compatibility.
  */
-function createFallbackContext(options?: TrackingContextOptions): TrackingContext {
-  const ctx: TrackingContext = {
+function createFallbackContext(): TrackingContext {
+  return {
     id: ++fallbackContextId,
     promises: new Set(),
     pauseCount: 0,
   };
-
-  // Set up auto-cleanup timeout if configured
-  if (options?.maxTimeout && options.maxTimeout > 0) {
-    setTimeout(() => {
-      ctx.promises.clear();
-    }, options.maxTimeout);
-  }
-
-  return ctx;
 }
 
 /**
@@ -103,8 +85,8 @@ export function createFallbackAsyncTracking(): AsyncTrackingAPI {
   let currentContext: TrackingContext | null = null;
 
   return {
-    start(options?: TrackingContextOptions): TrackingContext {
-      currentContext = createFallbackContext(options);
+    start(): TrackingContext {
+      currentContext = createFallbackContext();
       return currentContext;
     },
     enter(ctx: TrackingContext): void {
@@ -138,7 +120,7 @@ export function createFallbackAsyncTracking(): AsyncTrackingAPI {
       // No-op in fallback - just return the promise
       return promise;
     },
-    waitAll(_timeoutMs: number, ctx?: TrackingContext): Promise<void> {
+    waitAll(ctx?: TrackingContext): Promise<void> {
       const target = ctx ?? currentContext;
       if (!target || target.promises.size === 0) {
         return Promise.resolve();
@@ -158,7 +140,7 @@ export function createFallbackAsyncTracking(): AsyncTrackingAPI {
 }
 
 /**
- * Get the async tracking API, using the native implementation if available,
+ * Get the async tracking API, using the runtime implementation if available,
  * otherwise falling back to a no-op implementation.
  *
  * This allows code to use async tracking unconditionally without checking

@@ -9,7 +9,7 @@
 import { WebSocket } from "ws";
 import { randomUUID } from "crypto";
 import * as fs from "fs";
-import type { RpcMessage, RpcResponse } from "@natstack/rpc";
+import type { CallerKind, RpcMessage, RpcResponse } from "@natstack/rpc";
 import type {
   WsClientMessage,
   WsServerMessage,
@@ -33,7 +33,12 @@ export type ConnectionStatus = "connected" | "connecting" | "disconnected";
 
 export interface ServerClient {
   /** Call a backend service via the server */
-  call(service: string, method: string, args: unknown[]): Promise<unknown>;
+  call(
+    service: string,
+    method: string,
+    args: unknown[],
+    callerContext?: { callerId: string; callerKind: CallerKind },
+  ): Promise<unknown>;
   /** Check if connected */
   isConnected(): boolean;
   /** Current connection status */
@@ -275,7 +280,12 @@ export async function createServerClient(
   setStatus("connected");
 
   const client: ServerClient = {
-    call(service: string, method: string, args: unknown[]): Promise<unknown> {
+    call(
+      service: string,
+      method: string,
+      args: unknown[],
+      callerContext?: { callerId: string; callerKind: CallerKind },
+    ): Promise<unknown> {
       if (ws.readyState !== WebSocket.OPEN) {
         return Promise.reject(new Error("Server not connected"));
       }
@@ -292,6 +302,9 @@ export async function createServerClient(
           args,
         };
         const envelope: WsClientMessage = { type: "ws:rpc", message: rpcMsg };
+        if (callerContext) {
+          envelope.forwardedIdentity = callerContext;
+        }
         ws.send(JSON.stringify(envelope));
       });
     },

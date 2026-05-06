@@ -13,14 +13,8 @@
  * descriptors (one per skill directory under `workspace/skills/`).
  */
 
-/**
- * Minimal structural type for the RPC caller. Matches `RpcCaller` from
- * `@natstack/types` (which is not a direct dependency of `@natstack/harness`).
- * Any compatible RpcCaller instance can be passed in.
- */
-export interface RpcCaller {
-  call<T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T>;
-}
+import type { RpcCaller } from "@natstack/rpc";
+export type { RpcCaller } from "@natstack/rpc";
 
 export interface SkillEntry {
   /** Skill identifier; matches the directory name under `workspace/skills/`. */

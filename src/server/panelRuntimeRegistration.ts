@@ -54,8 +54,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
 
   {
     const { createPanelService } = await import("./services/panelService.js");
-    const { createPanelPersistence } = await import("@natstack/shared/db/panelPersistence");
-    const { createPanelSearchIndex } = await import("@natstack/shared/db/panelSearchIndex");
+    const { createPanelPersistenceClient } = await import("./services/panelPersistenceClient.js");
 
     container.register({
       name: "panelService",
@@ -64,8 +63,12 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
         const fsServiceInst = resolve<import("@natstack/shared/fsService").FsService>("fsService")!;
         const { server: rpcSrv } = resolve<{ server: import("./rpcServer.js").RpcServer }>("rpcServer")!;
         const getRpcPort = () => rpcSrv.getPort() ?? 0;
-        const persistence = createPanelPersistence({ statePath: workspace.statePath, workspaceId: workspace.config.id });
-        const searchIndex = createPanelSearchIndex(persistence);
+        const panelPersistenceRpc = {
+          call: (service: string, method: string, args: unknown[]) =>
+            dispatcher.dispatch({ callerId: "server", callerKind: "server" }, service, method, args),
+        };
+        const persistence = createPanelPersistenceClient(panelPersistenceRpc);
+        const searchIndex = persistence;
         const wkrdPort = resolve<import("./workerdManager.js").WorkerdManager>("workerdManager")?.getPort() ?? 0;
         const { protocol, externalHost } = hostConfig;
         const wsProto = protocol === "https" ? "wss" : "ws";

@@ -30,12 +30,12 @@ const log = createDevLogger("Autofill");
 
 /** Narrow interface for the password store — avoids deep import */
 interface PasswordStoreLike {
-  getForOrigin(origin: string): StoredPassword[];
-  updateLastUsed(id: number): void;
-  update(id: number, partial: Partial<{ username: string; password: string; actionUrl: string; realm: string }>): void;
-  add(password: { url: string; username: string; password: string; actionUrl?: string; realm?: string }): number;
-  addNeverSave(origin: string): void;
-  isNeverSave(origin: string): boolean;
+  getForOrigin(origin: string): Promise<StoredPassword[]> | StoredPassword[];
+  updateLastUsed(id: number): Promise<void> | void;
+  update(id: number, partial: Partial<{ username: string; password: string; actionUrl: string; realm: string }>): Promise<void> | void;
+  add(password: { url: string; username: string; password: string; actionUrl?: string; realm?: string }): Promise<number> | number;
+  addNeverSave(origin: string): Promise<void> | void;
+  isNeverSave(origin: string): Promise<boolean> | boolean;
 }
 
 interface FieldInfo {
@@ -189,7 +189,7 @@ export class AutofillManager {
       const currentOrigin = this.deriveOrigin(webContents);
       if (currentOrigin && currentOrigin !== state.origin) {
         state.origin = currentOrigin;
-        state.credentials = this.passwordStore.getForOrigin(currentOrigin);
+        void this.refreshCredentialsForOrigin(currentOrigin);
       }
 
       this.injectContentScript(webContentsId, webContents);
@@ -205,7 +205,7 @@ export class AutofillManager {
       if (newOrigin && newOrigin !== state.origin) {
         // New origin — refresh credentials
         state.origin = newOrigin;
-        state.credentials = this.passwordStore.getForOrigin(newOrigin);
+        void this.refreshCredentialsForOrigin(newOrigin);
         state.signalCounts = { strong: 0, medium: 0, weak: 0 };
         state.hasPendingSnapshot = false;
         state.hasInjected = false;
@@ -213,7 +213,7 @@ export class AutofillManager {
         this.cleanupWebRequest(webContentsId, state);
       } else if (newOrigin === state.origin && state.hasPendingSnapshot) {
         // Same origin, full navigation after snapshot = strong signal
-        this.addSignal(webContentsId, "strong");
+        void this.addSignal(webContentsId, "strong");
       }
 
       // Reset for new page — fields will be re-detected by content script
@@ -232,7 +232,7 @@ export class AutofillManager {
     const inPageNavHandler = () => {
       const state = this.panelState.get(webContentsId);
       if (state?.hasPendingSnapshot) {
-        this.addSignal(webContentsId, "medium");
+        void this.addSignal(webContentsId, "medium");
       }
     };
     webContents.on("did-navigate-in-page", inPageNavHandler);
@@ -241,7 +241,7 @@ export class AutofillManager {
     const willNavigateHandler = () => {
       const state = this.panelState.get(webContentsId);
       if (state?.hasPendingSnapshot) {
-        this.addSignal(webContentsId, "strong");
+        void this.addSignal(webContentsId, "strong");
       }
     };
     webContents.on("will-navigate", willNavigateHandler);
@@ -311,7 +311,7 @@ export class AutofillManager {
         switch (method) {
           case "confirmSave": {
             const [panelId, action] = args as [string, "save" | "never" | "dismiss"];
-            this.handleConfirmSave(panelId, action);
+            await this.handleConfirmSave(panelId, action);
             return;
           }
           default:
@@ -408,7 +408,7 @@ export class AutofillManager {
     const currentOrigin = this.deriveOrigin(wc);
     if (currentOrigin && currentOrigin !== state.origin) {
       state.origin = currentOrigin;
-      state.credentials = this.passwordStore.getForOrigin(currentOrigin);
+      await this.refreshCredentialsForOrigin(currentOrigin);
     }
 
     // Handle field detection — accept new fields or field type changes (SPA transitions)
@@ -477,7 +477,7 @@ export class AutofillManager {
 
     // Handle field removal (SPA signal)
     if (pulled.fieldsRemoved && state.hasPendingSnapshot) {
-      this.addSignal(wcId, "medium");
+      void this.addSignal(wcId, "medium");
     }
 
     // Handle username snapshot for multi-step
@@ -512,7 +512,7 @@ export class AutofillManager {
 
     try {
       await this.executeInActiveFrame(wc, state, script);
-      this.passwordStore.updateLastUsed(credential.id);
+      await this.passwordStore.updateLastUsed(credential.id);
       log.verbose(` Filled credential for ${credential.origin_url}`);
     } catch (err) {
       log.verbose(` Fill failed: ${err}`);
@@ -643,12 +643,12 @@ export class AutofillManager {
   // Save/Update Detection
   // ===========================================================================
 
-  private addSignal(wcId: number, tier: "strong" | "medium" | "weak"): void {
+  private async addSignal(wcId: number, tier: "strong" | "medium" | "weak"): Promise<void> {
     const state = this.panelState.get(wcId);
     if (!state || !state.hasPendingSnapshot) return;
 
     // Permanently suppressed
-    if (this.passwordStore.isNeverSave(state.origin)) return;
+    if (await this.passwordStore.isNeverSave(state.origin)) return;
 
     // Suppress if user recently dismissed save for this origin
     if (state.dismissedAt && Date.now() - state.dismissedAt < 10 * 60 * 1000) return;
@@ -705,7 +705,7 @@ export class AutofillManager {
     if (existing) {
       if (existing.password === snapshot.password) {
         // Same credentials — silently update last used, clean up
-        this.passwordStore.updateLastUsed(existing.id);
+        await this.passwordStore.updateLastUsed(existing.id);
         state.hasPendingSnapshot = false;
         state.signalCounts = { strong: 0, medium: 0, weak: 0 };
         this.cleanupWebRequest(wcId, state);
@@ -791,9 +791,9 @@ export class AutofillManager {
           : true;
 
         if (setsCookie && matchesAction) {
-          this.addSignal(wcId, "strong");
+          void this.addSignal(wcId, "strong");
         } else if (matchesAction) {
-          this.addSignal(wcId, "medium");
+          void this.addSignal(wcId, "medium");
         }
       }
     });
@@ -834,7 +834,7 @@ export class AutofillManager {
     this.webRequestWatchers.delete(wcId);
   }
 
-  private handleConfirmSave(panelId: string, action: "save" | "never" | "dismiss"): void {
+  private async handleConfirmSave(panelId: string, action: "save" | "never" | "dismiss"): Promise<void> {
     const pending = this.pendingCredentials.get(panelId);
     if (!pending) return;
 
@@ -842,22 +842,22 @@ export class AutofillManager {
 
     if (action === "save") {
       if (pending.isUpdate && pending.existingId !== undefined) {
-        this.passwordStore.update(pending.existingId, {
+        await this.passwordStore.update(pending.existingId, {
           password: pending.password,
         });
       } else {
-        this.passwordStore.add({
+        await this.passwordStore.add({
           url: pending.origin,
           username: pending.username,
           password: pending.password,
         });
       }
       // Refresh in-memory credential cache for all panels on this origin
-      this.refreshCredentialsForOrigin(pending.origin);
+      await this.refreshCredentialsForOrigin(pending.origin);
       this.eventService.emit("browser-data-changed", { dataType: "passwords" });
     } else if (action === "never") {
       // Permanently suppress saves for this origin
-      this.passwordStore.addNeverSave(pending.origin);
+      await this.passwordStore.addNeverSave(pending.origin);
     } else if (action === "dismiss") {
       // Temporarily suppress for 10 minutes
       for (const state of this.panelState.values()) {
@@ -881,8 +881,8 @@ export class AutofillManager {
   // Helpers
   // ===========================================================================
 
-  private refreshCredentialsForOrigin(origin: string): void {
-    const freshCredentials = this.passwordStore.getForOrigin(origin);
+  private async refreshCredentialsForOrigin(origin: string): Promise<void> {
+    const freshCredentials = await this.passwordStore.getForOrigin(origin);
     for (const state of this.panelState.values()) {
       if (state.origin === origin) {
         state.credentials = freshCredentials;

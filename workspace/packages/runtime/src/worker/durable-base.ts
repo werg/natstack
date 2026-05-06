@@ -11,11 +11,9 @@
 import { createHttpRpcBridge } from "../shared/httpRpcBridge.js";
 import { createCredentialClient, type CredentialClient } from "../shared/credentials.js";
 import { createNotificationClient, type NotificationClient } from "../shared/notifications.js";
-import { createDbClient } from "../shared/database.js";
 import { _initFsWithRpc } from "./fs.js";
 import { createParentHandle } from "../shared/handles.js";
 import type { RpcBridge } from "@natstack/rpc";
-import type { DbClient } from "@natstack/types";
 import type { RuntimeFs } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -90,6 +88,13 @@ export interface DurableObjectContext {
     setAlarm(scheduledTime: number | Date): void;
     getAlarm(): Promise<number | null>;
     deleteAlarm(): void;
+    /**
+     * Run a synchronous block inside a DO storage transaction. Workerd
+     * rejects raw `BEGIN`/`COMMIT` SQL and requires this API instead — it
+     * auto-rolls-back on thrown exceptions and coalesces with the DO's
+     * atomic-write semantics. The callback must be synchronous.
+     */
+    transactionSync<T>(callback: () => T): T;
   };
   // Tagged accept: tags survive hibernation, retrievable via getWebSockets(tag)
   acceptWebSocket(ws: WebSocket, tags?: string[]): void;
@@ -123,7 +128,6 @@ export abstract class DurableObjectBase {
   private _rpc: (RpcBridge & { handleIncomingPost(body: unknown): Promise<unknown> }) | null = null;
   private _credentials: CredentialClient | null = null;
   private _notifications: NotificationClient | null = null;
-  private _db: DbClient | null = null;
   private _fs: RuntimeFs | null = null;
 
   constructor(ctx: DurableObjectContext, env: unknown) {
@@ -141,6 +145,9 @@ export abstract class DurableObjectBase {
 
   /** Subclasses define their SQL tables here. Called during schema init. */
   protected abstract createTables(): void;
+
+  /** Subclasses may migrate persisted SQL state between schema versions. */
+  protected migrate(_fromVersion: number, _toVersion: number): void {}
 
   /**
    * Lazily called on first fetch() or alarm(). Safe for subclasses to call
@@ -164,6 +171,7 @@ export abstract class DurableObjectBase {
     const targetVersion = (this.constructor as typeof DurableObjectBase).schemaVersion;
     if (currentVersion < targetVersion) {
       this.createTables();
+      this.migrate(currentVersion, targetVersion);
       this.sql.exec(
         `INSERT OR REPLACE INTO state (key, value) VALUES ('schema_version', ?)`,
         String(targetVersion),
@@ -269,12 +277,6 @@ export abstract class DurableObjectBase {
   protected get notifications(): NotificationClient {
     if (!this._notifications) this._notifications = createNotificationClient(this.rpc);
     return this._notifications;
-  }
-
-  /** Database client */
-  protected get db(): DbClient {
-    if (!this._db) this._db = createDbClient(this.rpc);
-    return this._db;
   }
 
   /** Filesystem client */
@@ -435,7 +437,6 @@ export abstract class DurableObjectBase {
     this._rpc = null;
     this._credentials = null;
     this._notifications = null;
-    this._db = null;
     this._fs = null;
   }
 

@@ -13,7 +13,17 @@ import { detectBrowsers } from "../detection/index.js";
 import { getReader } from "../readers/index.js";
 import { createCryptoProvider } from "../crypto/index.js";
 import { ProgressEmitter, type ProgressCallback } from "./progressEmitter.js";
-import type { BrowserDataStore } from "../storage/index.js";
+
+interface BrowserDataStore {
+  bookmarks: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readBookmarks"]>>): number | Promise<number> };
+  history: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readHistory"]>>): number | Promise<number> };
+  cookies: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readCookies"]>>): number | Promise<number> };
+  passwords: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readPasswords"]>>): number | Promise<number> };
+  autofill: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readAutofill"]>>): number | Promise<number> };
+  searchEngines: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readSearchEngines"]>>): number | Promise<number> };
+  permissions: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readPermissions"]>>): number | Promise<number> };
+  favicons: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readFavicons"]>>): number | Promise<number> };
+}
 
 function getBrowserFamily(name: BrowserName): BrowserFamily {
   if (name === "firefox" || name === "zen") return "firefox";
@@ -104,7 +114,7 @@ async function importDataType(
       const bookmarks = await reader.readBookmarks(request.profilePath);
       progress.reading(dataType, bookmarks.length, bookmarks.length);
       progress.storing(dataType, 0, bookmarks.length);
-      store.bookmarks.addBatch(bookmarks);
+      await store.bookmarks.addBatch(bookmarks);
       progress.done(dataType, bookmarks.length);
       return {
         dataType,
@@ -120,7 +130,7 @@ async function importDataType(
       const history = await reader.readHistory(request.profilePath);
       progress.reading(dataType, history.length, history.length);
       progress.storing(dataType, 0, history.length);
-      store.history.addBatch(history);
+      await store.history.addBatch(history);
       progress.done(dataType, history.length);
       return {
         dataType,
@@ -145,7 +155,7 @@ async function importDataType(
       }
 
       progress.storing(dataType, 0, cookies.length);
-      store.cookies.addBatch(cookies);
+      await store.cookies.addBatch(cookies);
       progress.done(dataType, cookies.length);
       return {
         dataType,
@@ -221,7 +231,7 @@ async function importDataType(
       }
 
       progress.storing(dataType, 0, passwords.length);
-      store.passwords.addBatch(passwords);
+      await store.passwords.addBatch(passwords);
       progress.done(dataType, passwords.length);
       return {
         dataType,
@@ -237,7 +247,7 @@ async function importDataType(
       const entries = await reader.readAutofill(request.profilePath);
       progress.reading(dataType, entries.length, entries.length);
       progress.storing(dataType, 0, entries.length);
-      store.autofill.addBatch(entries);
+      await store.autofill.addBatch(entries);
       progress.done(dataType, entries.length);
       return {
         dataType,
@@ -253,7 +263,7 @@ async function importDataType(
       const engines = await reader.readSearchEngines(request.profilePath);
       progress.reading(dataType, engines.length, engines.length);
       progress.storing(dataType, 0, engines.length);
-      store.searchEngines.addBatch(engines);
+      await store.searchEngines.addBatch(engines);
       progress.done(dataType, engines.length);
       return {
         dataType,
@@ -284,7 +294,7 @@ async function importDataType(
       const permissions = await reader.readPermissions(request.profilePath);
       progress.reading(dataType, permissions.length, permissions.length);
       progress.storing(dataType, 0, permissions.length);
-      store.permissions.addBatch(permissions);
+      await store.permissions.addBatch(permissions);
       progress.done(dataType, permissions.length);
       return {
         dataType,
@@ -321,7 +331,7 @@ async function importDataType(
       const favicons = await reader.readFavicons(request.profilePath);
       progress.reading(dataType, favicons.length, favicons.length);
       progress.storing(dataType, 0, favicons.length);
-      store.favicons.addBatch(favicons);
+      await store.favicons.addBatch(favicons);
       progress.done(dataType, favicons.length);
       return {
         dataType,

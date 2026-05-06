@@ -9,7 +9,6 @@
     "natstack-server": "dist/server.mjs"
   },
   "scripts": {
-    "postinstall": "node -e \"try{require('electron');require('child_process').execSync('electron-rebuild -f',{stdio:'inherit'})}catch{}\"",
     "prebuild": "node scripts/generate-channels.mjs && node scripts/generate-injected.mjs",
     "build": "NODE_ENV=production node build.mjs",
     "build:dist": "pnpm build",
@@ -19,7 +18,6 @@
     "server:dev": "NODE_ENV=development node dist/server.mjs",
     "dev:mobile-server": "node scripts/dev-mobile-server.mjs",
     "mobile:dev": "node scripts/start-mobile-dev.mjs",
-    "server:install": "cd server-native && npm install",
     "pack": "pnpm build:dist && electron-builder --dir",
     "dist": "pnpm build:dist && electron-builder",
     "dist:mac": "pnpm build:dist && electron-builder --mac",
@@ -27,8 +25,6 @@
     "dist:linux": "pnpm build:dist && electron-builder --linux",
     "generate:runtime-docs": "node scripts/generate-runtime-docs.mjs",
     "check:runtime-docs": "node scripts/generate-runtime-docs.mjs --check",
-    "verify-native": "node scripts/verify-native-modules.mjs",
-    "verify-native:electron": "node scripts/verify-electron-native.mjs",
     "dev:debug": "NATSTACK_DEBUG_PATHS=1 pnpm dev",
     "dev:verbose": "NATSTACK_LOG_LEVEL=verbose pnpm dev",
     "lint": "eslint src",
@@ -36,9 +32,7 @@
     "format:check": "prettier --check 'src/**/*.{ts,tsx,css,html,json}'",
     "type-check": "tsc --noEmit && tsc --project tsconfig.workspace.json",
     "type-check:watch": "tsc --noEmit --watch --preserveWatchOutput",
-    "pretest": "npm rebuild better-sqlite3",
     "test": "pnpm run check:runtime-docs && vitest run",
-    "posttest": "electron-rebuild -f -w better-sqlite3 -o better-sqlite3",
     "test:watch": "vitest",
     "test:e2e": "playwright test -c tests/config/playwright.config.ts",
     "test:e2e:headed": "playwright test -c tests/config/playwright.config.ts --headed",
@@ -55,14 +49,12 @@
   "pnpm": {
     "allowedBuilds": [
       "electron",
-      "esbuild",
-      "better-sqlite3"
+      "esbuild"
     ],
     "onlyBuiltDependencies": [
       "electron",
       "esbuild",
-      "node-git-server",
-      "better-sqlite3"
+      "node-git-server"
     ],
     "//overrides": "react-native 0.79 peerDeps react ^19.0.0. Pinning here prevents hoisted React 18 (pulled in transitively by workspace deps) from shadowing RN's requirement in the mobile bundle. Revisit when bumping RN. protobufjs ^7.5.5 patches RCE GHSA-xq3m-2v4x-88gg reachable via @google/genai → pi-ai.",
     "overrides": {
@@ -75,12 +67,10 @@
     }
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.7.1",
     "@eslint/js": "^9.39.1",
     "@natstack/ai": "workspace:*",
     "@playwright/test": "^1.57.0",
     "@testing-library/react": "^16.3.2",
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.10.1",
     "@types/npmcli__arborist": "^6.3.1",
     "@types/pacote": "^11.1.8",
@@ -142,7 +132,6 @@
     "@types/json-schema": "^7.0.15",
     "@types/ws": "^8.18.1",
     "ajv": "^8.17.1",
-    "better-sqlite3": "^12.5.0",
     "chokidar": "^5.0.0",
     "cross-fetch": "^4.1.0",
     "dotenv": "^16.4.5",

@@ -1,4 +1,7 @@
 import * as net from "net";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 
 /**
  * Default port ranges for different services.
@@ -11,6 +14,79 @@ export const PORT_RANGES = {
   pubsub: { start: 49452, end: 49552 },
   workerd: { start: 49552, end: 49652 },
 } as const;
+
+const leases = new Map<string, number>();
+
+function leaseKey(service: keyof typeof PORT_RANGES, port: number): string {
+  return `${service}:${port}`;
+}
+
+function lockDir(): string {
+  return process.env["NATSTACK_PORT_LOCK_DIR"] ?? path.join(os.tmpdir(), "natstack-port-locks");
+}
+
+function lockPath(service: keyof typeof PORT_RANGES, port: number): string {
+  return path.join(lockDir(), `${service}-${port}.lock`);
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === "EPERM";
+  }
+}
+
+function removeStaleLock(filePath: string): void {
+  try {
+    const pid = Number(fs.readFileSync(filePath, "utf8").trim());
+    if (Number.isFinite(pid) && pid > 0 && processIsAlive(pid)) return;
+  } catch {
+    // Unreadable lock files are treated as stale; the subsequent exclusive
+    // open still arbitrates races with another process doing the same cleanup.
+  }
+  try { fs.unlinkSync(filePath); } catch {}
+}
+
+function tryLeasePort(service: keyof typeof PORT_RANGES, port: number): number | null {
+  const key = leaseKey(service, port);
+  if (leases.has(key)) return null;
+  fs.mkdirSync(lockDir(), { recursive: true });
+  const filePath = lockPath(service, port);
+  try {
+    const fd = fs.openSync(filePath, "wx");
+    fs.writeFileSync(fd, `${process.pid}\n`, "utf8");
+    leases.set(key, fd);
+    return fd;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+      removeStaleLock(filePath);
+      try {
+        const fd = fs.openSync(filePath, "wx");
+        fs.writeFileSync(fd, `${process.pid}\n`, "utf8");
+        leases.set(key, fd);
+        return fd;
+      } catch {
+        return null;
+      }
+    }
+    throw err;
+  }
+}
+
+export function releaseServicePort(
+  service: keyof typeof PORT_RANGES,
+  port: number,
+): void {
+  const key = leaseKey(service, port);
+  const fd = leases.get(key);
+  if (fd === undefined) return;
+  leases.delete(key);
+  try { fs.closeSync(fd); } catch {}
+  try { fs.unlinkSync(lockPath(service, port)); } catch {}
+}
 
 /**
  * Probe whether a port is available on a specific host by binding a temp server.
@@ -42,11 +118,14 @@ export async function findServicePort(
   let lastError: NodeJS.ErrnoException | null = null;
 
   for (let port = start; port < end; port++) {
+    const lease = tryLeasePort(service, port);
+    if (lease === null) continue;
     const result = await probePort(port, host);
     if ("server" in result) {
       await new Promise<void>((resolve) => result.server.close(() => resolve()));
       return port;
     }
+    releaseServicePort(service, port);
     // EADDRINUSE is expected (port taken), anything else is a system problem
     if (result.error.code !== "EADDRINUSE") {
       throw new Error(

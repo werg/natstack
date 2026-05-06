@@ -38,18 +38,12 @@ import { cleanupPendingImages, type PendingImage } from "../../utils/imageUtils"
 import type { ChatInputContextValue } from "../../types";
 import { useChannelMessages } from "../useChannelMessages.js";
 
-/** Pending agent timeout per handle. */
-const PENDING_AGENT_TIMEOUT_MS = 45_000;
-
 /** Maximum debug events to retain (ring buffer). */
 const MAX_DEBUG_EVENTS = 500;
 
 /** Maximum method history entries before pruning. */
 const METHOD_HISTORY_MAX = 2000;
 const METHOD_HISTORY_PRUNE_TO = 1400;
-
-/** Typing indicator auto-stop debounce (ms). */
-const TYPING_DEBOUNCE_MS = 3000;
 
 // =============================================================================
 // Types
@@ -114,6 +108,7 @@ export interface ChatCoreState {
   dirtyRepoWarnings: Map<string, DirtyRepoDetails>;
   pendingAgents: Map<string, PendingAgent>;
   addPendingAgent: (handle: string, agentId: string) => void;
+  setPendingAgentInfos: (agents: Array<{ handle: string; agentId: string }>) => void;
   removePendingAgent: (handle: string) => void;
   onDismissDirtyWarning: (agentName: string) => void;
 
@@ -153,13 +148,8 @@ export function useChatCore({
   // Suppress disconnect detection until we see ourselves in the roster
   // (avoids spurious disconnects during initial handshake).
   const suppressDisconnectRef = useRef(true);
-  // Track expected stops (idle/timeout) so we don't show "disconnected" for them.
+  // Track expected stops so we don't show "disconnected" for them.
   const expectedStopsRef = useRef(new Set<string>());
-  // Per-handle pending agent timeout timers.
-  const pendingTimeoutsRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
-  // Typing indicator state (metadata-based).
-  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   // --- Connection manager (PubSubClient lifecycle) ---
   const connectionRef = useRef<ConnectionManager | null>(null);
   if (!connectionRef.current) {
@@ -275,9 +265,9 @@ export function useChatCore({
               }
             }
 
-            // Track expected stops (idle/timeout) so roster handler can suppress disconnect message
+            // Track expected idle stops so roster handler can suppress disconnect message.
             if (payload.debugType === "lifecycle" && payload.event === "stopped" &&
-                (payload.reason === "idle" || payload.reason === "timeout")) {
+                payload.reason === "idle") {
               expectedStopsRef.current.add(payload.handle);
             }
 
@@ -295,15 +285,6 @@ export function useChatCore({
               });
             }
 
-            // Spawning lifecycle → auto-create pending agent
-            if (payload.debugType === "lifecycle" && payload.event === "spawning") {
-              setPendingAgents((prev) => {
-                if (prev.has(payload.handle)) return prev;
-                const n = new Map(prev);
-                n.set(payload.handle, { agentId: payload.agentId, status: "starting" });
-                return n;
-              });
-            }
           }
         },
         onReconnect: () => {
@@ -344,11 +325,6 @@ export function useChatCore({
   useEffect(() => {
     return () => {
       cleanupPendingImages(pendingImagesRef.current);
-      // Clear pending agent timeouts
-      for (const t of pendingTimeoutsRef.current.values()) clearTimeout(t);
-      pendingTimeoutsRef.current.clear();
-      // Clear typing timeout
-      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     };
   }, []);
 
@@ -428,7 +404,7 @@ export function useChatCore({
             if (next[pid]) continue;
             if (!isAgentParticipantType(prevP?.metadata?.type)) continue;
 
-            // Skip expected leaves (graceful, replaced) and expected stops (idle, timeout)
+            // Skip expected leaves (graceful, replaced) and expected idle stops.
             const handle = prevP.metadata.handle;
             const isExpectedStop = expectedStopsRef.current.has(handle) || changeIsExpectedLeave;
             expectedStopsRef.current.delete(handle);
@@ -476,7 +452,6 @@ export function useChatCore({
               changed = true;
             }
           }
-          if (changed) schedulePendingTimeouts(nextPending);
           return changed ? nextPending : prevPending;
         });
       });
@@ -508,38 +483,6 @@ export function useChatCore({
       try { connection.disconnect(); } catch { /* best-effort */ }
     };
   }, [connection]);
-
-  // --- Pending agent per-handle timeouts ---
-  const schedulePendingTimeouts = useCallback((agents: Map<string, PendingAgent>) => {
-    // Schedule timeouts for new "starting" agents
-    for (const [handle, agent] of agents) {
-      if (agent.status === "starting" && !pendingTimeoutsRef.current.has(handle)) {
-        const timer = setTimeout(() => {
-          pendingTimeoutsRef.current.delete(handle);
-          setPendingAgents((prev) => {
-            const existing = prev.get(handle);
-            if (existing?.status !== "starting") return prev;
-            const n = new Map(prev);
-            n.set(handle, { ...existing, status: "error", error: { message: "Agent failed to start (timeout)" } });
-            return n;
-          });
-        }, PENDING_AGENT_TIMEOUT_MS);
-        pendingTimeoutsRef.current.set(handle, timer);
-      }
-    }
-    // Clear timeouts for agents no longer pending
-    for (const [handle, timer] of pendingTimeoutsRef.current) {
-      if (!agents.has(handle)) {
-        clearTimeout(timer);
-        pendingTimeoutsRef.current.delete(handle);
-      }
-    }
-  }, []);
-
-  // Schedule timeouts when pendingAgents changes
-  useEffect(() => {
-    schedulePendingTimeouts(pendingAgents);
-  }, [pendingAgents, schedulePendingTimeouts]);
 
   // --- Method history ---
   const addMethodHistoryEntry = useCallback((entry: MethodHistoryEntry) => {
@@ -584,10 +527,6 @@ export function useChatCore({
   const typingActiveRef = useRef(false);
 
   const stopTyping = useCallback(async () => {
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current);
-      typingTimeoutRef.current = null;
-    }
     if (!typingActiveRef.current) return;
     typingActiveRef.current = false;
     const c = clientRef.current;
@@ -596,29 +535,11 @@ export function useChatCore({
     }
   }, []);
 
-  const startTyping = useCallback(async () => {
-    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    if (!typingActiveRef.current) {
-      typingActiveRef.current = true;
-      const c = clientRef.current;
-      if (c?.connected) {
-        try { await c.setTyping(true); } catch { /* best-effort */ }
-      }
-    }
-    typingTimeoutRef.current = setTimeout(() => {
-      void stopTyping().catch(() => {});
-    }, TYPING_DEBOUNCE_MS);
-  }, [stopTyping]);
-
   const handleInputChange = useCallback((value: string) => {
     setInput(value);
     inputRef.current = value;
-    if (value.trim()) {
-      void startTyping().catch(() => {});
-    } else {
-      void stopTyping().catch(() => {});
-    }
-  }, [startTyping, stopTyping]);
+    void stopTyping().catch(() => {});
+  }, [stopTyping]);
 
   // --- Send message (with optimistic local rendering) ---
   const sendMessage = useCallback(async (attachments?: AttachmentInput[]): Promise<void> => {
@@ -722,6 +643,19 @@ export function useChatCore({
     });
   }, []);
 
+  const setPendingAgentInfos = useCallback((agents: Array<{ handle: string; agentId: string }>) => {
+    setPendingAgents((prev) => {
+      const next = new Map<string, PendingAgent>();
+      for (const agent of agents) {
+        const existing = prev.get(agent.handle);
+        next.set(agent.handle, existing?.status === "error"
+          ? { ...existing, agentId: agent.agentId }
+          : { agentId: agent.agentId, status: "starting" });
+      }
+      return next;
+    });
+  }, []);
+
   const removePendingAgent = useCallback((handle: string) => {
     setPendingAgents((prev) => {
       if (!prev.has(handle)) return prev;
@@ -779,6 +713,7 @@ export function useChatCore({
     dirtyRepoWarnings,
     pendingAgents,
     addPendingAgent,
+    setPendingAgentInfos,
     removePendingAgent,
     onDismissDirtyWarning,
     selfId,

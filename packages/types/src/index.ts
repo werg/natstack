@@ -22,15 +22,6 @@ export type {
 // Config types
 export type { PubSubConfig } from "./config-types.js";
 
-// Database types
-export type {
-  DbRunResult,
-  DatabaseInterface,
-  DatabaseOpener,
-  RpcCaller,
-  DbClient,
-} from "./database.js";
-
 // AI types
 export type {
   AIModelInfo,

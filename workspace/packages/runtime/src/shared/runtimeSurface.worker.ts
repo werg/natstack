@@ -7,7 +7,6 @@ export const workerRuntimeSurface: RuntimeSurface = {
   exports: {
     id: valueEntry(),
     rpc: valueEntry(),
-    db: valueEntry(),
     fs: valueEntry(),
     workers: namespaceEntry([
       "create",

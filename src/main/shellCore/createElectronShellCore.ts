@@ -1,9 +1,8 @@
-import { createPanelPersistence } from "@natstack/shared/db/panelPersistence";
-import { createPanelSearchIndex } from "@natstack/shared/db/panelSearchIndex";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import { PanelManager } from "@natstack/shared/shell/panelManager";
 import type { ServerClient } from "../serverClient.js";
-import { PanelStoreSqlite } from "./panelStoreSqlite.js";
+import { PanelStoreRpc } from "./panelStoreRpc.js";
+import { createPanelPersistenceClient } from "../../server/services/panelPersistenceClient.js";
 
 export function createElectronShellCore(deps: {
   statePath: string;
@@ -22,12 +21,9 @@ export function createElectronShellCore(deps: {
   pubsubUrl: string;
   workspaceConfig?: import("@natstack/shared/workspace/types").WorkspaceConfig;
 }) {
-  const persistence = createPanelPersistence({
-    statePath: deps.statePath,
-    workspaceId: deps.workspaceId,
-  });
-  const searchIndex = createPanelSearchIndex(persistence);
-  const store = new PanelStoreSqlite(persistence);
+  const persistence = createPanelPersistenceClient(deps.serverClient);
+  const searchIndex = persistence;
+  const store = new PanelStoreRpc(deps.serverClient);
   const panelManager = new PanelManager({
     store,
     registry: deps.registry,

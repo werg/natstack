@@ -37,7 +37,6 @@ const env = config.env;
 const {
   parentId: runtimeParentId,
   rpc,
-  db,
   parent,
   getParent,
   getParentWithContract,
@@ -57,7 +56,6 @@ const {
 
 export {
   rpc,
-  db,
   parent,
   getParent,
   getParentWithContract,

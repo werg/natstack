@@ -1,14 +1,13 @@
 /**
  * Base runtime factory — transport-agnostic core shared by panels and workers.
  *
- * Provides: rpc, db, fs, callMain, workspace tree/branches/commits,
+ * Provides: rpc, fs, callMain, workspace tree/branches/commits,
  * connection error handling, method exposure, theme, focus.
  *
  * Does NOT include: stateArgs, parent handles, panel-specific features.
  */
 
 import { createRpcBridge, type RpcTransport } from "@natstack/rpc";
-import { createDbClient } from "../shared/database.js";
 import { createWorkerdClient } from "../shared/workerd.js";
 import type {
   GitConfig,
@@ -40,7 +39,6 @@ export function createBaseRuntime(deps: BaseRuntimeDeps) {
 
   const fs = deps.fs;
   const callMain = <T>(method: string, ...args: unknown[]) => rpc.call<T>("main", method, ...args);
-  const db = createDbClient(rpc);
   const workers = createWorkerdClient(rpc);
 
   let currentTheme: ThemeAppearance = deps.initialTheme;
@@ -134,7 +132,6 @@ export function createBaseRuntime(deps: BaseRuntimeDeps) {
     id: deps.id,
 
     rpc,
-    db,
     fs,
     workers,
 

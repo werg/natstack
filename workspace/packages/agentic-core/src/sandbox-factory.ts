@@ -1,19 +1,13 @@
 /**
  * SandboxConfig factory for panel contexts.
  *
- * Worker and Node.js factories live in @workspace/agentic-session
- * (they need DbHandle from @workspace/eval which is a heavier dep).
+ * Worker and Node.js factories live in @workspace/agentic-session.
  */
 
-import type { DbHandle } from "@workspace/eval";
 import type { SandboxConfig } from "./types.js";
 
 interface RpcLike {
   call(target: string, method: string, ...args: unknown[]): Promise<unknown>;
-}
-
-interface DbLike {
-  open(name: string): Promise<DbHandle>;
 }
 
 /**
@@ -23,7 +17,7 @@ interface DbLike {
  * into a reusable function. Both workspace and npm imports go through RPC
  * to the build service on the main process.
  */
-export function createPanelSandboxConfig(rpc: RpcLike, db: DbLike): SandboxConfig {
+export function createPanelSandboxConfig(rpc: RpcLike): SandboxConfig {
   return {
     rpc: { call: (t: string, m: string, ...a: unknown[]) => rpc.call(t, m, ...a) },
     loadImport: async (specifier: string, ref: string | undefined, externals: string[]) => {
@@ -35,6 +29,5 @@ export function createPanelSandboxConfig(rpc: RpcLike, db: DbLike): SandboxConfi
       const result = await rpc.call("main", "build.getBuild", specifier, ref, { library: true, externals }) as { bundle: string };
       return result.bundle;
     },
-    db: { open: (name: string) => db.open(name) },
   };
 }

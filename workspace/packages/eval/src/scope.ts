@@ -56,7 +56,6 @@ export class ScopeManager {
   private currentCreatedAt: number;
   private evalInProgress = false;
   private dirty = false;
-  private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
   constructor(opts: {
@@ -200,15 +199,6 @@ export class ScopeManager {
     });
   }
 
-  /** Schedule a debounced persist (used by DOM event delegation) */
-  schedulePersist(delayMs: number): void {
-    if (this.persistTimer) clearTimeout(this.persistTimer);
-    this.persistTimer = setTimeout(() => {
-      this.persistTimer = null;
-      this.persist().catch((err) => console.warn("[ScopeManager] Scheduled persist failed:", err));
-    }, delayMs);
-  }
-
   // -------------------------------------------------------------------------
   // Eval lifecycle
   // -------------------------------------------------------------------------
@@ -285,10 +275,6 @@ export class ScopeManager {
   // -------------------------------------------------------------------------
 
   dispose(): void {
-    if (this.persistTimer) {
-      clearTimeout(this.persistTimer);
-      this.persistTimer = null;
-    }
     if (this.dirty) {
       this.persist().catch((err) => console.warn("[ScopeManager] Dispose persist failed:", err));
     }

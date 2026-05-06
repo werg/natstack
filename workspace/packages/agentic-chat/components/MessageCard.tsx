@@ -20,6 +20,7 @@ interface MessageCardProps {
   inlineUiComponents?: Map<string, InlineUiComponentEntry>;
   onInterrupt: (msgId: string, senderId: string) => void;
   onCopy: (msgId: string, content: string) => void;
+  onClearCopied: (msgId: string) => void;
   onFocusPanel?: (panelId: string) => void;
   onReloadPanel?: (panelId: string) => void;
   mdxActions?: MdxActionHandlers;
@@ -40,6 +41,7 @@ export const MessageCard = React.memo(function MessageCard({
   inlineUiComponents,
   onInterrupt,
   onCopy,
+  onClearCopied,
   onFocusPanel,
   onReloadPanel,
   mdxActions,
@@ -54,6 +56,9 @@ export const MessageCard = React.memo(function MessageCard({
   const handleCopy = useCallback(() => {
     void onCopy(msg.id, msg.content);
   }, [onCopy, msg.id, msg.content]);
+  const handleClearCopied = useCallback(() => {
+    onClearCopied(msg.id);
+  }, [onClearCopied, msg.id]);
 
   // Handle inline_ui messages
   if (msg.contentType === CONTENT_TYPE_INLINE_UI) {
@@ -154,6 +159,8 @@ export const MessageCard = React.memo(function MessageCard({
                 right: 4,
               }}
               onClick={handleCopy}
+              onBlur={handleClearCopied}
+              onPointerLeave={handleClearCopied}
               title="Copy message"
             >
               {isCopied ? <CheckIcon /> : <CopyIcon />}

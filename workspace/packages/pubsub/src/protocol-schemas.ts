@@ -26,7 +26,6 @@ export const MethodAdvertisementSchema = z.object({
   parameters: z.record(z.unknown()),
   returns: z.record(z.unknown()).optional(),
   streaming: z.boolean().optional(),
-  timeout: z.number().positive().optional(),
 });
 
 // Primitive field value type (for conditions and warnings)
@@ -161,9 +160,6 @@ export interface FeedbackFormArgs {
   values?: Record<string, string | number | boolean | string[]>;
   submitLabel?: string;
   cancelLabel?: string;
-  // New properties for feedback UI
-  timeout?: number;                             // Auto-cancel/submit after N ms
-  timeoutAction?: "cancel" | "submit";          // What happens on timeout
   severity?: "info" | "warning" | "danger";     // Affects styling/icon
   hideSubmit?: boolean;                         // Hide submit button (for buttonGroup with submitOnSelect)
   hideCancel?: boolean;                         // Hide cancel button
@@ -188,13 +184,10 @@ export const FeedbackFormArgsSchema = z.object({
   values: z.record(z.union([z.string(), z.number(), z.boolean(), z.array(z.string())])).optional(),
   submitLabel: z.string().optional(),
   cancelLabel: z.string().optional(),
-  // New properties for feedback UI
-  timeout: z.number().optional(),                           // Auto-cancel/submit after N ms
-  timeoutAction: z.enum(["cancel", "submit"]).optional(),   // What happens on timeout
   severity: z.enum(["info", "warning", "danger"]).optional(), // Affects styling/icon
   hideSubmit: z.boolean().optional(),                       // Hide submit button (for buttonGroup with submitOnSelect)
   hideCancel: z.boolean().optional(),                       // Hide cancel button
-});
+}).strict();
 
 /**
  * Zod schema for feedback_custom method arguments.

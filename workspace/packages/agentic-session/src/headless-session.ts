@@ -46,7 +46,7 @@ import type {
   IncomingMethodResultEvent,
 } from "@natstack/pubsub";
 import { z } from "zod";
-import { ScopeManager, DbScopePersistence } from "@workspace/eval";
+import { ScopeManager, RpcScopePersistence } from "@workspace/eval";
 import {
   getRecommendedChannelConfig,
   subscribeHeadlessAgent,
@@ -74,13 +74,6 @@ export interface SessionSnapshot {
   participants: Record<string, { name: string; type: string; handle: string; connected: boolean }>;
   connected: boolean;
   duration: number;
-}
-
-export class HeadlessTimeoutError extends Error {
-  constructor(message: string, public readonly snapshot: SessionSnapshot) {
-    super(message);
-    this.name = "HeadlessTimeoutError";
-  }
 }
 
 export interface HeadlessSessionConfig {
@@ -159,7 +152,7 @@ export class HeadlessSession {
       this._scopeManager = new ScopeManager({
         channelId,
         panelId: config.config.clientId,
-        persistence: new DbScopePersistence(() => config.sandbox!.db.open("repl-scopes")),
+        persistence: new RpcScopePersistence(config.sandbox.rpc),
       });
     } else {
       this._scopeManager = null;
@@ -371,7 +364,7 @@ export class HeadlessSession {
       this._scopeManager = new ScopeManager({
         channelId,
         panelId: this._clientId,
-        persistence: new DbScopePersistence(() => this._sandbox!.db.open("repl-scopes")),
+        persistence: new RpcScopePersistence(this._sandbox.rpc),
       });
       await this._scopeManager.hydrate();
     }
@@ -663,9 +656,7 @@ export class HeadlessSession {
   /**
    * Wait for a message from an agent (any non-self participant).
    */
-  waitForAgentMessage(opts?: { timeout?: number }): Promise<ChatMessage> {
-    const timeout = opts?.timeout ?? 0;
-
+  waitForAgentMessage(): Promise<ChatMessage> {
     const isAgentMessage = (msg: ChatMessage): boolean =>
       msg.senderId !== this._clientId &&
       msg.kind === "message" &&
@@ -675,28 +666,12 @@ export class HeadlessSession {
       msg.contentType !== "typing" &&
       msg.contentType !== "toolCall";
 
-    const knownAgentHandles = new Set<string>();
-    for (const p of Object.values(this._participants)) {
-      if (isAgentParticipantType(p.metadata.type)) {
-        knownAgentHandles.add(p.metadata.handle);
-      }
-    }
-
     const baselineMessages = this.messages;
     const alreadyPresent = [...baselineMessages].reverse().find(isAgentMessage);
     const baselineCount = baselineMessages.length;
 
-    return new Promise<ChatMessage>((resolve, reject) => {
-      const timer = timeout > 0 ? setTimeout(() => {
-        cleanup();
-        reject(new HeadlessTimeoutError(
-          `Timed out waiting for agent message after ${timeout}ms`,
-          this.snapshot(),
-        ));
-      }, timeout) : null;
-
+    return new Promise<ChatMessage>((resolve) => {
       const cleanup = () => {
-        if (timer) clearTimeout(timer);
         this._messageListeners.delete(listener);
       };
 
@@ -719,8 +694,7 @@ export class HeadlessSession {
   /**
    * Wait for the agent to become idle (no new messages for `debounce` ms).
    */
-  waitForIdle(opts?: { timeout?: number; debounce?: number }): Promise<ChatMessage> {
-    const timeout = opts?.timeout ?? 0;
+  waitForIdle(opts?: { debounce?: number }): Promise<ChatMessage> {
     const debounceMs = opts?.debounce ?? 3_000;
 
     const isAgentMessage = (msg: ChatMessage): boolean =>
@@ -736,24 +710,11 @@ export class HeadlessSession {
     const alreadyPresent = [...baselineMessages].reverse().find(isAgentMessage);
     const baselineCount = baselineMessages.length;
 
-    return new Promise<ChatMessage>((resolve, reject) => {
+    return new Promise<ChatMessage>((resolve) => {
       let lastMatch: ChatMessage | undefined;
       let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
-      const overallTimer = timeout > 0 ? setTimeout(() => {
-        cleanup();
-        if (lastMatch) {
-          resolve(lastMatch);
-        } else {
-          reject(new HeadlessTimeoutError(
-            `Timed out waiting for idle after ${timeout}ms`,
-            this.snapshot(),
-          ));
-        }
-      }, timeout) : null;
-
       const cleanup = () => {
-        if (overallTimer) clearTimeout(overallTimer);
         if (debounceTimer !== undefined) clearTimeout(debounceTimer);
         this._messageListeners.delete(listener);
       };
@@ -788,7 +749,7 @@ export class HeadlessSession {
     });
   }
 
-  async sendAndWait(text: string, opts?: { timeout?: number }): Promise<ChatMessage> {
+  async sendAndWait(text: string, opts?: { debounce?: number }): Promise<ChatMessage> {
     await this.send(text);
     return this.waitForIdle(opts);
   }

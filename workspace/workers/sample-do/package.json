@@ -1,0 +1,17 @@
+{
+  "name": "sample-do",
+  "version": "0.0.0",
+  "type": "module",
+  "natstack": {
+    "title": "Sample Durable Object",
+    "kind": "worker",
+    "entry": "index.ts",
+    "durable": {
+      "classes": [
+        {
+          "className": "SampleDO"
+        }
+      ]
+    }
+  }
+}

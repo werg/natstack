@@ -108,6 +108,18 @@ interface ServerMessage {
   }>;
 }
 
+interface SubscribeResult {
+  ok?: boolean;
+  initialReplay?: ServerMessage[];
+  ready?: {
+    contextId?: string;
+    channelConfig?: ChannelConfig;
+    totalCount: number;
+    chatMessageCount: number;
+    firstChatMessageId?: number;
+  };
+}
+
 /** Convert wire-format attachments (base64) to client Attachment[] (Uint8Array). */
 function convertWireAttachments(wireAtts: WireAttachment[] | undefined): Attachment[] | undefined {
   if (!wireAtts || wireAtts.length === 0) return undefined;
@@ -173,7 +185,6 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
         parameters,
         returns,
         streaming: def.streaming,
-        timeout: def.timeout,
         menu: def.menu,
       };
     });
@@ -200,6 +211,19 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     readyResolve = resolve;
     readyReject = reject;
   });
+  readyPromise.catch(() => {});
+
+  function resolveReady(): void {
+    readyResolve?.();
+    readyResolve = null;
+    readyReject = null;
+  }
+
+  function rejectReady(error: Error): void {
+    readyReject?.(error);
+    readyResolve = null;
+    readyReject = null;
+  }
 
   // Message queue for messages() iterator
   const messageQueue: Message[] = [];
@@ -222,6 +246,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   let aggregatedReplay: AggregatedEvent[] = [];
   let initialReplayComplete = false;
   const streamReplayEvents: IncomingEvent[] = [];
+  const replayMessageKeys = new Set<string>();
+  const MAX_REPLAY_MESSAGE_KEYS = 2000;
 
   // Roster dedup
   const rosterOpIds = new Set<number>();
@@ -410,7 +436,36 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     return null;
   }
 
+  function replayDedupeKey(msg: ServerMessage): string | null {
+    if (msg.kind !== "replay") return null;
+    if (msg.id !== undefined) {
+      return `${msg.id}:${msg.type ?? ""}:${msg.senderId ?? ""}`;
+    }
+    if (msg.type === "presence" && msg.senderId) {
+      return `snapshot:${msg.type}:${msg.senderId}`;
+    }
+    return null;
+  }
+
+  function rememberReplayMessage(msg: ServerMessage): boolean {
+    const key = replayDedupeKey(msg);
+    if (!key) return true;
+    if (replayMessageKeys.has(key)) return false;
+    replayMessageKeys.add(key);
+    if (replayMessageKeys.size > MAX_REPLAY_MESSAGE_KEYS) {
+      const toRemove = replayMessageKeys.size - (MAX_REPLAY_MESSAGE_KEYS - 400);
+      const iter = replayMessageKeys.values();
+      for (let i = 0; i < toRemove; i++) {
+        const { value } = iter.next();
+        if (value !== undefined) replayMessageKeys.delete(value);
+      }
+    }
+    return true;
+  }
+
   function handleServerMessage(msg: ServerMessage): void {
+    if (!rememberReplayMessage(msg)) return;
+
     switch (msg.kind) {
       case "ready": {
         if (typeof msg.contextId === "string") serverContextId = msg.contextId;
@@ -421,6 +476,10 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           serverFirstChatMessageId = msg.firstChatMessageId;
         } else {
           serverFirstChatMessageId = undefined;
+        }
+
+        if (initialReplayComplete) {
+          break;
         }
 
         // Aggregate replay
@@ -436,9 +495,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
         pendingReplay = [];
         initialReplayComplete = true;
 
-        readyResolve?.();
-        readyResolve = null;
-        readyReject = null;
+        resolveReady();
         enqueueMessage({
           kind: "ready",
           totalCount: serverTotalCount,
@@ -460,6 +517,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       case "error": {
         const errorMsg = msg.error || "unknown server error";
         const error = new PubSubError(errorMsg, "server");
+        if (!initialReplayComplete) rejectReady(error);
         handleError(error);
         break;
       }
@@ -557,9 +615,15 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
               .catch((err) => console.error(`[RpcPubSubClient] Method execution failed:`, err));
           }
 
-          // Buffer replay events
+          // Buffer replay events until the initial ready boundary. If ready was
+          // resolved from the subscribe acknowledgment because the ready event
+          // was not delivered, late replay events are surfaced directly instead
+          // of being stranded in a replay buffer with no future ready boundary.
           if (event.kind === "replay") {
-            if (replayMode !== "skip") {
+            if (initialReplayComplete) {
+              if (replayMode === "stream") streamReplayEvents.push(event);
+              eventsFanout.emit(event);
+            } else if (replayMode !== "skip") {
               if (!bufferingReplay) {
                 bufferingReplay = true;
                 pendingReplay = [];
@@ -580,6 +644,23 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
         break;
       }
     }
+  }
+
+  function applySubscribeAckFallback(result: SubscribeResult | undefined): void {
+    if (!result?.ready || !Array.isArray(result.initialReplay) || initialReplayComplete) {
+      return;
+    }
+    for (const replayMessage of result.initialReplay) {
+      handleServerMessage(replayMessage);
+    }
+    handleServerMessage({
+      kind: "ready",
+      contextId: result.ready.contextId,
+      channelConfig: result.ready.channelConfig,
+      totalCount: result.ready.totalCount,
+      chatMessageCount: result.ready.chatMessageCount,
+      firstChatMessageId: result.ready.firstChatMessageId,
+    });
   }
 
   async function handleMethodCallExec(event: IncomingMethodCallEvent): Promise<void> {
@@ -792,9 +873,6 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       reconnecting = false;
       return;
     }
-    // Exponential backoff: 1s, 2s, 4s, 8s, 16s
-    const backoffMs = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), 16000);
-    await new Promise(resolve => setTimeout(resolve, backoffMs));
     if (closed) { reconnecting = false; return; }
     try {
       // Best-effort unsubscribe old session
@@ -802,9 +880,14 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       // Reset local roster and presence dedup state so replayed presence events are accepted
       currentRoster = {};
       rosterOpIds.clear();
+      replayMessageKeys.clear();
+      pendingReplay = [];
+      bufferingReplay = replayMode !== "skip";
+      initialReplayComplete = false;
       // Re-subscribe with sinceId for catch-up replay
       const resubMeta = { ...subscribeMetadata, sinceId: lastSeenSeq, replay: true };
-      await rpc.call(doTarget, "subscribe", pid, resubMeta);
+      const result = await rpc.call<SubscribeResult | undefined>(doTarget, "subscribe", pid, resubMeta);
+      applySubscribeAckFallback(result);
       consecutiveTouchFailures = 0;
       reconnectAttempts = 0;
       reconnecting = false;
@@ -831,14 +914,17 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     });
   }, TOUCH_INTERVAL_MS);
 
-  // Fire subscribe (replay arrives via events, not return value)
-  rpc.call(doTarget, "subscribe", pid, subscribeMetadata).catch((err: unknown) => {
+  // Fire subscribe. Replay normally arrives through ordered channel events; the
+  // result also carries the same ordered initial replay as a fallback so losing
+  // the ready event does not let ready resolve ahead of replay delivery.
+  rpc.call<SubscribeResult | undefined>(doTarget, "subscribe", pid, subscribeMetadata).then((result) => {
+    applySubscribeAckFallback(result);
+  }).catch((err: unknown) => {
     const error = err instanceof Error ? err : new Error(String(err));
     clearInterval(touchInterval);
-    readyReject?.(new PubSubError(error.message, "connection"));
-    readyResolve = null;
-    readyReject = null;
-    handleError(new PubSubError(error.message, "connection"));
+    const pubsubError = new PubSubError(error.message, "connection");
+    rejectReady(pubsubError);
+    handleError(pubsubError);
   });
 
   // Subscribe to events fanout for method-result tracking
@@ -891,11 +977,26 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
 
   // ── Public API ──────────────────────────────────────────────────────────
 
-  async function ready(timeoutMs = 30000): Promise<void> {
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new PubSubError("ready timeout", "timeout")), timeoutMs);
+  async function ready(signal?: AbortSignal): Promise<void> {
+    if (initialReplayComplete) return;
+    if (closed) throw new PubSubError("connection closed before ready", "connection");
+    if (!signal) return readyPromise;
+    if (signal.aborted) throw new PubSubError("ready aborted", "connection");
+
+    return new Promise<void>((resolve, reject) => {
+      const onAbort = () => reject(new PubSubError("ready aborted", "connection"));
+      signal.addEventListener("abort", onAbort, { once: true });
+      readyPromise.then(
+        () => {
+          signal.removeEventListener("abort", onAbort);
+          resolve();
+        },
+        (error) => {
+          signal.removeEventListener("abort", onAbort);
+          reject(error);
+        },
+      );
     });
-    return Promise.race([readyPromise, timeoutPromise]);
   }
 
   async function publish<P>(
@@ -990,7 +1091,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     providerId: string,
     methodName: string,
     args?: unknown,
-    callOptions?: { timeoutMs?: number },
+    callOptions?: { signal?: AbortSignal },
   ): MethodCallHandle {
     const callId = crypto.randomUUID();
 
@@ -1012,48 +1113,54 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     };
     methodCallStates.set(callId, state);
 
-    // Publish method-call via DO
-    void rpc.call(doTarget, "callMethod", pid, providerId, callId, methodName, args ?? {}).catch((e: unknown) => {
-      const err = e instanceof Error ? e : new Error(String(e));
+    const cancelCall = (notifyProvider: boolean, waitForProvider: boolean): Promise<void> => {
+      if (state.complete) return Promise.resolve();
       state.complete = true;
       state.isError = true;
-      stream.close(err);
-      rejectResult(new AgenticError(err.message, "connection-error", err));
+      stream.close();
+      rejectResult(new AgenticError("cancelled", "cancelled"));
       methodCallStates.delete(callId);
-    });
+      if (!notifyProvider) {
+        return Promise.resolve();
+      }
+      const cancelPromise = rpc.call(doTarget, "cancelMethodCall", callId).then(() => undefined);
+      if (waitForProvider) return cancelPromise;
+      void cancelPromise.catch(() => {});
+      return Promise.resolve();
+    };
 
-    const timeoutMs = callOptions?.timeoutMs;
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-    if (timeoutMs && timeoutMs > 0) {
-      timeoutId = setTimeout(() => {
-        if (!state.complete) {
-          state.complete = true;
-          state.isError = true;
-          stream.close();
-          rejectResult(new AgenticError("method call timeout", "timeout"));
-          methodCallStates.delete(callId);
-          // Tell the DO to cancel so the provider can be notified
-          rpc.call(doTarget, "cancelMethodCall", callId).catch(() => {});
-        }
-      }, timeoutMs);
+    if (callOptions?.signal) {
+      if (callOptions.signal.aborted) {
+        void cancelCall(false, false);
+      } else {
+        const abort = () => { void cancelCall(true, false); };
+        callOptions.signal.addEventListener("abort", abort, { once: true });
+        result.then(
+          () => callOptions.signal?.removeEventListener("abort", abort),
+          () => callOptions.signal?.removeEventListener("abort", abort),
+        );
+      }
     }
 
-    void result.finally(() => {
-      if (timeoutId) clearTimeout(timeoutId);
-    });
+    if (!state.complete) {
+      // Publish method-call via DO.
+      void rpc.call(doTarget, "callMethod", pid, providerId, callId, methodName, args ?? {}).catch((e: unknown) => {
+        if (state.complete) return;
+        const err = e instanceof Error ? e : new Error(String(e));
+        state.complete = true;
+        state.isError = true;
+        stream.close(err);
+        rejectResult(new AgenticError(err.message, "connection-error", err));
+        methodCallStates.delete(callId);
+      });
+    }
 
     return {
       callId,
       result,
       stream: stream.subscribe(),
       cancel: async () => {
-        if (state.complete) return;
-        state.complete = true;
-        state.isError = true;
-        stream.close();
-        rejectResult(new AgenticError("cancelled", "cancelled"));
-        methodCallStates.delete(callId);
-        await rpc.call(doTarget, "cancelMethodCall", callId).catch(e => console.warn("[PubSub] Failed to cancel method call:", e));
+        await cancelCall(true, true);
       },
       get complete() { return state.complete; },
       get isError() { return state.isError; },
@@ -1105,6 +1212,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
 
   function close(): void {
     closed = true;
+    rejectReady(new PubSubError("connection closed before ready", "connection"));
     clearInterval(touchInterval);
     eventsFanout.close();
     removeEventListener();

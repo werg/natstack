@@ -6,7 +6,7 @@
  */
 
 import type { ChannelEvent, SendMessageOptions } from "@natstack/harness/types";
-import type { RpcCaller } from "@natstack/types";
+import type { RpcCaller } from "@natstack/rpc";
 
 const CHANNEL_SOURCE = "workers/pubsub-channel";
 const CHANNEL_CLASS = "PubSubChannel";

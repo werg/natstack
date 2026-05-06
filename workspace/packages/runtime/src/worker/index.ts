@@ -30,7 +30,6 @@ if (typeof globalThis.Buffer === "undefined") {
 import type { RpcBridge } from "@natstack/rpc";
 import { createHttpRpcBridge } from "../shared/httpRpcBridge.js";
 import type { OpenExternalOptions, OpenExternalResult } from "@natstack/shared/externalOpen";
-import { createDbClient } from "../shared/database.js";
 import { fs, _initFsWithRpc } from "./fs.js";
 import { createCredentialClient, type CredentialClient } from "../shared/credentials.js";
 import { createWebhookIngressClient, type WebhookIngressClient } from "../shared/webhooks.js";
@@ -69,8 +68,8 @@ export type { NotificationClient } from "../shared/notifications.js";
 export { DurableObjectBase } from "./durable-base.js";
 export type { DurableObjectContext, SqlStorage, SqlResult, DORef } from "./durable-base.js";
 export { fs } from "./fs.js";
-// Note: createTestDO is intentionally NOT exported here — it depends on better-sqlite3
-// which is a Node.js-only dependency that can't be bundled for workerd.
+// Note: createTestDO is intentionally NOT exported here because it depends on
+// sql.js test-only helpers that should not be bundled into production workers.
 // Import directly from "@workspace/runtime/src/worker/durable-test-utils" in tests.
 
 export interface GitRemoteSpec {
@@ -111,7 +110,6 @@ let cachedWorkerId: string | null = null;
 export interface WorkerRuntime {
   readonly id: string;
   readonly rpc: RpcBridge;
-  readonly db: ReturnType<typeof createDbClient>;
   readonly fs: RuntimeFs;
   readonly workers: WorkerdClient;
   readonly workspace: WorkspaceClient;
@@ -166,7 +164,6 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
   });
 
   const runtimeFs = _initFsWithRpc(rpc);
-  const db = createDbClient(rpc);
   const workers = helpfulNamespace("workers", createWorkerdClient(rpc));
   const workspaceApi = helpfulNamespace("workspace", createWorkspaceClient(rpc));
   const credentials = helpfulNamespace("credentials", createCredentialClient(rpc));
@@ -212,7 +209,6 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
   const runtime: WorkerRuntime = {
     id: workerId,
     rpc,
-    db,
     fs: runtimeFs,
     workers,
     workspace: workspaceApi,

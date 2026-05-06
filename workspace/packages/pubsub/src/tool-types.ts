@@ -22,9 +22,16 @@ import { normalizeToolName } from "./tool-name-utils.js";
 export const BashArgsSchema = z.object({
   command: z.string().describe("The bash command to execute"),
   description: z.string().optional().describe("Description of what the command does"),
-  timeout: z.number().optional().describe("Optional timeout in milliseconds"),
   run_in_background: z.boolean().optional().describe("Run command in background"),
-}).passthrough();
+}).passthrough().superRefine((value, ctx) => {
+  if ("timeout" in value) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Bash does not accept a timeout parameter",
+      path: ["timeout"],
+    });
+  }
+});
 export type BashArgs = z.infer<typeof BashArgsSchema>;
 
 // ============================================================================

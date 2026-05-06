@@ -26,6 +26,10 @@ import {
   getPhysicalPathForAsarPath,
   getPlatformPackageBinaryPath,
 } from "@natstack/shared/runtimePaths";
+import {
+  getInternalDOBundle,
+  isInternalDOSource,
+} from "./internalDOs/internalDoLoader.js";
 
 const log = createDevLogger("WorkerdManager");
 declare const __filename: string | undefined;
@@ -424,9 +428,15 @@ export class WorkerdManager {
       const { className } = doService;
       let bundleContent: string;
       try {
-        const buildResult = await this.deps.getBuild(doService.source);
-        bundleContent = buildResult.bundle;
-        doService.buildKey = buildResult.metadata.ev;
+        if (isInternalDOSource(doService.source)) {
+          const buildResult = getInternalDOBundle();
+          bundleContent = buildResult.bundle;
+          doService.buildKey = buildResult.buildKey;
+        } else {
+          const buildResult = await this.deps.getBuild(doService.source);
+          bundleContent = buildResult.bundle;
+          doService.buildKey = buildResult.metadata.ev;
+        }
       } catch (err) {
         log.warn(`Skipping DO service "${serviceKey}" — build not available:`, err);
         continue;
@@ -912,6 +922,10 @@ ${doBlock}${cases.join("\n")}
     // Release the pinned port so restartWorkerd re-probes via findServicePort.
     // findServicePort skips EADDRINUSE ports, which sidesteps the race where
     // the kernel has not finished releasing our previous bind yet.
+    if (this.port) {
+      const { releaseServicePort } = await import("@natstack/port-utils");
+      releaseServicePort("workerd", this.port);
+    }
     this.port = null;
   }
 
@@ -932,23 +946,19 @@ ${doBlock}${cases.join("\n")}
       const serviceKey = `${source}:${className}`;
       if (this.doServices.has(serviceKey)) continue;
 
-      const sourceSegments = source.split("/").filter(Boolean);
-      if (sourceSegments.length !== 2) {
-        log.warn(`Skipping DO class with invalid source path: "${source}"`);
-        continue;
-      }
-
       try {
-        const buildResult = await this.deps.getBuild(source);
+        const buildKey = isInternalDOSource(source)
+          ? getInternalDOBundle().buildKey
+          : (await this.deps.getBuild(source)).metadata.ev;
         const sourceSanitized = source.replace(/[^a-zA-Z0-9_]/g, "_");
         const serviceName = `do_${sourceSanitized}_${className.replace(/[^a-zA-Z0-9_]/g, "_")}`;
         this.doServices.set(serviceKey, {
-          buildKey: buildResult.metadata.ev,
+          buildKey,
           className,
           serviceName,
           source,
         });
-        this.registerRoutesForDoClass(source, className);
+        if (!isInternalDOSource(source)) this.registerRoutesForDoClass(source, className);
         added = true;
       } catch (err) {
         log.warn(`Skipping DO class ${source}:${className} — build failed:`, err);
@@ -977,23 +987,33 @@ ${doBlock}${cases.join("\n")}
     const serviceKey = `${source}:${className}`;
     if (!this.doServices.has(serviceKey)) {
       const sourceSegments = source.split("/").filter(Boolean);
-      if (sourceSegments.length !== 2) {
+      if (!isInternalDOSource(source) && sourceSegments.length !== 2) {
         throw new Error(`DO source path must be exactly 2 segments, got: "${source}"`);
       }
-      const buildResult = await this.deps.getBuild(source);
+      const buildKey = isInternalDOSource(source)
+        ? getInternalDOBundle().buildKey
+        : (await this.deps.getBuild(source)).metadata.ev;
       const sourceSanitized = source.replace(/[^a-zA-Z0-9_]/g, "_");
       const serviceName = `do_${sourceSanitized}_${className.replace(/[^a-zA-Z0-9_]/g, "_")}`;
       this.doServices.set(serviceKey, {
-        buildKey: buildResult.metadata.ev,
+        buildKey,
         className,
         serviceName,
         source,
       });
-      this.registerRoutesForDoClass(source, className);
+      if (!isInternalDOSource(source)) this.registerRoutesForDoClass(source, className);
       await this.restartWorkerd();
     }
 
     if (!this.process || this.process.exitCode !== null) {
+      await this.restartWorkerd();
+      return;
+    }
+
+    try {
+      await this.waitForHttpReady(2_000);
+    } catch (err) {
+      log.warn(`workerd process is present but not accepting HTTP; restarting before DO dispatch:`, err);
       await this.restartWorkerd();
     }
   }
@@ -1007,6 +1027,29 @@ ${doBlock}${cases.join("\n")}
    */
   async ensureDO(source: string, className: string, _objectKey: string): Promise<void> {
     await this.ensureDOClass(source, className);
+  }
+
+  private async waitForHttpReady(timeoutMs = 5_000): Promise<void> {
+    if (!this.port) {
+      throw new Error("workerd has no assigned port");
+    }
+    const deadline = Date.now() + timeoutMs;
+    let lastError: unknown;
+    while (Date.now() < deadline) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${this.port}/__natstack_workerd_ready`, {
+          method: "GET",
+        });
+        await response.arrayBuffer().catch(() => undefined);
+        return;
+      } catch (err) {
+        lastError = err;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    throw lastError instanceof Error
+      ? lastError
+      : new Error(`workerd did not accept HTTP on port ${this.port}`);
   }
 
   // =========================================================================

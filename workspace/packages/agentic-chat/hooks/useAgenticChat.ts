@@ -4,7 +4,7 @@
  * Composes useChatCore + feature hooks (pending agents, feedback, tools,
  * debug, inline UI) into the full ChatContextValue.
  *
- * Roster tracking, pending agent timeouts, debug events, and dirty repo
+ * Roster tracking, pending agents, debug events, and dirty repo
  * warnings are now handled by SessionManager via useChatCore — the feature
  * hooks are retained as stubs for backward compatibility only.
  *
@@ -14,7 +14,7 @@
 import { useCallback, useMemo, useRef, useEffect } from "react";
 import { z } from "zod";
 import type { ChannelConfig, MethodDefinition, MethodExecutionContext } from "@natstack/pubsub";
-import { executeSandbox, ScopeManager, DbScopePersistence } from "@workspace/eval";
+import { executeSandbox, ScopeManager, RpcScopePersistence } from "@workspace/eval";
 import type { SandboxOptions, SandboxResult, HydrateResult } from "@workspace/eval";
 import type { ActiveFeedbackSchema, FeedbackResult } from "@workspace/tool-ui";
 import { useChatCore } from "./core/useChatCore";
@@ -80,7 +80,7 @@ export function useAgenticChat({
     scopeManagerRef.current = new ScopeManager({
       channelId: channelName,
       panelId: config.clientId,
-      persistence: new DbScopePersistence(() => sandbox.db.open("repl-scopes")),
+      persistence: new RpcScopePersistence(sandbox.rpc),
     });
   }
 
@@ -111,13 +111,11 @@ export function useAgenticChat({
     initialPrompt,
   });
 
-  // --- Seed pending agents into SessionManager when they arrive ---
+  // --- Mirror session-owned pending agents when provided ---
   useEffect(() => {
-    if (!pendingAgentInfos?.length) return;
-    for (const agent of pendingAgentInfos) {
-      core.addPendingAgent(agent.handle, agent.agentId);
-    }
-  }, [pendingAgentInfos, core.addPendingAgent]);
+    if (pendingAgentInfos === undefined) return;
+    core.setPendingAgentInfos(pendingAgentInfos);
+  }, [pendingAgentInfos, core.setPendingAgentInfos]);
 
   // --- Build chat sandbox value (stale-ref safe — dereferences clientRef at call time) ---
   const chat: ChatSandboxValue = useMemo(() => ({
@@ -266,7 +264,6 @@ export default function App({ props, chat }) {
   const handleCopy = () => {
     navigator.clipboard.writeText(JSON.stringify(props.data, null, 2));
     setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
   };
   return (
     <Flex direction="column" gap="2">
@@ -493,12 +490,8 @@ export default function App({ props, chat }) {
   const handleAddAgent = useCallback(async (agentId?: string) => {
     if (!actions?.onAddAgent) return;
     const launcherContextId = core.clientRef.current?.contextId;
-    const result = await actions.onAddAgent(channelName, launcherContextId, agentId);
-    // If the callback returns agent info, track it as pending via SessionManager
-    if (result?.agentId && result?.handle) {
-      core.addPendingAgent(result.handle, result.agentId);
-    }
-  }, [channelName, core.clientRef, actions, core.addPendingAgent]);
+    await actions.onAddAgent(channelName, launcherContextId, agentId);
+  }, [channelName, core.clientRef, actions]);
 
   const handleRemoveAgent = useCallback(async (handle: string) => {
     if (!actions?.onRemoveAgent) return;

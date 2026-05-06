@@ -3,7 +3,7 @@
 // =============================================================================
 
 // --- HeadlessSession ---
-export { HeadlessSession, HeadlessTimeoutError } from "./headless-session.js";
+export { HeadlessSession } from "./headless-session.js";
 export type {
   HeadlessSessionConfig,
   HeadlessWithAgentConfig,

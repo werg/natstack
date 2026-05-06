@@ -31,7 +31,6 @@ export {
 } from "./asyncTracking.js";
 export type {
   TrackingContext,
-  TrackingContextOptions,
   AsyncTrackingAPI,
 } from "./asyncTracking.js";
 
@@ -39,7 +38,6 @@ export type {
 export {
   executeSandbox,
   compileComponent,
-  SANDBOX_DEFAULT_TIMEOUT_MS,
 } from "./sandbox.js";
 export type {
   SandboxOptions,
@@ -50,12 +48,11 @@ export type {
 // REPL scope — persistent scope across eval calls
 export { ScopeManager } from "./scope.js";
 export type { ScopesApi, HydrateResult } from "./scope.js";
-export { DbScopePersistence } from "./scopePersistence.js";
+export { RpcScopePersistence } from "./rpcScopePersistence.js";
 export type {
   ScopePersistence,
   ScopeEntry,
   ScopeListEntry,
-  DbHandle,
 } from "./scopePersistence.js";
 export { serializeScope, deserializeScope } from "./scopeSerialize.js";
 export type { SerializedScope } from "./scopeSerialize.js";

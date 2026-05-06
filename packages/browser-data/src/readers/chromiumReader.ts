@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
-import Database from "better-sqlite3";
+import type { Database } from "./sqlJsReader.js";
+import { openReadonlySqlite } from "./sqlJsReader.js";
 import type {
   BrowserDataReader,
   BrowserName,
@@ -54,7 +55,7 @@ function readJsonFile(filePath: string): unknown {
   return JSON.parse(content);
 }
 
-function tableExists(db: Database.Database, tableName: string): boolean {
+function tableExists(db: Database, tableName: string): boolean {
   const row = db
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
     .get(tableName) as { name: string } | undefined;
@@ -63,11 +64,11 @@ function tableExists(db: Database.Database, tableName: string): boolean {
 
 async function withDatabase<T>(
   dbPath: string,
-  fn: (db: Database.Database) => T,
+  fn: (db: Database) => T,
 ): Promise<T> {
   const tempPath = await copyDatabaseToTemp(dbPath);
   try {
-    const db = new Database(tempPath, { readonly: true });
+    const db = await openReadonlySqlite(fs.readFileSync(tempPath));
     try {
       return fn(db);
     } finally {

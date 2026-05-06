@@ -150,7 +150,10 @@ export class IpcDispatcher {
         const forwardToServer = SERVER_SERVICES.has(service);
         if (forwardToServer) {
           // Forward to server process via serverClient
-          result = await this.deps.serverClient.call(service, method, req.args);
+          result = await this.deps.serverClient.call(service, method, req.args, {
+            callerId,
+            callerKind,
+          });
         } else {
           // Dispatch locally to Electron services. The dispatcher itself
           // enforces policy via checkServiceAccess (single choke-point).

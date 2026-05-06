@@ -278,10 +278,12 @@ export const MessageList = React.memo(function MessageList({
     try {
       await navigator.clipboard.writeText(content);
       setCopiedMessageId(messageId);
-      setTimeout(() => setCopiedMessageId(null), 1500);
     } catch (err) {
       console.error("Failed to copy message:", err);
     }
+  }, []);
+  const handleClearCopiedMessage = useCallback((messageId: string) => {
+    setCopiedMessageId((current) => current === messageId ? null : current);
   }, []);
 
   // --- Sender info lookup ---
@@ -475,6 +477,7 @@ export const MessageList = React.memo(function MessageList({
           inlineUiComponents={inlineUiComponents}
           onInterrupt={handleInterruptMessage}
           onCopy={handleCopyMessage}
+          onClearCopied={handleClearCopiedMessage}
           onFocusPanel={onFocusPanel}
           onReloadPanel={onReloadPanel}
           mdxActions={mdxActions}
@@ -482,7 +485,7 @@ export const MessageList = React.memo(function MessageList({
       </Flex>
     );
   }, [getSenderInfo, inlineUiComponents, mdxActions,
-      handleInterruptMessage, handleCopyMessage, handleTypingInterrupt, onFocusPanel, onReloadPanel,
+      handleInterruptMessage, handleCopyMessage, handleClearCopiedMessage, handleTypingInterrupt, onFocusPanel, onReloadPanel,
       customRenderMessage, customRenderInlineGroup]);
 
   // --- Render ---

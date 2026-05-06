@@ -24,15 +24,6 @@ export function ChatInput() {
   const [sendError, setSendError] = useState<string | null>(null);
   const [showImageInput, setShowImageInput] = useState(false);
 
-  // Auto-dismiss error after 5 seconds
-  useEffect(() => {
-    if (sendError) {
-      const timer = setTimeout(() => setSendError(null), 5000);
-      return () => clearTimeout(timer);
-    }
-    return undefined;
-  }, [sendError]);
-
   // Auto-resize textarea: use rAF-coalesced onInput handler
   const resizeRafRef = useRef(0);
   const handleTextAreaInput = useCallback(() => {
@@ -111,6 +102,16 @@ export function ChatInput() {
     }
   }, [onSendMessage, pendingImages, onImagesChange]);
 
+  const handleInputChange = useCallback((value: string) => {
+    if (sendError) setSendError(null);
+    onInputChange(value);
+  }, [onInputChange, sendError]);
+
+  const handleImagesChange = useCallback((images: PendingImage[]) => {
+    if (sendError) setSendError(null);
+    onImagesChange(images);
+  }, [onImagesChange, sendError]);
+
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -119,8 +120,9 @@ export function ChatInput() {
   }, [handleSendMessage]);
 
   const toggleImageInput = useCallback(() => {
+    if (sendError) setSendError(null);
     setShowImageInput((prev) => !prev);
-  }, []);
+  }, [sendError]);
 
   const handleSendClick = useCallback(() => {
     void handleSendMessage();
@@ -145,7 +147,7 @@ export function ChatInput() {
           <Card size="1">
             <ImageInput
               images={pendingImages}
-              onImagesChange={onImagesChange}
+              onImagesChange={handleImagesChange}
               onError={(error) => setSendError(error)}
               disabled={!connected}
             />
@@ -164,7 +166,7 @@ export function ChatInput() {
             style={{ flex: 1, minHeight: 48, maxHeight: isMobile ? Math.min(150, viewportHeight * 0.25) : 200, resize: "none" }}
             placeholder={isMobile ? "Type a message..." : "Type a message... (Enter to send, Shift+Enter for new line)"}
             value={input}
-            onChange={(e) => onInputChange(e.target.value)}
+            onChange={(e) => handleInputChange(e.target.value)}
             onInput={handleTextAreaInput}
             onKeyDown={handleKeyDown}
             disabled={!connected}

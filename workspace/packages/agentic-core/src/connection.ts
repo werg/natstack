@@ -42,6 +42,7 @@ export class ConnectionManager {
   private _status: ConnectionStatus = "disconnected";
   private _clientId: string | null = null;
   private unsubscribers: Array<() => void> = [];
+  private connectAbortController: AbortController | null = null;
 
   constructor(opts: {
     config: ConnectionConfig;
@@ -82,9 +83,12 @@ export class ConnectionManager {
     // Close existing connection if any
     this.disconnect();
     this.setStatus("connecting");
+    const readyAbort = new AbortController();
+    this.connectAbortController = readyAbort;
 
+    let newClient: PubSubClient<ChatParticipantMetadata> | null = null;
     try {
-      const newClient = connectViaRpc<ChatParticipantMetadata>({
+      newClient = connectViaRpc<ChatParticipantMetadata>({
         rpc: this.config.rpc,
         channel: channelId,
         contextId,
@@ -99,7 +103,12 @@ export class ConnectionManager {
       });
 
       // Wait for the initial replay to complete
-      await newClient.ready();
+      await newClient.ready(readyAbort.signal);
+      if (this.connectAbortController !== readyAbort) {
+        newClient.close();
+        throw new Error("Connection attempt was superseded");
+      }
+      this.connectAbortController = null;
 
       this._client = newClient;
       this._clientId = newClient.clientId ?? null;
@@ -168,6 +177,13 @@ export class ConnectionManager {
       return newClient;
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
+      newClient?.close();
+      if (readyAbort.signal.aborted && this.connectAbortController !== readyAbort) {
+        throw error;
+      }
+      if (this.connectAbortController === readyAbort) {
+        this.connectAbortController = null;
+      }
       this.callbacks.onError?.(error);
       this.setStatus("error");
       this.disconnect();
@@ -176,6 +192,9 @@ export class ConnectionManager {
   }
 
   disconnect(): void {
+    this.connectAbortController?.abort();
+    this.connectAbortController = null;
+
     for (const unsub of this.unsubscribers) {
       unsub();
     }

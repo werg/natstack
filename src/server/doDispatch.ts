@@ -276,19 +276,19 @@ export class DODispatch {
 
     // Token-based path: use postToDOWithToken when tokenManager + getWorkerdUrl are set
     if (this.tokenManager && this.getWorkerdUrl) {
-      const deps: PostToDOWithTokenDeps = {
-        tokenManager: this.tokenManager,
-        workerdUrl: this.getWorkerdUrl(),
+      const buildDeps = (): PostToDOWithTokenDeps => ({
+        tokenManager: this.tokenManager!,
+        workerdUrl: this.getWorkerdUrl!(),
         dispatchSecret: this.getDispatchSecret ? this.getDispatchSecret() : undefined,
-      };
+      });
       try {
-        return await postToDOWithToken(ref, method, args, deps);
+        return await postToDOWithToken(ref, method, args, buildDeps());
       } catch (err) {
         if (this.ensureDOFn && this.isRetryable(err)) {
           console.warn(`[DODispatch] ${doRefKey(ref)}.${method} failed (${err instanceof Error ? err.message : String(err)}), calling ensureDO and retrying`);
           await this.ensureDOFn(ref.source, ref.className, ref.objectKey);
           await Promise.resolve(this.beforeDispatchFn?.(ref));
-          return await postToDOWithToken(ref, method, args, deps);
+          return await postToDOWithToken(ref, method, args, buildDeps());
         }
         throw err;
       }
@@ -314,6 +314,11 @@ export class DODispatch {
 
   private isRetryable(err: unknown): boolean {
     const msg = String(err);
-    return msg.includes("DO class not found") || msg.includes("ECONNREFUSED") || msg.includes("workerd not running");
+    const cause = err instanceof Error && "cause" in err ? String(err.cause) : "";
+    return msg.includes("DO class not found")
+      || msg.includes("ECONNREFUSED")
+      || msg.includes("fetch failed")
+      || msg.includes("workerd not running")
+      || cause.includes("ECONNREFUSED");
   }
 }

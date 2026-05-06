@@ -13,7 +13,7 @@ import type { AgentTool } from "@mariozechner/pi-agent-core";
 import type { TextContent, ImageContent } from "@mariozechner/pi-ai";
 import { Buffer } from "node:buffer";
 import type { RuntimeFs } from "./runtime-fs.js";
-import type { RpcCaller } from "@natstack/types";
+import type { RpcCaller } from "@natstack/rpc";
 import { resolveReadPath } from "./path-utils.js";
 import {
   DEFAULT_MAX_BYTES,

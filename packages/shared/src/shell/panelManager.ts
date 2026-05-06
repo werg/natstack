@@ -2,7 +2,7 @@ import * as path from "path";
 import { createDevLogger } from "@natstack/dev-log";
 import type { PanelRegistry } from "../panelRegistry.js";
 import type { Panel, ThemeAppearance } from "../types.js";
-import type { PanelSearchIndex } from "../db/panelSearchIndex.js";
+import type { PanelSearchIndex } from "../panelPersistenceTypes.js";
 import type { WorkspaceConfig } from "../workspace/types.js";
 import { loadPanelManifest } from "../panelTypes.js";
 import { validateStateArgs } from "../stateArgsValidator.js";
@@ -517,10 +517,8 @@ export class PanelManager {
 
   private indexPanel(panelId: string, title: string, panelPath: string): void {
     if (!this.searchIndex) return;
-    try {
-      this.searchIndex.indexPanel({ id: panelId, title, path: panelPath });
-    } catch (error) {
+    Promise.resolve(this.searchIndex.indexPanel({ id: panelId, title, path: panelPath })).catch((error) => {
       log.warn(`Failed to index panel ${panelId}:`, error);
-    }
+    });
   }
 }

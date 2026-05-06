@@ -1,7 +1,7 @@
 /**
  * Hello Worker — sample workerd worker demonstrating NatStack runtime integration.
  *
- * Shows: fs access, database, workspace tree, and basic HTTP handling.
+ * Shows: fs access, workspace tree, and basic HTTP handling.
  */
 
 import { createWorkerRuntime, handleWorkerRpc } from "@workspace/runtime/worker";
@@ -36,18 +36,7 @@ export default {
       }
     }
 
-    if (url.pathname === "/db") {
-      const db = await runtime.db.open("hello-worker-test");
-      await db.exec("CREATE TABLE IF NOT EXISTS visits (id INTEGER PRIMARY KEY, ts TEXT)");
-      await db.run("INSERT INTO visits (ts) VALUES (?)", [new Date().toISOString()]);
-      const count = await db.get<{ cnt: number }>("SELECT COUNT(*) as cnt FROM visits");
-      await db.close();
-      return new Response(`Visit count: ${count?.cnt ?? 0}`, {
-        headers: { "Content-Type": "text/plain" },
-      });
-    }
-
-    return new Response(`Hello from NatStack Worker!\n\nRoutes:\n  /tree - workspace tree\n  /readfile?path=/package.json - read a file\n  /db - database demo\n`, {
+    return new Response(`Hello from NatStack Worker!\n\nRoutes:\n  /tree - workspace tree\n  /readfile?path=/package.json - read a file\n`, {
       headers: { "Content-Type": "text/plain" },
     });
   },

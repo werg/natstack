@@ -36,8 +36,8 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
   /** Set this client's typing state. Broadcasts ephemerally (not persisted to message history). */
   setTyping(active: boolean): Promise<void>;
 
-  /** Wait for the ready signal (replay complete). Throws if timeout exceeded. */
-  ready(timeoutMs?: number): Promise<void>;
+  /** Wait for the ready signal (replay complete). */
+  ready(signal?: AbortSignal): Promise<void>;
 
   /** Close the connection */
   close(): void;
@@ -173,6 +173,6 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
     providerId: string,
     methodName: string,
     args?: unknown,
-    options?: { timeoutMs?: number }
+    options?: { signal?: AbortSignal }
   ): MethodCallHandle;
 }

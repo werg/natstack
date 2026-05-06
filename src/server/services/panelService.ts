@@ -10,8 +10,7 @@ import * as path from "path";
 import * as fs from "fs";
 import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
-import type { PanelPersistence } from "@natstack/shared/db/panelPersistence";
-import type { PanelSearchIndex } from "@natstack/shared/db/panelSearchIndex";
+import type { PanelPersistence, PanelSearchIndex } from "@natstack/shared/panelPersistenceTypes";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { FsService } from "@natstack/shared/fsService";
 import type { GitServer } from "@natstack/git-server";
@@ -105,21 +104,21 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
     }
   }
 
-  function persistAndIndex(
+  async function persistAndIndex(
     panelId: string,
     title: string,
     parentId: string | null,
     snapshot: ReturnType<typeof createSnapshot>,
-  ): void {
-    persistence.createPanel({ id: panelId, title, parentId, snapshot });
+  ): Promise<void> {
+    await persistence.createPanel({ id: panelId, title, parentId, snapshot });
 
     if (parentId) {
-      persistence.setSelectedChild(parentId, panelId);
+      await persistence.setSelectedChild(parentId, panelId);
     }
 
     if (searchIndex) {
       try {
-        searchIndex.indexPanel({ id: panelId, title, path: snapshot.source });
+        await searchIndex.indexPanel({ id: panelId, title, path: snapshot.source });
       } catch (err) {
         console.error(`[PanelService] Failed to index panel ${panelId}:`, err);
       }
@@ -127,28 +126,32 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
   }
 
   /** Archive childless panels with autoArchiveWhenEmpty (e.g., unused launcher UIs). */
-  function cleanupChildlessAutoArchivePanels(
+  async function cleanupChildlessAutoArchivePanels(
     panels: import("@natstack/shared/types").Panel[],
     persist: PanelPersistence,
-  ): void {
+  ): Promise<void> {
     for (const panel of panels) {
       if (panel.children.length > 0) {
-        cleanupChildlessAutoArchivePanels(panel.children, persist);
-        panel.children = panel.children.filter(c => !persist.isArchived(c.id));
+        await cleanupChildlessAutoArchivePanels(panel.children, persist);
+        const kept = [];
+        for (const child of panel.children) {
+          if (!(await persist.isArchived(child.id))) kept.push(child);
+        }
+        panel.children = kept;
       }
       if (panel.snapshot.autoArchiveWhenEmpty && panel.children.length === 0) {
-        try { persist.archivePanel(panel.id); }
+        try { await persist.archivePanel(panel.id); }
         catch (e) { console.error(`[PanelService] Failed to archive panel ${panel.id}:`, e); }
       }
     }
   }
 
   /** Collect panelId + all descendant IDs from the DB. */
-  function collectSubtree(panelId: string): string[] {
+  async function collectSubtree(panelId: string): Promise<string[]> {
     const ids: string[] = [panelId];
-    const children = persistence.getChildren(panelId);
+    const children = await persistence.getChildren(panelId);
     for (const child of children) {
-      ids.push(...collectSubtree(child.id));
+      ids.push(...await collectSubtree(child.id));
     }
     return ids;
   }
@@ -302,7 +305,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
 
           // Persist
           const parentId = opts?.parentId ?? null;
-          persistAndIndex(panelId, manifest.title, parentId, snapshot);
+          await persistAndIndex(panelId, manifest.title, parentId, snapshot);
 
           const result: PanelCreateResult = {
             panelId,
@@ -324,7 +327,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
         // =================================================================
         case "close": {
           const [panelId] = a as [string];
-          const closedIds = collectSubtree(panelId);
+          const closedIds = await collectSubtree(panelId);
 
           for (const id of closedIds) {
             tokenManager.revokeToken(id);
@@ -332,7 +335,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
             fsService.unregisterCallerContext(id);
             fsService.closeHandlesForCaller(id);
             codeIdentityResolver?.unregisterCaller(id);
-            persistence.archivePanel(id);
+            await persistence.archivePanel(id);
           }
 
           return { closedIds };
@@ -362,7 +365,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           const rpcToken = tokenManager.getToken(panelId)!;
 
           const snapshot = createSnapshot(`browser:${url}`, contextId, {});
-          persistAndIndex(panelId, opts?.name ?? hostname, parentId, snapshot);
+          await persistAndIndex(panelId, opts?.name ?? hostname, parentId, snapshot);
 
           // No FS context for browser panels
 
@@ -410,9 +413,9 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
         // =================================================================
         case "updateTitle": {
           const [panelId, title] = a as [string, string];
-          persistence.setTitle(panelId, title);
+          await persistence.setTitle(panelId, title);
           if (searchIndex) {
-            try { searchIndex.updateTitle(panelId, title); }
+            try { await searchIndex.updateTitle(panelId, title); }
             catch (e) { console.warn(`[PanelService] Search index updateTitle failed for ${panelId}:`, e); }
           }
           return;
@@ -420,7 +423,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
 
         case "updateContext": {
           const [panelId, updates] = a as [string, { contextId?: string; source?: string; stateArgs?: Record<string, unknown> }];
-          const existing = persistence.getPanel(panelId);
+          const existing = await persistence.getPanel(panelId);
           if (!existing) throw new Error(`Panel not found: ${panelId}`);
 
           const updatedSnapshot = { ...existing.snapshot };
@@ -466,7 +469,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           }
           if (updates.stateArgs) updatedSnapshot.stateArgs = updates.stateArgs;
 
-          persistence.updatePanel(panelId, { snapshot: updatedSnapshot });
+          await persistence.updatePanel(panelId, { snapshot: updatedSnapshot });
 
           // Update FS context mapping if contextId changed
           if (updates.contextId) {
@@ -480,7 +483,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
 
         case "updateStateArgs": {
           const [panelId, updates] = a as [string, Record<string, unknown>];
-          const panel = persistence.getPanel(panelId);
+          const panel = await persistence.getPanel(panelId);
           if (!panel) throw new Error(`Panel not found: ${panelId}`);
 
           // Load manifest for schema validation
@@ -506,32 +509,32 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           }
 
           const updatedSnapshot = { ...panel.snapshot, stateArgs: validation.data };
-          persistence.updatePanel(panelId, { snapshot: updatedSnapshot });
+          await persistence.updatePanel(panelId, { snapshot: updatedSnapshot });
 
           return validation.data;
         }
 
         case "setCollapsed": {
           const [panelId, collapsed] = a as [string, boolean];
-          persistence.setCollapsed(panelId, collapsed);
+          await persistence.setCollapsed(panelId, collapsed);
           return;
         }
 
         case "setCollapsedBatch": {
           const [panelIds, collapsed] = a as [string[], boolean];
-          persistence.setCollapsedBatch(panelIds, collapsed);
+          await persistence.setCollapsedBatch(panelIds, collapsed);
           return;
         }
 
         case "getCollapsedIds": {
-          return persistence.getCollapsedIds();
+          return await persistence.getCollapsedIds();
         }
 
         case "updateSelectedPath": {
           const [panelId] = a as [string];
-          persistence.updateSelectedPath(panelId);
+          await persistence.updateSelectedPath(panelId);
           if (searchIndex) {
-            try { searchIndex.incrementAccessCount(panelId); }
+            try { await searchIndex.incrementAccessCount(panelId); }
             catch (e) { console.warn(`[PanelService] Search index incrementAccessCount failed for ${panelId}:`, e); }
           }
           return;
@@ -550,7 +553,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           } else {
             [panelId, targetParentId, position] = a as [string, string | null, number];
           }
-          persistence.movePanel(panelId, targetParentId, position);
+          await persistence.movePanel(panelId, targetParentId, position);
           return;
         }
 
@@ -558,12 +561,15 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
         // Tree operations
         // =================================================================
         case "loadTree": {
-          const tree = persistence.getFullTree();
+          const tree = await persistence.getFullTree();
           // Clean up childless autoArchiveWhenEmpty panels (e.g., unused launcher UIs)
-          cleanupChildlessAutoArchivePanels(tree, persistence);
+          await cleanupChildlessAutoArchivePanels(tree, persistence);
           // Return tree + collapsed IDs in one call (eliminates a round-trip)
-          const rootPanels = tree.filter(p => !persistence.isArchived(p.id));
-          const collapsedIds = persistence.getCollapsedIds();
+          const rootPanels = [];
+          for (const panel of tree) {
+            if (!(await persistence.isArchived(panel.id))) rootPanels.push(panel);
+          }
+          const collapsedIds = await persistence.getCollapsedIds();
           return { rootPanels, collapsedIds };
         }
 
@@ -571,18 +577,18 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           const [livePanelIds] = a as [string[]];
           const liveSet = new Set(livePanelIds);
           // Archive panels that are no longer live
-          const tree = persistence.getFullTree();
-          const archiveIfDead = (panels: import("@natstack/shared/types").Panel[]) => {
+          const tree = await persistence.getFullTree();
+          const archiveIfDead = async (panels: import("@natstack/shared/types").Panel[]) => {
             for (const panel of panels) {
               if (!liveSet.has(panel.id)) {
-                persistence.archivePanel(panel.id);
+                await persistence.archivePanel(panel.id);
               }
               if (panel.children.length > 0) {
-                archiveIfDead(panel.children);
+                await archiveIfDead(panel.children);
               }
             }
           };
-          archiveIfDead(tree);
+          await archiveIfDead(tree);
           return;
         }
 
@@ -593,7 +599,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
         case "archive": {
           // Alias for close — archive panel + descendants
           const [panelId] = a as [string];
-          const closedIds = collectSubtree(panelId);
+          const closedIds = await collectSubtree(panelId);
 
           for (const id of closedIds) {
             tokenManager.revokeToken(id);
@@ -601,7 +607,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
             fsService.unregisterCallerContext(id);
             fsService.closeHandlesForCaller(id);
             codeIdentityResolver?.unregisterCaller(id);
-            persistence.archivePanel(id);
+            await persistence.archivePanel(id);
           }
 
           return { closedIds };
@@ -610,9 +616,9 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
         case "notifyFocused": {
           // Alias for updateSelectedPath
           const [panelId] = a as [string];
-          persistence.updateSelectedPath(panelId);
+          await persistence.updateSelectedPath(panelId);
           if (searchIndex) {
-            try { searchIndex.incrementAccessCount(panelId); }
+            try { await searchIndex.incrementAccessCount(panelId); }
             catch (e) { console.warn(`[PanelService] Search index incrementAccessCount failed for ${panelId}:`, e); }
           }
           return;
@@ -656,7 +662,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           });
 
           const snapshot = createSnapshot(relativePath, contextId, { env });
-          persistAndIndex(aboutPanelId, manifest.title, null, snapshot);
+          await persistAndIndex(aboutPanelId, manifest.title, null, snapshot);
 
           return { id: aboutPanelId, title: manifest.title };
         }
@@ -679,7 +685,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
         case "expandIds": {
           // Alias for setCollapsedBatch(panelIds, false)
           const [panelIds] = a as [string[]];
-          persistence.setCollapsedBatch(panelIds, false);
+          await persistence.setCollapsedBatch(panelIds, false);
           return;
         }
 

@@ -1,7 +1,8 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import Database from "better-sqlite3";
+import type { Database } from "./sqlJsReader.js";
+import { openReadonlySqlite } from "./sqlJsReader.js";
 import bplist from "bplist-parser";
 import type {
   BrowserDataReader,
@@ -335,7 +336,7 @@ export class SafariReader implements BrowserDataReader {
     let tempPath: string | undefined;
     try {
       tempPath = await copyDatabaseToTemp(dbPath);
-      const db = new Database(tempPath, { readonly: true });
+      const db = await openReadonlySqlite(fs.readFileSync(tempPath));
 
       try {
         const rows = db
@@ -511,7 +512,7 @@ export class SafariReader implements BrowserDataReader {
     let tempPath: string | undefined;
     try {
       tempPath = await copyDatabaseToTemp(dbPath);
-      const db = new Database(tempPath, { readonly: true });
+      const db = await openReadonlySqlite(fs.readFileSync(tempPath));
 
       try {
         // PerSitePreferences.db has a `preference_values` table with

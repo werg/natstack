@@ -25,6 +25,10 @@ class TestAiChatWorker extends AiChatWorker {
       accountIdentity: { providerUserId },
     });
   }
+
+  modelBaseUrl(): string {
+    return (this as unknown as { getModelBaseUrl(): string }).getModelBaseUrl();
+  }
 }
 
 describe("AiChatWorker model credential defaults", () => {
@@ -33,6 +37,7 @@ describe("AiChatWorker model credential defaults", () => {
     const worker = instance as TestAiChatWorker;
 
     expect(worker.model()).toBe("openai-codex:gpt-5.5");
+    expect(worker.modelBaseUrl()).toBe("https://chatgpt.com/backend-api");
 
     const setup = worker.setupProps("openai-codex");
     expect(setup).toMatchObject({
@@ -73,6 +78,9 @@ describe("AiChatWorker model credential defaults", () => {
           browser: "external",
           flow: expect.objectContaining({
             type: "oauth2-auth-code-pkce",
+          }),
+          credential: expect.objectContaining({
+            audience: [{ url: "https://chatgpt.com/backend-api", match: "path-prefix" }],
           }),
           redirect: {
             host: "localhost",

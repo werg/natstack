@@ -1,11 +1,12 @@
 import * as crypto from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
-import type { DatabaseManager } from "@natstack/shared/db/databaseManager";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
 import type { ServiceRouteDecl } from "../routeRegistry.js";
 import type { CodeIdentityResolver } from "./codeIdentityResolver.js";
+import type { DODispatch } from "../doDispatch.js";
+import { INTERNAL_DO_SOURCE } from "../internalDOs/internalDoLoader.js";
 import {
   getHeader,
   summarizeWebhookIngressSubscription,
@@ -80,10 +81,10 @@ const rotateSecretSchema = z.object({
 }).strict();
 
 export interface WebhookIngressStore {
-  create(input: Omit<WebhookIngressSubscription, "subscriptionId" | "createdAt" | "updatedAt">): WebhookIngressSubscription;
-  get(subscriptionId: string): WebhookIngressSubscription | null;
-  list(ownerCallerId?: string): WebhookIngressSubscription[];
-  replace(subscription: WebhookIngressSubscription): void;
+  create(input: Omit<WebhookIngressSubscription, "subscriptionId" | "createdAt" | "updatedAt">): WebhookIngressSubscription | Promise<WebhookIngressSubscription>;
+  get(subscriptionId: string): WebhookIngressSubscription | null | Promise<WebhookIngressSubscription | null>;
+  list(ownerCallerId?: string): WebhookIngressSubscription[] | Promise<WebhookIngressSubscription[]>;
+  replace(subscription: WebhookIngressSubscription): void | Promise<void>;
 }
 
 export class InMemoryWebhookIngressStore implements WebhookIngressStore {
@@ -116,170 +117,25 @@ export class InMemoryWebhookIngressStore implements WebhookIngressStore {
   }
 }
 
-interface WebhookIngressSubscriptionRow {
-  subscription_id: string;
-  label: string | null;
-  owner_caller_id: string;
-  owner_caller_kind: WebhookIngressSubscription["ownerCallerKind"];
-  target_json: string;
-  verifier_json: string;
-  replay_json: string | null;
-  public_url: string;
-  revoked_at: number | null;
-  created_at: number;
-  updated_at: number;
-}
+export class DOWebhookIngressStore implements WebhookIngressStore {
+  private readonly ref = { source: INTERNAL_DO_SOURCE, className: "WebhookStoreDO", objectKey: "global" };
 
-export class SqliteWebhookIngressStore implements WebhookIngressStore {
-  private readonly handle: string;
+  constructor(private readonly doDispatch: DODispatch) {}
 
-  constructor(private readonly databaseManager: DatabaseManager) {
-    this.handle = databaseManager.open("server:webhookIngress", "webhook-ingress");
-    this.databaseManager.exec(this.handle, `
-      CREATE TABLE IF NOT EXISTS webhook_ingress_subscriptions (
-        subscription_id TEXT PRIMARY KEY,
-        label TEXT,
-        owner_caller_id TEXT NOT NULL,
-        owner_caller_kind TEXT NOT NULL,
-        target_json TEXT NOT NULL,
-        verifier_json TEXT NOT NULL,
-        replay_json TEXT,
-        public_url TEXT NOT NULL,
-        revoked_at INTEGER,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )
-    `);
-    this.databaseManager.exec(this.handle, `
-      CREATE INDEX IF NOT EXISTS webhook_ingress_subscriptions_owner_idx
-      ON webhook_ingress_subscriptions(owner_caller_id)
-    `);
+  create(input: Omit<WebhookIngressSubscription, "subscriptionId" | "createdAt" | "updatedAt">): Promise<WebhookIngressSubscription> {
+    return this.doDispatch.dispatch(this.ref, "create", input) as Promise<WebhookIngressSubscription>;
   }
 
-  create(input: Omit<WebhookIngressSubscription, "subscriptionId" | "createdAt" | "updatedAt">): WebhookIngressSubscription {
-    const now = Date.now();
-    const subscription: WebhookIngressSubscription = {
-      ...input,
-      subscriptionId: crypto.randomUUID(),
-      createdAt: now,
-      updatedAt: now,
-    };
-    this.upsert(subscription);
-    return subscription;
+  get(subscriptionId: string): Promise<WebhookIngressSubscription | null> {
+    return this.doDispatch.dispatch(this.ref, "get", subscriptionId) as Promise<WebhookIngressSubscription | null>;
   }
 
-  get(subscriptionId: string): WebhookIngressSubscription | null {
-    const row = this.databaseManager.get<WebhookIngressSubscriptionRow>(
-      this.handle,
-      `
-        SELECT
-          subscription_id,
-          label,
-          owner_caller_id,
-          owner_caller_kind,
-          target_json,
-          verifier_json,
-          replay_json,
-          public_url,
-          revoked_at,
-          created_at,
-          updated_at
-        FROM webhook_ingress_subscriptions
-        WHERE subscription_id = ?
-      `,
-      [subscriptionId],
-    );
-    return row ? this.fromRow(row) : null;
+  list(ownerCallerId?: string): Promise<WebhookIngressSubscription[]> {
+    return this.doDispatch.dispatch(this.ref, "list", ownerCallerId) as Promise<WebhookIngressSubscription[]>;
   }
 
-  list(ownerCallerId?: string): WebhookIngressSubscription[] {
-    const sql = `
-      SELECT
-        subscription_id,
-        label,
-        owner_caller_id,
-        owner_caller_kind,
-        target_json,
-        verifier_json,
-        replay_json,
-        public_url,
-        revoked_at,
-        created_at,
-        updated_at
-      FROM webhook_ingress_subscriptions
-      ${ownerCallerId ? "WHERE owner_caller_id = ?" : ""}
-      ORDER BY created_at ASC
-    `;
-    const rows = this.databaseManager.query<WebhookIngressSubscriptionRow>(
-      this.handle,
-      sql,
-      ownerCallerId ? [ownerCallerId] : undefined,
-    );
-    return rows.map((row) => this.fromRow(row));
-  }
-
-  replace(subscription: WebhookIngressSubscription): void {
-    this.upsert(subscription);
-  }
-
-  private upsert(subscription: WebhookIngressSubscription): void {
-    this.databaseManager.run(
-      this.handle,
-      `
-        INSERT INTO webhook_ingress_subscriptions (
-          subscription_id,
-          label,
-          owner_caller_id,
-          owner_caller_kind,
-          target_json,
-          verifier_json,
-          replay_json,
-          public_url,
-          revoked_at,
-          created_at,
-          updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(subscription_id) DO UPDATE SET
-          label = excluded.label,
-          owner_caller_id = excluded.owner_caller_id,
-          owner_caller_kind = excluded.owner_caller_kind,
-          target_json = excluded.target_json,
-          verifier_json = excluded.verifier_json,
-          replay_json = excluded.replay_json,
-          public_url = excluded.public_url,
-          revoked_at = excluded.revoked_at,
-          updated_at = excluded.updated_at
-      `,
-      [
-        subscription.subscriptionId,
-        subscription.label ?? null,
-        subscription.ownerCallerId,
-        subscription.ownerCallerKind,
-        JSON.stringify(subscription.target),
-        JSON.stringify(subscription.verifier),
-        subscription.replay ? JSON.stringify(subscription.replay) : null,
-        subscription.publicUrl,
-        subscription.revokedAt ?? null,
-        subscription.createdAt,
-        subscription.updatedAt,
-      ],
-    );
-  }
-
-  private fromRow(row: WebhookIngressSubscriptionRow): WebhookIngressSubscription {
-    return {
-      subscriptionId: row.subscription_id,
-      label: row.label ?? undefined,
-      ownerCallerId: row.owner_caller_id,
-      ownerCallerKind: row.owner_caller_kind,
-      target: JSON.parse(row.target_json) as WebhookIngressSubscription["target"],
-      verifier: JSON.parse(row.verifier_json) as WebhookIngressSubscription["verifier"],
-      replay: row.replay_json ? JSON.parse(row.replay_json) as WebhookIngressSubscription["replay"] : undefined,
-      publicUrl: row.public_url,
-      revokedAt: row.revoked_at ?? undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
+  async replace(subscription: WebhookIngressSubscription): Promise<void> {
+    await this.doDispatch.dispatch(this.ref, "replace", subscription);
   }
 }
 
@@ -287,7 +143,7 @@ export interface WebhookIngressServiceDeps {
   relaySigningSecret?: string;
   publicBaseUrl?: string;
   store?: WebhookIngressStore;
-  databaseManager?: DatabaseManager;
+  doDispatch?: DODispatch;
   codeIdentityResolver?: Pick<CodeIdentityResolver, "resolveByCallerId">;
   now?: () => number;
   dispatchToTarget?: (target: WebhookTarget, event: WebhookDeliveryEvent) => Promise<unknown>;
@@ -311,8 +167,8 @@ export function createWebhookIngressService(deps: WebhookIngressServiceDeps = {}
   };
 } {
   const store = deps.store ?? (
-    deps.databaseManager
-      ? new SqliteWebhookIngressStore(deps.databaseManager)
+    deps.doDispatch
+      ? new DOWebhookIngressStore(deps.doDispatch)
       : new InMemoryWebhookIngressStore()
   );
   const publicBaseUrl = normalizeBaseUrl(deps.publicBaseUrl ?? DEFAULT_PUBLIC_BASE_URL);
@@ -341,13 +197,13 @@ export function createWebhookIngressService(deps: WebhookIngressServiceDeps = {}
     }
   }
 
-  function createSubscription(
+  async function createSubscription(
     ctx: ServiceContext,
     input: CreateWebhookIngressSubscriptionRequest,
-  ): WebhookIngressSubscriptionSummary {
+  ): Promise<WebhookIngressSubscriptionSummary> {
     const parsed = createSubscriptionSchema.parse(input) as CreateWebhookIngressSubscriptionRequest;
     ensureTargetIsCallerSource(ctx, parsed.target);
-    const subscription = store.create({
+    const subscription = await store.create({
       label: parsed.label,
       ownerCallerId: ctx.callerId,
       ownerCallerKind: ctx.callerKind,
@@ -361,30 +217,30 @@ export function createWebhookIngressService(deps: WebhookIngressServiceDeps = {}
       publicUrl: `${publicBaseUrl}/i/${encodeURIComponent(subscription.subscriptionId)}`,
       updatedAt: now(),
     };
-    store.replace(withUrl);
+    await store.replace(withUrl);
     return toSummary(withUrl);
   }
 
-  function listSubscriptions(ctx: ServiceContext): WebhookIngressSubscriptionSummary[] {
+  async function listSubscriptions(ctx: ServiceContext): Promise<WebhookIngressSubscriptionSummary[]> {
     const owner = ctx.callerKind === "shell" || ctx.callerKind === "server"
       ? undefined
       : ctx.callerId;
-    return store.list(owner).map(toSummary);
+    return (await store.list(owner)).map(toSummary);
   }
 
-  function revokeSubscription(ctx: ServiceContext, subscriptionId: string): void {
-    const subscription = store.get(subscriptionId);
+  async function revokeSubscription(ctx: ServiceContext, subscriptionId: string): Promise<void> {
+    const subscription = await store.get(subscriptionId);
     if (!subscription) return;
     ensureOwner(ctx, subscription);
-    store.replace({ ...subscription, revokedAt: now() });
+    await store.replace({ ...subscription, revokedAt: now() });
   }
 
-  function rotateSecret(
+  async function rotateSecret(
     ctx: ServiceContext,
     input: RotateWebhookIngressSecretRequest,
-  ): RotateWebhookIngressSecretResult {
+  ): Promise<RotateWebhookIngressSecretResult> {
     const parsed = rotateSecretSchema.parse(input) as RotateWebhookIngressSecretRequest;
-    const subscription = store.get(parsed.subscriptionId);
+    const subscription = await store.get(parsed.subscriptionId);
     if (!subscription || subscription.revokedAt) {
       throw new Error("webhook subscription not found");
     }
@@ -398,7 +254,7 @@ export function createWebhookIngressService(deps: WebhookIngressServiceDeps = {}
       verifier,
       updatedAt: now(),
     };
-    store.replace(updated);
+    await store.replace(updated);
     return {
       subscription: toSummary(updated),
       secret,
@@ -451,7 +307,7 @@ export function createWebhookIngressService(deps: WebhookIngressServiceDeps = {}
     if (!verifyRelayEnvelope(req, rawBody)) {
       return sendJson(res, 401, { error: "invalid relay envelope" });
     }
-    const subscription = store.get(subscriptionId);
+    const subscription = await store.get(subscriptionId);
     if (!subscription || subscription.revokedAt) {
       return sendJson(res, 404, { error: "webhook subscription not found" });
     }

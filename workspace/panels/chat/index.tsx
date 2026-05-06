@@ -6,7 +6,7 @@
  * directly — no cross-context navigation needed.
  */
 
-import { pubsubConfig, id as panelClientId, contextId, rpc, focusPanel, useStateArgs, setStateArgs, buildPanelLink, db } from "@workspace/runtime";
+import { pubsubConfig, id as panelClientId, contextId, rpc, focusPanel, useStateArgs, setStateArgs, buildPanelLink } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Flex, Spinner, Text, Theme } from "@radix-ui/themes";
@@ -241,8 +241,8 @@ export default function ChatPanel() {
     onReloadPanel: handleReloadPanel,
   }), [handleNewConversation, handleAddAgent, handleRemoveAgent, availableAgents, handleFocusPanel, handleReloadPanel]);
 
-  // Sandbox config — provides RPC, import loading, and DB to agentic-chat (keeps it runtime-agnostic)
-  const sandboxConfig = useMemo(() => createPanelSandboxConfig(rpc, db), []);
+  // Sandbox config — provides RPC and import loading to agentic-chat.
+  const sandboxConfig = useMemo(() => createPanelSandboxConfig(rpc), []);
 
   // Tool provider: only eval tool — all other operations use eval + runtime APIs
   const toolProvider: ToolProvider = useCallback((deps: ToolProviderDeps) => {

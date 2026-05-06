@@ -59,7 +59,11 @@ function createSqlProxy(db: Database) {
   return {
     exec(query: string, ...bindings: unknown[]): SqlResult {
       const trimmed = query.trim().toUpperCase();
-      const isQuery = trimmed.startsWith("SELECT") || trimmed.startsWith("WITH") || trimmed.startsWith("PRAGMA");
+      const isQuery =
+        trimmed.startsWith("SELECT") ||
+        trimmed.startsWith("WITH") ||
+        trimmed.startsWith("PRAGMA") ||
+        /\bRETURNING\b/.test(trimmed);
 
       if (isQuery) {
         const stmt = db.prepare(query);
@@ -133,6 +137,22 @@ export async function createTestDO<T>(
       },
       deleteAlarm() {
         alarms.length = 0;
+      },
+      transactionSync<T>(callback: () => T): T {
+        // sql.js doesn't enforce workerd's "no raw BEGIN/COMMIT" rule, but we
+        // mirror the production semantics: synchronous block, auto-rollback on
+        // throw. Use a SAVEPOINT so nested calls work too.
+        const savepoint = `_tx_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+        sqlProxy.exec(`SAVEPOINT ${savepoint}`);
+        try {
+          const result = callback();
+          sqlProxy.exec(`RELEASE ${savepoint}`);
+          return result;
+        } catch (err) {
+          try { sqlProxy.exec(`ROLLBACK TO ${savepoint}`); } catch { /* ignore */ }
+          try { sqlProxy.exec(`RELEASE ${savepoint}`); } catch { /* ignore */ }
+          throw err;
+        }
       },
     },
     acceptWebSocket(ws: unknown, tags?: string[]) {

@@ -17,6 +17,20 @@ export interface SendOpts {
 export interface SubscribeResult {
   ok: boolean;
   channelConfig?: Record<string, unknown>;
+  /**
+   * Ordered wire-format replay events for RPC subscribers. This mirrors the
+   * replay events queued to the subscriber before `ready`, so an RPC client can
+   * recover if the ready event is lost without weakening the "ready means
+   * replay drained" contract.
+   */
+  initialReplay?: Array<Record<string, unknown>>;
+  ready?: {
+    contextId?: string;
+    channelConfig?: Record<string, unknown>;
+    totalCount: number;
+    chatMessageCount: number;
+    firstChatMessageId?: number;
+  };
   /** Up to 50 most recent persisted events before the subscriber joined (best-effort catch-up). */
   replay?: ChannelEvent[];
   /** True if replay was capped and older events exist beyond the returned window. */

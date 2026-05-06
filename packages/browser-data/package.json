@@ -17,15 +17,15 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "better-sqlite3": "^12.5.0",
-    "bplist-parser": "^0.3.2"
+    "bplist-parser": "^0.3.2",
+    "sql.js": "^1.14.0"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.10.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4",
-    "zod": "^3.24.1"
+    "zod": "^3.24.1",
+    "@types/sql.js": "^1.4.11"
   },
   "peerDependencies": {
     "zod": "^3.24.1"

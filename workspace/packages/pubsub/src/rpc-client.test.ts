@@ -132,7 +132,7 @@ describe("connectViaRpc", () => {
         { id: "panel-1", name: "User", type: "panel" },
       ]);
 
-      await client.ready(1000);
+      await client.ready();
 
       // Roster should have both participants
       const roster = client.roster;
@@ -143,6 +143,78 @@ describe("connectViaRpc", () => {
 
       expect(client.connected).toBe(true);
       expect(client.contextId).toBe("ctx-123");
+
+      client.close();
+    });
+
+    it("resolves ready() from the subscribe acknowledgment after applying fallback replay", async () => {
+      mockRpc.call.mockResolvedValueOnce({
+        ok: true,
+        initialReplay: [
+          {
+            kind: "replay",
+            id: 101,
+            type: "presence",
+            payload: { action: "join", metadata: { name: "Claude", type: "agent" } },
+            senderId: "agent-1",
+            ts: Date.now(),
+          },
+          {
+            kind: "replay",
+            id: 201,
+            type: "message",
+            payload: { id: "msg-201", content: "from replay" },
+            senderId: "agent-1",
+            ts: Date.now(),
+          },
+        ],
+        ready: {
+          contextId: "ctx-from-subscribe",
+          channelConfig: { title: "Ack Channel" },
+          totalCount: 1,
+          chatMessageCount: 1,
+        },
+      });
+
+      const client = connectViaRpc({ rpc: mockRpc as any, channel: CHANNEL });
+      const iter = client.messages();
+      const readyHandler = vi.fn();
+      client.onReady(readyHandler);
+
+      await client.ready();
+
+      expect(client.connected).toBe(true);
+      expect(client.contextId).toBe("ctx-from-subscribe");
+      expect(client.channelConfig).toEqual({ title: "Ack Channel" });
+      expect(client.roster["agent-1"]?.metadata).toEqual({ name: "Claude", type: "agent" });
+      expect(readyHandler).toHaveBeenCalledTimes(1);
+
+      await expect(iter.next()).resolves.toMatchObject({
+        value: { kind: "replay", id: 201, type: "message" },
+      });
+      await expect(iter.next()).resolves.toMatchObject({
+        value: { kind: "ready", totalCount: 1, chatMessageCount: 1 },
+      });
+
+      // If the queued event delivery catches up after the ack fallback, replay
+      // and ready are deduped rather than surfacing a second boundary.
+      emit({
+        kind: "replay",
+        id: 201,
+        type: "message",
+        payload: { id: "msg-201", content: "from replay" },
+        senderId: "agent-1",
+        ts: Date.now(),
+      });
+      emit({
+        kind: "ready",
+        contextId: "ctx-from-subscribe",
+        channelConfig: { title: "Ack Channel" },
+        totalCount: 1,
+        chatMessageCount: 1,
+      });
+      await Promise.resolve();
+      expect(readyHandler).toHaveBeenCalledTimes(1);
 
       client.close();
     });
@@ -163,7 +235,7 @@ describe("connectViaRpc", () => {
         { id: "agent-1", name: "Claude", type: "agent" },
       ]);
 
-      await client.ready(1000);
+      await client.ready();
 
       expect(rosterUpdates).toContainEqual({ participantId: "agent-1", action: "join" });
 
@@ -179,7 +251,7 @@ describe("connectViaRpc", () => {
     beforeEach(async () => {
       client = connectViaRpc({ rpc: mockRpc as any, channel: CHANNEL });
       await emitReplayAndReady(emit, []);
-      await client.ready(1000);
+      await client.ready();
       // Clear call history from subscribe
       mockRpc.call.mockClear();
       mockRpc.call.mockResolvedValue({ id: 42 });
@@ -249,7 +321,7 @@ describe("connectViaRpc", () => {
       });
 
       await emitReplayAndReady(emit, []);
-      await client.ready(1000);
+      await client.ready();
       mockRpc.call.mockClear();
       mockRpc.call.mockResolvedValue(undefined);
 
@@ -303,7 +375,7 @@ describe("connectViaRpc", () => {
     it("calls unsubscribe and fires disconnect handlers", async () => {
       const client = connectViaRpc({ rpc: mockRpc as any, channel: CHANNEL });
       await emitReplayAndReady(emit, []);
-      await client.ready(1000);
+      await client.ready();
       mockRpc.call.mockClear();
       mockRpc.call.mockResolvedValue(undefined);
 
@@ -328,7 +400,7 @@ describe("connectViaRpc", () => {
     it("terminates messages() iterator on close", async () => {
       const client = connectViaRpc({ rpc: mockRpc as any, channel: CHANNEL });
       await emitReplayAndReady(emit, []);
-      await client.ready(1000);
+      await client.ready();
 
       const iter = client.messages();
 
@@ -343,6 +415,85 @@ describe("connectViaRpc", () => {
   // ── 5. Method cancel propagation ──────────────────────────────────────
 
   describe("method cancel propagation", () => {
+    it("does not publish a method call when the caller signal is already aborted", async () => {
+      const client = connectViaRpc({ rpc: mockRpc as any, channel: CHANNEL });
+      await emitReplayAndReady(emit, []);
+      await client.ready();
+      mockRpc.call.mockClear();
+
+      const controller = new AbortController();
+      controller.abort();
+
+      const handle = client.callMethod("provider-1", "slowWork", {}, { signal: controller.signal });
+
+      await expect(handle.result).rejects.toMatchObject({ code: "cancelled" });
+      expect(mockRpc.call).not.toHaveBeenCalled();
+
+      client.close();
+    });
+
+    it("cancels an in-flight method call when the caller signal aborts", async () => {
+      const client = connectViaRpc({ rpc: mockRpc as any, channel: CHANNEL });
+      await emitReplayAndReady(emit, []);
+      await client.ready();
+      mockRpc.call.mockClear();
+      mockRpc.call.mockResolvedValue(undefined);
+
+      const controller = new AbortController();
+      const handle = client.callMethod("provider-1", "slowWork", {}, { signal: controller.signal });
+
+      expect(mockRpc.call).toHaveBeenCalledWith(
+        DO_TARGET,
+        "callMethod",
+        SELF_ID,
+        "provider-1",
+        handle.callId,
+        "slowWork",
+        {},
+      );
+
+      controller.abort();
+
+      await expect(handle.result).rejects.toMatchObject({ code: "cancelled" });
+      expect(mockRpc.call).toHaveBeenCalledWith(DO_TARGET, "cancelMethodCall", handle.callId);
+
+      client.close();
+    });
+
+    it("awaits cancelMethodCall for explicit cancellation", async () => {
+      const client = connectViaRpc({ rpc: mockRpc as any, channel: CHANNEL });
+      await emitReplayAndReady(emit, []);
+      await client.ready();
+      mockRpc.call.mockClear();
+
+      let resolveCancel!: () => void;
+      mockRpc.call.mockImplementation((_target: string, method: string) => {
+        if (method === "cancelMethodCall") {
+          return new Promise<void>((resolve) => {
+            resolveCancel = resolve;
+          });
+        }
+        return Promise.resolve(undefined);
+      });
+
+      const handle = client.callMethod("provider-1", "slowWork", {});
+      void handle.result.catch(() => {});
+
+      const cancelPromise = handle.cancel();
+      let settled = false;
+      void cancelPromise.then(() => { settled = true; });
+
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(mockRpc.call).toHaveBeenCalledWith(DO_TARGET, "cancelMethodCall", handle.callId);
+
+      resolveCancel();
+      await cancelPromise;
+      expect(settled).toBe(true);
+
+      client.close();
+    });
+
     it("aborts the signal when method-cancel arrives", async () => {
       let capturedSignal: AbortSignal | null = null;
 
@@ -370,7 +521,7 @@ describe("connectViaRpc", () => {
       });
 
       await emitReplayAndReady(emit, []);
-      await client.ready(1000);
+      await client.ready();
       mockRpc.call.mockClear();
       mockRpc.call.mockResolvedValue(undefined);
 

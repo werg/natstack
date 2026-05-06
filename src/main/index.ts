@@ -114,7 +114,7 @@ let isCleaningUp = false; // Prevent re-entry in will-quit handler
 let autofillManager: import("./autofill/autofillManager.js").AutofillManager | null = null;
 let browserDataStoreForCredentialCapture: {
   cookies: {
-    getByDomain(domain?: string): Array<{
+    getByDomain(domain?: string): Promise<Array<{
       name: string;
       value: string;
       domain: string;
@@ -123,7 +123,7 @@ let browserDataStoreForCredentialCapture: {
       secure: number;
       http_only: number;
       same_site: string;
-    }>;
+    }>>;
   };
 } | null = null;
 
@@ -292,7 +292,7 @@ async function handleCredentialSessionCaptureRequest(
       if (!browserDataStoreForCredentialCapture) {
         return { error: "external browser cookie import is unavailable" };
       }
-      const imported = browserDataStoreForCredentialCapture.cookies.getByDomain();
+      const imported = await browserDataStoreForCredentialCapture.cookies.getByDomain();
       const material = buildImportedCookieHeader(imported, cookieNames, origins);
       if (!material) {
         return { error: "external browser cookie import did not contain the declared session cookies" };
@@ -874,9 +874,7 @@ app.on("ready", async () => {
     const { createAdblockService } = await import("./services/adblockService.js");
     const { createBrowserService } = await import("./services/browserService.js");
     // FS and git-local services removed — server owns these via panel service
-    const { createBrowserDataService } = await import("./services/browserDataService.js");
-    const { BrowserDataStore } = await import("@natstack/browser-data");
-    const { getCentralConfigDirectory } = await import("./paths.js");
+    const { createBrowserDataRpcClient } = await import("@natstack/browser-data");
 
     const electronContainer = new ServiceContainer(dispatcher);
 
@@ -911,37 +909,36 @@ app.on("ready", async () => {
     electronContainer.register(rpcService(createBrowserService({
       cdpServer, getViewManager, panelRegistry,
     })));
-    // FS and git-local services removed — server-side only now
+    // Browser-data persistence lives on the server; Electron keeps only the
+    // host-bound autofill adapter.
     {
-      let browserDataStore: InstanceType<typeof BrowserDataStore>;
       electronContainer.register({
-        name: "browser-data",
+        name: "browser-data-host",
         async start() {
-          browserDataStore = new BrowserDataStore(getCentralConfigDirectory());
-          browserDataStoreForCredentialCapture = browserDataStore;
-
-          // Initialize autofill manager with password store
+          const browserDataClient = createBrowserDataRpcClient(sc);
+          browserDataStoreForCredentialCapture = browserDataClient;
           autofillManager = new AutofillManager({
-            passwordStore: browserDataStore.passwords,
+            passwordStore: browserDataClient.passwords,
             eventService,
             getViewManager: () => viewManager!,
             autofillOverlayPreloadPath: path.join(__dirname, "autofillOverlayPreload.cjs"),
           });
-
-          return browserDataStore;
+          return browserDataClient;
         },
-        async stop(store: InstanceType<typeof BrowserDataStore>) {
+        async stop() {
           browserDataStoreForCredentialCapture = null;
           if (autofillManager) {
             autofillManager.destroy();
             autofillManager = null;
           }
-          store.close();
-        },
-        getServiceDefinition() {
-          return createBrowserDataService({ eventService, browserDataStore });
         },
       });
+      const { createBrowserSessionSyncService } = await import("./services/browserSessionSync.js");
+      electronContainer.register(createBrowserSessionSyncService({
+        eventService,
+        serverClient: sc,
+        browserDataClient: createBrowserDataRpcClient(sc),
+      }));
     }
 
     // Register autofill service (uses lazy resolution since autofillManager is created in browser-data start)

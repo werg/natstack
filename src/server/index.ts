@@ -325,7 +325,6 @@ async function main() {
   const { ServiceContainer } = await import("@natstack/shared/serviceContainer");
   const { rpcService } = await import("@natstack/shared/managedService");
   const { initBuildSystemV2 } = await import("./buildV2/index.js");
-  const { DatabaseManager } = await import("@natstack/shared/db/databaseManager");
 
   loadCentralEnv();
 
@@ -381,7 +380,6 @@ async function main() {
   const workspacePath = workspace.path;
   const workspaceConfig = workspace.config;
   const statePath = workspace.statePath;
-
   // ===========================================================================
   // App node_modules resolution (for @natstack/* platform packages)
   // ===========================================================================
@@ -499,8 +497,6 @@ async function main() {
     });
   });
 
-  const databaseManager = new DatabaseManager(statePath);
-
   // ===========================================================================
   // Unified ServiceContainer — lifecycle + RPC services in one container
   // ===========================================================================
@@ -520,10 +516,6 @@ async function main() {
   container.register({
     name: "tokenManager",
     async start() { return tokenManager; },
-  });
-  container.register({
-    name: "databaseManager",
-    async start() { return databaseManager; },
   });
   container.register({
     name: "gitServer",
@@ -568,7 +560,6 @@ async function main() {
   const { createTokensService } = await import("./services/tokensService.js");
   const { createGitService } = await import("./services/gitService.js");
   const { createTestService } = await import("./services/testService.js");
-  const { createDbService } = await import("./services/dbService.js");
   const { createTypecheckService } = await import("./services/typecheckService.js");
   const { createWorkerService } = await import("./services/workerService.js");
 
@@ -642,7 +633,6 @@ async function main() {
     const { createWorkerLogService } = await import("./services/workerLogService.js");
     container.register(rpcService(createWorkerLogService()));
   }
-  container.register(rpcService(createDbService({ databaseManager }), ["databaseManager"]));
   container.register(rpcService(createTypecheckService({ contextFolderManager })));
   container.register(rpcService(createEventsServiceDefinition(eventService)));
 
@@ -761,31 +751,6 @@ async function main() {
     }, routeRegistry));
   }
 
-  // ── Generic public webhook ingress ──
-  {
-    const { createWebhookIngressService } = await import("./services/webhookIngressService.js");
-    const { rpcServiceWithRoutes } = await import("./rpcServiceWithRoutes.js");
-    const webhookIngress = createWebhookIngressService({
-      relaySigningSecret: process.env["NATSTACK_RELAY_SIGNING_SECRET"],
-      publicBaseUrl: process.env["NATSTACK_WEBHOOK_PUBLIC_URL"] ?? "https://hooks.snugenv.com",
-      databaseManager,
-      codeIdentityResolver,
-      dispatchToTarget: async (target, event) => {
-        const doDispatch = container.get<import("./doDispatch.js").DODispatch>("doDispatch");
-        await doDispatch.dispatch(
-          {
-            source: target.source,
-            className: target.className,
-            objectKey: target.objectKey,
-          },
-          target.method,
-          event,
-        );
-      },
-    });
-    container.register(rpcServiceWithRoutes(webhookIngress, routeRegistry));
-  }
-
   // ── DODispatch (source-scoped HTTP dispatch to Durable Objects) ──
 
   container.register({
@@ -854,6 +819,102 @@ async function main() {
       return doDispatch;
     },
   });
+
+  // ── Internal DO-backed services ──
+  {
+    const { createScopeService } = await import("./services/scopeService.js");
+    let scopeDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null = null;
+    container.register({
+      name: "scope",
+      dependencies: ["doDispatch"],
+      async start(resolve) {
+        const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
+        scopeDefinition = createScopeService({ doDispatch });
+      },
+      getServiceDefinition() {
+        if (!scopeDefinition) throw new Error("scope service not initialized");
+        return scopeDefinition;
+      },
+    });
+  }
+
+  {
+    const { createPanelPersistenceService } = await import("./services/panelPersistenceService.js");
+    let panelPersistenceDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null = null;
+    container.register({
+      name: "panel-persistence",
+      dependencies: ["doDispatch"],
+      async start(resolve) {
+        const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
+        panelPersistenceDefinition = createPanelPersistenceService({
+          doDispatch,
+          workspaceId: workspace.config.id,
+        });
+      },
+      getServiceDefinition() {
+        if (!panelPersistenceDefinition) throw new Error("panel-persistence service not initialized");
+        return panelPersistenceDefinition;
+      },
+    });
+  }
+
+  {
+    const { createBrowserDataService } = await import("./services/browserDataService.js");
+    let browserDataDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null = null;
+    container.register({
+      name: "browser-data",
+      dependencies: ["doDispatch"],
+      async start(resolve) {
+        const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
+        browserDataDefinition = createBrowserDataService({ doDispatch, eventService });
+      },
+      getServiceDefinition() {
+        if (!browserDataDefinition) throw new Error("browser-data service not initialized");
+        return browserDataDefinition;
+      },
+    });
+  }
+
+  // ── Generic public webhook ingress ──
+  {
+    const { createWebhookIngressService } = await import("./services/webhookIngressService.js");
+    let webhookIngress: ReturnType<typeof createWebhookIngressService> | null = null;
+    container.register({
+      name: "webhookIngress",
+      dependencies: ["doDispatch"],
+      async start(resolve) {
+        const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
+        webhookIngress = createWebhookIngressService({
+          relaySigningSecret: process.env["NATSTACK_RELAY_SIGNING_SECRET"],
+          publicBaseUrl: process.env["NATSTACK_WEBHOOK_PUBLIC_URL"] ?? "https://hooks.snugenv.com",
+          doDispatch,
+          codeIdentityResolver,
+          dispatchToTarget: async (target, event) => {
+            await doDispatch.dispatch(
+              {
+                source: target.source,
+                className: target.className,
+                objectKey: target.objectKey,
+              },
+              target.method,
+              event,
+            );
+          },
+        });
+        if (webhookIngress.routes.length > 0) {
+          routeRegistry.registerService(webhookIngress.routes);
+        }
+        return webhookIngress;
+      },
+      async stop() {
+        routeRegistry.unregisterService("webhookIngress");
+      },
+      getServiceDefinition() {
+        if (!webhookIngress) throw new Error("webhookIngress service not initialized");
+        return webhookIngress.definition;
+      },
+    });
+  }
 
   // Admin token resolution (first hit wins):
   //   1. NATSTACK_ADMIN_TOKEN env var (always overrides)
@@ -1019,8 +1080,12 @@ async function main() {
         // Pre-register all DO classes from the build graph so they're available
         // before any panel connects or agent subscribes. Single workerd restart.
         {
+          const { INTERNAL_DO_CLASSES, INTERNAL_DO_SOURCE } = await import("./internalDOs/internalDoLoader.js");
           const graph = buildSystemForWorkerd.getGraph();
           const doClasses: Array<{ source: string; className: string }> = [];
+          for (const className of INTERNAL_DO_CLASSES) {
+            doClasses.push({ source: INTERNAL_DO_SOURCE, className });
+          }
           for (const node of graph.allNodes()) {
             if (node.kind !== "worker") continue;
             if (!node.manifest.durable) continue;
@@ -1157,7 +1222,7 @@ async function main() {
     const sharedSet = new Set<string>(SERVER_SERVICE_NAMES);
     // Services that live on both Electron and server, are internal lifecycle only,
     // or are standalone-mode-only (not present in IPC/Electron mode)
-    const localOnly = new Set(["events", "browser", "panel", "settings", "push", "auth"]);
+    const localOnly = new Set(["events", "browser", "panel", "panel-persistence", "settings", "push", "auth"]);
     for (const name of dispatcher.getServices()) {
       if (!sharedSet.has(name) && !localOnly.has(name)) {
         console.warn(

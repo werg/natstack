@@ -59,7 +59,6 @@ export function createRuntime(deps: RuntimeDeps) {
     parentId: deps.parentId,
 
     rpc: base.rpc,
-    db: base.db,
     fs: base.fs,
     workers: base.workers,
 

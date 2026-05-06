@@ -170,7 +170,13 @@ export function sendReady(
   sql: SqlStorage,
   contextId: string | null,
   channelConfig: Record<string, unknown> | null,
-): void {
+): {
+  contextId?: string;
+  channelConfig?: Record<string, unknown>;
+  totalCount: number;
+  chatMessageCount: number;
+  firstChatMessageId?: number;
+} {
   const totalRow = sql.exec(`SELECT COUNT(*) as cnt FROM messages`).toArray();
   const totalCount = (totalRow[0]?.["cnt"] as number) ?? 0;
 
@@ -179,21 +185,25 @@ export function sendReady(
 
   const firstRow = sql.exec(`SELECT MIN(id) as mid FROM messages WHERE type = 'message'`).toArray();
   const firstChatMessageId = (firstRow[0]?.["mid"] as number | null) ?? undefined;
+  const ready = {
+    contextId: contextId ?? undefined,
+    channelConfig: channelConfig ?? undefined,
+    totalCount,
+    chatMessageCount,
+    firstChatMessageId,
+  };
 
   // Queued (not awaited) so the subscribe handler returns and unblocks the
-  // subscriber's RPC call reply; the per-subscriber emit chain guarantees
-  // `ready` lands after any replay emits already enqueued.
+  // subscriber's RPC call reply; the same ready payload is also returned from
+  // subscribe as an acknowledgment fallback if event delivery is interrupted.
   void queueEmit(deps, subscriberId, {
     channelId: deps.objectKey,
     message: {
       kind: "ready",
-      contextId: contextId ?? undefined,
-      channelConfig: channelConfig ?? undefined,
-      totalCount,
-      chatMessageCount,
-      firstChatMessageId,
+      ...ready,
     },
   });
+  return ready;
 }
 
 // ── ChannelEvent builders ────────────────────────────────────────────────────

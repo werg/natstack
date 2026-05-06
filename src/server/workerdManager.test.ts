@@ -33,6 +33,7 @@ vi.mock("child_process", () => ({
         }, 0);
       }),
       pid: 12345,
+      exitCode: null,
     };
     return proc;
   }),
@@ -41,6 +42,7 @@ vi.mock("child_process", () => ({
 // Mock port-utils
 vi.mock("@natstack/port-utils", () => ({
   findServicePort: vi.fn().mockResolvedValue(49552),
+  releaseServicePort: vi.fn(),
 }));
 
 function createMockDeps(overrides: Partial<WorkerdManagerDeps> = {}): WorkerdManagerDeps {
@@ -400,6 +402,32 @@ describe("WorkerdManager", () => {
 
       expect(revokeSpy).toHaveBeenCalledWith("do-service:workers/agent:A");
       expect(revokeSpy).toHaveBeenCalledWith("do-service:workers/agent:B");
+    });
+
+    it("waits for an existing workerd process to accept HTTP before DO dispatch", async () => {
+      const deps = createMockDeps();
+      const mgr = new WorkerdManager(deps);
+
+      await mgr.registerAllDOClasses([
+        { source: "workers/agent", className: "AgentDO" },
+      ]);
+
+      const fetchMock = vi.fn()
+        .mockRejectedValueOnce(new TypeError("fetch failed"))
+        .mockResolvedValueOnce(new Response("ready", { status: 404 }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      try {
+        await mgr.ensureDO("workers/agent", "AgentDO", "object-1");
+      } finally {
+        vi.unstubAllGlobals();
+      }
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock).toHaveBeenCalledWith(
+        "http://127.0.0.1:49552/__natstack_workerd_ready",
+        { method: "GET" },
+      );
     });
   });
 });

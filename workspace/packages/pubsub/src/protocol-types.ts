@@ -72,8 +72,6 @@ export interface MethodAdvertisement {
   returns?: JsonSchema;
   /** Whether this method can stream partial results */
   streaming?: boolean;
-  /** Suggested timeout in milliseconds */
-  timeout?: number;
   /** Whether to show this method in participant menu UI */
   menu?: boolean;
 }
@@ -86,7 +84,6 @@ export type AgenticErrorCode =
   | "provider-not-found"
   | "provider-offline"
   | "execution-error"
-  | "timeout"
   | "cancelled"
   | "validation-error"
   | "connection-error"
@@ -208,7 +205,7 @@ export type AgentDebugPayload =
       agentId: string;
       handle: string;
       event: "spawning" | "started" | "stopped" | "woken" | "warning";
-      reason?: "timeout" | "explicit" | "crash" | "idle" | "dirty-repo";
+      reason?: "explicit" | "crash" | "idle" | "dirty-repo";
       /** Additional details for warning events (e.g., dirty repo state) */
       details?: unknown;
     }
@@ -565,8 +562,6 @@ export interface DiscoveredMethod {
   returns?: JsonSchema;
   /** Whether method supports streaming */
   streaming: boolean;
-  /** Suggested timeout in ms */
-  timeout?: number;
   /** Whether this method should only appear in menus, not be used as an AI tool */
   menu?: boolean;
 }
@@ -623,8 +618,6 @@ export interface MethodDefinition<TArgs extends z.ZodTypeAny = z.ZodTypeAny, TRe
   returns?: z.ZodTypeAny;
   /** Whether this method streams partial results */
   streaming?: boolean;
-  /** Suggested timeout in milliseconds */
-  timeout?: number;
   /** Whether to show this method in participant menu UI */
   menu?: boolean;
   /** Internal methods are callable via callMethod() but not advertised
@@ -792,7 +785,7 @@ export interface AgenticClient<T extends AgenticParticipantMetadata = AgenticPar
     providerId: string,
     methodName: string,
     args: unknown,
-    options?: { signal?: AbortSignal; validateArgs?: z.ZodTypeAny; timeoutMs?: number }
+    options?: { signal?: AbortSignal; validateArgs?: z.ZodTypeAny }
   ): MethodCallHandle;
 
   // === Roster ===

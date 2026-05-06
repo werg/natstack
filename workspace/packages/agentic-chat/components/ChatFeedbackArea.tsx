@@ -18,8 +18,12 @@ import { useChatContext } from "../context/ChatContext";
 export function ChatFeedbackArea() {
   const { activeFeedbacks, onFeedbackDismiss, onFeedbackError, chat, scope, scopes, scopeManager } = useChatContext();
 
-  // DOM event delegation — silent best-effort persist after user interaction
-  const onInteraction = useCallback(() => scopeManager?.schedulePersist(2000), [scopeManager]);
+  // DOM event delegation — silent best-effort persist after user interaction.
+  const onInteraction = useCallback(() => {
+    void scopeManager?.persist().catch((err) => {
+      console.warn("[ChatFeedbackArea] Scope persist after interaction failed:", err);
+    });
+  }, [scopeManager]);
 
   if (activeFeedbacks.size === 0) return null;
 
@@ -40,8 +44,6 @@ export function ChatFeedbackArea() {
                 initialValues={feedback.values}
                 submitLabel={feedback.submitLabel}
                 cancelLabel={feedback.cancelLabel}
-                timeout={feedback.timeout}
-                timeoutAction={feedback.timeoutAction}
                 severity={feedback.severity}
                 hideSubmit={feedback.hideSubmit}
                 hideCancel={feedback.hideCancel}

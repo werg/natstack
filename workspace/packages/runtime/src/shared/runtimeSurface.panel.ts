@@ -15,7 +15,6 @@ export const panelRuntimeSurface: RuntimeSurface = {
     getInstanceId: valueEntry(),
     id: valueEntry(),
     rpc: valueEntry(),
-    db: valueEntry(),
     parent: valueEntry(),
     getParent: valueEntry(),
     getParentWithContract: valueEntry(),

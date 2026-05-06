@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { TokenManager } from "@natstack/shared/tokenManager";
 import { doRefKey, doRefUrl, DODispatch, type DORef } from "./doDispatch.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -67,6 +68,7 @@ describe("DODispatch", () => {
   let dispatch: DODispatch;
 
   beforeEach(() => {
+    vi.unstubAllGlobals();
     dispatch = new DODispatch();
   });
 
@@ -138,6 +140,43 @@ describe("DODispatch", () => {
       expect(first).not.toHaveBeenCalled();
       expect(second).toHaveBeenCalledTimes(1);
       expect(result).toBe("second");
+    });
+  });
+
+  describe("dispatch with token-backed workerd URL", () => {
+    it("retries fetch failures after ensuring the DO and refreshes the workerd URL", async () => {
+      const tokenManager = new TokenManager();
+      const ensureDO = vi.fn().mockResolvedValue(undefined);
+      const getWorkerdUrl = vi.fn()
+        .mockReturnValueOnce("http://127.0.0.1:10001")
+        .mockReturnValueOnce("http://127.0.0.1:10002");
+      const fetchMock = vi.fn()
+        .mockRejectedValueOnce(new TypeError("fetch failed"))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }));
+
+      vi.stubGlobal("fetch", fetchMock);
+      dispatch.setTokenManager(tokenManager);
+      dispatch.setGetWorkerdUrl(getWorkerdUrl);
+      dispatch.setGetDispatchSecret(() => "dispatch-secret");
+      dispatch.setEnsureDO(ensureDO);
+
+      const ref = makeRef();
+      await expect(dispatch.dispatch(ref, "ping", "arg")).resolves.toEqual({ ok: true });
+
+      expect(ensureDO).toHaveBeenCalledWith(ref.source, ref.className, ref.objectKey);
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        1,
+        "http://127.0.0.1:10001/_w/workers/agent-worker/AiChatWorker/ch-123/ping",
+        expect.any(Object),
+      );
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        2,
+        "http://127.0.0.1:10002/_w/workers/agent-worker/AiChatWorker/ch-123/ping",
+        expect.any(Object),
+      );
     });
   });
 });

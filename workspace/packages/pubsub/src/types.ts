@@ -40,7 +40,7 @@ export interface Attachment extends AttachmentInput {
 /**
  * Error codes for PubSub operations.
  */
-export type PubSubErrorCode = "auth" | "validation" | "connection" | "server" | "timeout";
+export type PubSubErrorCode = "auth" | "validation" | "connection" | "server";
 
 /**
  * Typed error for PubSub operations.
@@ -181,8 +181,6 @@ export interface RosterUpdate<T extends ParticipantMetadata = ParticipantMetadat
 export interface PublishOptions {
   /** Whether to persist the message to SQLite. Default: true */
   persist?: boolean;
-  /** Timeout in milliseconds for the publish operation. Default: 30000 */
-  timeoutMs?: number;
   /** Binary attachments to send alongside JSON payload (server assigns IDs) */
   attachments?: AttachmentInput[];
   /** Caller-provided idempotency key for dedup on retry. Must be stable across retries. */
@@ -193,8 +191,5 @@ export interface PublishOptions {
  * Options for updating participant metadata.
  */
 export interface UpdateMetadataOptions {
-  /** Timeout in milliseconds for the update operation. Default: 30000 */
-  timeoutMs?: number;
 }
-
 

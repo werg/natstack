@@ -22,25 +22,7 @@ const nodeBuiltinsExternalPlugin = {
   },
 };
 
-// Redirect better-sqlite3 to the server-native copy (compiled for system Node, not Electron).
-// Path is relative to outfile (dist/server.mjs) so the build artifact is portable.
-const serverNativeSqlitePath = path.relative(
-  path.dirname("dist/server.mjs"),
-  "server-native/node_modules/better-sqlite3/lib/index.js"
-).replace(/\\/g, "/");  // ESM import specifiers must use forward slashes
-const serverNativePlugin = {
-  name: "server-native-redirect",
-  setup(build) {
-    build.onResolve({ filter: /^better-sqlite3$/ }, () => ({
-      path: serverNativeSqlitePath.startsWith(".") ? serverNativeSqlitePath : "./" + serverNativeSqlitePath,
-      external: true,
-    }));
-  },
-};
-
-const serverNativeReady = fs.existsSync("server-native/node_modules/better-sqlite3");
-
-// CJS build for utilityProcess.fork() from Electron — uses Electron's built-in better-sqlite3
+// CJS build for utilityProcess.fork() from Electron.
 const serverElectronConfig = {
   entryPoints: ["src/server/index.ts"],
   bundle: true,
@@ -48,7 +30,7 @@ const serverElectronConfig = {
   target: "node20",
   format: "cjs",
   outfile: "dist/server-electron.cjs",
-  external: ["electron", "esbuild", "@npmcli/arborist", "better-sqlite3",
+  external: ["electron", "esbuild", "@npmcli/arborist",
              "node-git-server", "vitest", "vitest/node", "vite",
              // Agent SDKs: must stay external — they use import.meta.url at module scope
              // to locate config files, which breaks when bundled into CJS.
@@ -129,7 +111,7 @@ const serverConfig = {
              // Agent SDKs: must stay external — they use import.meta.url at module scope
              // to locate config files relative to their install path.
              "@mariozechner/pi-agent-core", "@mariozechner/pi-ai"],
-  plugins: [serverNativePlugin, electronStubPlugin],
+  plugins: [electronStubPlugin],
   sourcemap: isDev,
   minify: !isDev,
   logOverride,
@@ -152,7 +134,7 @@ const mainConfig = {
   target: "node20",
   format: "cjs",
   outfile: "dist/main.cjs",
-  external: ["electron", "esbuild", "@npmcli/arborist", "better-sqlite3"],
+  external: ["electron", "esbuild", "@npmcli/arborist"],
   sourcemap: isDev,
   minify: !isDev,
   logOverride,
@@ -240,6 +222,20 @@ const browserTransportConfig = {
   target: "es2020",
   format: "iife",
   outfile: "dist/browserTransport.js",
+  sourcemap: isDev,
+  minify: !isDev,
+  logOverride,
+};
+
+const internalDoBundleConfig = {
+  entryPoints: ["src/server/internalDOs/index.ts"],
+  bundle: true,
+  platform: "browser",
+  target: "es2022",
+  format: "esm",
+  outfile: "dist/internal-do.bundle.mjs",
+  conditions: ["worker", "browser"],
+  external: ["node:*", "electron"],
   sourcemap: isDev,
   minify: !isDev,
   logOverride,
@@ -491,18 +487,30 @@ async function build() {
     await esbuild.build(autofillPreloadConfig);
     await esbuild.build(autofillOverlayPreloadConfig);
     await esbuild.build(browserTransportConfig);
+    await esbuild.build(internalDoBundleConfig);
+    // Read the internal-DO bundle output and inline it as a string into the
+    // server builds via `define`. This eliminates the runtime file lookup
+    // performed by `internalDoLoader.ts` — the bundle ships embedded in the
+    // server output instead of as a sibling file. Falls back to the file
+    // lookup if the define is absent (test/dev paths run from source).
+    const internalDoBundleContent = fs.readFileSync("dist/internal-do.bundle.mjs", "utf8");
+    const internalDoBundleDefine = {
+      "globalThis.__NATSTACK_INTERNAL_DO_BUNDLE__": JSON.stringify(internalDoBundleContent),
+    };
+    const serverElectronWithBundle = {
+      ...serverElectronConfig,
+      define: { ...(serverElectronConfig.define ?? {}), ...internalDoBundleDefine },
+    };
+    const serverWithBundle = {
+      ...serverConfig,
+      define: { ...(serverConfig.define ?? {}), ...internalDoBundleDefine },
+    };
     // Clean stale renderer artifacts before ESM build (prevents accidental loading of old CJS bundle)
     try { fs.unlinkSync("dist/renderer.js"); } catch {}
     try { fs.unlinkSync("dist/renderer.css"); } catch {}
     await esbuild.build(rendererConfig);
-    await esbuild.build(serverElectronConfig);
-    if (serverNativeReady) {
-      await esbuild.build(serverConfig);
-    } else {
-      // Remove stale artifact so bin/script don't point at an outdated bundle
-      try { fs.unlinkSync("dist/server.mjs"); } catch {}
-      console.warn("[build] Skipping standalone server build — run 'pnpm server:install' first");
-    }
+    await esbuild.build(serverElectronWithBundle);
+    await esbuild.build(serverWithBundle);
     await buildDependencyWorkers();
 
     // ========================================================================

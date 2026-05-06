@@ -228,8 +228,6 @@ export interface BrowserDataApi {
   getCookies(domain?: string): Promise<StoredCookie[]>;
   deleteCookie(id: number): Promise<void>;
   clearCookies(domain?: string): Promise<number>;
-  syncCookiesToSession(domain?: string): Promise<{ synced: number; failed: number }>;
-  syncCookiesFromSession(domain?: string): Promise<{ synced: number }>;
 
   // Export
   exportBookmarks(format: "html" | "json" | "chrome-json"): Promise<string>;
@@ -292,8 +290,6 @@ function buildApi(call: ServiceCallFn): BrowserDataApi {
     getCookies: (domain?) => call(`${SVC}.getCookies`, domain),
     deleteCookie: (id) => call(`${SVC}.deleteCookie`, id),
     clearCookies: (domain?) => call(`${SVC}.clearCookies`, domain),
-    syncCookiesToSession: (domain?) => call(`${SVC}.syncCookiesToSession`, domain),
-    syncCookiesFromSession: (domain?) => call(`${SVC}.syncCookiesFromSession`, domain),
 
     // Export
     exportBookmarks: (format) => call(`${SVC}.exportBookmarks`, format),

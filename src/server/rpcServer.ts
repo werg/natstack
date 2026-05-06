@@ -480,7 +480,7 @@ export class RpcServer {
             return;
           }
         }
-        void this.handleRpc(client, msg.message);
+        void this.handleRpc(client, msg.message, msg.forwardedIdentity);
         break;
       case "ws:tool-result":
         this.handleToolResult(msg.callId, msg.result as ToolExecutionResult);
@@ -494,7 +494,11 @@ export class RpcServer {
     }
   }
 
-  private async handleRpc(client: WsClientState, message: RpcMessage): Promise<void> {
+  private async handleRpc(
+    client: WsClientState,
+    message: RpcMessage,
+    forwardedIdentity?: { callerId: string; callerKind: CallerKind },
+  ): Promise<void> {
     if (message.type !== "request") return;
 
     const request = message as RpcRequest;
@@ -513,9 +517,23 @@ export class RpcServer {
     }
 
     const { service, method } = parsed;
+    if (forwardedIdentity && client.callerKind !== "server") {
+      this.sendToWs(client.ws, {
+        type: "ws:rpc",
+        message: {
+          type: "response",
+          requestId: request.requestId,
+          error: "forwardedIdentity is only accepted on trusted admin connections",
+        },
+      });
+      return;
+    }
+
+    const effectiveCallerId = forwardedIdentity?.callerId ?? client.callerId;
+    const effectiveCallerKind = forwardedIdentity?.callerKind ?? client.callerKind;
 
     try {
-      checkServiceAccess(service, client.callerKind, this.dispatcher, method);
+      checkServiceAccess(service, effectiveCallerKind, this.dispatcher, method);
     } catch (error) {
       this.sendToWs(client.ws, {
         type: "ws:rpc",
@@ -529,8 +547,8 @@ export class RpcServer {
     }
 
     const ctx: ServiceContext = {
-      callerId: client.callerId,
-      callerKind: client.callerKind,
+      callerId: effectiveCallerId,
+      callerKind: effectiveCallerKind,
       wsClient: client,
     };
 

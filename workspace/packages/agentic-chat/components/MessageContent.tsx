@@ -1,4 +1,4 @@
-import React, { type ComponentType, useEffect, useRef, useState } from "react";
+import React, { type ComponentType, useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Text } from "@radix-ui/themes";
@@ -67,56 +67,9 @@ async function compileMdx(
 // which appear in normal English and would defeat the plain-text fast path.
 const MARKDOWN_SYNTAX_RE = /^[ \t]*#{1,6} |`[^`]|```|\*\*|__|\*[^\s*]|_[^\s_]|^[ \t]*[-*+] |^[ \t]*\d+\. |^[ \t]*>|~~|\[[^\]]*\]\(|!\[|.*\|.*\|/m;
 
-// Debounce interval for streaming content updates (ms)
-const STREAMING_DEBOUNCE_MS = 100;
-
 export const MessageContent = React.memo(function MessageContent({ content, isStreaming, mdxActions }: MessageContentProps) {
   const [MdxComponent, setMdxComponent] = useState<ComponentType | null>(null);
   const [highlightLoaded, setHighlightLoaded] = useState<RehypeHighlightPlugin | null>(rehypeHighlightPlugin);
-  const contentRef = useRef(content);
-  contentRef.current = content;
-
-  // Debounced content for streaming: batch rapid content updates to reduce
-  // ReactMarkdown re-parse frequency from ~10+/sec to ~10/sec max
-  const [displayContent, setDisplayContent] = useState(content);
-  const streamTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    if (!isStreaming) {
-      // Not streaming — show exact content immediately (final render)
-      setDisplayContent(content);
-      if (streamTimerRef.current) {
-        clearTimeout(streamTimerRef.current);
-        streamTimerRef.current = null;
-      }
-      return;
-    }
-
-    // During streaming, batch updates at STREAMING_DEBOUNCE_MS intervals.
-    // IMPORTANT: No cleanup function here — the timer must persist across
-    // content changes so that intermediate chunks are skipped. The timer
-    // reads the latest content via contentRef when it fires.
-    if (!streamTimerRef.current) {
-      // First update in this batch — show immediately for responsiveness
-      setDisplayContent(content);
-      streamTimerRef.current = setTimeout(() => {
-        streamTimerRef.current = null;
-        // Flush latest content when timer fires
-        setDisplayContent(contentRef.current);
-      }, STREAMING_DEBOUNCE_MS);
-    }
-    // If timer is already running, the next flush will pick up contentRef.current
-  }, [content, isStreaming]);
-
-  // Cleanup timer on unmount only
-  useEffect(() => {
-    return () => {
-      if (streamTimerRef.current) {
-        clearTimeout(streamTimerRef.current);
-        streamTimerRef.current = null;
-      }
-    };
-  }, []);
 
   // Lazy-load highlight.js on first render
   useEffect(() => {
@@ -141,7 +94,6 @@ export const MessageContent = React.memo(function MessageContent({ content, isSt
     if (!highlightLoaded) return;
 
     let cancelled = false;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
     // Try compilation
     compileMdx(content, highlightLoaded, mdxActions)
@@ -149,23 +101,13 @@ export const MessageContent = React.memo(function MessageContent({ content, isSt
         if (!cancelled) setMdxComponent(() => Component);
       })
       .catch((err) => {
-        // Retry once after delay if compilation fails (content may still be settling)
-        retryTimer = setTimeout(() => {
-          if (cancelled || contentRef.current !== content) return;
-
-          compileMdx(content, highlightLoaded, mdxActions)
-            .then((Component) => {
-              if (!cancelled) setMdxComponent(() => Component);
-            })
-            .catch((retryErr) => {
-              console.debug("MDX compilation failed after retry, using markdown fallback:", retryErr);
-            });
-        }, 150);
+        if (!cancelled) {
+          console.debug("MDX compilation failed, using markdown fallback:", err);
+        }
       });
 
     return () => {
       cancelled = true;
-      if (retryTimer) clearTimeout(retryTimer);
     };
   }, [content, isStreaming, highlightLoaded, mdxActions]);
 
@@ -175,10 +117,10 @@ export const MessageContent = React.memo(function MessageContent({ content, isSt
 
   // Fast path: during streaming, if content has no markdown syntax yet,
   // skip ReactMarkdown entirely and render as plain text
-  if (isStreaming && !MARKDOWN_SYNTAX_RE.test(displayContent)) {
+  if (isStreaming && !MARKDOWN_SYNTAX_RE.test(content)) {
     return (
       <Text as="div" size="2" style={{ whiteSpace: "pre-wrap" }}>
-        {displayContent}
+        {content}
       </Text>
     );
   }
@@ -191,7 +133,7 @@ export const MessageContent = React.memo(function MessageContent({ content, isSt
 
   return (
     <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={markdownComponents}>
-      {displayContent}
+      {content}
     </ReactMarkdown>
   );
 });

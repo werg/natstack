@@ -283,7 +283,7 @@ describe("AutofillManager", () => {
       return state;
     }
 
-    it("strong signal triggers save", () => {
+    it("strong signal triggers save", async () => {
       const { manager } = createManager();
       const wc = createMockWebContents(1);
       manager.attachToWebContents(1, wc);
@@ -291,12 +291,12 @@ describe("AutofillManager", () => {
       const state = setupWithSnapshot(manager, 1);
       const triggerSpy = vi.spyOn(manager as any, "triggerSave").mockResolvedValue(undefined);
 
-      (manager as any).addSignal(1, "strong");
+      await (manager as any).addSignal(1, "strong");
 
       expect(triggerSpy).toHaveBeenCalledWith(1, false);
     });
 
-    it("single medium signal triggers check-only save", () => {
+    it("single medium signal triggers check-only save", async () => {
       const { manager } = createManager();
       const wc = createMockWebContents(1);
       manager.attachToWebContents(1, wc);
@@ -304,12 +304,12 @@ describe("AutofillManager", () => {
       const state = setupWithSnapshot(manager, 1);
       const triggerSpy = vi.spyOn(manager as any, "triggerSave").mockResolvedValue(undefined);
 
-      (manager as any).addSignal(1, "medium");
+      await (manager as any).addSignal(1, "medium");
 
       expect(triggerSpy).toHaveBeenCalledWith(1, true); // onlyIfChanged = true
     });
 
-    it("two medium signals trigger full save", () => {
+    it("two medium signals trigger full save", async () => {
       const { manager } = createManager();
       const wc = createMockWebContents(1);
       manager.attachToWebContents(1, wc);
@@ -317,15 +317,15 @@ describe("AutofillManager", () => {
       const state = setupWithSnapshot(manager, 1);
       const triggerSpy = vi.spyOn(manager as any, "triggerSave").mockResolvedValue(undefined);
 
-      (manager as any).addSignal(1, "medium");
+      await (manager as any).addSignal(1, "medium");
       expect(triggerSpy).toHaveBeenCalledWith(1, true); // first medium = check-only
 
       triggerSpy.mockClear();
-      (manager as any).addSignal(1, "medium");
+      await (manager as any).addSignal(1, "medium");
       expect(triggerSpy).toHaveBeenCalledWith(1, false); // second medium = full save
     });
 
-    it("medium + weak signals trigger full save", () => {
+    it("medium + weak signals trigger full save", async () => {
       const { manager } = createManager();
       const wc = createMockWebContents(1);
       manager.attachToWebContents(1, wc);
@@ -333,14 +333,14 @@ describe("AutofillManager", () => {
       const state = setupWithSnapshot(manager, 1);
       const triggerSpy = vi.spyOn(manager as any, "triggerSave").mockResolvedValue(undefined);
 
-      (manager as any).addSignal(1, "weak");
+      await (manager as any).addSignal(1, "weak");
       expect(triggerSpy).not.toHaveBeenCalled(); // weak alone = nothing
 
-      (manager as any).addSignal(1, "medium");
+      await (manager as any).addSignal(1, "medium");
       expect(triggerSpy).toHaveBeenCalledWith(1, false); // medium + weak = full save
     });
 
-    it("never-save origin suppresses all signals", () => {
+    it("never-save origin suppresses all signals", async () => {
       const { manager, passwordStore } = createManager();
       const wc = createMockWebContents(1);
       manager.attachToWebContents(1, wc);
@@ -349,12 +349,12 @@ describe("AutofillManager", () => {
       passwordStore.isNeverSave.mockReturnValue(true);
 
       const triggerSpy = vi.spyOn(manager as any, "triggerSave").mockResolvedValue(undefined);
-      (manager as any).addSignal(1, "strong");
+      await (manager as any).addSignal(1, "strong");
 
       expect(triggerSpy).not.toHaveBeenCalled();
     });
 
-    it("recently dismissed origin suppresses signals", () => {
+    it("recently dismissed origin suppresses signals", async () => {
       const { manager } = createManager();
       const wc = createMockWebContents(1);
       manager.attachToWebContents(1, wc);
@@ -363,12 +363,12 @@ describe("AutofillManager", () => {
       state.dismissedAt = Date.now(); // just dismissed
 
       const triggerSpy = vi.spyOn(manager as any, "triggerSave").mockResolvedValue(undefined);
-      (manager as any).addSignal(1, "strong");
+      await (manager as any).addSignal(1, "strong");
 
       expect(triggerSpy).not.toHaveBeenCalled();
     });
 
-    it("old dismissal (>10min) does not suppress", () => {
+    it("old dismissal (>10min) does not suppress", async () => {
       const { manager } = createManager();
       const wc = createMockWebContents(1);
       manager.attachToWebContents(1, wc);
@@ -377,19 +377,19 @@ describe("AutofillManager", () => {
       state.dismissedAt = Date.now() - 11 * 60 * 1000; // 11 minutes ago
 
       const triggerSpy = vi.spyOn(manager as any, "triggerSave").mockResolvedValue(undefined);
-      (manager as any).addSignal(1, "strong");
+      await (manager as any).addSignal(1, "strong");
 
       expect(triggerSpy).toHaveBeenCalled();
     });
 
-    it("no pending snapshot means signals are ignored", () => {
+    it("no pending snapshot means signals are ignored", async () => {
       const { manager } = createManager();
       const wc = createMockWebContents(1);
       manager.attachToWebContents(1, wc);
 
       // hasPendingSnapshot defaults to false
       const triggerSpy = vi.spyOn(manager as any, "triggerSave").mockResolvedValue(undefined);
-      (manager as any).addSignal(1, "strong");
+      await (manager as any).addSignal(1, "strong");
 
       expect(triggerSpy).not.toHaveBeenCalled();
     });

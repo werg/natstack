@@ -85,8 +85,6 @@ export interface ActiveFeedbackSchema extends ActiveFeedbackBase {
   values: Record<string, FieldValue>;
   submitLabel?: string;
   cancelLabel?: string;
-  timeout?: number;
-  timeoutAction?: "cancel" | "submit";
   severity?: "info" | "warning" | "danger";
   hideSubmit?: boolean;
   hideCancel?: boolean;

@@ -268,14 +268,14 @@ interface AsyncTrackingContext {
  * NatStack async tracking API.
  */
 declare const __natstackAsyncTracking__: {
-  start(options?: { maxTimeout?: number }): AsyncTrackingContext;
+  start(): AsyncTrackingContext;
   enter(ctx: AsyncTrackingContext): void;
   exit(): void;
   stop(ctx: AsyncTrackingContext): void;
   pause(ctx: AsyncTrackingContext): void;
   resume(ctx: AsyncTrackingContext): void;
   ignore<T extends Promise<unknown>>(p: T): T;
-  waitAll(timeoutMs: number, ctx?: AsyncTrackingContext): Promise<void>;
+  waitAll(ctx?: AsyncTrackingContext): Promise<void>;
   pending(ctx?: AsyncTrackingContext): number;
   activeContexts(): { id: string; pending: number }[];
 };

@@ -2,7 +2,7 @@
  * @natstack/pubsub - PubSub client for NatStack
  *
  * Provides real-time messaging between panels and workers via RPC
- * with SQLite-backed message history.
+ * with Durable Object message history.
  *
  * @example Basic usage
  * ```typescript
@@ -126,5 +126,4 @@ export {
   createApprovalSchema,
   type CreateApprovalSchemaParams,
 } from "./approval-schema.js";
-
 

@@ -2,15 +2,16 @@
  * Tests for effectiveVersion.ts — git-based functions with mocked child_process.
  */
 
-vi.mock("child_process", () => ({
-  execFileSync: vi.fn(),
+vi.mock("@natstack/shared/gitRuntime", () => ({
+  execGitFileSync: vi.fn(),
+  execGitFile: vi.fn(),
 }));
 
 vi.mock("@natstack/shared/envPaths", () => ({
   getUserDataPath: vi.fn().mockReturnValue("/tmp/test-ev"),
 }));
 
-import { execFileSync } from "child_process";
+import { execGitFileSync } from "@natstack/shared/gitRuntime";
 import {
   resolveMainRef,
   computeGitTreeHash,
@@ -18,9 +19,11 @@ import {
   diffEvMaps,
 } from "./effectiveVersion.js";
 
+const execGitFileSyncMock = execGitFileSync as unknown as ReturnType<typeof vi.fn>;
+
 describe("effectiveVersion", () => {
   beforeEach(() => {
-    vi.mocked(execFileSync).mockReset();
+    execGitFileSyncMock.mockReset();
   });
 
   // -------------------------------------------------------------------------
@@ -28,20 +31,19 @@ describe("effectiveVersion", () => {
   // -------------------------------------------------------------------------
   describe("resolveMainRef", () => {
     it("returns refs/heads/main when git rev-parse succeeds for main", () => {
-      vi.mocked(execFileSync).mockReturnValue("deadbeef\n");
+      execGitFileSyncMock.mockReturnValue("deadbeef\n");
 
       // Use a unique repo path to avoid the internal cache
       const ref = resolveMainRef("/repo/resolve-main-success");
       expect(ref).toBe("refs/heads/main");
-      expect(execFileSync).toHaveBeenCalledWith(
-        "git",
+      expect(execGitFileSync).toHaveBeenCalledWith(
         ["rev-parse", "--verify", "--end-of-options", "refs/heads/main"],
         expect.objectContaining({ cwd: "/repo/resolve-main-success" }),
       );
     });
 
     it("falls back to refs/heads/master when main fails", () => {
-      vi.mocked(execFileSync)
+      execGitFileSyncMock
         .mockImplementationOnce(() => {
           throw new Error("not found");
         })
@@ -52,7 +54,7 @@ describe("effectiveVersion", () => {
     });
 
     it("throws when both main and master fail", () => {
-      vi.mocked(execFileSync).mockImplementation(() => {
+      execGitFileSyncMock.mockImplementation(() => {
         throw new Error("not found");
       });
 
@@ -68,7 +70,7 @@ describe("effectiveVersion", () => {
   describe("computeGitTreeHash", () => {
     it("returns trimmed git rev-parse output for tree ref", () => {
       // First call resolves the main ref, second returns the tree hash
-      vi.mocked(execFileSync)
+      execGitFileSyncMock
         .mockReturnValueOnce("ok\n") // rev-parse --verify refs/heads/main
         .mockReturnValueOnce("aabbccdd1122334455667788aabbccdd11223344\n"); // rev-parse refs/heads/main^{tree}
 
@@ -77,11 +79,10 @@ describe("effectiveVersion", () => {
     });
 
     it("uses an explicit ref when provided", () => {
-      vi.mocked(execFileSync).mockReturnValue("abc123def456\n");
+      execGitFileSyncMock.mockReturnValue("abc123def456\n");
 
       const hash = computeGitTreeHash("/repo/tree-explicit-ref", "refs/heads/feature");
-      expect(execFileSync).toHaveBeenCalledWith(
-        "git",
+      expect(execGitFileSync).toHaveBeenCalledWith(
         ["rev-parse", "--verify", "--end-of-options", "refs/heads/feature^{tree}"],
         expect.anything(),
       );
@@ -95,7 +96,7 @@ describe("effectiveVersion", () => {
   describe("getCommitAt", () => {
     it("returns trimmed SHA on success", () => {
       // First call resolves the main ref
-      vi.mocked(execFileSync)
+      execGitFileSyncMock
         .mockReturnValueOnce("ok\n") // rev-parse --verify refs/heads/main
         .mockReturnValueOnce("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n"); // rev-parse refs/heads/main
 
@@ -104,7 +105,7 @@ describe("effectiveVersion", () => {
     });
 
     it("returns null when git command fails", () => {
-      vi.mocked(execFileSync).mockImplementation(() => {
+      execGitFileSyncMock.mockImplementation(() => {
         throw new Error("not found");
       });
 

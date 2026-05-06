@@ -205,7 +205,7 @@ export function getResourcesPath(): string {
 
 /**
  * Get a path inside the .asar.unpacked directory for native modules.
- * Some modules (esbuild, better-sqlite3) need to be unpacked from ASAR for execution.
+ * Some modules (esbuild) need to be unpacked from ASAR for execution.
  *
  * @param relativePath - Path relative to app root (e.g., "node_modules/esbuild")
  * @returns Absolute path to the unpacked location

@@ -10,7 +10,7 @@
  */
 
 import type { MethodDefinition } from "@natstack/pubsub";
-import type { ScopesApi, DbHandle } from "@workspace/eval";
+import type { ScopesApi } from "@workspace/eval";
 import type { SandboxOptions, SandboxResult } from "@workspace/eval";
 
 // The canonical participant metadata shape lives in @natstack/pubsub so that
@@ -58,7 +58,6 @@ export interface ChatSandboxValue {
 export interface SandboxConfig {
   rpc: { call: (target: string, method: string, ...args: unknown[]) => Promise<unknown> };
   loadImport: (specifier: string, ref: string | undefined, externals: string[]) => Promise<string>;
-  db: { open: (name: string) => Promise<DbHandle> };
 }
 
 /** Dependencies provided to the tool provider factory */

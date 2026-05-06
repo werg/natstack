@@ -106,8 +106,8 @@ export interface RpcBridge {
    * Expose a method with full type safety.
    *
    * @example
-   * bridge.exposeMethod("db.open", (name: string, readOnly?: boolean) => {
-   *   return dbManager.open(name, readOnly);
+   * bridge.exposeMethod("notes.create", (title: string) => {
+   *   return notes.create(title);
    * });
    */
   exposeMethod<TArgs extends unknown[], TReturn>(
@@ -138,6 +138,12 @@ export interface RpcBridgeInternal extends RpcBridge {
   _handleMessage(sourceId: string, message: RpcMessage): void;
 }
 
+export type CallerKind = "shell" | "panel" | "worker" | "server" | "harness";
+
+export interface RpcCaller {
+  call<T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T>;
+}
+
 // =============================================================================
 // Server Service Names — single source of truth for routing
 // =============================================================================
@@ -156,7 +162,6 @@ export const SERVER_SERVICE_NAMES = [
   "build",
   "capabilities",
   "credentials",
-  "db",
   "externalOpen",
   "fs",
   "git",
@@ -164,8 +169,10 @@ export const SERVER_SERVICE_NAMES = [
   "image",
   "meta",
   "notification",
+  "browser-data",
   "secrets",
   "shellApproval",
+  "scope",
   "test",
   "tokens",
   "typecheck",

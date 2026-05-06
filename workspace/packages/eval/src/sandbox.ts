@@ -28,24 +28,12 @@ import {
 import { getAsyncTracking } from "./asyncTracking.js";
 
 // =============================================================================
-// Timeout Constants
-// =============================================================================
-
-/** Default timeout for async operations: 0 = no timeout */
-export const SANDBOX_DEFAULT_TIMEOUT_MS = 0;
-
-/** Buffer added to tracking context cleanup */
-const TRACKING_CLEANUP_BUFFER_MS = 5_000;
-
-// =============================================================================
 // Types
 // =============================================================================
 
 export interface SandboxOptions {
   /** Source syntax (default: "tsx") */
   syntax?: "typescript" | "jsx" | "tsx";
-  /** Timeout in ms for async operations (default: 10s, max: 90s, 0 = skip async) */
-  timeout?: number;
   /** Packages to build and load before execution.
    *  - Workspace packages: value is "latest" or a git ref (branch/tag/SHA)
    *  - npm packages: value is "npm:<version>" (e.g. "npm:^4.17.21", "npm:latest")
@@ -168,43 +156,6 @@ function safeSerialize(value: unknown, maxDepth = 10): unknown {
   return serialize(value, 0);
 }
 
-// =============================================================================
-// Timeout Helper
-// =============================================================================
-
-function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  onTimeout: () => void,
-): { promise: Promise<T>; cleanup: () => void } {
-  let timeoutId: ReturnType<typeof setTimeout> | null = null;
-  let settled = false;
-
-  const cleanup = () => {
-    if (timeoutId !== null) {
-      clearTimeout(timeoutId);
-      timeoutId = null;
-    }
-  };
-
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        onTimeout();
-        reject(new Error(`Timeout: ${timeoutMs}ms exceeded`));
-      }
-    }, timeoutMs);
-  });
-
-  const racedPromise = Promise.race([promise, timeoutPromise]).finally(() => {
-    settled = true;
-    cleanup();
-  });
-
-  return { promise: racedPromise, cleanup };
-}
-
 function wrapForTopLevelAwait(code: string): string {
   return `return (async () => {\n${code}\n})()`;
 }
@@ -236,19 +187,13 @@ export async function executeSandbox(
 ): Promise<SandboxResult> {
   const { syntax = "tsx", bindings = {} } = options;
 
-  // 0 or undefined = use default; negative = no timeout
-  const requestedTimeout = options.timeout ?? SANDBOX_DEFAULT_TIMEOUT_MS;
-  const timeout = requestedTimeout <= 0 ? 0 : Math.max(0, requestedTimeout);
-
   const tracking = getAsyncTracking();
-  const trackingContext = tracking?.start({
-    maxTimeout: timeout > 0 ? timeout + TRACKING_CLEANUP_BUFFER_MS : TRACKING_CLEANUP_BUFFER_MS,
-  });
+  const trackingContext = tracking?.start();
 
   const capture = createConsoleCapture();
 
   // Pause tracking around onConsole so any promises created by the callback
-  // (e.g. ctx.stream()) are not tracked by waitAll — prevents spurious timeouts.
+  // (e.g. ctx.stream()) are not tracked by waitAll.
   const unsubscribe = capture.onEntry((entry) => {
     const formatted = formatConsoleEntry(entry);
     if (tracking && trackingContext) {
@@ -334,40 +279,25 @@ export async function executeSandbox(
       tracking?.exit();
     }
 
-    // Wait for async operations
-    if (timeout > 0) {
-      if (tracking && trackingContext) {
-        await tracking.waitAll(timeout, trackingContext);
-      }
-
-      let returnValue = result.returnValue;
-      if (isPromise(returnValue)) {
-        const { promise: timedPromise } = withTimeout(returnValue, timeout, () => {});
-        returnValue = await timedPromise;
-      }
-
-      const safeReturnValue = safeSerialize(returnValue ?? result.exports["default"]);
-      return {
-        success: true,
-        consoleOutput: formatConsoleOutput(capture.getEntries()),
-        returnValue: safeReturnValue,
-        exports: result.exports,
-      };
-    } else {
-      // No timeout: still await the return value (most eval code uses top-level await)
-      let returnValue = result.returnValue;
-      if (isPromise(returnValue)) {
-        returnValue = await returnValue;
-      }
-
-      const safeReturnValue = safeSerialize(returnValue ?? result.exports["default"]);
-      return {
-        success: true,
-        consoleOutput: formatConsoleOutput(capture.getEntries()),
-        returnValue: safeReturnValue,
-        exports: result.exports,
-      };
+    // Wait for async operations and promised return values without imposing a
+    // wall-clock limit. Agentic eval work should finish by completion, error,
+    // or explicit user interruption, not a hidden timeout.
+    if (tracking && trackingContext) {
+      await tracking.waitAll(trackingContext);
     }
+
+    let returnValue = result.returnValue;
+    if (isPromise(returnValue)) {
+      returnValue = await returnValue;
+    }
+
+    const safeReturnValue = safeSerialize(returnValue ?? result.exports["default"]);
+    return {
+      success: true,
+      consoleOutput: formatConsoleOutput(capture.getEntries()),
+      returnValue: safeReturnValue,
+      exports: result.exports,
+    };
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     const errorStack = err instanceof Error ? err.stack : undefined;
