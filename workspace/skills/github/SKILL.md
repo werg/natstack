@@ -42,7 +42,8 @@ do not avoid broad user authorization concerns.
      `repo`; use only when the user explicitly accepts the larger blast radius.
 3. Ask for a broad-strokes access level instead of exposing every GitHub
    permission:
-   - **Read Only**: inspect repositories, issues, PRs, and Actions.
+   - **Read Only**: inspect repositories, issues, PRs, Actions, and clone/pull
+     repository remotes without changing code.
    - **Collaborate**: normal code/content changes plus issues and PRs.
    - **Code + Workflows**: collaborate plus GitHub Actions workflow edits.
    - **Broad**: high-trust access; pair with All repositories or classic `repo`.
@@ -53,11 +54,16 @@ do not avoid broad user authorization concerns.
      `openExternal(url)`.
 5. Call `requestGitHubTokenCredential()` so the shell-owned approval UI collects
    the PAT. Do not ask the user to paste the PAT into chat or a panel-owned form.
-   Use `mode: "api"` for API-only access, `mode: "git"` for clone/pull/push
-   permissions, or `mode: "api-and-git"` when the user wants both.
+   Access levels choose the right mode automatically. Use explicit
+   `mode: "api"` only for API-only access, `mode: "git"` only for
+   clone/pull/push permissions, or `mode: "api-and-git"` when the user wants
+   both.
    If the user chose a broad classic token, pass `tokenKind: "classic"`.
 6. Run `verifyGitHubCredential(credentialId)` or
    `getGitHubOnboardingStatus({ verify: true })`.
+7. If the user intends to clone/pull/push a specific remote, run
+   `verifyGitHubGitRemoteAccess(remoteUrl, credentialId)` before declaring git
+   remote access complete.
 
 Only render the full [SETUP.md](SETUP.md) checklist when the user asks for
 guided setup or needs help choosing repository access and permissions. Do not
@@ -71,6 +77,7 @@ import {
   openGitHubTokenSettings,
   requestGitHubTokenCredential,
   verifyGitHubCredential,
+  verifyGitHubGitRemoteAccess,
 } from "@workspace-skills/github";
 
 const status = await getGitHubOnboardingStatus();
@@ -83,6 +90,7 @@ if (status.stage === "needs-token") {
     accessLevel,
   });
   await verifyGitHubCredential(stored.id);
+  await verifyGitHubGitRemoteAccess("https://github.com/owner/repo.git", stored.id);
 }
 ```
 
@@ -100,12 +108,13 @@ use External when their normal browser already has GitHub auth, passkeys, or
 password-manager state. The full workflow UI in `SETUP.md` is optional guidance,
 not the default happy path.
 
-The stored credential is URL-bound to `https://api.github.com/`. API requests
-should use `credentials.fetch()`. For direct GitHub clone/pull/push, request
-`mode: "git"` or `mode: "api-and-git"` so the saved PAT has repository contents
-permissions. The internal git server does not consume GitHub credentials; use
-NatStack's host-mediated isomorphic-git HTTP adapter for `https://github.com/...`
-git remotes without exposing the PAT to panels or workers.
+The stored credential is URL-bound to `https://api.github.com/` and, for every
+friendly access level, to `https://github.com/` git HTTP as well. API requests
+should use `credentials.fetch()`. Direct GitHub clone/pull/push should use
+`git.client()` or `credentials.gitHttp()`. The internal git server does not
+consume GitHub credentials; NatStack's host-mediated isomorphic-git HTTP
+adapter handles `https://github.com/...` git remotes without exposing the PAT to
+panels or workers.
 
 ```ts
 import { credentials, fs } from "@workspace/runtime";
@@ -167,6 +176,7 @@ await git.importProject({
     name: "origin",
     url: "https://github.com/owner/my-panel.git",
   },
+  credentialId: "cred_github_...",
 });
 ```
 
@@ -181,7 +191,7 @@ When `meta/natstack.yml` already declares shared remotes, use
 workspace repo is currently missing:
 
 ```ts
-const result = await git.completeWorkspaceDependencies();
+const result = await git.completeWorkspaceDependencies({ credentialId: "cred_github_..." });
 console.log(result.imported, result.skipped, result.failed);
 ```
 
@@ -205,6 +215,8 @@ write unless the user explicitly wants to edit GitHub Actions workflow files.
 - `401 Bad credentials`: the PAT was revoked, expired, or copied incorrectly.
 - `403 Resource not accessible by personal access token`: the token does not
   have access to that repository or the needed permission.
-- Git clone or push is requested: use `mode: "git"` or `mode: "api-and-git"`
-  when creating the PAT. Git transport should use `credentials.gitHttp()`, not
-  the internal git server.
+- Git clone or push is requested: use a friendly access level, or explicit
+  `mode: "git"` / `mode: "api-and-git"` when creating the PAT. Verify a target
+  remote with `verifyGitHubGitRemoteAccess(remoteUrl, credentialId)`. Git
+  transport should use `git.client()` or `credentials.gitHttp()`, not the
+  internal git server.

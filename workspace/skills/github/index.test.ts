@@ -7,6 +7,7 @@ const runtimeMock = vi.hoisted(() => ({
     listStoredCredentials: vi.fn(),
     revokeCredential: vi.fn(),
     fetch: vi.fn(),
+    gitHttp: vi.fn(),
   },
   createBrowserPanel: vi.fn(),
   openExternal: vi.fn(),
@@ -20,6 +21,7 @@ import {
   openGitHubTokenSettings,
   requestGitHubTokenCredential,
   verifyGitHubCredential,
+  verifyGitHubGitRemoteAccess,
 } from "./index.js";
 
 const githubCredential: StoredCredentialSummary = {
@@ -49,6 +51,16 @@ describe("github skill facade", () => {
         headers: { "content-type": "application/json" },
       })
     );
+    runtimeMock.credentials.gitHttp.mockReturnValue({
+      request: vi.fn().mockResolvedValue({
+        url: "https://github.com/octo/project.git/info/refs?service=git-upload-pack",
+        method: "GET",
+        statusCode: 200,
+        statusMessage: "OK",
+        headers: {},
+        body: (async function* () {})(),
+      }),
+    });
   });
 
   it("reports needs-token when no GitHub credential exists", async () => {
@@ -112,6 +124,27 @@ describe("github skill facade", () => {
     );
   });
 
+  it("stores read-only access as API plus clone/pull capable git transport", async () => {
+    await requestGitHubTokenCredential({ accessLevel: "read-only" });
+
+    expect(runtimeMock.credentials.requestCredentialInput).toHaveBeenCalledWith(
+      expect.objectContaining({
+        credential: expect.objectContaining({
+          scopes: expect.arrayContaining(["metadata:read", "contents:read", "issues:read", "pull_requests:read", "actions:read"]),
+          metadata: expect.objectContaining({
+            accessLevel: "read-only",
+            credentialMode: "api-and-git",
+            gitRemoteOrigin: "https://github.com/",
+          }),
+          bindings: expect.arrayContaining([
+            expect.objectContaining({ use: "fetch" }),
+            expect.objectContaining({ id: "github-git", use: "git-http" }),
+          ]),
+        }),
+      })
+    );
+  });
+
   it("can label broad classic PATs separately from fine-grained PATs", async () => {
     await requestGitHubTokenCredential({ accessLevel: "broad", tokenKind: "classic" });
 
@@ -162,6 +195,45 @@ describe("github skill facade", () => {
       }),
       { credentialId: "cred-github" }
     );
+  });
+
+  it("verifies GitHub git remote read access through credentials.gitHttp", async () => {
+    const gitHttp = {
+      request: vi.fn().mockResolvedValue({
+        url: "https://github.com/octo/project.git/info/refs?service=git-upload-pack",
+        method: "GET",
+        statusCode: 200,
+        statusMessage: "OK",
+        headers: {},
+        body: (async function* () {})(),
+      }),
+    };
+    runtimeMock.credentials.gitHttp.mockReturnValue(gitHttp);
+
+    const result = await verifyGitHubGitRemoteAccess("https://github.com/octo/project.git", "cred-github");
+
+    expect(result).toMatchObject({
+      accessible: true,
+      credentialId: "cred-github",
+      remoteUrl: "https://github.com/octo/project.git",
+      action: "read",
+      statusCode: 200,
+    });
+    expect(runtimeMock.credentials.gitHttp).toHaveBeenCalledWith({ credentialId: "cred-github" });
+    expect(gitHttp.request).toHaveBeenCalledWith({
+      url: "https://github.com/octo/project.git/info/refs?service=git-upload-pack",
+      method: "GET",
+      headers: expect.objectContaining({
+        accept: "*/*",
+        "git-protocol": "version=2",
+      }),
+    });
+  });
+
+  it("rejects non-GitHub git verification URLs", async () => {
+    await expect(
+      verifyGitHubGitRemoteAccess("https://example.com/octo/project.git", "cred-github")
+    ).rejects.toThrow("https://github.com");
   });
 
   it("opens the fine-grained token page externally", async () => {

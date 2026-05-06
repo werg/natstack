@@ -34,6 +34,16 @@ export interface GitHubVerificationResult {
   error?: string;
 }
 
+export interface GitHubGitRemoteVerificationResult {
+  accessible: boolean;
+  credentialId?: string;
+  remoteUrl: string;
+  action: "read";
+  statusCode?: number;
+  statusMessage?: string;
+  error?: string;
+}
+
 export interface GitHubOnboardingStatus {
   stage: GitHubOnboardingStage;
   connected: boolean;
@@ -92,7 +102,7 @@ export const GITHUB_ACCESS_LEVELS: Record<GitHubAccessLevel, {
 }> = {
   "read-only": {
     label: "Read Only",
-    mode: "api",
+    mode: "api-and-git",
     presets: ["contents-read", "issues", "pull-requests", "actions-read"],
     scopes: ["metadata:read", "contents:read", "issues:read", "pull_requests:read", "actions:read"],
     fineGrainedPermissions: {
@@ -441,6 +451,57 @@ export async function verifyGitHubCredential(credentialId: string): Promise<GitH
 
 export async function verifyGitHubConnection(connectionId: string): Promise<GitHubVerificationResult> {
   return verifyGitHubCredential(connectionId);
+}
+
+function normalizeGitHubRemoteUrl(remoteUrl: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(remoteUrl);
+  } catch {
+    throw new Error(`Invalid GitHub remote URL: ${remoteUrl}`);
+  }
+  if (parsed.protocol !== "https:" || parsed.origin !== GITHUB_GIT_ORIGIN) {
+    throw new Error(`GitHub git verification only supports https://github.com remotes: ${remoteUrl}`);
+  }
+  const path = parsed.pathname.replace(/\/+$/, "");
+  if (!path || path === "/" || !path.endsWith(".git")) {
+    throw new Error(`GitHub remote URL must be an https .git URL such as https://github.com/owner/repo.git: ${remoteUrl}`);
+  }
+  parsed.pathname = path;
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString();
+}
+
+export async function verifyGitHubGitRemoteAccess(
+  remoteUrl: string,
+  credentialId?: string
+): Promise<GitHubGitRemoteVerificationResult> {
+  const normalizedRemoteUrl = normalizeGitHubRemoteUrl(remoteUrl);
+  return withCredentialRuntime(async (api) => {
+    if (typeof api.gitHttp !== "function") {
+      throw new Error("NatStack credential runtime is unavailable: credentials.gitHttp is missing.");
+    }
+    const verificationUrl = `${normalizedRemoteUrl}/info/refs?service=git-upload-pack`;
+    const response = await api.gitHttp({ credentialId }).request({
+      url: verificationUrl,
+      method: "GET",
+      headers: {
+        accept: "*/*",
+        "git-protocol": "version=2",
+      },
+    });
+    const accessible = response.statusCode >= 200 && response.statusCode < 300;
+    return {
+      accessible,
+      credentialId,
+      remoteUrl: normalizedRemoteUrl,
+      action: "read",
+      statusCode: response.statusCode,
+      statusMessage: response.statusMessage,
+      ...(accessible ? {} : { error: `${response.statusCode} ${response.statusMessage}` }),
+    };
+  });
 }
 
 export async function getGitHubOnboardingStatus(

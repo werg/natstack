@@ -36,7 +36,9 @@ Always let the user choose the token style before opening GitHub:
 5. Add permissions for the requested workflow:
    - API-only default: Metadata read, Contents read, Issues read/write, Pull
      requests read/write.
-   - Clone or pull: Metadata read, Contents read.
+   - Read Only: Metadata read, Contents read, Issues read, Pull requests read,
+     Actions read, plus GitHub git HTTP for clone/pull.
+   - Clone or pull only: Metadata read, Contents read.
    - Push: Metadata read, Contents write.
    - Actions reads: Metadata read, Actions read.
    - Workflow editing: Metadata read, Contents write, Workflows write.
@@ -44,6 +46,8 @@ Always let the user choose the token style before opening GitHub:
 7. Run `requestGitHubTokenCredential()` and let the user enter the token in the
    host approval UI.
 8. Run `getGitHubOnboardingStatus({ verify: true })`.
+9. If a specific GitHub remote will be cloned or pulled, run
+   `verifyGitHubGitRemoteAccess(remoteUrl, credentialId)`.
 
 ## Broad Access
 
@@ -68,7 +72,7 @@ await requestGitHubTokenCredential({
 ## Advanced Modes
 
 Choose the token mode only when the user needs something other than the
-API-only default:
+friendly access levels:
 
    - API only: GitHub API calls such as issues, pull requests, contents API, or
      Actions reads.
@@ -86,16 +90,17 @@ import {
   getGitHubOnboardingStatus,
   requestGitHubTokenCredential,
   verifyGitHubCredential,
+  verifyGitHubGitRemoteAccess,
 } from "@workspace-skills/github";
 
 const before = await getGitHubOnboardingStatus();
 if (before.stage === "needs-token") {
   const stored = await requestGitHubTokenCredential({
-    mode: "api",
-    presets: ["contents-read", "issues", "pull-requests"],
+    accessLevel: "read-only",
   });
   const verification = await verifyGitHubCredential(stored.id);
-  return { before, stored, verification };
+  const gitVerification = await verifyGitHubGitRemoteAccess("https://github.com/owner/repo.git", stored.id);
+  return { before, stored, verification, gitVerification };
 }
 
 return { before };
@@ -154,7 +159,7 @@ import {
 } from "@workspace-skills/github";
 
 const accessLevels = [
-  ["read-only", "Read Only", "Inspect repositories, issues, PRs, and Actions without changing code."],
+  ["read-only", "Read Only", "Inspect repositories, issues, PRs, Actions, and clone/pull without changing code."],
   ["collaborate", "Collaborate", "Make normal code/content changes and work with issues and PRs."],
   ["code-workflows", "Code + Workflows", "Collaborate and edit GitHub Actions workflow files."],
   ["broad", "Broad", "High-trust access. Use with All repositories or a classic PAT."],
