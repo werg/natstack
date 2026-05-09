@@ -136,8 +136,8 @@
 
 .message-scroll-area [data-radix-scroll-area-viewport] > div {
   display: block !important;
-  inline-size: 100% !important;
-  min-inline-size: 0 !important;
+  inline-size: 0 !important;
+  min-inline-size: 100% !important;
   max-inline-size: 100% !important;
 }
 
@@ -148,34 +148,39 @@
 }
 
 .message-list-content {
-  contain: inline-size;
+  inline-size: 0;
+  min-inline-size: 100%;
+  contain: inline-size layout paint;
 }
 
 .message-row {
   display: flex;
-  inline-size: 100%;
+  inline-size: fit-content;
   min-inline-size: 0;
-  max-inline-size: 100%;
+  max-inline-size: min(100%, 72ch);
   overflow-x: hidden;
 }
 
 .message-row-client {
+  align-self: flex-end;
   justify-content: flex-end;
 }
 
 .message-row-agent {
+  align-self: flex-start;
   justify-content: flex-start;
 }
 
 .message-row-system {
+  align-self: center;
   justify-content: center;
 }
 
 .message-card {
   position: relative;
-  flex: 0 1 min(72ch, 96%);
+  flex: 1 1 auto;
   min-inline-size: 0;
-  max-inline-size: min(72ch, 96%);
+  max-inline-size: 100%;
   overflow: hidden;
   color: var(--gray-12);
   background-color: var(--gray-3);
@@ -243,13 +248,15 @@
 
 .inline-group {
   display: flex;
-  inline-size: 100%;
+  align-self: flex-start;
+  inline-size: min(100%, 72ch);
   justify-content: flex-start;
+  overflow: hidden;
 }
 
 .inline-group-body {
-  inline-size: min(72ch, 96%);
-  max-inline-size: 96%;
+  inline-size: 100%;
+  max-inline-size: 100%;
   overflow: hidden;
 }
 
@@ -262,13 +269,14 @@
 
 .inline-action-pill,
 .inline-status-pill {
-  flex: 0 1 auto;
   min-inline-size: 0;
   max-inline-size: 100%;
   overflow: hidden;
 }
 
 .inline-action-pill {
+  flex: 1 1 22rem;
+  inline-size: min(100%, 34rem);
   max-inline-size: min(100%, 34rem);
   contain: inline-size;
   display: inline-grid !important;
@@ -277,6 +285,8 @@
 }
 
 .inline-status-pill {
+  flex: 0 1 auto;
+  inline-size: auto;
   max-inline-size: min(100%, 34rem);
 }
 
