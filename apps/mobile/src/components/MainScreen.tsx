@@ -439,42 +439,47 @@ export function MainScreen() {
         )}
 
         {webViewStack.map((entry) => (
-          <WebViewErrorBoundary
+          <View
             key={entry.panelId}
-            panelId={entry.panelId}
-            colors={{
-              background: colors.background,
-              text: colors.text,
-              textSecondary: colors.textSecondary,
-              accent: colors.primary,
-              accentText: colors.text,
-            }}
+            style={styles.webViewSlot}
+            pointerEvents={entry.panelId === activePanelId ? "auto" : "none"}
           >
-            <PanelWebView
-              ref={(handle) => {
-                if (handle) {
-                  webViewRefsMap.current.set(entry.panelId, handle);
-                }
-              }}
+            <WebViewErrorBoundary
               panelId={entry.panelId}
-              url={entry.url}
-              visible={entry.panelId === activePanelId}
-              managed={entry.managed}
-              panelInit={entry.panelInit}
-              externalHost={externalHost}
-              onPanelNavigate={handlePanelNavigate}
-              onTitleChange={handlePanelTitleChange}
-              onBridgeCall={handleBridgeCall}
-              onUnmount={handleWebViewUnmount}
-              diagnosticsEnabled={entry.managed && hostConfig?.protocol === "http"}
               colors={{
                 background: colors.background,
                 text: colors.text,
                 textSecondary: colors.textSecondary,
-                primary: colors.primary,
+                accent: colors.primary,
+                accentText: colors.text,
               }}
-            />
-          </WebViewErrorBoundary>
+            >
+              <PanelWebView
+                ref={(handle) => {
+                  if (handle) {
+                    webViewRefsMap.current.set(entry.panelId, handle);
+                  }
+                }}
+                panelId={entry.panelId}
+                url={entry.url}
+                visible={entry.panelId === activePanelId}
+                managed={entry.managed}
+                panelInit={entry.panelInit}
+                externalHost={externalHost}
+                onPanelNavigate={handlePanelNavigate}
+                onTitleChange={handlePanelTitleChange}
+                onBridgeCall={handleBridgeCall}
+                onUnmount={handleWebViewUnmount}
+                diagnosticsEnabled={entry.managed && hostConfig?.protocol === "http"}
+                colors={{
+                  background: colors.background,
+                  text: colors.text,
+                  textSecondary: colors.textSecondary,
+                  primary: colors.primary,
+                }}
+              />
+            </WebViewErrorBoundary>
+          </View>
         ))}
       </View>
     </View>
@@ -530,6 +535,11 @@ const styles = StyleSheet.create({
   },
   contentArea: {
     flex: 1,
+    position: "relative",
+    overflow: "hidden",
+  },
+  webViewSlot: {
+    ...StyleSheet.absoluteFillObject,
   },
   placeholderContainer: {
     flex: 1,
