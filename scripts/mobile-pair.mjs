@@ -26,6 +26,7 @@ function parseArgs(argv) {
     workspaceDir: null,
     appRoot: null,
     publicUrl: process.env.NATSTACK_PUBLIC_URL ?? null,
+    dev: process.env.NATSTACK_MOBILE_DEV === "1",
     noInit: false,
     help: false,
     serverArgs: [],
@@ -40,6 +41,8 @@ function parseArgs(argv) {
     "--workspace-dir",
     "--app-root",
     "--public-url",
+    "--dev",
+    "--ephemeral",
     "--no-init",
     "--help",
   ]);
@@ -69,6 +72,8 @@ function parseArgs(argv) {
       options.appRoot = argv[++i] ?? "";
     } else if (arg === "--public-url") {
       options.publicUrl = argv[++i] ?? "";
+    } else if (arg === "--dev" || arg === "--ephemeral") {
+      options.dev = true;
     } else if (arg === "--no-init") {
       options.noInit = true;
     } else if (arg === "--help") {
@@ -81,6 +86,12 @@ function parseArgs(argv) {
   if (options.protocol !== "http" && options.protocol !== "https") {
     throw new Error("--protocol must be http or https");
   }
+  if (options.dev && (options.workspace || options.workspaceDir)) {
+    throw new Error("--dev cannot be combined with --workspace or --workspace-dir");
+  }
+  if (options.dev && options.noInit) {
+    throw new Error("--dev cannot be combined with --no-init");
+  }
 
   return options;
 }
@@ -90,6 +101,7 @@ function printHelp() {
 
 Usage:
   pnpm mobile:pair
+  pnpm mobile:pair --dev
   pnpm mobile:pair --host tailscale --port 3030
   pnpm mobile:pair --host 100.x.y.z --workspace my-workspace
   pnpm mobile:pair --host server.tailnet.ts.net --public-url http://server.tailnet.ts.net:3030
@@ -110,6 +122,9 @@ Options:
       Application root passed to the server.
   --public-url <url>
       Override the externally reachable URL used by OAuth/webhook routes.
+  --dev, --ephemeral
+      Use a disposable dev workspace copied fresh from the template and deleted
+      when the server exits. This is the right mode for iterating on panel UI.
   --no-init
       Do not auto-create the workspace from the template.
   --help
@@ -134,6 +149,7 @@ function buildServerArgs(options, host) {
   ];
 
   if (!options.noInit) args.push("--init");
+  if (options.dev) args.push("--ephemeral");
   if (options.workspace) args.push("--workspace", options.workspace);
   if (options.workspaceDir) args.push("--workspace-dir", options.workspaceDir);
   if (options.appRoot) args.push("--app-root", options.appRoot);
@@ -154,6 +170,7 @@ function main() {
 
   console.log(`[mobile-pair] Host: ${selectedHost.address}${selectedHost.interfaceName ? ` (${selectedHost.interfaceName})` : ""}`);
   console.log(`[mobile-pair] Gateway port: ${options.port}`);
+  if (options.dev) console.log("[mobile-pair] Dev workspace: fresh template copy, deleted on exit");
   console.log("[mobile-pair] Install the internal APK with: pnpm mobile:install:internal --launch\n");
 
   const child = spawn(process.execPath, serverArgs, {
@@ -164,6 +181,7 @@ function main() {
       NATSTACK_HOST: selectedHost.address,
       NATSTACK_GATEWAY_PORT: String(options.port),
       NATSTACK_PROTOCOL: options.protocol,
+      ...(options.dev ? { NODE_ENV: "development", NATSTACK_WORKSPACE_EPHEMERAL: "1" } : {}),
     },
   });
 

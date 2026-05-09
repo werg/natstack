@@ -22,7 +22,7 @@ function main() {
 
   const child = spawn(
     process.execPath,
-    ["dist/server.mjs", "--host", host.address, "--serve-panels", "--init", "--print-token"],
+    ["dist/server.mjs", "--host", host.address, "--serve-panels", "--init", "--ephemeral", "--print-token"],
     {
       cwd: repoRoot,
       stdio: ["inherit", "pipe", "inherit"],

@@ -77,6 +77,19 @@ pnpm mobile:pair
 The command prints a `natstack://connect?...` deep link and QR code. Scan it
 with the Android camera and accept the app's connection prompt.
 
+For UI and panel development, prefer the disposable dev variant:
+
+```bash
+pnpm build
+pnpm mobile:pair:dev
+```
+
+This starts the same phone-reachable gateway, but passes `--ephemeral` to the
+server. The server creates a fresh `dev-<random>` workspace from the checked-in
+`workspace/` template and deletes it on shutdown, matching the desktop
+`pnpm dev` workflow. Use this when you need template or panel CSS changes to be
+visible immediately instead of reusing an older persisted mobile workspace.
+
 For panel/WebView diagnostics while using the trusted HTTP workflow, launch the
 app and tail its logs:
 
@@ -122,6 +135,11 @@ pnpm mobile:pair --workspace-dir /path/to/workspace
 
 `--init` is on by default so a missing workspace is created from the template.
 Pass `--no-init` to require the workspace to already exist.
+
+For development, use `pnpm mobile:pair:dev` or `pnpm mobile:pair --dev` instead
+of a named workspace. Dev mode intentionally cannot be combined with
+`--workspace` or `--workspace-dir`, because its purpose is to always start from a
+fresh template copy.
 
 ## Reconnecting later
 

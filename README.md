@@ -212,11 +212,12 @@ start a stable QR-pairing server:
 ```bash
 pnpm mobile:install:internal --launch
 pnpm build
-pnpm mobile:pair
+pnpm mobile:pair:dev
 ```
 
 See [docs/mobile-vpn.md](docs/mobile-vpn.md) for host selection, workspace
-flags, and reconnect behavior.
+flags, dev-vs-persistent workspace mode, and reconnect behavior. Use
+`pnpm mobile:pair` when you want a persistent trusted server workspace.
 
 Each panel gets:
 - **Injected globals** replacing Electron's preload/contextBridge

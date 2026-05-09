@@ -18,6 +18,7 @@
     "server:dev": "NODE_ENV=development node dist/server.mjs",
     "dev:mobile-server": "node scripts/dev-mobile-server.mjs",
     "mobile:pair": "node scripts/mobile-pair.mjs",
+    "mobile:pair:dev": "node scripts/mobile-pair.mjs --dev",
     "mobile:apk:internal": "node scripts/install-mobile-internal.mjs --build-only",
     "mobile:install:internal": "node scripts/install-mobile-internal.mjs",
     "mobile:logs:internal": "node scripts/mobile-logs.mjs",
