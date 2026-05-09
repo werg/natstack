@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Box, Callout, Card, Flex, IconButton, TextArea } from "@radix-ui/themes";
+import { Box, Callout, Flex, IconButton, TextArea } from "@radix-ui/themes";
 import { PaperPlaneIcon, ImageIcon } from "@radix-ui/react-icons";
 import { useIsMobile, useTouchDevice, useViewportHeight } from "@workspace/react";
 import { useChatContext } from "../context/ChatContext";
@@ -143,27 +143,24 @@ export function ChatInput() {
 
       {/* Image input - shown when toggled or when images are pending */}
       {(showImageInput || pendingImages.length > 0) && (
-        <Box flexShrink="0">
-          <Card size="1">
-            <ImageInput
-              images={pendingImages}
-              onImagesChange={handleImagesChange}
-              onError={(error) => setSendError(error)}
-              disabled={!connected}
-            />
-          </Card>
+        <Box className="chat-attachment-panel" flexShrink="0">
+          <ImageInput
+            images={pendingImages}
+            onImagesChange={handleImagesChange}
+            onError={(error) => setSendError(error)}
+            disabled={!connected}
+          />
         </Box>
       )}
 
       {/* Input */}
-      <Box flexShrink="0">
-      <Card size="1">
-        <Flex align="end" gap="1" p="0">
+      <Box className="chat-input-frame" flexShrink="0">
+        <Flex align="end" gap="1">
           <TextArea
             ref={textAreaRef}
             size="2"
             variant="surface"
-            style={{ flex: 1, minHeight: 48, maxHeight: isMobile ? Math.min(150, viewportHeight * 0.25) : 200, resize: "none" }}
+            style={{ flex: 1, minHeight: isMobile ? 38 : 42, maxHeight: isMobile ? Math.min(120, viewportHeight * 0.22) : 180, resize: "none" }}
             placeholder={isMobile ? "Type a message..." : "Type a message... (Enter to send, Shift+Enter for new line)"}
             value={input}
             onChange={(e) => handleInputChange(e.target.value)}
@@ -171,7 +168,7 @@ export function ChatInput() {
             onKeyDown={handleKeyDown}
             disabled={!connected}
           />
-          <Flex direction="column" gap="2">
+          <Flex direction="column" gap="1">
             <IconButton
               variant="ghost"
               size={isTouch ? "3" : "2"}
@@ -192,7 +189,6 @@ export function ChatInput() {
             </IconButton>
           </Flex>
         </Flex>
-      </Card>
       </Box>
     </>
   );

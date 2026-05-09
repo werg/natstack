@@ -34,14 +34,14 @@ export const ChatLayout = React.memo(function ChatLayout() {
       <Flex
         className="agentic-chat-root"
         direction="column"
-        gap="2"
+        gap="1"
         style={{
           height: "100dvh",
           minWidth: 0,
           width: "100%",
           boxSizing: "border-box",
           overflow: "hidden",
-          padding: "max(var(--space-2), env(safe-area-inset-top, 0)) max(var(--space-2), env(safe-area-inset-right, 0)) max(var(--space-2), env(safe-area-inset-bottom, 0)) max(var(--space-2), env(safe-area-inset-left, 0))",
+          padding: "max(2px, env(safe-area-inset-top, 0)) max(2px, env(safe-area-inset-right, 0)) max(2px, env(safe-area-inset-bottom, 0)) max(2px, env(safe-area-inset-left, 0))",
         }}
       >
         <ChatHeader />

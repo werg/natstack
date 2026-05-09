@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, useLayoutEffect } from "react";
-import { Box, Button, Card, Flex, ScrollArea, Text } from "@radix-ui/themes";
+import { Box, Button, Flex, ScrollArea, Text } from "@radix-ui/themes";
 import type { Participant } from "@natstack/pubsub";
 import { useStickToBottom } from "use-stick-to-bottom";
 import { InlineGroup, type InlineItem } from "./InlineGroup";
@@ -490,67 +490,65 @@ export const MessageList = React.memo(function MessageList({
 
   // --- Render ---
   return (
-    <Box flexGrow="1" overflow="hidden" style={{ minHeight: 0, position: "relative" }} asChild>
-      <Card className="message-list-card">
-        <ScrollArea
-          className="message-scroll-area"
-          ref={(node) => { scrollRef(node); }}
-          style={{
-            height: "100%",
-            width: "100%",
-          }}
-          scrollbars="vertical"
-          size="1"
+    <Box className="message-list-card" flexGrow="1" overflow="hidden" style={{ minHeight: 0, position: "relative" }}>
+      <ScrollArea
+        className="message-scroll-area"
+        ref={(node) => { scrollRef(node); }}
+        style={{
+          height: "100%",
+          width: "100%",
+        }}
+        scrollbars="vertical"
+        size="1"
+      >
+        <div
+          ref={contentRef}
+          className="message-list-content"
+          style={{ padding: 2 }}
         >
-          <div
-            ref={contentRef}
-            className="message-list-content"
-            style={{ padding: "var(--space-1)" }}
-          >
-            {/* Load earlier messages button */}
-            {hasMoreHistory && onLoadEarlierMessages && (
-              <Flex justify="center" py="2">
-                <Button
-                  size="1"
-                  variant="soft"
-                  onClick={onLoadEarlierMessages}
-                  disabled={loadingMore}
+          {/* Load earlier messages button */}
+          {hasMoreHistory && onLoadEarlierMessages && (
+            <Flex justify="center" py="1">
+              <Button
+                size="1"
+                variant="soft"
+                onClick={onLoadEarlierMessages}
+                disabled={loadingMore}
+              >
+                {loadingMore ? "Loading..." : "Load earlier messages"}
+              </Button>
+            </Flex>
+          )}
+          {groupedItems.length === 0 && activeTypingItems.length === 0 ? (
+            <Text color="gray" size="2">
+              Send a message to start chatting
+            </Text>
+          ) : (
+            <Flex className="message-list-stack" direction="column" gap="1">
+              {groupedItems.map((item, index) => (
+                <div
+                  className="message-item"
+                  key={item.type === "inline-group" ? item.key : (item.msg.id || `msg-${index}`)}
                 >
-                  {loadingMore ? "Loading..." : "Load earlier messages"}
-                </Button>
-              </Flex>
-            )}
-            {groupedItems.length === 0 && activeTypingItems.length === 0 ? (
-              <Text color="gray" size="2">
-                Send a message to start chatting
-              </Text>
-            ) : (
-              <Flex className="message-list-stack" direction="column" gap="1">
-                {groupedItems.map((item, index) => (
-                  <div
-                    className="message-item"
-                    key={item.type === "inline-group" ? item.key : (item.msg.id || `msg-${index}`)}
-                  >
-                    {renderItem(index)}
-                  </div>
-                ))}
-                {activeTypingItems.length > 0 && (
-                  <div className="message-item" key="active-typing">
-                    <Flex className="message-item" direction="column">
-                      {customRenderInlineGroup
-                        ? customRenderInlineGroup(activeTypingItems)
-                        : <InlineGroup items={activeTypingItems} onInterrupt={handleTypingInterrupt} />}
-                    </Flex>
-                  </div>
-                )}
-              </Flex>
-            )}
-          </div>
-        </ScrollArea>
-        {showNewContent && (
-          <NewContentIndicator onClick={handleScrollToNewContent} />
-        )}
-      </Card>
+                  {renderItem(index)}
+                </div>
+              ))}
+              {activeTypingItems.length > 0 && (
+                <div className="message-item" key="active-typing">
+                  <Flex className="message-item" direction="column">
+                    {customRenderInlineGroup
+                      ? customRenderInlineGroup(activeTypingItems)
+                      : <InlineGroup items={activeTypingItems} onInterrupt={handleTypingInterrupt} />}
+                  </Flex>
+                </div>
+              )}
+            </Flex>
+          )}
+        </div>
+      </ScrollArea>
+      {showNewContent && (
+        <NewContentIndicator onClick={handleScrollToNewContent} />
+      )}
     </Box>
   );
 });
