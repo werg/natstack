@@ -46,6 +46,7 @@ export function doRefUrl(ref: DORef, method: string): string {
 export interface PostToDOWithTokenDeps {
   tokenManager: TokenManager;
   workerdUrl: string;
+  workerdGatewayToken: string;
   /**
    * Per-process dispatch secret stamped onto internal `/_w/` dispatches as
    * the `X-NatStack-Dispatch-Secret` header. The auto-generated workerd router
@@ -89,7 +90,10 @@ export async function postToDOWithToken(
     __parentId: callerId ?? undefined,
   };
 
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${deps.workerdGatewayToken}`,
+  };
   if (deps.dispatchSecret) {
     headers["X-NatStack-Dispatch-Secret"] = deps.dispatchSecret;
   }
@@ -209,6 +213,7 @@ export class DODispatch {
   private tokenManager: TokenManager | null = null;
   private getWorkerdUrl: (() => string) | null = null;
   private getDispatchSecret: (() => string) | null = null;
+  private getWorkerdGatewayToken: (() => string) | null = null;
 
   /**
    * Set the HTTP dispatcher function used by dispatch().
@@ -262,6 +267,10 @@ export class DODispatch {
     this.getDispatchSecret = fn;
   }
 
+  setGetWorkerdGatewayToken(fn: () => string): void {
+    this.getWorkerdGatewayToken = fn;
+  }
+
   /**
    * Dispatch a method call to a DO via HTTP POST.
    * Returns the parsed JSON response (type depends on the DO method).
@@ -275,10 +284,11 @@ export class DODispatch {
     await Promise.resolve(this.beforeDispatchFn?.(ref));
 
     // Token-based path: use postToDOWithToken when tokenManager + getWorkerdUrl are set
-    if (this.tokenManager && this.getWorkerdUrl) {
+    if (this.tokenManager && this.getWorkerdUrl && this.getWorkerdGatewayToken) {
       const buildDeps = (): PostToDOWithTokenDeps => ({
         tokenManager: this.tokenManager!,
         workerdUrl: this.getWorkerdUrl!(),
+        workerdGatewayToken: this.getWorkerdGatewayToken!(),
         dispatchSecret: this.getDispatchSecret ? this.getDispatchSecret() : undefined,
       });
       try {

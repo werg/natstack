@@ -249,9 +249,9 @@ export abstract class DurableObjectBase {
       if (!token) {
         throw new Error("RPC not available: no instance token. This DO has not been dispatched via postToDOWithToken yet.");
       }
-      const serverUrl = this.env["SERVER_URL"] as string;
+      const serverUrl = this.env["GATEWAY_URL"] as string;
       if (!serverUrl) {
-        throw new Error("RPC not available: SERVER_URL not configured");
+        throw new Error("RPC not available: GATEWAY_URL not configured");
       }
       const instanceId = this.getStateValue("__instanceId");
       this._rpc = createHttpRpcBridge({

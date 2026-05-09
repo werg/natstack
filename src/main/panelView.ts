@@ -69,8 +69,7 @@ export class PanelView implements PanelViewLike {
   private readonly MAX_CRASHES = 3;
   private readonly CRASH_WINDOW_MS = 60000;
 
-  /** Derive panel HTTP port from serverInfo.gatewayPort */
-  private get panelHttpPort() { return this.serverInfo.gatewayPort; }
+  private get gatewayPort() { return this.serverInfo.gatewayPort; }
 
   constructor(deps: {
     viewManager: ViewManager;
@@ -432,7 +431,7 @@ export class PanelView implements PanelViewLike {
     const nextUrl = buildPanelUrl({
       source,
       contextId: newContextId,
-      panelHttpPort: this.panelHttpPort,
+      gatewayPort: this.gatewayPort,
       externalHost: this.externalHost,
       protocol: this.serverInfo.protocol,
     });

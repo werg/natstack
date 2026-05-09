@@ -1,6 +1,14 @@
-import { app, dialog, BaseWindow, nativeTheme, session, ipcMain, shell, type Session } from "electron";
+import {
+  app,
+  dialog,
+  BaseWindow,
+  nativeTheme,
+  session,
+  ipcMain,
+  shell,
+  type Session,
+} from "electron";
 import * as path from "path";
-import * as fs from "fs";
 // Silence Electron security warnings in dev; panels run in isolated webviews.
 process.env["ELECTRON_DISABLE_SECURITY_WARNINGS"] = "true";
 
@@ -11,12 +19,15 @@ const log = createDevLogger("App");
 import { PanelRegistry } from "@natstack/shared/panelRegistry";
 import { PanelOrchestrator } from "./panelOrchestrator.js";
 import { PanelView } from "./panelView.js";
-import { setupMenu, setMenuPanelLifecycle, setMenuPanelRegistry, setMenuViewManager, setMenuEventService } from "./menu.js";
-import { getAppRoot } from "./paths.js";
 import {
-  loadCentralEnv,
-  deleteWorkspaceDir,
-} from "@natstack/shared/workspace/loader";
+  setupMenu,
+  setMenuPanelLifecycle,
+  setMenuPanelRegistry,
+  setMenuViewManager,
+  setMenuEventService,
+} from "./menu.js";
+import { getAppRoot } from "./paths.js";
+import { loadCentralEnv, deleteWorkspaceDir } from "@natstack/shared/workspace/loader";
 import { CentralDataManager } from "@natstack/shared/centralData";
 import { resolveStartupMode, getRemoteUserDataDir, type StartupMode } from "./startupMode.js";
 import { establishServerSession, type SessionConnection } from "./serverSession.js";
@@ -24,7 +35,7 @@ import { CdpServer } from "./cdpServer.js";
 import { TokenManager } from "@natstack/shared/tokenManager";
 import { EventService } from "@natstack/shared/eventsService";
 import { isValidEventName, type EventName } from "@natstack/shared/events";
-import { installPinnedTlsForAllPartitions, pemFileFingerprint } from "./tlsPinning.js";
+import { installPinnedTlsForAllPartitions } from "./tlsPinning.js";
 import { BROWSER_SESSION_PARTITION } from "@natstack/shared/panelInterfaces";
 
 const eventService = new EventService();
@@ -105,8 +116,9 @@ let cdpServer: CdpServer | null = null;
 let panelRegistry: PanelRegistry | null = null;
 let panelOrchestrator: PanelOrchestrator | null = null;
 let panelView: PanelView | null = null;
-let shellCore: ReturnType<typeof import("./shellCore/createElectronShellCore.js").createElectronShellCore> | null = null;
-let ipcDispatcher: import("./ipcDispatcher.js").IpcDispatcher | null = null;
+let shellCore: ReturnType<
+  typeof import("./shellCore/createElectronShellCore.js").createElectronShellCore
+> | null = null;
 let serverSession: SessionConnection | null = null;
 let mainWindow: BaseWindow | null = null;
 let viewManager: ViewManager | null = null;
@@ -114,16 +126,18 @@ let isCleaningUp = false; // Prevent re-entry in will-quit handler
 let autofillManager: import("./autofill/autofillManager.js").AutofillManager | null = null;
 let browserDataStoreForCredentialCapture: {
   cookies: {
-    getByDomain(domain?: string): Promise<Array<{
-      name: string;
-      value: string;
-      domain: string;
-      path: string;
-      expiration_date: number | null;
-      secure: number;
-      http_only: number;
-      same_site: string;
-    }>>;
+    getByDomain(domain?: string): Promise<
+      Array<{
+        name: string;
+        value: string;
+        domain: string;
+        path: string;
+        expiration_date: number | null;
+        secure: number;
+        http_only: number;
+        same_site: string;
+      }>
+    >;
   };
 } | null = null;
 
@@ -141,7 +155,9 @@ type CredentialSessionCaptureRequest = Record<string, unknown> & {
 };
 
 function toStringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0) : [];
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+    : [];
 }
 
 function wait(ms: number): Promise<void> {
@@ -165,7 +181,10 @@ function normalizeCaptureOrigins(value: unknown): string[] {
   return [...new Set(origins)];
 }
 
-function buildCookieHeader(cookies: Electron.Cookie[], cookieNames: string[]): {
+function buildCookieHeader(
+  cookies: Electron.Cookie[],
+  cookieNames: string[]
+): {
   header: string;
   expiresAt?: number;
   cookies: Record<string, unknown>[];
@@ -178,7 +197,11 @@ function buildCookieHeader(cookies: Electron.Cookie[], cookieNames: string[]): {
     selected.push(cookie);
   }
   const expiringCookies = selected
-    .map((cookie) => typeof cookie.expirationDate === "number" ? Math.floor(cookie.expirationDate * 1000) : undefined)
+    .map((cookie) =>
+      typeof cookie.expirationDate === "number"
+        ? Math.floor(cookie.expirationDate * 1000)
+        : undefined
+    )
     .filter((value): value is number => typeof value === "number" && value > 0);
   return {
     header: selected.map((cookie) => `${cookie.name}=${cookie.value}`).join("; "),
@@ -192,9 +215,10 @@ function buildCookieHeader(cookies: Electron.Cookie[], cookieNames: string[]): {
       httpOnly: cookie.httpOnly,
       sameSite: cookie.sameSite,
       expirationDate: cookie.expirationDate,
-      partitionKey: typeof (cookie as { partitionKey?: unknown }).partitionKey === "string"
-        ? (cookie as { partitionKey?: string }).partitionKey
-        : undefined,
+      partitionKey:
+        typeof (cookie as { partitionKey?: unknown }).partitionKey === "string"
+          ? (cookie as { partitionKey?: string }).partitionKey
+          : undefined,
     })),
   };
 }
@@ -211,7 +235,7 @@ function buildImportedCookieHeader(
     same_site: string;
   }>,
   cookieNames: string[],
-  origins: string[],
+  origins: string[]
 ): {
   header: string;
   expiresAt?: number;
@@ -219,10 +243,11 @@ function buildImportedCookieHeader(
 } | null {
   const selected: typeof cookies = [];
   for (const name of cookieNames) {
-    const cookie = cookies.find((entry) =>
-      entry.name === name
-      && !!entry.value
-      && origins.some((origin) => importedCookieMatchesOrigin(entry, origin))
+    const cookie = cookies.find(
+      (entry) =>
+        entry.name === name &&
+        !!entry.value &&
+        origins.some((origin) => importedCookieMatchesOrigin(entry, origin))
     );
     if (!cookie) return null;
     selected.push(cookie);
@@ -231,7 +256,11 @@ function buildImportedCookieHeader(
   const expiringCookies = selected
     .map((cookie) => cookie.expiration_date ?? undefined)
     .filter((value): value is number => typeof value === "number" && value > nowSeconds);
-  if (selected.some((cookie) => typeof cookie.expiration_date === "number" && cookie.expiration_date <= nowSeconds)) {
+  if (
+    selected.some(
+      (cookie) => typeof cookie.expiration_date === "number" && cookie.expiration_date <= nowSeconds
+    )
+  ) {
     return null;
   }
   return {
@@ -252,7 +281,7 @@ function buildImportedCookieHeader(
 
 function importedCookieMatchesOrigin(
   cookie: { domain: string; path: string; secure: number },
-  origin: string,
+  origin: string
 ): boolean {
   const url = new URL(origin);
   if (cookie.secure === 1 && url.protocol !== "https:") return false;
@@ -263,11 +292,14 @@ function importedCookieMatchesOrigin(
     : host === cookieDomain;
   if (!domainMatches) return false;
   const cookiePath = cookie.path || "/";
-  return url.pathname === cookiePath || url.pathname.startsWith(cookiePath.endsWith("/") ? cookiePath : `${cookiePath}/`);
+  return (
+    url.pathname === cookiePath ||
+    url.pathname.startsWith(cookiePath.endsWith("/") ? cookiePath : `${cookiePath}/`)
+  );
 }
 
 async function handleCredentialSessionCaptureRequest(
-  msg: CredentialSessionCaptureRequest,
+  msg: CredentialSessionCaptureRequest
 ): Promise<Record<string, unknown>> {
   try {
     if (msg.kind !== "cookies" && msg.kind !== "saml") {
@@ -284,7 +316,8 @@ async function handleCredentialSessionCaptureRequest(
     if (cookieNames.length === 0) {
       return { error: "cookie capture requires declared cookie names" };
     }
-    const origins = msg.kind === "cookies" ? normalizeCaptureOrigins(msg.origins) : [signInUrl.origin];
+    const origins =
+      msg.kind === "cookies" ? normalizeCaptureOrigins(msg.origins) : [signInUrl.origin];
     if (msg.kind === "saml" && msg.assertion && cookieNames.length === 0) {
       return { error: "raw SAML assertion capture is not supported by this host adapter" };
     }
@@ -295,21 +328,25 @@ async function handleCredentialSessionCaptureRequest(
       const imported = await browserDataStoreForCredentialCapture.cookies.getByDomain();
       const material = buildImportedCookieHeader(imported, cookieNames, origins);
       if (!material) {
-        return { error: "external browser cookie import did not contain the declared session cookies" };
+        return {
+          error: "external browser cookie import did not contain the declared session cookies",
+        };
       }
-      const maxTtlSeconds = typeof msg.maxTtlSeconds === "number" && msg.maxTtlSeconds > 0
-        ? Math.floor(msg.maxTtlSeconds)
-        : undefined;
-      const maxExpiresAt = maxTtlSeconds ? Date.now() + (maxTtlSeconds * 1000) : undefined;
+      const maxTtlSeconds =
+        typeof msg.maxTtlSeconds === "number" && msg.maxTtlSeconds > 0
+          ? Math.floor(msg.maxTtlSeconds)
+          : undefined;
+      const maxExpiresAt = maxTtlSeconds ? Date.now() + maxTtlSeconds * 1000 : undefined;
       return {
         cookieHeader: material.header,
         cookieSession: {
           origins,
           cookies: material.cookies,
         },
-        expiresAt: material.expiresAt && maxExpiresAt
-          ? Math.min(material.expiresAt, maxExpiresAt)
-          : material.expiresAt ?? maxExpiresAt,
+        expiresAt:
+          material.expiresAt && maxExpiresAt
+            ? Math.min(material.expiresAt, maxExpiresAt)
+            : (material.expiresAt ?? maxExpiresAt),
       };
     }
     if (!panelOrchestrator || !viewManager) {
@@ -322,12 +359,14 @@ async function handleCredentialSessionCaptureRequest(
     });
     const webContents = viewManager.getWebContents(panel.id);
     const browserSession = session.fromPartition(BROWSER_SESSION_PARTITION);
-    const completionPattern = typeof msg.completionUrlPattern === "string" ? msg.completionUrlPattern : undefined;
+    const completionPattern =
+      typeof msg.completionUrlPattern === "string" ? msg.completionUrlPattern : undefined;
     const deadline = Date.now() + 300_000;
 
     while (Date.now() < deadline) {
       const currentUrl = webContents && !webContents.isDestroyed() ? webContents.getURL() : "";
-      const completionSatisfied = !completionPattern || (currentUrl && globMatches(completionPattern, currentUrl));
+      const completionSatisfied =
+        !completionPattern || (currentUrl && globMatches(completionPattern, currentUrl));
       if (completionSatisfied) {
         const captured: Electron.Cookie[] = [];
         for (const origin of origins) {
@@ -340,19 +379,21 @@ async function handleCredentialSessionCaptureRequest(
         }
         const material = buildCookieHeader(captured, cookieNames);
         if (material) {
-          const maxTtlSeconds = typeof msg.maxTtlSeconds === "number" && msg.maxTtlSeconds > 0
-            ? Math.floor(msg.maxTtlSeconds)
-            : undefined;
-          const maxExpiresAt = maxTtlSeconds ? Date.now() + (maxTtlSeconds * 1000) : undefined;
+          const maxTtlSeconds =
+            typeof msg.maxTtlSeconds === "number" && msg.maxTtlSeconds > 0
+              ? Math.floor(msg.maxTtlSeconds)
+              : undefined;
+          const maxExpiresAt = maxTtlSeconds ? Date.now() + maxTtlSeconds * 1000 : undefined;
           return {
             cookieHeader: material.header,
             cookieSession: {
               origins,
               cookies: material.cookies,
             },
-            expiresAt: material.expiresAt && maxExpiresAt
-              ? Math.min(material.expiresAt, maxExpiresAt)
-              : material.expiresAt ?? maxExpiresAt,
+            expiresAt:
+              material.expiresAt && maxExpiresAt
+                ? Math.min(material.expiresAt, maxExpiresAt)
+                : (material.expiresAt ?? maxExpiresAt),
           };
         }
       }
@@ -366,19 +407,16 @@ async function handleCredentialSessionCaptureRequest(
 
 /**
  * Install TLS fingerprint pinning across the default session AND every
- * `persist:browser` / `persist:panel:*` partition (audit finding #45).
- * Replaces the previous `installRemoteCertificateOverride` which only
- * pinned the default session — panel webContents created on persisted
- * partitions could connect to a MITM'd remote with a forged cert.
+ * `persist:browser` / `persist:panel:*` partition when the user configured an
+ * explicit leaf certificate fingerprint. A CA path is trust material, not a
+ * leaf pin, so it is handled by Node/Electron certificate validation instead.
  */
 function installRemoteTlsPinning(mode: StartupMode): void {
   if (mode.kind !== "remote" || mode.remoteUrl.protocol !== "https:") {
     return;
   }
 
-  const expectedFingerprint =
-    mode.tls?.fingerprint ??
-    (mode.tls?.caPath ? pemFileFingerprint(mode.tls.caPath) : undefined);
+  const expectedFingerprint = mode.tls?.fingerprint;
 
   if (!expectedFingerprint) {
     return;
@@ -421,7 +459,7 @@ function createWindow(): void {
   mainWindow.on("closed", () => {
     mainWindow = null;
     viewManager = null;
-    panelView = null;  // Clear so getPanelView() returns null until recreated
+    panelView = null; // Clear so getPanelView() returns null until recreated
   });
 
   // PanelView is resolved lazily by PanelOrchestrator via getPanelView()
@@ -574,7 +612,9 @@ app.on("ready", async () => {
     try {
       installPermissionHandlers(s);
     } catch (err) {
-      console.warn(`[permissions] failed to install handlers on session: ${(err as Error).message}`);
+      console.warn(
+        `[permissions] failed to install handlers on session: ${(err as Error).message}`
+      );
     }
   });
 
@@ -588,7 +628,10 @@ app.on("ready", async () => {
           logger: unknown;
           autoDownload: boolean;
           autoInstallOnAppQuit: boolean;
-          on: (event: string, callback: (info: { version?: string; message?: string }) => void) => void;
+          on: (
+            event: string,
+            callback: (info: { version?: string; message?: string }) => void
+          ) => void;
           checkForUpdates: () => Promise<unknown>;
         };
       };
@@ -640,12 +683,14 @@ app.on("ready", async () => {
     if (!serverClientRef || shellEventSubscriptions.size === 0) return;
     const events = [...shellEventSubscriptions];
     log.info(`[events] replaying ${events.length} shell subscription(s) to server`);
-    await Promise.all(events.map((event) =>
-      serverClientRef!.call("events", "subscribe", [event]).catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        log.warn(`[events] replay subscribe(${event}) failed: ${msg}`);
-      }),
-    ));
+    await Promise.all(
+      events.map((event) =>
+        serverClientRef!.call("events", "subscribe", [event]).catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          log.warn(`[events] replay subscribe(${event}) failed: ${msg}`);
+        })
+      )
+    );
   };
 
   // Bridge server→main events. Two distinct sources arrive through this
@@ -690,16 +735,22 @@ app.on("ready", async () => {
         const { url } = payload as { url?: string };
         if (typeof url === "string") {
           void shell.openExternal(url).catch((err: unknown) => {
-            log.warn(`[externalOpen] shell.openExternal failed: ${err instanceof Error ? err.message : String(err)}`);
+            log.warn(
+              `[externalOpen] shell.openExternal failed: ${err instanceof Error ? err.message : String(err)}`
+            );
           });
         }
       }
       if (bareEvent === "browser-panel:open") {
         const { url, parentPanelId } = payload as { url?: string; parentPanelId?: string };
         if (typeof url === "string" && typeof parentPanelId === "string") {
-          void panelOrchestrator?.createBrowserPanel(parentPanelId, url, { focus: true }).catch((err: unknown) => {
-            log.warn(`[browserPanel] createBrowserPanel failed: ${err instanceof Error ? err.message : String(err)}`);
-          });
+          void panelOrchestrator
+            ?.createBrowserPanel(parentPanelId, url, { focus: true })
+            .catch((err: unknown) => {
+              log.warn(
+                `[browserPanel] createBrowserPanel failed: ${err instanceof Error ? err.message : String(err)}`
+              );
+            });
         }
       }
       if (isValidEventName(bareEvent)) {
@@ -799,14 +850,7 @@ app.on("ready", async () => {
       allowMissingManifests: startupMode.kind === "remote",
       registry: panelRegistry,
       serverClient: serverSession.serverClient,
-      protocol: serverSession.protocol,
-      externalHost: serverSession.externalHost,
-      gatewayPort: serverSession.gatewayPort,
-      rpcPort: serverSession.rpcPort,
-      workerdPort: serverSession.workerdPort,
-      gitBaseUrl: serverSession.gitBaseUrl,
-      rpcWsUrl: serverSession.rpcWsUrl,
-      pubsubUrl: serverSession.pubsubUrl,
+      gatewayConfig: serverSession.gatewayConfig,
       workspaceConfig: serverSession.workspaceConfig,
     });
 
@@ -817,7 +861,7 @@ app.on("ready", async () => {
     // Forwards server-service calls to the server, dispatches Electron-local
     // services to the local dispatcher.
     const { IpcDispatcher } = await import("./ipcDispatcher.js");
-    ipcDispatcher = new IpcDispatcher({
+    new IpcDispatcher({
       dispatcher,
       serverClient: conn.serverClient,
       getShellWebContents: () => viewManager?.getShellWebContents() ?? null,
@@ -881,20 +925,40 @@ app.on("ready", async () => {
     const { serverClient: sc } = conn;
 
     // Shell-only services
-    electronContainer.register(rpcService(createAppService({
-      panelOrchestrator, serverClient: sc, getViewManager,
-      connectionMode: startupMode.kind === "remote" ? "remote" : "local",
-      remoteHost: startupMode.kind === "remote" ? startupMode.remoteUrl.hostname : undefined,
-    })));
-    electronContainer.register(rpcService(createPanelShellService({
-      panelOrchestrator, panelRegistry,
-      get panelView(): PanelView { return getPanelView(); },
-      getViewManager,
-    })));
+    electronContainer.register(
+      rpcService(
+        createAppService({
+          panelOrchestrator,
+          serverClient: sc,
+          getViewManager,
+          connectionMode: startupMode.kind === "remote" ? "remote" : "local",
+          remoteHost: startupMode.kind === "remote" ? startupMode.remoteUrl.hostname : undefined,
+        })
+      )
+    );
+    electronContainer.register(
+      rpcService(
+        createPanelShellService({
+          panelOrchestrator,
+          panelRegistry,
+          get panelView(): PanelView {
+            return getPanelView();
+          },
+          getViewManager,
+        })
+      )
+    );
     electronContainer.register(rpcService(createViewService({ getViewManager })));
-    electronContainer.register(rpcService(createMenuService({
-      panelOrchestrator, panelRegistry, getViewManager, serverClient: sc,
-    })));
+    electronContainer.register(
+      rpcService(
+        createMenuService({
+          panelOrchestrator,
+          panelRegistry,
+          getViewManager,
+          serverClient: sc,
+        })
+      )
+    );
     // Workspace operations live entirely on the server now (single source of
     // truth, accessible to panels/workers/shell). The shell renderer's
     // `workspace.*` calls reach the server via IpcDispatcher's forwardToServer
@@ -906,9 +970,15 @@ app.on("ready", async () => {
     electronContainer.register(rpcService(createRemoteCredService({ startupMode })));
     electronContainer.register(rpcService(createAdblockService({ adBlockManager })));
     // Locally-hosted services
-    electronContainer.register(rpcService(createBrowserService({
-      cdpServer, getViewManager, panelRegistry,
-    })));
+    electronContainer.register(
+      rpcService(
+        createBrowserService({
+          cdpServer,
+          getViewManager,
+          panelRegistry,
+        })
+      )
+    );
     // Browser-data persistence lives on the server; Electron keeps only the
     // host-bound autofill adapter.
     {
@@ -934,29 +1004,33 @@ app.on("ready", async () => {
         },
       });
       const { createBrowserSessionSyncService } = await import("./services/browserSessionSync.js");
-      electronContainer.register(createBrowserSessionSyncService({
-        eventService,
-        serverClient: sc,
-        browserDataClient: createBrowserDataRpcClient(sc),
-      }));
+      electronContainer.register(
+        createBrowserSessionSyncService({
+          eventService,
+          serverClient: sc,
+          browserDataClient: createBrowserDataRpcClient(sc),
+        })
+      );
     }
 
     // Register autofill service (uses lazy resolution since autofillManager is created in browser-data start)
-    electronContainer.register(rpcService({
-      name: "autofill",
-      description: "Password autofill management",
-      policy: { allowed: ["shell"] },
-      methods: {
-        confirmSave: {
-          args: z.tuple([z.string(), z.enum(["save", "never", "dismiss"])]),
+    electronContainer.register(
+      rpcService({
+        name: "autofill",
+        description: "Password autofill management",
+        policy: { allowed: ["shell"] },
+        methods: {
+          confirmSave: {
+            args: z.tuple([z.string(), z.enum(["save", "never", "dismiss"])]),
+          },
         },
-      },
-      handler: async (_ctx, method, args) => {
-        if (!autofillManager) throw new Error("Autofill not initialized");
-        const def = autofillManager.getServiceDefinition();
-        return def.handler(_ctx, method, args);
-      },
-    }));
+        handler: async (_ctx, method, args) => {
+          if (!autofillManager) throw new Error("Autofill not initialized");
+          const def = autofillManager.getServiceDefinition();
+          return def.handler(_ctx, method, args);
+        },
+      })
+    );
     // Events service — local subscription on main's EventService plus a
     // fire-and-forget forward to the server. The forward makes main's
     // serverClient WS a subscriber on the server's EventService for the same
@@ -971,27 +1045,29 @@ app.on("ready", async () => {
     // subscriber dies with the old WS).
     {
       const baseEventsService = createEventsServiceDefinition(eventService);
-      electronContainer.register(rpcService({
-        ...baseEventsService,
-        handler: async (ctx, method, args) => {
-          const result = await baseEventsService.handler(ctx, method, args);
-          if (ctx.callerKind !== "shell") return result;
+      electronContainer.register(
+        rpcService({
+          ...baseEventsService,
+          handler: async (ctx, method, args) => {
+            const result = await baseEventsService.handler(ctx, method, args);
+            if (ctx.callerKind !== "shell") return result;
 
-          if (method === "subscribe") {
-            shellEventSubscriptions.add(args[0] as EventName);
-          } else if (method === "unsubscribe") {
-            shellEventSubscriptions.delete(args[0] as EventName);
-          } else if (method === "unsubscribeAll") {
-            shellEventSubscriptions.clear();
-          }
+            if (method === "subscribe") {
+              shellEventSubscriptions.add(args[0] as EventName);
+            } else if (method === "unsubscribe") {
+              shellEventSubscriptions.delete(args[0] as EventName);
+            } else if (method === "unsubscribeAll") {
+              shellEventSubscriptions.clear();
+            }
 
-          void sc.call("events", method, args as unknown[]).catch((err: unknown) => {
-            const msg = err instanceof Error ? err.message : String(err);
-            log.warn(`[events] forward ${method} to server failed: ${msg}`);
-          });
-          return result;
-        },
-      }));
+            void sc.call("events", method, args as unknown[]).catch((err: unknown) => {
+              const msg = err instanceof Error ? err.message : String(err);
+              log.warn(`[events] forward ${method} to server failed: ${msg}`);
+            });
+            return result;
+          },
+        })
+      );
     }
 
     await electronContainer.startAll();
@@ -1025,7 +1101,7 @@ app.on("ready", async () => {
      * webContents has a known id; everything else is a panel/browser view.
      */
     const resolveCaller = (
-      event: Electron.IpcMainInvokeEvent,
+      event: Electron.IpcMainInvokeEvent
     ): { callerId: string; callerKind: "shell" | "panel" } => {
       const callerId = resolveCallerId(event);
       return { callerId, callerKind: callerId === "shell" ? "shell" : "panel" };
@@ -1039,9 +1115,7 @@ app.on("ready", async () => {
     const requireShellSender = (event: Electron.IpcMainInvokeEvent, channel: string): void => {
       const { callerKind, callerId } = resolveCaller(event);
       if (callerKind !== "shell") {
-        console.warn(
-          `[ipc] Rejecting ${channel} from non-shell sender (callerId=${callerId})`,
-        );
+        console.warn(`[ipc] Rejecting ${channel} from non-shell sender (callerId=${callerId})`);
         throw new Error(`Channel '${channel}' is shell-only`);
       }
     };
@@ -1055,13 +1129,13 @@ app.on("ready", async () => {
     const requireOwnsViewOrShell = (
       event: Electron.IpcMainInvokeEvent,
       targetViewId: string,
-      channel: string,
+      channel: string
     ): void => {
       const { callerKind, callerId } = resolveCaller(event);
       if (callerKind === "shell") return;
       if (callerId === targetViewId) return;
       console.warn(
-        `[ipc] Rejecting ${channel} from ${callerId} → ${targetViewId} (not owner, not shell)`,
+        `[ipc] Rejecting ${channel} from ${callerId} → ${targetViewId} (not owner, not shell)`
       );
       throw new Error(`Caller does not own target view '${targetViewId}'`);
     };
@@ -1094,22 +1168,31 @@ app.on("ready", async () => {
     ipcMain.handle("natstack:focusPanel", async (_event, panelId: string) => {
       panelOrchestrator!.focusPanel(panelId);
     });
-    ipcMain.handle("natstack:bridge.createBrowserPanel", async (event, url: string, opts?: { name?: string; focus?: boolean }) => {
-      const callerId = resolveCallerId(event);
-      return panelOrchestrator!.createBrowserPanel(callerId, url, opts);
-    });
-    ipcMain.handle("natstack:createBrowserPanel", async (event, url: string, opts?: { name?: string; focus?: boolean }) => {
-      const callerId = resolveCallerId(event);
-      return panelOrchestrator!.createBrowserPanel(callerId, url, opts);
-    });
+    ipcMain.handle(
+      "natstack:bridge.createBrowserPanel",
+      async (event, url: string, opts?: { name?: string; focus?: boolean }) => {
+        const callerId = resolveCallerId(event);
+        return panelOrchestrator!.createBrowserPanel(callerId, url, opts);
+      }
+    );
+    ipcMain.handle(
+      "natstack:createBrowserPanel",
+      async (event, url: string, opts?: { name?: string; focus?: boolean }) => {
+        const callerId = resolveCallerId(event);
+        return panelOrchestrator!.createBrowserPanel(callerId, url, opts);
+      }
+    );
     ipcMain.handle("natstack:bridge.getInfo", async (event) => {
       const callerId = resolveCallerId(event);
       return shellCore?.panelManager.getInfo(callerId);
     });
-    ipcMain.handle("natstack:bridge.setStateArgs", async (event, updates: Record<string, unknown>) => {
-      const callerId = resolveCallerId(event);
-      return shellCore?.panelManager.updateStateArgs(callerId, updates);
-    });
+    ipcMain.handle(
+      "natstack:bridge.setStateArgs",
+      async (event, updates: Record<string, unknown>) => {
+        const callerId = resolveCallerId(event);
+        return shellCore?.panelManager.updateStateArgs(callerId, updates);
+      }
+    );
     ipcMain.handle("natstack:getBootstrapConfig", async (event) => {
       const callerId = resolveCallerId(event);
       return shellCore?.panelManager.getPanelInit(callerId);
@@ -1132,7 +1215,7 @@ app.on("ready", async () => {
         properties: ["openDirectory", "createDirectory"],
         title: opts?.title ?? "Select Folder",
       });
-      return result.canceled ? null : result.filePaths[0] ?? null;
+      return result.canceled ? null : (result.filePaths[0] ?? null);
     });
     ipcMain.handle("natstack:openFolderDialog", async (event, opts?: { title?: string }) => {
       requireShellSender(event, "natstack:openFolderDialog");
@@ -1140,28 +1223,34 @@ app.on("ready", async () => {
         properties: ["openDirectory", "createDirectory"],
         title: opts?.title ?? "Select Folder",
       });
-      return result.canceled ? null : result.filePaths[0] ?? null;
+      return result.canceled ? null : (result.filePaths[0] ?? null);
     });
-    ipcMain.handle("natstack:openFileDialog", async (
-      event,
-      opts?: { title?: string; filters?: { name: string; extensions: string[] }[] },
-    ) => {
-      requireShellSender(event, "natstack:openFileDialog");
-      const result = await dialog.showOpenDialog({
-        properties: ["openFile"],
-        title: opts?.title ?? "Select File",
-        filters: opts?.filters,
-      });
-      return result.canceled ? null : result.filePaths[0] ?? null;
-    });
-    ipcMain.handle("natstack:bridge.openExternal", async (event, url: string, options?: unknown) => {
-      const caller = resolveCaller(event);
-      if (caller.callerKind === "shell") {
-        await sc.call("externalOpen", "openExternal", [url, options]);
-      } else {
-        await sc.call("externalOpen", "openExternalForCaller", [{ ...caller, url, options }]);
+    ipcMain.handle(
+      "natstack:openFileDialog",
+      async (
+        event,
+        opts?: { title?: string; filters?: { name: string; extensions: string[] }[] }
+      ) => {
+        requireShellSender(event, "natstack:openFileDialog");
+        const result = await dialog.showOpenDialog({
+          properties: ["openFile"],
+          title: opts?.title ?? "Select File",
+          filters: opts?.filters,
+        });
+        return result.canceled ? null : (result.filePaths[0] ?? null);
       }
-    });
+    );
+    ipcMain.handle(
+      "natstack:bridge.openExternal",
+      async (event, url: string, options?: unknown) => {
+        const caller = resolveCaller(event);
+        if (caller.callerKind === "shell") {
+          await sc.call("externalOpen", "openExternal", [url, options]);
+        } else {
+          await sc.call("externalOpen", "openExternalForCaller", [{ ...caller, url, options }]);
+        }
+      }
+    );
     ipcMain.handle("natstack:openExternal", async (event, url: string, options?: unknown) => {
       const caller = resolveCaller(event);
       if (caller.callerKind === "shell") {
@@ -1195,7 +1284,9 @@ app.on("ready", async () => {
       requireOwnsViewOrShell(event, browserId, "natstack:navigate");
       const wc = viewManager!.getWebContents(browserId);
       if (!wc) throw new Error(`Browser webContents not found for ${browserId}`);
-      try { await wc.loadURL(url); } catch (err) {
+      try {
+        await wc.loadURL(url);
+      } catch (err) {
         const error = err as { code?: string; errno?: number };
         if (error.errno === -3 || error.code === "ERR_ABORTED") return;
         throw err;
@@ -1226,10 +1317,24 @@ app.on("ready", async () => {
     // Log startup timing in dev mode
     if (isDev()) {
       performance.measure("startup:total", "startup:ready", "startup:window-created");
-      performance.measure("startup:server-spawn", "startup:server-spawn-begin", "startup:server-spawned");
-      performance.measure("startup:server-connect", "startup:server-spawned", "startup:server-connected");
-      performance.measure("startup:post-connect", "startup:server-connected", "startup:window-created");
-      const entries = performance.getEntriesByType("measure").filter((e) => e.name.startsWith("startup:"));
+      performance.measure(
+        "startup:server-spawn",
+        "startup:server-spawn-begin",
+        "startup:server-spawned"
+      );
+      performance.measure(
+        "startup:server-connect",
+        "startup:server-spawned",
+        "startup:server-connected"
+      );
+      performance.measure(
+        "startup:post-connect",
+        "startup:server-connected",
+        "startup:window-created"
+      );
+      const entries = performance
+        .getEntriesByType("measure")
+        .filter((e) => e.name.startsWith("startup:"));
       for (const entry of entries) {
         console.log(`[Perf] ${entry.name}: ${Math.round(entry.duration)}ms`);
       }
@@ -1254,12 +1359,16 @@ app.on("ready", async () => {
 
     if (serverSession?.serverClient) {
       cleanupPromises.push(
-        serverSession.serverClient.close().catch((e) => console.error("[App] serverClient cleanup error:", e))
+        serverSession.serverClient
+          .close()
+          .catch((e) => console.error("[App] serverClient cleanup error:", e))
       );
     }
     if (serverSession?.serverProcessManager) {
       cleanupPromises.push(
-        serverSession.serverProcessManager.shutdown().catch((e) => console.error("[App] serverProcess cleanup error:", e))
+        serverSession.serverProcessManager
+          .shutdown()
+          .catch((e) => console.error("[App] serverProcess cleanup error:", e))
       );
     }
     serverSession = null;
@@ -1271,10 +1380,7 @@ app.on("ready", async () => {
     }
     await Promise.all(cleanupPromises);
 
-    dialog.showErrorBox(
-      "Startup Failed",
-      error instanceof Error ? error.message : String(error)
-    );
+    dialog.showErrorBox("Startup Failed", error instanceof Error ? error.message : String(error));
     app.exit(1);
   }
 });
@@ -1313,7 +1419,7 @@ app.on("will-quit", (event) => {
 
     const stopPromises: Promise<void>[] = [];
 
-    // Server client (WS admin connection) + server process
+    // Server client (caller-token WS connection) + server process
     if (serverSession) {
       // Run panel cleanup via server (archive childless shell panels),
       // then close the connection and stop the server process.
@@ -1322,11 +1428,13 @@ app.on("will-quit", (event) => {
 
       const cleanupThenClose = (async () => {
         if (panelRegistry && shellCore) {
-          const livePanelIds = panelRegistry.listPanels().map(p => p.panelId);
-          await shellCore.panelManager.shutdownCleanup(livePanelIds)
+          const livePanelIds = panelRegistry.listPanels().map((p) => p.panelId);
+          await shellCore.panelManager
+            .shutdownCleanup(livePanelIds)
             .catch((e: unknown) => console.error("[App] Failed to run shutdown cleanup:", e));
         }
-        await session.serverClient.close()
+        await session.serverClient
+          .close()
           .catch((e) => console.error("[App] Server client close error:", e));
       })();
       stopPromises.push(cleanupThenClose);
@@ -1334,8 +1442,8 @@ app.on("will-quit", (event) => {
       if (session.serverProcessManager) {
         stopPromises.push(
           cleanupThenClose.then(() =>
-            session.serverProcessManager!
-              .shutdown()
+            session
+              .serverProcessManager!.shutdown()
               .then(() => console.log("[App] Server process stopped"))
               .catch((e) => console.error("[App] Server process shutdown error:", e))
           )
@@ -1379,8 +1487,5 @@ app.on("activate", () => {
 
 // Listen for system theme changes and notify subscribers
 nativeTheme.on("updated", () => {
-  eventService.emit(
-    "system-theme-changed",
-    nativeTheme.shouldUseDarkColors ? "dark" : "light"
-  );
+  eventService.emit("system-theme-changed", nativeTheme.shouldUseDarkColors ? "dark" : "light");
 });

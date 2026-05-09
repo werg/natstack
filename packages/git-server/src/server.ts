@@ -4,6 +4,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as http from "http";
 import { execFile } from "child_process";
+import { AsyncLocalStorage } from "async_hooks";
 import { createDevLogger } from "@natstack/dev-log";
 import { execGitFile, spawnGit, spawnGitSync } from "@natstack/shared/gitRuntime";
 
@@ -13,14 +14,10 @@ import type {
   BranchInfo,
   CommitInfo,
   GitWatcherLike,
-  TokenManagerLike,
   GitWriteAuthorizer,
 } from "./types.js";
 import { GitAuthManager } from "./auth.js";
-import * as net from "net";
 import { WorkspaceTreeManager } from "./git/workspaceTree.js";
-
-const DEFAULT_GIT_SERVER_PORT = 63524;
 
 /**
  * Strict allow-list for user-controlled git refs / branches / paths that flow
@@ -53,8 +50,6 @@ export interface GitPushEvent {
  * Configuration options for the git server
  */
 export interface GitServerConfig {
-  /** Port to listen on. If unavailable, will try to find an open port. */
-  port?: number;
   /** Custom path for git repositories (workspace root). */
   reposPath?: string;
   /** Glob patterns for directories to initialize as git repos (e.g., ["panels/*"]) */
@@ -70,6 +65,10 @@ export interface GitServerConfig {
    * fail closed when no authorizer is configured.
    */
   writeAuthorizer?: GitWriteAuthorizer;
+  /** Resolve source repo path for a caller id (workers/DOs). */
+  getSourceForCaller?: (callerId: string) => string | null;
+  /** Dynamic CORS allowlist for browser git clients. */
+  getAllowedOrigins?: () => string[];
 }
 
 export class GitServer {
@@ -77,9 +76,8 @@ export class GitServer {
   private configuredReposPath: string | null;
   private resolvedReposPath: string | null = null;
   private authManager: GitAuthManager;
-  private configuredPort: number;
-  private actualPort: number | null = null;
   private initPatterns: string[];
+  private identityStore = new AsyncLocalStorage<{ callerId: string; callerKind: string }>();
 
   // Workspace tree discovery (delegated to WorkspaceTreeManager)
   private treeManager: WorkspaceTreeManager | null = null;
@@ -91,14 +89,16 @@ export class GitServer {
   private devTargetDir: string | null;
   private writeAuthorizer: GitWriteAuthorizer | null;
 
-  constructor(tokenManager: TokenManagerLike, config?: GitServerConfig) {
-    this.configuredPort = config?.port ?? DEFAULT_GIT_SERVER_PORT;
+  constructor(config?: GitServerConfig) {
     this.configuredReposPath = config?.reposPath ?? null;
     this.initPatterns = config?.initPatterns ?? ["panels/*", "packages/*", "projects/*"];
     this.devTargetDir = config?.devTargetDir ?? null;
     this.writeAuthorizer = config?.writeAuthorizer ?? null;
-    this.authManager = new GitAuthManager(tokenManager);
+    this.authManager = new GitAuthManager(config?.getSourceForCaller);
+    this.getAllowedOrigins = config?.getAllowedOrigins ?? (() => []);
   }
+
+  private getAllowedOrigins: () => string[];
 
   private getTreeManager(): WorkspaceTreeManager {
     if (!this.treeManager) {
@@ -114,35 +114,7 @@ export class GitServer {
     return this.resolvedReposPath;
   }
 
-  /**
-   * Probe for an available port starting from configuredPort up to the git range end.
-   * No host specified (matching real server which also binds to all interfaces).
-   */
-  private async findAvailablePort(): Promise<number> {
-    const end = this.configuredPort + 100;
-    for (let port = this.configuredPort; port < end; port++) {
-      const result = await new Promise<{ ok: true } | { ok: false; error: NodeJS.ErrnoException }>((resolve) => {
-        const srv = net.createServer();
-        srv.once("error", (err: NodeJS.ErrnoException) => resolve({ ok: false, error: err }));
-        srv.listen(port, () => {
-          srv.close(() => resolve({ ok: true }));
-        });
-      });
-      if (result.ok) return port;
-      if (result.error.code !== "EADDRINUSE") {
-        throw new Error(
-          `Cannot probe port ${port} for git: ${result.error.code} - ${result.error.message}`
-        );
-      }
-    }
-    throw new Error(`Could not find available port in range ${this.configuredPort}-${end - 1}`);
-  }
-
-  /**
-   * Start the git server.
-   * Tries the configured port first, then searches for an available one.
-   */
-  async start(): Promise<number> {
+  async init(): Promise<void> {
     const reposPath = this.ensureReposPath();
 
     // Ensure repos directory exists
@@ -165,20 +137,18 @@ export class GitServer {
       {
       autoCreate: true,
       checkout: true, // Use working directories instead of bare repos
-      authenticate: ({ type, repo, headers }, next) => {
-        // Extract bearer token from Authorization header
-        const authHeader = headers["authorization"];
-        if (!authHeader || !authHeader.startsWith("Bearer ")) {
-          next(new Error("Bearer token required"));
+      authenticate: ({ type, repo }, next) => {
+        const identity = this.identityStore.getStore();
+        if (!identity) {
+          next(new Error("Authenticated caller identity missing"));
           return;
         }
 
-        const token = authHeader.slice("Bearer ".length);
         // Map git operation type to our fetch/push model
         const operation: "fetch" | "push" = type === "push" ? "push" : "fetch";
-        const result = this.authManager.validateAccess(token, repo, operation);
+        const result = this.authManager.canAccess(identity.callerId, identity.callerKind, repo, operation);
 
-        if (!result.valid) {
+        if (!result.allowed) {
           log.verbose(` Auth failed for ${operation} on ${repo}: ${result.reason}`);
           next(new Error(result.reason || "Authentication failed"));
           return;
@@ -192,15 +162,11 @@ export class GitServer {
           next(new Error("Git write permission unavailable"));
           return;
         }
-        if (!result.callerId) {
-          next(new Error("Authenticated git caller is missing"));
-          return;
-        }
 
         const repoPath = this.normalizePath(repo);
         Promise.resolve(this.writeAuthorizer({
-          callerId: result.callerId,
-          callerKind: result.callerKind ?? "panel",
+          callerId: identity.callerId,
+          callerKind: identity.callerKind,
           repoPath,
         }))
           .then((authorization) => {
@@ -209,12 +175,12 @@ export class GitServer {
               return;
             }
             const reason = authorization.reason || "Git write permission denied";
-            log.verbose(` Write permission denied for ${result.callerId} on ${repoPath}: ${reason}`);
+            log.verbose(` Write permission denied for ${identity.callerId} on ${repoPath}: ${reason}`);
             next(new Error(reason));
           })
           .catch((error: unknown) => {
             const reason = error instanceof Error ? error.message : String(error);
-            log.verbose(` Write permission check failed for ${result.callerId} on ${repoPath}: ${reason}`);
+            log.verbose(` Write permission check failed for ${identity.callerId} on ${repoPath}: ${reason}`);
             next(new Error(reason || "Git write permission check failed"));
           });
       },
@@ -281,85 +247,56 @@ export class GitServer {
       throw new Error("Git server not initialized");
     }
 
-    // Allow in-browser git fetches (isomorphic-git) by setting permissive CORS headers.
-    const applyCors = (res: http.ServerResponse): void => {
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader(
-        "Access-Control-Allow-Headers",
-        "Authorization, Content-Type, User-Agent, X-Requested-With"
-      );
-      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    };
-
-    const server = http.createServer(async (req, res) => {
-      applyCors(res);
-      if (req.method === "OPTIONS") {
-        res.writeHead(200);
-        res.end();
-        return;
-      }
-
-      git.handle(req, res);
-    });
-
-    const port = await this.findAvailablePort();
-    if (port !== this.configuredPort) {
-      log.verbose(` Configured port ${this.configuredPort} unavailable, using ${port}`);
-    }
-
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(port, () => resolve());
-    });
-
-    this.actualPort = port;
-    log.verbose(` Started on http://localhost:${port}`);
     log.verbose(` Repos directory: ${this.ensureReposPath()}`);
-    return port;
   }
 
-  /**
-   * Stop the git server
-   */
-  async stop(): Promise<void> {
-    const server = this.git?.server;
-    if (server) {
-      return new Promise((resolve) => {
-        server.close(() => {
-          console.log("[GitServer] Stopped");
-          this.actualPort = null;
-          resolve();
-        });
-      });
+  async handleHttpRequest(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    callerId: string | null,
+    callerKind: string | null,
+  ): Promise<void> {
+    const corsHandled = this.handleCors(req, res);
+    if (corsHandled) return;
+    if (!this.git) {
+      res.writeHead(503, { "Content-Type": "text/plain" });
+      res.end("Git server not initialized");
+      return;
     }
+    if (!callerId || !callerKind) {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end("Git caller identity missing");
+      return;
+    }
+    const originalUrl = req.url ?? "/";
+    req.url = originalUrl.startsWith("/_git/") ? originalUrl.slice("/_git".length) : originalUrl;
+    this.identityStore.run({ callerId, callerKind }, () => this.git!.handle(req, res));
   }
 
-  /**
-   * Get the server port. Returns the actual port if running, otherwise the configured port.
-   */
-  getPort(): number {
-    return this.actualPort ?? this.configuredPort;
-  }
-
-  /**
-   * Get the base URL for git operations
-   */
-  getBaseUrl(): string {
-    return `http://localhost:${this.getPort()}`;
-  }
-
-  /**
-   * Get or create a bearer token for a panel ID
-   */
-  getTokenForPanel(panelId: string): string {
-    return this.authManager.getToken(panelId);
-  }
-
-  /**
-   * Revoke token when panel is closed
-   */
-  revokeTokenForPanel(panelId: string): boolean {
-    return this.authManager.revokeToken(panelId);
+  private handleCors(req: http.IncomingMessage, res: http.ServerResponse): boolean {
+    const origin = req.headers.origin;
+    const originValue = Array.isArray(origin) ? origin[0] : origin;
+    const allowed = originValue ? this.getAllowedOrigins().includes(originValue) : true;
+    if (originValue && !allowed) {
+      res.writeHead(403, { "Content-Type": "text/plain" });
+      res.end("Origin not allowed");
+      return true;
+    }
+    if (originValue) {
+      res.setHeader("Access-Control-Allow-Origin", originValue);
+      res.setHeader("Access-Control-Allow-Credentials", "true");
+      res.setHeader("Vary", "Origin");
+    }
+    if (req.method === "OPTIONS") {
+      if (originValue) {
+        res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+      }
+      res.writeHead(204);
+      res.end();
+      return true;
+    }
+    return false;
   }
 
   /**

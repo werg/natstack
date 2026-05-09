@@ -16,6 +16,7 @@ import type {
   BranchInfo,
   CommitInfo,
 } from "../core/index.js";
+import type { GatewayConfig } from "../shared/globals.js";
 import type { RuntimeFs, ThemeAppearance } from "../types.js";
 
 export interface BaseRuntimeDeps {
@@ -27,6 +28,7 @@ export interface BaseRuntimeDeps {
   initialTheme: ThemeAppearance;
   fs: RuntimeFs;
   setupGlobals?: () => void;
+  gatewayConfig?: GatewayConfig | null;
   gitConfig?: GitConfig | null;
   pubsubConfig?: PubSubConfig | null;
 }
@@ -155,6 +157,7 @@ export function createBaseRuntime(deps: BaseRuntimeDeps) {
 
     exposeMethod: rpc.exposeMethod.bind(rpc),
 
+    gatewayConfig: deps.gatewayConfig ?? null,
     gitConfig: deps.gitConfig ?? null,
     pubsubConfig: deps.pubsubConfig ?? null,
     contextId: deps.contextId,

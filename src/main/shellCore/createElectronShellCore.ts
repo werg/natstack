@@ -11,14 +11,7 @@ export function createElectronShellCore(deps: {
   allowMissingManifests?: boolean;
   registry: PanelRegistry;
   serverClient: ServerClient;
-  protocol: "http" | "https";
-  externalHost: string;
-  gatewayPort: number;
-  rpcPort: number;
-  workerdPort: number;
-  gitBaseUrl: string;
-  rpcWsUrl: string;
-  pubsubUrl: string;
+  gatewayConfig: { serverUrl: string };
   workspaceConfig?: import("@natstack/shared/workspace/types").WorkspaceConfig;
 }) {
   const persistence = createPanelPersistenceClient(deps.serverClient);
@@ -32,18 +25,11 @@ export function createElectronShellCore(deps: {
     searchIndex,
     workspaceConfig: deps.workspaceConfig,
     serverInfo: {
-      protocol: deps.protocol,
-      externalHost: deps.externalHost,
-      gatewayPort: deps.gatewayPort,
-      rpcPort: deps.rpcPort,
-      workerdPort: deps.workerdPort,
-      gitBaseUrl: deps.gitBaseUrl,
-      rpcWsUrl: deps.rpcWsUrl,
-      pubsubUrl: deps.pubsubUrl,
+      gatewayConfig: deps.gatewayConfig,
     },
     tokenClient: {
       ensurePanelToken: (panelId, contextId, parentId, source) =>
-        deps.serverClient.call("tokens", "ensurePanelToken", [panelId, contextId, parentId, source]) as Promise<{ token: string; gitToken: string }>,
+        deps.serverClient.call("tokens", "ensurePanelToken", [panelId, contextId, parentId, source]) as Promise<{ token: string }>,
       revokePanelToken: (panelId) =>
         deps.serverClient.call("tokens", "revokePanelToken", [panelId]) as Promise<void>,
       updatePanelContext: (panelId, contextId) =>

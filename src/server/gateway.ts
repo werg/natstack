@@ -1,17 +1,24 @@
 /**
  * Gateway — Single-port HTTP/WS router for NatStack server.
  *
- * In-process routing for RPC and PanelHttp (zero-overhead handler dispatch).
- * Reverse proxy only for external processes (git server, workerd).
+ * In-process routing for RPC, PanelHttp, and git, plus reverse proxying for
+ * external worker processes.
  *
- * The gateway is always present in standalone mode. In Electron IPC mode,
- * the Electron process runs its own RpcServer — the gateway is not needed.
+ * The gateway is the single caller-facing ingress in both standalone and
+ * Electron-managed server modes.
  */
 
-import { createServer, request, type Server as HttpServer, type IncomingMessage, type ServerResponse } from "http";
+import {
+  createServer,
+  request,
+  type Server as HttpServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "http";
 import { createServer as createHttpsServer } from "https";
 import { randomBytes } from "crypto";
 import * as fs from "fs";
+import { connect as connectNet } from "net";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Duplex } from "stream";
 import { createDevLogger } from "@natstack/dev-log";
@@ -23,25 +30,11 @@ const log = createDevLogger("Gateway");
 // ---------------------------------------------------------------------------
 // Per-upstream gateway credentials (audit finding #32).
 //
-// Wave-1 stripped inbound `Authorization` before forwarding to workerd /
-// git upstreams (so panel/admin tokens never leak into workerd-served
-// code). What was missing: an upstream-scoped credential that lets the
-// upstream attribute the request to "the gateway" rather than "anonymous
-// loopback caller". We mint a fresh random token per upstream at gateway
-// construction time and stamp it onto every forwarded request.
-//
-// The receiving side (workerd entrypoint, git server) must validate the
-// bearer matches its expected token. Wiring that validation into workerd
-// and the git server is OUT of this agent's file scope.
-//
-// TODO(security-audit-wave2-agent-1): wire WORKERD_GATEWAY_TOKEN into
-// `src/server/workerdManager.ts` so that the workerd entrypoint refuses
-// requests whose Authorization bearer does not match the env-injected
-// token. Pass via `WORKERD_GATEWAY_TOKEN` env binding on workerd start.
-// TODO(security-audit-wave2-agent-1): wire GIT_GATEWAY_TOKEN into
-// `src/server/gitServer.ts` so the git server validates the bearer
-// before serving any /_git/ request. Until that lands, the bearer is
-// stamped but unverified.
+// Inbound `Authorization` and `x-natstack-*` headers are stripped before
+// forwarding to upstream processes so panel/admin tokens never leak past the
+// gateway. Workerd receives a gateway-scoped bearer that its router validates.
+// Git is dispatched in-process after caller bearer validation, so it receives
+// caller identity directly rather than a forwarded bearer.
 // ---------------------------------------------------------------------------
 
 /**
@@ -54,14 +47,10 @@ const log = createDevLogger("Gateway");
  * `x-natstack-*` covers `x-natstack-token` (admin) and any future
  * NatStack-internal admin-bearing headers.
  */
-const STRIP_UPSTREAM_HEADERS = new Set<string>([
-  "authorization",
-  "cookie",
-  "proxy-authorization",
-]);
+const STRIP_UPSTREAM_HEADERS = new Set<string>(["authorization", "cookie", "proxy-authorization"]);
 
 function stripUpstreamHeaders(
-  headers: IncomingMessage["headers"],
+  headers: IncomingMessage["headers"]
 ): Record<string, string | string[]> {
   const out: Record<string, string | string[]> = {};
   for (const [k, v] of Object.entries(headers)) {
@@ -88,17 +77,36 @@ export interface RpcHandler {
   handleGatewayHttpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> | void;
 }
 
+export interface GitHttpHandler {
+  handleHttpRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    callerId: string | null,
+    callerKind: string | null
+  ): Promise<void> | void;
+}
+
 export interface GatewayDeps {
   /** In-process RPC handler */
   rpcHandler?: RpcHandler;
+  /** Dynamic in-process RPC handler getter. */
+  getRpcHandler?: () => RpcHandler | null | undefined;
   /** In-process panel HTTP handler */
   panelHttpHandler?: PanelHttpHandler;
-  /** Git server port for /_git/ path (reverse proxy) */
-  gitPort?: number;
+  /** Dynamic in-process panel HTTP handler getter. */
+  getPanelHttpHandler?: () => PanelHttpHandler | null | undefined;
+  /** Dynamic in-process git handler getter. */
+  getGitHandler?: () => GitHttpHandler | null | undefined;
   /** Workerd port for /_w/ path (reverse proxy) */
   workerdPort?: number | null;
+  /** Dynamic workerd port getter. */
+  getWorkerdPort?: () => number | null | undefined;
+  /** Optional pre-shared workerd gateway token. */
+  workerdGatewayToken?: string;
   /** External hostname for generated public URLs and origin checks */
   externalHost: string;
+  /** Current public URL for origin checks, including --public-url / NATSTACK_PUBLIC_URL overrides. */
+  getPublicUrl?: () => string | null | undefined;
   /** Bind host (default "0.0.0.0") */
   bindHost?: string;
   /** Path to TLS certificate file (enables HTTPS) */
@@ -107,7 +115,7 @@ export interface GatewayDeps {
   tlsKey?: string;
   /** Called by /healthz to produce the JSON body */
   healthProvider?: (detailed: boolean) => Record<string, unknown>;
-  /** Admin token — when provided and matches ?token= query arg, /healthz returns detailed fields */
+  /** Admin token — when provided and presented as Bearer, /healthz returns detailed fields */
   adminToken?: string;
   /** Caller token manager for route auth modes used by panels/workers/shell/server callers. */
   tokenManager: TokenManager;
@@ -124,12 +132,10 @@ export class Gateway {
    *  construction; stamped onto every forwarded request after inbound auth
    *  headers are stripped. */
   private readonly workerdGatewayToken: string;
-  private readonly gitGatewayToken: string;
 
   constructor(deps: GatewayDeps) {
     this.deps = deps;
-    this.workerdGatewayToken = randomBytes(32).toString("hex");
-    this.gitGatewayToken = randomBytes(32).toString("hex");
+    this.workerdGatewayToken = deps.workerdGatewayToken ?? randomBytes(32).toString("hex");
   }
 
   /** Bearer token the gateway uses when calling workerd. The workerd
@@ -138,56 +144,47 @@ export class Gateway {
     return this.workerdGatewayToken;
   }
 
-  /** Bearer token the gateway uses when calling the git server. */
-  getGitGatewayToken(): string {
-    return this.gitGatewayToken;
-  }
-
-
   async start(port: number): Promise<number> {
-    const { rpcHandler, panelHttpHandler, gitPort, workerdPort, tlsCert, tlsKey } = this.deps;
+    const { tlsCert, tlsKey } = this.deps;
 
     const { healthProvider, adminToken, tokenManager, routeRegistry } = this.deps;
     const workerdToken = this.workerdGatewayToken;
-    const gitToken = this.gitGatewayToken;
 
     const requestHandler = (req: IncomingMessage, res: ServerResponse) => {
       const url = req.url ?? "/";
+      const rpcHandler = this.deps.getRpcHandler?.() ?? this.deps.rpcHandler;
+      const panelHttpHandler = this.deps.getPanelHttpHandler?.() ?? this.deps.panelHttpHandler;
+      const gitHandler = this.deps.getGitHandler?.();
+      const workerdPort = this.deps.getWorkerdPort?.() ?? this.deps.workerdPort;
 
       // /healthz → liveness + (token-gated) detailed status. No auth for basic
-      // probe. Token can arrive via `?token=` query (convenient for curl) OR
-      // via `X-NatStack-Token` header (what the main-process health poller
-      // uses — keeps the admin token out of URLs / proxy logs).
+      // probe. Detailed status requires the admin token as a Bearer token.
       if (req.method === "GET" && (url === "/healthz" || url.startsWith("/healthz?"))) {
         let detailed = false;
-        // Default-deny: the detailed branch is only reachable when the host
-        // configured an admin token AND the caller presents the matching
-        // token. No token configured ⇒ no detailed branch (audit #25).
         if (adminToken) {
-          const qIdx = url.indexOf("?");
-          if (qIdx !== -1) {
-            const params = new URLSearchParams(url.slice(qIdx + 1));
-            const qToken = params.get("token");
-            if (qToken && constantTimeStringEqual(qToken, adminToken)) {
-              detailed = true;
-            }
-          }
-          const headerToken = req.headers["x-natstack-token"];
-          if (typeof headerToken === "string" && headerToken.length > 0
-              && constantTimeStringEqual(headerToken, adminToken)) {
+          const bearer = extractBearerToken(req);
+          if (bearer && constantTimeStringEqual(bearer, adminToken)) {
             detailed = true;
           }
         }
-        const body = healthProvider
-          ? healthProvider(detailed)
-          : { ok: true };
+        const body = healthProvider ? healthProvider(detailed) : { ok: true };
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(body));
         return;
       }
 
       // /_w/ → workerd reverse proxy
-      if (url.startsWith("/_w/") && workerdPort) {
+      if (url.startsWith("/_w/")) {
+        if (!validateCallerBearer(req, tokenManager)) {
+          res.writeHead(401, { "Content-Type": "text/plain" });
+          res.end("Unauthorized");
+          return;
+        }
+        if (!workerdPort) {
+          res.writeHead(503, { "Content-Type": "text/plain" });
+          res.end("Service starting up");
+          return;
+        }
         return proxyRequest(req, res, workerdPort, url, workerdToken);
       }
 
@@ -201,16 +198,24 @@ export class Gateway {
           workerdPort,
           adminToken,
           tokenManager,
-          workerdToken,
+          workerdToken
         );
         if (handled) return;
         // Fall through to 404 below — no panel fallback for `/_r/` misses.
       }
 
       // /_git/ → git server reverse proxy
-      if (url.startsWith("/_git/") && gitPort) {
-        const gitPath = url.slice(5); // strip /_git prefix
-        return proxyRequest(req, res, gitPort, gitPath, gitToken);
+      if (url.startsWith("/_git/") && gitHandler) {
+        if (req.method === "OPTIONS") {
+          return gitHandler.handleHttpRequest(req, res, null, null);
+        }
+        const entry = validateCallerBearer(req, tokenManager);
+        if (!entry) {
+          res.writeHead(401, { "Content-Type": "text/plain" });
+          res.end("Unauthorized");
+          return;
+        }
+        return gitHandler.handleHttpRequest(req, res, entry.callerId, entry.callerKind);
       }
 
       // POST /rpc → RPC handler (in-process)
@@ -231,7 +236,7 @@ export class Gateway {
     if (tlsCert && tlsKey) {
       this.server = createHttpsServer(
         { cert: fs.readFileSync(tlsCert), key: fs.readFileSync(tlsKey) },
-        requestHandler,
+        requestHandler
       );
     } else {
       this.server = createServer(requestHandler);
@@ -241,11 +246,15 @@ export class Gateway {
     // gateway preserves existing WebSocket behavior for large developer flows.
     this.wss = new WebSocketServer({ noServer: true });
 
-    const externalHost = this.deps.externalHost;
-    const allowedOrigins = buildOriginAllowList(externalHost);
-
     this.server.on("upgrade", (req, socket, head) => {
       const url = req.url ?? "/";
+      const rpcHandler = this.deps.getRpcHandler?.() ?? this.deps.rpcHandler;
+      const panelHttpHandler = this.deps.getPanelHttpHandler?.() ?? this.deps.panelHttpHandler;
+      const workerdPort = this.deps.getWorkerdPort?.() ?? this.deps.workerdPort;
+      const allowedOrigins = buildOriginAllowList(
+        this.deps.externalHost,
+        this.deps.getPublicUrl?.()
+      );
 
       // Origin allow-list (audit #30). Bearer auth still gates the actual
       // RPC, but rejecting cross-site browser connects defends against the
@@ -267,7 +276,17 @@ export class Gateway {
       }
 
       // /_w/ → workerd WebSocket proxy
-      if (url.startsWith("/_w/") && workerdPort) {
+      if (url.startsWith("/_w/")) {
+        if (!validateCallerBearer(req, tokenManager)) {
+          socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+        if (!workerdPort) {
+          socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
+          socket.destroy();
+          return;
+        }
         return proxyUpgrade(req, socket, head, workerdPort, workerdToken);
       }
 
@@ -282,7 +301,7 @@ export class Gateway {
           workerdPort,
           adminToken,
           tokenManager,
-          workerdToken,
+          workerdToken
         );
         if (handled) return;
         // Miss → fall through to destroy below.
@@ -342,12 +361,24 @@ export class Gateway {
  * Override / extension: set `NATSTACK_WS_ALLOWED_ORIGINS` to a comma list
  * of additional origins (e.g. `http://my-dev-host:5173,chrome-extension://xyz`).
  */
-function buildOriginAllowList(externalHost: string): { exact: Set<string>; suffix: Set<string> } {
+function buildOriginAllowList(
+  externalHost: string,
+  publicUrl?: string | null
+): { exact: Set<string>; suffix: Set<string> } {
   const exact = new Set<string>();
   const suffix = new Set<string>();
   // Bare host on http/https.
   exact.add(`http://${externalHost}`);
   exact.add(`https://${externalHost}`);
+  if (publicUrl) {
+    try {
+      const parsed = new URL(publicUrl);
+      exact.add(parsed.origin);
+      exact.add(`${parsed.protocol}//${parsed.hostname}`);
+    } catch {
+      log.warn(`Ignoring invalid public URL for WS Origin allow-list: ${publicUrl}`);
+    }
+  }
   // Loopback dev origins.
   for (const h of ["localhost", "127.0.0.1", "[::1]"]) {
     exact.add(`http://${h}`);
@@ -376,7 +407,7 @@ function buildOriginAllowList(externalHost: string): { exact: Set<string>; suffi
  */
 function isOriginAllowed(
   origin: string | string[] | undefined,
-  allowed: { exact: Set<string>; suffix: Set<string> },
+  allowed: { exact: Set<string>; suffix: Set<string> }
 ): boolean {
   if (origin === undefined) return true;
   const value = Array.isArray(origin) ? origin[0] : origin;
@@ -409,7 +440,7 @@ function proxyRequest(
   targetPort: number,
   targetPath: string,
   upstreamToken: string,
-  hostHeader?: string,
+  hostHeader?: string
 ): void {
   // Strip inbound auth/cookie/X-NatStack-* before forwarding (audit #32).
   // Workerd-served code is untrusted-by-design; it must never see the
@@ -432,10 +463,14 @@ function proxyRequest(
       res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
       proxyRes.on("error", (err) => {
         log.warn(`Proxy response stream error: ${err.message}`);
-        try { res.end(); } catch { /* already closed */ }
+        try {
+          res.end();
+        } catch {
+          /* already closed */
+        }
       });
       proxyRes.pipe(res);
-    },
+    }
   );
 
   proxyReq.on("error", (err) => {
@@ -453,14 +488,13 @@ function proxyUpgrade(
   socket: Duplex,
   head: Buffer,
   targetPort: number,
-  upstreamToken: string,
+  upstreamToken: string
 ): void {
   // Strip inbound auth/cookie/X-NatStack-* (audit #32). See proxyRequest.
   // After stripping, stamp the per-upstream gateway bearer.
   const safeHeaders = stripUpstreamHeaders(req.headers);
   safeHeaders["authorization"] = `Bearer ${upstreamToken}`;
-  const { connect } = require("net") as typeof import("net");
-  const targetSocket = connect(targetPort, "127.0.0.1", () => {
+  const targetSocket = connectNet(targetPort, "127.0.0.1", () => {
     const headers = Object.entries(safeHeaders)
       .filter(([, v]) => v !== undefined)
       .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`)
@@ -488,39 +522,43 @@ function proxyUpgrade(
 // Route registry dispatch (`/_r/w/...` and `/_r/s/...`)
 // ===========================================================================
 
-/** Extract an admin-token-equivalent value from query or `X-NatStack-Token` header. */
-function extractRouteToken(url: string, req: IncomingMessage): string | null {
-  const qIdx = url.indexOf("?");
-  if (qIdx !== -1) {
-    const params = new URLSearchParams(url.slice(qIdx + 1));
-    const qToken = params.get("token");
-    if (qToken) return qToken;
-  }
-  const h = req.headers["x-natstack-token"];
-  if (typeof h === "string" && h.length > 0) return h;
-  return null;
+function extractBearerToken(req: IncomingMessage): string | null {
+  const h = req.headers["authorization"];
+  if (typeof h !== "string" || !h.startsWith("Bearer ")) return null;
+  const token = h.slice("Bearer ".length);
+  return token.length > 0 ? token : null;
+}
+
+function validateCallerBearer(
+  req: IncomingMessage,
+  tokenManager: TokenManager
+): { callerId: string; callerKind: string } | null {
+  const token = extractBearerToken(req);
+  if (!token) return null;
+  return tokenManager.validateToken(token);
+}
+
+function validateAdminBearer(req: IncomingMessage, adminToken: string | undefined): boolean {
+  if (!adminToken) return false;
+  const token = extractBearerToken(req);
+  if (!token) return false;
+  return constantTimeStringEqual(token, adminToken);
 }
 
 function enforceAuth(
   lookup: LookupResult,
   req: IncomingMessage,
-  url: string,
+  _url: string,
   adminToken: string | undefined,
-  tokenManager: TokenManager,
+  tokenManager: TokenManager
 ): boolean {
-  const presented = extractRouteToken(url, req);
   switch (lookup.auth) {
     case "public":
       return true;
     case "admin-token":
-      // Default-deny when no admin token is configured (audit #25): without a
-      // token there is no way to authenticate, so the route is unreachable.
-      if (!adminToken || !presented) return false;
-      // Constant-time compare (audit #33).
-      return constantTimeStringEqual(presented, adminToken);
+      return validateAdminBearer(req, adminToken);
     case "caller-token":
-      if (!presented) return false;
-      return tokenManager.validateToken(presented) !== null;
+      return validateCallerBearer(req, tokenManager) !== null;
   }
 }
 
@@ -534,7 +572,7 @@ function enforceAuth(
  */
 function buildWorkerTargetPath(
   lookup: Extract<LookupResult, { kind: "worker-do" | "worker-regular" }>,
-  originalUrl: string,
+  originalUrl: string
 ): string {
   const qIdx = originalUrl.indexOf("?");
   const query = qIdx !== -1 ? originalUrl.slice(qIdx) : "";
@@ -558,7 +596,7 @@ function handleRouteRequest(
   workerdPort: number | null | undefined,
   adminToken: string | undefined,
   tokenManager: TokenManager,
-  workerdToken: string,
+  workerdToken: string
 ): boolean {
   const qIdx = url.indexOf("?");
   const pathOnly = qIdx === -1 ? url : url.slice(0, qIdx);
@@ -588,7 +626,11 @@ function handleRouteRequest(
         res.writeHead(500, { "Content-Type": "text/plain" });
         res.end("Internal Server Error");
       } else {
-        try { res.end(); } catch { /* already closed */ }
+        try {
+          res.end();
+        } catch {
+          /* already closed */
+        }
       }
     });
     return true;
@@ -617,7 +659,7 @@ function handleRouteUpgrade(
   workerdPort: number | null | undefined,
   adminToken: string | undefined,
   tokenManager: TokenManager,
-  workerdToken: string,
+  workerdToken: string
 ): boolean {
   const qIdx = url.indexOf("?");
   const pathOnly = qIdx === -1 ? url : url.slice(0, qIdx);

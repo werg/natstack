@@ -96,7 +96,7 @@ function createSqlProxy(db: Database) {
 /** Default env stubs so AgentWorkerBase subclasses don't crash during construction.
  *  The HTTP clients are created but never called in unit tests. */
 const AGENTIC_ENV_DEFAULTS: Record<string, string> = {
-  SERVER_URL: "http://test-server.invalid",
+  GATEWAY_URL: "http://test-server.invalid",
   RPC_AUTH_TOKEN: "test-token",
 };
 
@@ -105,7 +105,7 @@ const AGENTIC_ENV_DEFAULTS: Record<string, string> = {
  * Eliminates the need for workerd or native modules in unit tests.
  *
  * Works with both DurableObjectBase and AgentWorkerBase subclasses.
- * For AgentWorkerBase subclasses, SERVER_URL/RPC_AUTH_TOKEN
+ * For AgentWorkerBase subclasses, GATEWAY_URL/RPC_AUTH_TOKEN
  * are automatically stubbed unless overridden via the env parameter.
  *
  * Must be awaited since sql.js initialization is async.

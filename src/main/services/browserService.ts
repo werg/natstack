@@ -1,10 +1,10 @@
 import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
-import type { CdpServer } from "../cdpServer.js";
+import type { CdpEndpoint, CdpServer } from "../cdpServer.js";
 import type { ViewManager } from "../viewManager.js";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 
-export function getCdpEndpointForCaller(cdpServer: CdpServer, browserId: string, callerId: string): string {
+export function getCdpEndpointForCaller(cdpServer: CdpServer, browserId: string, callerId: string): CdpEndpoint {
   const endpoint = cdpServer.getCdpEndpoint(browserId, callerId);
   if (!endpoint) {
     throw new Error("Access denied: you do not own this browser panel");

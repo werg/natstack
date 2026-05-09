@@ -14,6 +14,7 @@ import {
   type PubSubConfig,
   type Rpc,
 } from "../core/index.js";
+import type { GatewayConfig } from "../shared/globals.js";
 import { createParentHandle, createParentHandleFromContract } from "../shared/handles.js";
 import type { ParentHandle, ParentHandleFromContract } from "../core/index.js";
 import type { RuntimeFs, ThemeAppearance } from "../types.js";
@@ -28,6 +29,7 @@ export interface RuntimeDeps {
   initialTheme: ThemeAppearance;
   fs: RuntimeFs;
   setupGlobals?: () => void;
+  gatewayConfig?: GatewayConfig | null;
   gitConfig?: GitConfig | null;
   pubsubConfig?: PubSubConfig | null;
 }

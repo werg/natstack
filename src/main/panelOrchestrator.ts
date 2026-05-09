@@ -580,7 +580,7 @@ export class PanelOrchestrator implements BridgePanelManager {
     return buildPanelUrl({
       source,
       contextId: getPanelContextId(panel),
-      panelHttpPort: this.deps.gatewayPort,
+      gatewayPort: this.deps.gatewayPort,
       externalHost: this.externalHost,
       protocol: this.deps.protocol,
     });

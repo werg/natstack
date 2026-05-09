@@ -288,11 +288,11 @@ export function createRemoteCredService(deps: { startupMode: StartupMode }): Ser
           // token actually authenticate, not just "is there an HTTP server
           // there".
           const wsProto = isTls ? "wss" : "ws";
-          const rpcPort = parseInt(parsed.port, 10) || (isTls ? 443 : 80);
-          const wsUrl = `${wsProto}://${parsed.hostname}:${rpcPort}/rpc`;
+          const gatewayPort = parseInt(parsed.port, 10) || (isTls ? 443 : 80);
+          const wsUrl = `${wsProto}://${parsed.hostname}:${gatewayPort}/rpc`;
           let client: Awaited<ReturnType<typeof createServerClient>> | null = null;
           try {
-            client = await createServerClient(rpcPort, payload.token, {
+            client = await createServerClient(gatewayPort, payload.token, {
               wsUrl,
               tls: {
                 caPath: payload.caPath,

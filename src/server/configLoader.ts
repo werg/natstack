@@ -68,18 +68,18 @@ export const CONFIG_LOADER_JS = `(async () => {
     cfg = parseStoredInit();
   }
 
-  if (!cfg || !cfg.panelId || !cfg.rpcWsUrl || !cfg.rpcToken) {
+  if (!cfg || !cfg.panelId || !cfg.gatewayConfig || !cfg.gatewayConfig.serverUrl || !cfg.gatewayConfig.token) {
     const root = document.getElementById("root");
     if (root) root.innerHTML = "<p>Open this panel from NatStack.</p>";
     return;
   }
 
   globalThis.__natstackId = cfg.panelId;
-  globalThis.__natstackRpcPort = cfg.rpcPort;
-  globalThis.__natstackRpcWsUrl = cfg.rpcWsUrl;
-  globalThis.__natstackRpcToken = cfg.rpcToken;
+  const gatewayConfig = cfg.gatewayConfig;
+  const gatewayRpcWsUrl = gatewayConfig.serverUrl.replace(/^https:/, "wss:").replace(/^http:/, "ws:").replace(/\\/$/, "") + "/rpc";
+  globalThis.__natstackGatewayRpcWsUrl = gatewayRpcWsUrl;
+  globalThis.__natstackGatewayToken = gatewayConfig.token;
   globalThis.__natstackKind = "panel";
-  if (cfg.rpcHost) globalThis.__natstackRpcHost = cfg.rpcHost;
 
   await new Promise((resolve, reject) => {
     const s = document.createElement("script");
@@ -98,8 +98,8 @@ export const CONFIG_LOADER_JS = `(async () => {
     __natstackContextId: cfg.contextId,
     __natstackParentId: cfg.parentId,
     __natstackInitialTheme: cfg.theme,
-    __natstackGitConfig: cfg.gitConfig,
-    __natstackPubSubConfig: cfg.pubsubConfig,
+    __natstackGatewayConfig: gatewayConfig,
+    __natstackSourceRepo: cfg.sourceRepo,
     __natstackEnv: cfg.env,
     __natstackStateArgs: effectiveStateArgs,
     process: { env: cfg.env },

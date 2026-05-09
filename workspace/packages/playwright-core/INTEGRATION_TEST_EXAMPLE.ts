@@ -7,13 +7,21 @@
 
 import { BrowserImpl, validateBrowserEnvironment } from '@workspace/playwright-core';
 
+type CdpEndpoint = { wsEndpoint: string; token: string };
+
+function connectBrowser(cdpEndpoint: CdpEndpoint) {
+  return BrowserImpl.connect(cdpEndpoint.wsEndpoint, {
+    transportOptions: { authToken: cdpEndpoint.token },
+  });
+}
+
 /**
  * Test 1: Basic Connection and Navigation
  */
-export async function testBasicNavigation(cdpEndpoint: string) {
+export async function testBasicNavigation(cdpEndpoint: CdpEndpoint) {
   console.log('Test 1: Basic Connection and Navigation');
 
-  const browser = await BrowserImpl.connect(cdpEndpoint);
+  const browser = await connectBrowser(cdpEndpoint);
   console.log(`✓ Connected to browser: ${browser.version()}`);
 
   const page = await browser.newPage();
@@ -32,10 +40,10 @@ export async function testBasicNavigation(cdpEndpoint: string) {
 /**
  * Test 2: JavaScript Evaluation
  */
-export async function testJavaScriptEvaluation(cdpEndpoint: string) {
+export async function testJavaScriptEvaluation(cdpEndpoint: CdpEndpoint) {
   console.log('\nTest 2: JavaScript Evaluation');
 
-  const browser = await BrowserImpl.connect(cdpEndpoint);
+  const browser = await connectBrowser(cdpEndpoint);
   const page = await browser.newPage();
 
   await page.goto('https://example.com');
@@ -68,10 +76,10 @@ export async function testJavaScriptEvaluation(cdpEndpoint: string) {
 /**
  * Test 3: Element Selection and Interaction
  */
-export async function testElementInteraction(cdpEndpoint: string) {
+export async function testElementInteraction(cdpEndpoint: CdpEndpoint) {
   console.log('\nTest 3: Element Selection and Interaction');
 
-  const browser = await BrowserImpl.connect(cdpEndpoint);
+  const browser = await connectBrowser(cdpEndpoint);
   const page = await browser.newPage();
 
   // Navigate to a page with forms
@@ -106,10 +114,10 @@ export async function testElementInteraction(cdpEndpoint: string) {
 /**
  * Test 4: Wait for Selector
  */
-export async function testWaitForSelector(cdpEndpoint: string) {
+export async function testWaitForSelector(cdpEndpoint: CdpEndpoint) {
   console.log('\nTest 4: Wait for Selector');
 
-  const browser = await BrowserImpl.connect(cdpEndpoint);
+  const browser = await connectBrowser(cdpEndpoint);
   const page = await browser.newPage();
 
   await page.goto('https://example.com');
@@ -138,10 +146,10 @@ export async function testWaitForSelector(cdpEndpoint: string) {
 /**
  * Test 5: Screenshot Capture
  */
-export async function testScreenshot(cdpEndpoint: string) {
+export async function testScreenshot(cdpEndpoint: CdpEndpoint) {
   console.log('\nTest 5: Screenshot Capture');
 
-  const browser = await BrowserImpl.connect(cdpEndpoint);
+  const browser = await connectBrowser(cdpEndpoint);
   const page = await browser.newPage();
 
   await page.goto('https://example.com');
@@ -163,10 +171,10 @@ export async function testScreenshot(cdpEndpoint: string) {
 /**
  * Test 6: Multiple Pages
  */
-export async function testMultiplePages(cdpEndpoint: string) {
+export async function testMultiplePages(cdpEndpoint: CdpEndpoint) {
   console.log('\nTest 6: Multiple Pages');
 
-  const browser = await BrowserImpl.connect(cdpEndpoint);
+  const browser = await connectBrowser(cdpEndpoint);
 
   // Create multiple pages
   const page1 = await browser.newPage();
@@ -202,10 +210,10 @@ export async function testMultiplePages(cdpEndpoint: string) {
 /**
  * Test 7: Browser Context
  */
-export async function testBrowserContext(cdpEndpoint: string) {
+export async function testBrowserContext(cdpEndpoint: CdpEndpoint) {
   console.log('\nTest 7: Browser Context');
 
-  const browser = await BrowserImpl.connect(cdpEndpoint);
+  const browser = await connectBrowser(cdpEndpoint);
 
   // Default context
   const defaultContext = browser.defaultContext();
@@ -237,10 +245,10 @@ export async function testBrowserContext(cdpEndpoint: string) {
 /**
  * Test 8: Page Content Retrieval
  */
-export async function testPageContent(cdpEndpoint: string) {
+export async function testPageContent(cdpEndpoint: CdpEndpoint) {
   console.log('\nTest 8: Page Content Retrieval');
 
-  const browser = await BrowserImpl.connect(cdpEndpoint);
+  const browser = await connectBrowser(cdpEndpoint);
   const page = await browser.newPage();
 
   await page.goto('https://example.com');
@@ -264,10 +272,10 @@ export async function testPageContent(cdpEndpoint: string) {
 /**
  * Test 9: Frame Access
  */
-export async function testFrameAccess(cdpEndpoint: string) {
+export async function testFrameAccess(cdpEndpoint: CdpEndpoint) {
   console.log('\nTest 9: Frame Access');
 
-  const browser = await BrowserImpl.connect(cdpEndpoint);
+  const browser = await connectBrowser(cdpEndpoint);
   const page = await browser.newPage();
 
   await page.goto('https://example.com');
@@ -295,10 +303,10 @@ export async function testFrameAccess(cdpEndpoint: string) {
 /**
  * Test 10: Error Handling
  */
-export async function testErrorHandling(cdpEndpoint: string) {
+export async function testErrorHandling(cdpEndpoint: CdpEndpoint) {
   console.log('\nTest 10: Error Handling');
 
-  const browser = await BrowserImpl.connect(cdpEndpoint);
+  const browser = await connectBrowser(cdpEndpoint);
   const page = await browser.newPage();
 
   // Test navigation timeout
@@ -333,10 +341,10 @@ export async function testErrorHandling(cdpEndpoint: string) {
 /**
  * Test 11: Existing Page Connection
  */
-export async function testExistingPageConnection(cdpEndpoint: string) {
+export async function testExistingPageConnection(cdpEndpoint: CdpEndpoint) {
   console.log('\nTest 11: Existing Page Connection');
 
-  const browser = await BrowserImpl.connect(cdpEndpoint);
+  const browser = await connectBrowser(cdpEndpoint);
   console.log('✓ Connected to browser');
 
   // Get existing pages (from browser that was already open)
@@ -362,14 +370,14 @@ export async function testExistingPageConnection(cdpEndpoint: string) {
 /**
  * Test 12: Comprehensive Real-World Workflow
  */
-export async function testRealWorldWorkflow(cdpEndpoint: string) {
+export async function testRealWorldWorkflow(cdpEndpoint: CdpEndpoint) {
   console.log('\nTest 12: Comprehensive Real-World Workflow');
 
   // Validate environment first
   validateBrowserEnvironment();
   console.log('✓ Environment validated');
 
-  const browser = await BrowserImpl.connect(cdpEndpoint);
+  const browser = await connectBrowser(cdpEndpoint);
   console.log(`✓ Connected: ${browser.version()}`);
 
   const page = await browser.newPage();
@@ -430,7 +438,7 @@ export async function testRealWorldWorkflow(cdpEndpoint: string) {
 /**
  * Run all tests sequentially
  */
-export async function runAllTests(cdpEndpoint: string) {
+export async function runAllTests(cdpEndpoint: CdpEndpoint) {
   console.log('='.repeat(60));
   console.log('Running Comprehensive Integration Tests');
   console.log('='.repeat(60));
@@ -479,8 +487,8 @@ export async function runAllTests(cdpEndpoint: string) {
  *
  * // In your panel component:
  * const runTests = async () => {
- *   const cdpUrl = await panel.browser.getCdpEndpoint(browserId);
- *   await runAllTests(cdpUrl);
+ *   const endpoint = await panel.browser.getCdpEndpoint(browserId);
+ *   await runAllTests(endpoint);
  * };
  * ```
  */

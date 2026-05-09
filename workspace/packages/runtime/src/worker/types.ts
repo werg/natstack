@@ -12,14 +12,10 @@ export interface WorkerEnv {
   WORKER_ID: string;
   /** Context ID for storage partition */
   CONTEXT_ID: string;
-  /** HTTP base URL for RPC server (e.g., "http://127.0.0.1:8080") */
-  SERVER_URL: string;
+  /** HTTP base URL for gateway server (e.g., "http://127.0.0.1:8080") */
+  GATEWAY_URL: string;
   /** Parent panel/worker ID for parent handle */
   PARENT_ID?: string;
-  /** Internal git server base URL, when internal git access is available */
-  GIT_SERVER_URL?: string;
-  /** Internal git server bearer token, when internal git access is available */
-  GIT_AUTH_TOKEN?: string;
   /** Initial state args (parsed object from JSON binding, if provided at instance creation) */
   STATE_ARGS?: Record<string, unknown>;
   /** User-defined bindings */

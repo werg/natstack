@@ -10,8 +10,9 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { createServer as createHttpServer } from "http";
 import { createServer as createHttpsServer } from "https";
-import { WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as os from "os";
@@ -29,16 +30,35 @@ function hasOpenssl(): boolean {
   }
 }
 
-function generateSelfSignedCert(dir: string): { certPath: string; keyPath: string; fingerprint: string } {
+function generateSelfSignedCert(dir: string): {
+  certPath: string;
+  keyPath: string;
+  fingerprint: string;
+} {
   const keyPath = path.join(dir, "key.pem");
   const certPath = path.join(dir, "cert.pem");
-  execFileSync("openssl", [
-    "req", "-x509", "-newkey", "rsa:2048", "-sha256",
-    "-keyout", keyPath, "-out", certPath,
-    "-days", "1", "-nodes",
-    "-subj", "/CN=127.0.0.1",
-    "-addext", "subjectAltName=IP:127.0.0.1",
-  ], { stdio: "pipe" });
+  execFileSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-sha256",
+      "-keyout",
+      keyPath,
+      "-out",
+      certPath,
+      "-days",
+      "1",
+      "-nodes",
+      "-subj",
+      "/CN=127.0.0.1",
+      "-addext",
+      "subjectAltName=IP:127.0.0.1",
+    ],
+    { stdio: "pipe" }
+  );
   const cert = new X509Certificate(fs.readFileSync(certPath));
   // X509Certificate.fingerprint256 is colon-separated uppercase hex in Node 18+.
   const fingerprint = cert.fingerprint256;
@@ -73,11 +93,13 @@ describeIf("ServerClient TLS pinning", () => {
             const msg = JSON.parse(data.toString());
             if (msg.type === "ws:auth") {
               const success = msg.token === adminToken;
-              ws.send(JSON.stringify({
-                type: "ws:auth-result",
-                success,
-                error: success ? undefined : "bad token",
-              }));
+              ws.send(
+                JSON.stringify({
+                  type: "ws:auth-result",
+                  success,
+                  error: success ? undefined : "bad token",
+                })
+              );
             }
           });
         });
@@ -115,7 +137,7 @@ describeIf("ServerClient TLS pinning", () => {
       createServerClient(port, adminToken, {
         wsUrl: `wss://127.0.0.1:${port}/rpc`,
         tls: { fingerprint: bogus },
-      }),
+      })
     ).rejects.toThrow(/fingerprint/i);
   });
 
@@ -145,7 +167,9 @@ describeIf("ServerClient TLS pinning", () => {
       key: fs.readFileSync(otherCert.keyPath),
     });
     probeServer.on("connection", (raw) => {
-      raw.on("data", (chunk) => { received.push(chunk); });
+      raw.on("data", (chunk) => {
+        received.push(chunk);
+      });
     });
     const probePort: number = await new Promise((resolve) => {
       probeServer.listen(0, "127.0.0.1", () => {
@@ -160,7 +184,7 @@ describeIf("ServerClient TLS pinning", () => {
           // Pin the ORIGINAL cert's fingerprint against the server that serves
           // the OTHER cert → guaranteed mismatch.
           tls: { fingerprint: cert.fingerprint },
-        }),
+        })
       ).rejects.toThrow(/fingerprint/i);
 
       // Give any in-flight bytes a chance to land. The TLS layer itself
@@ -183,6 +207,73 @@ describeIf("ServerClient TLS pinning", () => {
       expect(concatenated).not.toContain(adminToken);
     } finally {
       await new Promise<void>((resolve) => probeServer.close(() => resolve()));
+    }
+  });
+});
+
+describe("ServerClient reconnect auth refresh", () => {
+  it("refreshes the caller token when reconnect auth is rejected", async () => {
+    const server = createHttpServer();
+    const wss = new WebSocketServer({ noServer: true });
+    const sockets: WebSocket[] = [];
+    let acceptOldToken = true;
+    let newTokenAccepted = false;
+
+    server.on("upgrade", (req, socket, head) => {
+      if (req.url !== "/rpc") {
+        socket.destroy();
+        return;
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        sockets.push(ws);
+        ws.on("message", (data) => {
+          const msg = JSON.parse(data.toString()) as { type?: string; token?: string };
+          if (msg.type !== "ws:auth") return;
+          const success =
+            (acceptOldToken && msg.token === "old-token") || msg.token === "new-token";
+          if (msg.token === "new-token" && success) newTokenAccepted = true;
+          ws.send(
+            JSON.stringify({
+              type: "ws:auth-result",
+              success,
+              error: success ? undefined : "stale token",
+            })
+          );
+        });
+      });
+    });
+
+    const port: number = await new Promise((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        resolve((server.address() as { port: number }).port);
+      });
+    });
+
+    let refreshCalled = false;
+    const client = await createServerClient(port, "old-token", {
+      reconnect: true,
+      maxReconnectAttempts: 2,
+      refreshAuthToken: async () => {
+        refreshCalled = true;
+        return "new-token";
+      },
+    });
+
+    try {
+      expect(client.isConnected()).toBe(true);
+      acceptOldToken = false;
+      sockets[0]?.close();
+
+      await expect
+        .poll(() => ({ refreshCalled, newTokenAccepted, connected: client.isConnected() }), {
+          timeout: 5_000,
+          interval: 50,
+        })
+        .toEqual({ refreshCalled: true, newTokenAccepted: true, connected: true });
+    } finally {
+      await client.close();
+      wss.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 });

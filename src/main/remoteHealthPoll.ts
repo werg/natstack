@@ -25,7 +25,7 @@ const REQUEST_TIMEOUT_MS = 7_000;
 export interface RemoteHealthPollOptions {
   /** Parsed URL pointing at the remote server base (`/healthz` is appended). */
   baseUrl: URL;
-  /** Admin token, sent via `X-NatStack-Token` header (never in the URL). */
+  /** Admin token, sent via `Authorization: Bearer` header. */
   adminToken: string;
   /** Optional TLS CA path to trust for self-signed servers. */
   caPath?: string;
@@ -108,7 +108,7 @@ export function startRemoteHealthPoll(
       timeout: REQUEST_TIMEOUT_MS,
       headers: {
         // Header form keeps the admin token out of any URL / request log.
-        "X-NatStack-Token": opts.adminToken,
+        "Authorization": `Bearer ${opts.adminToken}`,
       },
       ...(isTls && fingerprintAgent ? { agent: fingerprintAgent } : {}),
       ...(isTls && !fingerprintAgent && caAgent ? { agent: caAgent } : {}),

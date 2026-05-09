@@ -38,6 +38,7 @@ import { createWorkspaceClient, type WorkspaceClient } from "../shared/workspace
 import { createNotificationClient, type NotificationClient } from "../shared/notifications.js";
 import { createParentHandle } from "../shared/handles.js";
 import { helpfulNamespace } from "../shared/helpfulNamespace.js";
+import { createGatewayFetch, type GatewayFetch } from "../shared/gatewayFetch.js";
 import { GitClient, createBearerHttpClient, createRoutingHttpClient } from "@natstack/git";
 import type { ParentHandle } from "../core/index.js";
 import type { WorkerEnv } from "./types.js";
@@ -68,6 +69,8 @@ export type { NotificationClient } from "../shared/notifications.js";
 export { DurableObjectBase } from "./durable-base.js";
 export type { DurableObjectContext, SqlStorage, SqlResult, DORef } from "./durable-base.js";
 export { fs } from "./fs.js";
+export { createGatewayFetch } from "../shared/gatewayFetch.js";
+export type { GatewayFetch } from "../shared/gatewayFetch.js";
 // Note: createTestDO is intentionally NOT exported here because it depends on
 // sql.js test-only helpers that should not be bundled into production workers.
 // Import directly from "@workspace/runtime/src/worker/durable-test-utils" in tests.
@@ -117,6 +120,8 @@ export interface WorkerRuntime {
   readonly webhooks: WebhookIngressClient;
   readonly notifications: NotificationClient;
   readonly contextId: string;
+  readonly gatewayConfig: { serverUrl: string; token: string };
+  readonly gatewayFetch: GatewayFetch;
   readonly gitConfig: { serverUrl: string; token: string } | null;
   readonly git: RuntimeGitApi;
   readonly pubsubConfig: null;
@@ -151,9 +156,9 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     return cachedRuntime;
   }
 
-  const serverUrl = env.SERVER_URL;
+  const serverUrl = env.GATEWAY_URL;
   if (!serverUrl) {
-    throw new Error("Worker env must provide SERVER_URL");
+    throw new Error("Worker env must provide GATEWAY_URL");
   }
 
   const selfId = `worker:${workerId}`;
@@ -167,9 +172,9 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
   const workers = helpfulNamespace("workers", createWorkerdClient(rpc));
   const workspaceApi = helpfulNamespace("workspace", createWorkspaceClient(rpc));
   const credentials = helpfulNamespace("credentials", createCredentialClient(rpc));
-  const gitConfig = env.GIT_SERVER_URL && env.GIT_AUTH_TOKEN
-    ? { serverUrl: env.GIT_SERVER_URL, token: env.GIT_AUTH_TOKEN }
-    : null;
+  const gatewayConfig = { serverUrl, token: env.RPC_AUTH_TOKEN };
+  const gatewayFetch = createGatewayFetch(gatewayConfig);
+  const gitConfig = { serverUrl: `${serverUrl}/_git`, token: env.RPC_AUTH_TOKEN };
   const git = helpfulNamespace("git", {
     http: credentials.gitHttp,
     importProject(request: ImportProjectRequest): Promise<ImportedWorkspaceRepo> {
@@ -217,6 +222,8 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     webhooks,
     notifications,
     contextId: env.CONTEXT_ID,
+    gatewayConfig,
+    gatewayFetch,
     gitConfig,
     pubsubConfig: null,
 

@@ -10,7 +10,6 @@ import type { ServiceContainer } from "@natstack/shared/serviceContainer";
 import type { ServiceDispatcher } from "@natstack/shared/serviceDispatcher";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { Workspace, WorkspaceConfig } from "@natstack/shared/workspace/types";
-import type { GitServer } from "@natstack/git-server";
 import type { CentralDataManager } from "@natstack/shared/centralData";
 import type { HostConfig } from "@natstack/shared/hostConfig";
 import type { CodeIdentityResolver } from "./services/codeIdentityResolver.js";
@@ -22,10 +21,8 @@ export interface CommonDeps {
   workspace: Workspace;
   workspacePath: string;
   workspaceConfig: WorkspaceConfig;
-  gitServer: GitServer;
   adminToken: string;
   centralData: CentralDataManager | null;
-  args: { panelPort?: number; servePanels?: boolean };
   hostConfig: HostConfig;
   isIpcMode: boolean;
   requestRelaunch?: (name: string) => void;
@@ -43,10 +40,8 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
     workspace,
     workspacePath,
     workspaceConfig,
-    gitServer,
     adminToken,
     centralData,
-    args,
     hostConfig,
   } = deps;
   const path = await import("path");
@@ -58,25 +53,24 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
 
     container.register({
       name: "panelService",
-      dependencies: ["fsService", "rpcServer"],
+      dependencies: ["fsService"],
       async start(resolve) {
         const fsServiceInst = resolve<import("@natstack/shared/fsService").FsService>("fsService")!;
-        const { server: rpcSrv } = resolve<{ server: import("./rpcServer.js").RpcServer }>("rpcServer")!;
-        const getRpcPort = () => rpcSrv.getPort() ?? 0;
         const panelPersistenceRpc = {
           call: (service: string, method: string, args: unknown[]) =>
-            dispatcher.dispatch({ callerId: "server", callerKind: "server" }, service, method, args),
+            dispatcher.dispatch(
+              { callerId: "server", callerKind: "server" },
+              service,
+              method,
+              args
+            ),
         };
         const persistence = createPanelPersistenceClient(panelPersistenceRpc);
         const searchIndex = persistence;
-        const wkrdPort = resolve<import("./workerdManager.js").WorkerdManager>("workerdManager")?.getPort() ?? 0;
         const { protocol, externalHost } = hostConfig;
-        const wsProto = protocol === "https" ? "wss" : "ws";
         const urlConfig = new (await import("./services/panelService.js")).PanelUrlConfig({
           protocol,
           externalHost,
-          gitBaseUrl: `${protocol}://${externalHost}:${gitServer.getPort()}`,
-          pubsubBaseUrl: wkrdPort ? `${wsProto}://${externalHost}:${wkrdPort}` : "",
           gatewayPort: 0,
         });
 
@@ -89,10 +83,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
             searchIndex,
             tokenManager,
             fsService: fsServiceInst,
-            gitServer,
             workspacePath,
-            getRpcPort,
-            workerdPort: wkrdPort,
             urlConfig,
             codeIdentityResolver: deps.codeIdentityResolver,
             getEffectiveVersion: deps.getEffectiveVersion,
@@ -100,7 +91,9 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
         };
       },
       getServiceDefinition() {
-        const inst = container.get<{ definition: import("@natstack/shared/serviceDefinition").ServiceDefinition }>("panelService");
+        const inst = container.get<{
+          definition: import("@natstack/shared/serviceDefinition").ServiceDefinition;
+        }>("panelService");
         return inst?.definition;
       },
     });
@@ -108,23 +101,28 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
 
   {
     const { createWorkspaceService } = await import("./services/workspaceService.js");
-    const { createWorkspaceConfigManager, createAndRegisterWorkspace, deleteWorkspaceDir } = await import("@natstack/shared/workspace/loader");
+    const { createWorkspaceConfigManager, createAndRegisterWorkspace, deleteWorkspaceDir } =
+      await import("@natstack/shared/workspace/loader");
     const wsConfigPath = path.join(workspacePath, "meta/natstack.yml");
     const wsConfigManager = createWorkspaceConfigManager(wsConfigPath, workspaceConfig);
 
-    container.register(rpcService(createWorkspaceService({
-      workspace,
-      getConfig: wsConfigManager.get,
-      setConfigField: wsConfigManager.set as (key: string, value: unknown) => void,
-      centralData: centralData ?? null,
-      createWorkspace: (name, opts) => {
-        if (!centralData) throw new Error("Workspace creation not available");
-        return createAndRegisterWorkspace(name, centralData, opts);
-      },
-      deleteWorkspaceDir,
-      requestRelaunch: deps.requestRelaunch,
-      requestWorkspaceList: deps.requestWorkspaceList,
-    })));
+    container.register(
+      rpcService(
+        createWorkspaceService({
+          workspace,
+          getConfig: wsConfigManager.get,
+          setConfigField: wsConfigManager.set as (key: string, value: unknown) => void,
+          centralData: centralData ?? null,
+          createWorkspace: (name, opts) => {
+            if (!centralData) throw new Error("Workspace creation not available");
+            return createAndRegisterWorkspace(name, centralData, opts);
+          },
+          deleteWorkspaceDir,
+          requestRelaunch: deps.requestRelaunch,
+          requestWorkspaceList: deps.requestWorkspaceList,
+        })
+      )
+    );
   }
 
   {
@@ -132,24 +130,19 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
     container.register({
       name: "panelHttpServer",
       async start() {
-        const server = new PanelHttpServer(hostConfig.bindHost, adminToken, hostConfig.externalHost, hostConfig.protocol);
-        if (deps.isIpcMode) {
-          let envPanelPort: number | undefined;
-          if (process.env["NATSTACK_PANEL_PORT"]) {
-            envPanelPort = parseInt(process.env["NATSTACK_PANEL_PORT"], 10);
-            if (isNaN(envPanelPort)) {
-              console.warn("[Server] NATSTACK_PANEL_PORT is not a valid number, ignoring");
-              envPanelPort = undefined;
-            }
-          }
-          const port = await server.start(args.panelPort ?? envPanelPort ?? 0);
-          return { server, port };
-        }
-
+        const server = new PanelHttpServer(
+          hostConfig.bindHost,
+          adminToken,
+          hostConfig.externalHost,
+          hostConfig.protocol
+        );
         server.initHandlers();
         return { server, port: 0 };
       },
-      async stop(instance: { server: import("./panelHttpServer.js").PanelHttpServer; port: number }) {
+      async stop(instance: {
+        server: import("./panelHttpServer.js").PanelHttpServer;
+        port: number;
+      }) {
         await instance?.server?.stop();
       },
     });
@@ -159,9 +152,13 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
     name: "panelHttpWiring",
     dependencies: ["panelHttpServer", "buildSystem", "rpcServer"],
     async start(resolve) {
-      const { server: panelHttpServer } = resolve<{ server: import("./panelHttpServer.js").PanelHttpServer }>("panelHttpServer")!;
+      const { server: panelHttpServer } = resolve<{
+        server: import("./panelHttpServer.js").PanelHttpServer;
+      }>("panelHttpServer")!;
       const buildSystem = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
-      const { server: rpcServer } = resolve<{ server: import("./rpcServer.js").RpcServer }>("rpcServer")!;
+      const { server: rpcServer } = resolve<{ server: import("./rpcServer.js").RpcServer }>(
+        "rpcServer"
+      )!;
 
       const graph = buildSystem.getGraph();
       const panelNodes = graph.allNodes().filter((n) => n.kind === "panel");
@@ -219,10 +216,15 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
           description: "Per-context filesystem operations (sandboxed to context folder)",
           policy: { allowed: ["panel", "server", "worker"] },
           methods: {
-            readFile: fsMethodSchema, writeFile: fsMethodSchema,
-            readdir: fsMethodSchema, mkdir: fsMethodSchema,
-            stat: fsMethodSchema, open: fsMethodSchema,
-            close: fsMethodSchema, read: fsMethodSchema, write: fsMethodSchema,
+            readFile: fsMethodSchema,
+            writeFile: fsMethodSchema,
+            readdir: fsMethodSchema,
+            mkdir: fsMethodSchema,
+            stat: fsMethodSchema,
+            open: fsMethodSchema,
+            close: fsMethodSchema,
+            read: fsMethodSchema,
+            write: fsMethodSchema,
             bindContext: bindContextSchema,
             mktemp: mktempSchema,
             symlink: { ...fsMethodSchema, policy: { allowed: ["shell"] } },

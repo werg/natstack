@@ -21,13 +21,9 @@ export interface BrowserDataClient {
 
 export function createBrowserDataRpcClient(
   rpc: RpcLike,
-  callerContext: { callerId: string; callerKind: "shell" } = { callerId: "electron-shell", callerKind: "shell" },
 ): BrowserDataClient {
   const call = <T>(method: string, ...args: unknown[]) => {
-    const maybeServerClient = rpc as RpcLike & {
-      call(service: string, method: string, args: unknown[], callerContext?: { callerId: string; callerKind: "shell" }): Promise<unknown>;
-    };
-    return maybeServerClient.call("browser-data", method, args, callerContext) as Promise<T>;
+    return rpc.call("browser-data", method, args) as Promise<T>;
   };
 
   return {

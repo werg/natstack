@@ -40,6 +40,7 @@ function createWorkerdHarness() {
     workspacePath: mkdtempSync(join(tmpdir(), "natstack-workerd-workspace-")),
     statePath: mkdtempSync(join(tmpdir(), "natstack-workerd-state-")),
     getProxyPort: () => 9,
+    getWorkerdGatewayToken: () => "internal-test-workerd-gateway-token",
     codeIdentityResolver: {
       upsertCallerIdentity: () => {},
       unregisterCaller: () => {},
@@ -54,6 +55,7 @@ function createWorkerdHarness() {
     return `http://127.0.0.1:${port}`;
   });
   dispatch.setGetDispatchSecret(() => manager.getDispatchSecret());
+  dispatch.setGetWorkerdGatewayToken(() => manager.getWorkerdGatewayToken());
   dispatch.setEnsureDO((source, className, objectKey) => manager.ensureDO(source, className, objectKey));
 
   return { manager, dispatch };

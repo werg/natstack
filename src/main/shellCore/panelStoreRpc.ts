@@ -6,10 +6,7 @@ export class PanelStoreRpc implements PanelStore {
   constructor(private readonly serverClient: ServerClient) {}
 
   private call<T>(method: string, ...args: unknown[]): Promise<T> {
-    return this.serverClient.call("panel-persistence", method, args, {
-      callerId: "electron-shell",
-      callerKind: "shell",
-    }) as Promise<T>;
+    return this.serverClient.call("panel-persistence", method, args) as Promise<T>;
   }
 
   createPanel(input: PanelStoreCreateInput): Promise<void> {

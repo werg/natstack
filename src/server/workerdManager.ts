@@ -133,7 +133,7 @@ export interface WorkerdManagerDeps {
   /** Manifest-route lookup, keyed by source. Used alongside routeRegistry. */
   getManifestRoutes?: (source: string) => ManifestRouteDecl[];
   getProxyPort: () => number | null;
-  getGitConfigForCaller?: (callerId: string) => { serverUrl: string; token: string } | null;
+  getWorkerdGatewayToken: () => string;
   codeIdentityResolver: Pick<CodeIdentityResolver, "upsertCallerIdentity" | "unregisterCaller">;
   cleanupWebhookSubscriptions?: (callerId: string) => Promise<void>;
 }
@@ -401,6 +401,10 @@ export class WorkerdManager {
     return this.dispatchSecret;
   }
 
+  getWorkerdGatewayToken(): string {
+    return this.deps.getWorkerdGatewayToken();
+  }
+
   getDoCodeIdentity(source: string, className: string): { repoPath: string; effectiveVersion: string } | null {
     const service = this.doServices.get(`${source}:${className}`);
     if (!service) {
@@ -465,13 +469,8 @@ export class WorkerdManager {
         { name: "WORKERD_SESSION_ID", text: this.sessionId },
       ];
 
-      // Server URL for RPC bridge (DOs use HttpRpcBridge via POST /rpc)
-      bindings.push({ name: "SERVER_URL", text: this.deps.getServerUrl() });
-      const doGitConfig = this.deps.getGitConfigForCaller?.(serviceCallerId);
-      if (doGitConfig) {
-        bindings.push({ name: "GIT_SERVER_URL", text: doGitConfig.serverUrl });
-        bindings.push({ name: "GIT_AUTH_TOKEN", text: doGitConfig.token });
-      }
+      // Gateway URL for RPC bridge (DOs use HttpRpcBridge via POST /rpc)
+      bindings.push({ name: "GATEWAY_URL", text: this.deps.getServerUrl() });
 
       // DO storage: create a disk service and reference it by name
       const diskServiceName = `${doService.serviceName}_disk`;
@@ -539,14 +538,8 @@ export class WorkerdManager {
         { name: "RPC_AUTH_TOKEN", text: instance.token },
         { name: "WORKER_ID", text: instance.name },
         { name: "CONTEXT_ID", text: instance.contextId },
-        { name: "SERVER_URL", text: this.deps.getServerUrl() },
+        { name: "GATEWAY_URL", text: this.deps.getServerUrl() },
       ];
-      const gitConfig = this.deps.getGitConfigForCaller?.(instance.callerId);
-      if (gitConfig) {
-        bindings.push({ name: "GIT_SERVER_URL", text: gitConfig.serverUrl });
-        bindings.push({ name: "GIT_AUTH_TOKEN", text: gitConfig.token });
-      }
-
       // Inject stateArgs as a JSON binding so workers can access initial state
       if (instance.stateArgs && Object.keys(instance.stateArgs).length > 0) {
         bindings.push({ name: "STATE_ARGS", json: JSON.stringify(instance.stateArgs) });
@@ -638,6 +631,7 @@ export class WorkerdManager {
 
       const routerCode = this.generateRouterCode(instanceNames, doClassNames);
       routerBindings.push({ name: "DISPATCH_SECRET", text: this.dispatchSecret });
+      routerBindings.push({ name: "WORKERD_GATEWAY_TOKEN", text: this.deps.getWorkerdGatewayToken() });
 
       services.push({
         name: "router",
@@ -684,7 +678,7 @@ export class WorkerdManager {
   ): string {
     const cases = instanceNames.map((name) => {
       const bindingName = `worker_${name.replace(/[^a-zA-Z0-9_]/g, "_")}`;
-      return `    if (prefix === ${JSON.stringify(name)}) return env.${bindingName}.fetch(new Request(newUrl, request));`;
+      return `    if (prefix === ${JSON.stringify(name)}) return env.${bindingName}.fetch(new Request(newUrl, strippedRequest));`;
     });
 
     // Build DO lookup map: "source:className" → binding name.
@@ -739,7 +733,7 @@ ${doLookupEntries.join(",\n")}
         const stub = ns.get(id);
         const doUrl = new URL("/" + objectKey + (doRest.length ? "/" + doRest.join("/") : ""), url.origin);
         doUrl.search = url.search;
-        return stub.fetch(new Request(doUrl, request));
+        return stub.fetch(new Request(doUrl, strippedRequest));
       }
       return new Response("DO class not found: " + doClass + " (source: " + source + ")", { status: 404 });
     }
@@ -748,9 +742,22 @@ ${doLookupEntries.join(",\n")}
 
     return `export default {
   async fetch(request, env) {
+    const expectedAuth = "Bearer " + env.WORKERD_GATEWAY_TOKEN;
+    if (request.headers.get("Authorization") !== expectedAuth) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+    const strippedHeaders = new Headers(request.headers);
+    strippedHeaders.delete("Authorization");
+    for (const name of Array.from(strippedHeaders.keys())) {
+      if (name.toLowerCase().startsWith("x-internal-")) strippedHeaders.delete(name);
+    }
+    const strippedRequest = new Request(request, { headers: strippedHeaders });
     const url = new URL(request.url);
     const parts = url.pathname.split("/").filter(Boolean);
     const prefix = parts[0] || "";
+    if (prefix === "__natstack_workerd_ready") {
+      return new Response(null, { status: 204 });
+    }
     const rest = "/" + parts.slice(1).join("/");
     const newUrl = new URL(rest, url.origin);
     newUrl.search = url.search;
@@ -1039,13 +1046,17 @@ ${doBlock}${cases.join("\n")}
       try {
         const response = await fetch(`http://127.0.0.1:${this.port}/__natstack_workerd_ready`, {
           method: "GET",
+          headers: {
+            "Authorization": `Bearer ${this.deps.getWorkerdGatewayToken()}`,
+          },
         });
         await response.arrayBuffer().catch(() => undefined);
-        return;
+        if (response.ok) return;
+        lastError = new Error(`workerd readiness returned HTTP ${response.status}`);
       } catch (err) {
         lastError = err;
-        await new Promise((resolve) => setTimeout(resolve, 50));
       }
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
     throw lastError instanceof Error
       ? lastError

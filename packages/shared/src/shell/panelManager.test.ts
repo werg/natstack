@@ -39,7 +39,6 @@ describe("PanelManager", () => {
     const tokenClient = {
       ensurePanelToken: vi.fn(async (panelId: string) => ({
         token: `rpc-${panelId}`,
-        gitToken: `git-${panelId}`,
       })),
       revokePanelToken: vi.fn(async () => {}),
       updatePanelContext: vi.fn(async () => {}),
@@ -52,14 +51,7 @@ describe("PanelManager", () => {
       workspacePath,
       tokenClient,
       serverInfo: {
-        protocol: "http",
-        externalHost: "localhost",
-        gatewayPort: 42773,
-        rpcPort: 49352,
-        workerdPort: 49562,
-        gitBaseUrl: "http://127.0.0.1:56049",
-        rpcWsUrl: "ws://127.0.0.1:49352",
-        pubsubUrl: "ws://127.0.0.1:49562/_w/workers/pubsub-channel/PubSubChannel",
+        gatewayConfig: { serverUrl: "http://127.0.0.1:42773" },
       },
     });
 
@@ -80,28 +72,16 @@ describe("PanelManager", () => {
 
     const init = await manager.getPanelInit(created.panelId) as {
       panelId: string;
-      rpcHost: string;
-      rpcPort: number;
-      rpcWsUrl: string;
-      rpcToken: string;
       contextId: string;
-      gitConfig: { serverUrl: string; token: string; sourceRepo: string };
-      pubsubConfig: { serverUrl: string; token: string };
+      sourceRepo: string;
+      gatewayConfig: { serverUrl: string; token: string };
       stateArgs: Record<string, unknown>;
     };
     expect(init.panelId).toBe(created.panelId);
-    expect(init.rpcHost).toBe("127.0.0.1");
-    expect(init.rpcPort).toBe(49352);
-    expect(init.rpcWsUrl).toBe("ws://127.0.0.1:49352");
-    expect(init.rpcToken).toBe(`rpc-${created.panelId}`);
     expect(init.contextId).toBe(created.contextId);
-    expect(init.gitConfig).toEqual({
-      serverUrl: "http://127.0.0.1:56049",
-      token: `git-${created.panelId}`,
-      sourceRepo: "panels/example",
-    });
-    expect(init.pubsubConfig).toEqual({
-      serverUrl: "ws://127.0.0.1:49562/_w/workers/pubsub-channel/PubSubChannel",
+    expect(init.sourceRepo).toBe("panels/example");
+    expect(init.gatewayConfig).toEqual({
+      serverUrl: "http://127.0.0.1:42773",
       token: `rpc-${created.panelId}`,
     });
     expect(init.stateArgs).toEqual({ greeting: "hello" });
@@ -135,21 +115,13 @@ describe("PanelManager", () => {
       tokenClient: {
         ensurePanelToken: vi.fn(async (panelId: string) => ({
           token: `rpc-${panelId}`,
-          gitToken: `git-${panelId}`,
         })),
         revokePanelToken: vi.fn(async () => {}),
         updatePanelContext: vi.fn(async () => {}),
         updatePanelParent: vi.fn(async () => {}),
       },
       serverInfo: {
-        protocol: "https",
-        externalHost: "natstack.example.com",
-        gatewayPort: 443,
-        rpcPort: 443,
-        workerdPort: 443,
-        gitBaseUrl: "https://natstack.example.com/_git",
-        rpcWsUrl: "wss://natstack.example.com/rpc",
-        pubsubUrl: "wss://natstack.example.com/_w/workers/pubsub-channel/PubSubChannel",
+        gatewayConfig: { serverUrl: "https://natstack.example.com" },
       },
     });
 
@@ -159,17 +131,11 @@ describe("PanelManager", () => {
     });
 
     const init = await manager.getPanelInit(created.panelId) as {
-      rpcHost: string;
-      rpcPort: number;
-      rpcWsUrl: string;
-      pubsubConfig: { serverUrl: string; token: string };
+      gatewayConfig: { serverUrl: string; token: string };
     };
 
-    expect(init.rpcHost).toBe("natstack.example.com");
-    expect(init.rpcPort).toBe(443);
-    expect(init.rpcWsUrl).toBe("wss://natstack.example.com/rpc");
-    expect(init.pubsubConfig).toEqual({
-      serverUrl: "wss://natstack.example.com/_w/workers/pubsub-channel/PubSubChannel",
+    expect(init.gatewayConfig).toEqual({
+      serverUrl: "https://natstack.example.com",
       token: `rpc-${created.panelId}`,
     });
   });

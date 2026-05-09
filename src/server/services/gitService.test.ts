@@ -23,16 +23,6 @@ function createApprovalQueueMock(): ApprovalQueue {
 }
 
 describe("gitService", () => {
-  it("restricts git token minting RPCs to shell and server callers", () => {
-    const service = createGitService({
-      gitServer: {} as never,
-      tokenManager: {} as never,
-    });
-
-    expect(service.methods["getTokenForPanel"]?.policy).toEqual({ allowed: ["shell", "server"] });
-    expect(service.methods["revokeTokenForPanel"]?.policy).toEqual({ allowed: ["shell", "server"] });
-  });
-
   it("gates panel-created repositories through git write permission", async () => {
     const approvalQueue = createApprovalQueueMock();
     const service = createGitService({

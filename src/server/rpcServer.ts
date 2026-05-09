@@ -6,27 +6,22 @@
  */
 
 import { WebSocketServer, WebSocket } from "ws";
-import { createServer, type Server as HttpServer } from "http";
 import { randomUUID } from "crypto";
-import { createRpcBridge, type RpcBridge, type RpcEvent, type RpcMessage, type RpcRequest, type RpcResponse } from "@natstack/rpc";
 import {
-  buildWsOriginAllowList,
-  checkWsRequestOrigin,
-  createWsServerTransport,
-  type WsOriginAllowList,
-  type WsServerTransportInternal,
-} from "./wsServerTransport.js";
-import type {
-  WsClientMessage,
-  WsServerMessage,
-} from "../../packages/shared/src/ws/protocol.js";
+  createRpcBridge,
+  type RpcBridge,
+  type RpcEvent,
+  type RpcMessage,
+  type RpcRequest,
+  type RpcResponse,
+} from "@natstack/rpc";
+import { createWsServerTransport, type WsServerTransportInternal } from "./wsServerTransport.js";
+import type { WsClientMessage, WsServerMessage } from "../../packages/shared/src/ws/protocol.js";
 import type { ToolExecutionResult } from "../../packages/shared/src/types.js";
 import type { WsClientInfo } from "../../packages/shared/src/serviceDispatcher.js";
-import { findServicePort } from "@natstack/port-utils";
 import { createDevLogger } from "@natstack/dev-log";
 import {
   parseServiceMethod,
-
   ServiceDispatcher,
   type CallerKind,
   type ServiceContext,
@@ -84,9 +79,7 @@ type RelayErrorCode =
   | "UNKNOWN_TARGET_KIND";
 
 function getErrorCode(error: unknown): string | undefined {
-  return error instanceof Error
-    ? (error as NodeJS.ErrnoException).code
-    : undefined;
+  return error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
 }
 
 function createRelayError(message: string, code: RelayErrorCode): Error {
@@ -95,17 +88,8 @@ function createRelayError(message: string, code: RelayErrorCode): Error {
 
 export class RpcServer {
   private wss: WebSocketServer | null = null;
-  private httpServer: HttpServer | null = null;
-  private port: number | null = null;
-  /**
-   * Loopback port bound for in-process back-channel HTTP POSTs (workerd →
-   * server). In IPC/self-hosting mode this equals `port`. In standalone
-   * mode it's a second, loopback-only listener so the workerd back-channel
-   * doesn't have to route through the external TLS gateway — orthogonal
-   * to whatever protocol the gateway speaks.
-   */
-  private loopbackHttpPort: number | null = null;
   private workerdUrl: string | null = null;
+  private workerdGatewayToken: string | null = null;
 
   // Connection tracking
   private clients = new Map<WebSocket, WsClientState>();
@@ -119,11 +103,14 @@ export class RpcServer {
    * targeting a mid-reconnect client wait briefly instead of failing fast
    * with "Target not reachable" — see relayCall.
    */
-  private reconnectWaiters = new Map<string, {
-    promise: Promise<void>;
-    resolve: () => void;
-    reject: (err: Error) => void;
-  }>();
+  private reconnectWaiters = new Map<
+    string,
+    {
+      promise: Promise<void>;
+      resolve: () => void;
+      reject: (err: Error) => void;
+    }
+  >();
 
   // Per-client RPC bridges for server→client calls
   private clientBridges = new Map<string, RpcBridge>();
@@ -180,6 +167,10 @@ export class RpcServer {
     this.workerdUrl = url;
   }
 
+  setWorkerdGatewayToken(token: string): void {
+    this.workerdGatewayToken = token;
+  }
+
   /**
    * Initialize handlers without binding a socket.
    * Call this when the gateway owns the socket and dispatches to us.
@@ -201,103 +192,6 @@ export class RpcServer {
     });
   }
   private handlersInitialized = false;
-
-  /**
-   * Start with own socket (non-gateway mode, e.g. Electron local RPC).
-   */
-  async start(): Promise<number> {
-    const port = await findServicePort("rpc");
-
-    this.httpServer = createServer((req, res) => {
-      this.handleHttpRequest(req, res).catch((err) => {
-        console.error("[RpcServer] HTTP request handler error:", err);
-        if (!res.headersSent) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Bad request" }));
-        }
-      });
-    });
-    // When self-hosting we own the upgrade so we can enforce an Origin
-    // allow-list (audit #30) before letting `ws` allocate framing state.
-    // Standalone-mode rpcServer is loopback-bound; the allow-list defaults
-    // to loopback origins plus anything in NATSTACK_WS_ALLOWED_ORIGINS.
-    this.wss = new WebSocketServer({ noServer: true });
-    const externalHost = process.env["NATSTACK_EXTERNAL_HOST"] ?? "127.0.0.1";
-    const allowedOrigins: WsOriginAllowList = buildWsOriginAllowList(externalHost);
-    this.httpServer.on("upgrade", (req, socket, head) => {
-      if (!checkWsRequestOrigin(req, allowedOrigins)) {
-        log.warn(`WS upgrade rejected: disallowed Origin ${String(req.headers["origin"])}`);
-        socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
-        socket.destroy();
-        return;
-      }
-      this.wss!.handleUpgrade(req, socket, head, (ws) => {
-        this.handleConnection(ws);
-      });
-    });
-    this.handlersInitialized = true;
-
-    // Register revocation-driven disconnect
-    this.deps.tokenManager.onRevoke((callerId) => {
-      const client = this.callerToClient.get(callerId);
-      if (!client) return;
-      client.ws.close(4001, "Token revoked");
-    });
-
-    await new Promise<void>((resolve, reject) => {
-      this.httpServer!.once("error", reject);
-      this.httpServer!.listen(port, "127.0.0.1", () => resolve());
-    });
-
-    this.port = port;
-    this.loopbackHttpPort = port;
-    return port;
-  }
-
-  /**
-   * Bind a loopback-only HTTP listener for in-process back-channel POSTs
-   * (workerd → server). Call this in gateway mode alongside `initHandlers()`:
-   * the gateway handles panel WS upgrades, this listener handles internal
-   * HTTP POST /rpc from workerd. Does NOT touch `this.port` — that stays
-   * the panel-facing port set by `setPort(gatewayPort)`.
-   */
-  async startLoopbackHttp(): Promise<number> {
-    this.initHandlers();
-    if (this.httpServer) {
-      throw new Error("RpcServer: loopback HTTP listener already bound");
-    }
-    const port = await findServicePort("rpc");
-    this.httpServer = createServer((req, res) => {
-      this.handleHttpRequest(req, res).catch((err) => {
-        console.error("[RpcServer] HTTP request handler error:", err);
-        if (!res.headersSent) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Bad request" }));
-        }
-      });
-    });
-    await new Promise<void>((resolve, reject) => {
-      this.httpServer!.once("error", reject);
-      this.httpServer!.listen(port, "127.0.0.1", () => resolve());
-    });
-    this.loopbackHttpPort = port;
-    return port;
-  }
-
-  /** Set the port (used when gateway owns the socket). */
-  setPort(port: number): void {
-    this.port = port;
-  }
-
-  getPort(): number | null {
-    return this.port;
-  }
-
-  /** Loopback HTTP port for in-process back-channel POSTs. Distinct from
-   *  `getPort()` in standalone mode. */
-  getLoopbackHttpPort(): number | null {
-    return this.loopbackHttpPort;
-  }
 
   private handleConnection(ws: WebSocket): void {
     // Expect first message to be ws:auth
@@ -338,35 +232,34 @@ export class RpcServer {
   }
 
   private handleAuth(ws: WebSocket, token: string): void {
-    let callerId: string;
-    let callerKind: CallerKind;
-
-    // Priority: admin token > regular token (shell uses regular ensureToken path)
+    // Admin tokens are management-only. RPC clients must use caller tokens.
     if (this.deps.tokenManager.validateAdminToken(token)) {
-      callerId = `ws:${randomUUID()}`;
-      callerKind = "server";
-    } else {
-      const entry = this.deps.tokenManager.validateToken(token);
-      if (!entry) {
-        const msg: WsServerMessage = {
-          type: "ws:auth-result",
-          success: false,
-          error: "Invalid token",
-        };
-        ws.send(JSON.stringify(msg));
-        ws.close(4006, "Invalid token");
-        return;
-      }
-      callerKind = entry.callerKind;
-      // Shell callers get unique per-connection IDs (like admin/server callers)
-      // so multiple mobile devices can connect simultaneously without
-      // disconnecting each other.
-      if (callerKind === "shell") {
-        callerId = `${entry.callerId}:${randomUUID().slice(0, 8)}`;
-      } else {
-        callerId = entry.callerId;
-      }
+      const msg: WsServerMessage = {
+        type: "ws:auth-result",
+        success: false,
+        error: "Admin token cannot authenticate RPC; exchange admin for a shell token first.",
+      };
+      ws.send(JSON.stringify(msg));
+      ws.close(4006, "Admin token cannot authenticate RPC");
+      return;
     }
+
+    const entry = this.deps.tokenManager.validateToken(token);
+    if (!entry) {
+      const msg: WsServerMessage = {
+        type: "ws:auth-result",
+        success: false,
+        error: "Invalid token",
+      };
+      ws.send(JSON.stringify(msg));
+      ws.close(4006, "Invalid token");
+      return;
+    }
+    const callerKind = entry.callerKind;
+    // Shell callers get unique per-connection IDs so multiple mobile devices
+    // can connect simultaneously without disconnecting each other.
+    const callerId =
+      callerKind === "shell" ? `${entry.callerId}:${randomUUID().slice(0, 8)}` : entry.callerId;
 
     // Single-active-connection enforcement for non-admin callers
     if (callerKind !== "server") {
@@ -480,7 +373,7 @@ export class RpcServer {
             return;
           }
         }
-        void this.handleRpc(client, msg.message, msg.forwardedIdentity);
+        void this.handleRpc(client, msg.message);
         break;
       case "ws:tool-result":
         this.handleToolResult(msg.callId, msg.result as ToolExecutionResult);
@@ -494,11 +387,7 @@ export class RpcServer {
     }
   }
 
-  private async handleRpc(
-    client: WsClientState,
-    message: RpcMessage,
-    forwardedIdentity?: { callerId: string; callerKind: CallerKind },
-  ): Promise<void> {
+  private async handleRpc(client: WsClientState, message: RpcMessage): Promise<void> {
     if (message.type !== "request") return;
 
     const request = message as RpcRequest;
@@ -517,23 +406,9 @@ export class RpcServer {
     }
 
     const { service, method } = parsed;
-    if (forwardedIdentity && client.callerKind !== "server") {
-      this.sendToWs(client.ws, {
-        type: "ws:rpc",
-        message: {
-          type: "response",
-          requestId: request.requestId,
-          error: "forwardedIdentity is only accepted on trusted admin connections",
-        },
-      });
-      return;
-    }
-
-    const effectiveCallerId = forwardedIdentity?.callerId ?? client.callerId;
-    const effectiveCallerKind = forwardedIdentity?.callerKind ?? client.callerKind;
 
     try {
-      checkServiceAccess(service, effectiveCallerKind, this.dispatcher, method);
+      checkServiceAccess(service, client.callerKind, this.dispatcher, method);
     } catch (error) {
       this.sendToWs(client.ws, {
         type: "ws:rpc",
@@ -547,8 +422,8 @@ export class RpcServer {
     }
 
     const ctx: ServiceContext = {
-      callerId: effectiveCallerId,
-      callerKind: effectiveCallerKind,
+      callerId: client.callerId,
+      callerKind: client.callerKind,
       wsClient: client,
     };
 
@@ -616,7 +491,7 @@ export class RpcServer {
                 ...(errorCode ? { errorCode } : {}),
               },
             });
-          },
+          }
         );
       } else if (message.type === "response") {
         void this.relayResponse(client.callerId, targetId, message).catch((err) => {
@@ -630,8 +505,7 @@ export class RpcServer {
         // server / another panel (e.g. "notification:show", "credentials:*").
         // Server / harness callers may set fromId explicitly (they're trusted
         // brokers); everyone else gets their real callerId substituted.
-        const trustedSource =
-          client.callerKind === "server" || client.callerKind === "harness";
+        const trustedSource = client.callerKind === "server" || client.callerKind === "harness";
         if (!trustedSource && eventFromId && eventFromId !== client.callerId) {
           log.warn("rejecting event fromId spoof", {
             callerId: client.callerId,
@@ -641,14 +515,10 @@ export class RpcServer {
             targetId,
           });
         }
-        const sourceId = trustedSource
-          ? (eventFromId ?? client.callerId)
-          : client.callerId;
-        void this.relayEvent(sourceId, targetId, event, payload).catch(
-          (err) => {
-            this.sendRouteError(client, targetId, message, err);
-          },
-        );
+        const sourceId = trustedSource ? (eventFromId ?? client.callerId) : client.callerId;
+        void this.relayEvent(sourceId, targetId, event, payload).catch((err) => {
+          this.sendRouteError(client, targetId, message, err);
+        });
       }
       return;
     }
@@ -661,8 +531,7 @@ export class RpcServer {
     // inner message.fromId and may use it. Normalize both.
     let outboundMessage = message;
     if (message.type === "event") {
-      const trustedSource =
-        client.callerKind === "server" || client.callerKind === "harness";
+      const trustedSource = client.callerKind === "server" || client.callerKind === "harness";
       const eventFromId = message.fromId;
       if (!trustedSource && eventFromId && eventFromId !== client.callerId) {
         log.warn("rejecting event fromId spoof (direct)", {
@@ -673,9 +542,7 @@ export class RpcServer {
           targetId,
         });
       }
-      const sourceId = trustedSource
-        ? (eventFromId ?? client.callerId)
-        : client.callerId;
+      const sourceId = trustedSource ? (eventFromId ?? client.callerId) : client.callerId;
       outboundMessage = { ...message, fromId: sourceId };
     }
     this.sendToWs(targetClient.ws, {
@@ -697,7 +564,7 @@ export class RpcServer {
     client: WsClientState,
     targetId: string,
     message: RpcMessage,
-    err: unknown,
+    err: unknown
   ): void {
     const errorMessage = err instanceof Error ? err.message : String(err);
     const errorCode = getErrorCode(err);
@@ -772,9 +639,12 @@ export class RpcServer {
         code: code ?? null,
         reason: reason || null,
         initiator:
-          code === 4001 ? "token-revoke"
-            : code === 4002 ? "replaced"
-              : code === 1005 || code === 1006 ? "network-or-reload"
+          code === 4001
+            ? "token-revoke"
+            : code === 4002
+              ? "replaced"
+              : code === 1005 || code === 1006
+                ? "network-or-reload"
                 : "other",
       });
     }
@@ -810,7 +680,10 @@ export class RpcServer {
     if (!this.reconnectWaiters.has(client.callerId)) {
       let resolveWaiter!: () => void;
       let rejectWaiter!: (err: Error) => void;
-      const promise = new Promise<void>((res, rej) => { resolveWaiter = res; rejectWaiter = rej; });
+      const promise = new Promise<void>((res, rej) => {
+        resolveWaiter = res;
+        rejectWaiter = rej;
+      });
       // Documented concurrent path: handleClose may reject the waiter before
       // relayCall/relayEvent actually attach their await, because the client
       // can fully miss the reconnect window with no in-flight relays. Known
@@ -826,7 +699,11 @@ export class RpcServer {
           errorCode: code,
         });
       });
-      this.reconnectWaiters.set(client.callerId, { promise, resolve: resolveWaiter, reject: rejectWaiter });
+      this.reconnectWaiters.set(client.callerId, {
+        promise,
+        resolve: resolveWaiter,
+        reject: rejectWaiter,
+      });
     }
 
     const timer = setTimeout(() => {
@@ -836,10 +713,12 @@ export class RpcServer {
       const waiter = this.reconnectWaiters.get(client.callerId);
       if (waiter) {
         this.reconnectWaiters.delete(client.callerId);
-        waiter.reject(createRelayError(
-          "Client did not reconnect within grace window",
-          "RECONNECT_GRACE_EXPIRED",
-        ));
+        waiter.reject(
+          createRelayError(
+            "Client did not reconnect within grace window",
+            "RECONNECT_GRACE_EXPIRED"
+          )
+        );
       }
       // Only fire if the caller hasn't reconnected
       if (!this.callerToClient.has(client.callerId)) {
@@ -902,8 +781,10 @@ export class RpcServer {
   /** Broadcast a message to control-plane clients (server and shell callers). */
   broadcastToControlPlane(msg: WsServerMessage): void {
     for (const client of this.callerToClient.values()) {
-      if ((client.callerKind === "server" || client.callerKind === "shell") &&
-          client.ws.readyState === WebSocket.OPEN) {
+      if (
+        (client.callerKind === "server" || client.callerKind === "shell") &&
+        client.ws.readyState === WebSocket.OPEN
+      ) {
         this.sendToWs(client.ws, msg);
       }
     }
@@ -913,7 +794,10 @@ export class RpcServer {
   // HTTP POST /rpc endpoint
   // ===========================================================================
 
-  private async handleHttpRequest(req: import("http").IncomingMessage, res: import("http").ServerResponse): Promise<void> {
+  private async handleHttpRequest(
+    req: import("http").IncomingMessage,
+    res: import("http").ServerResponse
+  ): Promise<void> {
     // Only handle POST /rpc
     if (req.method !== "POST" || req.url !== "/rpc") {
       res.writeHead(404);
@@ -938,22 +822,24 @@ export class RpcServer {
       return;
     }
 
-    let callerId: string;
-    let callerKind: CallerKind;
-
     if (this.deps.tokenManager.validateAdminToken(token)) {
-      callerId = "server";
-      callerKind = "server";
-    } else {
-      const entry = this.deps.tokenManager.validateToken(token);
-      if (!entry) {
-        res.writeHead(401, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Invalid token" }));
-        return;
-      }
-      callerId = entry.callerId;
-      callerKind = entry.callerKind;
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: "Admin token cannot authenticate RPC; exchange admin for a shell token first.",
+        })
+      );
+      return;
     }
+
+    const entry = this.deps.tokenManager.validateToken(token);
+    if (!entry) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Invalid token" }));
+      return;
+    }
+    const callerId = entry.callerId;
+    const callerKind = entry.callerKind;
 
     try {
       const result = await this.handleHttpRpc(callerId, callerKind, body);
@@ -970,7 +856,7 @@ export class RpcServer {
   private async handleHttpRpc(
     callerId: string,
     callerKind: CallerKind,
-    body: Record<string, unknown>,
+    body: Record<string, unknown>
   ): Promise<unknown> {
     const type = body["type"] as string | undefined;
     const targetId = body["targetId"] as string | undefined;
@@ -1036,7 +922,11 @@ export class RpcServer {
    * Shell-owned panel trees are not mirrored on the server anymore, so
    * relay authorization is now based only on caller authentication.
    */
-  private checkRelayAuth(callerId: string, callerKind: CallerKind, targetId: string): RelayAuthCheck {
+  private checkRelayAuth(
+    callerId: string,
+    callerKind: CallerKind,
+    targetId: string
+  ): RelayAuthCheck {
     if (callerKind !== "panel") return { ok: true };
     if (targetId === callerId) return { ok: true };
     if (targetId.startsWith("do:") || targetId.startsWith("worker:")) return { ok: true };
@@ -1077,7 +967,7 @@ export class RpcServer {
     }
 
     throw new Error(
-      `Invariant violated: reconnect waiter resolved for ${targetId} but no client found`,
+      `Invariant violated: reconnect waiter resolved for ${targetId} but no client found`
     );
   }
 
@@ -1085,7 +975,12 @@ export class RpcServer {
     return this.relayCall("main", targetId, method, args) as Promise<T>;
   }
 
-  private async relayCall(callerId: string, targetId: string, method: string, args: unknown[]): Promise<unknown> {
+  private async relayCall(
+    callerId: string,
+    targetId: string,
+    method: string,
+    args: unknown[]
+  ): Promise<unknown> {
     const isPanelOrShellTarget = !targetId.startsWith("do:") && !targetId.startsWith("worker:");
     if (isPanelOrShellTarget) {
       const wsClient = this.callerToClient.get(targetId);
@@ -1110,7 +1005,7 @@ export class RpcServer {
         case "grace-expired":
           throw createRelayError(
             `Target ${targetId} did not reconnect within grace window`,
-            "RECONNECT_GRACE_EXPIRED",
+            "RECONNECT_GRACE_EXPIRED"
           );
         case "no-waiter":
           throw createRelayError(`Target not reachable: ${targetId}`, "TARGET_NOT_REACHABLE");
@@ -1128,7 +1023,11 @@ export class RpcServer {
     throw createRelayError(`Unknown target kind: ${targetId}`, "UNKNOWN_TARGET_KIND");
   }
 
-  private async relayResponse(fromId: string, targetId: string, response: RpcResponse): Promise<void> {
+  private async relayResponse(
+    fromId: string,
+    targetId: string,
+    response: RpcResponse
+  ): Promise<void> {
     const client = await this.resolveWsRelayTarget(targetId);
     this.sendToWs(client.ws, {
       type: "ws:routed",
@@ -1137,19 +1036,33 @@ export class RpcServer {
     });
   }
 
-  private async relayToDO(callerId: string, targetId: string, method: string, args: unknown[]): Promise<unknown> {
+  private async relayToDO(
+    callerId: string,
+    targetId: string,
+    method: string,
+    args: unknown[]
+  ): Promise<unknown> {
     const ref = parseDOTarget(targetId);
 
     const { postToDOWithToken } = await import("./doDispatch.js");
 
-    if (!this.deps.tokenManager || !this.workerdUrl) {
-      throw new Error("Cannot relay to DO: tokenManager or workerdUrl not configured");
+    if (!this.deps.tokenManager || !this.workerdUrl || !this.workerdGatewayToken) {
+      throw new Error(
+        "Cannot relay to DO: tokenManager, workerdUrl, or workerdGatewayToken not configured"
+      );
     }
 
-    return await postToDOWithToken(ref, method, args, {
-      tokenManager: this.deps.tokenManager,
-      workerdUrl: this.workerdUrl,
-    }, callerId);
+    return await postToDOWithToken(
+      ref,
+      method,
+      args,
+      {
+        tokenManager: this.deps.tokenManager,
+        workerdUrl: this.workerdUrl,
+        workerdGatewayToken: this.workerdGatewayToken,
+      },
+      callerId
+    );
   }
 
   private async relayToWorker(targetId: string, method: string, args: unknown[]): Promise<unknown> {
@@ -1160,7 +1073,12 @@ export class RpcServer {
     const url = `${this.workerdUrl}/${workerName}/__rpc`;
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(this.workerdGatewayToken
+          ? { Authorization: `Bearer ${this.workerdGatewayToken}` }
+          : {}),
+      },
       body: JSON.stringify({ type: "call", method, args }),
     });
 
@@ -1172,22 +1090,29 @@ export class RpcServer {
         throw new Error(
           `Worker relay to ${targetId} failed (${res.status}) and response body could not be read: ${
             error instanceof Error ? error.message : String(error)
-          }`,
+          }`
         );
       }
       throw new Error(`Worker relay to ${targetId} failed (${res.status}): ${text}`);
     }
 
-    const json = await res.json() as Record<string, unknown>;
+    const json = (await res.json()) as Record<string, unknown>;
     if (json["error"]) {
       const err = new Error(json["error"] as string);
-      if (json["errorCode"]) (err as any).code = json["errorCode"];
+      if (json["errorCode"]) {
+        (err as Error & { code?: unknown }).code = json["errorCode"];
+      }
       throw err;
     }
     return json["result"];
   }
 
-  private async relayEvent(fromId: string, targetId: string, event: string, payload: unknown): Promise<void> {
+  private async relayEvent(
+    fromId: string,
+    targetId: string,
+    event: string,
+    payload: unknown
+  ): Promise<void> {
     const isPanelOrShellTarget = !targetId.startsWith("do:") && !targetId.startsWith("worker:");
     if (isPanelOrShellTarget) {
       const wsClient = this.callerToClient.get(targetId);
@@ -1214,7 +1139,7 @@ export class RpcServer {
         case "grace-expired":
           throw createRelayError(
             `Target ${targetId} did not reconnect within grace window`,
-            "RECONNECT_GRACE_EXPIRED",
+            "RECONNECT_GRACE_EXPIRED"
           );
         case "no-waiter":
           throw createRelayError(`Target not reachable: ${targetId}`, "TARGET_NOT_REACHABLE");
@@ -1225,8 +1150,10 @@ export class RpcServer {
     if (targetId.startsWith("do:")) {
       const ref = parseDOTarget(targetId);
 
-      if (!this.deps.tokenManager || !this.workerdUrl) {
-        throw new Error("Cannot relay event to DO: tokenManager or workerdUrl not configured");
+      if (!this.deps.tokenManager || !this.workerdUrl || !this.workerdGatewayToken) {
+        throw new Error(
+          "Cannot relay event to DO: tokenManager, workerdUrl, or workerdGatewayToken not configured"
+        );
       }
 
       const { postToDOWithToken } = await import("./doDispatch.js");
@@ -1235,6 +1162,7 @@ export class RpcServer {
       await postToDOWithToken(ref, "__event", [event, payload, fromId], {
         tokenManager: this.deps.tokenManager,
         workerdUrl: this.workerdUrl,
+        workerdGatewayToken: this.workerdGatewayToken,
       });
       return;
     }
@@ -1246,7 +1174,12 @@ export class RpcServer {
 
       const res = await fetch(`${this.workerdUrl}/${workerName}/__rpc`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(this.workerdGatewayToken
+            ? { Authorization: `Bearer ${this.workerdGatewayToken}` }
+            : {}),
+        },
         body: JSON.stringify({ type: "emit", event, payload, fromId }),
       });
       if (!res.ok) {
@@ -1257,7 +1190,7 @@ export class RpcServer {
           throw new Error(
             `Event relay to ${targetId} failed (${res.status}) and response body could not be read: ${
               error instanceof Error ? error.message : String(error)
-            }`,
+            }`
           );
         }
         throw new Error(`Event relay to ${targetId} failed (${res.status}): ${text}`);
@@ -1283,7 +1216,7 @@ export class RpcServer {
       case "grace-expired":
         throw createRelayError(
           `Target ${targetId} did not reconnect within grace window`,
-          "RECONNECT_GRACE_EXPIRED",
+          "RECONNECT_GRACE_EXPIRED"
         );
       case "no-waiter":
         throw createRelayError(`Target not reachable: ${targetId}`, "TARGET_NOT_REACHABLE");
@@ -1310,7 +1243,10 @@ export class RpcServer {
   }
 
   /** Handle an HTTP POST /rpc from the gateway (in-process dispatch). */
-  async handleGatewayHttpRequest(req: import("http").IncomingMessage, res: import("http").ServerResponse): Promise<void> {
+  async handleGatewayHttpRequest(
+    req: import("http").IncomingMessage,
+    res: import("http").ServerResponse
+  ): Promise<void> {
     await this.handleHttpRequest(req, res);
   }
 
@@ -1354,15 +1290,5 @@ export class RpcServer {
       this.wss.close();
       this.wss = null;
     }
-
-    // Close HTTP server
-    if (this.httpServer) {
-      await new Promise<void>((resolve) => {
-        this.httpServer!.close(() => resolve());
-      });
-      this.httpServer = null;
-    }
-
-    this.port = null;
   }
 }

@@ -18,8 +18,6 @@ import { normalizeRelativePanelPath } from "./pathUtils.js";
 export interface PanelCreateResult {
   panelId: string;
   contextId: string;
-  rpcToken: string;
-  gitToken?: string;
   source: string;
   title: string;
   url?: string;
@@ -34,14 +32,7 @@ export interface BuildBootstrapConfigOpts {
   source: string;
   parentId: string | null;
   theme: "light" | "dark";
-  /** Fully resolved RPC WebSocket URL */
-  rpcWsUrl: string;
-  /** Single RPC token (server-issued) */
-  rpcToken: string;
-  gitToken: string;
-  gitBaseUrl: string;
-  /** Fully resolved PubSub WebSocket URL */
-  pubsubUrl: string;
+  gatewayConfig: { serverUrl: string; token: string };
   env?: Record<string, string>;
   stateArgs?: Record<string, unknown>;
 }
@@ -49,17 +40,14 @@ export interface BuildBootstrapConfigOpts {
 export interface BuildPanelUrlOpts {
   source: string;
   contextId: string;
-  panelHttpPort: number;
+  gatewayPort: number;
   externalHost: string;
   protocol: "http" | "https";
 }
 
 export interface BuildPanelEnvOpts {
   panelId: string;
-  gitBaseUrl: string;
-  gitToken: string;
-  serverRpcToken: string | null;
-  workerdPort: number;
+  gatewayToken: string | null;
   contextId: string;
   sourceRepo: string;
   externalHost: string;
@@ -86,41 +74,18 @@ export function resolveSource(
  * Assemble the full bootstrap config delivered to panels via RPC.
  */
 export function buildBootstrapConfig(opts: BuildBootstrapConfigOpts): unknown {
-  const rpcMatch = opts.rpcWsUrl.match(/^(wss?):\/\/([^/?#:]+)(?::(\d+))?(?:[/?#]|$)/i);
-  if (!rpcMatch) {
-    throw new Error(`Invalid RPC WebSocket URL: ${opts.rpcWsUrl}`);
-  }
-  const rpcHost = rpcMatch[2]!;
-  const rpcPort = rpcMatch[3]
-    ? Number(rpcMatch[3])
-    : rpcMatch[1]!.toLowerCase() === "wss" ? 443 : 80;
-
-  const gitConfig = {
-    serverUrl: opts.gitBaseUrl,
-    token: opts.gitToken,
-    sourceRepo: opts.source,
-  };
-  const pubsubConfig = {
-    serverUrl: opts.pubsubUrl,
-    token: opts.rpcToken,
-  };
-
   return {
     panelId: opts.panelId,
     contextId: opts.contextId,
     parentId: opts.parentId,
     theme: opts.theme,
-    rpcHost,
-    rpcPort,
-    rpcWsUrl: opts.rpcWsUrl,
-    rpcToken: opts.rpcToken,
-    gitConfig,
-    pubsubConfig,
+    sourceRepo: opts.source,
+    gatewayConfig: opts.gatewayConfig,
     env: {
       ...opts.env,
       PARENT_ID: opts.parentId ?? "",
-      __GIT_CONFIG: JSON.stringify(gitConfig),
-      __PUBSUB_CONFIG: JSON.stringify(pubsubConfig),
+      __NATSTACK_SOURCE_REPO: opts.source,
+      __NATSTACK_GATEWAY_CONFIG: JSON.stringify(opts.gatewayConfig),
     },
     stateArgs: opts.stateArgs ?? {},
   };
@@ -138,29 +103,22 @@ export function buildPanelUrl(opts: BuildPanelUrlOpts): string {
   const encodedPath = encodeURIComponent(opts.source).replace(/%2F/g, "/");
   const params = new URLSearchParams();
   params.set("contextId", opts.contextId);
-  return `${opts.protocol}://${opts.externalHost}:${opts.panelHttpPort}/${encodedPath}/?${params.toString()}`;
+  return `${opts.protocol}://${opts.externalHost}:${opts.gatewayPort}/${encodedPath}/?${params.toString()}`;
 }
 
 /**
  * Build env vars for a panel, merging base env with system env.
  */
 export function buildPanelEnv(opts: BuildPanelEnvOpts): Record<string, string> {
-  const gitConfig = JSON.stringify({
-    serverUrl: opts.gitBaseUrl,
-    token: opts.gitToken,
-    sourceRepo: opts.sourceRepo,
-  });
-
-  const envHost = opts.externalHost;
-  const wsProtocol = opts.protocol === "https" ? "wss" : "ws";
-  const wsPort = opts.gatewayPort;
-  const pubsubConfig = wsPort
+  const gatewayServerUrl = opts.gatewayPort
+    ? `${opts.protocol}://${opts.externalHost}:${opts.gatewayPort}`
+    : "";
+  const gatewayConfig = gatewayServerUrl
     ? JSON.stringify({
-        serverUrl: `${wsProtocol}://${envHost}:${wsPort}/_w/workers/pubsub-channel/PubSubChannel`,
-        token: opts.serverRpcToken,
+        serverUrl: gatewayServerUrl,
+        token: opts.gatewayToken ?? "",
       })
     : "";
-
   // Pass critical environment variables that Node.js APIs depend on
   const criticalEnv: Record<string, string> = {};
   for (const key of [
@@ -176,10 +134,8 @@ export function buildPanelEnv(opts: BuildPanelEnvOpts): Record<string, string> {
   return {
     ...criticalEnv,
     ...opts.baseEnv,
-    __GIT_SERVER_URL: opts.gitBaseUrl,
-    __GIT_TOKEN: opts.gitToken,
-    __GIT_CONFIG: gitConfig,
-    __PUBSUB_CONFIG: pubsubConfig,
+    __NATSTACK_SOURCE_REPO: opts.sourceRepo,
+    __NATSTACK_GATEWAY_CONFIG: gatewayConfig,
   };
 }
 

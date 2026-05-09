@@ -17,12 +17,10 @@ import {
 import { getEsbuildBinaryPath, getServerProcessEntryPath } from "./paths.js";
 
 export interface ServerPorts {
-  rpcPort: number;
-  gitPort: number;
   workerdPort?: number;
-  gatewayPort?: number;
-  panelHttpPort?: number;
+  gatewayPort: number;
   adminToken: string;
+  shellToken?: string;
 }
 
 export class ServerProcessManager {
@@ -182,12 +180,10 @@ export class ServerProcessManager {
       proc.on("message", (msg: any) => {
         if (msg?.type === "ready") {
           resolve({
-            rpcPort: msg.rpcPort,
-            gitPort: msg.gitPort,
             workerdPort: msg.workerdPort,
             gatewayPort: msg.gatewayPort,
-            panelHttpPort: msg.panelHttpPort,
             adminToken: msg.adminToken,
+            shellToken: msg.shellToken,
           });
         } else if (msg?.type === "error") {
           reject(new Error(`Server startup failed: ${msg.message}`));

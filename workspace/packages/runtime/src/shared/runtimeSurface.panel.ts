@@ -32,8 +32,11 @@ export const panelRuntimeSurface: RuntimeSurface = {
     contextId: valueEntry(),
     parentId: valueEntry(),
     fs: valueEntry(),
-    gitConfig: valueEntry(),
-    pubsubConfig: valueEntry(),
+    createGatewayFetch: valueEntry("Create a gateway-authenticated fetch helper from an explicit config."),
+    gatewayConfig: valueEntry("Gateway base URL and bearer token for NatStack service routes."),
+    gatewayFetch: valueEntry("Fetch helper that prefixes gateway-relative paths and adds Authorization: Bearer."),
+    gitConfig: valueEntry("Git HTTP endpoint and token derived from the gateway config."),
+    pubsubConfig: valueEntry("PubSub WebSocket endpoint and token derived from the gateway config."),
     env: valueEntry(),
     workers: namespaceEntry([
       "create",

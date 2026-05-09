@@ -1,9 +1,9 @@
 /**
  * HostConfig — resolved host/port configuration for a NatStack server.
  *
- * Abstracts away whether panels are served on localhost (Electron local)
- * or on a remote host (remote server mode). All URL construction flows
- * through this config.
+ * Abstracts away whether gateway traffic is served on localhost (Electron
+ * local) or on a remote host (remote server mode). All panel-facing URL
+ * construction flows through this config.
  */
 
 export interface HostConfig {
@@ -17,12 +17,6 @@ export interface HostConfig {
   internalHost: "127.0.0.1";
   /** The gateway port that multiplexes HTTP/WS/git/workerd */
   gatewayPort: number;
-  /** The RPC WS port (may differ from gatewayPort in local mode) */
-  rpcPort: number;
-  /** The panel HTTP port */
-  panelHttpPort: number;
-  /** The git server port */
-  gitPort: number;
   /** The workerd port */
   workerdPort: number;
   /** Path to TLS certificate file (enables HTTPS gateway) */
@@ -34,8 +28,8 @@ export interface HostConfig {
 /**
  * Resolve host config from environment or explicit values.
  *
- * In local mode: all services run on localhost with separate ports.
- * In remote mode: gateway multiplexes everything on a single port/host.
+ * In local and remote mode: gateway multiplexes panel HTTP, RPC, git, and
+ * workerd ingress on a single externally visible port.
  *
  * Environment variables:
  * - NATSTACK_HOST / --host: external hostname (sets bindHost to "0.0.0.0")
@@ -45,9 +39,6 @@ export interface HostConfig {
  */
 export function resolveHostConfig(opts: {
   remoteUrl?: string;
-  rpcPort: number;
-  panelHttpPort: number;
-  gitPort: number;
   workerdPort: number;
   gatewayPort?: number;
   host?: string;
@@ -66,9 +57,6 @@ export function resolveHostConfig(opts: {
       externalHost: url.hostname,
       internalHost: "127.0.0.1",
       gatewayPort: port,
-      rpcPort: port,
-      panelHttpPort: port,
-      gitPort: port,
       workerdPort: port,
     };
   }
@@ -87,10 +75,7 @@ export function resolveHostConfig(opts: {
     bindHost,
     externalHost,
     internalHost: "127.0.0.1",
-    gatewayPort: opts.gatewayPort ?? opts.panelHttpPort,
-    rpcPort: opts.rpcPort,
-    panelHttpPort: opts.panelHttpPort,
-    gitPort: opts.gitPort,
+    gatewayPort: opts.gatewayPort ?? 0,
     workerdPort: opts.workerdPort,
     tlsCert: opts.tlsCert,
     tlsKey: opts.tlsKey,

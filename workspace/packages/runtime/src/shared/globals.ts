@@ -6,6 +6,11 @@
 
 import type { GitConfig, PubSubConfig } from "../core/index.js";
 
+export interface GatewayConfig {
+  serverUrl: string;
+  token: string;
+}
+
 /**
  * Injected globals available in both panel and worker environments.
  */
@@ -20,10 +25,10 @@ declare global {
   var __natstackParentId: string | null | undefined;
   /** Initial theme appearance */
   var __natstackInitialTheme: "light" | "dark" | undefined;
-  /** Git configuration */
-  var __natstackGitConfig: GitConfig | null | undefined;
-  /** PubSub configuration for real-time messaging */
-  var __natstackPubSubConfig: PubSubConfig | null | undefined;
+  /** Single gateway configuration for HTTP, RPC-derived clients, git and pubsub */
+  var __natstackGatewayConfig: GatewayConfig | undefined;
+  /** Source repo path for this endpoint */
+  var __natstackSourceRepo: string | undefined;
   /** Environment variables */
   var __natstackEnv: Record<string, string> | undefined;
 }
@@ -34,6 +39,7 @@ export interface InjectedConfig {
   kind: "panel" | "shell";
   parentId: string | null;
   initialTheme: "light" | "dark";
+  gatewayConfig: GatewayConfig;
   gitConfig: GitConfig | null;
   pubsubConfig: PubSubConfig | null;
   env: Record<string, string>;
@@ -47,10 +53,18 @@ const g = globalThis as unknown as {
   __natstackKind?: "panel" | "shell";
   __natstackParentId?: string | null;
   __natstackInitialTheme?: "light" | "dark";
-  __natstackGitConfig?: GitConfig | null;
-  __natstackPubSubConfig?: PubSubConfig | null;
+  __natstackGatewayConfig?: GatewayConfig;
+  __natstackSourceRepo?: string;
+  __natstackGitConfig?: unknown;
+  __natstackPubSubConfig?: unknown;
   __natstackEnv?: Record<string, string>;
 };
+
+function toWebSocketUrl(serverUrl: string): string {
+  const url = new URL(serverUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString().replace(/\/$/, "");
+}
 
 /**
  * Get the injected configuration from globals.
@@ -61,6 +75,27 @@ export function getInjectedConfig(): InjectedConfig {
       "NatStack runtime globals not found. Expected __natstackId to be defined."
     );
   }
+  if (typeof g.__natstackGitConfig !== "undefined" || typeof g.__natstackPubSubConfig !== "undefined") {
+    throw new Error(
+      "Legacy NatStack runtime globals are not supported. Expected __natstackGatewayConfig only."
+    );
+  }
+  if (!g.__natstackGatewayConfig?.serverUrl || !g.__natstackGatewayConfig?.token) {
+    throw new Error(
+      "NatStack runtime globals not found. Expected __natstackGatewayConfig with serverUrl and token."
+    );
+  }
+
+  const sourceRepo = g.__natstackSourceRepo ?? g.__natstackEnv?.["__NATSTACK_SOURCE_REPO"] ?? "";
+  const gitConfig: GitConfig = {
+    serverUrl: `${g.__natstackGatewayConfig.serverUrl.replace(/\/$/, "")}/_git`,
+    token: g.__natstackGatewayConfig.token,
+    sourceRepo,
+  };
+  const pubsubConfig: PubSubConfig = {
+    serverUrl: `${toWebSocketUrl(g.__natstackGatewayConfig.serverUrl)}/_w/workers/pubsub-channel/PubSubChannel`,
+    token: g.__natstackGatewayConfig.token,
+  };
 
   return {
     id: g.__natstackId,
@@ -71,8 +106,9 @@ export function getInjectedConfig(): InjectedConfig {
         ? g.__natstackParentId
         : null,
     initialTheme: g.__natstackInitialTheme === "dark" ? "dark" : "light",
-    gitConfig: g.__natstackGitConfig ?? null,
-    pubsubConfig: g.__natstackPubSubConfig ?? null,
+    gatewayConfig: g.__natstackGatewayConfig,
+    gitConfig,
+    pubsubConfig,
     env: g.__natstackEnv ?? {},
   };
 }

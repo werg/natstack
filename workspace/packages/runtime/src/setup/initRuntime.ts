@@ -46,6 +46,7 @@ export function initRuntime(options: InitRuntimeOptions): InitRuntimeResult {
     initialTheme: config.initialTheme,
     fs: options.fs,
     setupGlobals: options.setupGlobals,
+    gatewayConfig: config.gatewayConfig,
     gitConfig: config.gitConfig,
     pubsubConfig: config.pubsubConfig,
   });

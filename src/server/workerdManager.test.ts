@@ -64,6 +64,7 @@ function createMockDeps(overrides: Partial<WorkerdManagerDeps> = {}): WorkerdMan
     workspacePath: "/tmp/test-workspace",
     statePath: "/tmp/test-workspace-state",
     getProxyPort: () => 49444,
+    getWorkerdGatewayToken: () => "mock-workerd-gateway-token",
     codeIdentityResolver: {
       upsertCallerIdentity: vi.fn(),
       unregisterCaller: vi.fn(),
@@ -414,7 +415,7 @@ describe("WorkerdManager", () => {
 
       const fetchMock = vi.fn()
         .mockRejectedValueOnce(new TypeError("fetch failed"))
-        .mockResolvedValueOnce(new Response("ready", { status: 404 }));
+        .mockResolvedValueOnce(new Response(null, { status: 204 }));
       vi.stubGlobal("fetch", fetchMock);
 
       try {
@@ -426,7 +427,12 @@ describe("WorkerdManager", () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(fetchMock).toHaveBeenCalledWith(
         "http://127.0.0.1:49552/__natstack_workerd_ready",
-        { method: "GET" },
+        {
+          method: "GET",
+          headers: {
+            "Authorization": "Bearer mock-workerd-gateway-token",
+          },
+        },
       );
     });
   });

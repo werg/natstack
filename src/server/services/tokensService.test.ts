@@ -10,10 +10,6 @@ function createService(tokenManager = new TokenManager()) {
       unregisterCallerContext: vi.fn(),
       updateCallerContext: vi.fn(),
     } as never,
-    gitServer: {
-      getTokenForPanel: vi.fn(() => "git-token"),
-      revokeTokenForPanel: vi.fn(),
-    } as never,
   });
   return { service, tokenManager };
 }

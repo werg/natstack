@@ -34,13 +34,6 @@ export interface GitWatcherLike {
   on(event: string, callback: (repoPath: string) => void): () => void;
 }
 
-/** Minimal TokenManager interface — subset used by GitAuthManager. */
-export interface TokenManagerLike {
-  getToken(callerId: string): string;
-  revokeToken(callerId: string): boolean;
-  validateToken(token: string): { callerId: string; callerKind: string } | null;
-}
-
 export interface GitWriteAuthorizationRequest {
   callerId: string;
   callerKind: string;

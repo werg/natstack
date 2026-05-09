@@ -176,23 +176,34 @@ function connectCdpBridge() {
   if (!serverUrl || !managementToken) return;
   if (cdpWs) { cdpWs.close(); cdpWs = null; }
 
-  const url = serverUrl.replace(/^http/, "ws") + "/api/cdp-bridge?token=" + managementToken;
+  const url = serverUrl.replace(/^http/, "ws") + "/api/cdp-bridge";
   const ws = new WebSocket(url);
   cdpWs = ws;
+  let authenticated = false;
 
   ws.onopen = () => {
     if (cdpWs !== ws) return; // replaced
-    console.log("[NatStack] CDP bridge connected");
+    ws.send(JSON.stringify({ type: "natstack:cdp-auth", token: managementToken }));
+  };
+
+  function registerTrackedTabs() {
     // Register all currently tracked panel tabs
     for (const [browserId, tabId] of panelTabs) {
       ws.send(JSON.stringify({ type: "cdp:register", browserId, tabId }));
     }
-  };
+  }
 
   ws.onmessage = async (event) => {
     if (cdpWs !== ws) return; // replaced
     try {
       const msg = JSON.parse(event.data);
+      if (msg.type === "natstack:cdp-auth-ok") {
+        authenticated = true;
+        console.log("[NatStack] CDP bridge connected");
+        registerTrackedTabs();
+        return;
+      }
+      if (!authenticated) return;
       if (msg.type === "cdp:command") await handleCdpCommand(msg);
       else if (msg.type === "cdp:detach") await detachDebugger(msg.browserId);
       else if (msg.type === "nav:command") await handleNavCommand(msg);

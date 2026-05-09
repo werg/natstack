@@ -32,11 +32,8 @@ const FIREFOX_ADDON_ID = "natstack-panel-manager@natstack.dev";
 // ---------------------------------------------------------------------------
 
 export interface ServicePorts {
-  rpcPort: number;
-  panelPort: number | null;
-  gitPort: number;
   adminToken: string;
-  gatewayPort?: number;
+  gatewayPort: number;
 }
 
 /**
@@ -63,19 +60,12 @@ export function registerHeadlessService(configDir: string, ports: ServicePorts):
 // ---------------------------------------------------------------------------
 
 function writeConnectionJson(configDir: string, ports: ServicePorts): void {
-  const serverUrl = ports.panelPort
-    ? `http://127.0.0.1:${ports.panelPort}`
-    : null;
-
-  const gw = ports.gatewayPort ?? null;
+  const gw = ports.gatewayPort;
   const connection = {
-    rpcPort: gw ?? ports.rpcPort,
-    panelPort: ports.panelPort,
-    gitPort: ports.gitPort,
     adminToken: ports.adminToken,
-    serverUrl: gw ? `http://127.0.0.1:${gw}` : serverUrl,
+    serverUrl: `http://127.0.0.1:${gw}`,
     gatewayPort: gw,
-    gatewayUrl: gw ? `http://127.0.0.1:${gw}` : null,
+    gatewayUrl: `http://127.0.0.1:${gw}`,
   };
 
   const filePath = path.join(configDir, "connection.json");
@@ -166,9 +156,6 @@ try {
         success: true,
         serverUrl: config.serverUrl || config.gatewayUrl || null,
         managementToken: config.adminToken || null,
-        rpcPort: config.rpcPort,
-        panelPort: config.panelPort,
-        gitPort: config.gitPort,
         gatewayPort: config.gatewayPort || null,
         gatewayUrl: config.gatewayUrl || null,
       });

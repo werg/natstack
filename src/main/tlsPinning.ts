@@ -185,14 +185,6 @@ function partitionShouldBePinned(partition: string | null): boolean {
  *
  * Returns a disposer that removes the `session-created` hook (useful in
  * tests; in production the install lives for the app lifetime).
- *
- * TODO(security-audit-agent-3): the production call site lives in
- * `src/main/index.ts:installRemoteCertificateOverride`, which is OUT of
- * this agent's file scope. That function should be replaced with a single
- * call to `installPinnedTlsForAllPartitions(managedHost, fingerprint)`.
- * Until that change lands, only the default session is pinned (the legacy
- * behaviour); this helper is provided so the wiring change is a one-line
- * edit in index.ts.
  */
 export function installPinnedTlsForAllPartitions(
   managedHost: string,

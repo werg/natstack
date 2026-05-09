@@ -135,7 +135,7 @@ describe("ViewManager", () => {
         id: "test-panel",
         type: "panel",
         preload: null,
-        url: "http://localhost:9100/panels/test-panel/?token=abc",
+        url: "http://localhost:9100/panels/test-panel/?state=abc",
       });
 
       expect(view).toBeDefined();

@@ -5,7 +5,6 @@
  * server resolves source builds and serves static assets from path-based URLs.
  */
 
-import { createServer, type Server as HttpServer } from "http";
 import * as fs from "fs";
 import * as path from "path";
 import { WebSocketServer } from "ws";
@@ -131,8 +130,6 @@ function shouldLogPanelResourceRequests(): boolean {
 // ---------------------------------------------------------------------------
 
 export class PanelHttpServer {
-  private httpServer: HttpServer | null = null;
-
   /** Serving cache: source -> last resolved build (for fast sub-resource serving within a page load) */
   private servingCache = new Map<string, CachedBuild>();
 
@@ -225,42 +222,6 @@ export class PanelHttpServer {
   }
   private handlersInitialized = false;
 
-  /**
-   * Start with own socket (non-gateway mode).
-   */
-  async start(port = 0): Promise<number> {
-    this.httpServer = createServer((req, res) => {
-      this.handleRequest(req, res).catch((err) => {
-        log.warn(`Request handler error: ${err}`);
-        if (!res.headersSent) {
-          res.writeHead(500, { "Content-Type": "text/plain" });
-          res.end("Internal Server Error");
-        }
-      });
-    });
-
-    // WebSocket upgrade handler for CDP bridge.
-    this.wss = new WebSocketServer({ noServer: true });
-    this.httpServer.on("upgrade", (req, socket, head) => {
-      if (this.cdpBridge) {
-        this.cdpBridge.handleUpgrade(req, socket, head, this.wss!);
-      } else {
-        socket.destroy();
-      }
-    });
-    this.handlersInitialized = true;
-
-    await new Promise<void>((resolve, reject) => {
-      this.httpServer!.on("error", reject);
-      this.httpServer!.listen(port, this.host, () => resolve());
-    });
-
-    const addr = this.httpServer.address();
-    this.port = typeof addr === "object" && addr ? addr.port : port;
-    log.info(`Panel HTTP server listening on ${this.protocol}://${this.host}:${this.port}`);
-    return this.port;
-  }
-
   /** Set the port (used when gateway owns the socket). */
   setPort(port: number): void {
     this.port = port;
@@ -319,12 +280,6 @@ export class PanelHttpServer {
       this.wss = null;
     }
 
-    if (this.httpServer) {
-      await new Promise<void>((resolve) => {
-        this.httpServer!.close(() => resolve());
-      });
-      this.httpServer = null;
-    }
     this.port = null;
   }
 

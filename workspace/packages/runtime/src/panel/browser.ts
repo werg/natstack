@@ -28,13 +28,18 @@ export interface BrowserHandle {
    * waitForSelector, querySelector, screenshot, title, content, close.
    */
   page(): Promise<any>;
-  getCdpEndpoint(): Promise<string>;
+  getCdpEndpoint(): Promise<CdpEndpoint>;
   navigate(url: string): Promise<void>;
   goBack(): Promise<void>;
   goForward(): Promise<void>;
   reload(): Promise<void>;
   stop(): Promise<void>;
   close(): Promise<void>;
+}
+
+export interface CdpEndpoint {
+  wsEndpoint: string;
+  token: string;
 }
 
 let _rpc: RpcBridge | null = null;
@@ -154,20 +159,23 @@ function makeBrowserHandle(rpc: RpcBridge, id: string, title: string): BrowserHa
         throw new Error("handle.page() requires __natstackRequire__ (panel runtime)");
       }
       const { BrowserImpl } = require("@workspace/playwright-client");
-      let wsEndpoint: string;
+      let endpoint: CdpEndpoint;
       if (shell?.getCdpEndpoint) {
-        wsEndpoint = await shell.getCdpEndpoint(id);
+        endpoint = await shell.getCdpEndpoint(id);
       } else {
-        wsEndpoint = await rpc.call<string>("main", "browser.getCdpEndpoint", id);
+        endpoint = await rpc.call<CdpEndpoint>("main", "browser.getCdpEndpoint", id);
       }
-      const browser = await BrowserImpl.connect(wsEndpoint, { isElectronWebview: true });
+      const browser = await BrowserImpl.connect(endpoint.wsEndpoint, {
+        isElectronWebview: true,
+        transportOptions: { authToken: endpoint.token },
+      });
       const page = browser.contexts()[0]?.pages()[0];
       if (!page) throw new Error("No page found in browser panel");
       return page;
     },
     getCdpEndpoint: () => {
       if (shell?.getCdpEndpoint) return shell.getCdpEndpoint(id);
-      return rpc.call<string>("main", "browser.getCdpEndpoint", id);
+      return rpc.call<CdpEndpoint>("main", "browser.getCdpEndpoint", id);
     },
     navigate: (u) => {
       if (shell?.navigate) return shell.navigate(id, u);

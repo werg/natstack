@@ -148,7 +148,7 @@ describe("RpcServer relay behavior", () => {
   });
 });
 
-describe("RpcServer forwarded identity passthrough", () => {
+describe("RpcServer caller identity", () => {
   function rpcRequest(requestId: string, method: string) {
     return {
       type: "request" as const,
@@ -164,48 +164,7 @@ describe("RpcServer forwarded identity passthrough", () => {
     return JSON.parse(raw) as { message: { result?: unknown; error?: string } };
   }
 
-  it("uses admin-provided forwarded identity for method policy checks and service context", async () => {
-    const { server } = createServer();
-    const client = createClient("admin");
-    client.callerKind = "server";
-    const dispatched: unknown[] = [];
-    (server as any).dispatcher.getPolicy.mockReturnValue({ allowed: ["server"] });
-    (server as any).dispatcher.getMethodPolicy.mockReturnValue({ allowed: ["shell"] });
-    (server as any).dispatcher.dispatch.mockImplementation(async (ctx: unknown) => {
-      dispatched.push(ctx);
-      return { ok: true };
-    });
-
-    await (server as any).handleRpc(client, rpcRequest("req-1", "browser-data.getPasswords"), {
-      callerId: "shell-window-1",
-      callerKind: "shell",
-    });
-
-    expect(dispatched).toHaveLength(1);
-    expect(dispatched[0]).toMatchObject({
-      callerId: "shell-window-1",
-      callerKind: "shell",
-    });
-    expect(sentResponse(client).message.result).toEqual({ ok: true });
-  });
-
-  it("rejects forwarded identity from non-admin connections before dispatch", async () => {
-    const { server } = createServer();
-    const client = createClient("worker-1");
-    client.callerKind = "worker";
-    (server as any).dispatcher.getPolicy.mockReturnValue({ allowed: ["worker"] });
-    (server as any).dispatcher.getMethodPolicy.mockReturnValue({ allowed: ["shell"] });
-
-    await (server as any).handleRpc(client, rpcRequest("req-2", "browser-data.getPasswords"), {
-      callerId: "shell-window-1",
-      callerKind: "shell",
-    });
-
-    expect((server as any).dispatcher.dispatch).not.toHaveBeenCalled();
-    expect(sentResponse(client).message.error).toBe("forwardedIdentity is only accepted on trusted admin connections");
-  });
-
-  it("denies worker callers for shell-only browser-data methods without forwarded identity", async () => {
+  it("denies worker callers for shell-only browser-data methods", async () => {
     const { server } = createServer();
     const client = createClient("worker-1");
     client.callerKind = "worker";
@@ -218,9 +177,9 @@ describe("RpcServer forwarded identity passthrough", () => {
     expect(sentResponse(client).message.error).toContain("not accessible to worker callers");
   });
 
-  it("dispatches admin connections without forwarded identity using their own server identity", async () => {
+  it("dispatches server callers using their own server identity", async () => {
     const { server } = createServer();
-    const client = createClient("admin");
+    const client = createClient("server");
     client.callerKind = "server";
     const dispatched: unknown[] = [];
     (server as any).dispatcher.getPolicy.mockReturnValue({ allowed: ["server"] });

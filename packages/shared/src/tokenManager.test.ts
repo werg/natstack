@@ -1,8 +1,8 @@
 /**
- * Tests for TokenManager and GitAuthManager.
+ * Tests for TokenManager.
  */
 
-import { TokenManager, GitAuthManager } from "./tokenManager.js";
+import { TokenManager } from "./tokenManager.js";
 
 describe("TokenManager", () => {
   let tm: TokenManager;
@@ -117,64 +117,5 @@ describe("TokenManager", () => {
     tm.revokeToken("panel-1");
 
     expect(tm.getPanelOwner("panel-1")).toBeUndefined();
-  });
-});
-
-describe("GitAuthManager", () => {
-  let tm: TokenManager;
-  let gam: GitAuthManager;
-
-  beforeEach(() => {
-    tm = new TokenManager();
-    gam = new GitAuthManager(tm);
-  });
-
-  it("fetch is always allowed", () => {
-    expect(gam.canAccess("panel-1", "tree/other", "fetch")).toEqual({
-      allowed: true,
-    });
-  });
-
-  it("push to non-protected path is allowed", () => {
-    expect(gam.canAccess("panel-1", "shared/repo", "push")).toEqual({
-      allowed: true,
-    });
-  });
-
-  it("push to own tree path is allowed", () => {
-    expect(gam.canAccess("tree/my-panel", "tree/my-panel", "push")).toEqual({
-      allowed: true,
-    });
-    // sub-path also allowed
-    expect(
-      gam.canAccess("tree/my-panel", "tree/my-panel/sub-repo", "push")
-    ).toEqual({ allowed: true });
-  });
-
-  it("push to other panel tree path is denied", () => {
-    const result = gam.canAccess("tree/panel-a", "tree/panel-b", "push");
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toContain("cannot push");
-  });
-
-  it("normalizes .git suffix and leading slashes", () => {
-    // tree/my-panel.git should normalize to tree/my-panel
-    expect(
-      gam.canAccess("tree/my-panel", "/tree/my-panel.git", "push")
-    ).toEqual({ allowed: true });
-  });
-
-  it("validateAccess rejects invalid token", () => {
-    const result = gam.validateAccess("bad-token", "some-repo", "fetch");
-    expect(result).toEqual({ valid: false, reason: "Invalid token" });
-  });
-
-  it("validateAccess checks access after token validation", () => {
-    const token = tm.createToken("tree/panel-a", "panel");
-    const ok = gam.validateAccess(token, "tree/panel-a", "push");
-    expect(ok).toEqual({ valid: true });
-
-    const denied = gam.validateAccess(token, "tree/panel-b", "push");
-    expect(denied.valid).toBe(false);
   });
 });

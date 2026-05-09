@@ -9,7 +9,10 @@ import { createPanelTransport } from "./transport.js";
 import { fs } from "./fs.js"; // RPC-backed fs (server-side per-context folders)
 import { initRuntime } from "../setup/initRuntime.js";
 import { helpfulNamespace } from "../shared/helpfulNamespace.js";
+import { createGatewayFetch } from "../shared/gatewayFetch.js";
 export type { ThemeAppearance, RuntimeFs, FileStats, MkdirOptions, RmOptions } from "../types.js";
+export { createGatewayFetch } from "../shared/gatewayFetch.js";
+export type { GatewayFetch, GatewayFetchConfig } from "../shared/gatewayFetch.js";
 
 // Initialize runtime with panel-specific providers
 const { runtime, config } = initRuntime({
@@ -30,6 +33,8 @@ export type * from "../core/types.js";
 export type { Runtime } from "../setup/createRuntime.js";
 
 export const id = config.id;
+const gatewayConfig = config.gatewayConfig;
+const gatewayFetch = createGatewayFetch(gatewayConfig);
 const gitConfig = config.gitConfig;
 const pubsubConfig = config.pubsubConfig;
 const env = config.env;
@@ -76,7 +81,7 @@ export {
 
 const { workers } = runtime;
 const helpfulWorkers = helpfulNamespace("workers", workers);
-export { fs, gitConfig, pubsubConfig, env, helpfulWorkers as workers };
+export { fs, gatewayConfig, gatewayFetch, gitConfig, pubsubConfig, env, helpfulWorkers as workers };
 
 // Path utilities for cross-platform path handling
 export { normalizePath, getFileName, resolvePath } from "../shared/pathUtils.js";

@@ -161,6 +161,7 @@ describe("DODispatch", () => {
       dispatch.setTokenManager(tokenManager);
       dispatch.setGetWorkerdUrl(getWorkerdUrl);
       dispatch.setGetDispatchSecret(() => "dispatch-secret");
+      dispatch.setGetWorkerdGatewayToken(() => "workerd-gateway-token");
       dispatch.setEnsureDO(ensureDO);
 
       const ref = makeRef();
@@ -175,7 +176,11 @@ describe("DODispatch", () => {
       expect(fetchMock).toHaveBeenNthCalledWith(
         2,
         "http://127.0.0.1:10002/_w/workers/agent-worker/AiChatWorker/ch-123/ping",
-        expect.any(Object),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            "Authorization": "Bearer workerd-gateway-token",
+          }),
+        }),
       );
     });
   });

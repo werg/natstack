@@ -151,25 +151,26 @@ describe("RouteRegistry × Gateway integration", () => {
     expect(status).toBe(401);
   });
 
-  it("accepts admin-token-auth route with correct token via header", async () => {
+  it("accepts admin-token-auth route with correct bearer", async () => {
     const { status, body } = await fetchText(
       `http://127.0.0.1:${h.gatewayPort}/_r/s/admin/secret`,
-      { headers: { "X-NatStack-Token": "secret-token" } },
+      { headers: { "Authorization": "Bearer secret-token" } },
     );
     expect(status).toBe(200);
     expect(body).toBe("allowed");
   });
 
-  it("accepts admin-token-auth route with correct token via query", async () => {
+  it("rejects admin-token-auth route with correct token via query", async () => {
     const { status } = await fetchText(
       `http://127.0.0.1:${h.gatewayPort}/_r/s/admin/secret?token=secret-token`,
     );
-    expect(status).toBe(200);
+    expect(status).toBe(401);
   });
 
   it("rejects admin-token-auth route with wrong token", async () => {
     const { status } = await fetchText(
-      `http://127.0.0.1:${h.gatewayPort}/_r/s/admin/secret?token=wrong`,
+      `http://127.0.0.1:${h.gatewayPort}/_r/s/admin/secret`,
+      { headers: { "Authorization": "Bearer wrong" } },
     );
     expect(status).toBe(401);
   });
@@ -187,11 +188,12 @@ describe("RouteRegistry × Gateway integration", () => {
 
     await expect(fetchText(
       `http://127.0.0.1:${h.gatewayPort}/_r/s/caller/token`,
-      { headers: { "X-NatStack-Token": panelToken } },
+      { headers: { "Authorization": `Bearer ${panelToken}` } },
     )).resolves.toEqual({ status: 200, body: "caller allowed" });
 
     await expect(fetchText(
-      `http://127.0.0.1:${h.gatewayPort}/_r/s/caller/token?token=${workerToken}`,
+      `http://127.0.0.1:${h.gatewayPort}/_r/s/caller/token`,
+      { headers: { "Authorization": `Bearer ${workerToken}` } },
     )).resolves.toEqual({ status: 200, body: "caller allowed" });
   });
 
@@ -205,13 +207,13 @@ describe("RouteRegistry × Gateway integration", () => {
 
     const admin = await fetchText(
       `http://127.0.0.1:${h.gatewayPort}/_r/s/caller-reject/token`,
-      { headers: { "X-NatStack-Token": "secret-token" } },
+      { headers: { "Authorization": "Bearer secret-token" } },
     );
     expect(admin.status).toBe(401);
 
     const unknown = await fetchText(
       `http://127.0.0.1:${h.gatewayPort}/_r/s/caller-reject/token`,
-      { headers: { "X-NatStack-Token": "unknown" } },
+      { headers: { "Authorization": "Bearer unknown" } },
     );
     expect(unknown.status).toBe(401);
   });

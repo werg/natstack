@@ -14,7 +14,6 @@ export function createMobileShellCore(deps: {
   const store = new PanelStoreAsync(deps.workspaceId);
   const host = parseHostConfig(deps.serverUrl);
   const gatewayPort = host.port ? Number(host.port) : host.protocol === "https" ? 443 : 80;
-  const wsProtocol = host.protocol === "https" ? "wss" : "ws";
   const hostWithPort = `${host.host}${host.port ? `:${host.port}` : ""}`;
 
   const panelManager = new PanelManager({
@@ -26,15 +25,12 @@ export function createMobileShellCore(deps: {
       protocol: host.protocol as "http" | "https",
       externalHost: host.host,
       gatewayPort,
-      rpcPort: gatewayPort,
       workerdPort: gatewayPort,
-      gitBaseUrl: `${host.protocol}://${hostWithPort}/_git`,
-      rpcWsUrl: `${wsProtocol}://${hostWithPort}/rpc`,
-      pubsubUrl: `${wsProtocol}://${hostWithPort}/_w/workers/pubsub-channel/PubSubChannel`,
+      gatewayConfig: { serverUrl: `${host.protocol}://${hostWithPort}` },
     },
     tokenClient: {
       ensurePanelToken: (panelId, contextId, parentId) =>
-        deps.transport.call("main", "tokens.ensurePanelToken", panelId, contextId, parentId) as Promise<{ token: string; gitToken: string }>,
+        deps.transport.call("main", "tokens.ensurePanelToken", panelId, contextId, parentId) as Promise<{ token: string }>,
       revokePanelToken: (panelId) =>
         deps.transport.call("main", "tokens.revokePanelToken", panelId) as Promise<void>,
       updatePanelContext: (panelId, contextId) =>

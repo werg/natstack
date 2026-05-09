@@ -7,7 +7,7 @@
  * Reuses RpcMessage from @workspace/rpc for the inner request/response payloads.
  */
 
-import type { CallerKind, RpcMessage } from "@natstack/rpc";
+import type { RpcMessage } from "@natstack/rpc";
 import type { ToolExecutionResult } from "../types.js";
 
 // =============================================================================
@@ -22,10 +22,6 @@ export interface WsAuthMessage {
 export interface WsRpcMessage {
   type: "ws:rpc";
   message: RpcMessage;
-  forwardedIdentity?: {
-    callerId: string;
-    callerKind: CallerKind;
-  };
 }
 
 export interface WsToolResultMessage {

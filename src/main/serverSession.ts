@@ -7,11 +7,20 @@
  */
 
 import { dialog, app } from "electron";
+import * as fs from "fs";
+import * as http from "http";
+import * as https from "https";
 import { createDevLogger } from "@natstack/dev-log";
 import { getAppRoot } from "./paths.js";
 import { ServerProcessManager, type ServerPorts } from "./serverProcessManager.js";
-import { createServerClient, type ServerClient, type ConnectionStatus } from "./serverClient.js";
-import type { PanelHttpServerLike, ServerInfoLike } from "@natstack/shared/panelInterfaces";
+import {
+  createServerClient,
+  type ServerClient,
+  type ConnectionStatus,
+  type TlsPinningOptions,
+} from "./serverClient.js";
+import { createPinnedHttpsAgent } from "./tlsPinning.js";
+import type { PanelHttpServerLike } from "@natstack/shared/panelInterfaces";
 import type { ServerInfo } from "./serverInfo.js";
 import type { WorkspaceConfig } from "@natstack/shared/workspace/types";
 import type { CentralDataManager } from "@natstack/shared/centralData";
@@ -21,12 +30,9 @@ const log = createDevLogger("ServerSession");
 
 export interface SessionConnection {
   protocol: "http" | "https";
-  rpcPort: number;
   gatewayPort: number;
   externalHost: string;
-  rpcWsUrl: string;
-  pubsubUrl: string;
-  gitBaseUrl: string;
+  gatewayConfig: { serverUrl: string };
   workerdPort: number;
   workspaceId: string;
   workspacePath: string;
@@ -45,43 +51,83 @@ function buildServerInfo(
   ports: ServerPorts,
   externalHost: string,
   protocol: "http" | "https",
-  rpcWsUrl: string,
-  pubsubUrl: string,
-  gitBaseUrl: string,
-  getClient: () => ServerClient,
+  gatewayConfig: { serverUrl: string },
+  getClient: () => ServerClient
 ): ServerInfo {
   return {
-    rpcPort: ports.rpcPort,
-    rpcWsUrl,
-    pubsubUrl,
-    gitBaseUrl,
+    gatewayConfig,
     workerdPort: ports.workerdPort ?? 0,
     externalHost,
-    gatewayPort: ports.gatewayPort ?? ports.panelHttpPort ?? ports.rpcPort,
+    gatewayPort: ports.gatewayPort,
     protocol,
-    createPanelToken: (panelId, kind) =>
-      getClient().call("tokens", "create", [panelId, kind]) as Promise<string>,
-    ensurePanelToken: (panelId, kind) =>
-      getClient().call("tokens", "ensure", [panelId, kind]) as Promise<string>,
-    revokePanelToken: (panelId) =>
-      getClient().call("tokens", "revoke", [panelId]) as Promise<void>,
-    getPanelToken: (panelId) =>
-      getClient().call("tokens", "get", [panelId]) as Promise<string | null>,
-    getGitTokenForPanel: (panelId) =>
-      getClient().call("git", "getTokenForPanel", [panelId]) as Promise<string>,
-    revokeGitToken: (panelId) =>
-      getClient().call("git", "revokeTokenForPanel", [panelId]) as Promise<void>,
-    getWorkspaceTree: () =>
-      getClient().call("git", "getWorkspaceTree", []),
-    listBranches: (repoPath) =>
-      getClient().call("git", "listBranches", [repoPath]),
+    getWorkspaceTree: () => getClient().call("git", "getWorkspaceTree", []),
+    listBranches: (repoPath) => getClient().call("git", "listBranches", [repoPath]),
     listCommits: (repoPath, ref, limit) =>
       getClient().call("git", "listCommits", [repoPath, ref, limit]),
     resolveRef: (repoPath, ref) =>
       getClient().call("git", "resolveRef", [repoPath, ref]) as Promise<string>,
-    call: (service, method, args) =>
-      getClient().call(service, method, args),
+    call: (service, method, args) => getClient().call(service, method, args),
   };
+}
+
+async function exchangeAdminForShell(
+  remoteUrl: URL,
+  adminToken: string,
+  tls?: TlsPinningOptions
+): Promise<string> {
+  const exchangeUrl = new URL("/_r/s/auth/exchange-admin-for-shell", remoteUrl);
+  const body = JSON.stringify({ callerId: "electron-remote" });
+  const responseBody = await new Promise<{
+    statusCode: number;
+    statusMessage: string;
+    body: string;
+  }>((resolve, reject) => {
+    const isHttps = exchangeUrl.protocol === "https:";
+    const agent =
+      isHttps && tls?.fingerprint
+        ? createPinnedHttpsAgent(tls.fingerprint)
+        : isHttps && tls?.caPath
+          ? new https.Agent({ ca: fs.readFileSync(tls.caPath) })
+          : undefined;
+    const req = (isHttps ? https : http).request(
+      exchangeUrl,
+      {
+        method: "POST",
+        agent,
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          resolve({
+            statusCode: res.statusCode ?? 0,
+            statusMessage: res.statusMessage ?? "",
+            body: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+      }
+    );
+    req.on("error", reject);
+    req.end(body);
+  });
+  const json = JSON.parse(responseBody.body || "{}") as { token?: unknown; error?: unknown };
+  if (
+    responseBody.statusCode < 200 ||
+    responseBody.statusCode >= 300 ||
+    typeof json.token !== "string"
+  ) {
+    throw new Error(
+      `Failed to exchange admin token for shell token (${responseBody.statusCode}): ${
+        typeof json.error === "string" ? json.error : responseBody.statusMessage
+      }`
+    );
+  }
+  return json.token;
 }
 
 /**
@@ -92,7 +138,10 @@ export async function establishServerSession(args: {
   centralData: CentralDataManager;
   onServerEvent: (event: string, payload: unknown) => void;
   onConnectionStatusChanged?: (status: ConnectionStatus) => void;
-  onIpcRequest?: (type: string, msg: Record<string, unknown>) => Promise<Record<string, unknown> | null>;
+  onIpcRequest?: (
+    type: string,
+    msg: Record<string, unknown>
+  ) => Promise<Record<string, unknown> | null>;
 }): Promise<SessionConnection> {
   const { mode, onServerEvent } = args;
 
@@ -101,9 +150,7 @@ export async function establishServerSession(args: {
   let ports: ServerPorts;
   let protocol: "http" | "https";
   let externalHost: string;
-  let rpcWsUrl: string;
-  let pubsubUrl: string;
-  let gitBaseUrl: string;
+  let gatewayConfig: { serverUrl: string };
 
   if (mode.kind === "remote") {
     // Remote mode: connect to existing server with automatic reconnection
@@ -111,15 +158,26 @@ export async function establishServerSession(args: {
     externalHost = remoteUrl.hostname;
     protocol = remoteUrl.protocol === "https:" ? "https" : "http";
     const remotePort = parseInt(remoteUrl.port) || (protocol === "https" ? 443 : 80);
-    rpcWsUrl = `${protocol === "https" ? "wss" : "ws"}://${externalHost}:${remotePort}/rpc`;
-    pubsubUrl = `${protocol === "https" ? "wss" : "ws"}://${externalHost}:${remotePort}/_w/workers/pubsub-channel/PubSubChannel`;
-    gitBaseUrl = `${protocol}://${externalHost}:${remotePort}/_git`;
+    gatewayConfig = { serverUrl: `${protocol}://${externalHost}:${remotePort}` };
 
-    serverClient = await createServerClient(remotePort, adminToken, {
-      wsUrl: rpcWsUrl,
+    let shellToken = await exchangeAdminForShell(remoteUrl, adminToken, tls);
+    ports = {
+      workerdPort: remotePort,
+      gatewayPort: remotePort,
+      adminToken,
+      shellToken,
+    };
+
+    serverClient = await createServerClient(remotePort, shellToken, {
+      wsUrl: `${protocol === "https" ? "wss" : "ws"}://${externalHost}:${remotePort}/rpc`,
       tls,
       reconnect: true,
       maxReconnectAttempts: 10,
+      refreshAuthToken: async () => {
+        shellToken = await exchangeAdminForShell(remoteUrl, adminToken, tls);
+        ports.shellToken = shellToken;
+        return shellToken;
+      },
       onConnectionStatusChanged: (status) => {
         args.onConnectionStatusChanged?.(status);
       },
@@ -134,13 +192,6 @@ export async function establishServerSession(args: {
       onEvent: onServerEvent,
     });
 
-    ports = {
-      rpcPort: remotePort,
-      gitPort: remotePort,
-      workerdPort: remotePort,
-      gatewayPort: remotePort,
-      adminToken,
-    };
     log.info(`[Server] Connected to remote server at ${remoteUrl.href}`);
   } else {
     // Local mode: spawn server as child process
@@ -191,14 +242,15 @@ export async function establishServerSession(args: {
     });
 
     ports = await serverProcessManager.start();
-    log.info(`[Server] Child process started (RPC: ${ports.rpcPort}, Git: ${ports.gitPort})`);
-    rpcWsUrl = `ws://127.0.0.1:${ports.rpcPort}`;
-    pubsubUrl = ports.workerdPort
-      ? `ws://127.0.0.1:${ports.workerdPort}/_w/workers/pubsub-channel/PubSubChannel`
-      : "";
-    gitBaseUrl = `http://127.0.0.1:${ports.gitPort}`;
+    const localGatewayPort = ports.gatewayPort;
+    log.info(`[Server] Child process started (Gateway: ${localGatewayPort})`);
+    gatewayConfig = { serverUrl: `http://127.0.0.1:${localGatewayPort}` };
 
-    serverClient = await createServerClient(ports.rpcPort, ports.adminToken, {
+    const shellToken = ports.shellToken;
+    if (!shellToken) {
+      throw new Error("Local server did not provide a shell caller token");
+    }
+    serverClient = await createServerClient(localGatewayPort, shellToken, {
       onDisconnect: () => {
         console.error("[App] Server process disconnected");
       },
@@ -206,27 +258,21 @@ export async function establishServerSession(args: {
     });
   }
 
-  log.info("[Server] Admin client connected");
+  log.info("[Server] Shell client connected");
 
   const getClient = () => serverClient;
-  const serverInfo = buildServerInfo(
-    ports,
-    externalHost,
-    protocol,
-    rpcWsUrl,
-    pubsubUrl,
-    gitBaseUrl,
-    getClient,
-  );
+  const serverInfo = buildServerInfo(ports, externalHost, protocol, gatewayConfig, getClient);
 
   // Get workspace metadata from server
-  const wsInfo = await serverClient.call("workspace", "getInfo", []) as {
-    path: string; statePath: string; contextsPath: string;
+  const wsInfo = (await serverClient.call("workspace", "getInfo", [])) as {
+    path: string;
+    statePath: string;
+    contextsPath: string;
     config: WorkspaceConfig;
   };
   log.info(`[Workspace] Server workspace: ${wsInfo.config.id}`);
 
-  const gatewayPort = ports.gatewayPort ?? ports.panelHttpPort ?? 0;
+  const gatewayPort = ports.gatewayPort;
   const panelHttpServer: PanelHttpServerLike = {
     hasBuild: () => false,
     invalidateBuild: () => {},
@@ -235,12 +281,9 @@ export async function establishServerSession(args: {
 
   return {
     protocol,
-    rpcPort: ports.rpcPort,
     gatewayPort,
     externalHost,
-    rpcWsUrl,
-    pubsubUrl,
-    gitBaseUrl,
+    gatewayConfig,
     workerdPort: ports.workerdPort ?? 0,
     workspaceId: wsInfo.config.id,
     workspacePath: wsInfo.path,

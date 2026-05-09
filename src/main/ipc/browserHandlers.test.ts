@@ -10,12 +10,13 @@ import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
 
 describe("getCdpEndpointForCaller", () => {
   it("returns endpoint when cdpServer.getCdpEndpoint succeeds", () => {
+    const endpoint = { wsEndpoint: "ws://127.0.0.1:9222", token: "token" };
     const cdpServer = {
-      getCdpEndpoint: vi.fn().mockReturnValue("ws://127.0.0.1:9222"),
+      getCdpEndpoint: vi.fn().mockReturnValue(endpoint),
     };
     const result = getCdpEndpointForCaller(cdpServer as any, "browser-1", "panel-1");
     expect(cdpServer.getCdpEndpoint).toHaveBeenCalledWith("browser-1", "panel-1");
-    expect(result).toBe("ws://127.0.0.1:9222");
+    expect(result).toEqual(endpoint);
   });
 
   it("throws when cdpServer returns null", () => {
@@ -29,8 +30,9 @@ describe("getCdpEndpointForCaller", () => {
 });
 
 describe("browserService handler", () => {
+  const endpoint = { wsEndpoint: "ws://127.0.0.1:9222", token: "token" };
   const cdpServer = {
-    getCdpEndpoint: vi.fn().mockReturnValue("ws://127.0.0.1:9222"),
+    getCdpEndpoint: vi.fn().mockReturnValue(endpoint),
     panelOwnsBrowser: vi.fn().mockReturnValue(true),
   };
   const mockWc = {
@@ -56,7 +58,7 @@ describe("browserService handler", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     cdpServer.panelOwnsBrowser.mockReturnValue(true);
-    cdpServer.getCdpEndpoint.mockReturnValue("ws://127.0.0.1:9222");
+    cdpServer.getCdpEndpoint.mockReturnValue(endpoint);
     viewManager.getWebContents.mockReturnValue(mockWc);
     mockWc.loadURL.mockResolvedValue(undefined);
   });
@@ -64,7 +66,7 @@ describe("browserService handler", () => {
   it("getCdpEndpoint delegates correctly", async () => {
     const result = await handler(ctx, "getCdpEndpoint", ["browser-1"]);
     expect(cdpServer.getCdpEndpoint).toHaveBeenCalledWith("browser-1", "panel-1");
-    expect(result).toBe("ws://127.0.0.1:9222");
+    expect(result).toEqual(endpoint);
   });
 
   it("navigate checks ownership, calls wc.loadURL, ignores ERR_ABORTED", async () => {

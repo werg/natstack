@@ -18,6 +18,7 @@
 import * as path from "path";
 import * as fs from "fs";
 import { randomBytes } from "crypto";
+import { getPublicUrl } from "./publicUrl.js";
 // __filename is available natively in CJS and via the esbuild banner shim in ESM.
 declare const __filename: string;
 
@@ -30,15 +31,25 @@ interface IpcChannel {
   on(event: string, handler: (msg: unknown) => void): void;
 }
 
+interface ElectronParentPort {
+  postMessage(msg: unknown): void;
+  on(event: "message", handler: (envelope: unknown) => void): void;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
 function detectServerIpcChannel(): IpcChannel | null {
   // Electron utilityProcess: process.parentPort exists
-  const parentPort = (process as any).parentPort;
+  const parentPort = (process as NodeJS.Process & { parentPort?: ElectronParentPort }).parentPort;
   if (parentPort) {
     return {
       postMessage: (msg: unknown) => parentPort.postMessage(msg),
       on: (_event: string, handler: (msg: unknown) => void) => {
-        parentPort.on("message", (envelope: any) => {
-          handler(envelope?.data ?? envelope);
+        parentPort.on("message", (envelope: unknown) => {
+          const record = asRecord(envelope);
+          handler(record && "data" in record ? record["data"] : envelope);
         });
       },
     };
@@ -69,10 +80,12 @@ const ipcChannel = detectServerIpcChannel();
 const pendingIpcResponses = new Map<string, (response: unknown) => void>();
 
 if (ipcChannel) {
-  ipcChannel.on("message", (msg: any) => {
-    if (msg?.id && pendingIpcResponses.has(msg.id)) {
-      pendingIpcResponses.get(msg.id)!(msg);
-      pendingIpcResponses.delete(msg.id);
+  ipcChannel.on("message", (msg: unknown) => {
+    const record = asRecord(msg);
+    const id = typeof record?.["id"] === "string" ? record["id"] : null;
+    if (id && pendingIpcResponses.has(id)) {
+      pendingIpcResponses.get(id)!(msg);
+      pendingIpcResponses.delete(id);
     }
   });
 }
@@ -84,7 +97,7 @@ if (ipcChannel) {
 function ipcRequest<T = unknown>(
   type: string,
   payload?: Record<string, unknown>,
-  timeoutMs: number = 5_000,
+  timeoutMs: number = 5_000
 ): Promise<T | null> {
   if (!ipcChannel) return Promise.resolve(null);
   const id = randomBytes(8).toString("hex");
@@ -193,7 +206,26 @@ function parseEnvPort(name: string): number | undefined {
 
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {};
-  const known = new Set(["workspace", "workspace-dir", "app-root", "ready-file", "ephemeral", "log-level", "serve-panels", "gateway-port", "panel-port", "init", "host", "bind-host", "protocol", "tls-cert", "tls-key", "print-token", "public-url", "help"]);
+  const known = new Set([
+    "workspace",
+    "workspace-dir",
+    "app-root",
+    "ready-file",
+    "ephemeral",
+    "log-level",
+    "serve-panels",
+    "gateway-port",
+    "panel-port",
+    "init",
+    "host",
+    "bind-host",
+    "protocol",
+    "tls-cert",
+    "tls-key",
+    "print-token",
+    "public-url",
+    "help",
+  ]);
   /** Flags that don't take a value */
   const booleanFlags = new Set(["serve-panels", "ephemeral", "init", "print-token", "help"]);
 
@@ -315,7 +347,8 @@ if (!ipcChannel) {
     process.exit(1);
   }
   if (args.workspaceDir) process.env["NATSTACK_WORKSPACE_DIR"] = args.workspaceDir;
-  process.env["NATSTACK_APP_ROOT"] = args.appRoot ?? process.env["NATSTACK_APP_ROOT"] ?? process.cwd();
+  process.env["NATSTACK_APP_ROOT"] =
+    args.appRoot ?? process.env["NATSTACK_APP_ROOT"] ?? process.cwd();
   if (args.logLevel) process.env["NATSTACK_LOG_LEVEL"] = args.logLevel;
 } else {
   // IPC mode: env vars already set by parent via fork({ env: {...} })
@@ -327,14 +360,20 @@ if (!ipcChannel) {
 
 async function main() {
   const { getUserDataPath, setUserDataPath } = await import("@natstack/env-paths");
-  const { loadCentralEnv, deleteWorkspaceDir, loadPersistedAdminToken, savePersistedAdminToken, getAdminTokenPath } = await import("@natstack/shared/workspace/loader");
+  const {
+    loadCentralEnv,
+    deleteWorkspaceDir,
+    loadPersistedAdminToken,
+    savePersistedAdminToken,
+    getAdminTokenPath,
+  } = await import("@natstack/shared/workspace/loader");
   const { resolveLocalWorkspaceStartup } = await import("@natstack/shared/workspace/startup");
   const { CentralDataManager } = await import("@natstack/shared/centralData");
   const { GitServer } = await import("@natstack/git-server");
   const { TokenManager } = await import("@natstack/shared/tokenManager");
-  const { z } = await import("zod");
   const { ServiceDispatcher } = await import("@natstack/shared/serviceDispatcher");
-  const { EventService, createEventsServiceDefinition } = await import("@natstack/shared/eventsService");
+  const { EventService, createEventsServiceDefinition } =
+    await import("@natstack/shared/eventsService");
   const { getExistingAppNodeModulesRoots } = await import("@natstack/shared/runtimePaths");
   const { assertGitAvailable } = await import("@natstack/shared/gitRuntime");
   const eventService = new EventService();
@@ -378,7 +417,8 @@ async function main() {
     });
     workspace = startup.resolved.workspace;
     workspaceName = startup.resolved.name;
-    workspaceIsEphemeral = startup.isEphemeral || process.env["NATSTACK_WORKSPACE_EPHEMERAL"] === "1";
+    workspaceIsEphemeral =
+      startup.isEphemeral || process.env["NATSTACK_WORKSPACE_EPHEMERAL"] === "1";
   } catch (error) {
     const msg = `Workspace resolution failed: ${error}`;
     if (ipcChannel) {
@@ -411,8 +451,10 @@ async function main() {
   // ===========================================================================
 
   const tokenManager = new TokenManager();
+  const workerdGatewayToken = randomBytes(32).toString("hex");
   const { CredentialStore } = await import("../../packages/shared/src/credentials/store.js");
-  const { ClientConfigStore } = await import("../../packages/shared/src/credentials/clientConfigStore.js");
+  const { ClientConfigStore } =
+    await import("../../packages/shared/src/credentials/clientConfigStore.js");
   const { AuditLog } = await import("../../packages/shared/src/credentials/audit.js");
   const { CodeIdentityResolver } = await import("./services/codeIdentityResolver.js");
   const { createEgressProxy } = await import("./services/egressProxy.js");
@@ -455,13 +497,41 @@ async function main() {
     isPnpmDevMode && workspaceIsEphemeral && hasDevTemplate && templateDiffersFromActive
       ? templateDir
       : undefined;
+  const requestedGatewayPort = args.gatewayPort ?? parseEnvPort("NATSTACK_GATEWAY_PORT");
+  const configuredProtocol = (process.env["NATSTACK_PROTOCOL"] ?? args.protocol ?? "http") as
+    | "http"
+    | "https";
+  const configuredExternalHost = process.env["NATSTACK_HOST"] ?? args.host ?? "localhost";
 
   const { createGitWriteAuthorizer } = await import("./services/gitWritePermission.js");
   const { WORKSPACE_GIT_INIT_PATTERNS } = await import("@natstack/shared/workspace/sourceDirs");
-  const gitServer = new GitServer(tokenManager, {
+  const gitServer = new GitServer({
     reposPath: workspacePath,
     initPatterns: [...WORKSPACE_GIT_INIT_PATTERNS],
     devTargetDir,
+    getSourceForCaller: (callerId) =>
+      codeIdentityResolver.resolveByCallerId(callerId)?.repoPath ?? null,
+    getAllowedOrigins: () => {
+      const port = gatewayPortResolved ?? requestedGatewayPort ?? 0;
+      const origins = new Set<string>();
+      if (port) {
+        origins.add(`http://127.0.0.1:${port}`);
+        origins.add(`http://localhost:${port}`);
+        origins.add(`https://127.0.0.1:${port}`);
+        origins.add(`https://localhost:${port}`);
+        origins.add(`${configuredProtocol}://${configuredExternalHost}:${port}`);
+      }
+      const publicUrl = process.env["NATSTACK_PUBLIC_URL"] ?? args.publicUrl;
+      if (publicUrl) {
+        try {
+          const url = new URL(publicUrl);
+          origins.add(url.origin);
+        } catch {
+          // Ignore invalid public URL here; configurePublicUrl handles errors.
+        }
+      }
+      return Array.from(origins);
+    },
     writeAuthorizer: createGitWriteAuthorizer({
       approvalQueue,
       grantStore: capabilityGrantStore,
@@ -484,20 +554,29 @@ async function main() {
     const repos = repoPath
       ? [repoPath]
       : collectWorkspaceRepoPaths((await gitServer.getWorkspaceTree()).children);
-    await Promise.all(repos.map((repo) => syncDeclaredRemoteForRepo({
-      config: workspaceConfig,
-      workspaceRoot: workspacePath,
-      repoPath: repo,
-    }).catch((err: unknown) => {
-      console.warn(`[GitRemotes] Failed to sync declared remote for ${repo}:`, err);
-    })));
+    await Promise.all(
+      repos.map((repo) =>
+        syncDeclaredRemoteForRepo({
+          config: workspaceConfig,
+          workspaceRoot: workspacePath,
+          repoPath: repo,
+        }).catch((err: unknown) => {
+          console.warn(`[GitRemotes] Failed to sync declared remote for ${repo}:`, err);
+        })
+      )
+    );
   };
   gitServer.onPush((event) => {
     if (event.repo !== "meta") {
       queueMicrotask(() => {
         syncDeclaredRemotesForSource(event.repo)
           .then(() => contextFolderManager.syncDeclaredRemotes(event.repo))
-          .catch((err: unknown) => console.warn(`[GitRemotes] Failed to sync declared remote after push to ${event.repo}:`, err));
+          .catch((err: unknown) =>
+            console.warn(
+              `[GitRemotes] Failed to sync declared remote after push to ${event.repo}:`,
+              err
+            )
+          );
       });
       return;
     }
@@ -507,7 +586,9 @@ async function main() {
         replaceWorkspaceConfig(workspaceConfig, nextConfig);
         syncDeclaredRemotesForSource()
           .then(() => contextFolderManager.syncDeclaredRemotes())
-          .catch((err: unknown) => console.warn("[GitRemotes] Failed to sync declared remotes after meta push:", err));
+          .catch((err: unknown) =>
+            console.warn("[GitRemotes] Failed to sync declared remotes after meta push:", err)
+          );
       } catch (err) {
         console.warn("[GitRemotes] Failed to reload workspace config after meta push:", err);
       }
@@ -532,16 +613,17 @@ async function main() {
   // Foundation: pre-created instances wrapped for container participation
   container.register({
     name: "tokenManager",
-    async start() { return tokenManager; },
+    async start() {
+      return tokenManager;
+    },
   });
   container.register({
     name: "gitServer",
     async start() {
-      await gitServer.start();
+      await gitServer.init();
       await syncDeclaredRemotesForSource();
       return gitServer;
     },
-    async stop() { await gitServer.stop(); },
   });
 
   // Build system
@@ -551,10 +633,12 @@ async function main() {
       return await initBuildSystemV2(
         workspacePath,
         gitServer,
-        appNodeModules.length > 0 ? appNodeModules : [path.join(appRoot, "node_modules")],
+        appNodeModules.length > 0 ? appNodeModules : [path.join(appRoot, "node_modules")]
       );
     },
-    async stop(instance: import("./buildV2/index.js").BuildSystemV2) { await instance?.shutdown(); },
+    async stop(instance: import("./buildV2/index.js").BuildSystemV2) {
+      await instance?.shutdown();
+    },
   });
 
   // Git watcher
@@ -567,7 +651,9 @@ async function main() {
       gitServer.subscribeToGitWatcher(watcher);
       return watcher;
     },
-    async stop(instance: import("@natstack/shared/workspace/gitWatcher").GitWatcher) { await instance?.close(); },
+    async stop(instance: import("@natstack/shared/workspace/gitWatcher").GitWatcher) {
+      await instance?.close();
+    },
   });
 
   // ── RPC-only services (replacing serverServiceRegistry.ts) ──
@@ -586,7 +672,8 @@ async function main() {
     path.resolve(serverDir, "../main/services/testSetup.ts"),
     path.resolve(serverDir, "../src/main/services/testSetup.ts"),
   ];
-  const panelTestSetupPath: string = setupCandidates.find(p => fs.existsSync(p)) ?? setupCandidates[0]!;
+  const panelTestSetupPath: string =
+    setupCandidates.find((p) => fs.existsSync(p)) ?? setupCandidates[0]!;
 
   {
     let buildSystemInstance: import("./buildV2/index.js").BuildSystemV2 | null = null;
@@ -602,13 +689,13 @@ async function main() {
     });
   }
   {
-    let tokensDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null = null;
+    let tokensDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null =
+      null;
     container.register({
       name: "tokens",
-      dependencies: ["tokenManager", "fsService", "gitServer"],
+      dependencies: ["tokenManager", "fsService"],
       async start(resolve) {
         const fsService = resolve<import("@natstack/shared/fsService").FsService>("fsService")!;
-        const liveGitServer = resolve<import("@natstack/git-server").GitServer>("gitServer")!;
         // Only persist the admin token centrally in standalone mode. In
         // IPC/Electron-embedded mode the token is consumed by the parent
         // process from the ready message, and writing it into the shared
@@ -619,10 +706,10 @@ async function main() {
         tokensDefinition = createTokensService({
           tokenManager,
           fsService,
-          gitServer: liveGitServer,
           codeIdentityResolver,
           getEffectiveVersion: async (source: string) => {
-            const buildSystem = container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
+            const buildSystem =
+              container.get<import("./buildV2/index.js").BuildSystemV2>("buildSystem");
             return buildSystem?.getEffectiveVersion(source) ?? undefined;
           },
           persistAdminToken,
@@ -634,18 +721,25 @@ async function main() {
       },
     });
   }
-  container.register(rpcService(createGitService({
-    gitServer,
-    tokenManager,
-    workspacePath,
-    workspaceConfig,
-    contextFolderManager,
-    egressProxy,
-    approvalQueue,
-    grantStore: capabilityGrantStore,
-    codeIdentityResolver,
-  }), ["gitServer"]));
-  container.register(rpcService(createTestService({ contextFolderManager, workspacePath, panelTestSetupPath })));
+  container.register(
+    rpcService(
+      createGitService({
+        gitServer,
+        tokenManager,
+        workspacePath,
+        workspaceConfig,
+        contextFolderManager,
+        egressProxy,
+        approvalQueue,
+        grantStore: capabilityGrantStore,
+        codeIdentityResolver,
+      }),
+      ["gitServer"]
+    )
+  );
+  container.register(
+    rpcService(createTestService({ contextFolderManager, workspacePath, panelTestSetupPath }))
+  );
   {
     const { createWorkerLogService } = await import("./services/workerLogService.js");
     container.register(rpcService(createWorkerLogService()));
@@ -656,18 +750,21 @@ async function main() {
   // ── Approval-gated host capabilities ──
   {
     const { createExternalOpenService } = await import("./services/externalOpenService.js");
-    container.register(rpcService(createExternalOpenService({
-      eventService,
-      approvalQueue,
-      grantStore: capabilityGrantStore,
-      codeIdentityResolver,
-    })));
+    container.register(
+      rpcService(
+        createExternalOpenService({
+          eventService,
+          approvalQueue,
+          grantStore: capabilityGrantStore,
+          codeIdentityResolver,
+        })
+      )
+    );
   }
 
   // ── Notification service ──
   const { createNotificationService } = await import("./services/notificationService.js");
   const notificationResult = createNotificationService({ eventService });
-  const notificationInternal = notificationResult.internal;
   container.register(rpcService(notificationResult.definition));
 
   // ── Shell approval service (consent bar queue) ──
@@ -678,11 +775,13 @@ async function main() {
   {
     const { createCredentialService } = await import("./services/credentialService.js");
     const { rpcServiceWithRoutes } = await import("./rpcServiceWithRoutes.js");
-    const captureSessionCredential = async <T extends Record<string, unknown>>(payload: Record<string, unknown>): Promise<T> => {
+    const captureSessionCredential = async <T extends Record<string, unknown>>(
+      payload: Record<string, unknown>
+    ): Promise<T> => {
       const response = await ipcRequest<T & { error?: unknown }>(
         "credential-session-capture-request",
         payload,
-        300_000,
+        300_000
       );
       if (!response) {
         throw new Error("Session credential capture timed out or is unavailable");
@@ -761,11 +860,18 @@ async function main() {
           };
         },
       },
-    }) as ReturnType<typeof createCredentialService> & { routes?: import("./routeRegistry.js").ServiceRouteDecl[] };
-    container.register(rpcServiceWithRoutes({
-      definition: credentialService,
-      routes: credentialService.routes,
-    }, routeRegistry));
+    }) as ReturnType<typeof createCredentialService> & {
+      routes?: import("./routeRegistry.js").ServiceRouteDecl[];
+    };
+    container.register(
+      rpcServiceWithRoutes(
+        {
+          definition: credentialService,
+          routes: credentialService.routes,
+        },
+        routeRegistry
+      )
+    );
   }
 
   // ── DODispatch (source-scoped HTTP dispatch to Durable Objects) ──
@@ -778,7 +884,8 @@ async function main() {
       const doDispatch = new DODispatch();
 
       // Dispatch DO method calls via HTTP POST to the workerd /_w/ URL scheme.
-      const workerdManager = resolve<import("./workerdManager.js").WorkerdManager>("workerdManager")!;
+      const workerdManager =
+        resolve<import("./workerdManager.js").WorkerdManager>("workerdManager")!;
       doDispatch.setDispatcher(async (urlPath, args) => {
         const port = workerdManager.getPort();
         if (!port) {
@@ -789,6 +896,7 @@ async function main() {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            Authorization: `Bearer ${workerdGatewayToken}`,
             // Internal DO dispatches stamp the process-private secret. The
             // router verifies this when present, but public gateway-routed DO
             // routes intentionally do not require it.
@@ -832,6 +940,7 @@ async function main() {
       // with the dispatch secret. See WorkerdManager.dispatchSecret for the
       // full rationale.
       doDispatch.setGetDispatchSecret(() => workerdManager.getDispatchSecret());
+      doDispatch.setGetWorkerdGatewayToken(() => workerdGatewayToken);
 
       return doDispatch;
     },
@@ -840,7 +949,8 @@ async function main() {
   // ── Internal DO-backed services ──
   {
     const { createScopeService } = await import("./services/scopeService.js");
-    let scopeDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null = null;
+    let scopeDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null =
+      null;
     container.register({
       name: "scope",
       dependencies: ["doDispatch"],
@@ -857,7 +967,9 @@ async function main() {
 
   {
     const { createPanelPersistenceService } = await import("./services/panelPersistenceService.js");
-    let panelPersistenceDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null = null;
+    let panelPersistenceDefinition:
+      | import("@natstack/shared/serviceDefinition").ServiceDefinition
+      | null = null;
     container.register({
       name: "panel-persistence",
       dependencies: ["doDispatch"],
@@ -869,7 +981,8 @@ async function main() {
         });
       },
       getServiceDefinition() {
-        if (!panelPersistenceDefinition) throw new Error("panel-persistence service not initialized");
+        if (!panelPersistenceDefinition)
+          throw new Error("panel-persistence service not initialized");
         return panelPersistenceDefinition;
       },
     });
@@ -877,7 +990,9 @@ async function main() {
 
   {
     const { createBrowserDataService } = await import("./services/browserDataService.js");
-    let browserDataDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null = null;
+    let browserDataDefinition:
+      | import("@natstack/shared/serviceDefinition").ServiceDefinition
+      | null = null;
     container.register({
       name: "browser-data",
       dependencies: ["doDispatch"],
@@ -914,7 +1029,7 @@ async function main() {
                 objectKey: target.objectKey,
               },
               target.method,
-              event,
+              event
             );
           },
         });
@@ -964,32 +1079,21 @@ async function main() {
     adminToken = randomBytes(32).toString("hex");
   }
   tokenManager.setAdminToken(adminToken);
+  let gatewayPortResolved: number | null = null;
 
   // ── RPC server (always present) ──
+  let rpcServerForGateway: import("./rpcServer.js").RpcServer | null = null;
 
   container.register({
     name: "rpcServer",
     dependencies: ["tokenManager"],
     async start() {
-      // In IPC mode, panels now connect to the server WS, so the server's
-      // RpcServer needs a panelManager for panel-to-panel RPC auth.
-      // We'll wire it lazily after panelService starts.
       const server = new RpcServer({ tokenManager, dispatcher, eventService });
-      if (ipcChannel) {
-        // IPC mode: server binds its own socket (Electron connects directly).
-        // Same socket handles panel WS + workerd HTTP POST back-channel.
-        await server.start();
-      } else {
-        // Standalone mode: external WS traffic comes through the TLS gateway
-        // (dispatches to our noServer WSS), while workerd's HTTP POST
-        // back-channel hits a loopback-only listener we own. Split ports so
-        // workers don't have to solve cert/TLS just to call back into us.
-        await server.startLoopbackHttp();
-      }
-      // Port is a live getter so downstream consumers see updates after gateway starts
-      return { server, get port() { return server.getPort() ?? 0; } };
+      server.initHandlers();
+      rpcServerForGateway = server;
+      return { server };
     },
-    async stop(instance: { server: import("./rpcServer.js").RpcServer; port: number }) {
+    async stop(instance: { server: import("./rpcServer.js").RpcServer }) {
       await instance?.server?.stop();
     },
   });
@@ -1035,47 +1139,48 @@ async function main() {
 
   // WorkerdManager — manages workerd process and worker instances
   //
-  // Workers POST back to the server via `SERVER_URL` — always the loopback
-  // HTTP listener bound on rpcServer. rpcServer starts before workerdManager
-  // (dep order), so the port is known by the time we read it here.
+  // Workers POST back through the gateway. The gateway starts before
+  // container.startAll(), so this URL is stable by the time workerd boots.
+  let workerdManagerForGateway: import("./workerdManager.js").WorkerdManager | null = null;
   {
     let workerdManagerInstance: import("./workerdManager.js").WorkerdManager | null = null;
     let buildSystemForWorkerd: import("./buildV2/index.js").BuildSystemV2 | null = null;
     container.register({
       name: "workerdManager",
-      dependencies: ["buildSystem", "rpcServer", "fsService"],
+      dependencies: ["buildSystem", "fsService"],
       async start(resolve) {
         const { WorkerdManager } = await import("./workerdManager.js");
         buildSystemForWorkerd = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
-        const { server: rpcSrvForWorkerd } = resolve<{ server: import("./rpcServer.js").RpcServer }>("rpcServer")!;
         const fsServiceInst = resolve<import("@natstack/shared/fsService").FsService>("fsService")!;
-
-        const loopbackPort = rpcSrvForWorkerd.getLoopbackHttpPort();
-        if (!loopbackPort) {
-          throw new Error("rpcServer loopback HTTP port not bound before workerdManager start");
-        }
-        const serverUrl = `http://127.0.0.1:${loopbackPort}`;
 
         workerdManagerInstance = new WorkerdManager({
           tokenManager,
           fsService: fsServiceInst,
-          getServerUrl: () => serverUrl,
+          getServerUrl: () => {
+            if (!gatewayPortResolved) {
+              throw new Error("Gateway port not finalized before workerd startup");
+            }
+            return `http://127.0.0.1:${gatewayPortResolved}`;
+          },
           getBuild: (unitPath, ref) => buildSystemForWorkerd!.getBuild(unitPath, ref),
           workspacePath,
           statePath,
           routeRegistry,
           getManifestRoutes: (source) => {
-            const node = buildSystemForWorkerd?.getGraph().allNodes().find(n => n.relativePath === source);
-            const manifest = node?.manifest as import("@natstack/shared/types").PackageManifest | undefined;
+            const node = buildSystemForWorkerd
+              ?.getGraph()
+              .allNodes()
+              .find((n) => n.relativePath === source);
+            const manifest = node?.manifest as
+              | import("@natstack/shared/types").PackageManifest
+              | undefined;
             return manifest?.routes ?? [];
           },
           getProxyPort: () => egressProxyPort,
-          getGitConfigForCaller: (callerId) => ({
-            serverUrl: gitServer.getBaseUrl(),
-            token: gitServer.getTokenForPanel(callerId),
-          }),
+          getWorkerdGatewayToken: () => workerdGatewayToken,
           codeIdentityResolver,
         });
+        workerdManagerForGateway = workerdManagerInstance;
 
         // Wire push trigger to restart workers on source rebuild.
         //
@@ -1084,9 +1189,14 @@ async function main() {
         // array reflects that absence and the stale DO service gets torn
         // down. Passing `undefined` would leave stale services bound forever.
         buildSystemForWorkerd.onPushBuild((source) => {
-          const node = buildSystemForWorkerd?.getGraph().allNodes().find(n => n.relativePath === source);
+          const node = buildSystemForWorkerd
+            ?.getGraph()
+            .allNodes()
+            .find((n) => n.relativePath === source);
           const manifest = node?.manifest as Record<string, unknown> | undefined;
-          const durable = manifest?.["durable"] as { classes?: Array<{ className: string }> } | undefined;
+          const durable = manifest?.["durable"] as
+            | { classes?: Array<{ className: string }> }
+            | undefined;
           const doClasses = durable?.classes ?? [];
 
           workerdManagerInstance?.onSourceRebuilt(source, doClasses).catch((err) => {
@@ -1097,7 +1207,8 @@ async function main() {
         // Pre-register all DO classes from the build graph so they're available
         // before any panel connects or agent subscribes. Single workerd restart.
         {
-          const { INTERNAL_DO_CLASSES, INTERNAL_DO_SOURCE } = await import("./internalDOs/internalDoLoader.js");
+          const { INTERNAL_DO_CLASSES, INTERNAL_DO_SOURCE } =
+            await import("./internalDOs/internalDoLoader.js");
           const graph = buildSystemForWorkerd.getGraph();
           const doClasses: Array<{ source: string; className: string }> = [];
           for (const className of INTERNAL_DO_CLASSES) {
@@ -1111,7 +1222,10 @@ async function main() {
             }
           }
           if (doClasses.length > 0) {
-            console.log(`[WorkerdManager] Pre-registering DO classes:`, doClasses.map(c => `${c.source}:${c.className}`).join(", "));
+            console.log(
+              `[WorkerdManager] Pre-registering DO classes:`,
+              doClasses.map((c) => `${c.source}:${c.className}`).join(", ")
+            );
             await workerdManagerInstance.registerAllDOClasses(doClasses);
           }
         }
@@ -1122,8 +1236,13 @@ async function main() {
         await instance?.shutdown();
       },
       getServiceDefinition() {
-        if (!workerdManagerInstance || !buildSystemForWorkerd) return undefined as any;
-        return createWorkerdService({ workerdManager: workerdManagerInstance, buildSystem: buildSystemForWorkerd });
+        if (!workerdManagerInstance || !buildSystemForWorkerd) {
+          throw new Error("workerd service not initialized");
+        }
+        return createWorkerdService({
+          workerdManager: workerdManagerInstance,
+          buildSystem: buildSystemForWorkerd,
+        });
       },
     });
   }
@@ -1135,12 +1254,14 @@ async function main() {
 
   // Resolve host configuration from CLI args / env vars
   const { resolveHostConfig } = await import("@natstack/shared/hostConfig");
-  const requestedGatewayPort = args.gatewayPort ?? parseEnvPort("NATSTACK_GATEWAY_PORT");
   const hostConfig = resolveHostConfig({
-    rpcPort: 0, panelHttpPort: 0, gitPort: gitServer.getPort(), workerdPort: 0, // ports filled later
+    workerdPort: 0, // ports filled later
     gatewayPort: requestedGatewayPort ?? 0,
-    host: args.host, bindHost: args.bindHost, protocol: args.protocol,
-    tlsCert: args.tlsCert, tlsKey: args.tlsKey,
+    host: args.host,
+    bindHost: args.bindHost,
+    protocol: args.protocol,
+    tlsCert: args.tlsCert,
+    tlsKey: args.tlsKey,
   });
 
   const { registerPanelServices } = await import("./panelRuntimeRegistration.js");
@@ -1185,20 +1306,27 @@ async function main() {
 
   {
     const { createMetaService } = await import("./services/metaService.js");
-    const { panelRuntimeSurface } = await import("../../workspace/packages/runtime/src/shared/runtimeSurface.panel.js");
-    const { workerRuntimeSurface } = await import("../../workspace/packages/runtime/src/shared/runtimeSurface.worker.js");
-    container.register(rpcService(createMetaService({
-      dispatcher,
-      runtimeSurfaces: {
-        panel: panelRuntimeSurface,
-        workerRuntime: workerRuntimeSurface,
-      },
-    })));
+    const { panelRuntimeSurface } =
+      await import("../../workspace/packages/runtime/src/shared/runtimeSurface.panel.js");
+    const { workerRuntimeSurface } =
+      await import("../../workspace/packages/runtime/src/shared/runtimeSurface.worker.js");
+    container.register(
+      rpcService(
+        createMetaService({
+          dispatcher,
+          runtimeSurfaces: {
+            panel: panelRuntimeSurface,
+            workerRuntime: workerRuntimeSurface,
+          },
+        })
+      )
+    );
   }
 
   if (!ipcChannel) {
     // Settings service for remote/mobile shells.
-    const { createSettingsServiceStandalone } = await import("./services/settingsServiceStandalone.js");
+    const { createSettingsServiceStandalone } =
+      await import("./services/settingsServiceStandalone.js");
     const { rpcService: rpcSvc } = await import("@natstack/shared/managedService");
     container.register(rpcSvc(createSettingsServiceStandalone({ dispatcher })));
 
@@ -1218,26 +1346,101 @@ async function main() {
   // ── Per-workspace content-addressable blobstore ──
   {
     const { createBlobstoreService } = await import("./services/blobstoreService.js");
+    const { createAuthService } = await import("./services/authService.js");
     const { rpcServiceWithRoutes } = await import("./rpcServiceWithRoutes.js");
+    container.register(rpcServiceWithRoutes(createAuthService({ tokenManager }), routeRegistry));
+
     const blobsDir = path.join(getUserDataPath(), "blobs");
     container.register(rpcServiceWithRoutes(createBlobstoreService({ blobsDir }), routeRegistry));
+  }
+
+  // ── Gateway ingress ──
+  //
+  // Start the only caller-facing socket before service startup. Handlers are
+  // attached dynamically as container services start.
+  const { Gateway } = await import("./gateway.js");
+  const startedAt = Date.now();
+  const isTlsInitial = !!(hostConfig.tlsCert && hostConfig.tlsKey);
+  const gateway = new Gateway({
+    getRpcHandler: () => rpcServerForGateway,
+    getPanelHttpHandler: () => {
+      if (!container.has("panelHttpServer")) return null;
+      return container.get<{ server: import("./panelHttpServer.js").PanelHttpServer }>(
+        "panelHttpServer"
+      ).server;
+    },
+    getGitHandler: () => gitServer,
+    getWorkerdPort: () => workerdManagerForGateway?.getPort() ?? null,
+    externalHost: hostConfig.externalHost,
+    bindHost: hostConfig.bindHost,
+    tlsCert: hostConfig.tlsCert,
+    tlsKey: hostConfig.tlsKey,
+    adminToken,
+    workerdGatewayToken,
+    tokenManager,
+    routeRegistry,
+    getPublicUrl: () => {
+      try {
+        return getPublicUrl();
+      } catch {
+        return null;
+      }
+    },
+    healthProvider: (detailed) => {
+      const base: Record<string, unknown> = {
+        ok: true,
+        protocol: isTlsInitial ? "https" : "http",
+      };
+      if (!detailed) return base;
+      return {
+        ...base,
+        version: "0.1.0",
+        uptimeMs: Date.now() - startedAt,
+        workerd: workerdManagerForGateway?.getPort() ? "running" : "stopped",
+        tokenSource,
+      };
+    },
+  });
+  const gatewayPort = await gateway.start(requestedGatewayPort ?? 0);
+  gatewayPortResolved = gatewayPort;
+
+  {
+    const { configurePublicUrl } = await import("./publicUrl.js");
+    configurePublicUrl({
+      override: args.publicUrl ?? process.env["NATSTACK_PUBLIC_URL"],
+      protocol: isTlsInitial ? "https" : "http",
+      externalHost: hostConfig.externalHost,
+      gatewayPort,
+    });
   }
 
   // ── Start all services in dependency order ──
   await container.startAll();
 
   // Wire DODispatch to workerdManager for restart recovery
-  const workerdManager = container.get<import("./workerdManager.js").WorkerdManager>("workerdManager");
+  const workerdManager =
+    container.get<import("./workerdManager.js").WorkerdManager>("workerdManager");
   const doDispatchInst = container.get<import("./doDispatch.js").DODispatch>("doDispatch");
 
-  doDispatchInst.setEnsureDO((source, className, objectKey) => workerdManager.ensureDO(source, className, objectKey));
+  doDispatchInst.setEnsureDO((source, className, objectKey) =>
+    workerdManager.ensureDO(source, className, objectKey)
+  );
 
   // Wire workerdUrl into rpcServer for HTTP relay to workers/DOs
-  const rpcServerInstance = container.get<{ server: import("./rpcServer.js").RpcServer; port: number }>("rpcServer").server;
+  const rpcServerInstance = container.get<{
+    server: import("./rpcServer.js").RpcServer;
+    port: number;
+  }>("rpcServer").server;
   const workerdPort = workerdManager.getPort();
   if (workerdPort) {
     rpcServerInstance.setWorkerdUrl(`http://127.0.0.1:${workerdPort}`);
   }
+  rpcServerInstance.setWorkerdGatewayToken(workerdGatewayToken);
+
+  const panelServiceData = container.get<{
+    urlConfig: import("./services/panelService.js").PanelUrlConfig;
+  }>("panelService");
+  panelServiceData?.urlConfig?.finalizeForGateway(gatewayPort);
 
   dispatcher.markInitialized();
 
@@ -1249,12 +1452,20 @@ async function main() {
     const sharedSet = new Set<string>(SERVER_SERVICE_NAMES);
     // Services that live on both Electron and server, are internal lifecycle only,
     // or are standalone-mode-only (not present in IPC/Electron mode)
-    const localOnly = new Set(["events", "browser", "panel", "panel-persistence", "settings", "push", "auth"]);
+    const localOnly = new Set([
+      "events",
+      "browser",
+      "panel",
+      "panel-persistence",
+      "settings",
+      "push",
+      "auth",
+    ]);
     for (const name of dispatcher.getServices()) {
       if (!sharedSet.has(name) && !localOnly.has(name)) {
         console.warn(
           `[Server] Service "${name}" is registered on the server but missing from SERVER_SERVICE_NAMES in @natstack/rpc. ` +
-          `Panel calls to this service will be misrouted in Electron mode.`
+            `Panel calls to this service will be misrouted in Electron mode.`
         );
       }
     }
@@ -1264,123 +1475,22 @@ async function main() {
   // Report ready
   // ===========================================================================
 
-  const rpcPort = container.get<{ port: number }>("rpcServer").port;
   const workerdMgr = container.get<import("./workerdManager.js").WorkerdManager>("workerdManager");
-  const panelHttpPort = container.has("panelHttpServer")
-    ? container.get<{ port: number }>("panelHttpServer").port
-    : null;
-
-  // =========================================================================
-  // Gateway — runs in BOTH IPC and standalone modes.
-  //
-  // Standalone mode: the gateway is the only ingress. RPC flows through it
-  // via in-process dispatch (`rpcHandler`), panels and workerd are
-  // reverse-proxied, and external URLs (OAuth callbacks, webhooks) resolve to
-  // this port.
-  //
-  // IPC mode: the RPC socket lives on rpcServer's own port (Electron connects
-  // there directly — unchanged from before). The gateway still runs on a
-  // separate port *purely* to serve the `/_r/` namespace to the user's
-  // browser. That's what lets `NatstackCodexProvider` work identically in
-  // local and remote deployments: OpenAI's IdP redirects the browser to
-  // `http://127.0.0.1:${gatewayPort}/_r/s/auth/oauth/callback`, which is
-  // reachable because in IPC mode the browser runs on the same machine as
-  // the server process.
-  //
-  // This is the fix for the IPC-mode OAuth regression: previously we
-  // fell back to pi-ai's bundled `localhost:1455` callback server when no
-  // public URL was configured. That split openai-codex across two
-  // implementations with diverging behavior. Running the gateway in both
-  // modes lets us use NatstackCodexProvider everywhere.
-  // =========================================================================
-
-  const { Gateway } = await import("./gateway.js");
-  const panelHttpServer = container.has("panelHttpServer")
-    ? container.get<{ server: import("./panelHttpServer.js").PanelHttpServer }>("panelHttpServer")?.server
-    : null;
-
-  const startedAt = Date.now();
-  const isTlsInitial = !!(hostConfig.tlsCert && hostConfig.tlsKey);
-  const gateway = new Gateway({
-    rpcHandler: rpcServerInstance,
-    panelHttpHandler: panelHttpServer ?? undefined,
-    gitPort: gitServer.getPort(),
-    workerdPort: workerdMgr?.getPort() ?? null,
-    externalHost: hostConfig.externalHost,
-    bindHost: hostConfig.bindHost,
-    tlsCert: hostConfig.tlsCert,
-    tlsKey: hostConfig.tlsKey,
-    adminToken,
-    tokenManager,
-    routeRegistry,
-    healthProvider: (detailed) => {
-      const base: Record<string, unknown> = {
-        ok: true,
-        protocol: isTlsInitial ? "https" : "http",
-      };
-      if (!detailed) return base;
-      return {
-        ...base,
-        version: "0.1.0",
-        uptimeMs: Date.now() - startedAt,
-        workerd: workerdMgr?.getPort() ? "running" : "stopped",
-        tokenSource,
-      };
-    },
-  });
-  const gatewayPort = await gateway.start(requestedGatewayPort ?? 0);
-
-  // Publish the externally-reachable base URL. Resolution:
-  //   1. --public-url / NATSTACK_PUBLIC_URL (explicit override for reverse-
-  //      proxy setups where the server sees different hostnames than users).
-  //   2. `${protocol}://${externalHost}:${gatewayPort}` — works for loopback
-  //      IPC mode (127.0.0.1) and for direct-binding standalone mode.
-  {
-    const { configurePublicUrl } = await import("./publicUrl.js");
-    configurePublicUrl({
-      override: args.publicUrl ?? process.env["NATSTACK_PUBLIC_URL"],
-      protocol: isTlsInitial ? "https" : "http",
-      externalHost: hostConfig.externalHost,
-      gatewayPort,
-    });
-  }
-  if (!ipcChannel) {
-    // Standalone: gateway IS the RPC ingress — propagate its port so
-    // rpcServer.getPort() + panel URL generation see the real port.
-    rpcServerInstance.setPort(gatewayPort);
-
-    const panelServiceData = container.get<{ urlConfig: import("./services/panelService.js").PanelUrlConfig }>("panelService");
-    if (panelServiceData?.urlConfig) {
-      panelServiceData.urlConfig.finalizeForGateway(gatewayPort);
-    }
-
-    // Restart workerd so any deferred DO services (registered after
-    // initial workerd startup) pick up the finalized bindings. The
-    // back-channel URL itself was already correct at initial startup —
-    // rpcServer's loopback HTTP port is bound before workerdManager.
-    if (workerdMgr) {
-      await workerdMgr.restartAll();
-    }
-  }
 
   if (ipcChannel) {
+    const shellToken = tokenManager.ensureToken("electron-main", "shell");
     ipcChannel.postMessage({
       type: "ready",
-      rpcPort,
-      gitPort: gitServer.getPort(),
       workerdPort: workerdMgr?.getPort() ?? 0,
-      panelHttpPort: panelHttpPort ?? 0,
       gatewayPort,
       adminToken,
+      shellToken,
     });
   } else {
     // Register for browser extension auto-discovery (idempotent file writes)
     const { registerHeadlessService } = await import("./headlessServiceRegistration.js");
     try {
       registerHeadlessService(statePath, {
-        rpcPort: gatewayPort, // In standalone mode, RPC is served via /rpc on the gateway
-        panelPort: panelHttpPort,
-        gitPort: gitServer.getPort(),
         adminToken,
         gatewayPort,
       });
@@ -1405,13 +1515,12 @@ async function main() {
     console.log(`  Git:         (via gateway /_git/)`);
     console.log(`  Workerd:     (via gateway /_w/)`);
     console.log(`  RPC:         ${wsProto}://${hostConfig.externalHost}:${gatewayPort}/rpc`);
-    if (panelHttpPort) {
-      console.log(`  Panels:      ${proto}://${hostConfig.externalHost}:${panelHttpPort}`);
-    }
     const sourceLabel =
-      tokenSource === "env" ? " (from NATSTACK_ADMIN_TOKEN)"
-      : tokenSource === "persisted" ? " (persisted)"
-      : " (newly generated)";
+      tokenSource === "env"
+        ? " (from NATSTACK_ADMIN_TOKEN)"
+        : tokenSource === "persisted"
+          ? " (persisted)"
+          : " (newly generated)";
     console.log(`  Token file:  ${tokenFilePath}${sourceLabel}`);
     if (tokenSource !== "env") {
       console.log(`  Persisted:   ${getAdminTokenPath()}`);
@@ -1435,7 +1544,6 @@ async function main() {
         shellToken,
         tokenFilePath,
         gatewayPort,
-        panelPort: panelHttpPort ?? 0,
         workerdPort: workerdMgr?.getPort() ?? 0,
       };
       try {
@@ -1468,7 +1576,8 @@ async function main() {
       process.exit(1);
     }, 5000);
 
-    await container.stopAll()
+    await container
+      .stopAll()
       .then(() => console.log("[Server] All services stopped"))
       .catch((e) => console.error("[Server] Service shutdown error:", e))
       .finally(() => {
@@ -1488,8 +1597,9 @@ async function main() {
   }
 
   if (ipcChannel) {
-    ipcChannel.on("message", (msg: any) => {
-      if (msg?.type === "shutdown") void shutdown();
+    ipcChannel.on("message", (msg: unknown) => {
+      const record = asRecord(msg);
+      if (record?.["type"] === "shutdown") void shutdown();
     });
   } else {
     process.on("SIGTERM", () => void shutdown());
@@ -1497,11 +1607,17 @@ async function main() {
   }
 }
 
-function collectWorkspaceRepoPaths(nodes: Array<{ path: string; isGitRepo: boolean; children: unknown[] }>): string[] {
+function collectWorkspaceRepoPaths(
+  nodes: Array<{ path: string; isGitRepo: boolean; children: unknown[] }>
+): string[] {
   const repos: string[] = [];
   for (const node of nodes) {
     if (node.isGitRepo) repos.push(node.path);
-    repos.push(...collectWorkspaceRepoPaths(node.children as Array<{ path: string; isGitRepo: boolean; children: unknown[] }>));
+    repos.push(
+      ...collectWorkspaceRepoPaths(
+        node.children as Array<{ path: string; isGitRepo: boolean; children: unknown[] }>
+      )
+    );
   }
   return repos;
 }

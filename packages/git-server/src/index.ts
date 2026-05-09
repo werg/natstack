@@ -8,7 +8,6 @@ export type {
   BranchInfo,
   CommitInfo,
   GitWatcherLike,
-  TokenManagerLike,
   GitWriteAuthorizationRequest,
   GitWriteAuthorizationResult,
   GitWriteAuthorizer,

@@ -24,21 +24,14 @@ export interface TokenClient {
     contextId: string,
     parentId: string | null,
     source?: string,
-  ): Promise<{ token: string; gitToken: string }>;
+  ): Promise<{ token: string }>;
   revokePanelToken(panelId: string): Promise<void>;
   updatePanelContext(panelId: string, contextId: string): Promise<void>;
   updatePanelParent(panelId: string, parentId: string | null): Promise<void>;
 }
 
 export interface PanelManagerServerInfo {
-  protocol: "http" | "https";
-  externalHost: string;
-  gatewayPort: number;
-  rpcPort: number;
-  workerdPort: number;
-  gitBaseUrl: string;
-  rpcWsUrl: string;
-  pubsubUrl: string;
+  gatewayConfig: { serverUrl: string; token?: string };
 }
 
 export interface CreatePanelOptions {
@@ -384,7 +377,7 @@ export class PanelManager {
 
   async getPanelInit(panelId: string): Promise<unknown> {
     const panel = this.registry.getPanel(panelId) ?? await this.requireStoredPanel(panelId);
-    const { token, gitToken } = await this.tokenClient.ensurePanelToken(
+    const { token } = await this.tokenClient.ensurePanelToken(
       panelId,
       getPanelContextId(panel),
       this.registry.findParentId(panelId) ?? await this.store.getParentId(panelId),
@@ -397,11 +390,10 @@ export class PanelManager {
       parentId: this.registry.findParentId(panelId) ?? await this.store.getParentId(panelId),
       source: getPanelSource(panel),
       theme: this.currentTheme,
-      rpcWsUrl: this.serverInfo.rpcWsUrl,
-      rpcToken: token,
-      gitToken,
-      gitBaseUrl: this.serverInfo.gitBaseUrl,
-      pubsubUrl: this.serverInfo.pubsubUrl,
+      gatewayConfig: {
+        serverUrl: this.serverInfo.gatewayConfig.serverUrl,
+        token,
+      },
       env: (panel.snapshot.options.env ?? {}) as Record<string, string>,
       stateArgs: (panel.snapshot.stateArgs ?? {}) as Record<string, unknown>,
     });

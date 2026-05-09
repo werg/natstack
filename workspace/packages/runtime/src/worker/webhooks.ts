@@ -5,61 +5,9 @@ import {
   type WebhookIngressClient,
   type WebhookIngressSubscriptionSummary,
 } from "../shared/webhooks.js";
+import { workerHostRpcCaller } from "./hostRpc.js";
 
-type RpcCallPayload = {
-  method: string;
-  args: unknown[];
-};
-
-type WorkerGlobals = typeof globalThis & {
-  __natstack_rpc?: (payload: RpcCallPayload) => Promise<unknown>;
-  __natstackEnv?: Record<string, string>;
-};
-
-async function callHostRpc<T>(method: string, ...args: unknown[]): Promise<T> {
-  const globals = globalThis as WorkerGlobals;
-  const payload: RpcCallPayload = { method, args };
-
-  if (typeof globals.__natstack_rpc === "function") {
-    return globals.__natstack_rpc(payload) as Promise<T>;
-  }
-
-  const env = globals.__natstackEnv;
-  const serverUrl = env?.["SERVER_URL"];
-  if (!serverUrl) {
-    throw new Error("NatStack worker RPC is unavailable: missing __natstack_rpc and SERVER_URL");
-  }
-
-  const authToken = env["RPC_AUTH_TOKEN"];
-  const headers = new Headers({ "Content-Type": "application/json" });
-  if (authToken) {
-    headers.set("Authorization", `Bearer ${authToken}`);
-  }
-
-  const response = await globalThis.fetch(`${serverUrl}/rpc`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      type: "call",
-      targetId: "main",
-      method,
-      args,
-    }),
-  });
-
-  const body = await response.json() as { result?: unknown; error?: unknown };
-  if (body.error) {
-    throw new Error(String(body.error));
-  }
-
-  return body.result as T;
-}
-
-const client: WebhookIngressClient = createWebhookIngressClient({
-  call<T>(_targetId: string, method: string, ...args: unknown[]): Promise<T> {
-    return callHostRpc<T>(method, ...args);
-  },
-});
+const client: WebhookIngressClient = createWebhookIngressClient(workerHostRpcCaller);
 
 export function createSubscription(
   input: CreateWebhookIngressSubscriptionRequest,

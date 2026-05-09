@@ -4,14 +4,11 @@ import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { CallerKind } from "@natstack/shared/serviceDispatcher";
 import type { FsService } from "@natstack/shared/fsService";
-import type { GitServer } from "@natstack/git-server";
-import { savePersistedAdminToken } from "@natstack/shared/centralAuth";
 import type { CodeIdentityResolver } from "./codeIdentityResolver.js";
 
 export function createTokensService(deps: {
   tokenManager: TokenManager;
   fsService: FsService;
-  gitServer: GitServer;
   codeIdentityResolver?: Pick<CodeIdentityResolver, "upsertCallerIdentity" | "unregisterCaller">;
   getEffectiveVersion?: (source: string) => Promise<string | undefined>;
   /**
@@ -31,7 +28,14 @@ export function createTokensService(deps: {
       ensure: { args: z.tuple([z.string(), z.string()]) },
       revoke: { args: z.tuple([z.string()]) },
       get: { args: z.tuple([z.string()]) },
-      ensurePanelToken: { args: z.tuple([z.string(), z.string(), z.string().nullable().optional(), z.string().optional()]) },
+      ensurePanelToken: {
+        args: z.tuple([
+          z.string(),
+          z.string(),
+          z.string().nullable().optional(),
+          z.string().optional(),
+        ]),
+      },
       revokePanelToken: { args: z.tuple([z.string()]) },
       updatePanelContext: { args: z.tuple([z.string(), z.string()]) },
       updatePanelParent: { args: z.tuple([z.string(), z.string().nullable()]) },
@@ -52,12 +56,26 @@ export function createTokensService(deps: {
     handler: async (ctx, method, args) => {
       const tm = deps.tokenManager;
       switch (method) {
-        case "create": return tm.createToken(args[0] as string, args[1] as CallerKind);
-        case "ensure": return tm.ensureToken(args[0] as string, args[1] as CallerKind);
-        case "revoke": tm.revokeToken(args[0] as string); return;
-        case "get": try { return tm.getToken(args[0] as string); } catch { return null; }
+        case "create":
+          return tm.createToken(args[0] as string, args[1] as CallerKind);
+        case "ensure":
+          return tm.ensureToken(args[0] as string, args[1] as CallerKind);
+        case "revoke":
+          tm.revokeToken(args[0] as string);
+          return;
+        case "get":
+          try {
+            return tm.getToken(args[0] as string);
+          } catch {
+            return null;
+          }
         case "ensurePanelToken": {
-          const [panelId, contextId, parentId, source] = args as [string, string, string | null | undefined, string | undefined];
+          const [panelId, contextId, parentId, source] = args as [
+            string,
+            string,
+            string | null | undefined,
+            string | undefined,
+          ];
           const token = tm.ensureToken(panelId, "panel");
           tm.setPanelParent(panelId, parentId ?? null);
           if (ctx.callerKind === "shell" || ctx.callerKind === "server") {
@@ -67,7 +85,9 @@ export function createTokensService(deps: {
           if (source && deps.codeIdentityResolver) {
             const effectiveVersion = source.startsWith("browser:")
               ? ""
-              : await Promise.resolve(deps.getEffectiveVersion?.(source)).catch(() => undefined) ?? "";
+              : ((await Promise.resolve(deps.getEffectiveVersion?.(source)).catch(
+                  () => undefined
+                )) ?? "");
             deps.codeIdentityResolver.upsertCallerIdentity({
               callerId: panelId,
               callerKind: "panel",
@@ -75,15 +95,13 @@ export function createTokensService(deps: {
               effectiveVersion,
             });
           }
-          const gitToken = deps.gitServer.getTokenForPanel(panelId);
-          return { token, gitToken };
+          return { token };
         }
         case "revokePanelToken": {
           const [panelId] = args as [string];
           tm.revokeToken(panelId);
           deps.fsService.unregisterCallerContext(panelId);
           deps.codeIdentityResolver?.unregisterCaller(panelId);
-          deps.gitServer.revokeTokenForPanel(panelId);
           return;
         }
         case "updatePanelContext": {
@@ -105,14 +123,15 @@ export function createTokensService(deps: {
               deps.persistAdminToken(newToken);
             } catch (err) {
               throw new Error(
-                `Failed to persist new admin token: ${err instanceof Error ? err.message : String(err)}`,
+                `Failed to persist new admin token: ${err instanceof Error ? err.message : String(err)}`
               );
             }
           }
           tm.setAdminToken(newToken);
           return newToken;
         }
-        default: throw new Error(`Unknown tokens method: ${method}`);
+        default:
+          throw new Error(`Unknown tokens method: ${method}`);
       }
     },
   };

@@ -1,12 +1,9 @@
 /**
  * Git authentication and authorization.
  *
- * GitAuthManager wraps a TokenManager for authentication only: bearer tokens
- * identify the caller. Host-side permission grants decide whether that caller
- * may perform sensitive writes.
+ * GitAuthManager authorizes an already-authenticated caller for repo access.
+ * Bearer validation happens at the gateway before requests reach GitServer.
  */
-
-import type { TokenManagerLike } from "./types.js";
 
 /**
  * Allowed characters in repo path segments. Repo paths arrive from HTTP URL
@@ -47,18 +44,11 @@ function normalizeRepoPath(repoPath: string): string {
  * - Write (push) to tree/<path> or singleton/<path>: panel ID must match or be a prefix
  */
 export class GitAuthManager {
-  constructor(private tokenManager: TokenManagerLike) {}
-
-  getToken(panelId: string): string {
-    return this.tokenManager.getToken(panelId);
-  }
-
-  revokeToken(panelId: string): boolean {
-    return this.tokenManager.revokeToken(panelId);
-  }
+  constructor(private getSourceForCaller: (callerId: string) => string | null = () => null) {}
 
   canAccess(
-    panelId: string,
+    callerId: string,
+    callerKind: string,
     repoPath: string,
     operation: "fetch" | "push"
   ): { allowed: boolean; reason?: string } {
@@ -73,6 +63,25 @@ export class GitAuthManager {
       return { allowed: true };
     }
 
+    if (callerKind === "shell" || callerKind === "server") {
+      return { allowed: true };
+    }
+
+    if (callerKind === "worker") {
+      const source = this.getSourceForCaller(callerId);
+      if (!source) {
+        return { allowed: false, reason: `Worker "${callerId}" has no source identity` };
+      }
+      const normalizedSource = normalizeRepoPath(source);
+      if (normalizedPath === normalizedSource || normalizedPath.startsWith(normalizedSource + "/")) {
+        return { allowed: true };
+      }
+      return {
+        allowed: false,
+        reason: `Worker "${callerId}" cannot push to repo "${normalizedPath}" outside source "${normalizedSource}"`,
+      };
+    }
+
     const isTreePath = normalizedPath.startsWith("tree/");
     const isSingletonPath = normalizedPath.startsWith("singleton/");
 
@@ -80,32 +89,13 @@ export class GitAuthManager {
       return { allowed: true };
     }
 
-    if (normalizedPath === panelId || normalizedPath.startsWith(panelId + "/")) {
+    if (normalizedPath === callerId || normalizedPath.startsWith(callerId + "/")) {
       return { allowed: true };
     }
 
     return {
       allowed: false,
-      reason: `Panel "${panelId}" cannot push to protected repo "${normalizedPath}"`,
+      reason: `Panel "${callerId}" cannot push to protected repo "${normalizedPath}"`,
     };
-  }
-
-  validateAccess(
-    token: string,
-    repoPath: string,
-    operation: "fetch" | "push"
-  ): { valid: boolean; reason?: string; callerId?: string; callerKind?: string } {
-    const entry = this.tokenManager.validateToken(token);
-    if (!entry?.callerId) {
-      return { valid: false, reason: "Invalid token" };
-    }
-    const panelId = entry.callerId;
-
-    const accessResult = this.canAccess(panelId, repoPath, operation);
-    if (!accessResult.allowed) {
-      return { valid: false, reason: accessResult.reason };
-    }
-
-    return { valid: true, callerId: entry.callerId, callerKind: entry.callerKind };
   }
 }

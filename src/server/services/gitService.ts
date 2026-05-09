@@ -111,9 +111,6 @@ export function createGitService(deps: GitServiceDeps): ServiceDefinition {
       getWorkspaceTree: { args: z.tuple([]) },
       listBranches: { args: z.tuple([z.string()]) },
       listCommits: { args: z.tuple([z.string(), z.string(), z.number()]) },
-      getBaseUrl: { args: z.tuple([]) },
-      getTokenForPanel: { args: z.tuple([z.string()]), policy: { allowed: ["shell", "server"] } },
-      revokeTokenForPanel: { args: z.tuple([z.string()]), policy: { allowed: ["shell", "server"] } },
       resolveRef: { args: z.tuple([z.string(), z.string()]) },
       createRepo: { args: z.tuple([z.string()]) },
       setSharedRemote: { args: z.tuple([z.string(), remoteSchema]) },
@@ -138,9 +135,6 @@ export function createGitService(deps: GitServiceDeps): ServiceDefinition {
           assertSafeRef(ref);
           return g.listCommits(repoPath, ref, args[2] as number);
         }
-        case "getBaseUrl": return g.getBaseUrl();
-        case "getTokenForPanel": return g.getTokenForPanel(args[0] as string);
-        case "revokeTokenForPanel": g.revokeTokenForPanel(args[0] as string); return;
         case "resolveRef": {
           const repoPath = args[0] as string;
           const ref = args[1] as string;

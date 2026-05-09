@@ -27,7 +27,11 @@ export interface BridgePanelManager {
   handleSetStateArgs(panelId: string, updates: Record<string, unknown>): Promise<unknown> | void;
   focusPanel?(panelId: string): void;
   getBootstrapConfig?(callerId: string): Promise<unknown> | unknown;
-  createBrowserPanel?(callerId: string, url: string, options?: { name?: string; focus?: boolean }): Promise<{ id: string; title: string }>;
+  createBrowserPanel?(
+    callerId: string,
+    url: string,
+    options?: { name?: string; focus?: boolean }
+  ): Promise<{ id: string; title: string }>;
   closeChild?(callerId: string, childId: string): Promise<void>;
 }
 
@@ -46,27 +50,19 @@ export interface PanelRelationshipProvider {
 // =============================================================================
 
 /**
- * Server interaction abstraction — works for both Electron (ServerInfo over
- * IPC) and headless (in-process token maps).
+ * Server interaction abstraction exposed to shell-owned view code. Caller
+ * token creation is handled by the shell PanelManager token client, not this
+ * generic server info surface.
  */
 export interface ServerInfoLike {
+  gatewayConfig: { serverUrl: string; token?: string };
+  workerdPort: number;
   /** Protocol for panel-facing URLs */
   protocol: "http" | "https";
-  rpcPort: number;
-  rpcWsUrl: string;
-  pubsubUrl: string;
-  gitBaseUrl: string;
-  workerdPort: number;
   /** External hostname for panel URLs (e.g., "localhost" or "my-server.example.com") */
   externalHost: string;
   /** Gateway port that multiplexes all services */
   gatewayPort: number;
-  createPanelToken(panelId: string, kind: string): Promise<string> | string;
-  ensurePanelToken(panelId: string, kind: string): Promise<string> | string;
-  revokePanelToken(panelId: string): Promise<void> | void;
-  getPanelToken(panelId: string): Promise<string | null> | string | null;
-  getGitTokenForPanel(panelId: string): Promise<string> | string;
-  revokeGitToken(panelId: string): Promise<void> | void;
   call(service: string, method: string, args: unknown[]): Promise<unknown>;
 }
 
@@ -108,4 +104,4 @@ export type PanelCreateOptions = {
   contextId?: string;
   /** If true, immediately focus the new panel after creation */
   focus?: boolean;
-}
+};
