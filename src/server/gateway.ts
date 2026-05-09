@@ -15,7 +15,7 @@ import * as fs from "fs";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Duplex } from "stream";
 import { createDevLogger } from "@natstack/dev-log";
-import { constantTimeStringEqual } from "@natstack/shared/tokenManager";
+import { constantTimeStringEqual, type TokenManager } from "@natstack/shared/tokenManager";
 import type { RouteRegistry, LookupResult } from "./routeRegistry.js";
 
 const log = createDevLogger("Gateway");
@@ -109,6 +109,8 @@ export interface GatewayDeps {
   healthProvider?: (detailed: boolean) => Record<string, unknown>;
   /** Admin token — when provided and matches ?token= query arg, /healthz returns detailed fields */
   adminToken?: string;
+  /** Caller token manager for route auth modes used by panels/workers/shell/server callers. */
+  tokenManager: TokenManager;
   /** Route registry for `/_r/` dispatch (worker and service routes). Optional
    *  — when absent, `/_r/` paths fall through to 404. */
   routeRegistry?: RouteRegistry;
@@ -145,7 +147,7 @@ export class Gateway {
   async start(port: number): Promise<number> {
     const { rpcHandler, panelHttpHandler, gitPort, workerdPort, tlsCert, tlsKey } = this.deps;
 
-    const { healthProvider, adminToken, routeRegistry } = this.deps;
+    const { healthProvider, adminToken, tokenManager, routeRegistry } = this.deps;
     const workerdToken = this.workerdGatewayToken;
     const gitToken = this.gitGatewayToken;
 
@@ -198,6 +200,7 @@ export class Gateway {
           routeRegistry,
           workerdPort,
           adminToken,
+          tokenManager,
           workerdToken,
         );
         if (handled) return;
@@ -278,6 +281,7 @@ export class Gateway {
           routeRegistry,
           workerdPort,
           adminToken,
+          tokenManager,
           workerdToken,
         );
         if (handled) return;
@@ -502,15 +506,22 @@ function enforceAuth(
   req: IncomingMessage,
   url: string,
   adminToken: string | undefined,
+  tokenManager: TokenManager,
 ): boolean {
-  if (lookup.auth !== "admin-token") return true;
-  // Default-deny when no admin token is configured (audit #25): without a
-  // token there is no way to authenticate, so the route is unreachable.
-  if (!adminToken) return false;
   const presented = extractRouteToken(url, req);
-  if (!presented) return false;
-  // Constant-time compare (audit #33).
-  return constantTimeStringEqual(presented, adminToken);
+  switch (lookup.auth) {
+    case "public":
+      return true;
+    case "admin-token":
+      // Default-deny when no admin token is configured (audit #25): without a
+      // token there is no way to authenticate, so the route is unreachable.
+      if (!adminToken || !presented) return false;
+      // Constant-time compare (audit #33).
+      return constantTimeStringEqual(presented, adminToken);
+    case "caller-token":
+      if (!presented) return false;
+      return tokenManager.validateToken(presented) !== null;
+  }
 }
 
 /**
@@ -546,6 +557,7 @@ function handleRouteRequest(
   routeRegistry: RouteRegistry,
   workerdPort: number | null | undefined,
   adminToken: string | undefined,
+  tokenManager: TokenManager,
   workerdToken: string,
 ): boolean {
   const qIdx = url.indexOf("?");
@@ -563,7 +575,7 @@ function handleRouteRequest(
     return true;
   }
 
-  if (!enforceAuth(result, req, url, adminToken)) {
+  if (!enforceAuth(result, req, url, adminToken, tokenManager)) {
     res.writeHead(401, { "Content-Type": "text/plain" });
     res.end("Unauthorized");
     return true;
@@ -604,6 +616,7 @@ function handleRouteUpgrade(
   routeRegistry: RouteRegistry,
   workerdPort: number | null | undefined,
   adminToken: string | undefined,
+  tokenManager: TokenManager,
   workerdToken: string,
 ): boolean {
   const qIdx = url.indexOf("?");
@@ -615,7 +628,7 @@ function handleRouteUpgrade(
     return true;
   }
 
-  if (!enforceAuth(result, req, url, adminToken)) {
+  if (!enforceAuth(result, req, url, adminToken, tokenManager)) {
     socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
     socket.destroy();
     return true;

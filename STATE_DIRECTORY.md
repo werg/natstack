@@ -35,6 +35,29 @@ The build key is a hash of `BUILD_CACHE_VERSION + unitName + effectiveVersion + 
 - To force rebuild all panels
 - To reclaim disk space
 
+### `blobs/`
+
+Per-workspace content-addressable object store, written by the server's
+`blobstoreService`. Layout:
+
+```
+blobs/
+  tmp/                          # incoming partial writes (swept on startup)
+  sha256/<aa>/<bb>/<rest>       # immutable objects, two-level fanout
+```
+
+Each object filename is the remaining 60 hex chars of its sha256 digest. The
+two-level fanout keeps any single directory bounded. The algorithm name is
+embedded in the path so additional digests can be added later without
+migrating existing objects.
+
+Writes go via `PUT /_r/s/blobstore/blob` (streaming, atomic-link to the final
+path with EEXIST treated as a dedup hit); reads via `GET /_r/s/blobstore/blob/<digest>`.
+There is no automatic GC — the layer above (e.g. the workspace's
+git-replacement system) is responsible for tracking reachability and calling
+`blobstore.delete(digest)`. See
+[`docs/architecture/storage.md`](docs/architecture/storage.md#blobstore-content-addressable-objects).
+
 ### `build-artifacts/`
 
 Stores external dependency installs (npm `node_modules`) for panels and agents, keyed by a hash of the merged dependency set.

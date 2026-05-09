@@ -1,0 +1,285 @@
+import { createHash, randomUUID } from "crypto";
+import * as fs from "fs";
+import { promises as fsp } from "fs";
+import * as path from "path";
+import { Transform } from "stream";
+import { pipeline } from "stream/promises";
+import type { IncomingMessage, ServerResponse } from "http";
+import { z } from "zod";
+import { createDevLogger } from "@natstack/dev-log";
+import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
+import type { ServicePolicy } from "@natstack/shared/servicePolicy";
+import type { ServiceRouteDecl } from "../routeRegistry.js";
+import type { ServiceWithRoutes } from "../rpcServiceWithRoutes.js";
+
+const log = createDevLogger("BlobstoreService");
+
+const DIGEST_RE = /^[0-9a-f]{64}$/;
+const PREFIX_RE = /^[0-9a-f]{0,64}$/;
+const READ_POLICY: ServicePolicy = { allowed: ["panel", "worker", "shell", "server"] };
+const ADMIN_POLICY: ServicePolicy = { allowed: ["shell", "server"] };
+
+const DigestSchema = z.string().regex(DIGEST_RE);
+const ListOptsSchema = z.object({
+  prefix: z.string().regex(PREFIX_RE).optional(),
+  limit: z.number().int().positive().max(100_000).optional(),
+}).optional();
+const ListArgsSchema = z.union([z.tuple([]), z.tuple([ListOptsSchema])]);
+
+export interface BlobstoreServiceDeps {
+  blobsDir: string;
+}
+
+export interface BlobStat {
+  size: number;
+  mtime: number;
+}
+
+function ensureLayout(blobsDir: string): void {
+  fs.mkdirSync(path.join(blobsDir, "tmp"), { recursive: true });
+  fs.mkdirSync(path.join(blobsDir, "sha256"), { recursive: true });
+}
+
+function sweepTmp(blobsDir: string): void {
+  const tmpDir = path.join(blobsDir, "tmp");
+  for (const entry of fs.readdirSync(tmpDir)) {
+    fs.rmSync(path.join(tmpDir, entry), { recursive: true, force: true });
+  }
+}
+
+function validateDigest(digest: string): void {
+  if (!DIGEST_RE.test(digest)) {
+    throw new Error("Invalid sha256 digest");
+  }
+}
+
+function blobPath(blobsDir: string, digest: string): string {
+  validateDigest(digest);
+  return path.join(
+    blobsDir,
+    "sha256",
+    digest.slice(0, 2),
+    digest.slice(2, 4),
+    digest.slice(4),
+  );
+}
+
+function sendJson(res: ServerResponse, status: number, payload: unknown): void {
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(payload));
+}
+
+function sendText(res: ServerResponse, status: number, body: string): void {
+  res.writeHead(status, { "Content-Type": "text/plain" });
+  res.end(body);
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await fsp.access(filePath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function statBlob(blobsDir: string, digest: string): Promise<BlobStat | null> {
+  const filePath = blobPath(blobsDir, digest);
+  try {
+    const stat = await fsp.stat(filePath);
+    return { size: stat.size, mtime: stat.mtimeMs };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function putBlob(blobsDir: string, req: IncomingMessage): Promise<{ digest: string; size: number }> {
+  const tmpPath = path.join(blobsDir, "tmp", `${process.pid}-${randomUUID()}.tmp`);
+  const hash = createHash("sha256");
+  let size = 0;
+
+  const tee = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      hash.update(chunk);
+      size += chunk.length;
+      callback(null, chunk);
+    },
+  });
+
+  try {
+    await pipeline(req, tee, fs.createWriteStream(tmpPath, { flags: "wx" }));
+    const digest = hash.digest("hex");
+    const finalPath = blobPath(blobsDir, digest);
+    await fsp.mkdir(path.dirname(finalPath), { recursive: true });
+    try {
+      await fsp.link(tmpPath, finalPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    await fsp.unlink(tmpPath).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    });
+    return { digest, size };
+  } catch (error) {
+    await fsp.unlink(tmpPath).catch(() => {});
+    throw error;
+  }
+}
+
+async function listBlobs(
+  blobsDir: string,
+  opts?: { prefix?: string; limit?: number },
+): Promise<string[]> {
+  const prefix = opts?.prefix ?? "";
+  const limit = opts?.limit;
+  const shaDir = path.join(blobsDir, "sha256");
+  const results: string[] = [];
+
+  let firstDirs: fs.Dirent[];
+  try {
+    firstDirs = await fsp.readdir(shaDir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+
+  for (const first of firstDirs.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!first.isDirectory() || !/^[0-9a-f]{2}$/.test(first.name)) continue;
+    if (prefix.length >= 2 && first.name !== prefix.slice(0, 2)) continue;
+    if (prefix.length < 2 && !first.name.startsWith(prefix)) continue;
+
+    const secondDirPath = path.join(shaDir, first.name);
+    const secondDirs = await fsp.readdir(secondDirPath, { withFileTypes: true });
+    for (const second of secondDirs.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!second.isDirectory() || !/^[0-9a-f]{2}$/.test(second.name)) continue;
+      const firstFour = first.name + second.name;
+      if (prefix.length >= 4 && firstFour !== prefix.slice(0, 4)) continue;
+      if (prefix.length < 4 && !firstFour.startsWith(prefix)) continue;
+
+      const leafDir = path.join(secondDirPath, second.name);
+      const files = await fsp.readdir(leafDir, { withFileTypes: true });
+      for (const file of files.sort((a, b) => a.name.localeCompare(b.name))) {
+        if (!file.isFile()) continue;
+        const digest = firstFour + file.name;
+        if (!DIGEST_RE.test(digest)) continue;
+        if (!digest.startsWith(prefix)) continue;
+        results.push(digest);
+        if (limit && results.length >= limit) return results;
+      }
+    }
+  }
+
+  return results;
+}
+
+export function createBlobstoreService(deps: BlobstoreServiceDeps): ServiceWithRoutes {
+  const definition: ServiceDefinition = {
+    name: "blobstore",
+    description: "Per-workspace content-addressable blob storage",
+    policy: READ_POLICY,
+    methods: {
+      has: { args: z.tuple([DigestSchema]), returns: z.boolean(), policy: READ_POLICY },
+      stat: {
+        args: z.tuple([DigestSchema]),
+        returns: z.object({ size: z.number(), mtime: z.number() }).nullable(),
+        policy: READ_POLICY,
+      },
+      delete: { args: z.tuple([DigestSchema]), returns: z.boolean(), policy: ADMIN_POLICY },
+      list: { args: ListArgsSchema, returns: z.array(z.string()), policy: ADMIN_POLICY },
+    },
+    handler: async (_ctx, method, args) => {
+      switch (method) {
+        case "has":
+          return pathExists(blobPath(deps.blobsDir, args[0] as string));
+        case "stat":
+          return statBlob(deps.blobsDir, args[0] as string);
+        case "delete": {
+          const filePath = blobPath(deps.blobsDir, args[0] as string);
+          try {
+            await fsp.unlink(filePath);
+            return true;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+            throw error;
+          }
+        }
+        case "list":
+          return listBlobs(deps.blobsDir, args[0] as { prefix?: string; limit?: number } | undefined);
+        default:
+          throw new Error(`Unknown blobstore method '${method}'`);
+      }
+    },
+  };
+
+  const routes: ServiceRouteDecl[] = [
+    {
+      serviceName: "blobstore",
+      path: "/blob",
+      methods: ["PUT"],
+      auth: "caller-token",
+      handler: async (req, res) => {
+        try {
+          sendJson(res, 200, await putBlob(deps.blobsDir, req));
+        } catch (error) {
+          log.warn("Blob PUT failed:", error);
+          sendText(res, 500, "Blob write failed");
+        }
+      },
+    },
+    {
+      serviceName: "blobstore",
+      path: "/blob/:digest",
+      methods: ["GET"],
+      auth: "caller-token",
+      handler: async (_req, res, params) => {
+        const digest = params["digest"] ?? "";
+        if (!DIGEST_RE.test(digest)) {
+          sendText(res, 400, "Malformed digest");
+          return;
+        }
+
+        const filePath = blobPath(deps.blobsDir, digest);
+        let stat: fs.Stats;
+        try {
+          stat = await fsp.stat(filePath);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+            sendText(res, 404, "Blob not found");
+            return;
+          }
+          log.warn("Blob stat failed:", error);
+          sendText(res, 500, "Blob read failed");
+          return;
+        }
+
+        res.writeHead(200, {
+          "Content-Type": "application/octet-stream",
+          "Content-Length": String(stat.size),
+          "ETag": `"${digest}"`,
+          "Cache-Control": "max-age=31536000, immutable",
+        });
+        const stream = fs.createReadStream(filePath);
+        stream.on("error", (error) => {
+          log.warn("Blob read stream failed:", error);
+          if (!res.headersSent) {
+            sendText(res, 500, "Blob read failed");
+          } else {
+            res.destroy(error);
+          }
+        });
+        stream.pipe(res);
+      },
+    },
+  ];
+
+  return {
+    definition,
+    routes,
+    start() {
+      ensureLayout(deps.blobsDir);
+      sweepTmp(deps.blobsDir);
+    },
+  };
+}

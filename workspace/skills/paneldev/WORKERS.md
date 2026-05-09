@@ -83,3 +83,45 @@ await credentials.fetch("https://api.example.com/v1/items", undefined, {
   credentialId: stored.id,
 });
 ```
+
+## Blobstore (content-addressable bytes)
+
+The per-workspace blobstore stores arbitrary content keyed by sha256 digest.
+Use it for anything large or binary — model outputs, fetched documents,
+generated artifacts, the object layer for a custom git-like format.
+
+**Metadata via RPC** (uses the worker's existing `RPC_AUTH_TOKEN` automatically):
+
+```ts
+const exists = await callMain("blobstore.has", digest);
+const meta = await callMain("blobstore.stat", digest); // { size, mtime } | null
+```
+
+**Streaming binary I/O via the gateway**:
+
+```ts
+const env = (globalThis as any).__natstackEnv;
+const headers = { "X-NatStack-Token": env.RPC_AUTH_TOKEN };
+// Writes are streaming — pass any Readable / ReadableStream as the body.
+const put = await fetch(`${env.SERVER_URL}/_r/s/blobstore/blob`, {
+  method: "PUT",
+  headers,
+  body,
+});
+const { digest, size } = await put.json();
+
+const get = await fetch(`${env.SERVER_URL}/_r/s/blobstore/blob/${digest}`, { headers });
+// `get.body` is a ReadableStream of the original bytes.
+```
+
+The gateway extracts the auth token from `X-NatStack-Token` (header) or
+`?token=` (query); it does not read `Authorization: Bearer`. Worker tokens
+are minted from the central `TokenManager`, so the route's `caller-token`
+auth admits them.
+
+`blobstore.delete` and `blobstore.list` are restricted to shell/server callers
+and cannot be invoked from a worker — design the upper layer (e.g. a server
+service) to own GC.
+
+See [`docs/architecture/storage.md`](../../../docs/architecture/storage.md#blobstore-content-addressable-objects)
+for the full design.

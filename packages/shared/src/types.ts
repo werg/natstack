@@ -80,7 +80,7 @@ export interface PackageManifest {
     path: string;
     methods?: ("GET" | "POST" | "PUT" | "DELETE" | "PATCH")[];
     durableObject?: { className: string; objectKey?: string };
-    auth?: "public" | "admin-token";
+    auth?: "public" | "admin-token" | "caller-token";
     websocket?: boolean;
   }>;
 }

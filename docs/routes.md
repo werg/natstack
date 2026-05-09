@@ -104,15 +104,23 @@ WebSocket routes, set `websocket: true` and provide an `onUpgrade(req, socket, h
 
 ## Auth model
 
-Each route opts in to one of two modes via the `auth` field:
+Each route opts in to one of three modes via the `auth` field. The gateway
+extracts a token from `?token=<value>` or `X-NatStack-Token` and dispatches
+based on the mode.
 
 - `"public"` (default): the route is reachable without any token. Handlers
   own their own validation (OAuth state parameter, HMAC signature, etc.).
   This is the common case — most callbacks come from third-party IdPs or
-  webhook senders, neither of which knows the admin token.
-- `"admin-token"`: the gateway checks `?token=<adminToken>` query arg or an
-  `X-NatStack-Token` header before dispatching. Useful for privileged
-  diagnostic routes.
+  webhook senders, neither of which knows any of our tokens.
+- `"admin-token"`: the gateway compares the presented token against the
+  process admin token in constant time. Useful for privileged diagnostic
+  routes. **Default-deny** when no admin token is configured.
+- `"caller-token"`: the gateway looks up the presented token in the central
+  `TokenManager` (the same registry that issues panel, worker, shell, and
+  server caller tokens). Any non-null hit is accepted. **Does not accept
+  the admin token** — admin is a separate, higher-privilege mode. Use this
+  when a route needs to be reachable by panels and workers (e.g. the
+  per-workspace blobstore at `/_r/s/blobstore/`).
 
 Rate limiting is out of scope; front the server with a reverse proxy if you
 need it.

@@ -26,6 +26,8 @@ import type { RouteRegistry, ServiceRouteDecl } from "./routeRegistry.js";
 export interface ServiceWithRoutes {
   definition: ServiceDefinition;
   routes?: ServiceRouteDecl[];
+  start?: () => void | Promise<void>;
+  stop?: () => void | Promise<void>;
 }
 
 /**
@@ -44,6 +46,7 @@ export function rpcServiceWithRoutes(
     name: serviceName,
     dependencies: deps,
     async start() {
+      await pair.start?.();
       if (pair.routes && pair.routes.length > 0) {
         routeRegistry.registerService(pair.routes);
       }
@@ -52,6 +55,7 @@ export function rpcServiceWithRoutes(
       if (pair.routes && pair.routes.length > 0) {
         routeRegistry.unregisterService(serviceName);
       }
+      await pair.stop?.();
     },
     getServiceDefinition() {
       return pair.definition;

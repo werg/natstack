@@ -174,6 +174,39 @@ workerd stores DO SQL state under the workspace state directory in `.databases/w
 
 ---
 
+## Blobstore (large/binary content)
+
+For bytes that don't fit in a DO row — pasted images, file uploads, generated
+artifacts — use the per-workspace content-addressable blobstore. Content is
+keyed by sha256 digest, deduplicated automatically, and written/read as
+streams.
+
+Metadata calls work via the normal RPC bridge:
+
+```typescript
+import { rpc } from "@workspace/runtime";
+
+const exists = await rpc.call("main", "blobstore.has", digest);
+const meta = await rpc.call("main", "blobstore.stat", digest); // { size, mtime } | null
+```
+
+Binary I/O happens on the gateway HTTP routes — `PUT /_r/s/blobstore/blob`
+streams a body in and returns `{ digest, size }`; `GET /_r/s/blobstore/blob/<digest>`
+streams it back. Both require a caller token on `X-NatStack-Token` (or
+`?token=`). The panel runtime does not currently surface a fetch helper that
+stamps this token, so today panels reach the routes through a worker
+(workers have `RPC_AUTH_TOKEN` in env — see [WORKERS.md](WORKERS.md#blobstore-content-addressable-bytes))
+or via an RPC method that owns the I/O on the server.
+
+`blobstore.delete` and `blobstore.list` are restricted to shell/server callers
+— panels cannot mutate or enumerate the store. Treat blobs as immutable; once
+a digest exists its bytes never change.
+
+See [`docs/architecture/storage.md`](../../../docs/architecture/storage.md#blobstore-content-addressable-objects)
+for the full design.
+
+---
+
 ## PubSub
 
 Real-time messaging between panels via `@natstack/pubsub`:

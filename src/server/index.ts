@@ -309,7 +309,7 @@ if (!ipcChannel) {
 // =============================================================================
 
 async function main() {
-  const { setUserDataPath } = await import("@natstack/env-paths");
+  const { getUserDataPath, setUserDataPath } = await import("@natstack/env-paths");
   const { loadCentralEnv, deleteWorkspaceDir, loadPersistedAdminToken, savePersistedAdminToken, getAdminTokenPath } = await import("@natstack/shared/workspace/loader");
   const { resolveLocalWorkspaceStartup } = await import("@natstack/shared/workspace/startup");
   const { CentralDataManager } = await import("@natstack/shared/centralData");
@@ -1196,6 +1196,14 @@ async function main() {
     container.register(rpcService(createImageService()));
   }
 
+  // ── Per-workspace content-addressable blobstore ──
+  {
+    const { createBlobstoreService } = await import("./services/blobstoreService.js");
+    const { rpcServiceWithRoutes } = await import("./rpcServiceWithRoutes.js");
+    const blobsDir = path.join(getUserDataPath(), "blobs");
+    container.register(rpcServiceWithRoutes(createBlobstoreService({ blobsDir }), routeRegistry));
+  }
+
   // ── Start all services in dependency order ──
   await container.startAll();
 
@@ -1284,6 +1292,7 @@ async function main() {
     tlsCert: hostConfig.tlsCert,
     tlsKey: hostConfig.tlsKey,
     adminToken,
+    tokenManager,
     routeRegistry,
     healthProvider: (detailed) => {
       const base: Record<string, unknown> = {

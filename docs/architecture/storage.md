@@ -51,6 +51,58 @@ To add another internal store:
 4. Add a server service that dispatches to `{ source: INTERNAL_DO_SOURCE, className, objectKey }`.
 5. Add workerd-backed tests for any storage feature that depends on workerd extensions.
 
+## Blobstore (Content-Addressable Objects)
+
+Bytes that don't fit a relational shape — large attachments, build artifacts,
+the underlying object store for the workspace's git-replacement layer — live
+in a per-workspace content-addressable filesystem store, separate from any DO.
+
+The store is implemented by `blobstoreService` in
+`src/server/services/blobstoreService.ts` and lives under the user-data
+directory, **outside the workspace source tree**:
+
+```text
+<userData>/blobs/
+  tmp/                          # incoming partial writes
+  sha256/<aa>/<bb>/<rest>       # final objects, two-level fanout
+```
+
+`<userData>` is the per-workspace user-data dir resolved via `getUserDataPath()`
+from `@natstack/env-paths` (see [STATE_DIRECTORY.md](../../STATE_DIRECTORY.md)).
+Tmp leftovers are swept on service startup.
+
+### API surface
+
+The service publishes both an RPC contract and HTTP routes:
+
+| Method | Kind | Auth / policy | Use |
+|---|---|---|---|
+| `PUT /_r/s/blobstore/blob` | HTTP | `caller-token` (panel/worker/shell/server) | Stream a body in; response `{ digest, size }`. Hash is computed while writing to a tmp file; `fs.link` then promotes to `sha256/<aa>/<bb>/<rest>`. EEXIST is a dedup hit. |
+| `GET /_r/s/blobstore/blob/:digest` | HTTP | `caller-token` | Stream bytes out. Sets `Content-Length`, quoted `ETag: "<digest>"`, and `Cache-Control: immutable, max-age=31536000`. 404 on missing, 400 on malformed digest. |
+| `blobstore.has(digest)` | RPC | panel/worker/shell/server | Existence check. |
+| `blobstore.stat(digest)` | RPC | panel/worker/shell/server | `{ size, mtime } \| null`. |
+| `blobstore.delete(digest)` | RPC | **shell/server only** | Caller-driven GC. Restricted to trusted callers — panels and workers cannot corrupt the store. |
+| `blobstore.list({ prefix?, limit? })` | RPC | **shell/server only** | Enumerate digests; admin/debug. |
+
+### Design properties
+
+- **Per-workspace isolation.** Each workspace's user-data dir is a separate
+  blob store. No cross-workspace dedup.
+- **Algorithm in the path.** `sha256/` is part of the layout so additional
+  algorithms can be introduced without migrating existing objects.
+- **No refcounting / GC inside the store.** The reachability layer above
+  (e.g. the git-replacement format) tracks what's live and calls `delete`
+  to sweep. v1 has no automatic GC.
+- **No verify-on-read.** Bytes are trusted from the FS. A future `verify`
+  method can be added if the format above grows distrust.
+- **Immutable from the caller's perspective.** Once written, a digest's bytes
+  never change; clients can cache aggressively (we set `immutable`).
+
+Auth threading uses the new `caller-token` mode on the route registry —
+`TokenManager.validateToken()` accepts panel/worker/shell/server tokens but
+**not** the admin token (admin is a separate, higher-privilege mode). See
+[../routes.md](../routes.md#auth-model).
+
 ## Trusted Bridge Identity
 
 Electron main connects to the server with the admin token, but renderer calls

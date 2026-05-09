@@ -8,6 +8,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from "http";
+import { TokenManager } from "@natstack/shared/tokenManager";
 import { Gateway } from "./gateway.js";
 import { RouteRegistry } from "./routeRegistry.js";
 
@@ -16,6 +17,7 @@ interface Harness {
   gatewayPort: number;
   workerdPort: number;
   registry: RouteRegistry;
+  tokenManager: TokenManager;
   workerdServer: HttpServer;
   /** Record of paths workerd received (for rewrite-assertion). */
   workerdPaths: string[];
@@ -23,6 +25,7 @@ interface Harness {
 
 async function startHarness(): Promise<Harness> {
   const registry = new RouteRegistry();
+  const tokenManager = new TokenManager();
 
   // Fake workerd — records the path it was called with and echoes it back.
   const workerdPaths: string[] = [];
@@ -44,10 +47,11 @@ async function startHarness(): Promise<Harness> {
     workerdPort,
     routeRegistry: registry,
     adminToken: "secret-token",
+    tokenManager,
   });
   const gatewayPort = await gateway.start(0);
 
-  return { gateway, gatewayPort, workerdPort, registry, workerdServer, workerdPaths };
+  return { gateway, gatewayPort, workerdPort, registry, tokenManager, workerdServer, workerdPaths };
 }
 
 async function stopHarness(h: Harness): Promise<void> {
@@ -168,5 +172,47 @@ describe("RouteRegistry × Gateway integration", () => {
       `http://127.0.0.1:${h.gatewayPort}/_r/s/admin/secret?token=wrong`,
     );
     expect(status).toBe(401);
+  });
+
+  it("accepts caller-token routes with panel and worker tokens", async () => {
+    h.registry.registerService([{
+      serviceName: "caller",
+      path: "/token",
+      auth: "caller-token",
+      handler: (_req, res) => { res.end("caller allowed"); },
+    }]);
+
+    const panelToken = h.tokenManager.ensureToken("p1", "panel");
+    const workerToken = h.tokenManager.ensureToken("w1", "worker");
+
+    await expect(fetchText(
+      `http://127.0.0.1:${h.gatewayPort}/_r/s/caller/token`,
+      { headers: { "X-NatStack-Token": panelToken } },
+    )).resolves.toEqual({ status: 200, body: "caller allowed" });
+
+    await expect(fetchText(
+      `http://127.0.0.1:${h.gatewayPort}/_r/s/caller/token?token=${workerToken}`,
+    )).resolves.toEqual({ status: 200, body: "caller allowed" });
+  });
+
+  it("rejects admin and unknown tokens for caller-token routes", async () => {
+    h.registry.registerService([{
+      serviceName: "caller-reject",
+      path: "/token",
+      auth: "caller-token",
+      handler: (_req, res) => { res.end("caller allowed"); },
+    }]);
+
+    const admin = await fetchText(
+      `http://127.0.0.1:${h.gatewayPort}/_r/s/caller-reject/token`,
+      { headers: { "X-NatStack-Token": "secret-token" } },
+    );
+    expect(admin.status).toBe(401);
+
+    const unknown = await fetchText(
+      `http://127.0.0.1:${h.gatewayPort}/_r/s/caller-reject/token`,
+      { headers: { "X-NatStack-Token": "unknown" } },
+    );
+    expect(unknown.status).toBe(401);
   });
 });

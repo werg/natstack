@@ -163,6 +163,15 @@ describe("RouteRegistry", () => {
       expect(res).toMatchObject({ auth: "admin-token" });
     });
 
+    it("caller-token auth is surfaced to the gateway", () => {
+      const reg = new RouteRegistry();
+      reg.registerService([{
+        serviceName: "s", path: "/x", auth: "caller-token", handler: () => {},
+      }]);
+      const res = reg.lookup("/_r/s/s/x", "GET", false);
+      expect(res).toMatchObject({ auth: "caller-token" });
+    });
+
     it("non-ws routes are not matched for upgrade requests", () => {
       const reg = new RouteRegistry();
       reg.registerService([{ serviceName: "s", path: "/x", handler: () => {} }]);

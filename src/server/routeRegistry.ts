@@ -33,7 +33,7 @@ import { createDevLogger } from "@natstack/dev-log";
 const log = createDevLogger("RouteRegistry");
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
-export type RouteAuth = "public" | "admin-token";
+export type RouteAuth = "public" | "admin-token" | "caller-token";
 
 /** Shape declared in a package manifest's `natstack.routes[]` entry. */
 export interface ManifestRouteDecl {
