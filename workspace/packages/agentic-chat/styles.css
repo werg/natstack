@@ -249,7 +249,7 @@
 .inline-group {
   display: flex;
   align-self: flex-start;
-  inline-size: min(100%, 72ch);
+  inline-size: 100%;
   justify-content: flex-start;
   overflow: hidden;
 }
@@ -278,7 +278,6 @@
   flex: 0 1 auto;
   inline-size: auto;
   max-inline-size: min(100%, 34rem);
-  contain: inline-size;
   display: inline-flex !important;
   align-items: center;
 }
