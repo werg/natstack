@@ -7,8 +7,10 @@
 //
 //   - Only http:// or https:// server URLs.
 //   - http:// is accepted only for hosts where cleartext is either local to
-//     the device, on a private LAN segment, or inside a Tailscale tailnet
-//     (which already encrypts end-to-end). Everything else requires https.
+//     the device, on a private LAN segment, inside a Tailscale tailnet
+//     (which already encrypts end-to-end), or addressed by a single-label /
+//     .local hostname that only resolves in local trusted networks. Everything
+//     else requires https.
 //   - Token must match a plausible character set/length so obvious junk is
 //     rejected before we try to authenticate with it.
 //
@@ -25,6 +27,10 @@ const CONNECT_PREFIX = "natstack://connect";
 // to avoid false negatives while still rejecting whitespace / odd punctuation.
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,512}$/;
 const TS_NET_SUFFIX = ".ts.net";
+
+function isSingleLabelHostname(host: string): boolean {
+  return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(host);
+}
 
 function isLoopbackHost(host: string): boolean {
   return host === "localhost" || host === "127.0.0.1" || host === "10.0.2.2";
@@ -56,6 +62,8 @@ export function isTrustedCleartextHost(host: string): boolean {
   if (isPrivateIPv4(lower)) return true;
   if (isTailscaleIPv4(lower)) return true;
   if (lower === "ts.net" || lower.endsWith(TS_NET_SUFFIX)) return true;
+  if (isSingleLabelHostname(lower)) return true;
+  if (lower.endsWith(".local")) return true;
   return false;
 }
 
@@ -98,7 +106,7 @@ export function parseConnectDeepLink(rawUrl: string): ConnectDeepLinkResult {
   if (server.protocol === "http:" && !isTrustedCleartextHost(server.hostname)) {
     return {
       kind: "error",
-      reason: `Cleartext HTTP is only allowed for loopback, private LAN, or Tailscale hosts. Use https:// for ${server.hostname}.`,
+      reason: `Cleartext HTTP is only allowed for loopback, private LAN, Tailscale, or local hostnames. Use https:// for ${server.hostname}.`,
     };
   }
 

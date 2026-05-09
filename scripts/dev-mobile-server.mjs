@@ -8,95 +8,25 @@
 //   NATSTACK_DEV_HOST=<ip> pnpm dev:mobile-server    # override auto-detected IP
 //   NATSTACK_DEV_HOST=tailscale pnpm dev:mobile-server  # prefer tailscale IP
 
-import os from "node:os";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { createRequire } from "node:module";
-
-const require = createRequire(import.meta.url);
-const qrcode = require("qrcode-terminal");
-
-function listIPv4Interfaces() {
-  const out = [];
-  for (const [name, addrs] of Object.entries(os.networkInterfaces() ?? {})) {
-    for (const addr of addrs ?? []) {
-      if (addr.family !== "IPv4" || addr.internal) continue;
-      out.push({ name, address: addr.address });
-    }
-  }
-  return out;
-}
-
-function pickHost() {
-  const override = process.env.NATSTACK_DEV_HOST;
-  const ifaces = listIPv4Interfaces();
-
-  if (override && override !== "tailscale" && override !== "lan") {
-    return override;
-  }
-
-  const scored = ifaces
-    .filter(({ name }) => !/^(docker|br-|veth|virbr|tun\d|tap\d)/i.test(name))
-    .map(({ name, address }) => {
-      // Lower score wins.
-      let priority = 9;
-      const isTailscale = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(address)
-        || /^tailscale/i.test(name);
-      const isLan = /^192\.168\./.test(address)
-        || /^10\./.test(address)
-        || /^172\.(1[6-9]|2\d|3[01])\./.test(address);
-
-      if (override === "tailscale") {
-        priority = isTailscale ? 0 : 5;
-      } else {
-        // Default: prefer LAN (192.168 > 10.x > 172.16), tailscale as fallback.
-        if (/^192\.168\./.test(address)) priority = 1;
-        else if (/^10\./.test(address)) priority = 2;
-        else if (/^172\.(1[6-9]|2\d|3[01])\./.test(address)) priority = 3;
-        else if (isTailscale) priority = 4;
-      }
-      return { name, address, priority, isTailscale, isLan };
-    })
-    .sort((a, b) => a.priority - b.priority);
-
-  if (scored.length === 0) {
-    throw new Error("Could not detect any non-internal IPv4 interface. Set NATSTACK_DEV_HOST=<ip>.");
-  }
-  return scored[0].address;
-}
-
-function printBanner(gatewayUrl, shellToken) {
-  const deepLink = `natstack://connect?url=${encodeURIComponent(gatewayUrl)}&token=${encodeURIComponent(shellToken)}`;
-  const divider = "=".repeat(66);
-  console.log(`\n${divider}`);
-  console.log("  NatStack mobile dev server");
-  console.log(divider);
-  console.log(`  Gateway:    ${gatewayUrl}`);
-  console.log(`  Shell tok:  ${shellToken}`);
-  console.log(`  Deep link:  ${deepLink}`);
-  console.log();
-  qrcode.generate(deepLink, { small: true });
-  console.log(divider);
-  console.log("  Point the Pixel camera at the QR code above, tap the");
-  console.log("  notification, and the app will auto-connect.");
-  console.log(`${divider}\n`);
-}
+import { pickMobileHost, printConnectBanner } from "./mobile-connect-utils.mjs";
 
 function main() {
-  const host = pickHost();
+  const host = pickMobileHost(process.env.NATSTACK_DEV_HOST, { defaultPreference: "lan" });
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-  console.log(`[dev-mobile-server] Binding server to ${host}`);
+  console.log(`[dev-mobile-server] Binding server to ${host.address}`);
   console.log("[dev-mobile-server] Override with NATSTACK_DEV_HOST=<ip|tailscale>\n");
 
   const child = spawn(
     process.execPath,
-    ["dist/server.mjs", "--host", host, "--serve-panels", "--init", "--print-token"],
+    ["dist/server.mjs", "--host", host.address, "--serve-panels", "--init", "--print-token"],
     {
       cwd: repoRoot,
       stdio: ["inherit", "pipe", "inherit"],
-      env: { ...process.env, NODE_ENV: "development" },
+      env: { ...process.env, NODE_ENV: "development", NATSTACK_HOST: host.address },
     },
   );
 
@@ -121,7 +51,12 @@ function main() {
 
       if (!bannerPrinted && gatewayUrl && shellToken) {
         bannerPrinted = true;
-        printBanner(gatewayUrl, shellToken);
+        printConnectBanner({
+          title: "NatStack mobile dev server",
+          gatewayUrl,
+          shellToken,
+          instructions: "Point the Pixel camera at the QR code above, tap the notification, and the app will auto-connect.",
+        });
       }
     }
   });

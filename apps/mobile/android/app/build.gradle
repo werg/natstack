@@ -44,6 +44,14 @@ android {
         debug {
             signingConfig signingConfigs.debug
         }
+        internal {
+            initWith debug
+            matchingFallbacks = ["debug"]
+            applicationIdSuffix ".internal"
+            versionNameSuffix "-internal"
+            signingConfig signingConfigs.debug
+            debuggable true
+        }
         release {
             minifyEnabled true
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"

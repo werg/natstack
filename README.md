@@ -175,6 +175,7 @@ natstack-server ready:
 | `--app-root=PATH` | Application root (defaults to cwd) |
 | `--log-level=LEVEL` | Log level |
 | `--serve-panels` | Enable HTTP panel serving for browser access |
+| `--gateway-port=PORT` | Port for the gateway HTTP/WS ingress (default: random) |
 | `--panel-port=PORT` | Port for the panel HTTP server (default: random) |
 
 ### Serving Panels to a Browser
@@ -202,6 +203,20 @@ natstack-server ready:
 Open `http://localhost:8080` to see a list of running panels. Panels are
 created via the RPC `bridge.createChild` method (using the admin token), then
 accessed by clicking their link on the index page.
+
+### Android phone over VPN
+
+For trusted phone testing over a VPN/LAN, build the internal Android app and
+start a stable QR-pairing server:
+
+```bash
+pnpm mobile:install:internal --launch
+pnpm build
+pnpm mobile:pair
+```
+
+See [docs/mobile-vpn.md](docs/mobile-vpn.md) for host selection, workspace
+flags, and reconnect behavior.
 
 Each panel gets:
 - **Injected globals** replacing Electron's preload/contextBridge

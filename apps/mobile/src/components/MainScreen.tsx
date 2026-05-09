@@ -136,6 +136,9 @@ export function MainScreen() {
       const panelInit = managed
         ? await shellClient.panels.getPanelInit(panelId)
         : null;
+      if (hostConfig.protocol === "http") {
+        console.log(`[MainScreen] Activating panel ${panelId}`, { source, url, managed });
+      }
 
       setWebViewStack((prev) => addWebViewEntry(prev, {
         panelId,
@@ -463,6 +466,7 @@ export function MainScreen() {
               onTitleChange={handlePanelTitleChange}
               onBridgeCall={handleBridgeCall}
               onUnmount={handleWebViewUnmount}
+              diagnosticsEnabled={entry.managed && hostConfig?.protocol === "http"}
               colors={{
                 background: colors.background,
                 text: colors.text,

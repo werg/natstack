@@ -41,6 +41,7 @@ export interface HostConfig {
  * - NATSTACK_HOST / --host: external hostname (sets bindHost to "0.0.0.0")
  * - NATSTACK_BIND_HOST / --bind-host: explicit bind address
  * - NATSTACK_PROTOCOL: "http" or "https"
+ * - NATSTACK_GATEWAY_PORT / --gateway-port: gateway ingress port
  */
 export function resolveHostConfig(opts: {
   remoteUrl?: string;

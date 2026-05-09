@@ -50,6 +50,7 @@ export interface PanelWebViewProps {
   onTitleChange?: (panelId: string, title: string) => void;
   onBridgeCall?: (panelId: string, method: string, args: unknown[]) => Promise<unknown>;
   onUnmount?: (panelId: string) => void;
+  diagnosticsEnabled?: boolean;
   colors?: {
     background?: string;
     text?: string;
@@ -60,6 +61,40 @@ export interface PanelWebViewProps {
 
 const NATSTACK_USER_AGENT = `NatStack-Mobile/1.0 (${Platform.OS}; ${Platform.Version})`;
 const REFERRER_POLICY_SCRIPT = `try{var m=document.createElement('meta');m.name='referrer';m.content='no-referrer';document.head.appendChild(m);}catch(e){}true;`;
+const RANDOM_UUID_POLYFILL_SCRIPT = `
+  (function () {
+    try {
+      var cryptoObj = globalThis.crypto;
+      if (!cryptoObj || typeof cryptoObj.randomUUID === "function") return;
+      function randomByte() {
+        if (typeof cryptoObj.getRandomValues === "function") {
+          var bytes = new Uint8Array(1);
+          cryptoObj.getRandomValues(bytes);
+          return bytes[0];
+        }
+        return Math.floor(Math.random() * 256);
+      }
+      Object.defineProperty(cryptoObj, "randomUUID", {
+        configurable: true,
+        value: function () {
+          var bytes = new Uint8Array(16);
+          for (var i = 0; i < bytes.length; i++) bytes[i] = randomByte();
+          bytes[6] = (bytes[6] & 15) | 64;
+          bytes[8] = (bytes[8] & 63) | 128;
+          var hex = [];
+          for (var j = 0; j < bytes.length; j++) hex.push(bytes[j].toString(16).padStart(2, "0"));
+          return [
+            hex.slice(0, 4).join(""),
+            hex.slice(4, 6).join(""),
+            hex.slice(6, 8).join(""),
+            hex.slice(8, 10).join(""),
+            hex.slice(10, 16).join("")
+          ].join("-");
+        }
+      });
+    } catch (_) {}
+  })();
+`;
 
 function serializeForInjection(value: unknown): string {
   return JSON.stringify(value ?? null);
@@ -68,6 +103,7 @@ function serializeForInjection(value: unknown): string {
 function buildBridgeBootstrapScript(panelInit: unknown, enableDebug: boolean): string {
   return `
     (function () {
+      ${RANDOM_UUID_POLYFILL_SCRIPT}
       const panelInit = ${serializeForInjection(panelInit)};
       const pending = new Map();
       const listeners = new Map();
@@ -280,6 +316,7 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
       onTitleChange,
       onBridgeCall,
       onUnmount,
+      diagnosticsEnabled = false,
       colors,
     },
     ref,
@@ -296,6 +333,15 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
     // bridge methods (createBrowserPanel, openExternal, auth.startOAuthLogin,
     // etc.). Initialised to the configured panel URL.
     const currentUrlRef = useRef<string>(url);
+
+    const logDiagnostic = useCallback((message: string, extra?: unknown) => {
+      if (!diagnosticsEnabled) return;
+      if (extra === undefined) {
+        console.log(`[PanelWebView:${panelId}] ${message}`);
+      } else {
+        console.log(`[PanelWebView:${panelId}] ${message}`, extra);
+      }
+    }, [diagnosticsEnabled, panelId]);
 
     const dispatchHostEvent = useCallback((event: string, payload: unknown) => {
       if (!managed) return;
@@ -359,13 +405,20 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
 
     const handleNavigationStateChange = useCallback(
       (navState: WebViewNavigation) => {
+        logDiagnostic("navigation", {
+          url: navState.url,
+          loading: navState.loading,
+          title: navState.title,
+          canGoBack: navState.canGoBack,
+          canGoForward: navState.canGoForward,
+        });
         setIsLoading(navState.loading ?? false);
         if (typeof navState.url === "string" && navState.url.length > 0) {
           currentUrlRef.current = navState.url;
         }
         onNavigationStateChange?.(navState);
       },
-      [onNavigationStateChange],
+      [logDiagnostic, onNavigationStateChange],
     );
 
     const handleMessage = useCallback(async (event: WebViewMessageEvent) => {
@@ -402,7 +455,7 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
           title?: string;
         };
         if (message.__natstackDebug) {
-          if (!__DEV__) return;
+          if (!diagnosticsEnabled && !__DEV__) return;
           const level = message.level ?? "log";
           const parts = Array.isArray(message.args) ? message.args : [];
           const text = parts.map((part) => typeof part === "string" ? part : JSON.stringify(part)).join(" ");
@@ -410,7 +463,7 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
           return;
         }
         if (message.__natstackDomSnapshot) {
-          if (!__DEV__) return;
+          if (!diagnosticsEnabled && !__DEV__) return;
           console.log(
             `[PanelWebView:${panelId}] DOM title=${message.title ?? ""} childCount=${message.childCount ?? 0} text=${message.text ?? ""}`,
           );
@@ -440,30 +493,32 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
       } catch {
         // Ignore non-bridge messages.
       }
-    }, [externalHost, managed, onBridgeCall, onTitleChange, panelId]);
+    }, [diagnosticsEnabled, externalHost, managed, onBridgeCall, onTitleChange, panelId]);
 
     const handleError = useCallback(
       (syntheticEvent: { nativeEvent: { description?: string; code?: number } }) => {
         const { nativeEvent } = syntheticEvent;
+        logDiagnostic("load error", nativeEvent);
         setHasError(true);
         setIsLoading(false);
         setErrorMessage(
           nativeEvent.description || `Failed to load panel (code ${nativeEvent.code ?? "unknown"})`,
         );
       },
-      [],
+      [logDiagnostic],
     );
 
     const handleHttpError = useCallback(
       (syntheticEvent: { nativeEvent: { statusCode: number; description: string } }) => {
         const { statusCode, description } = syntheticEvent.nativeEvent;
+        logDiagnostic("http error", syntheticEvent.nativeEvent);
         if (statusCode >= 400) {
           setHasError(true);
           setIsLoading(false);
           setErrorMessage(`HTTP ${statusCode}: ${description || "Server error"}`);
         }
       },
-      [],
+      [logDiagnostic],
     );
 
     const handleRetry = useCallback(() => {
@@ -474,8 +529,9 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
     }, []);
 
     const handleLoadEnd = useCallback(() => {
+      logDiagnostic("load end", { url: currentUrlRef.current });
       setIsLoading(false);
-      if (!managed || !__DEV__) return;
+      if (!managed || (!diagnosticsEnabled && !__DEV__)) return;
       webViewRef.current?.injectJavaScript(`
         (function () {
           try {
@@ -500,7 +556,38 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
           true;
         })();
       `);
-    }, [managed]);
+    }, [diagnosticsEnabled, logDiagnostic, managed]);
+
+    const handleLoadStart = useCallback(
+      (syntheticEvent: { nativeEvent: { url?: string } }) => {
+        logDiagnostic("load start", syntheticEvent.nativeEvent);
+      },
+      [logDiagnostic],
+    );
+
+    const handleLoadProgress = useCallback(
+      (syntheticEvent: { nativeEvent: { progress?: number; url?: string } }) => {
+        const progress = syntheticEvent.nativeEvent.progress;
+        if (progress === undefined || progress === 1 || progress < 0.05 || progress > 0.95) {
+          logDiagnostic("load progress", syntheticEvent.nativeEvent);
+        }
+      },
+      [logDiagnostic],
+    );
+
+    const handleRenderProcessGone = useCallback(
+      (syntheticEvent: { nativeEvent: { didCrash?: boolean } }) => {
+        logDiagnostic("render process gone", syntheticEvent.nativeEvent);
+        setHasError(true);
+        setIsLoading(false);
+        setErrorMessage(
+          syntheticEvent.nativeEvent.didCrash
+            ? "Android WebView renderer crashed."
+            : "Android WebView renderer was terminated.",
+        );
+      },
+      [logDiagnostic],
+    );
 
     if (hasError) {
       return (
@@ -533,10 +620,13 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
           onShouldStartLoadWithRequest={handleShouldStartLoad}
           onNavigationStateChange={handleNavigationStateChange}
           onMessage={handleMessage}
+          onLoadStart={handleLoadStart}
+          onLoadProgress={handleLoadProgress}
           onError={handleError}
           onHttpError={handleHttpError}
           onLoadEnd={handleLoadEnd}
-          injectedJavaScriptBeforeContentLoaded={managed ? buildBridgeBootstrapScript(panelInit, __DEV__) : undefined}
+          onRenderProcessGone={handleRenderProcessGone}
+          injectedJavaScriptBeforeContentLoaded={managed ? buildBridgeBootstrapScript(panelInit, diagnosticsEnabled || __DEV__) : undefined}
           injectedJavaScript={REFERRER_POLICY_SCRIPT}
           scalesPageToFit={false}
           textZoom={100}

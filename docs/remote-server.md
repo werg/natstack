@@ -88,6 +88,7 @@ natstack-server ready:
 | `--tls-cert <path>` | — | TLS certificate file (PEM). Enables HTTPS with `--tls-key`. |
 | `--tls-key <path>` | — | TLS private key file (PEM). Required with `--tls-cert`. |
 | `--serve-panels` | — | Enable panel HTTP serving |
+| `--gateway-port <port>` | `NATSTACK_GATEWAY_PORT` | Port for the gateway HTTP/WS ingress (default: auto-assigned). Use a fixed value for phone/VPN pairing or firewall rules. |
 | `--panel-port <port>` | — | Port for panel HTTP (default: auto-assigned) |
 | `--init` | — | Auto-create workspace from template if it doesn't exist |
 | `--log-level <level>` | `NATSTACK_LOG_LEVEL` | Log verbosity |

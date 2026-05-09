@@ -360,12 +360,12 @@ export class PanelHttpServer {
 
     // ── Static runtime helpers ────────────────────────────────────────────
     if (pathname === "/__loader.js") {
-      res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "public, max-age=3600" });
+      res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" });
       res.end(CONFIG_LOADER_JS);
       return;
     }
     if (pathname === "/__transport.js") {
-      res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "public, max-age=3600" });
+      res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" });
       res.end(BROWSER_TRANSPORT_JS);
       return;
     }

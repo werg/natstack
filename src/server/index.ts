@@ -113,6 +113,7 @@ interface CliArgs {
   readyFile?: string;
   ephemeral?: boolean;
   servePanels?: boolean;
+  gatewayPort?: number;
   panelPort?: number;
   init?: boolean;
   host?: string;
@@ -130,7 +131,7 @@ function printHelp(): void {
 natstack-server — Headless and standalone NatStack server
 
 Usage:
-  node dist/server/index.js [options]
+  node dist/server.mjs [options]
 
 Options:
   --workspace <name>       Workspace name to resolve (default: last-opened or "default")
@@ -144,6 +145,7 @@ Options:
   --tls-cert <path>        TLS certificate file (PEM). Enables HTTPS when used with --tls-key.
   --tls-key <path>         TLS private key file (PEM). Required when --tls-cert is provided.
   --serve-panels           Enable panel HTTP serving
+  --gateway-port <port>    Port for the gateway HTTP/WS ingress (default: auto-assigned)
   --panel-port <port>      Port for panel HTTP (default: auto-assigned)
   --init                   Auto-create workspace from template if it doesn't exist
   --log-level <level>      Log verbosity
@@ -159,6 +161,7 @@ Environment variables:
   NATSTACK_HOST            External hostname (same as --host)
   NATSTACK_BIND_HOST       Explicit bind address (same as --bind-host)
   NATSTACK_PROTOCOL        Protocol for panel URLs (same as --protocol)
+  NATSTACK_GATEWAY_PORT    Gateway ingress port (same as --gateway-port)
   NATSTACK_WORKSPACE       Workspace name (same as --workspace)
   NATSTACK_WORKSPACE_DIR   Workspace directory (same as --workspace-dir)
   NATSTACK_APP_ROOT        Application root (same as --app-root)
@@ -173,9 +176,24 @@ Remote Electron connection:
 `);
 }
 
+function parsePort(value: string | undefined, label: string): number {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    console.error(`${label} must be an integer from 1 to 65535`);
+    process.exit(1);
+  }
+  return port;
+}
+
+function parseEnvPort(name: string): number | undefined {
+  const value = process.env[name];
+  if (value == null || value === "") return undefined;
+  return parsePort(value, name);
+}
+
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {};
-  const known = new Set(["workspace", "workspace-dir", "app-root", "ready-file", "ephemeral", "log-level", "serve-panels", "panel-port", "init", "host", "bind-host", "protocol", "tls-cert", "tls-key", "print-token", "public-url", "help"]);
+  const known = new Set(["workspace", "workspace-dir", "app-root", "ready-file", "ephemeral", "log-level", "serve-panels", "gateway-port", "panel-port", "init", "host", "bind-host", "protocol", "tls-cert", "tls-key", "print-token", "public-url", "help"]);
   /** Flags that don't take a value */
   const booleanFlags = new Set(["serve-panels", "ephemeral", "init", "print-token", "help"]);
 
@@ -239,12 +257,11 @@ function parseArgs(argv: string[]): CliArgs {
       case "init":
         args.init = true;
         break;
+      case "gateway-port":
+        args.gatewayPort = parsePort(value, "--gateway-port");
+        break;
       case "panel-port":
-        args.panelPort = parseInt(value!, 10);
-        if (isNaN(args.panelPort)) {
-          console.error("--panel-port must be a number");
-          process.exit(1);
-        }
+        args.panelPort = parsePort(value, "--panel-port");
         break;
       case "host":
         args.host = value;
@@ -1118,8 +1135,10 @@ async function main() {
 
   // Resolve host configuration from CLI args / env vars
   const { resolveHostConfig } = await import("@natstack/shared/hostConfig");
+  const requestedGatewayPort = args.gatewayPort ?? parseEnvPort("NATSTACK_GATEWAY_PORT");
   const hostConfig = resolveHostConfig({
     rpcPort: 0, panelHttpPort: 0, gitPort: gitServer.getPort(), workerdPort: 0, // ports filled later
+    gatewayPort: requestedGatewayPort ?? 0,
     host: args.host, bindHost: args.bindHost, protocol: args.protocol,
     tlsCert: args.tlsCert, tlsKey: args.tlsKey,
   });
@@ -1309,7 +1328,7 @@ async function main() {
       };
     },
   });
-  const gatewayPort = await gateway.start(0);
+  const gatewayPort = await gateway.start(requestedGatewayPort ?? 0);
 
   // Publish the externally-reachable base URL. Resolution:
   //   1. --public-url / NATSTACK_PUBLIC_URL (explicit override for reverse-
