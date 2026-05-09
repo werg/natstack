@@ -275,12 +275,11 @@
 }
 
 .inline-action-pill {
-  flex: 1 1 22rem;
-  inline-size: min(100%, 34rem);
+  flex: 0 1 auto;
+  inline-size: auto;
   max-inline-size: min(100%, 34rem);
   contain: inline-size;
-  display: inline-grid !important;
-  grid-template-columns: auto auto minmax(0, 1fr) minmax(0, 1fr);
+  display: inline-flex !important;
   align-items: center;
 }
 
@@ -291,6 +290,7 @@
 }
 
 .inline-pill-label {
+  flex: 0 1 auto;
   min-inline-size: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -300,6 +300,7 @@
 .inline-pill-summary,
 .inline-pill-description {
   display: block;
+  flex: 0 1 auto;
   min-inline-size: 0;
   max-inline-size: 100%;
   overflow: hidden;
