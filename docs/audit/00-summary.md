@@ -96,7 +96,7 @@ Even after T1 is fixed, the service policies themselves over-grant
 |---|---|---|---|
 | `authTokens.getProviderToken` | `panel` | Read every stored OAuth / API token (Anthropic, OpenAI, Google, GitHub, Linear, …) | 02, 03-F-02, 04-4.1 |
 | `authTokens.persist` / `authTokens.logout` | `panel` | Overwrite or delete the user's provider tokens | 02 |
-| `git.getTokenForPanel` / `git.revokeTokenForPanel` | `panel` | Steal or destroy another panel's git push credentials | 04-4.2 |
+| `git.getTokenForPanel` / `git.revokeTokenForPanel` | removed | Historical finding remediated; methods no longer exist | 04-4.2 |
 | `browser-data.getPasswords`, `getCookies`, `getHistory`, `exportAll`, `exportPasswords` | `panel`, `worker`, `shell` | Dump the imported browser credential store in plaintext | 01-C2, 07-F-02 |
 | `workers.callDO` | `panel` | Dispatch arbitrary DO method on arbitrary object | 04-4.4 |
 | `credentials.revokeConsent` (with empty `connectionId`) | `panel` | Wipe all consent grants | 04-4.18 |
@@ -188,10 +188,11 @@ The RPC server is the primary trust-boundary enforcer, but:
 - **DO `__instanceToken`** is attached by the gateway but verified by no
   code in-tree [04-4.8]. Any process that reaches the workerd port can
   POST directly and pretend to be the gateway.
-- **CDP WebSocket** binds `0.0.0.0` with URL-query token and accepts any
-  valid panel token; `debugger.sendCommand` is forwarded with no command
-  allow-list [05-S6, 01-LOW-1] — leaked token = full page RCE via
-  `Runtime.evaluate`.
+- **CDP WebSocket** accepts any valid panel token and forwards
+  `debugger.sendCommand` with no command allow-list [05-S6, 01-LOW-1].
+  Electron CDP is now loopback-bound and CDP tokens are carried in a
+  first WebSocket frame instead of URL query strings, but a leaked token
+  is still full page RCE via `Runtime.evaluate`.
 - No rate limiting anywhere on RPC / auth endpoints [02, 04-4.19].
 
 **Fix shape:** Origin allow-list on WS; constant-time compares via
@@ -311,7 +312,7 @@ Outside the runtime trust model:
 | 18 | `ServiceDispatcher.dispatch` never calls `checkServiceAccess` | 01, 04 | High |
 | 19 | `IpcDispatcher` / `natstack:rpc:send` hard-coded `callerKind:"shell"` | 01, 04 | High |
 | 20 | Event `fromId` spoofing in relay | 04 | High |
-| 21 | `git.getTokenForPanel` / `revokeTokenForPanel` reachable by panel | 04 | High |
+| 21 | `git.getTokenForPanel` / `revokeTokenForPanel` reachable by panel | 04 | Remediated |
 | 22 | `workers.callDO` reachable by panel | 04 | High |
 | 23 | `RpcServer.checkRelayAuth` only ACLs `panel`, leaves worker/shell/server/harness open | 02 | High |
 | 24 | Egress proxy auth based on trusted HTTP headers only, no token | 02, 03 | High |
@@ -324,7 +325,7 @@ Outside the runtime trust model:
 | 31 | No WS frame size limit; 200 MB HTTP `/rpc` body | 04, 06 | High |
 | 32 | Gateway forwards `Authorization` header raw to workerd / git | 04 | High |
 | 33 | Non-constant-time admin-token comparisons | 02, 06 | High |
-| 34 | CDP wildcard-bound, URL-query token, no command allow-list | 05, 01 | High |
+| 34 | CDP raw command surface with no command allow-list | 05, 01 | High |
 | 35 | `getBuildNpm` accepts free-form version → arbitrary package install | 05 | High |
 | 36 | Panel manifests can pull `file:` / `git+` deps | 05 | High |
 | 37 | Git argument injection via user-controlled ref in `rev-parse` / `log` | 05, 07 | High |
@@ -365,8 +366,7 @@ finding(s) it closes.
    findings #3, #18, #19, #20 and the structural cause of #5–#8, #21–#22.
    [01, 04]
 2. **Tighten service `policy.allowed` across the board.** Remove `panel`
-   from: `authTokens.*`, `git.getTokenForPanel`/`revokeTokenForPanel`,
-   `browser-data.*`, `workers.callDO`, `credentials.revokeConsent`,
+   from: `authTokens.*`, `browser-data.*`, `workers.callDO`, `credentials.revokeConsent`,
    `workspace.setConfigField`/`select`, `fs.bindContext`, `db.exec`,
    `fs.chown`, `fs.symlink`. Closes findings #4–#8, #21–#22, #39, #7.
    [01, 02, 04, 07]
@@ -411,10 +411,11 @@ finding(s) it closes.
     strip `Authorization` from gateway → upstream forwards; implement DO
     instance-token verifier inside the worker binding so direct-to-workerd
     POSTs are rejected. Closes #20, #29, #30, #31, #32. [04]
-14. **Bind CDP to `127.0.0.1`**; replace URL-query token with
-    `Authorization` header; allow-list `debugger.sendCommand` methods;
-    don't forward raw CDP commands from panels. Closes #34, #9 on the
-    CDP axis. [05, 01]
+14. **Keep Electron CDP bound to `127.0.0.1`**; keep CDP tokens out of
+    URLs with first-frame WebSocket auth because browser `WebSocket`
+    cannot set bearer headers; allow-list `debugger.sendCommand`
+    methods; don't forward raw CDP commands from panels. Closes #34, #9
+    on the CDP axis. [05, 01]
 15. **Remove `fs.symlink` and `fs.chown` from the panel policy**; if an
     internal use exists, route it through a shell-only service. Closes
     #38, #39. [07]

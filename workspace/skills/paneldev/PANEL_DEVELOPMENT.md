@@ -192,11 +192,17 @@ const meta = await rpc.call("main", "blobstore.stat", digest); // { size, mtime 
 
 Binary I/O happens on the gateway HTTP routes — `PUT /_r/s/blobstore/blob`
 streams a body in and returns `{ digest, size }`; `GET /_r/s/blobstore/blob/<digest>`
-streams it back. Both require a caller token on `X-NatStack-Token` (or
-`?token=`). The panel runtime does not currently surface a fetch helper that
-stamps this token, so today panels reach the routes through a worker
-(workers have `RPC_AUTH_TOKEN` in env — see [WORKERS.md](WORKERS.md#blobstore-content-addressable-bytes))
-or via an RPC method that owns the I/O on the server.
+streams it back. Both require a caller Bearer token. The panel runtime exports
+`gatewayFetch`, which prefixes the gateway URL and stamps
+`Authorization: Bearer <token>`:
+
+```typescript
+import { gatewayFetch } from "@workspace/runtime";
+
+const put = await gatewayFetch("/_r/s/blobstore/blob", { method: "PUT", body });
+const { digest, size } = await put.json();
+const get = await gatewayFetch(`/_r/s/blobstore/blob/${digest}`);
+```
 
 `blobstore.delete` and `blobstore.list` are restricted to shell/server callers
 — panels cannot mutate or enumerate the store. Treat blobs as immutable; once

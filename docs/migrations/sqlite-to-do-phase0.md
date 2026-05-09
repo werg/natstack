@@ -8,14 +8,13 @@ identity. The relevant current services are:
 
 | Service | Shell-only methods | Result |
 |---|---|---|
-| `browser-data` | password, cookie, history, autofill, and export methods | Requires forwarded shell identity from Electron renderer calls |
-| `workspace` | shell UI operations such as workspace selection | Requires forwarded shell identity |
-| `git` | token-management helpers restricted to shell/server | Requires forwarded shell or server identity |
+| `browser-data` | password, cookie, history, autofill, and export methods | Requires an authenticated shell caller token |
+| `workspace` | shell UI operations such as workspace selection | Requires an authenticated shell caller token |
+| `git` | token-management helpers restricted to shell/server | Requires an authenticated shell or server caller token |
 
-`RpcServer` now accepts `forwardedIdentity` only from admin-authenticated
-connections. Non-admin callers that include it receive an RPC error before
-dispatch. Tests cover admin shell forwarding, non-admin forgery rejection, and
-worker denial for shell-only `browser-data` methods.
+`RpcServer` rejects admin tokens for RPC and does not accept forwarded caller
+identity on the WebSocket envelope. Tests cover admin-token rejection and worker
+denial for shell-only `browser-data` methods.
 
 ## FTS5 Gate
 

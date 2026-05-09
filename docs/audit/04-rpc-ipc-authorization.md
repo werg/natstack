@@ -14,7 +14,7 @@ However, the implementation has substantive gaps between the declared policy mod
 
 1. **Policy is not enforced on Electron IPC** (`src/main/index.ts` `natstack:serviceCall` and `src/main/ipcDispatcher.ts`). `ServiceDispatcher.dispatch()` never calls `checkServiceAccess`; only the WS/HTTP RPC server does. In Electron mode panels can invoke Electron-local services with policies like `{ allowed: ["shell"] }` (app/panel/view/menu/adblock/settings services) simply by issuing `__natstackElectron.serviceCall("app.xxx", …)`. The `callerKind` at dispatch is heuristically set to `"panel"` for non-shell webContents but the dispatcher ignores it.
 
-2. **Several server services over-allow `panel` callers on privilege-sensitive methods.** Examples: `authTokens.getProviderToken` (any panel can read stored OAuth/API keys), `authTokens.persist` / `authTokens.logout` (any panel can overwrite/delete them), `git.getTokenForPanel` / `git.revokeTokenForPanel` (any panel can steal or destroy another panel's git push credentials), `auth.startOAuthLogin` / `auth.logout`, `credentials.revokeConsent` (destructive and unbounded), `credentials.renameConnection`, `workspace.setConfigField` (arbitrary config write by a panel), `workspace.select` (forces a workspace relaunch), `workers.callDO` (arbitrary DO method dispatch).
+2. **Several server services over-allow `panel` callers on privilege-sensitive methods.** Examples: `authTokens.getProviderToken` (any panel can read stored OAuth/API keys), `authTokens.persist` / `authTokens.logout` (any panel can overwrite/delete them), `auth.startOAuthLogin` / `auth.logout`, `credentials.revokeConsent` (destructive and unbounded), `credentials.renameConnection`, `workspace.setConfigField` (arbitrary config write by a panel), `workspace.select` (forces a workspace relaunch), `workers.callDO` (arbitrary DO method dispatch). The old `git.getTokenForPanel` / `git.revokeTokenForPanel` RPC surface has been removed.
 
 3. **`fs.bindContext` lets any panel re-bind its own fs context to an arbitrary `contextId`.** This means a panel that learns another panel's contextId (they appear in URLs, logs, and the management API) can read and write the victim context's folder via the regular fs methods without any further authorization.
 
@@ -28,7 +28,7 @@ However, the implementation has substantive gaps between the declared policy mod
 
 8. **Route registry auth is coarse.** Service-registered HTTP routes default to `auth: "public"` (`routeRegistry.ts:350`); the only gate is `"admin-token"`. There is no `"panel"` / `"shell"` / `"worker"` tier, no per-method scoping, and no integration with `TokenManager` for panel tokens on route requests.
 
-9. **Gateway reverse-proxy forwards raw headers** (`gateway.ts:240`) including `Authorization` to the git/workerd upstreams. An attacker who can reach a workerd route can piggyback an admin bearer token to the underlying worker.
+9. **Historical gateway header forwarding issue is remediated.** The gateway now strips inbound `Authorization`, cookies, and `x-natstack-*` before workerd proxying, stamps a gateway-scoped upstream bearer, and dispatches git in-process after caller-token validation.
 
 10. **`panelHttpServer`'s management API uses a static bearer token and adds `Access-Control-Allow-Origin: *`** (`panelHttpServer.ts:506`). Because the `Authorization` header is not a cookie, CSRF is unlikely; but the `*` plus wildcard `Access-Control-Allow-Headers: Authorization` lets any site harvest `/api/panels` via `fetch(…, { headers: { Authorization } })` if it can obtain or brute-force the token.
 
@@ -93,9 +93,9 @@ There is also an HTTP fallback: `POST /rpc` on the same server (or via gateway).
 
 Single-port front door:
 
-- `GET /healthz[?token=]` — public liveness; admin token unlocks detailed body.
+- `GET /healthz` — public liveness; `Authorization: Bearer <admin>` unlocks detailed body.
 - `/_w/*` — reverse-proxy to workerd (HTTP and Upgrade).
-- `/_r/*` — route registry dispatch (`RouteRegistry.lookup`). Auth is `public` or `admin-token`, extracted from `?token=` or `X-NatStack-Token` header.
+- `/_r/*` — route registry dispatch (`RouteRegistry.lookup`). Auth is `public`, `admin-token`, or `caller-token`; protected routes use `Authorization: Bearer <token>`.
 - `/_git/*` — reverse-proxy to git server with path stripped.
 - `POST /rpc` — forwarded to `RpcServer.handleGatewayHttpRequest`.
 - WebSocket upgrades on `/rpc` are forwarded to the RPC server; upgrades on `/_w/*` or `/_r/*` go through proxy or route dispatch.
@@ -125,7 +125,7 @@ Two separate IPC surfaces:
 ### 2.8 Browser/mobile/panel transport (`src/preload/wsTransport.ts`, `src/server/browserTransportEntry.ts`)
 
 - `createWsTransport({viewId, wsPort, authToken, callerKind, wsUrl?})` opens a WebSocket, sends `ws:auth`, reconnects with jittered exponential backoff on non-terminal closes. `callerKind` in the config is ignored by the server — the server derives caller kind from the token's entry.
-- `browserTransportEntry.ts` exposes `globalThis.__natstackTransport` into panel pages served by the gateway. It reads `__natstackRpcToken`/`__natstackRpcWsUrl` that `configLoader.js` populates from sessionStorage or the `__natstackShell.getPanelInit()` IPC call.
+- `browserTransportEntry.ts` exposes `globalThis.__natstackTransport` into panel pages served by the gateway. It reads `__natstackGatewayToken` / `__natstackGatewayRpcWsUrl` that `configLoader.js` populates from sessionStorage or the `__natstackShell.getPanelInit()` IPC call.
 
 ---
 
@@ -171,30 +171,12 @@ Severity scale: **Critical / High / Medium / Low / Informational**. Line numbers
 - Attack path: any panel (`callerKind: "panel"`) invokes `authTokens.getProviderToken("openai")` via its WS/IPC transport and receives the plaintext bearer/API key used for OpenAI/Anthropic/etc. calls. There is no method-level policy tightening and no `ctx` check in the handler.
 - Remediation: raise the service-level policy to `{allowed: ["shell", "worker", "server"]}` and add method-level `policy: { allowed: ["worker","server"] }` on `getProviderToken`; panels that genuinely need to display provider state should call a scoped `listProviders` or a `providerStatus(providerId)` that returns only booleans and display labels. Same for `persist` and `logout`.
 
-### 4.2 CRITICAL — `git.getTokenForPanel` / `revokeTokenForPanel` reachable by panels
+### 4.2 REMEDIATED — old panel git-token RPC surface removed
 
-- File: `src/server/services/gitService.ts:18-62`
-- Snippet:
-
-  ```ts
-  policy: { allowed: ["shell", "panel", "server", "worker"] },
-  methods: {
-    ...
-    getTokenForPanel:   { args: z.tuple([z.string()]) },
-    revokeTokenForPanel:{ args: z.tuple([z.string()]) },
-    ...
-  },
-  handler: async (_ctx, method, args) => {
-    ...
-    case "getTokenForPanel":    return g.getTokenForPanel(args[0] as string);
-    case "revokeTokenForPanel": g.revokeTokenForPanel(args[0] as string); return;
-    ...
-  }
-  ```
-
-- `_ctx` is unused; there is no check that `args[0] === ctx.callerId`.
-- Attack path: panel A calls `git.getTokenForPanel("panel-B")` → receives panel B's git push bearer. `git.revokeTokenForPanel("*")` lets any panel disable git operations for any other panel (or cause denial of service by revoking shell's token).
-- Remediation: either move these methods to a `{ allowed: ["server"] }` policy and have panels that need their own token read it at bootstrap, or enforce `args[0] === ctx.callerId` inside the handler.
+The previous `git.getTokenForPanel` / `git.revokeTokenForPanel` service methods
+are no longer part of `gitService`. Panel git access now goes through gateway
+caller tokens and the in-process git handler; panels do not ask the git service
+for another panel's bearer credential.
 
 ### 4.3 CRITICAL — `fs.bindContext` allows cross-context pivot
 
@@ -349,9 +331,7 @@ Severity scale: **Critical / High / Medium / Low / Informational**. Line numbers
     (proxyRes) => { res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers); proxyRes.pipe(res); });
   ```
 
-- All headers — including `Authorization`, `X-NatStack-Token`, `Cookie` — are passed through verbatim to workerd. Workerd is typically bound to `127.0.0.1`, but any worker that happens to read `request.headers` sees host-level admin tokens.
-- Attack path: a worker author (who is, by policy, untrusted) adds `const admin = req.headers.get("x-natstack-token")` and exfiltrates. Since workers are user-code by design (panels render builds of worker packages), a malicious workspace can harvest admin tokens from any user who opens it.
-- Remediation: strip `Authorization`, `X-NatStack-Token`, and `Cookie` on the proxy path before re-sending. Replace with a narrow workerd-scoped token if the downstream needs identity.
+- Current code strips `Authorization`, `Cookie`, `Proxy-Authorization`, and `x-natstack-*` before forwarding to workerd, then injects a gateway-scoped workerd bearer. This finding is remediated in the gateway path.
 
 ### 4.13 MEDIUM — `panelHttpServer` management API is CORS-wide-open
 
@@ -446,7 +426,7 @@ Severity scale: **Critical / High / Medium / Low / Informational**. Line numbers
 
 ### 4.23 LOW — `panelHttpServer` serves panel HTML that embeds an inline script if configured poorly
 
-- File: `src/server/panelHttpServer.ts:622-692`. The server serves `build.html` with no CSP header. Combined with `/__transport.js` served as `public, max-age=3600` and with `/__loader.js`, a panel page has full access to `__natstackRpcToken`.
+- File: `src/server/panelHttpServer.ts:622-692`. The server serves `build.html` with no CSP header. Combined with `/__transport.js` served as `public, max-age=3600` and with `/__loader.js`, a panel page has full access to `__natstackGatewayToken`.
 - Remediation: emit a strict CSP on panel HTML responses (`default-src 'none'; script-src 'self'; connect-src ws://externalHost:*;`). This reduces XSS → token exfil risk.
 
 ### 4.24 LOW — WS auth timeout is lenient
@@ -468,7 +448,7 @@ Severity scale: **Critical / High / Medium / Low / Informational**. Line numbers
 
 ### 4.27 LOW — Browser transport caches token in `sessionStorage`
 
-- File: `src/server/configLoader.ts:13-34`. `sessionStorage.setItem("__natstackPanelInit", JSON.stringify(cfg))` stores the full panel init (including `rpcToken`) in the panel's sessionStorage. Any XSS on the panel exfiltrates it.
+- File: `src/server/configLoader.ts`. `sessionStorage.setItem("__natstackPanelInit", JSON.stringify(cfg))` stores the full panel init (including `gatewayConfig.token`) in the panel's sessionStorage. Any XSS on the panel exfiltrates it.
 - Remediation: avoid persisting the token: re-fetch via `__natstackShell.getPanelInit()` on each page load (already the code path when the shell is present). For gateway-served panels, consider a short-lived, HttpOnly cookie bound to the gateway origin plus a server-side mapping keyed by panelId, rather than injecting the bearer into JS globals.
 
 ### 4.28 LOW — `workers.callDO` handler logs `doMethod` and `objectKey`
@@ -509,7 +489,6 @@ Severity scale: **Critical / High / Medium / Low / Informational**. Line numbers
 
 3. **Re-audit each server service's method list** for panel-reachable destructive/credential methods. Specifically:
    - `authTokens.getProviderToken / persist / logout` → tighten to `shell/worker/server`.
-   - `git.getTokenForPanel / revokeTokenForPanel` → either enforce `panelId === ctx.callerId` or drop `panel` from allowed.
    - `workers.callDO` → drop `panel`.
    - `workspace.setConfigField / select / setInitPanels` → drop `panel`/`worker`.
    - `credentials.revokeConsent` → require `connectionId`.
@@ -524,7 +503,7 @@ Severity scale: **Critical / High / Medium / Low / Informational**. Line numbers
 
 7. **Verify `__instanceToken` in workerd.** Either add a workerd-level middleware that validates the token against `TokenManager`, or stop sending it and move DO invocations to a gateway path that authenticates.
 
-8. **Remove `Authorization`/`X-NatStack-Token`/`Cookie` from the gateway's workerd proxy headers.** Replace with a narrow DO-auth header if needed.
+8. **Done:** gateway workerd proxying strips inbound auth/cookie headers and injects a narrow workerd-scoped bearer.
 
 9. **CSP on panel HTML.** `default-src 'none'; script-src 'self'; connect-src <gateway-url>; img-src 'self' data:; style-src 'self' 'unsafe-inline';` — at minimum `script-src 'self'` to frustrate token exfil via injected JS.
 

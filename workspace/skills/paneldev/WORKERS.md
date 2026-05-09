@@ -19,8 +19,10 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
 | `contextId` | value |  |  |
-| `gitConfig` | value |  |  |
-| `pubsubConfig` | value |  |  |
+| `gatewayConfig` | value |  | Gateway base URL and bearer token for NatStack service routes. |
+| `gatewayFetch` | value |  | Fetch helper that prefixes gateway-relative paths and adds Authorization: Bearer. |
+| `gitConfig` | value |  | Git HTTP endpoint and token derived from the gateway config. |
+| `pubsubConfig` | value |  | Always null in worker runtime; PubSub access goes through service routes. |
 | `callMain` | value |  |  |
 | `openExternal` | value |  |  |
 | `getWorkspaceTree` | value |  |  |
@@ -100,24 +102,20 @@ const meta = await callMain("blobstore.stat", digest); // { size, mtime } | null
 **Streaming binary I/O via the gateway**:
 
 ```ts
-const env = (globalThis as any).__natstackEnv;
-const headers = { "X-NatStack-Token": env.RPC_AUTH_TOKEN };
 // Writes are streaming — pass any Readable / ReadableStream as the body.
-const put = await fetch(`${env.SERVER_URL}/_r/s/blobstore/blob`, {
+const put = await runtime.gatewayFetch("/_r/s/blobstore/blob", {
   method: "PUT",
-  headers,
   body,
 });
 const { digest, size } = await put.json();
 
-const get = await fetch(`${env.SERVER_URL}/_r/s/blobstore/blob/${digest}`, { headers });
+const get = await runtime.gatewayFetch(`/_r/s/blobstore/blob/${digest}`);
 // `get.body` is a ReadableStream of the original bytes.
 ```
 
-The gateway extracts the auth token from `X-NatStack-Token` (header) or
-`?token=` (query); it does not read `Authorization: Bearer`. Worker tokens
-are minted from the central `TokenManager`, so the route's `caller-token`
-auth admits them.
+`gatewayFetch` prefixes `GATEWAY_URL` and sends `Authorization: Bearer
+<RPC_AUTH_TOKEN>`. Worker tokens are minted from the central `TokenManager`,
+so the route's `caller-token` auth admits them.
 
 `blobstore.delete` and `blobstore.list` are restricted to shell/server callers
 and cannot be invoked from a worker — design the upper layer (e.g. a server

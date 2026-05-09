@@ -79,7 +79,7 @@ services.push({
 
 - `fetch("http://169.254.169.254/latest/meta-data/iam/security-credentials/…")` — AWS IMDSv1, no token. The proxy's per-provider manifest machinery was the only thing that would have blocked this.
 - `fetch("http://127.0.0.1:${rpcPort}/rpc", { headers: { authorization: "Bearer "+RPC_AUTH_TOKEN }, body: JSON.stringify({ service:"workerd", method:"createInstance", args:[{ source:"workers/attacker", contextId:"ctx", name:"x", …}]})})` — privilege-escalate by RPC'ing `workerd.createInstance` with arbitrary `source` / `stateArgs`. (`workerdService.policy.allowed` includes `"worker"`, so callerKind=worker is acceptable.)
-- `fetch("http://localhost:${gitServerPort}/…")` — every worker has a `gitToken` in its env via `buildPanelEnv` if created from a panel. `GitAuthManager.canAccess` allows fetch for any authenticated token, so a compromised worker can clone any repo the git server knows about, including `github.com/<any>/<any>` (auto-clone is triggered by the fetch).
+- `fetch(GATEWAY_URL + "/_git/…", { headers: { authorization: "Bearer "+RPC_AUTH_TOKEN } })` — workers no longer receive a separate git bearer, but they do receive a real caller token plus gateway URL. If git policy over-allows that caller, a compromised worker can still exercise git through the authenticated gateway path.
 - Any on-host service: Redis at 6379, Postgres at 5432, Elasticsearch at 9200, the developer's ssh-agent UNIX socket forwarded over TCP, etc.
 - Data exfiltration to any attacker-controlled host with no audit trail.
 
@@ -91,7 +91,7 @@ services.push({
    - a `globalOutbound` that points at an `externalServer: { address: "127.0.0.1:$egressPort", http: { … } }` — workerd can be configured to have outbound HTTP go through an external HTTP proxy by treating the proxy as an external service and URL-rewriting, though this is non-trivial with Cap'n-Proto config; or
    - remove the per-worker `network` service entirely and force every outbound through a fetch-binding that the worker must call explicitly.
 2. Until (1) lands, at minimum set `network.deny` to the RFC1918 / loopback / link-local / ULA set and remove `"local"` from `allow`. `deny` takes CIDR blocks in workerd.
-3. Do not give workers the `gitToken` / `RPC_AUTH_TOKEN` by default — today they land in the worker's env in cleartext, and since outbound is unrestricted the worker can re-use either from inside its own process or leak them.
+3. Do not give workers `RPC_AUTH_TOKEN` by default, or scope it to the minimum worker-specific capabilities — today it lands in the worker's env in cleartext alongside `GATEWAY_URL`, and since outbound is unrestricted the worker can re-use it from inside its own process or leak it.
 
 Severity: **Critical** — this is the stated mechanism protecting credentials and it does not run.
 
@@ -283,31 +283,31 @@ Severity: **High** — exposed to worker code today.
 
 ---
 
-### S6 — High: CDP is a full RCE primitive and is wildcard-bound with URL tokens
+### S6 — High: CDP is a full RCE primitive
 
-**Files**: `src/main/cdpServer.ts:193-370`, `src/server/cdpBridge.ts:115-153`
+**Files**: `src/main/cdpServer.ts`, `src/server/cdpBridge.ts`
 
-- `http.createServer().listen(port, () => …)` binds **all interfaces** (IPv6 unspecified `::`, which accepts IPv4 mapped too). Nothing restricts clients to loopback. `log.verbose(\` Started on ws://localhost:\${port}\`)` is misleading — the log string lies.
-- Authentication is a token in the URL query string (`?token=…`). URL query strings are logged by any intermediary (reverse proxies, browsers, HAR captures, accesslog tooling), are carried in `Referer` headers if CDP responses link externally, and show up in process titles on some platforms.
+- Electron CDP now binds to loopback explicitly (`127.0.0.1`).
+- CDP authentication no longer uses URL query strings. `getCdpEndpoint` returns `{ wsEndpoint, token }`; browser WebSocket clients open the token-free URL and send a first-frame `{ type: "natstack:cdp-auth", token }` message. This is intentional because browser `WebSocket` cannot set `Authorization: Bearer` headers.
 - After auth, `contents.debugger.sendCommand(msg.method, msg.params, sessionId)` is called with the raw method name and params. There is no allow-list. `Runtime.evaluate`, `Page.navigate`, `Page.downloadFile`, `Network.emulateNetworkConditions`, `Fetch.fulfillRequest`, `Browser.setDownloadBehavior` with arbitrary `downloadPath`, `Page.captureScreenshot`, etc. are all reachable.
 - `CdpServer.canAccessBrowser` authorises both the **direct owner** and any **tree ancestor** panel of the browser. That policy is documented (`cdpServer.ts:132-161`), but the "tree ancestor" clause means any ancestor panel compromise yields automation of every descendant browser (including navigation / XSS / cookie theft). Combined with S1 this means an agent worker can reach the CDP WebSocket directly.
-- `CdpBridge` (`src/server/cdpBridge.ts:115-153`) mirrors all of this for remote / extension-backed CDP: single query-string token, same sendCommand shape.
+- `CdpBridge` mirrors the same raw CDP command surface for remote / extension-backed CDP, but it also uses the first-frame auth protocol instead of query tokens.
 
 **Attack paths**:
 
-1. Any process on the LAN can connect once it has a panel token. Tokens are 32-char random, but they travel in logs.
+1. Any local process that obtains a panel token can connect to Electron CDP; any remote client with a valid token and browser access can connect through the remote CDP bridge.
 2. Any panel/worker can proxy through `/rpc` to acquire its own browser's CDP endpoint (`panel.createBrowser`), which returns `getCdpEndpoint` — there's no separation between "panel may open browser" and "panel may pilot browser".
 3. `contents.debugger.sendCommand("Runtime.evaluate", { expression: "<attacker-JS>" })` = full main-world execution inside the browser's webContents, which in Electron has access to `window` of arbitrary origins if the browser has navigated there — sufficient to exfiltrate cookies, session storage, etc.
 4. `Page.navigate` → `file:///…` can in some Electron configurations read local files into the target page.
 
 **Remediation**:
 
-- Bind `127.0.0.1` explicitly: `this.server!.listen(port, "127.0.0.1", () => resolve())`. Do the same for `CdpBridge` / `/cdp/*` upgrades served by the gateway.
-- Move token from query string to a WebSocket sub-protocol or an opening `authenticate` frame. At a minimum, do not log URLs that carry tokens and strip `?token=` from `req.url` before any log/audit write.
+- Preserve explicit loopback binding for Electron CDP.
+- Preserve token-free CDP URLs and first-frame WebSocket authentication; do not reintroduce `?token=` compatibility.
 - Consider an allow-list of CDP methods. Pages need `Page.*`, `Runtime.evaluate`, `Network.*`. Worker-originated CDP probably does not need `Debugger.setBreakpoint` → `Debugger.evaluateOnCallFrame` (which can step through arbitrary JS) or `Browser.*` methods. Route each `msg.method` through a permission table.
 - Require an extra confirmation gate for `Page.navigate` to `file://` / `chrome://` schemes.
 
-Severity: **High** — token leak = full browser takeover.
+Severity: **High** — a valid CDP token still enables full browser takeover.
 
 ---
 
@@ -518,7 +518,7 @@ db.prepare(`UPDATE panels SET ${updates.join(", ")} WHERE id = ?`).run(...params
 ### Stack-level observations (not ranked)
 
 - **Workerd router code is string-concatenated** (`workerdManager.ts:608-621`). `instanceNames` are `name.replace(/[^a-zA-Z0-9_]/g, "_")` and `JSON.stringify`'d, so injection is mitigated. `doClassNames` are sanitised similarly. No bug today but it is generated JS — any future addition that forgets to sanitise is an immediate XSS-in-router.
-- **Token in URL pattern** (`cdpServer.getCdpEndpoint`, `cdpBridge.getCdpEndpoint`) appears multiple times. Refactor the token carriage to `Sec-WebSocket-Protocol` once, everywhere.
+- **CDP first-frame auth** (`cdpServer.getCdpEndpoint`, `cdpBridge.getCdpEndpoint`) now keeps tokens out of URLs. Keep that pattern centralized; browser WebSocket clients cannot set bearer headers.
 - **`trustBrowserCas: true`** on worker network services (`workerdManager.ts:403`, `workerdManager.ts:489`) should be audited: for outbound traffic to public APIs it is correct, but combined with the `"local"` allow-list workers can speak TLS to loopback services too.
 - **`autoCreate: true` on git server** (`server.ts:172`) means a push to any previously-unknown path creates a new repo there. Combined with `GitAuthManager.canAccess` returning `allowed: true` for non-`tree/` non-`singleton/` paths (`auth.ts:49`), a token-bearing client can `git push` to `../../../tmp/foo` — though the `normalizeRepoPath` + `node-git-server`'s `dirMap` normalization should block traversal, the combination is fragile and merits an explicit allow-list of write-permitted prefixes.
 - **workerd process env inheritance** — `spawn(binary, [...], { env: { ...process.env } })` (`workerdManager.ts:693`) passes the full server environment (including any `AWS_*`, `GITHUB_TOKEN`, `ANTHROPIC_API_KEY`) to workerd. workerd's own `WORKER_*` text bindings expose the ones we intend. But a misconfigured worker or a workerd regression that reads `process.env` directly would inherit everything. Prefer `{ env: allowlist(process.env) }`.

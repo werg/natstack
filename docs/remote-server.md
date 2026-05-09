@@ -119,11 +119,11 @@ natstack-server --workspace my-workspace --host 0.0.0.0
 
 The gateway exposes `GET /healthz` on both HTTP and HTTPS builds — it always
 returns `{"ok":true,"protocol":"http|https"}`. For detailed fields (`version`,
-`uptimeMs`, `workerd`, `tokenSource`) pass the admin token via either:
+`uptimeMs`, `workerd`, `tokenSource`) pass the admin token as a Bearer token:
 
-- `?token=<admin-token>` query param (convenient for curl), or
-- `X-NatStack-Token: <admin-token>` request header (what the Electron main
-  process uses; keeps the token out of URLs, referer headers, and proxy logs).
+```bash
+curl -H "Authorization: Bearer $NATSTACK_ADMIN_TOKEN" https://your-host/healthz
+```
 
 The Electron main process polls `/healthz` every 60s in remote mode and
 forwards samples to the renderer via the `server-health` event — the badge
@@ -230,11 +230,15 @@ forward.
 
 1. Electron parses the remote URL and validates it (must be http or https)
    It must also be a trustworthy origin: `https://...`, or loopback `http://...`.
-2. Opens a WebSocket to `ws[s]://<host>:<port>/rpc`
-3. Authenticates with the admin token
-4. Fetches workspace metadata from the server via RPC
-5. Creates an RPC-backed proxy for all panel HTTP operations
-6. All panel rendering, builds, git, AI, etc. are served by the remote server
+2. Exchanges the admin token over `/_r/s/auth/exchange-admin-for-shell` for a
+   short-lived shell caller token
+3. Opens a WebSocket to `ws[s]://<host>:<port>/rpc`
+4. Authenticates the WebSocket with the shell caller token. If the remote server
+   restarts and forgets in-memory caller tokens, Electron re-runs the exchange
+   before retrying the RPC WebSocket.
+5. Fetches workspace metadata from the server via RPC
+6. Creates an RPC-backed proxy for all panel HTTP operations
+7. All panel rendering, builds, git, AI, etc. are served by the remote server
 
 ### Electron state in remote mode
 

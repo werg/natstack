@@ -26,10 +26,10 @@ The highest-severity issues are:
 | F-06 | **High**    | Third-party provider manifests (`@someone/natstack-provider-foo`) are trusted unconditionally — no signing, no allow-list — and control `apiBase` (→ which hosts get `Authorization: Bearer <user-token>` stamped) and `tokenUrl` (→ where the refresh-token is POSTed). |
 | F-07 | **High**    | Webhook relay (Cloudflare Worker) has **no HMAC / auth / verification** at all — receiving endpoint for provider webhooks is an open drop box. |
 | F-08 | **Medium**  | Full request URLs (with query strings) persisted to audit log (`~/.config/natstack/logs/credentials-audit-YYYY-MM-DD.jsonl`). Some provider APIs put auth codes / tokens / sensitive IDs in query strings. Log file created with default mode (not `0o600`). |
-| F-09 | **Medium**  | Panel bootstrap RPC token is persisted in `sessionStorage` (`__natstackPanelInit`) and exposed as `globalThis.__natstackRpcToken` — any script in the panel's origin (incl. supply-chain-poisoned npm deps bundled into the panel) can read it. |
+| F-09 | **Medium**  | Panel bootstrap gateway caller token is persisted in `sessionStorage` (`__natstackPanelInit`) and exposed as `globalThis.__natstackGatewayToken` / `__natstackGatewayConfig` — any script in the panel's origin (incl. supply-chain-poisoned npm deps bundled into the panel) can read it. |
 | F-10 | **Medium**  | `remoteCredentialStore` falls back to **plaintext token on disk** when Electron `safeStorage` is unavailable (only emits a `log.warn`). Behaviour is silent from the user's perspective. |
 | F-11 | **Medium**  | `fetchPeerFingerprint` / `healthProbe` TOFU: first-time connect accepts the server-presented cert fingerprint under an "observedFingerprint" UX; but there is no pinning / UI friction enforced inside the daemon layer — relies entirely on the user visually comparing a 64-char hash. |
-| F-12 | **Medium**  | Mobile `PanelWebView` copies `panelInit` (which contains `rpcToken`, `gitToken`) into `sessionStorage` inside the WebView. WebView sessionStorage isolation is per-origin; any JS the panel loads from a third-party script tag can read it. |
+| F-12 | **Medium**  | Mobile `PanelWebView` copies `panelInit` (which contains `gatewayConfig.token`) into `sessionStorage` inside the WebView. WebView sessionStorage isolation is per-origin; any JS the panel loads from a third-party script tag can read it. |
 | F-13 | **Medium**  | OAuth `state` / `nonce` parameters for `completeConsent` are unauthenticated — any caller (including panel, worker) on the local RPC can drive `credentials.completeConsent` if they learn the nonce. Mitigated because nonces live in-memory and are single-use, but there is no caller-binding. |
 | F-14 | **Low**     | PKCE `codeVerifier` is stored in `pendingConsents` Map indefinitely with no expiry sweep; grows unbounded on abandoned flows. |
 | F-15 | **Low**     | Panel HTML responses disable caching (`Cache-Control: no-store`) but `/__loader.js` is cached `public, max-age=3600` — since that script contains no secrets (the init fetch is dynamic) this is fine, but worth re-asserting during review. |
@@ -496,19 +496,20 @@ async append(entry: AuditEntry): Promise<void> {
 
 ---
 
-### F-09 — Panel `rpcToken` exposed via `sessionStorage` and `globalThis`  [**Medium**]
+### F-09 — Panel gateway token exposed via `sessionStorage` and `globalThis`  [**Medium**]
 
 **File / Line:** `src/server/configLoader.ts:10-50`.
 
 ```js
 sessionStorage.setItem("__natstackPanelInit", JSON.stringify(cfg));   // :26
 ...
-globalThis.__natstackRpcToken = cfg.rpcToken;                         // :48
+globalThis.__natstackGatewayToken = cfg.gatewayConfig.token;
+globalThis.__natstackGatewayConfig = cfg.gatewayConfig;
 ```
 
-The panel RPC token is:
+The panel gateway caller token is:
 - Injected into the page global namespace. Any script on the page origin
-  reads it via `globalThis.__natstackRpcToken`.
+  reads it via `globalThis.__natstackGatewayToken`.
 - Persisted to `sessionStorage`. Any script can `sessionStorage.getItem(...)`
   it.
 
@@ -617,12 +618,11 @@ if (panelInit !== null) {
 ```
 
 Same class of issue as F-09 for the mobile surface. Mobile additionally has
-the concern that `rpcToken` (the shell token or a panel-specific token) sits
-in WebView `sessionStorage`; if the panel loads any <script src="..."> that
-is then network-tampered (mobile networks, captive portals, misconfigured
-plaintext in-app URLs), it reads the token. iOS/Android keychain storage in
-`auth.ts` is correct for the shell token; the exposure is the subsequent
-panel-token handoff into WebView land.
+the concern that `gatewayConfig.token` sits in WebView `sessionStorage`; if
+the panel loads any <script src="..."> that is then network-tampered (mobile
+networks, captive portals, misconfigured plaintext in-app URLs), it reads the
+token. iOS/Android keychain storage in `auth.ts` is correct for the shell
+token; the exposure is the subsequent panel-token handoff into WebView land.
 
 **Remediation.**
 

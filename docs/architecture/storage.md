@@ -103,17 +103,15 @@ Auth threading uses the new `caller-token` mode on the route registry —
 **not** the admin token (admin is a separate, higher-privilege mode). See
 [../routes.md](../routes.md#auth-model).
 
-## Trusted Bridge Identity
+## Trusted Shell Identity
 
-Electron main connects to the server with the admin token, but renderer calls
-must retain the renderer's caller identity for service policy checks. The
-WebSocket RPC envelope supports `forwardedIdentity: { callerId, callerKind }`.
-`RpcServer` honors it only on admin-authenticated connections.
+Electron main exchanges the admin token for a shell caller token before opening
+RPC. Server policy checks use the authenticated WebSocket caller identity
+directly; the wire protocol does not support caller-identity forwarding.
 
-This lets shell renderers call shell-only server methods through Electron's
-trusted bridge while preventing workers or panels from forging shell identity.
-`browser-data` relies on this: sensitive methods such as password, cookie, and
-history reads remain method-level shell-only policies.
+Shell-only methods remain restricted by method-level policies. `browser-data`
+relies on this: sensitive methods such as password, cookie, and history reads
+are available to shell callers, not panels or workers.
 
 ## External SQLite Input
 

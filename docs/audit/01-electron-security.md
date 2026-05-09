@@ -520,20 +520,23 @@ Script text comes from `this.engine.getCosmeticsFilters({...})` — i.e., from t
 
 ### [LOW-1] `cdpServer` uses `ws://localhost` without TLS
 
-**File:** `src/main/cdpServer.ts:170-171`
+**File:** `src/main/cdpServer.ts`
 
 ```ts
-return `ws://localhost:${this.getPort()}/${browserId}?token=${token}`;
+return {
+  wsEndpoint: `ws://${CDP_BIND_HOST}:${this.getPort()}/${browserId}`,
+  token,
+};
 ```
 
-The endpoint URL is handed to panels via `getCdpEndpoint`. An attacker on the same host (other user) could bind a server to the same port first — `findServicePort` scans for free ports, so if an attacker races to bind a known port, they could theoretically intercept. The token in the query string at least prevents trivial impersonation. Token is validated on ws upgrade.
+The endpoint URL is handed to panels via `getCdpEndpoint`. An attacker on the same host (other user) could bind a server to the same port first — `findServicePort` scans for free ports, so if an attacker races to bind a known port, they could theoretically intercept. The endpoint token is no longer embedded in the URL; browser WebSocket clients authenticate by sending a first-frame `{ type: "natstack:cdp-auth", token }` message after the WebSocket opens.
 
-Low-risk because (a) local-only, (b) token-gated, (c) Electron app is typically the only user-session process binding these ports. But tokens in query strings get logged by proxies/firewalls/dev-tools; moving to `Authorization` header or WS subprotocol would be cleaner.
+Low-risk because (a) local-only, (b) token-gated, (c) Electron app is typically the only user-session process binding these ports, and (d) tokens are no longer carried in query strings.
 
 **Remediation:**
 
-- Use `Sec-WebSocket-Protocol: natstack-cdp.${token}` or a header instead of a query param to avoid log leakage.
-- Consider binding to `127.0.0.1` (not `localhost`) explicitly to avoid resolution races on IPv4/IPv6.
+- Keep `127.0.0.1` binding explicit to avoid resolution races on IPv4/IPv6.
+- Keep CDP auth token carriage out of the URL. Browser `WebSocket` cannot set `Authorization` headers, so use the first-frame auth protocol rather than reintroducing query tokens.
 
 ---
 

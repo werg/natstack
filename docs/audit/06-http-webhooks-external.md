@@ -21,7 +21,12 @@ That said, the audit found **several exploitable or latent weaknesses** that war
 5. **Very permissive CSP on panels** (`script-src 'self' 'unsafe-inline' 'unsafe-eval'`, `connect-src … ws: wss: https:`) makes any XSS in a panel trivially escalate. **Severity: Medium** (accepted by design for panel runtime — should be documented).
 6. **Host-header-derived `URL` construction** in `panelHttpServer.handleRequest` allows Host-header injection for logging/`req.url` side-effects — no direct exploit found, but documented below.
 7. **Management API on panel HTTP server does not require auth when `managementToken` is null** (validateManagementAuth returns true). Any caller can enumerate running panels / context IDs. **Severity: Medium** in any non-Electron deployment.
-8. **Gateway reverse-proxy to workerd (`/_w/`) and git (`/_git/`) is unauthenticated** at the gateway layer — these rely on the upstream services to enforce auth. workerd enforces per-worker tokens for DO dispatch, but `git` is guarded by `GitAuth` that relies on `Authorization` headers supplied by the client; a **missing Authorization header hits a 502/4xx at git-server, not a 401 at the gateway**. **Severity: Medium** (defense-in-depth gap).
+8. **Historical gateway auth gap for workerd/git has been remediated.** `/_w/*`
+   now requires a caller bearer at the gateway and receives only a gateway-scoped
+   upstream bearer; `/_git/*` requires a caller bearer at the gateway (except
+   CORS `OPTIONS`) and dispatches in-process with caller identity. Inbound
+   `Authorization`, cookies, and `x-natstack-*` headers are stripped before any
+   workerd proxying.
 9. **Egress proxy CONNECT tunnel (`EgressProxy.handleConnect`) has no provider-matching / consent check** — only requires the two attribution headers to be present. Any worker that can set those headers (which every worker can, via the proxy-auth wiring) tunnels arbitrary TLS traffic without consent enforcement, bypassing the capability/rate-limit/audit path that HTTP requests take. **Severity: High** if workers are untrusted.
 10. **Audit log entries include full request URL** (including query strings, which for many providers carry access tokens). Log records are JSONL files; log injection is blocked by `JSON.stringify`, but secrets landing in logs is the real concern. **Severity: Medium.**
 11. **Default `apple-app-site-association` path pattern `/oauth/callback/*`** and Android assetlinks don't yet have real fingerprints in `config.json` (TODO placeholders). A released build with placeholder values would bind universal links to no apps / wrong apps. **Severity: Build-time — blocker if shipped.**
@@ -38,12 +43,12 @@ No findings affect the core TLS-pinning implementation (`src/main/tlsPinning.ts`
 
 | Method | Path | Handler | Auth |
 |---|---|---|---|
-| GET | `/healthz` | inline | none for basic; admin token (`?token=` OR `X-NatStack-Token`) gates detailed fields |
-| GET/WS | `/rpc` | `RpcServer.handleGatewayHttpRequest` / `handleGatewayWsConnection` | Bearer (HTTP) or `ws:auth` (WS) — admin token OR per-caller token |
-| ANY | `/_w/*` | reverse proxy → workerd | none at gateway; workerd checks per-worker tokens |
+| GET | `/healthz` | inline | none for basic; admin token via `Authorization: Bearer` gates detailed fields |
+| GET/WS | `/rpc` | `RpcServer.handleGatewayHttpRequest` / `handleGatewayWsConnection` | Bearer (HTTP) or `ws:auth` (WS) — per-caller tokens only; admin tokens are rejected |
+| ANY | `/_w/*` | reverse proxy → workerd | caller bearer at gateway; gateway-scoped bearer to workerd |
 | ANY | `/_r/w/<source>/...` | route lookup → workerd rewrite | route `auth` attr (public / admin-token) |
 | ANY | `/_r/s/<service>/...` | in-proc service handler | route `auth` attr |
-| ANY | `/_git/*` | reverse proxy → git server | none at gateway; upstream handles |
+| ANY | `/_git/*` | in-process git handler | caller bearer at gateway, except CORS `OPTIONS` |
 | other | `*` | `PanelHttpServer.handleGatewayRequest` | varies (see below) |
 
 Upgrade path mirrors HTTP: `/rpc`, `/_w/`, `/_r/` with WS-enabled routes, and anything else goes to the panel HTTP upgrade handler (CDP bridge).
@@ -65,7 +70,7 @@ CORS on `/api/*`: `Access-Control-Allow-Origin: *`, `Allow-Methods: GET, OPTIONS
 
 | Method | Path | Auth |
 |---|---|---|
-| POST | `/rpc` | `Authorization: Bearer <token>` — admin token OR per-caller token (validated via `TokenManager`) |
+| POST | `/rpc` | `Authorization: Bearer <token>` — per-caller tokens only; admin tokens are rejected |
 
 ### Webhook relay (Cloudflare Worker) — `apps/webhook-relay/src/index.ts`
 
@@ -97,43 +102,12 @@ Ephemeral `127.0.0.1:0` HTTP server, one path: `GET /callback`. Lifetime is one 
 
 ## Findings (severity-ordered)
 
-### F-01 — HIGH — Non-constant-time admin-token comparison
+### F-01 — REMEDIATED — Admin-token comparison and carriage
 
-**Files:**
-- `packages/shared/src/tokenManager.ts:133` — `return this.adminToken !== null && token === this.adminToken;`
-- `src/server/gateway.ts:88` — `if (params.get("token") === adminToken) detailed = true;`
-- `src/server/gateway.ts:91` — `if (typeof headerToken === "string" && headerToken === adminToken) detailed = true;`
-- `src/server/gateway.ts:317` — `return presented === adminToken;`
-- `src/server/panelHttpServer.ts:538` — `return match?.[1] === this.managementToken;`
-- `apps/webhook-relay/src/index.ts` — (N/A today; no auth)
-
-**Attack:** on a public server, any remote client can measure response latency for `/healthz?token=<guess>` and incrementally recover the admin token byte by byte (string `===` aborts at the first mismatching byte in V8, typically giving a few nanoseconds differential per byte). A 32-byte hex token has 256 characters of search space; at ~1000 measurements per position, recovery is feasible within minutes on a LAN.
-
-**Code snippet (gateway.ts:82–91):**
-```ts
-if (req.method === "GET" && (url === "/healthz" || url.startsWith("/healthz?"))) {
-  let detailed = false;
-  if (adminToken) {
-    const qIdx = url.indexOf("?");
-    if (qIdx !== -1) {
-      const params = new URLSearchParams(url.slice(qIdx + 1));
-      if (params.get("token") === adminToken) detailed = true;   // ← timing
-    }
-    const headerToken = req.headers["x-natstack-token"];
-    if (typeof headerToken === "string" && headerToken === adminToken) detailed = true;  // ← timing
-  }
-```
-
-Same shape appears in `enforceAuth`, in `TokenManager.validateAdminToken`, and in the panel management-API check. `validateToken` is fine (Map lookup, O(1) regardless of input).
-
-**Remediation:** replace every admin-token compare with `crypto.timingSafeEqual` on Buffers of equal length, bail-early only on length mismatch. Wrap in a helper:
-```ts
-function safeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
-}
-```
-Apply at `tokenManager.ts:133`, `gateway.ts:88/91/317`, `panelHttpServer.ts:538`.
+Admin-token checks now use the shared constant-time helper, and `/healthz` /
+route-registry admin auth accept `Authorization: Bearer <token>` rather than
+legacy query-token or `X-NatStack-Token` carriage. RPC also rejects admin tokens;
+clients must exchange admin authority for a caller token before connecting.
 
 ---
 
@@ -244,29 +218,28 @@ The constructor signature is `managementToken?: string`, and nothing in the stan
 
 ---
 
-### F-06 — MEDIUM — Gateway reverse-proxy (`/_w/`, `/_git/`) has no gateway-level auth
+### F-06 — REMEDIATED — Gateway proxy auth and header stripping
 
-**File:** `src/server/gateway.ts:102–123`
+**File:** `src/server/gateway.ts`
 
 ```ts
 // /_w/ → workerd reverse proxy
-if (url.startsWith("/_w/") && workerdPort) {
-  return proxyRequest(req, res, workerdPort, url);
+if (url.startsWith("/_w/")) {
+  if (!validateCallerBearer(req, tokenManager)) return 401;
+  return proxyRequest(req, res, workerdPort, url, workerdToken);
 }
 ...
-// /_git/ → git server reverse proxy
-if (url.startsWith("/_git/") && gitPort) {
-  const gitPath = url.slice(5);
-  return proxyRequest(req, res, gitPort, gitPath);
+// /_git/ → in-process git handler
+if (url.startsWith("/_git/") && gitHandler) {
+  const entry = validateCallerBearer(req, tokenManager);
+  return gitHandler.handleHttpRequest(req, res, entry.callerId, entry.callerKind);
 }
 ```
 
-Upstream (workerd, git) enforces its own auth — but:
-- If an upstream service has an auth bug (e.g., an unprotected endpoint), the gateway happily relays it.
-- The gateway forwards all headers including `Host` (unchanged unless caller overrides via the optional `hostHeader` argument, which is never passed). Host-based virtual-host dispatch in workerd may be confused by a caller-supplied Host (see F-10).
-- `proxyRequest` forwards 502 errors opaquely, including upstream stack traces if the upstream leaks them.
-
-**Remediation:** defense-in-depth — require the admin token on all `/_w/` and `/_git/` paths that are not explicitly whitelisted for public reach. If that breaks legitimate flows, at minimum enforce a same-origin `Referer`/`Origin` check for browser-origin requests.
+Current behavior requires gateway caller authentication before workerd/git access.
+For workerd, caller credentials are stripped and replaced with a narrow
+gateway-internal bearer. For git, the gateway validates the caller token and
+passes caller identity to the in-process handler.
 
 ---
 
@@ -351,9 +324,9 @@ The `GET /` index page emits HTML listing every `sourceRegistry` entry plus ever
 
 **File:** `src/server/index.ts:987–999`
 
-The token-gated branch leaks `version: "0.1.0"`, `uptimeMs`, and `tokenSource`. With the F-01 timing attack, an attacker can use `/healthz?token=…` as the measurable oracle: response body is **uniformly sized for both branches** (good) but status header writes differ by the token comparison branch — same timing signal as F-01.
+The token-gated branch leaks `version: "0.1.0"`, `uptimeMs`, and `tokenSource`. F-01's query-token timing oracle is remediated; the remaining question is whether these fields should be exposed to authenticated admins only or removed from public deployments entirely.
 
-**Remediation:** fix F-01.
+**Remediation:** decide whether detailed health metadata is needed on remote deployments; keep it gated behind `Authorization: Bearer <admin>` if it stays.
 
 ---
 
@@ -473,12 +446,10 @@ res.setHeader("X-Frame-Options", "DENY");
 
 ## Attack Walkthroughs
 
-### Walkthrough 1 — remote timing attack on admin token
+### Walkthrough 1 — remediated historical timing attack on admin token
 1. Attacker knows the server URL (`https://server.example.com:8080`).
-2. Repeatedly `GET /healthz?token=<candidate>` with varying first-byte candidates.
-3. Measure TCP-to-response-body latency. When the first candidate byte matches, the string comparison enters its second iteration → tiny but measurable latency delta.
-4. Repeat 32 × 16 times to recover the 32-byte hex token.
-5. Attacker now has admin token → POST `/rpc` with `Authorization: Bearer <admin>` → full service dispatch → read credentials, trigger builds, invoke any service.
+2. Historically, the attacker could repeatedly request `/healthz?token=<candidate>` and measure branch timing.
+3. Current code no longer accepts query-token admin auth, uses constant-time admin comparisons, and rejects admin tokens on `/rpc`.
 
 **Mitigated by F-01 remediation.**
 
@@ -548,14 +519,14 @@ res.setHeader("X-Frame-Options", "DENY");
 
 ## Appendix B — Quick test commands to verify findings
 
-F-01 (timing):
+F-01 (timing, historical):
 ```sh
 for i in $(seq 1 1000); do
   curl -s -w "%{time_total}\n" -o /dev/null \
     "https://SERVER/healthz?token=$(head -c 64 /dev/urandom | base64 | head -c 32)"
 done | sort -n
 ```
-Consistent low-variance output → indicates token gate is running. Then measure `a000…` vs `z000…` byte 0 candidates; delta in microseconds per byte is the signal.
+This legacy query-token probe should now return only basic health data; it should not unlock detailed health output.
 
 F-02 (webhook stub):
 ```sh

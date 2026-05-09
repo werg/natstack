@@ -8,7 +8,7 @@ The simplest way to run a headless agentic session with eval support:
 import { HeadlessSession, createRpcSandboxConfig } from "@workspace/agentic-session";
 
 const session = await HeadlessSession.createWithAgent({
-  config: { serverUrl: pubsubUrl, token, clientId: "my-harness" },
+  config: { serverUrl: gatewayUrl, token, clientId: "my-harness" },
   sandbox: createRpcSandboxConfig(rpcClient),
   rpcCall: (t, m, ...a) => rpcClient.call(t, m, ...a),
   source: "workers/agent-worker",
@@ -44,7 +44,7 @@ import { subscribeHeadlessAgent } from "@workspace/agentic-session";
 
 // Create session
 const session = HeadlessSession.create({
-  config: { serverUrl: pubsubUrl, token, clientId: "my-harness" },
+  config: { serverUrl: gatewayUrl, token, clientId: "my-harness" },
   sandbox: createRpcSandboxConfig(rpcClient),
 });
 
@@ -70,7 +70,7 @@ For maximum control — no defaults, no convenience wrappers:
 import { SessionManager } from "@workspace/agentic-core";
 
 const manager = new SessionManager({
-  config: { serverUrl: pubsubUrl, token, clientId: "raw-client" },
+  config: { serverUrl: gatewayUrl, token, clientId: "raw-client" },
 });
 
 await manager.connect("existing-channel", {
@@ -92,7 +92,7 @@ When you don't need eval/scope — just messaging:
 
 ```typescript
 const session = await HeadlessSession.createWithAgent({
-  config: { serverUrl: pubsubUrl, token, clientId: "messaging-only" },
+  config: { serverUrl: gatewayUrl, token, clientId: "messaging-only" },
   // No sandbox → eval method is not registered on the client, so the agent
   // only sees set_title in its discovered tools.
   rpcCall: (t, m, ...a) => rpcClient.call(t, m, ...a),
@@ -117,7 +117,7 @@ import { createRpcSandboxConfig } from "@workspace/agentic-session";
 const sandbox = createRpcSandboxConfig(rpc);
 
 const session = await HeadlessSession.createWithAgent({
-  config: { serverUrl: pubsubUrl, token, clientId: `worker-${objectKey}` },
+  config: { serverUrl: gatewayUrl, token, clientId: `worker-${objectKey}` },
   sandbox,
   rpcCall: (t, m, ...a) => rpc.call(t, m, ...a),
   source: "workers/agent-worker",

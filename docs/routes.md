@@ -105,8 +105,8 @@ WebSocket routes, set `websocket: true` and provide an `onUpgrade(req, socket, h
 ## Auth model
 
 Each route opts in to one of three modes via the `auth` field. The gateway
-extracts a token from `?token=<value>` or `X-NatStack-Token` and dispatches
-based on the mode.
+extracts a token only from `Authorization: Bearer <token>` and dispatches based
+on the mode.
 
 - `"public"` (default): the route is reachable without any token. Handlers
   own their own validation (OAuth state parameter, HMAC signature, etc.).
