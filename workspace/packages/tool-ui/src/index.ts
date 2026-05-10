@@ -51,7 +51,7 @@ export {
 // Hooks
 // ============================================================================
 export { useFeedbackManager, type UseFeedbackManagerResult } from "./hooks/useFeedbackManager";
-export { useToolApproval, APPROVAL_LEVELS, type FeedbackFunctions } from "./hooks/useToolApproval";
+export { useToolApproval, APPROVAL_LEVELS } from "./hooks/useToolApproval";
 
 // ============================================================================
 // Utilities

@@ -124,14 +124,6 @@ export interface ToolApprovalSettings {
 export interface UseToolApprovalResult {
   settings: ToolApprovalSettings;
   setGlobalFloor: (level: ApprovalLevel) => void;
-  checkToolApproval: (toolName: string) => boolean;
-  requestApproval: (params: {
-    callId: string;
-    agentId: string;
-    agentName: string;
-    methodName: string;
-    args: unknown;
-  }) => Promise<boolean>;
 }
 
 /**
