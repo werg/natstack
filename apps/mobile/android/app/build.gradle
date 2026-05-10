@@ -2,6 +2,12 @@ apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
 
+// Apply google-services only when the JSON exists locally. Devs without
+// Firebase can copy google-services.template.json to google-services.json.
+if (file("google-services.json").exists()) {
+    apply plugin: "com.google.gms.google-services"
+}
+
 /**
  * React Native Gradle Plugin configuration.
  * https://github.com/facebook/react-native/tree/main/packages/react-native-gradle-plugin

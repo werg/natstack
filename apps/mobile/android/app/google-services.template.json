@@ -1,0 +1,30 @@
+{
+  "_comment": "Local-only Firebase template. Copy to google-services.json and replace every fake value with your Firebase Android app config. The real google-services.json is ignored by git.",
+  "project_info": {
+    "project_number": "000000000000",
+    "project_id": "natstack-local-fake",
+    "storage_bucket": "natstack-local-fake.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:000000000000:android:0000000000000000000000",
+        "android_client_info": {
+          "package_name": "com.natstack.mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD-LOCAL_FAKE_KEY_DO_NOT_USE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

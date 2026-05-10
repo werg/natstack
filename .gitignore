@@ -17,6 +17,10 @@ packages/*/**/*.map
 .env
 .env.local
 .env.*.local
+firebase-service-account.json
+**/firebase-service-account.json
+**/google-services.json
+**/GoogleService-Info.plist
 
 # Build artifacts
 **/.npmrc
