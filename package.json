@@ -24,6 +24,7 @@
     "mobile:logs:internal": "node scripts/mobile-logs.mjs",
     "mobile:emulator": "node scripts/start-mobile-emulator.mjs",
     "mobile:dev": "node scripts/start-mobile-dev.mjs",
+    "mobile:clean": "rm -rf apps/mobile/node_modules && pnpm install",
     "pack": "pnpm build:dist && electron-builder --dir",
     "dist": "pnpm build:dist && electron-builder",
     "dist:mac": "pnpm build:dist && electron-builder --mac",
