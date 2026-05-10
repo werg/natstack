@@ -174,8 +174,6 @@ export function useAgenticChat({
   const chatTools = useChatTools({
     clientRef: core.clientRef,
     tools,
-    addFeedback: feedback.addFeedback,
-    removeFeedback: feedback.removeFeedback,
     contextId: contextId ?? "",
     executeSandbox: boundExecuteSandbox,
     chat,
@@ -203,12 +201,10 @@ export function useAgenticChat({
       try {
         const feedbackMethods = feedbackRef.current.buildFeedbackMethods();
         const toolMethods = chatToolsRef.current.buildToolMethods();
-        const approvalMethod = chatToolsRef.current.buildApprovalMethod();
 
         const methods: Record<string, MethodDefinition> = {
           ...feedbackMethods,
           ...toolMethods,
-          ...approvalMethod,
           set_title: {
             description: "Set the conversation title",
             parameters: z.object({ title: z.string().describe("The new title") }),
