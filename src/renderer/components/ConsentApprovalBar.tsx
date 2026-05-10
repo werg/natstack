@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
-import { Badge, Box, Button, Code, Flex, IconButton, Text, TextField, Tooltip } from "@radix-ui/themes";
+import {
+  Badge,
+  Box,
+  Button,
+  Code,
+  Flex,
+  IconButton,
+  Text,
+  TextField,
+  Tooltip,
+} from "@radix-ui/themes";
 import {
   ChevronDownIcon,
   CheckCircledIcon,
@@ -21,12 +31,32 @@ import type {
   PendingClientConfigApproval,
   PendingUserlandApproval,
 } from "@natstack/shared/approvals";
+import {
+  formatAccount,
+  formatInjection,
+  getApprovalCategoryLabel,
+  getApprovalCopy,
+  getStandardActionCopy,
+  originForUrl,
+  shouldOpenApprovalDetails,
+} from "@natstack/shared/approvalCopy";
 import { useShellEvent } from "../shell/useShellEvent";
-import { shellApproval, view } from "../shell/client";
+import { shellApproval, shellPresence, view } from "../shell/client";
 
 export function ConsentApprovalBar() {
   const [pendingAccess, setPendingAccess] = useState<PendingApproval[]>([]);
   const [secretConfigValues, setSecretConfigValues] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    const heartbeat = () => {
+      void shellPresence
+        .heartbeat()
+        .catch((err: unknown) => console.warn("[ConsentApprovalBar] heartbeat failed:", err));
+    };
+    heartbeat();
+    const intervalId = window.setInterval(heartbeat, 5_000);
+    return () => window.clearInterval(intervalId);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,13 +113,17 @@ export function ConsentApprovalBar() {
     if (current?.kind !== "client-config") return;
     void shellApproval
       .submitClientConfig(current.approvalId, secretConfigValues)
-      .catch((err: unknown) => console.error("[ConsentApprovalBar] submitClientConfig failed:", err));
+      .catch((err: unknown) =>
+        console.error("[ConsentApprovalBar] submitClientConfig failed:", err)
+      );
   };
   const submitCredentialInput = () => {
     if (current?.kind !== "credential-input") return;
     void shellApproval
       .submitCredentialInput(current.approvalId, secretConfigValues)
-      .catch((err: unknown) => console.error("[ConsentApprovalBar] submitCredentialInput failed:", err));
+      .catch((err: unknown) =>
+        console.error("[ConsentApprovalBar] submitCredentialInput failed:", err)
+      );
   };
   const resolveUserland = (choice: string | "dismiss") => {
     if (current?.kind !== "userland") return;
@@ -113,10 +147,7 @@ export function ConsentApprovalBar() {
         backgroundImage: "linear-gradient(var(--sky-a3), var(--sky-a3))",
         borderBottom: "1px solid var(--gray-a6)",
         // Accent strip on top edge.
-        boxShadow: [
-          "inset 0 3px 0 0 var(--sky-9)",
-          "0 4px 12px -4px var(--black-a6)",
-        ].join(", "),
+        boxShadow: ["inset 0 3px 0 0 var(--sky-9)", "0 4px 12px -4px var(--black-a6)"].join(", "),
         flexShrink: 0,
       }}
     >
@@ -143,11 +174,15 @@ export function ConsentApprovalBar() {
 
           <Flex direction="column" gap="1" style={{ minWidth: 0, flex: 1 }}>
             <Flex align="center" gap="2" wrap="wrap" style={{ minWidth: 0 }}>
-              <Text size="1" weight="bold" style={{
-                color: "var(--sky-11)",
-                textTransform: "uppercase",
-                letterSpacing: "0.05em",
-              }}>
+              <Text
+                size="1"
+                weight="bold"
+                style={{
+                  color: "var(--sky-11)",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.05em",
+                }}
+              >
                 {getApprovalCategoryLabel(current)}
               </Text>
               <Text size="2" weight="bold">
@@ -183,9 +218,7 @@ export function ConsentApprovalBar() {
               callerLabel={callerLabel}
               defaultOpen={shouldOpenApprovalDetails(current)}
             />
-            {current.kind === "userland" ? (
-              <UserlandApprovalBody approval={current} />
-            ) : null}
+            {current.kind === "userland" ? <UserlandApprovalBody approval={current} /> : null}
             {current.kind === "client-config" || current.kind === "credential-input" ? (
               <SecretConfigFields
                 approval={current}
@@ -235,12 +268,7 @@ function StandardApprovalActions({
 }) {
   const copy = getStandardActionCopy(approval);
   return (
-    <Flex
-      align="center"
-      className="approval-actions"
-      gap="2"
-      wrap="wrap"
-    >
+    <Flex align="center" className="approval-actions" gap="2" wrap="wrap">
       <DecisionButton
         label={copy.once.label}
         description={copy.once.description}
@@ -296,15 +324,16 @@ function ClientConfigActions({
   onDeny: () => void;
   onDismiss: () => void;
 }) {
-  const missingRequired = approval.fields.some((field) => field.required && !values[field.name]?.trim());
+  const missingRequired = approval.fields.some(
+    (field) => field.required && !values[field.name]?.trim()
+  );
   return (
-    <Flex
-      align="center"
-      className="approval-actions"
-      gap="2"
-      wrap="wrap"
-    >
-      <Tooltip content={missingRequired ? "Enter the required fields first." : "Save this connected service."}>
+    <Flex align="center" className="approval-actions" gap="2" wrap="wrap">
+      <Tooltip
+        content={
+          missingRequired ? "Enter the required fields first." : "Save this connected service."
+        }
+      >
         <Button size="1" variant="solid" color="sky" disabled={missingRequired} onClick={onSubmit}>
           <CheckCircledIcon />
           Save service
@@ -339,15 +368,16 @@ function CredentialInputActions({
   onDeny: () => void;
   onDismiss: () => void;
 }) {
-  const missingRequired = approval.fields.some((field) => field.required && !values[field.name]?.trim());
+  const missingRequired = approval.fields.some(
+    (field) => field.required && !values[field.name]?.trim()
+  );
   return (
-    <Flex
-      align="center"
-      className="approval-actions"
-      gap="2"
-      wrap="wrap"
-    >
-      <Tooltip content={missingRequired ? "Enter the required secret first." : "Save this connected service."}>
+    <Flex align="center" className="approval-actions" gap="2" wrap="wrap">
+      <Tooltip
+        content={
+          missingRequired ? "Enter the required secret first." : "Save this connected service."
+        }
+      >
         <Button size="1" variant="solid" color="sky" disabled={missingRequired} onClick={onSubmit}>
           <CheckCircledIcon />
           Save service
@@ -378,12 +408,7 @@ function UserlandApprovalActions({
 }) {
   return (
     <Flex direction="column" align="end" gap="1">
-      <Flex
-        align="center"
-        className="approval-actions"
-        gap="2"
-        wrap="wrap"
-      >
+      <Flex align="center" className="approval-actions" gap="2" wrap="wrap">
         {approval.options.map((option) => (
           <DecisionButton
             key={option.value}
@@ -435,11 +460,7 @@ function DecisionButton({
   );
 }
 
-function UserlandApprovalBody({
-  approval,
-}: {
-  approval: PendingUserlandApproval;
-}) {
+function UserlandApprovalBody({ approval }: { approval: PendingUserlandApproval }) {
   return (
     <Box
       mt="1"
@@ -456,13 +477,17 @@ function UserlandApprovalBody({
           From <IdCode value={approval.callerId} />
         </Text>
         <Flex direction="column" gap="1">
-          <Text size="1" color="gray">Request</Text>
+          <Text size="1" color="gray">
+            Request
+          </Text>
           <Text size="2" weight="medium" style={{ lineHeight: 1.35, overflowWrap: "anywhere" }}>
             {approval.title}
           </Text>
         </Flex>
         <Flex align="center" gap="2" wrap="wrap">
-          <Text size="1" color="gray">Subject</Text>
+          <Text size="1" color="gray">
+            Subject
+          </Text>
           <IdCode value={approval.subject.id} />
           {approval.subject.label ? <InlineCode>{approval.subject.label}</InlineCode> : null}
         </Flex>
@@ -563,7 +588,8 @@ function SecretConfigFields({
   return (
     <Flex direction="column" gap="2" pt="1" style={{ maxWidth: 620 }}>
       <Text size="1" color="gray" style={{ lineHeight: 1.35 }}>
-        Secrets are entered in NatStack's shell UI, not exposed to panels or workers, and stored encrypted after submission.
+        Secrets are entered in NatStack's shell UI, not exposed to panels or workers, and stored
+        encrypted after submission.
       </Text>
       {approval.fields.map((field) => (
         <Flex key={field.name} direction="column" gap="1">
@@ -623,7 +649,12 @@ function ClientConfigDetails({ approval }: { approval: PendingClientConfigApprov
         icon={<LockClosedIcon />}
         label="Token URL"
         value={
-          <Code size="1" color="amber" variant="soft" style={{ maxWidth: 520, overflowWrap: "anywhere" }}>
+          <Code
+            size="1"
+            color="amber"
+            variant="soft"
+            style={{ maxWidth: 520, overflowWrap: "anywhere" }}
+          >
             {approval.tokenUrl}
           </Code>
         }
@@ -650,8 +681,13 @@ function ClientConfigDetails({ approval }: { approval: PendingClientConfigApprov
         value={
           <Flex align="center" gap="1" wrap="wrap">
             {approval.fields.map((field) => (
-              <Badge key={field.name} color={field.type === "secret" ? "amber" : "gray"} variant="outline">
-                {field.name}{field.type === "secret" ? " (secret)" : ""}
+              <Badge
+                key={field.name}
+                color={field.type === "secret" ? "amber" : "gray"}
+                variant="outline"
+              >
+                {field.name}
+                {field.type === "secret" ? " (secret)" : ""}
               </Badge>
             ))}
           </Flex>
@@ -698,8 +734,13 @@ function CredentialInputDetails({ approval }: { approval: PendingCredentialInput
         value={
           <Flex align="center" gap="1" wrap="wrap">
             {approval.fields.map((field) => (
-              <Badge key={field.name} color={field.type === "secret" ? "amber" : "gray"} variant="outline">
-                {field.name}{field.type === "secret" ? " (secret)" : ""}
+              <Badge
+                key={field.name}
+                color={field.type === "secret" ? "amber" : "gray"}
+                variant="outline"
+              >
+                {field.name}
+                {field.type === "secret" ? " (secret)" : ""}
               </Badge>
             ))}
           </Flex>
@@ -729,9 +770,7 @@ function CredentialDetails({ approval }: { approval: PendingCredentialApproval }
     approval.oauthAuthorizeOrigin,
     approval.oauthTokenOrigin,
     approval.oauthUserinfoOrigin,
-  ].filter(
-    (origin): origin is string => typeof origin === "string" && origin.length > 0
-  );
+  ].filter((origin): origin is string => typeof origin === "string" && origin.length > 0);
 
   return (
     <>
@@ -899,398 +938,4 @@ function IdCode({ value, prefix }: { value: string; prefix?: string }) {
       {display}
     </Code>
   );
-}
-
-function getApprovalCategoryLabel(approval: PendingApproval): string {
-  if (approval.kind === "credential") {
-    if (isOAuthCredentialConnectionApproval(approval)) {
-      return "Connection request";
-    }
-    if (approval.credentialUse === "git-http") {
-      return approval.gitOperation?.action === "write" ? "Git write" : "Git read";
-    }
-    return "Access request";
-  }
-  if (approval.kind === "client-config") {
-    return "Service setup";
-  }
-  if (approval.kind === "credential-input") {
-    return "Service setup";
-  }
-  if (approval.kind === "userland") {
-    return approval.callerKind === "worker" ? "Worker request" : "Panel request";
-  }
-  if (approval.capability === "internal-git-write") {
-    return approval.resource?.value === "meta" ? "Config edit" : "Write request";
-  }
-  if (approval.capability === "workspace-shared-git-remote") {
-    return "Remote config";
-  }
-  if (approval.capability === "workspace-project-import") {
-    return "Project import";
-  }
-  return isOAuthExternalApproval(approval) ? "Sign-in action" : "Browser action";
-}
-
-function getStandardActionCopy(approval: PendingCredentialApproval | PendingCapabilityApproval): {
-  once: { label: string; description: string };
-  session: { label: string; description: string };
-  version: { label: string; description: string };
-  repo: { label: string; description: string };
-  denyDescription: string;
-} {
-  if (approval.kind === "credential") {
-    if (isOAuthCredentialConnectionApproval(approval)) {
-      return {
-        once: {
-          label: "Connect once",
-          description: "Save this credential, use it for this request, and ask again before future use.",
-        },
-        session: {
-          label: "Connect this session",
-          description: "Save and allow use until NatStack restarts.",
-        },
-        version: {
-          label: "Trust version",
-          description: "Save and allow this exact stable code version to use it.",
-        },
-        repo: {
-          label: "Trust repo",
-          description: "Save and allow this workspace repo to use it.",
-        },
-        denyDescription: "Do not connect this service.",
-      };
-    }
-    if (approval.credentialUse === "git-http") {
-      const isWrite = approval.gitOperation?.action === "write";
-      return {
-        once: {
-          label: isWrite ? "Push once" : "Read once",
-          description: isWrite ? "Allow this git push once." : "Allow this git read once.",
-        },
-        session: {
-          label: isWrite ? "Push this session" : "Read this session",
-          description: isWrite
-            ? "Allow git pushes to this remote until NatStack restarts."
-            : "Allow git reads from this remote until NatStack restarts.",
-        },
-        version: {
-          label: "Trust version",
-          description: isWrite
-            ? "Allow this exact code version to push to this remote."
-            : "Allow this exact code version to read from this remote.",
-        },
-        repo: {
-          label: "Trust repo",
-          description: isWrite
-            ? "Allow this workspace project to push to this remote."
-            : "Allow this workspace project to read from this remote.",
-        },
-        denyDescription: isWrite ? "Do not allow this git push." : "Do not allow this git read.",
-      };
-    }
-    return {
-      once: { label: "Use once", description: "Use this service for this request only." },
-      session: { label: "Use this session", description: "Reuse this service until NatStack restarts." },
-      version: { label: "Trust version", description: "Reuse this service for this exact code version." },
-      repo: { label: "Trust repo", description: "Reuse this service for this workspace." },
-      denyDescription: "Do not use this service.",
-    };
-  }
-  if (isOAuthExternalApproval(approval)) {
-    return {
-      once: { label: "Connect once", description: "Open this sign-in flow once." },
-      session: { label: "Connect this session", description: "Allow this sign-in origin until NatStack restarts." },
-      version: { label: "Trust version", description: "Allow this sign-in origin for this exact code version." },
-      repo: { label: "Trust repo", description: "Allow this sign-in origin for this workspace." },
-      denyDescription: "Do not open this sign-in flow.",
-    };
-  }
-  if (approval.capability === "internal-git-write") {
-    const isMeta = approval.resource?.value === "meta";
-    return {
-      once: {
-        label: isMeta ? "Edit once" : "Write once",
-        description: isMeta ? "Allow this config push once." : "Allow this git write once.",
-      },
-      session: {
-        label: isMeta ? "Edit this session" : "Write this session",
-        description: isMeta
-          ? "Allow config pushes until NatStack restarts."
-          : "Allow writes to this repository until NatStack restarts.",
-      },
-      version: {
-        label: "Trust version",
-        description: isMeta
-          ? "Allow this code version to edit workspace config."
-          : "Allow this code version to write to this repository.",
-      },
-      repo: {
-        label: "Trust repo",
-        description: isMeta
-          ? "Allow this workspace project to edit workspace config."
-          : "Allow this workspace project to write to this repository.",
-      },
-      denyDescription: isMeta ? "Do not allow this config edit." : "Do not allow this git write.",
-    };
-  }
-  if (approval.capability === "workspace-shared-git-remote") {
-    return {
-      once: { label: "Change once", description: "Allow this shared remote change once." },
-      session: { label: "Change this session", description: "Allow shared remote changes until NatStack restarts." },
-      version: { label: "Trust version", description: "Allow this code version to change shared remotes." },
-      repo: { label: "Trust repo", description: "Allow this workspace project to change shared remotes." },
-      denyDescription: "Do not change this shared remote.",
-    };
-  }
-  if (approval.capability === "workspace-project-import") {
-    return {
-      once: { label: "Import once", description: "Allow this project import once." },
-      session: { label: "Import this session", description: "Allow project imports until NatStack restarts." },
-      version: { label: "Trust version", description: "Allow this code version to import project repos." },
-      repo: { label: "Trust repo", description: "Allow this workspace project to import project repos." },
-      denyDescription: "Do not import this project.",
-    };
-  }
-  return {
-    once: { label: "Open once", description: "Open this browser action once." },
-    session: { label: "Open this session", description: "Allow this browser origin until NatStack restarts." },
-    version: { label: "Trust version", description: "Allow this browser origin for this exact code version." },
-    repo: { label: "Trust repo", description: "Allow this browser origin for this workspace." },
-    denyDescription: "Do not open this site.",
-  };
-}
-
-function getApprovalCopy(
-  approval: PendingApproval,
-  callerLabel: string
-): { title: string; summary: string; warning?: string } {
-  const requester = `${callerLabel} ${truncateId(approval.callerId)}`;
-  if (approval.kind === "capability") {
-    if (approval.capability === "internal-git-write") {
-      const destination = approval.resource?.value ?? "this repository";
-      if (destination === "meta") {
-        return {
-          title: "Edit workspace config",
-          summary: `${requester} wants to push changes to sensitive workspace config.`,
-        };
-      }
-      return {
-        title: "Write project files",
-        summary: `${requester} wants to push changes to ${destination}.`,
-      };
-    }
-    if (approval.capability === "workspace-shared-git-remote") {
-      const destination = approval.resource?.value ?? "this repository";
-      const operation = approval.details?.find((detail) => detail.label === "Operation")?.value ?? "change a shared remote";
-      return {
-        title: approval.title || "Configure shared remote",
-        summary: `${requester} wants to ${operation.toLowerCase()} for ${destination}.`,
-      };
-    }
-    if (approval.capability === "workspace-project-import") {
-      const destination = approval.resource?.value ?? "this project";
-      return {
-        title: approval.title || "Add project repo",
-        summary: `${requester} wants to import ${destination} from a remote git repository.`,
-      };
-    }
-    const isOAuth = isOAuthExternalApproval(approval);
-    const destination = formatCapabilityDestination(approval, isOAuth);
-    if (isOAuth) {
-      return {
-        title: "Connect to service",
-        summary: `${requester} wants to connect to ${destination} in your browser.`,
-      };
-    }
-    return {
-      title: "Open external site",
-      summary: `${requester} wants to open ${destination} in your system browser.`,
-    };
-  }
-  if (approval.kind === "client-config") {
-    return {
-      title: "Configure service",
-      summary: "Save OAuth client settings. Secrets stay encrypted and are only used for OAuth token exchange and refresh.",
-    };
-  }
-  if (approval.kind === "credential-input") {
-    const audience = formatCredentialInputAudienceSummary(approval);
-    return {
-      title: "Add service",
-      summary: `${requester} wants to save ${approval.credentialLabel} for ${audience}. Secrets stay encrypted and are only sent to matching requests.`,
-    };
-  }
-  if (approval.kind === "userland") {
-    // Header text is renderer-controlled. Provider-supplied title, summary,
-    // and warning render inside the "From <issuer>" framed body so they
-    // cannot impersonate the verified-issuer chrome.
-    const callerKindLabel = approval.callerKind === "worker" ? "Worker" : "Panel";
-    return {
-      title: `${callerKindLabel} requests your decision`,
-      summary: `${requester} is asking about ${approval.subject.id}. Your choice will be remembered until revoked.`,
-    };
-  }
-
-  const audience = formatAudienceSummary(approval);
-  if (approval.credentialUse === "git-http") {
-    const operation = approval.gitOperation;
-    const remote = operation?.remote ? formatGitRemoteSummary(operation.remote) : audience;
-    const label = operation?.label ?? "git operation";
-    return {
-      title: operation?.action === "write" ? "Push to remote" : "Read from remote",
-      summary: `${requester} wants to ${label} on ${remote} using ${approval.credentialLabel}.`,
-    };
-  }
-  if (isOAuthCredentialConnectionApproval(approval)) {
-    return {
-      title: "Connect service",
-      summary: approval.replacementCredentialLabel
-        ? `${requester} wants to replace your existing ${approval.replacementCredentialLabel} credential with ${approval.credentialLabel} and use it with ${audience}.`
-        : `${requester} wants to connect ${approval.credentialLabel} and use it with ${audience}.`,
-      warning: approval.oauthAudienceDomainMismatch
-        ? "The sign-in domain differs from the service domain."
-        : undefined,
-    };
-  }
-  return {
-    title: "Use connected service",
-    summary: `${requester} wants to use ${approval.credentialLabel} with ${audience}.`,
-    warning: approval.oauthAudienceDomainMismatch
-      ? "The sign-in domain differs from the service domain."
-      : undefined,
-  };
-}
-
-function getCapabilityPrimaryDestination(approval: PendingCapabilityApproval): string {
-  return (
-    approval.details?.find((detail) => detail.label.toLowerCase() === "url")?.value ??
-    approval.resource?.value ??
-    "an external destination"
-  );
-}
-
-function shouldOpenApprovalDetails(approval: PendingApproval): boolean {
-  void approval;
-  return false;
-}
-
-function originForUrl(raw: string): string {
-  try {
-    return new URL(raw).origin;
-  } catch {
-    return raw;
-  }
-}
-
-function formatAudienceSummary(approval: PendingCredentialApproval): string {
-  if (approval.audience.length === 0) return "an unspecified audience";
-  const first = approval.audience[0];
-  if (!first) return "an unspecified audience";
-  const audience = formatUrlForSummary(first.url, first.match === "origin" ? "origin" : "path");
-  const extraCount = approval.audience.length - 1;
-  return extraCount > 0 ? `${audience} and ${extraCount} more` : audience;
-}
-
-function formatGitRemoteSummary(raw: string): string {
-  try {
-    const url = new URL(raw);
-    const path = url.pathname.replace(/^\/+/, "").replace(/\.git$/, "");
-    return path ? `${url.hostname}/${path}` : url.hostname;
-  } catch {
-    return raw;
-  }
-}
-
-function formatAccount(approval: PendingCredentialApproval): string {
-  const identity = approval.accountIdentity;
-  return (
-    identity.email ??
-    identity.username ??
-    identity.workspaceName ??
-    identity.providerUserId ??
-    approval.credentialId
-  );
-}
-
-function formatCredentialInputAudienceSummary(approval: PendingCredentialInputApproval): string {
-  if (approval.audience.length === 0) return "this service";
-  const first = approval.audience[0];
-  if (!first) return "this service";
-  const audience = formatUrlForSummary(first.url, first.match === "origin" ? "origin" : "path");
-  const extraCount = approval.audience.length - 1;
-  return extraCount > 0 ? `${audience} and ${extraCount} more` : audience;
-}
-
-function formatInjection(approval: PendingCredentialApproval | PendingCredentialInputApproval): string {
-  const injection = approval.injection;
-  if (injection.type === "query-param") {
-    return `query ${injection.name}`;
-  }
-  if (injection.type === "basic-auth") {
-    return "basic auth";
-  }
-  if (injection.type === "oauth1-signature") {
-    return "OAuth 1 signature";
-  }
-  if (injection.type === "cookie") {
-    return "cookie";
-  }
-  if (injection.type === "aws-sigv4") {
-    return `AWS SigV4 ${injection.service}/${injection.region}`;
-  }
-  if (injection.type === "ssh-key") {
-    return "SSH key";
-  }
-  return `header ${injection.name}`;
-}
-
-function isOAuthCredentialConnectionApproval(approval: PendingCredentialApproval): boolean {
-  return !!approval.oauthAuthorizeOrigin && !!approval.oauthTokenOrigin && !approval.credentialUse;
-}
-
-function isOAuthExternalApproval(approval: PendingCapabilityApproval): boolean {
-  return approval.details?.some((detail) => detail.label.toLowerCase() === "oauth callback") === true;
-}
-
-function formatCapabilityDestination(approval: PendingCapabilityApproval, oauth: boolean): string {
-  const rawDestination = getCapabilityPrimaryDestination(approval);
-  return formatUrlForSummary(rawDestination, oauth ? "origin" : "path");
-}
-
-function formatUrlForSummary(raw: string, mode: "origin" | "path" = "path"): string {
-  try {
-    const url = new URL(raw);
-    if (url.protocol === "mailto:") {
-      return "email";
-    }
-    const host = url.hostname;
-    if (mode === "origin") {
-      return host;
-    }
-    const path = compactPath(url.pathname);
-    return path ? `${host}${path}` : host;
-  } catch {
-    return raw.length > 64 ? `${raw.slice(0, 61)}...` : raw;
-  }
-}
-
-function compactPath(pathname: string): string {
-  const segments = pathname.split("/").filter(Boolean);
-  if (segments.length === 0) {
-    return "";
-  }
-  const first = segments[0] ?? "";
-  if (!first || first.length > 32) {
-    return "";
-  }
-  return `/${first}${segments.length > 1 ? "/..." : ""}`;
-}
-
-function formatServiceName(configId: string): string {
-  return configId
-    .split(/[-_.]+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ") || "this service";
 }

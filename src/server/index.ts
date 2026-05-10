@@ -769,6 +769,48 @@ async function main() {
   const notificationResult = createNotificationService({ eventService });
   container.register(rpcService(notificationResult.definition));
 
+  // ── Push + shell presence services ──
+  {
+    const { createPushService } = await import("./services/pushService.js");
+    const pushResult = createPushService();
+    container.register({
+      name: "push",
+      start: async () => pushResult,
+      getServiceDefinition: () => pushResult.definition,
+    });
+  }
+  {
+    const { createShellPresenceService } = await import("./services/shellPresenceService.js");
+    const shellPresenceResult = createShellPresenceService();
+    container.register({
+      name: "shellPresence",
+      start: async () => shellPresenceResult,
+      getServiceDefinition: () => shellPresenceResult.definition,
+    });
+  }
+  {
+    const { createApprovalPushBridge } = await import("./services/approvalPushBridge.js");
+    container.register({
+      name: "approvalPushBridge",
+      dependencies: ["push", "shellPresence"],
+      start: async (resolve) => {
+        const push = resolve<import("./services/pushService.js").PushServiceResult>("push")!;
+        const shellPresence =
+          resolve<import("./services/shellPresenceService.js").ShellPresenceServiceResult>(
+            "shellPresence",
+          )!;
+        return createApprovalPushBridge({
+          approvalQueue,
+          push: push.internal,
+          shellPresence: shellPresence.internal,
+        });
+      },
+      stop: async (bridge: import("./services/approvalPushBridge.js").ApprovalPushBridge) => {
+        bridge.stop();
+      },
+    });
+  }
+
   // ── Shell approval service (consent bar queue) ──
   const { createShellApprovalService } = await import("./services/shellApprovalService.js");
   container.register(rpcService(createShellApprovalService({ approvalQueue })));
@@ -1339,12 +1381,7 @@ async function main() {
     // Settings service for remote/mobile shells.
     const { createSettingsServiceStandalone } =
       await import("./services/settingsServiceStandalone.js");
-    const { rpcService: rpcSvc } = await import("@natstack/shared/managedService");
-    container.register(rpcSvc(createSettingsServiceStandalone({ dispatcher })));
-
-    // Push notification service for mobile device registration.
-    const { createPushService } = await import("./services/pushService.js");
-    container.register(rpcSvc(createPushService()));
+    container.register(rpcService(createSettingsServiceStandalone({ dispatcher })));
   }
 
   // ── W1k: image service (server-side resize/convert via photon WASM) ──
@@ -1471,6 +1508,7 @@ async function main() {
       "panel-persistence",
       "settings",
       "push",
+      "shellPresence",
       "auth",
     ]);
     for (const name of dispatcher.getServices()) {

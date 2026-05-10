@@ -69,10 +69,12 @@ export default defineConfig({
       "workspace/**/*.test.tsx",
       "packages/**/*.test.ts",
       "packages/**/*.test.tsx",
+      "tests/**/*.test.ts",
+      "tests/**/*.test.tsx",
       "apps/**/*.test.ts",
       "apps/**/*.test.tsx",
     ],
-    exclude: ["**/node_modules/**", "dist", "workspace/.contexts"],
+    exclude: ["**/node_modules/**", "dist", "workspace/.contexts", "apps/mobile/**"],
     setupFiles: ["tests/setup/vitest.setup.ts"],
     server: {
       deps: {

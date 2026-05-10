@@ -59,6 +59,9 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `credentials` | namespace | `store`, `connect`, `configureClient`, `requestCredentialInput`, `getClientConfigStatus`, `deleteClientConfig`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
 | `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote`, `client` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
+| `requestApproval` | value |  |  |
+| `revokeApproval` | value |  |  |
+| `listApprovals` | value |  |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
 <!-- END GENERATED: panel-runtime-surface -->
 

@@ -89,6 +89,51 @@ describe("approvalQueue", () => {
     await expect(promise).resolves.toBe("once");
   });
 
+  it("fans out pending changes to listeners and supports unsubscribe", async () => {
+    const { queue } = createQueue();
+    const listener = vi.fn();
+    const unsubscribe = queue.onPendingChanged(listener);
+    const promise = queue.request({
+      kind: "capability",
+      callerId: "panel:1",
+      callerKind: "panel",
+      repoPath: "panels/example",
+      effectiveVersion: "hash-1",
+      capability: "external-browser-open",
+      title: "Open external browser",
+    });
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener.mock.calls[0]?.[0]).toHaveLength(1);
+
+    unsubscribe();
+    queue.resolve(queue.listPending()[0]!.approvalId, "deny");
+
+    await expect(promise).resolves.toBe("deny");
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats double resolve as a no-op after the first settlement", async () => {
+    const { queue, emit } = createQueue();
+    const promise = queue.request({
+      kind: "capability",
+      callerId: "panel:1",
+      callerKind: "panel",
+      repoPath: "panels/example",
+      effectiveVersion: "hash-1",
+      capability: "external-browser-open",
+      title: "Open external browser",
+    });
+    const approvalId = queue.listPending()[0]!.approvalId;
+
+    queue.resolve(approvalId, "once");
+    queue.resolve(approvalId, "deny");
+
+    await expect(promise).resolves.toBe("once");
+    expect(queue.listPending()).toEqual([]);
+    expect(emit).toHaveBeenCalledTimes(2);
+  });
+
   it("can isolate one-shot capability approvals from concurrent waiters", async () => {
     const { queue } = createQueue();
     const first = queue.request({

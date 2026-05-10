@@ -28,6 +28,9 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 | `getWorkspaceTree` | value |  |  |
 | `listBranches` | value |  |  |
 | `listCommits` | value |  |  |
+| `requestApproval` | value |  |  |
+| `revokeApproval` | value |  |  |
+| `listApprovals` | value |  |  |
 | `exposeMethod` | value |  |  |
 | `getParent` | value |  |  |
 | `handleRpcPost` | value |  |  |

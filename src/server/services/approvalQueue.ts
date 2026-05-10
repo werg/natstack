@@ -146,6 +146,7 @@ export interface ApprovalQueue {
   requestClientConfig(req: ClientConfigApprovalQueueRequest): Promise<ClientConfigApprovalResult>;
   requestCredentialInput(req: CredentialInputApprovalQueueRequest): Promise<FieldInputApprovalResult>;
   requestUserland(req: UserlandApprovalQueueRequest): Promise<UserlandApprovalResult>;
+  onPendingChanged?(listener: (pending: PendingApproval[]) => void): () => void;
   resolve(approvalId: string, decision: ApprovalDecision): void;
   resolveUserland(approvalId: string, choice: string): void;
   submitClientConfig(approvalId: string, values: Record<string, string>): void;
@@ -153,15 +154,27 @@ export interface ApprovalQueue {
   listPending(): PendingApproval[];
 }
 
+export interface ApprovalQueueWithListeners extends ApprovalQueue {
+  onPendingChanged(listener: (pending: PendingApproval[]) => void): () => void;
+}
+
 export type SensitiveActionQueue = ApprovalQueue;
 
-export function createApprovalQueue(deps: { eventService: EventService }): ApprovalQueue {
+export function createApprovalQueue(deps: { eventService: EventService }): ApprovalQueueWithListeners {
   const { eventService } = deps;
   const entriesById = new Map<string, QueueEntry>();
   const entriesByDedupKey = new Map<string, QueueEntry>();
+  const pendingListeners = new Set<(pending: PendingApproval[]) => void>();
 
   function emitPendingChanged(): void {
     const pending = Array.from(entriesById.values()).map((e) => e.approval);
+    for (const listener of pendingListeners) {
+      try {
+        listener(pending);
+      } catch (error) {
+        console.warn("[ApprovalQueue] pending listener failed:", error);
+      }
+    }
     eventService.emit("shell-approval:pending-changed", { pending });
   }
 
@@ -510,6 +523,13 @@ export function createApprovalQueue(deps: { eventService: EventService }): Appro
           emitPendingChanged();
         }
       });
+    },
+
+    onPendingChanged(listener) {
+      pendingListeners.add(listener);
+      return () => {
+        pendingListeners.delete(listener);
+      };
     },
 
     resolve(approvalId, decision) {

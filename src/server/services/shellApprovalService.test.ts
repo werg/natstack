@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { ServiceError } from "@natstack/shared/serviceDispatcher";
+import { createApprovalQueue } from "./approvalQueue.js";
 import { createShellApprovalService } from "./shellApprovalService.js";
+import { createPushMetrics } from "./pushMetrics.js";
 
 describe("shellApprovalService", () => {
   it("accepts every approval decision exposed by the consent UI", () => {
@@ -10,6 +12,7 @@ describe("shellApprovalService", () => {
         requestClientConfig: vi.fn(),
         requestCredentialInput: vi.fn(),
         requestUserland: vi.fn(),
+        onPendingChanged: vi.fn(),
         resolve: vi.fn(),
         resolveUserland: vi.fn(),
         submitClientConfig: vi.fn(),
@@ -32,6 +35,7 @@ describe("shellApprovalService", () => {
         requestClientConfig: vi.fn(),
         requestCredentialInput: vi.fn(),
         requestUserland: vi.fn(),
+        onPendingChanged: vi.fn(),
         resolve,
         resolveUserland,
         submitClientConfig: vi.fn(),
@@ -70,6 +74,7 @@ describe("shellApprovalService", () => {
         requestClientConfig: vi.fn(),
         requestCredentialInput: vi.fn(),
         requestUserland: vi.fn(),
+        onPendingChanged: vi.fn(),
         resolve: vi.fn(),
         resolveUserland: vi.fn(),
         submitClientConfig: vi.fn(),
@@ -82,5 +87,31 @@ describe("shellApprovalService", () => {
       .rejects.toMatchObject({ name: "ServiceError", code: "ENOENT" });
     await expect(service.handler({ callerId: "shell", callerKind: "shell" }, "missing", []))
       .rejects.toBeInstanceOf(ServiceError);
+  });
+
+  it("leaves double resolves idempotent and records resolution metrics", async () => {
+    const approvalQueue = createApprovalQueue({ eventService: { emit: vi.fn() } as never });
+    const metrics = createPushMetrics();
+    const service = createShellApprovalService({ approvalQueue, metrics });
+    const pendingPromise = approvalQueue.request({
+      kind: "capability",
+      callerId: "panel:1",
+      callerKind: "panel",
+      repoPath: "panels/example",
+      effectiveVersion: "hash-1",
+      capability: "external-browser-open",
+      title: "Open external browser",
+    });
+    const approvalId = approvalQueue.listPending()[0]!.approvalId;
+
+    await service.handler({ callerId: "shell", callerKind: "shell" }, "resolve", [approvalId, "once"]);
+    await service.handler({ callerId: "shell", callerKind: "shell" }, "resolve", [approvalId, "deny"]);
+
+    await expect(pendingPromise).resolves.toBe("once");
+    expect(approvalQueue.listPending()).toEqual([]);
+    expect(metrics.snapshot().approval_resolved_total).toMatchObject({
+      "decision=once,source=shell": 1,
+    });
+    expect(metrics.snapshot().approval_resolved_total).not.toHaveProperty("decision=deny,source=shell");
   });
 });

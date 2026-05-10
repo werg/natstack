@@ -5,8 +5,9 @@ import type {
   CredentialInjection,
   UrlAudience,
 } from "./credentials/types.js";
+import type { ApprovalDecisionId } from "./approvalContract.js";
 
-export type ApprovalDecision = "once" | "session" | "version" | "repo" | "deny" | "dismiss";
+export type ApprovalDecision = ApprovalDecisionId;
 export type ApprovalConfigFieldType = "text" | "secret";
 
 const CONTROL_CHARS = /[\u0000-\u001F\u007F]/;

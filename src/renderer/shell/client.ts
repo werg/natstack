@@ -6,6 +6,7 @@
  */
 
 import { createRpcBridge, type RpcBridge, type RpcTransport, type RpcMessage } from "@natstack/rpc";
+import { RPC_METHODS } from "@natstack/shared/approvalContract";
 
 // Type for the shell transport bridge injected by the preload script
 type ShellTransportBridge = {
@@ -268,6 +269,14 @@ export const shellApproval = {
   submitCredentialInput: (approvalId: string, values: Record<string, string>) =>
     rpc.call("main", "shellApproval.submitCredentialInput", approvalId, values) as Promise<void>,
   listPending: () => rpc.call<PendingApproval[]>("main", "shellApproval.listPending"),
+};
+
+// =============================================================================
+// Shell Presence Service
+// =============================================================================
+
+export const shellPresence = {
+  heartbeat: () => rpc.call<void>("main", RPC_METHODS.shellPresence.heartbeat),
 };
 
 // =============================================================================
