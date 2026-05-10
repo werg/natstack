@@ -15,7 +15,7 @@ How to use the chat panel's code execution sandbox — the eval tool, inline UI 
 | [INLINE_UI.md](INLINE_UI.md) | Inline UI — persistent interactive components in chat |
 | [MDX.md](MDX.md) | Normal rich chat messages — callouts, badges, tables, ActionButton |
 | [FEEDBACK.md](FEEDBACK.md) | Feedback forms — block until user responds |
-| [RUNTIME_API.md](RUNTIME_API.md) | Full runtime API reference — fs, db, workers, ai, git, browser data |
+| [RUNTIME_API.md](RUNTIME_API.md) | Full runtime API reference — fs, db, workers, ai, git, browser data, userland approval prompts |
 | [CHAT_API.md](CHAT_API.md) | Chat API — publish messages, call methods, interact with the conversation |
 | [BROWSER_AUTOMATION.md](BROWSER_AUTOMATION.md) | Browser automation — Playwright API via CDP |
 | [PATTERNS.md](PATTERNS.md) | Common patterns and recipes |
@@ -45,7 +45,7 @@ These are pre-bundled with the panel and work as bare `import` statements:
 
 | Module | What it provides |
 |--------|-----------------|
-| `@workspace/runtime` | rpc, fs, db, workers, ai, workspace, contextId, panel navigation |
+| `@workspace/runtime` | rpc, fs, db, workers, ai, workspace, contextId, panel navigation, `requestApproval` |
 | `@workspace/panel-browser` | Browser data import/export (cookies, passwords, bookmarks, history) |
 | `@workspace/playwright-client` | Playwright browser automation |
 | `react`, `react/jsx-runtime` | React hooks and component APIs |

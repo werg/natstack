@@ -11,9 +11,9 @@ Documentation for developing NatStack panels.
 
 | Document | Content |
 |----------|---------|
-| [PANEL_DEVELOPMENT.md](PANEL_DEVELOPMENT.md) | Hooks, fs, templates |
+| [PANEL_DEVELOPMENT.md](PANEL_DEVELOPMENT.md) | Hooks, fs, templates, userland approval prompts |
 | [PANEL_SYSTEM.md](PANEL_SYSTEM.md) | API reference |
-| [WORKERS.md](WORKERS.md) | Workers & Durable Objects: AgentWorkerBase (@workspace/agentic-do), DurableObjectBase, PiRunner, approval continuations |
+| [WORKERS.md](WORKERS.md) | Workers & Durable Objects: AgentWorkerBase (@workspace/agentic-do), DurableObjectBase, PiRunner, approval continuations, runtime approval prompts |
 | [RPC.md](RPC.md) | Typed parent-child contracts |
 | [BROWSER.md](BROWSER.md) | Browser automation (Playwright/CDP) |
 | [TOOLS.md](TOOLS.md) | Agent tools reference |

@@ -1,4 +1,4 @@
-# Runtime Credential API
+# Runtime API
 
 Credentials are URL-bound and may only be used through host-mediated egress.
 
@@ -117,3 +117,55 @@ await credentials.fetch("https://api.example.com/v1/items", undefined, {
   credentialId: stored.id,
 });
 ```
+
+## Userland Approval Prompts
+
+Use `requestApproval()` when panel code needs a human decision for a
+provider-defined action that NatStack does not understand as a built-in
+credential or capability grant. The shell verifies the issuer identity
+(`callerId`/`callerKind`) and shows the user a trusted consent prompt.
+
+```ts
+import { requestApproval, revokeApproval, listApprovals } from "@workspace/runtime";
+
+const result = await requestApproval({
+  subject: {
+    id: "team-x:calendar-write",
+    label: "Team X calendar write access",
+  },
+  title: "Allow calendar writes?",
+  summary: "Team X wants this worker to create events on its behalf.",
+  warning: "Only allow this for teams you administer.",
+  details: [
+    { label: "Team", value: "Team X" },
+    { label: "Operation", value: "Create calendar events" },
+  ],
+  options: [
+    { value: "allow", label: "Allow", tone: "primary" },
+    { value: "deny", label: "Deny", tone: "danger" },
+  ],
+});
+
+if (result.kind === "choice" && result.choice === "allow") {
+  // Continue with the gated action.
+}
+```
+
+Decision caching is server-managed. Every non-dismiss choice is remembered for
+the verified issuer and `subject.id`; the next identical request resolves
+immediately with the stored choice and no prompt. Dismissal is not remembered.
+
+```ts
+const grants = await listApprovals();
+await revokeApproval("team-x:calendar-write");
+```
+
+Use stable, provider-owned `subject.id` values such as
+`team-x:calendar-write`. IDs must be 1-128 chars, use only
+letters/numbers/`._:/-`, and cannot start with `shell:`, `server:`,
+`system:`, or `@`. Option values must be unique, 1-40 chars, and use only
+letters/numbers/`_-`; `dismiss` is reserved.
+
+Do not use `requestApproval()` for host capabilities that already have a
+NatStack permission flow: use `openExternal()`, `credentials.*`, `git.*`, or
+other runtime APIs so the host can apply the right trust scope and audit model.

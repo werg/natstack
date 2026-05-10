@@ -1,4 +1,4 @@
-# Runtime Credential API
+# Worker Runtime API
 
 Credentials are URL-bound and may only be used through host-mediated egress.
 
@@ -96,6 +96,65 @@ await credentials.fetch("https://api.example.com/v1/items", undefined, {
   credentialId: stored.id,
 });
 ```
+
+## Userland Approval Prompts
+
+Workers can ask the user for provider-defined decisions through the runtime's
+approval helpers. Use this when a worker exposes its own security-gated service
+to other userland callers and needs a human decision that NatStack cannot model
+as a built-in credential or capability permission.
+
+```ts
+import { createWorkerRuntime } from "@workspace/runtime/worker";
+
+export default {
+  async fetch(request: Request, env: WorkerEnv, ctx: ExecutionContext) {
+    const runtime = createWorkerRuntime(env);
+
+    const decision = await runtime.requestApproval({
+      subject: {
+        id: "team-x:calendar-write",
+        label: "Team X calendar write access",
+      },
+      title: "Allow calendar writes?",
+      summary: "A caller wants this worker to create Team X calendar events.",
+      details: [
+        { label: "Caller", value: request.headers.get("x-caller") ?? "unknown" },
+        { label: "Operation", value: "Create calendar events" },
+      ],
+      options: [
+        { value: "allow", label: "Allow", tone: "primary" },
+        { value: "deny", label: "Deny", tone: "danger" },
+      ],
+    });
+
+    if (decision.kind !== "choice" || decision.choice !== "allow") {
+      return new Response("Not approved", { status: 403 });
+    }
+
+    return new Response("Approved");
+  },
+};
+```
+
+Every non-dismiss choice is persisted by the server under the verified issuer
+worker and `subject.id`. Subsequent calls with the same `subject.id` return the
+stored choice immediately. Use `runtime.revokeApproval(subjectId)` to forget a
+decision, and `runtime.listApprovals()` to inspect decisions owned by the same
+worker.
+
+```ts
+await runtime.revokeApproval("team-x:calendar-write");
+const grants = await runtime.listApprovals();
+```
+
+Keep `subject.id` stable and provider-owned. It must be 1-128 chars using only
+letters/numbers/`._:/-`, and cannot start with `shell:`, `server:`, `system:`,
+or `@`. Options must have unique values; `dismiss` is reserved. Treat
+`requestApproval()` as a userland policy gate only. For host-mediated actions
+such as external browser opens, credentials, git writes, project imports, or
+webhooks, call the existing runtime API and let NatStack's built-in permission
+flow handle the prompt and trust scope.
 
 ## Blobstore (content-addressable bytes)
 

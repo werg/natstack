@@ -174,6 +174,49 @@ workerd stores DO SQL state under the workspace state directory in `.databases/w
 
 ---
 
+## Userland Approval Prompts
+
+Panels can ask the user for provider-defined decisions through
+`requestApproval`. This is for policy questions owned by the panel or its
+paired worker, not for host capabilities that already have NatStack permission
+flows.
+
+```typescript
+import { requestApproval, revokeApproval, listApprovals } from "@workspace/runtime";
+
+const decision = await requestApproval({
+  subject: { id: "workspace-sync:push", label: "Workspace sync push" },
+  title: "Allow sync push?",
+  summary: "This panel wants to let the sync service push changes.",
+  options: [
+    { value: "allow", label: "Allow", tone: "primary" },
+    { value: "deny", label: "Deny", tone: "danger" },
+  ],
+});
+
+if (decision.kind === "choice" && decision.choice === "allow") {
+  // Continue with the panel-owned operation.
+}
+```
+
+The shell prompt always shows the verified issuer as the trusted identity.
+Every non-dismiss choice is remembered under that issuer and `subject.id`;
+dismissals are not remembered. Use `revokeApproval(subjectId)` when the panel
+offers a "forget this decision" control, and `listApprovals()` to show the
+current panel's stored decisions.
+
+`subject.id` must be stable, 1-128 chars, and limited to
+letters/numbers/`._:/-`; reserved prefixes are `shell:`, `server:`, `system:`,
+and `@`. Option values must be unique, 1-40 chars, and use only
+letters/numbers/`_-`.
+
+Use built-in APIs for built-in actions: `openExternal` for system-browser
+opens, `credentials.*` for secrets and OAuth, and `git.*` / `workspace.*` for
+workspace changes. Those APIs carry their own permission scopes and audit
+behavior.
+
+---
+
 ## Blobstore (large/binary content)
 
 For bytes that don't fit in a DO row — pasted images, file uploads, generated

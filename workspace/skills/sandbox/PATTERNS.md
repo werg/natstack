@@ -174,6 +174,47 @@ eval({
 
 Works with any configured provider. Check `await credentials.listStoredCredentials()` to see what's available.
 
+## Ask for a Userland Approval
+
+Use `requestApproval()` for a domain-specific decision owned by your panel or
+worker. NatStack verifies the issuer, shows the user a shell consent prompt,
+and remembers every non-dismiss choice for the same issuer and `subject.id`.
+
+```
+eval({
+  code: `
+    import { requestApproval } from "@workspace/runtime";
+
+    const decision = await requestApproval({
+      subject: { id: "demo:send-report", label: "Send report" },
+      title: "Send this report?",
+      summary: "This panel wants permission to send the generated report.",
+      options: [
+        { value: "allow", label: "Send", tone: "primary" },
+        { value: "deny", label: "Cancel", tone: "danger" },
+      ],
+    });
+
+    console.log(decision);
+  `
+})
+```
+
+If the user dismisses the prompt, the result is `{ kind: "dismissed" }` and no
+grant is stored. To forget a stored decision:
+
+```
+eval({
+  code: `
+    import { revokeApproval } from "@workspace/runtime";
+    await revokeApproval("demo:send-report");
+  `
+})
+```
+
+Do not use this for credentials, external browser opens, git writes, or project
+imports; those built-in APIs have their own trust scopes.
+
 ## Import Cookies from Chrome
 
 ```

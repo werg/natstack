@@ -502,6 +502,40 @@ REPL.
 
 ---
 
+## Userland Approval Prompts
+
+Use `requestApproval()` when a panel owns a domain-specific decision and wants
+NatStack's trusted shell UI to ask the user. The verified panel is shown as the
+issuer, and every non-dismiss choice is remembered for that issuer and
+`subject.id`.
+
+```tsx
+import { requestApproval, revokeApproval, listApprovals } from "@workspace/runtime";
+
+const decision = await requestApproval({
+  subject: { id: "sync:push", label: "Sync push" },
+  title: "Allow sync push?",
+  summary: "This panel wants to let the sync service push changes.",
+  options: [
+    { value: "allow", label: "Allow", tone: "primary" },
+    { value: "deny", label: "Deny", tone: "danger" },
+  ],
+});
+
+if (decision.kind === "choice" && decision.choice === "allow") {
+  // Continue with the panel-owned action.
+}
+
+await revokeApproval("sync:push");
+const grants = await listApprovals();
+```
+
+Use built-in APIs instead for built-in host capabilities: `openExternal`,
+`credentials.*`, `git.*`, and workspace/project operations already include the
+right approval and trust-scope behavior.
+
+---
+
 ## PubSub
 
 Real-time messaging between panels via `@natstack/pubsub`:

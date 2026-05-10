@@ -4,6 +4,15 @@ NatStack approval prompts use one server-owned queue and two shell surfaces:
 Electron and mobile. The queue is the source of truth; notifications are a
 delivery surface for pending queue entries.
 
+Approval kinds:
+
+- `credential` and `capability`: host-owned reusable grants with standard
+  trust scopes.
+- `client-config` and `credential-input`: trusted shell input flows for
+  secrets and provider setup.
+- `userland`: panel/worker-owned prompts with provider-defined options and a
+  flat persisted decision keyed by verified issuer and provider subject.
+
 ## Architecture
 
 ```text
@@ -79,6 +88,39 @@ Standard `credential` and `capability` approvals expose `once`, `session`,
 `deny`, `open`, `version`, and `repo` in that order. `client-config`,
 `credential-input`, and `userland` approvals expose only `open` from the
 notification because they require in-app UI.
+
+## Userland Approval Flow
+
+Userland code calls `requestApproval()` from `@workspace/runtime` (panel) or
+`runtime.requestApproval()` from a worker runtime. The request supplies a
+provider-owned `subject.id`, user-facing copy, and 1-6 option buttons. The
+server ignores any caller identity in the payload; it uses `ServiceContext` and
+`CodeIdentityResolver` to attach the verified panel/worker issuer.
+
+The service checks the persisted grant store before showing the prompt. A grant
+hit returns `{ kind: "choice", choice }` immediately. If there is no grant, the
+approval queue shows one prompt per `(issuer.callerId, subject.id)` and
+coalesces concurrent waiters. When the user chooses an option, the choice is
+persisted under that flat key. Dismissals return `{ kind: "dismissed" }` and
+are not persisted.
+
+Userland prompt copy is untrusted provider text. UI surfaces must keep the
+verified issuer visually primary and render provider subject/details inside the
+framed userland prompt area. Provider strings must never masquerade as shell,
+server, or system identity.
+
+Subject and option validation is intentionally strict:
+
+- `subject.id`: 1-128 chars, letters/numbers/`._:/-`, no control characters,
+  and not prefixed with `shell:`, `server:`, `system:`, or `@`.
+- option values: unique, 1-40 chars, letters/numbers/`_-`; `dismiss` is
+  reserved.
+- title, summary, warning, details, labels, and descriptions are length-bound
+  and stripped/rejected for invisible/control characters before enqueueing.
+
+Revocation is issuer-scoped: `revokeApproval(subjectId)` can only remove grants
+owned by the calling panel or worker. `listApprovals()` returns only grants for
+that issuer.
 
 ## Security Model
 
