@@ -113,8 +113,8 @@ export function ConsentApprovalBar() {
         flexShrink: 0,
       }}
     >
-      <Flex align="start" justify="between" gap="3" px="3" py="2" wrap="wrap">
-        <Flex align="start" gap="3" style={{ minWidth: 280, flex: "1 1 0" }}>
+      <Flex direction="column" gap="3" px="3" py="2">
+        <Flex align="start" gap="3">
           <Flex
             align="center"
             justify="center"
@@ -188,25 +188,27 @@ export function ConsentApprovalBar() {
           </Flex>
         </Flex>
 
-        {current.kind === "client-config" ? (
-          <ClientConfigActions
-            approval={current}
-            values={secretConfigValues}
-            onSubmit={submitClientConfig}
-            onDeny={() => decide("deny")}
-            onDismiss={() => decide("dismiss")}
-          />
-        ) : current.kind === "credential-input" ? (
-          <CredentialInputActions
-            approval={current}
-            values={secretConfigValues}
-            onSubmit={submitCredentialInput}
-            onDeny={() => decide("deny")}
-            onDismiss={() => decide("dismiss")}
-          />
-        ) : (
-          <StandardApprovalActions approval={current} decide={decide} />
-        )}
+        <Flex justify="end" wrap="wrap" gap="2">
+          {current.kind === "client-config" ? (
+            <ClientConfigActions
+              approval={current}
+              values={secretConfigValues}
+              onSubmit={submitClientConfig}
+              onDeny={() => decide("deny")}
+              onDismiss={() => decide("dismiss")}
+            />
+          ) : current.kind === "credential-input" ? (
+            <CredentialInputActions
+              approval={current}
+              values={secretConfigValues}
+              onSubmit={submitCredentialInput}
+              onDeny={() => decide("deny")}
+              onDismiss={() => decide("dismiss")}
+            />
+          ) : (
+            <StandardApprovalActions approval={current} decide={decide} />
+          )}
+        </Flex>
       </Flex>
     </Box>
   );
@@ -226,12 +228,6 @@ function StandardApprovalActions({
       className="approval-actions"
       gap="2"
       wrap="wrap"
-      style={{
-        alignSelf: "flex-end",
-        flexShrink: 0,
-        justifyContent: "flex-start",
-        marginLeft: "auto",
-      }}
     >
       <DecisionButton
         label={copy.once.label}
@@ -295,12 +291,6 @@ function ClientConfigActions({
       className="approval-actions"
       gap="2"
       wrap="wrap"
-      style={{
-        alignSelf: "flex-end",
-        flexShrink: 0,
-        justifyContent: "flex-start",
-        marginLeft: "auto",
-      }}
     >
       <Tooltip content={missingRequired ? "Enter the required fields first." : "Save this connected service."}>
         <Button size="1" variant="solid" color="sky" disabled={missingRequired} onClick={onSubmit}>
@@ -344,12 +334,6 @@ function CredentialInputActions({
       className="approval-actions"
       gap="2"
       wrap="wrap"
-      style={{
-        alignSelf: "flex-end",
-        flexShrink: 0,
-        justifyContent: "flex-start",
-        marginLeft: "auto",
-      }}
     >
       <Tooltip content={missingRequired ? "Enter the required secret first." : "Save this connected service."}>
         <Button size="1" variant="solid" color="sky" disabled={missingRequired} onClick={onSubmit}>
@@ -439,11 +423,7 @@ function ApprovalDetails({
         <Detail
           icon={<PersonIcon />}
           label="Requester"
-          value={
-            <InlineCode>
-              {callerLabel} {approval.callerId}
-            </InlineCode>
-          }
+          value={<IdCode prefix={callerLabel} value={approval.callerId} />}
         />
         <Detail
           icon={<GlobeIcon />}
@@ -453,7 +433,7 @@ function ApprovalDetails({
         <Detail
           icon={<LockClosedIcon />}
           label="Version"
-          value={<InlineCode>{approval.effectiveVersion}</InlineCode>}
+          value={<IdCode value={approval.effectiveVersion} />}
         />
         {approval.kind === "credential" ? (
           <CredentialDetails approval={approval} />
@@ -526,7 +506,7 @@ function ClientConfigDetails({ approval }: { approval: PendingClientConfigApprov
       <Detail
         icon={<LockClosedIcon />}
         label="Client"
-        value={<InlineCode>{approval.configId}</InlineCode>}
+        value={<IdCode value={approval.configId} />}
       />
       <Detail
         icon={<GlobeIcon />}
@@ -777,6 +757,21 @@ function InlineCode({ children }: { children: ReactNode }) {
   );
 }
 
+function truncateId(id: string, head = 8, tail = 4): string {
+  if (id.length <= head + tail + 1) return id;
+  return `${id.slice(0, head)}…${id.slice(-tail)}`;
+}
+
+function IdCode({ value, prefix }: { value: string; prefix?: string }) {
+  const fullText = prefix ? `${prefix} ${value}` : value;
+  const display = `${prefix ? `${prefix} ` : ""}${truncateId(value)}`;
+  return (
+    <Code size="1" variant="soft" title={fullText} style={{ maxWidth: "100%" }}>
+      {display}
+    </Code>
+  );
+}
+
 function getApprovalCategoryLabel(approval: PendingApproval): string {
   if (approval.kind === "credential") {
     if (isOAuthCredentialConnectionApproval(approval)) {
@@ -938,7 +933,7 @@ function getApprovalCopy(
   approval: PendingApproval,
   callerLabel: string
 ): { title: string; summary: string; warning?: string } {
-  const requester = `${callerLabel} ${approval.callerId}`;
+  const requester = `${callerLabel} ${truncateId(approval.callerId)}`;
   if (approval.kind === "capability") {
     if (approval.capability === "internal-git-write") {
       const destination = approval.resource?.value ?? "this repository";
