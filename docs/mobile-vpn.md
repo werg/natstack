@@ -9,7 +9,49 @@ The workflow uses:
   cleartext HTTP to VPN/LAN hosts;
 - a **stable gateway port** so the phone can keep using the same server URL;
 - a **QR/deep-link pairing command** that saves the server URL and token in the
-  app.
+  app;
+- **automatic Tailscale serve setup** so the phone connects over HTTPS via
+  MagicDNS and OAuth callbacks land on the same URL — no per-machine setup
+  beyond a one-time `tailscale set --operator=$USER`.
+
+## Auto-detected Tailscale path (recommended)
+
+If Tailscale is running on the server machine, `pnpm mobile:pair` will detect
+the MagicDNS hostname (e.g. `pop-os.tailnet-xyz.ts.net`), provision
+`tailscale serve` to forward HTTPS → the local gateway, verify the URL is
+actually reachable, and use it as the QR target. The phone connects via
+`https://<host>.<tailnet>.ts.net`, panel chrome and OAuth callbacks share the
+same URL, and registering OAuth providers becomes a one-time copy-paste of
+`https://<host>.<tailnet>.ts.net/_r/s/credentials/oauth/callback`.
+
+First-time requirements:
+
+- HTTPS Certificates feature enabled in your tailnet admin console
+  (https://login.tailscale.com/admin/dns).
+- Either run the natstack server as the Tailscale operator
+  (`sudo tailscale set --operator=$USER` once, then logout/login or restart),
+  or run `sudo tailscale serve --bg <gateway-port>` once manually. Without one
+  of these, the auto-provision step prints `permission-denied` and falls back
+  to the IP+HTTP gateway URL.
+
+The readiness banner reports what's happening:
+
+```
+natstack-server ready:
+  …
+  Gateway:     http://100.x.y.z:3030                              # IP+HTTP fallback
+  Public URL:  https://host.tailnet.ts.net (auto-detected tailscale) (verified reachable)
+  Mobile URL:  https://host.tailnet.ts.net                         # what the QR encodes
+  OAuth callback (register with each provider):
+    https://host.tailnet.ts.net/_r/s/credentials/oauth/callback
+  Tailscale: configured `tailscale serve` to forward https://host.tailnet.ts.net/ → 127.0.0.1:3030.
+             Persistent across reboots; remove with `tailscale serve reset`.
+```
+
+To skip auto-detection (you manage `tailscale serve` yourself, or use a
+reverse proxy / Cloudflare Tunnel), pass `--no-vpn-detect` or set
+`NATSTACK_NO_VPN_DETECT=1`. Setting `--public-url` also implicitly skips
+detection.
 
 ## 1. Build and install the phone app
 
@@ -170,5 +212,11 @@ it on later starts.
   networks/VPNs.
 - QR pairing accepts HTTP for loopback, private LAN IPs, Tailscale IPs /
   `*.ts.net`, single-label local names such as `pop-os`, and `.local` names.
+  When the auto-detected `Mobile URL:` is HTTPS, the QR uses that and the
+  HTTP rules don't matter.
 - Release builds keep the stricter network policy in
   `apps/mobile/android/app/src/main/res/xml/network_security_config.xml`.
+- The auto-detected URL is also used by OAuth flows on mobile, panel chrome,
+  and webhook delivery. When you register OAuth providers, register the
+  callback URL printed in the banner (`/_r/s/credentials/oauth/callback`)
+  exactly — provider consoles do exact-match validation.

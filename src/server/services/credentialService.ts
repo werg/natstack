@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { EventService } from "@natstack/shared/eventsService";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { ServiceRouteDecl } from "../routeRegistry.js";
-import { buildPublicUrl } from "../publicUrl.js";
+import { buildPublicUrl, isPublicUrlVerified } from "../publicUrl.js";
 import type { AuditLog } from "../../../packages/shared/src/credentials/audit.js";
 import { ClientConfigStore, type ClientConfigRecord } from "../../../packages/shared/src/credentials/clientConfigStore.js";
 import { CredentialStore } from "../../../packages/shared/src/credentials/store.js";
@@ -62,6 +62,7 @@ const PENDING_OAUTH_TTL_MS = 10 * 60 * 1000;
 const OAUTH_USERINFO_TIMEOUT_MS = 15_000;
 const DEFAULT_LOOPBACK_HOST = "127.0.0.1";
 const DEFAULT_CALLBACK_PATH = "/oauth/callback";
+const PUBLIC_OAUTH_CALLBACK_PATH = "/_r/s/credentials/oauth/callback";
 const RESERVED_OAUTH_AUTHORIZE_PARAMS = new Set([
   "client_id",
   "code_challenge",
@@ -568,6 +569,26 @@ function validateOAuthCredentialRequest(request: InternalOAuthConnectionRequest)
       throw new Error("OAuth userinfo url must not include a fragment");
     }
   }
+}
+
+/**
+ * Decide which redirect strategy to use when the caller doesn't specify one.
+ *
+ * Loopback (browser-on-server) is the safe default for a personal desktop
+ * server. When the public URL is verified working — either supplied
+ * explicitly by the operator or auto-detected and reachability-tested —
+ * default to "public" so OAuth works for mobile and remote-desktop clients
+ * without each callsite having to know.
+ *
+ * Critically, an auto-detected URL that *failed* its reachability check
+ * stays loopback by default — desktop in-process panels keep working even
+ * when Tailscale serve provisioning fell through.
+ */
+function resolveDefaultRedirectStrategy(
+  requested: "loopback" | "public" | "client-forwarded" | undefined,
+): "loopback" | "public" | "client-forwarded" {
+  if (requested) return requested;
+  return isPublicUrlVerified() ? "public" : "loopback";
 }
 
 function isLoopbackHost(hostname: string): boolean {
@@ -1989,7 +2010,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       throw new OAuthConnectionError("client_config_unavailable");
     }
     const redirect = request.redirect ?? {};
-    const redirectStrategy = redirect.type ?? "loopback";
+    const redirectStrategy = resolveDefaultRedirectStrategy(redirect.type);
     let callback: HostOAuthCallback | null = null;
     let tx: OAuthConnectionTransaction | null = null;
     try {
@@ -2006,10 +2027,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         redirectUri = callback.redirectUri;
       } else if (redirectStrategy === "public") {
         transactionId = randomUUID();
-        redirectUri = buildPublicUrl(`/_r/s/credentials/oauth/callback/${transactionId}`);
+        redirectUri = buildPublicUrl(PUBLIC_OAUTH_CALLBACK_PATH);
       } else if (redirectStrategy === "client-forwarded") {
         transactionId = randomUUID();
-        redirectUri = redirect.callbackUri ?? buildPublicUrl(`/_r/s/credentials/oauth/callback/${transactionId}`);
+        redirectUri = redirect.callbackUri ?? buildPublicUrl(PUBLIC_OAUTH_CALLBACK_PATH);
       } else {
         throw new OAuthConnectionError("redirect_unavailable");
       }
@@ -2122,7 +2143,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     explicitHandoffTarget?: { callerId: string; callerKind: "panel" | "shell" },
   ): Promise<StoredCredentialSummary> {
     const redirect = request.redirect ?? {};
-    const redirectStrategy = redirect.type ?? "loopback";
+    const redirectStrategy = resolveDefaultRedirectStrategy(redirect.type);
     let callback: HostOAuthCallback | null = null;
     let tx: OAuthConnectionTransaction | null = null;
     try {
@@ -2139,10 +2160,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         redirectUri = callback.redirectUri;
       } else if (redirectStrategy === "public") {
         transactionId = randomUUID();
-        redirectUri = buildPublicUrl(`/_r/s/credentials/oauth/callback/${transactionId}`);
+        redirectUri = buildPublicUrl(PUBLIC_OAUTH_CALLBACK_PATH);
       } else if (redirectStrategy === "client-forwarded") {
         transactionId = randomUUID();
-        redirectUri = redirect.callbackUri ?? buildPublicUrl(`/_r/s/credentials/oauth/callback/${transactionId}`);
+        redirectUri = redirect.callbackUri ?? buildPublicUrl(PUBLIC_OAUTH_CALLBACK_PATH);
       } else {
         throw new OAuthConnectionError("redirect_unavailable");
       }
@@ -3357,38 +3378,44 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     },
   };
 
-  const routes: ServiceRouteDecl[] = [{
-    serviceName: "credentials",
-    path: "/oauth/callback/:transactionId",
-    methods: ["GET"],
-    auth: "public",
-    handler: async (req, res, routeParams) => {
-      const tx = oauthTransactions.get(routeParams["transactionId"] ?? "");
-      if (!tx) {
-        respondOAuthCallback(res, 400, "No matching OAuth connection is waiting for this callback.");
-        return;
-      }
-      const url = new URL(req.url ?? "/", tx.redirectUri);
-      const providerError = url.searchParams.get("error");
-      await receiveOAuthCallback(tx, {
-        code: url.searchParams.get("code") ?? url.searchParams.get("oauth_verifier"),
-        state: url.searchParams.get("state"),
-        error: providerError,
-        url: url.toString(),
-      });
-      if (tx.state === "failed" || tx.state === "expired" || tx.state === "cancelled") {
-        respondOAuthCallback(res, providerError ? 400 : 400, providerError
-          ? "The provider denied the connection."
-          : "OAuth callback could not be validated.");
-      } else if (providerError) {
-        respondOAuthCallback(res, 400, "The provider denied the connection.");
-      } else if (!url.searchParams.get("code")) {
-        respondOAuthCallback(res, 400, "Missing authorization code.");
-      } else {
-        respondOAuthCallback(res, 200, "Connection complete. You can close this window.");
-      }
+  const publicCallbackHandler: ServiceRouteDecl["handler"] = async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://placeholder");
+    const stateParam = url.searchParams.get("state") ?? undefined;
+    const tx = findOAuthTransactionByState(stateParam);
+    if (!tx) {
+      respondOAuthCallback(res, 400, "No matching OAuth connection is waiting for this callback.");
+      return;
+    }
+    const providerError = url.searchParams.get("error");
+    const callbackUrl = new URL(req.url ?? "/", tx.redirectUri);
+    await receiveOAuthCallback(tx, {
+      code: callbackUrl.searchParams.get("code") ?? callbackUrl.searchParams.get("oauth_verifier"),
+      state: callbackUrl.searchParams.get("state"),
+      error: providerError,
+      url: callbackUrl.toString(),
+    });
+    if (tx.state === "failed" || tx.state === "expired" || tx.state === "cancelled") {
+      respondOAuthCallback(res, 400, providerError
+        ? "The provider denied the connection."
+        : "OAuth callback could not be validated.");
+    } else if (providerError) {
+      respondOAuthCallback(res, 400, "The provider denied the connection.");
+    } else if (!callbackUrl.searchParams.get("code")) {
+      respondOAuthCallback(res, 400, "Missing authorization code.");
+    } else {
+      respondOAuthCallback(res, 200, "Connection complete. You can close this window.");
+    }
+  };
+
+  const routes: ServiceRouteDecl[] = [
+    {
+      serviceName: "credentials",
+      path: "/oauth/callback",
+      methods: ["GET"],
+      auth: "public",
+      handler: publicCallbackHandler,
     },
-  }];
+  ];
 
   return Object.assign(definition, { routes });
 }

@@ -23,6 +23,7 @@ interface PublicUrlState {
 }
 
 let state: PublicUrlState | null = null;
+let verified = false;
 
 export interface ConfigurePublicUrlOptions {
   override?: string;
@@ -51,6 +52,33 @@ export function getPublicUrl(): string {
   return `${state.protocol}://${state.externalHost}:${state.gatewayPort}`;
 }
 
+/**
+ * Whether the public URL was supplied explicitly (via --public-url or
+ * NATSTACK_PUBLIC_URL) rather than auto-derived from bind host + port.
+ */
+export function isPublicUrlExplicit(): boolean {
+  return !!state?.override;
+}
+
+/**
+ * Whether the public URL is known to actually be reachable. This is true
+ * when the user supplied --public-url (they vouch for it) or when the auto-
+ * detected URL passed a reachability check. False when auto-detection
+ * proposed a URL but provisioning failed — e.g., tailscale serve isn't yet
+ * configured.
+ *
+ * Used to gate "default OAuth redirect to public" — without this check,
+ * desktop panels that worked fine on loopback would silently break when
+ * detection ran but provisioning didn't.
+ */
+export function isPublicUrlVerified(): boolean {
+  return verified;
+}
+
+export function markPublicUrlVerified(value: boolean): void {
+  verified = value;
+}
+
 /** Build an absolute URL from a pathname (must start with "/"). */
 export function buildPublicUrl(pathname: string): string {
   const base = getPublicUrl();
@@ -61,6 +89,7 @@ export function buildPublicUrl(pathname: string): string {
 /** For tests. */
 export function resetPublicUrl(): void {
   state = null;
+  verified = false;
 }
 
 function normalizeOverride(value: string | undefined): string | undefined {

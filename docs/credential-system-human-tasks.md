@@ -4,13 +4,33 @@ This is the current human-facing plan for the URL-bound credential work. It
 intentionally does not revive provider manifests, default credentials, legacy
 consent, or non-interactive deployment flows.
 
-## Target Domains
+## Default mobile OAuth path: per-server public URL
+
+For personal-server NatStack installations, the default mobile OAuth path is
+**direct to the server's own public URL** — no shared hosted relay required.
+The server auto-detects a Tailscale MagicDNS hostname, provisions
+`tailscale serve` to forward HTTPS to the local gateway, and uses the
+resulting `https://<host>.<tailnet>.ts.net/_r/s/credentials/oauth/callback`
+as the redirect URI. Each user registers that URL with their own OAuth
+provider clients (in their own Google / GitHub / etc developer console).
+
+The bootstrap and registration flow is described in
+[../docs/remote-server.md](./remote-server.md#oauth-in-remote-mode) and
+[../docs/mobile-vpn.md](./mobile-vpn.md#auto-detected-tailscale-path-recommended).
+
+The `auth.snugenv.com` shared universal-link relay below is an alternative
+path — useful only if you want one redirect URI shared across many natstack
+deployments without per-user provider registration. It requires hosted
+infrastructure (DNS, static site, signed mobile app) and is not on the
+critical path for personal-server use.
+
+## Target Domains (shared-relay path, optional)
 
 - `snugenv.com`: public product/apex domain and optional well-known fallback.
 - `auth.snugenv.com`: OAuth universal-link callback host.
 - `hooks.snugenv.com`: public webhook ingress relay host.
 
-OAuth callback paths should be:
+OAuth callback paths (when using the shared-relay path) should be:
 
 - `https://auth.snugenv.com/oauth/callback/:providerId`
 - transitional fallback only: `natstack://oauth/callback/:providerId`
@@ -100,19 +120,33 @@ Follow-up TODOs:
 - TODO: Keep `natstack://` only as a debug/transitional fallback until app-link
   verification is proven on production builds.
 
-### TODO: OAuth Provider Registrations
+### OAuth Provider Registrations
 
 For each OAuth-backed credential provider we ship or document:
 
-- TODO: Register `https://auth.snugenv.com/oauth/callback/:providerId`.
-- TODO: Register loopback redirects only for desktop flows that need them.
-- TODO: Prefer public PKCE clients. Do not require a mobile client secret.
-- TODO: Record whether the provider supports:
+- **Per-personal-server** (default path): each user registers
+  `https://<their-server>.<their-tailnet>.ts.net/_r/s/credentials/oauth/callback`
+  with their own OAuth client in the provider's developer console. The
+  natstack readiness banner prints the exact string to copy.
+- **Device-code fallback** (RFC 8628): for providers that support it
+  (Google, Microsoft/Azure AD, GitHub, GitLab, Slack, Twitch, Spotify,
+  Dropbox, Atlassian, Discord), userland can pass `type: "oauth2-device-code"`
+  to `credentials.connect()` and skip redirect-URI registration entirely.
+  The trusted approval bar displays the `user_code`; the polling loop is
+  cancellable. See `docs/credential-system.md#device-code-flow-rfc-8628`.
+- **Shared-relay (optional)**: if maintaining the `auth.snugenv.com` path,
+  register `https://auth.snugenv.com/oauth/callback/:providerId` instead.
+- Loopback redirects only for desktop flows that need them.
+- Prefer public PKCE clients. Do not require a mobile client secret.
+- Record whether the provider supports:
   - absent `token_type`
   - absent `expires_in`
   - refresh tokens
   - custom scopes
   - strict redirect URI matching
+  - Apple Sign-In is the one major provider that **rejects `*.ts.net`
+    domains** at registration; for Apple, fall back to the shared relay or
+    `tailscale funnel` to expose a publicly-resolvable hostname.
 
 The OpenAI/Codex default must continue to use URL-bound credentials and the
 server-supported OAuth PKCE path. The default model is

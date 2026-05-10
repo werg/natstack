@@ -304,18 +304,38 @@ the approved `external-open:open` event and opens the URL locally
 drives the OAuth state machine and persists the resulting tokens.
 
 **Callback reachability.** The OAuth provider redirects the user's browser
-back to a URL *on the server*. For the callback to land correctly when the
-server is remote:
+back to a URL *on the server*. For mobile and remote-Electron clients, the
+server's loopback isn't reachable from the user's browser, so we redirect
+through a verified public URL instead. The system picks one of three paths
+in this order:
 
-- **`NATSTACK_PUBLIC_URL` must be set** (or `--public-url`) to the URL the
-  user's browser will use to reach the server. This becomes the OAuth
-  `redirect_uri` — for OpenAI Codex, that's
-  `${NATSTACK_PUBLIC_URL}/_r/s/auth/oauth/callback`.
-- The OAuth flow is owned by `NatstackCodexProvider`
-  (`src/server/services/oauthProviders/`), which registers a callback route via
-  the gateway's `/_r/` primitive (see [routes.md](./routes.md)). Unlike pi-ai's
-  bundled flow (which hardcodes `http://localhost:1455`), ours works with any
-  publicly-reachable redirect URI.
+1. **Explicit `--public-url` / `NATSTACK_PUBLIC_URL`.** Trusted as-is. You
+   register `${NATSTACK_PUBLIC_URL}/_r/s/credentials/oauth/callback` with
+   each OAuth provider.
+2. **Auto-detected Tailscale MagicDNS URL.** When Tailscale is running on
+   the server, the bootstrap detects the MagicDNS hostname, attempts
+   `tailscale serve --bg <gateway-port>` (idempotent; refuses to clobber a
+   non-empty serve config that points elsewhere), and runs a `/healthz`
+   reachability check before promising the URL works. If verified, OAuth
+   flows default to it without each callsite having to know.
+3. **Loopback fallback.** When neither of the above is available, OAuth
+   defaults to a loopback HTTP server on the natstack machine — works for
+   desktop in-process flows, fails (correctly) for mobile/remote.
+
+The decision is gated on `isPublicUrlVerified()` in
+`src/server/publicUrl.ts`: explicit URLs are trusted up-front, auto-detected
+URLs require the reachability check to pass.
+
+**Callback URL format.** The server exposes a stable callback path
+`${publicUrl}/_r/s/credentials/oauth/callback` and looks up the in-flight
+transaction by the OAuth `state` parameter. This means you register one URL
+per server with each provider — providers do exact-match validation, but
+since `state` is unique per flow, one registered URL covers all flows.
+
+Helpers:
+
+- `--no-vpn-detect` skips the auto-detection step entirely.
+- The readiness banner prints the registration URL alongside `Public URL:`.
 ## Ops & resilience
 
 ### Backup

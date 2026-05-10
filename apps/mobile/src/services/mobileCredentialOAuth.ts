@@ -4,6 +4,12 @@
  * Userland calls the host-owned credential OAuth transaction. The server owns
  * browser handoff and callback validation; mobile only forwards browser-open
  * events through the shell bridge.
+ *
+ * Default redirect strategy is "public" — the server's NATSTACK_PUBLIC_URL
+ * (typically a Tailscale `*.ts.net` hostname) is reachable from the phone, so
+ * the OAuth provider redirects straight to the server. Pass `redirectUri` or
+ * `callbackOrigin` to opt into the legacy "client-forwarded" universal-link
+ * path that requires a published mobile app and hosted relay domain.
  */
 
 import { Linking } from "react-native";
@@ -20,7 +26,7 @@ const DEFAULT_FLOW_TIMEOUT_MS = 10 * 60 * 1000;
 
 export interface ConnectMobileOAuthCredentialRequest
   extends ConnectCredentialRequest {
-  providerId: string;
+  providerId?: string;
   redirectUri?: string;
   callbackOrigin?: string;
   timeoutMs?: number;
@@ -43,19 +49,31 @@ export async function connectMobileOAuthCredential(
   shellClient: ShellClient,
   request: ConnectMobileOAuthCredentialRequest,
 ): Promise<StoredCredentialSummary> {
-  const redirectUri = request.redirectUri
-    ?? buildMobileOAuthRedirectUri(request.providerId, request.callbackOrigin);
+  const wantsClientForwarded = request.redirectUri !== undefined
+    || request.callbackOrigin !== undefined
+    || request.redirect?.type === "client-forwarded";
+  let redirect: ConnectCredentialRequest["redirect"];
+  if (wantsClientForwarded) {
+    if (!request.providerId && !request.redirectUri) {
+      throw new Error("client-forwarded mobile OAuth requires providerId or redirectUri");
+    }
+    const callbackUri = request.redirectUri
+      ?? buildMobileOAuthRedirectUri(request.providerId!, request.callbackOrigin);
+    redirect = {
+      ...(request.redirect ?? {}),
+      type: "client-forwarded",
+      callbackUri,
+    };
+  } else {
+    redirect = { ...(request.redirect ?? {}), type: "public" };
+  }
   return shellClient.transport.call<StoredCredentialSummary>(
     "main",
     "credentials.connect",
     {
       flow: request.flow,
       credential: request.credential,
-      redirect: {
-        ...(request.redirect ?? {}),
-        type: "client-forwarded",
-        callbackUri: redirectUri,
-      },
+      redirect,
       browser: request.browser ?? "external",
     },
   );

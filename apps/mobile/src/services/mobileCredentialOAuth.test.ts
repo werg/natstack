@@ -45,7 +45,7 @@ describe("mobileCredentialOAuth", () => {
     expect(mockOpenURL).not.toHaveBeenCalled();
   });
 
-  it("delegates credential OAuth connection to the server transaction API", async () => {
+  it("delegates credential OAuth connection to the server with public redirect by default", async () => {
     const calls: Array<{ method: string; args: unknown[] }> = [];
     const shellClient = {
       transport: {
@@ -83,6 +83,46 @@ describe("mobileCredentialOAuth", () => {
       args: [expect.objectContaining({
         flow: expect.objectContaining({ clientId: "client" }),
         browser: "external",
+        redirect: { type: "public" },
+      })],
+    });
+  });
+
+  it("opts into client-forwarded redirect when callbackOrigin is supplied", async () => {
+    const calls: Array<{ method: string; args: unknown[] }> = [];
+    const shellClient = {
+      transport: {
+        call: jest.fn(async (_target: string, method: string, ...args: unknown[]) => {
+          calls.push({ method, args });
+          if (method === "credentials.connect") {
+            return { id: "cred-1" };
+          }
+          throw new Error(`unexpected method: ${method}`);
+        }),
+      },
+    };
+
+    await connectMobileOAuthCredential(shellClient as never, {
+      providerId: "example",
+      callbackOrigin: "https://auth.snugenv.com",
+      flow: {
+        type: "oauth2-auth-code-pkce",
+        authorizeUrl: "https://auth.example.test/oauth",
+        tokenUrl: "https://auth.example.test/token",
+        clientId: "client",
+      },
+      credential: {
+        label: "Example",
+        audience: [{ url: "https://api.example.test/", match: "origin" }],
+        injection: {
+          type: "header",
+          name: "Authorization",
+          valueTemplate: "Bearer {token}",
+        },
+      },
+    });
+    expect(calls[0]).toMatchObject({
+      args: [expect.objectContaining({
         redirect: {
           type: "client-forwarded",
           callbackUri: "https://auth.snugenv.com/oauth/callback/example",

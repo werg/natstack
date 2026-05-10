@@ -136,6 +136,7 @@ interface CliArgs {
   tlsKey?: string;
   printToken?: boolean;
   publicUrl?: string;
+  noVpnDetect?: boolean;
   help?: boolean;
 }
 
@@ -167,6 +168,12 @@ Options:
                            Used for OAuth redirect URIs, webhooks, and any route that
                            needs to be reached from the user's browser. Falls back to
                            constructing a URL from --protocol/--host/<gatewayPort>.
+                           When set, OAuth flows default to redirecting through this
+                           URL — register <public-url>/_r/s/credentials/oauth/callback
+                           with each OAuth provider as the allowed redirect URI.
+  --no-vpn-detect          Skip auto-detection and auto-configuration of the VPN-based
+                           public URL (Tailscale today). Useful if you manage
+                           tailscale serve yourself or use --public-url.
   --help                   Show this help message and exit
 
 Environment variables:
@@ -224,10 +231,18 @@ function parseArgs(argv: string[]): CliArgs {
     "tls-key",
     "print-token",
     "public-url",
+    "no-vpn-detect",
     "help",
   ]);
   /** Flags that don't take a value */
-  const booleanFlags = new Set(["serve-panels", "ephemeral", "init", "print-token", "help"]);
+  const booleanFlags = new Set([
+    "serve-panels",
+    "ephemeral",
+    "init",
+    "print-token",
+    "no-vpn-detect",
+    "help",
+  ]);
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -319,6 +334,9 @@ function parseArgs(argv: string[]): CliArgs {
         break;
       case "public-url":
         args.publicUrl = value;
+        break;
+      case "no-vpn-detect":
+        args.noVpnDetect = true;
         break;
       case "help":
         args.help = true;
@@ -523,14 +541,12 @@ async function main() {
         origins.add(`https://localhost:${port}`);
         origins.add(`${configuredProtocol}://${configuredExternalHost}:${port}`);
       }
-      const publicUrl = process.env["NATSTACK_PUBLIC_URL"] ?? args.publicUrl;
-      if (publicUrl) {
-        try {
-          const url = new URL(publicUrl);
-          origins.add(url.origin);
-        } catch {
-          // Ignore invalid public URL here; configurePublicUrl handles errors.
-        }
+      // Picks up both explicit --public-url and the auto-detected VPN URL,
+      // since both flow into configurePublicUrl().
+      try {
+        origins.add(new URL(getPublicUrl()).origin);
+      } catch {
+        // configurePublicUrl not yet called or value invalid — ignore.
       }
       return Array.from(origins);
     },
@@ -1453,18 +1469,68 @@ async function main() {
   const gatewayPort = await gateway.start(requestedGatewayPort ?? 0);
   gatewayPortResolved = gatewayPort;
 
-  {
-    const { configurePublicUrl } = await import("./publicUrl.js");
-    configurePublicUrl({
-      override: args.publicUrl ?? process.env["NATSTACK_PUBLIC_URL"],
-      protocol: isTlsInitial ? "https" : "http",
-      externalHost: hostConfig.externalHost,
-      gatewayPort,
-    });
+  // ── Public URL: explicit input now, auto-detection in parallel below ──
+  // The explicit --public-url path runs synchronously; auto-detection runs
+  // concurrently with service startup so we don't block on it.
+  interface VpnSetupResult {
+    detectedVpn: import("./vpnDetect.js").DetectedVpnPublicUrl | null;
+    serveProvision: import("./tailscaleServe.js").ServeProvisionResult | null;
+    publicUrlVerified: boolean;
   }
+  const explicitOverride = args.publicUrl ?? process.env["NATSTACK_PUBLIC_URL"];
+  const skipVpnDetect =
+    args.noVpnDetect
+    || process.env["NATSTACK_NO_VPN_DETECT"] === "1"
+    || !!explicitOverride;
+  const { configurePublicUrl, markPublicUrlVerified } = await import("./publicUrl.js");
+  configurePublicUrl({
+    override: explicitOverride,
+    protocol: isTlsInitial ? "https" : "http",
+    externalHost: hostConfig.externalHost,
+    gatewayPort,
+  });
+  // Explicit URLs are trusted up-front. Auto-detected URLs (if any) get
+  // verified in the parallel block below and update this state then.
+  markPublicUrlVerified(!!explicitOverride);
+
+  const vpnSetupPromise: Promise<VpnSetupResult> = skipVpnDetect
+    ? Promise.resolve({ detectedVpn: null, serveProvision: null, publicUrlVerified: false })
+    : (async (): Promise<VpnSetupResult> => {
+      const { detectVpnPublicUrl } = await import("./vpnDetect.js");
+      const detectedVpn = await detectVpnPublicUrl().catch(() => null);
+      if (!detectedVpn) {
+        return { detectedVpn: null, serveProvision: null, publicUrlVerified: false };
+      }
+      const { verifyHttpsReachable, ensureHttpsServe } = await import("./tailscaleServe.js");
+      let publicUrlVerified = await verifyHttpsReachable(detectedVpn.url).catch(() => false);
+      let serveProvision: import("./tailscaleServe.js").ServeProvisionResult | null = null;
+      if (!publicUrlVerified && detectedVpn.vendor === "tailscale") {
+        serveProvision = await ensureHttpsServe({
+          port: gatewayPort,
+          hostname: detectedVpn.hostname,
+        }).catch((err) => ({
+          kind: "error",
+          message: err instanceof Error ? err.message : String(err),
+        } as import("./tailscaleServe.js").ServeProvisionResult));
+        if (serveProvision.kind === "configured" || serveProvision.kind === "already-configured") {
+          publicUrlVerified = await verifyHttpsReachable(detectedVpn.url).catch(() => false);
+        }
+      }
+      configurePublicUrl({
+        override: detectedVpn.url,
+        protocol: isTlsInitial ? "https" : "http",
+        externalHost: hostConfig.externalHost,
+        gatewayPort,
+      });
+      markPublicUrlVerified(publicUrlVerified);
+      return { detectedVpn, serveProvision, publicUrlVerified };
+    })();
 
   // ── Start all services in dependency order ──
   await container.startAll();
+  // Settle VPN setup before printing the readiness banner (so the operator
+  // sees the auto-detected Mobile URL line if one is available).
+  const { detectedVpn, serveProvision, publicUrlVerified } = await vpnSetupPromise;
 
   // Wire DODispatch to workerdManager for restart recovery
   const workerdManager =
@@ -1574,6 +1640,42 @@ async function main() {
     console.log(`  Token file:  ${tokenFilePath}${sourceLabel}`);
     if (tokenSource !== "env") {
       console.log(`  Persisted:   ${getAdminTokenPath()}`);
+    }
+    {
+      const explicitPublicUrl = args.publicUrl ?? process.env["NATSTACK_PUBLIC_URL"];
+      const publicUrlForBanner = explicitPublicUrl ?? detectedVpn?.url;
+      if (publicUrlForBanner) {
+        const publicUrlLabel = explicitPublicUrl
+          ? "(--public-url)"
+          : detectedVpn
+            ? `(auto-detected ${detectedVpn.vendor})`
+            : "";
+        const reachabilityLabel = publicUrlVerified
+          ? "verified reachable"
+          : "not yet reachable — see note below";
+        console.log(`  Public URL:  ${publicUrlForBanner} ${publicUrlLabel} (${reachabilityLabel})`);
+        if (publicUrlVerified) {
+          // Single canonical URL for QR pairing, panel chrome, and OAuth.
+          // mobile-pair prefers this line over Gateway: when present.
+          console.log(`  Mobile URL:  ${publicUrlForBanner}`);
+        }
+        console.log(`  OAuth callback (register with each provider):`);
+        console.log(`    ${publicUrlForBanner}/_r/s/credentials/oauth/callback`);
+        if (serveProvision?.kind === "configured") {
+          console.log(`  Tailscale: configured \`tailscale serve\` to forward https://${detectedVpn?.hostname}/ → 127.0.0.1:${gatewayPort}.`);
+          console.log(`             Persistent across reboots; remove with \`tailscale serve reset\`.`);
+        } else if (serveProvision?.kind === "permission-denied") {
+          console.log(`  Note: ${serveProvision.hint}`);
+        } else if (serveProvision?.kind === "https-feature-disabled") {
+          console.log(`  Note: ${serveProvision.hint}`);
+        } else if (serveProvision?.kind === "skipped-conflict") {
+          console.log(`  Note: ${serveProvision.reason}`);
+        } else if (serveProvision?.kind === "error") {
+          console.log(`  Note: tailscale serve setup failed: ${serveProvision.message}`);
+        } else if (!publicUrlVerified && !explicitPublicUrl && detectedVpn?.setupHint) {
+          console.log(`  Note: ${detectedVpn.setupHint}`);
+        }
+      }
     }
     // Mint a shell token for mobile/remote shell clients.
     // Shell tokens give callerKind "shell" (not "server"), which is the correct

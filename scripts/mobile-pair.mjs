@@ -99,6 +99,11 @@ function parseArgs(argv) {
 function printHelp() {
   console.log(`mobile-pair
 
+If Tailscale is running and \`tailscale serve\` is configured (or can be configured —
+the server attempts it automatically), the QR points at the MagicDNS HTTPS URL and
+OAuth, panel chrome, and pairing all use the same URL. Otherwise it falls back to
+the IP+HTTP gateway address.
+
 Usage:
   pnpm mobile:pair
   pnpm mobile:pair --dev
@@ -186,9 +191,35 @@ function main() {
   });
 
   let gatewayUrl = null;
+  let mobileUrl = null;
   let shellToken = null;
   let bannerPrinted = false;
   let buffer = "";
+  // Wait briefly after seeing the Gateway line to give the server a chance
+  // to also emit the Mobile URL line (when tailscale serve is verified). If
+  // Mobile URL never arrives, we fall back to the gateway URL.
+  let pendingTimer = null;
+  const tryPrintBanner = () => {
+    if (bannerPrinted || !shellToken || (!gatewayUrl && !mobileUrl)) return;
+    if (!mobileUrl && pendingTimer === null) {
+      pendingTimer = setTimeout(() => {
+        pendingTimer = null;
+        tryPrintBanner();
+      }, 500);
+      return;
+    }
+    bannerPrinted = true;
+    if (pendingTimer !== null) {
+      clearTimeout(pendingTimer);
+      pendingTimer = null;
+    }
+    const url = mobileUrl ?? gatewayUrl;
+    printConnectBanner({
+      title: "NatStack Android pairing",
+      gatewayUrl: url,
+      shellToken,
+    });
+  };
 
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk) => {
@@ -199,19 +230,14 @@ function main() {
       const line = buffer.slice(0, newlineIdx);
       buffer = buffer.slice(newlineIdx + 1);
 
+      const mobileMatch = line.match(/Mobile URL:\s+(\S+)/);
+      if (mobileMatch) mobileUrl = mobileMatch[1];
       const gatewayMatch = line.match(/Gateway:\s+(\S+)/);
       if (gatewayMatch) gatewayUrl = gatewayMatch[1];
       const tokenMatch = line.match(/(?:NATSTACK_SHELL_TOKEN=|Shell token:\s+)([A-Za-z0-9_-]+)/);
       if (tokenMatch) shellToken = tokenMatch[1];
 
-      if (!bannerPrinted && gatewayUrl && shellToken) {
-        bannerPrinted = true;
-        printConnectBanner({
-          title: "NatStack Android pairing",
-          gatewayUrl,
-          shellToken,
-        });
-      }
+      tryPrintBanner();
     }
   });
 
