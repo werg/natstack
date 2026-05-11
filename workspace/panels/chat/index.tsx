@@ -133,6 +133,62 @@ export default function ChatPanel() {
     stateArgs.systemPromptMode,
   ]);
 
+  // Rehydration recovery: when a panel mounts with channelName already set
+  // (persisted from a prior session) but no DO participants are in the
+  // channel, re-subscribe the agent. Covers the case where the original
+  // bootstrap persisted channelName but the subscribeDOToChannel call lost
+  // its race against WS-readiness, leaving the user with a chat that has
+  // no agent. Skipped when this session ran the bootstrap itself (in which
+  // case the in-flight subscribe is authoritative).
+  const rehydrationCheckedRef = useRef(false);
+  useEffect(() => {
+    if (
+      rehydrationCheckedRef.current ||
+      bootstrapAttempted.current ||
+      !stateArgs.channelName ||
+      !resolvedContextId
+    ) return;
+    rehydrationCheckedRef.current = true;
+
+    const channelName = stateArgs.channelName;
+    void (async () => {
+      try {
+        const dos = await rpc.call<Array<{ source: string; className: string; objectKey: string }>>(
+          "main",
+          "workers.getChannelWorkers",
+          channelName,
+        );
+        if (dos.length > 0) return;
+
+        const workerSource = stateArgs.agentSource ?? DEFAULT_WORKER_SOURCE;
+        const fallbackClass = stateArgs.agentClass ?? DEFAULT_CLASS_NAME;
+        const fallbackHandle = fallbackClass === DEFAULT_CLASS_NAME
+          ? DEFAULT_HANDLE
+          : fallbackClass.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase();
+        const pendingList = (stateArgs.pendingAgents && stateArgs.pendingAgents.length > 0)
+          ? stateArgs.pendingAgents
+          : [{ agentId: fallbackClass, handle: fallbackHandle }];
+
+        for (const agent of pendingList) {
+          const objectKey = `${agent.handle}-${crypto.randomUUID().slice(0, 8)}`;
+          const subscribeConfig: Record<string, unknown> = { handle: agent.handle };
+          if (stateArgs.systemPrompt) subscribeConfig["systemPrompt"] = stateArgs.systemPrompt;
+          if (stateArgs.systemPromptMode) subscribeConfig["systemPromptMode"] = stateArgs.systemPromptMode;
+          try {
+            await subscribeDOToChannel(
+              workerSource, agent.agentId, objectKey, channelName, resolvedContextId,
+              subscribeConfig, true,
+            );
+          } catch (err) {
+            console.warn(`[ChatPanel] Failed to re-subscribe agent "${agent.handle}" on rehydration:`, err);
+          }
+        }
+      } catch (err) {
+        console.warn(`[ChatPanel] Rehydration agent check failed:`, err);
+      }
+    })();
+  }, [stateArgs.channelName, resolvedContextId]);
+
   // Clear initialPrompt from persisted stateArgs after local capture.
   // AgenticChat may not mount until the channel bootstrap finishes, so the
   // panel must retain the prompt locally instead of relying on child capture.
