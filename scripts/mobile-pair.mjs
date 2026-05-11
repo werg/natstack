@@ -195,11 +195,27 @@ function main() {
   let shellToken = null;
   let bannerPrinted = false;
   let buffer = "";
+  // Captured Tailscale-Serve activation URL, when the server emits an
+  // "ACTION NEEDED" block during readiness. We re-surface this AFTER the QR
+  // banner so the actionable item is the last thing on the user's screen
+  // when they look up from scanning. Without this, the bordered server
+  // block scrolls off as the QR is rendered.
+  let pendingServeActivationUrl = null;
   // Wait briefly after seeing the Gateway line to give the server a chance
   // to also emit the Mobile URL line (when tailscale serve is verified). If
   // Mobile URL never arrives, we fall back to the gateway URL.
   let pendingTimer = null;
   let waitElapsed = false;
+  const printServeActionFollowup = () => {
+    if (!pendingServeActivationUrl) return;
+    const divider = "=".repeat(72);
+    console.log(`\n${divider}`);
+    console.log("  Heads up: mobile OAuth will fall back to localhost until you");
+    console.log("  enable Tailscale Serve. One click here:");
+    console.log(`    ${pendingServeActivationUrl}`);
+    console.log("  Then restart `pnpm mobile:pair` to pick up the public HTTPS URL.");
+    console.log(`${divider}\n`);
+  };
   const tryPrintBanner = () => {
     if (bannerPrinted || !shellToken || (!gatewayUrl && !mobileUrl)) return;
     if (!mobileUrl && !waitElapsed && pendingTimer === null) {
@@ -221,6 +237,7 @@ function main() {
       gatewayUrl: url,
       shellToken,
     });
+    printServeActionFollowup();
   };
 
   child.stdout.setEncoding("utf8");
@@ -238,6 +255,11 @@ function main() {
       if (gatewayMatch) gatewayUrl = gatewayMatch[1];
       const tokenMatch = line.match(/(?:NATSTACK_SHELL_TOKEN=|Shell token:\s+)([A-Za-z0-9_-]+)/);
       if (tokenMatch) shellToken = tokenMatch[1];
+      // Matches the "    https://login.tailscale.com/f/serve?node=..." line
+      // inside the server's ACTION NEEDED block. Restricted to the Tailscale
+      // activation host so other URLs in startup logs aren't captured.
+      const serveActivationMatch = line.match(/(https:\/\/login\.tailscale\.com\/f\/serve\?\S+)/);
+      if (serveActivationMatch) pendingServeActivationUrl = serveActivationMatch[1];
 
       tryPrintBanner();
     }

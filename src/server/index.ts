@@ -1688,6 +1688,27 @@ async function main() {
           console.log(`  Note: ${serveProvision.hint}`);
         } else if (serveProvision?.kind === "https-feature-disabled") {
           console.log(`  Note: ${serveProvision.hint}`);
+        } else if (serveProvision?.kind === "serve-feature-disabled") {
+          // Conspicuous bordered banner: this is a hard blocker for mobile
+          // OAuth, the user must act, and the line otherwise gets lost
+          // between the readiness block and the QR banner that follows.
+          const line = "=".repeat(72);
+          console.log("");
+          console.log(line);
+          console.log("  ACTION NEEDED — Tailscale Serve is not enabled");
+          console.log(line);
+          console.log("  Mobile OAuth needs a public HTTPS URL. Without Tailscale Serve,");
+          console.log("  redirects fall back to localhost and won't work on your phone.");
+          console.log("");
+          console.log("  Enable Tailscale Serve (one click):");
+          if (serveProvision.activationUrl) {
+            console.log(`    ${serveProvision.activationUrl}`);
+          } else {
+            console.log("    Open the Tailscale admin console → Settings → Serve.");
+          }
+          console.log("");
+          console.log("  Then restart `pnpm mobile:pair`.");
+          console.log(`${line}\n`);
         } else if (serveProvision?.kind === "skipped-conflict") {
           console.log(`  Note: ${serveProvision.reason}`);
         } else if (serveProvision?.kind === "error") {

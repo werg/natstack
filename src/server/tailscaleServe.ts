@@ -34,6 +34,10 @@ export type ServeProvisionResult =
   | { kind: "skipped-conflict"; reason: string }
   | { kind: "permission-denied"; hint: string }
   | { kind: "https-feature-disabled"; hint: string }
+  /** The Serve feature itself isn't enabled on the tailnet — the daemon
+   *  prints an activation URL that takes the operator straight to the
+   *  one-click enable page; we surface it verbatim in `hint`. */
+  | { kind: "serve-feature-disabled"; hint: string; activationUrl?: string }
   | { kind: "tailscale-unavailable" }
   | { kind: "error"; message: string };
 
@@ -53,7 +57,13 @@ export interface EnsureHttpsServeOptions {
 export async function ensureHttpsServe(
   opts: EnsureHttpsServeOptions,
 ): Promise<ServeProvisionResult> {
-  const timeoutMs = opts.timeoutMs ?? 4000;
+  // Tailscale CLI calls can be slow when LocalAPI rountrips through the
+  // daemon to query account state. The "Serve is not enabled" response in
+  // particular has been observed at 6–8 s; a 4 s budget was hitting the
+  // timeout branch and surfacing as a generic error instead of the
+  // actionable "enable Serve at <link>" hint the daemon prints. 12 s gives
+  // every code path room while still bounding the readiness banner.
+  const timeoutMs = opts.timeoutMs ?? 12000;
   const deadline = Date.now() + timeoutMs;
 
   const cli = await locateTailscale(deadline);
@@ -217,10 +227,18 @@ async function runServeAdd(
   const result = await runOnce(cli, ["serve", "--bg", String(port)], deadline);
   if (!result) return { kind: "fail", stderr: "(timed out)", exitCode: null };
   if (result.exitCode === 0) return { kind: "ok" };
-  return { kind: "fail", stderr: result.stderr, exitCode: result.exitCode };
+  // On timeout the CLI may have emitted a useful diagnostic before hanging —
+  // the "Serve is not enabled" message is the canonical example, observed in
+  // the wild keeping the CLI alive for 30+ seconds after the daemon already
+  // responded. Tailscale routes that particular message to **stdout** (not
+  // stderr, despite being an error). Combine both streams so the classifier
+  // can match regardless of which side the CLI chose.
+  const combined = [result.stdout, result.stderr].filter((s) => s.trim().length > 0).join("\n");
+  const stderr = combined.length > 0 ? combined : "(timed out)";
+  return { kind: "fail", stderr, exitCode: result.exitCode };
 }
 
-function classifyServeError(stderr: string, _exit: number | null): ServeProvisionResult {
+export function classifyServeError(stderr: string, _exit: number | null): ServeProvisionResult {
   const lower = stderr.toLowerCase();
   if (lower.includes("must run as root") || lower.includes("operation not permitted")
     || lower.includes("permission denied")) {
@@ -232,6 +250,17 @@ function classifyServeError(stderr: string, _exit: number | null): ServeProvisio
         + "Or run `sudo tailscale serve --bg <port>` once manually.",
     };
   }
+  // "Serve is not enabled on your tailnet. To enable, visit: <url>" — the
+  // daemon emits this when the Serve feature itself isn't activated. The
+  // activation URL is per-tailnet/per-node, so we extract it from stderr
+  // rather than hardcoding a generic admin link.
+  if (lower.includes("serve is not enabled")) {
+    const activationUrl = extractFirstHttpsUrl(stderr);
+    const hint = activationUrl
+      ? `Tailscale Serve isn't enabled on your tailnet. Open ${activationUrl} to enable it (one click), then restart natstack.`
+      : "Tailscale Serve isn't enabled on your tailnet. Enable it from the Tailscale admin console, then restart natstack.";
+    return { kind: "serve-feature-disabled", hint, activationUrl };
+  }
   if (lower.includes("https") && (lower.includes("disabled") || lower.includes("not enabled"))) {
     return {
       kind: "https-feature-disabled",
@@ -241,6 +270,11 @@ function classifyServeError(stderr: string, _exit: number | null): ServeProvisio
     };
   }
   return { kind: "error", message: stderr.trim() || "tailscale serve failed" };
+}
+
+function extractFirstHttpsUrl(text: string): string | undefined {
+  const match = text.match(/https:\/\/\S+/);
+  return match ? match[0].replace(/[.,)\]]+$/, "") : undefined;
 }
 
 interface SpawnResult {
@@ -263,8 +297,14 @@ function runOnce(cmd: string, args: string[], deadline: number): Promise<SpawnRe
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      child.kill();
-      resolve(null);
+      // Capture whatever the child has streamed so far. The Tailscale CLI is
+      // known to print "Serve is not enabled" to stderr and then hang
+      // indefinitely; treating that case as "no output" loses the actionable
+      // hint the user needs. SIGKILL because plain `kill` (SIGTERM) leaves
+      // the hung CLI alive — observed leaving zombie `tailscale serve`
+      // processes around. exitCode=null marks the result as timed-out.
+      child.kill("SIGKILL");
+      resolve({ exitCode: null, stdout, stderr });
     }, remaining);
     child.stdout?.on("data", (chunk) => {
       stdout += chunk.toString("utf8");

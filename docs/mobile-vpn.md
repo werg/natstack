@@ -26,8 +26,14 @@ same URL, and registering OAuth providers becomes a one-time copy-paste of
 
 First-time requirements:
 
+- **Tailscale Serve enabled on your tailnet.** Serve is a per-tailnet feature
+  that has to be turned on once from the admin console. If it isn't, mobile
+  OAuth silently falls back to a `localhost` redirect that the phone can't
+  reach — see [If the readiness banner says ACTION NEEDED](#if-the-readiness-banner-says-action-needed)
+  below.
 - HTTPS Certificates feature enabled in your tailnet admin console
-  (https://login.tailscale.com/admin/dns).
+  (https://login.tailscale.com/admin/dns). Provisioned `tailscale serve`
+  uses Let's Encrypt certs minted via this feature.
 - Either run the natstack server as the Tailscale operator
   (`sudo tailscale set --operator=$USER` once, then logout/login or restart),
   or run `sudo tailscale serve --bg <gateway-port>` once manually. Without one
@@ -52,6 +58,41 @@ To skip auto-detection (you manage `tailscale serve` yourself, or use a
 reverse proxy / Cloudflare Tunnel), pass `--no-vpn-detect` or set
 `NATSTACK_NO_VPN_DETECT=1`. Setting `--public-url` also implicitly skips
 detection.
+
+### If the readiness banner says ACTION NEEDED
+
+When Tailscale Serve isn't enabled on the tailnet, `pnpm mobile:pair` prints a
+bordered block during startup and again right after the QR banner:
+
+```
+========================================================================
+  ACTION NEEDED — Tailscale Serve is not enabled
+========================================================================
+  Mobile OAuth needs a public HTTPS URL. Without Tailscale Serve,
+  redirects fall back to localhost and won't work on your phone.
+
+  Enable Tailscale Serve (one click):
+    https://login.tailscale.com/f/serve?node=<your-node-id>
+
+  Then restart `pnpm mobile:pair`.
+========================================================================
+```
+
+The activation URL is per-tailnet and is extracted from the daemon's own
+"Serve is not enabled" message — open it in a browser, click **Enable**, then
+restart `pnpm mobile:pair`. The next run will:
+
+1. provision `tailscale serve --bg <port>` automatically,
+2. verify `https://<host>.<tailnet>.ts.net/healthz` returns `{ ok: true }`,
+3. mark the public URL as **verified reachable**,
+4. switch OAuth redirects to `https://<host>.<tailnet>.ts.net/_r/s/credentials/oauth/callback`
+   so logins from the phone complete.
+
+**For agents driving this setup:** treat the `ACTION NEEDED` block as a hard
+stop on the OAuth path. Pairing and the chat agent still work over the IP+HTTP
+gateway, but any OAuth flow the user starts from mobile will redirect to
+`http://localhost:<port>/...` and hang. Surface the activation URL to the
+operator before encouraging them to try mobile OAuth.
 
 ## 1. Build and install the phone app
 

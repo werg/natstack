@@ -14,6 +14,13 @@ resulting `https://<host>.<tailnet>.ts.net/_r/s/credentials/oauth/callback`
 as the redirect URI. Each user registers that URL with their own OAuth
 provider clients (in their own Google / GitHub / etc developer console).
 
+> **Prerequisite for mobile OAuth:** Tailscale Serve must be enabled on the
+> tailnet (one-click activation from the admin console). If it isn't, the
+> server prints an `ACTION NEEDED` block with the per-tailnet activation URL
+> at startup, mobile OAuth silently falls back to a `localhost` redirect that
+> the phone can't reach, and any OAuth flow started from mobile will hang.
+> See [mobile-vpn.md → If the readiness banner says ACTION NEEDED](./mobile-vpn.md#if-the-readiness-banner-says-action-needed).
+
 The bootstrap and registration flow is described in
 [../docs/remote-server.md](./remote-server.md#oauth-in-remote-mode) and
 [../docs/mobile-vpn.md](./mobile-vpn.md#auto-detected-tailscale-path-recommended).
