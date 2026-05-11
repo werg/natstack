@@ -469,6 +469,26 @@ async function main() {
   // ===========================================================================
 
   const tokenManager = new TokenManager();
+
+  // Re-seed TokenManager from persisted DO state so DOs that wake from a
+  // restart-survived alarm don't 401 with a token issued by a previous
+  // server lifetime. See recoverPersistedDOTokens.ts for the rationale.
+  // Best-effort: if `node:sqlite` is unavailable (Node < 22.5) the recovery
+  // skips silently and the system falls back to pre-fix behavior.
+  try {
+    const { recoverPersistedDOTokens } = await import("./recoverPersistedDOTokens.js");
+    const summary = recoverPersistedDOTokens(tokenManager, statePath);
+    if (summary.recovered > 0 || summary.errors > 0) {
+      console.log(
+        `[Server] Recovered ${summary.recovered} persisted DO token(s)` +
+          (summary.errors > 0 ? ` (${summary.errors} unreadable)` : ""),
+      );
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[Server] DO token recovery unavailable: ${msg}`);
+  }
+
   const workerdGatewayToken = randomBytes(32).toString("hex");
   const { CredentialStore } = await import("../../packages/shared/src/credentials/store.js");
   const { ClientConfigStore } =

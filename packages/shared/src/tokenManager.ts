@@ -72,6 +72,27 @@ export class TokenManager {
   }
 
   /**
+   * Re-register a token that was issued in a previous process lifetime and
+   * persisted by the caller (e.g., a Durable Object's `__instanceToken` saved
+   * to its SQLite storage). Without this, the token would be unknown to the
+   * fresh in-memory TokenManager and any inbound RPC from the persisted
+   * caller would 401 until the next dispatch refreshes the token — long
+   * enough for alarm-driven server calls to fail visibly.
+   *
+   * Idempotent: returns true if the registration took effect, false if a
+   * binding already exists for the callerId or the token is already mapped
+   * to a different caller (collision; should be vanishingly rare with 256
+   * bits of entropy, but we refuse silently rather than overwrite).
+   */
+  registerExistingToken(token: string, callerId: string, callerKind: CallerKind): boolean {
+    if (this.callerIdToToken.has(callerId)) return false;
+    if (this.tokenToEntry.has(token)) return false;
+    this.tokenToEntry.set(token, { callerId, callerKind });
+    this.callerIdToToken.set(callerId, token);
+    return true;
+  }
+
+  /**
    * Get the existing token for a caller. Throws if no token exists.
    */
   getToken(callerId: string): string {
