@@ -40,7 +40,7 @@ Panels in the same context share a filesystem. The chat panel's agent and its ch
 The chat panel hosts an AI agent that can:
 
 - **Run code** via the `eval` tool in a browser sandbox
-- **Render UI** via `inline_ui` (persistent components in chat) and `feedback_custom` (interactive forms)
+- **Render UI** via `inline_ui` (persistent components in chat), `load_action_bar` (compact pinned panel controls), and `feedback_custom` (interactive forms)
 - **Read/write files** in the workspace
 - **Build and launch panels** on demand
 - **Connect API provider integrations** — Gmail, GitHub, Slack, and other OAuth/credential-backed services

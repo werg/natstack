@@ -43,6 +43,7 @@ naturally drop out of the agent's tool list.
 | set_title | Yes | Yes |
 | scope persistence | Yes | Yes (auto-created when SandboxConfig provided) |
 | inline_ui | Yes | No — no panel to render the component |
+| load_action_bar | Yes | No — no panel-local top bar to render |
 | feedback_form / feedback_custom | Yes | No — no panel to render the form |
 | Tool approval UI | Yes | No — headless uses full-auto approval |
 

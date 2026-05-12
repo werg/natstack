@@ -20,7 +20,7 @@
   useChatCore() creates SessionManager internally
   - subscribes to events → pipes into useState
   - adds React-only concerns: input state, pending images,
-    document.title, inline UI compilation, tool approval UI
+    document.title, inline UI/action-bar compilation, tool approval UI
   useAgenticChat() composes useChatCore + feature hooks
 
 @workspace/agentic-session       ← thin headless convenience

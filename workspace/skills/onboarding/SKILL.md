@@ -95,7 +95,7 @@ eval({ code: `
 See the sandbox skill's [MDX.md](../sandbox/MDX.md) and [INTERACTION_PATTERNS.md](../sandbox/INTERACTION_PATTERNS.md) for when to use MDX, inline UI, feedback UI, or eval. During onboarding:
 
 - Use MDX `ActionButton`s for the initial choice list and other simple follow-up prompts.
-- Use `feedback_custom` or `inline_ui` after the user chooses a setup path that needs OAuth, provider console links, browser opens, persistence, or error handling.
+- Use `feedback_custom` or `inline_ui` after the user chooses a setup path that needs OAuth, provider console links, browser opens, persistence, or error handling. Use `load_action_bar` for compact pinned setup status or controls that should stay visible while the conversation continues.
 - Actions like switching workspaces or importing browser data should be workflow UIs, not blind eval calls.
 
 ## Guiding Principles
@@ -104,10 +104,10 @@ See the sandbox skill's [MDX.md](../sandbox/MDX.md) and [INTERACTION_PATTERNS.md
 - **Ask what they want to do** — don't dump everything at once. Tailor the walkthrough to their goals.
 - **Recommend from state** — mention already configured providers, imported browser data, and existing panels before suggesting next steps.
 - **Keep provider setup first-class** — API provider integrations are an initial onboarding option, independent of browser data import.
-- **Show, don't tell** — use `eval`, MDX, `feedback_custom`, and `inline_ui` to demonstrate concepts live rather than just describing them.
+- **Show, don't tell** — use `eval`, MDX, `feedback_custom`, `inline_ui`, and `load_action_bar` to demonstrate concepts live rather than just describing them.
 - **Reference, don't repeat** — point to existing skill docs for deep dives rather than duplicating content.
 - **Go step by step** — confirm each step works before moving to the next.
 
 ## Environment Compatibility
 
-- Best experience is **panel-only** — `inline_ui`, interactive workflows, and browser import features require a panel rendering context. However, basic onboarding (workspace exploration, config, creating a first project) can still proceed via `eval` and plain text replies in non-panel environments.
+- Best experience is **panel-only** — `inline_ui`, `load_action_bar`, interactive workflows, and browser import features require a panel rendering context. However, basic onboarding (workspace exploration, config, creating a first project) can still proceed via `eval` and plain text replies in non-panel environments.

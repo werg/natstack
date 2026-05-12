@@ -1,6 +1,6 @@
 # Chat API
 
-The `chat` object enables sandbox code (eval) and components (inline_ui, feedback_custom) to interact with the conversation.
+The `chat` object enables sandbox code (eval) and components (inline_ui, load_action_bar action-bar components, feedback_custom) to interact with the conversation.
 
 ## Access
 

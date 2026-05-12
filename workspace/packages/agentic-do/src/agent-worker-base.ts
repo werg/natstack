@@ -773,7 +773,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           // than collapsing into a single steered run. Without this, the 2nd
           // and later replay events would hit `running=true` (set by the 1st
           // event's drainLoop pre-await) and route to steer.
-          await this.onChannelEvent(opts.channelId, event, { mode: "sequential" });
+          await this.dispatchChannelEvent(opts.channelId, event, { mode: "sequential" });
         }
       } catch (err) {
         console.warn(`[AgentWorkerBase] Replay processing stopped:`, err);
@@ -915,7 +915,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
   }
 
-  private async dispatchChannelEvent(channelId: string, event: ChannelEvent): Promise<void> {
+  private async dispatchChannelEvent(
+    channelId: string,
+    event: ChannelEvent,
+    opts?: { mode?: "auto" | "sequential" },
+  ): Promise<void> {
     if (event.type === "config-update") {
       let newLevel: number | undefined;
       try {
@@ -929,6 +933,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       if (newLevel !== undefined && (newLevel === 0 || newLevel === 1 || newLevel === 2)) {
         this.setApprovalLevel(channelId, newLevel);
       }
+      return;
+    }
+
+    if (event.type === "agent-context") {
+      await this.appendAgentContext(channelId, event);
       return;
     }
 
@@ -953,7 +962,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       return;
     }
 
-    await this.onChannelEvent(channelId, event);
+    await this.onChannelEvent(channelId, event, opts);
   }
 
   // ── PiRunner lifecycle (one per channel, lazy) ──────────────────────────
@@ -1142,6 +1151,43 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       channelId,
     ).toArray();
     return rows.map((row) => JSON.parse(row["content"] as string) as AgentMessage);
+  }
+
+  private async appendAgentContext(channelId: string, event: ChannelEvent): Promise<void> {
+    const senderType = event.senderMetadata?.["type"] as string | undefined;
+    if (!isClientParticipantType(senderType)) return;
+
+    const payload = event.payload as Record<string, unknown> | undefined;
+    const content = typeof payload?.["content"] === "string" ? payload["content"] : undefined;
+    if (!content) return;
+
+    const messages = this.loadMessages(channelId);
+    const eventKey = event.id > 0 ? `event:${event.id}` : `message:${event.messageId}`;
+    if (messages.some((message) => {
+      const details = (message as { details?: Record<string, unknown> }).details;
+      return details?.["__natstack_agent_context_key"] === eventKey;
+    })) {
+      return;
+    }
+
+    const nextMessages: AgentMessage[] = [
+      ...messages,
+      {
+        role: "user",
+        content,
+        timestamp: event.ts ?? Date.now(),
+        details: {
+          __natstack_agent_context: true,
+          __natstack_agent_context_key: eventKey,
+          kind: payload?.["kind"],
+          senderId: event.senderId,
+        },
+      } as AgentMessage,
+    ];
+
+    await this.saveMessages(channelId, nextMessages);
+    const entry = this.runners.get(channelId);
+    if (entry) entry.runner.replaceHistory(nextMessages);
   }
 
   private async saveMessages(channelId: string, messages: AgentMessage[]): Promise<void> {

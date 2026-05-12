@@ -16,7 +16,9 @@ Use a UI instead of plain text when the task has:
 
 For one-shot approval/setup workflows, prefer `feedback_custom`; it returns a
 structured result to the agent. For dashboards, previews, logs, or long-lived
-assistants, prefer `inline_ui`.
+assistants in the transcript, prefer `inline_ui`. For compact controls or
+status that should remain pinned above chat history in the current panel, use
+`load_action_bar` with a TSX file instead.
 
 ## Component Rules
 

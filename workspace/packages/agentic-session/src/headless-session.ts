@@ -6,6 +6,8 @@
  * wrapper subscribes a PubSubClient to the channel and reads persisted
  * channel messages (text, thinking, action, image, inline_ui) to expose
  * chat state.
+ * Panel-local action bars are not channel messages, so headless sessions do
+ * not expose them.
  *
  * Public API mirrors the legacy SessionManager-based wrapper:
  *   - `HeadlessSession.create()` — wire up a session, no agent yet

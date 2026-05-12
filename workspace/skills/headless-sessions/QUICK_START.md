@@ -31,7 +31,7 @@ This automatically:
 - Registers eval and set_title methods on the client
 - Creates a ScopeManager for persistent scope across eval calls
 - Uses the worker's normal NatStack prompt and tool surface — UI tools like
-  inline_ui and feedback_form simply aren't advertised, so the agent naturally
+  inline_ui, load_action_bar, and feedback_form simply aren't advertised, so the agent naturally
   falls back to plain message replies
 
 ## 2. Two-step: Create then Connect

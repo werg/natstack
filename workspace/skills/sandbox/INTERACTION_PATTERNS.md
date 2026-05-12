@@ -64,6 +64,21 @@ Use `inline_ui` for persistent display, not blocking handoff:
 - Long-running workflow progress.
 - Inspectable search or browser-import results.
 
+## Use `load_action_bar`
+
+Use `load_action_bar` for compact controls or status that should stay visible
+above chat history in the current panel:
+
+- Current workflow status.
+- Pinned next actions.
+- Small control strips for a running task.
+- A file-backed UI the agent can edit and reload.
+
+`load_action_bar` reads a context-relative TSX file from the current panel's
+filesystem context. It is panel-local; it does not affect other panels on the
+same channel. Keep the UI compact and use `inline_ui` for larger dashboards or
+inspectable results that belong in the transcript.
+
 ## Browser Opens
 
 - Internal browser panels: `createBrowserPanel(url, { focus: true })`

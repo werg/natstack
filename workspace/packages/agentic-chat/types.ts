@@ -57,6 +57,28 @@ export interface InlineUiComponentEntry {
 }
 
 // ===========================================================================
+// Action Bar
+// ===========================================================================
+
+export interface ActionBarData {
+  /** Unique ID for this action bar revision. New revisions replace old ones. */
+  id: string;
+  /** Context-relative file path that provided this action bar. */
+  path?: string;
+  /** TSX source code for the component */
+  code: string;
+  /** Optional props to pass to the component */
+  props?: Record<string, unknown>;
+  /** Optional preferred maximum height in pixels. Clamped by the renderer. */
+  maxHeight?: number;
+}
+
+export interface ActionBarState {
+  data: ActionBarData;
+  component?: InlineUiComponentEntry;
+}
+
+// ===========================================================================
 // Typing Indicators
 // ===========================================================================
 
@@ -115,6 +137,7 @@ export interface ChatContextValue {
   messages: ChatMessage[];
   methodEntries: Map<string, MethodHistoryEntry>;
   inlineUiComponents: Map<string, InlineUiComponentEntry>;
+  actionBar: ActionBarState | null;
   hasMoreHistory: boolean;
   loadingMore: boolean;
 

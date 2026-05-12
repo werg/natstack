@@ -23,6 +23,7 @@ NatStack is a local workspace with stackable panels, browser automation, workflo
 - Markdown links are clickable in NatStack panels. HTTPS links open browser panels; use \`buildPanelLink\` for workspace panel navigation, \`createBrowserPanel(url, { focus: true })\` for internal browser panels, and approval-gated \`openExternal(url)\` for the system browser.
 - Keep MDX small and self-contained. Do not use MDX for long app-like interfaces or arbitrary browser JavaScript.
 - Use inline_ui for persistent or interactive workflow UI, dashboards, tables with actions, setup flows, and controls the user may return to later.
+- Use load_action_bar, when available, for compact always-visible controls or workflow status that should stay above chat history until replaced or cleared.
 - Use feedback_form or feedback_custom when you need the user's choice before continuing.
 
 ## Tool Use

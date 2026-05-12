@@ -172,6 +172,19 @@ function userMessage(content: string): ChannelEvent {
   } as unknown as ChannelEvent;
 }
 
+function agentContext(content: string): ChannelEvent {
+  return {
+    id: 42,
+    messageId: "ctx-42",
+    type: "agent-context",
+    senderId: "panel-1",
+    senderMetadata: { type: "panel" },
+    payload: { kind: "action_bar", content },
+    ts: 123,
+    persist: true,
+  } as unknown as ChannelEvent;
+}
+
 async function flush(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
@@ -227,6 +240,30 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
 
     // getOrCreateRunner never got called — no fakeState created.
     expect((instance as TestWorker).fakeState).toBeNull();
+  });
+
+  it("panel agent-context events are appended to Pi history without starting a turn", async () => {
+    const { instance, sql } = await createTestDO(TestWorker);
+    await (instance as any).getOrCreateRunner("ch-1");
+
+    await (instance as any).dispatchChannelEvent("ch-1", agentContext("load_action_bar(...) -> ok"));
+    await flush();
+
+    const rows = sql.exec(`SELECT content FROM pi_messages WHERE channel_id = ? ORDER BY idx`, "ch-1").toArray();
+    const messages = rows.map((row) => JSON.parse(row["content"] as string));
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      role: "user",
+      content: "load_action_bar(...) -> ok",
+      details: {
+        __natstack_agent_context: true,
+        kind: "action_bar",
+        senderId: "panel-1",
+      },
+    });
+    expect((instance as TestWorker).fakeState!.runTurnCalls).toHaveLength(0);
+    const replaceCalls = (instance as TestWorker).fakeState!.replaceHistoryCalls;
+    expect(replaceCalls[replaceCalls.length - 1]).toMatchObject(messages);
   });
 
   it("message events with a contentType are filtered (agent-emitted sub-blocks)", async () => {

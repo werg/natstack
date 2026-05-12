@@ -3,6 +3,7 @@ import { Flex } from "@radix-ui/themes";
 import { ChatHeader } from "./ChatHeader";
 import { ChatConnectionErrorBanner } from "./ChatConnectionErrorBanner";
 import { ChatDirtyRepoWarnings } from "./ChatDirtyRepoWarnings";
+import { ChatActionBar } from "./ChatActionBar";
 import { ChatMessageArea } from "./ChatMessageArea";
 import { ChatFeedbackArea } from "./ChatFeedbackArea";
 import { ChatInput } from "./ChatInput";
@@ -47,6 +48,7 @@ export const ChatLayout = React.memo(function ChatLayout() {
         <ChatHeader />
         <ChatConnectionErrorBanner />
         <ChatDirtyRepoWarnings />
+        <ChatActionBar />
         <ChatMessageArea />
         <ChatFeedbackArea />
         <ChatInput />

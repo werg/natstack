@@ -43,7 +43,7 @@ export interface FeedbackCallbacks {
 export interface FeedbackComponentProps extends FeedbackCallbacks {
   /** Chat API — publish messages, access runtime, etc. */
   chat: Record<string, unknown>;
-  /** REPL scope — shared read+write state across eval, inline_ui, feedback_custom */
+  /** REPL scope — shared read+write state across eval, inline_ui, action bars, feedback_custom */
   scope: Record<string, unknown>;
   /** Scopes API — call scopes.save() to persist scope changes from component handlers */
   scopes: Record<string, unknown>;

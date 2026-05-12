@@ -29,6 +29,14 @@ export interface AgenticChatProps {
   initialPrompt?: string;
   /** Sandbox config — provides RPC and import loading */
   sandbox: SandboxConfig;
+  /** Context-relative TSX file to load into the panel-local action bar on mount */
+  initialActionBarFile?: string;
+  /** Props for initialActionBarFile */
+  initialActionBarProps?: Record<string, unknown>;
+  /** Preferred max height for initialActionBarFile */
+  initialActionBarMaxHeight?: number;
+  /** Persist action-bar file changes into the hosting panel state, if supported */
+  onActionBarFileChange?: (value: { path: string | null; props?: Record<string, unknown>; maxHeight?: number }) => void | Promise<void>;
 }
 
 /**
@@ -50,6 +58,10 @@ export function AgenticChat({
   pendingAgents: pendingAgentInfos,
   initialPrompt,
   sandbox,
+  initialActionBarFile,
+  initialActionBarProps,
+  initialActionBarMaxHeight,
+  onActionBarFileChange,
 }: AgenticChatProps) {
   const { contextValue, inputContextValue } = useAgenticChat({
     config,
@@ -63,6 +75,10 @@ export function AgenticChat({
     pendingAgentInfos,
     initialPrompt,
     sandbox,
+    initialActionBarFile,
+    initialActionBarProps,
+    initialActionBarMaxHeight,
+    onActionBarFileChange,
   });
 
   return (

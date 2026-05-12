@@ -13,6 +13,7 @@ How to use the chat panel's code execution sandbox — the eval tool, inline UI 
 |----------|---------|
 | [EVAL.md](EVAL.md) | Eval tool — run code, stream console, dynamic imports |
 | [INLINE_UI.md](INLINE_UI.md) | Inline UI — persistent interactive components in chat |
+| [ACTION_BAR.md](ACTION_BAR.md) | Action bar — file-backed compact UI pinned above chat history |
 | [MDX.md](MDX.md) | Normal rich chat messages — callouts, badges, tables, ActionButton |
 | [FEEDBACK.md](FEEDBACK.md) | Feedback forms — block until user responds |
 | [RUNTIME_API.md](RUNTIME_API.md) | Full runtime API reference — fs, db, workers, ai, git, browser data, userland approval prompts |
@@ -29,6 +30,7 @@ All code runs in the same sandbox (Sucrase transform + CJS execution in the pane
 |------|-----------|-----------|----------|
 | `eval` | imperative (run + return) | transient | immediate (result to agent) |
 | `inline_ui` | component (render React) | persistent (in chat history) | none (fire-and-forget) |
+| `load_action_bar` | component from file (render React) | persistent (top of current panel) | immediate tool result |
 | `feedback_custom` | component (render React) | transient | deferred (blocks until user submits) |
 
 ## Pre-injected Variables
@@ -78,23 +80,23 @@ eval({ code: `
 ` })
 ```
 
-See [EVAL.md](EVAL.md) for details. On-demand imports are not available in inline_ui/feedback_custom (use eval to preload first).
+See [EVAL.md](EVAL.md) for details. On-demand imports are not available in inline_ui/load_action_bar/feedback_custom components (use eval to preload first).
 
 ## Interaction Patterns
 
 See [MDX.md](MDX.md) for rich normal chat messages and `ActionButton`.
-See [INTERACTION_PATTERNS.md](INTERACTION_PATTERNS.md) for when to use inline UI vs eval for side-effect actions. In short: if an action involves choices or could fail, prefer rendering an inline UI that lets the user trigger it and reports results back via `chat.publish`. For setup workflows with links, use the [INLINE_UI.md](INLINE_UI.md) link/checklist patterns and offer both internal browser-panel opens and approval-gated `openExternal` system-browser opens.
+See [INTERACTION_PATTERNS.md](INTERACTION_PATTERNS.md) for when to use inline UI vs eval for side-effect actions. In short: if an action involves choices or could fail, prefer rendering an inline UI that lets the user trigger it and reports results back via `chat.publish`. Use [ACTION_BAR.md](ACTION_BAR.md) when small controls or status should stay pinned above chat history for the current panel. For setup workflows with links, use the [INLINE_UI.md](INLINE_UI.md) link/checklist patterns and offer both internal browser-panel opens and approval-gated `openExternal` system-browser opens.
 
 ## Critical Rules
 
 1. **Static imports only** — `import { rpc } from "@workspace/runtime"` (NOT `await import(...)`)
 2. **Workspace packages are auto-resolved** — `import { GitClient } from "@natstack/git"` just works. npm packages require `imports: { "lodash": "npm:4" }`
-3. **Components must `export default`** — named exports alone won't work for inline_ui/feedback_custom
+3. **Components must `export default`** — named exports alone won't work for inline_ui/load_action_bar/feedback_custom components
 4. **Inline UI components receive `{ props, chat, scope, scopes }`** — always default `props` (`{ props = {}, chat }`) and guard property access (`props?.items ?? []`). For maximum portability, prefer embedding small constant data in the component source.
 5. **Feedback components receive `{ onSubmit, onCancel, onError, chat }`**
 6. **Workspace code is built from git, not from the working tree** — `workspace/` source (`packages/`, `panels/`, `workers/`, `skills/`) is extracted from git commits for builds. Editing files has NO effect until you **commit and push**. This applies to eval imports too: if you edit `@workspace/agentic-session` source, it won't change the imported module until the edit is committed and pushed.
 
 ## Environment Compatibility
 
-- `inline_ui`, `feedback_form`, and `feedback_custom` are **panel-only** -- they require a browser rendering context.
+- `inline_ui`, `load_action_bar`, `feedback_form`, and `feedback_custom` are **panel-only** -- they require a browser rendering context.
 - `eval` and `set_title` work in both panel and **headless** sessions.

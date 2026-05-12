@@ -182,6 +182,22 @@
   box-shadow: none;
 }
 
+.chat-action-bar {
+  flex: 0 0 auto;
+  inline-size: 100%;
+  min-inline-size: 0;
+  overflow: auto;
+  border: 1px solid var(--gray-a4);
+  border-radius: var(--radius-2);
+  background: var(--color-surface);
+}
+
+.chat-action-bar-content {
+  inline-size: 100%;
+  min-inline-size: 0;
+  padding: var(--space-2);
+}
+
 .message-list-content {
   inline-size: 0;
   min-inline-size: 100%;

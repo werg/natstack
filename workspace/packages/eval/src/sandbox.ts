@@ -6,7 +6,7 @@
  *
  * Two entry points:
  * - executeSandbox(): imperative code execution (eval tool)
- * - compileComponent(): React component compilation (inline_ui, feedback_custom)
+ * - compileComponent(): React component compilation (inline_ui, load_action_bar, feedback_custom)
  *
  * Both use the same transform → preload → execute pipeline from @workspace/eval.
  */
@@ -324,7 +324,8 @@ export async function executeSandbox(
 /**
  * Compile TSX code into a React component.
  *
- * Used for both persistent (inline_ui) and transient (feedback_custom) components.
+ * Used for persistent (inline_ui/action bar) and transient (feedback_custom)
+ * components.
  * The when-to-compile decision is made by the caller; callers store the result
  * in their own state (React useState / Map) to avoid recompilation on re-render.
  */

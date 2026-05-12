@@ -18,6 +18,8 @@ export type {
   ChatContextValue,
   ChatInputContextValue,
   InlineUiComponentEntry,
+  ActionBarData,
+  ActionBarState,
 } from "./types";
 
 // --- Context ---
@@ -43,6 +45,8 @@ export { useChatDebug } from "./hooks/features/useChatDebug";
 export type { ChatDebugState } from "./hooks/features/useChatDebug";
 export { useInlineUi } from "./hooks/features/useInlineUi";
 export type { InlineUiState } from "./hooks/features/useInlineUi";
+export { useActionBar, parseActionBarData } from "./hooks/features/useActionBar";
+export type { ActionBarHookState } from "./hooks/features/useActionBar";
 
 // --- High-level components ---
 export { AgenticChat } from "./components/AgenticChat";
@@ -57,6 +61,7 @@ export { ChatFeedbackArea } from "./components/ChatFeedbackArea";
 export { ChatInput } from "./components/ChatInput";
 export { ChatDirtyRepoWarnings } from "./components/ChatDirtyRepoWarnings";
 export { ChatDebugConsole } from "./components/ChatDebugConsole";
+export { ChatActionBar } from "./components/ChatActionBar";
 
 // --- Primitive components ---
 export { MessageList } from "./components/MessageList";

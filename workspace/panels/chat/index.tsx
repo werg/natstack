@@ -45,6 +45,12 @@ interface ChatStateArgs {
   systemPrompt?: string;
   /** How systemPrompt interacts with NatStack base, workspace prompt, and skills */
   systemPromptMode?: "append" | "replace-natstack" | "replace";
+  /** Context-relative TSX file to load into the panel-local action bar */
+  actionBarFile?: string | null;
+  /** Props for actionBarFile */
+  actionBarProps?: Record<string, unknown> | null;
+  /** Preferred max height for actionBarFile */
+  actionBarMaxHeight?: number | null;
 }
 
 /**
@@ -221,6 +227,18 @@ export default function ChatPanel() {
     void focusPanel(panelId);
   }, []);
 
+  const handleActionBarFileChange = useCallback((value: {
+    path: string | null;
+    props?: Record<string, unknown>;
+    maxHeight?: number;
+  }) => {
+    void setStateArgs({
+      actionBarFile: value.path,
+      actionBarProps: value.path ? (value.props ?? null) : null,
+      actionBarMaxHeight: value.path ? (value.maxHeight ?? null) : null,
+    });
+  }, []);
+
   // Fetch available worker sources (DO agents) on mount
   const [availableAgents, setAvailableAgents] = useState<Array<{ id: string; name: string; proposedHandle: string; className: string }>>([]);
   useEffect(() => {
@@ -348,6 +366,10 @@ export default function ChatPanel() {
         pendingAgents={pendingAgents}
         initialPrompt={initialPromptCaptured.current}
         sandbox={sandboxConfig}
+        initialActionBarFile={stateArgs.actionBarFile ?? undefined}
+        initialActionBarProps={stateArgs.actionBarProps ?? undefined}
+        initialActionBarMaxHeight={stateArgs.actionBarMaxHeight ?? undefined}
+        onActionBarFileChange={handleActionBarFileChange}
       />
     </>
   );

@@ -45,7 +45,7 @@ export interface AgenticChatActions {
   onBecomeVisible?: () => void;
 }
 
-/** Chat API exposed to sandboxed code (eval, inline_ui, feedback_custom) */
+/** Chat API exposed to sandboxed code (eval, inline_ui, action bars, feedback_custom) */
 export interface ChatSandboxValue {
   publish: (eventType: string, payload: unknown, options?: { persist?: boolean }) => Promise<unknown>;
   callMethod: (participantId: string, method: string, args: unknown) => Promise<unknown>;

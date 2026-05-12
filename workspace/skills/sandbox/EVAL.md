@@ -109,7 +109,7 @@ eval({
 
 ### Limitations
 
-- npm packages are only available in `eval`, not in `inline_ui` or `feedback_custom` components. To use an npm package in a component, preload it via `eval` first (it will remain in the module map).
+- npm packages are only available in `eval`, not in `inline_ui`, `load_action_bar`, or `feedback_custom` components. To use an npm package in a component, preload it via `eval` first (it will remain in the module map).
 - Only packages with standard npm names are accepted (e.g. `lodash`, `@scope/pkg`). URLs, file paths, and git specifiers are rejected.
 - Packages requiring native addons (`.node` binaries) won't work — esbuild cannot bundle them.
 
@@ -187,7 +187,7 @@ eval({ code: `
 ### Persistence Contract
 
 - **Automatic after every eval call** — no action needed
-- **Non-eval writes require explicit `scopes.save()`** — inline_ui button handlers, async callbacks, timers, feedback_custom interactions
+- **Non-eval writes require explicit `scopes.save()`** — inline_ui/action-bar button handlers, async callbacks, timers, feedback_custom interactions
 - Example: an inline_ui component modifies `scope.count++` on button click → call `scopes.save()` to persist
 
 ## Filesystem Access

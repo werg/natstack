@@ -17,7 +17,7 @@ import { useChatContext } from "../context/ChatContext";
 // InlineUiErrorCallout — error display with "Report to Agent" button
 // ---------------------------------------------------------------------------
 
-function InlineUiErrorCallout({
+export function InlineUiErrorCallout({
   error,
   componentId,
   chat,
