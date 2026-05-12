@@ -34,6 +34,13 @@ function createMockRuntime() {
     rpc,
     async callMain<T>(method: string, ...args: unknown[]): Promise<T> {
       mainCalls.push({ method, args });
+      if (method === "workers.resolveService") {
+        return {
+          source: "workers/pubsub-channel",
+          className: "PubSubChannel",
+          objectKey: args[1],
+        } as T;
+      }
       return { source: "x", className: "Y", objectKey: "z" } as T;
     },
   };
@@ -197,6 +204,9 @@ describe("fork()", () => {
     let cloneCount = 0;
     runtime.callMain = async (method: string, ...args: unknown[]) => {
       mainCalls.push({ method, args });
+      if (method === "workers.resolveService") {
+        return { source: "workers/pubsub-channel", className: "PubSubChannel", objectKey: args[1] } as any;
+      }
       if (method === "workerd.cloneDO") {
         cloneCount++;
         if (cloneCount === 2) throw new Error("clone failed"); // channel=1, agent=2
@@ -226,6 +236,9 @@ describe("fork()", () => {
     // Override callMain to fail on second agent clone
     runtime.callMain = async (method: string, ...args: unknown[]) => {
       mainCalls.push({ method, args });
+      if (method === "workers.resolveService") {
+        return { source: "workers/pubsub-channel", className: "PubSubChannel", objectKey: args[1] } as any;
+      }
       if (method === "workerd.cloneDO") {
         cloneCount++;
         if (cloneCount === 3) throw new Error("disk full"); // channel=1, agent1=2, agent2=3

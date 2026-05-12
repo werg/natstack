@@ -1,9 +1,8 @@
 /**
  * RPC-based PubSub client.
  *
- * Implements PubSubClient<T> using RPC calls to the PubSubChannel DO
- * instead of a direct WebSocket connection. Used by panels that communicate
- * through the Electron RPC bridge.
+ * Implements PubSubClient<T> using RPC calls to the manifest-declared channel
+ * service DO. Used by panels that communicate through the Electron RPC bridge.
  */
 
 import type {
@@ -58,8 +57,7 @@ import { zodToJsonSchema as convertZodToJsonSchema } from "zod-to-json-schema";
 import { z } from "zod";
 import type { PubSubClient } from "./client.js";
 
-const CHANNEL_SOURCE = "workers/pubsub-channel";
-const CHANNEL_CLASS = "PubSubChannel";
+const CHANNEL_SERVICE_PROTOCOL = "natstack.channel.v1";
 /** Wire attachment shape — base64 data string, not Uint8Array. */
 interface WireAttachment {
   id: string;
@@ -120,6 +118,11 @@ interface SubscribeResult {
   };
 }
 
+interface ResolvedService {
+  kind: "durable-object" | "worker";
+  targetId?: string;
+}
+
 /** Convert wire-format attachments (base64) to client Attachment[] (Uint8Array). */
 function convertWireAttachments(wireAtts: WireAttachment[] | undefined): Attachment[] | undefined {
   if (!wireAtts || wireAtts.length === 0) return undefined;
@@ -165,8 +168,21 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   opts: RpcConnectOptions<T>,
 ): PubSubClient<T> {
   const { rpc, channel, replayMode = "stream", methods: providedMethods } = opts;
-  const doTarget = `do:${CHANNEL_SOURCE}:${CHANNEL_CLASS}:${channel}`;
   const pid = opts.clientId ?? rpc.selfId;
+  let doTargetPromise: Promise<string> | null = null;
+  const getDoTarget = () => {
+    doTargetPromise ??= rpc
+      .call<ResolvedService>("main", "workers.resolveService", CHANNEL_SERVICE_PROTOCOL, channel)
+      .then((service) => {
+        if (service.kind !== "durable-object" || !service.targetId) {
+          throw new Error("Channel service must resolve to a Durable Object service");
+        }
+        return service.targetId;
+      });
+    return doTargetPromise;
+  };
+  const callChannel = async <R = unknown>(method: string, ...args: unknown[]): Promise<R> =>
+    rpc.call<R>(await getDoTarget(), method, ...args);
 
   // Convert MethodDefinitions to MethodAdvertisements
   function toMethodAdvertisements(methods: Record<string, MethodDefinition>): MethodAdvertisement[] {
@@ -669,7 +685,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     const methodDef = registeredMethods[event.methodName];
     if (!methodDef) {
       try {
-        await rpc.call(doTarget, "publish", pid, "method-result", {
+        await callChannel("publish", pid, "method-result", {
           callId: event.callId,
           content: { error: `Method "${event.methodName}" not registered on this client` },
           complete: true,
@@ -686,7 +702,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       callerId: event.senderId,
       signal: abortController.signal,
       stream: async (content: unknown) => {
-        await rpc.call(doTarget, "publish", pid, "method-result", {
+        await callChannel("publish", pid, "method-result", {
           callId: event.callId,
           content,
           complete: false,
@@ -694,7 +710,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
         }, { persist: true });
       },
       streamWithAttachments: async (content: unknown, attachments: AttachmentInput[], streamOpts?: { contentType?: string }) => {
-        await rpc.call(doTarget, "publish", pid, "method-result", {
+        await callChannel("publish", pid, "method-result", {
           callId: event.callId,
           content,
           contentType: streamOpts?.contentType,
@@ -708,7 +724,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
         contentType: resultOpts?.contentType,
       }),
       progress: async (percent: number) => {
-        await rpc.call(doTarget, "publish", pid, "method-result", {
+        await callChannel("publish", pid, "method-result", {
           callId: event.callId,
           complete: false,
           isError: false,
@@ -727,7 +743,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
 
       if (result && typeof result === "object" && "attachments" in (result as Record<string, unknown>) && "content" in (result as Record<string, unknown>)) {
         const withAttachments = result as { content: unknown; attachments: AttachmentInput[]; contentType?: string };
-        await rpc.call(doTarget, "publish", pid, "method-result", {
+        await callChannel("publish", pid, "method-result", {
           callId: event.callId,
           content: withAttachments.content,
           contentType: withAttachments.contentType,
@@ -735,7 +751,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           isError: false,
         }, { persist: true, attachments: toStoredAttachments(withAttachments.attachments) });
       } else {
-        await rpc.call(doTarget, "publish", pid, "method-result", {
+        await callChannel("publish", pid, "method-result", {
           callId: event.callId,
           content: result,
           complete: true,
@@ -744,7 +760,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      await rpc.call(doTarget, "publish", pid, "method-result", {
+      await callChannel("publish", pid, "method-result", {
         callId: event.callId,
         content: { error: errorMsg },
         complete: true,
@@ -799,8 +815,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           const gap = msg.id - lastSeenSeq - 1;
           if (gap <= MAX_GAP_SIZE) {
             repairingGap = true;
-            rpc.call<Array<{ id: number; type: string; payload: unknown; senderId: string; ts: number; senderMetadata?: Record<string, unknown>; attachments?: unknown[] }>>(
-              doTarget, "getEventRange", lastSeenSeq, msg.id - 1,
+            callChannel<Array<{ id: number; type: string; payload: unknown; senderId: string; ts: number; senderMetadata?: Record<string, unknown>; attachments?: unknown[] }>>(
+              "getEventRange", lastSeenSeq, msg.id - 1,
             ).then(events => {
               if (events && Array.isArray(events)) {
                 for (const evt of events) {
@@ -876,7 +892,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     if (closed) { reconnecting = false; return; }
     try {
       // Best-effort unsubscribe old session
-      await rpc.call(doTarget, "unsubscribe", pid).catch(() => {});
+      await callChannel("unsubscribe", pid).catch(() => {});
       // Reset local roster and presence dedup state so replayed presence events are accepted
       currentRoster = {};
       rosterOpIds.clear();
@@ -886,7 +902,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       initialReplayComplete = false;
       // Re-subscribe with sinceId for catch-up replay
       const resubMeta = { ...subscribeMetadata, sinceId: lastSeenSeq, replay: true };
-      const result = await rpc.call<SubscribeResult | undefined>(doTarget, "subscribe", pid, resubMeta);
+      const result = await callChannel<SubscribeResult | undefined>("subscribe", pid, resubMeta);
       applySubscribeAckFallback(result);
       consecutiveTouchFailures = 0;
       reconnectAttempts = 0;
@@ -901,7 +917,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
 
   const touchInterval = setInterval(() => {
     if (closed) return;
-    rpc.call(doTarget, "touch", pid).then(() => {
+    callChannel("touch", pid).then(() => {
       consecutiveTouchFailures = 0;
     }).catch(err => {
       consecutiveTouchFailures++;
@@ -917,7 +933,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   // Fire subscribe. Replay normally arrives through ordered channel events; the
   // result also carries the same ordered initial replay as a fallback so losing
   // the ready event does not let ready resolve ahead of replay delivery.
-  rpc.call<SubscribeResult | undefined>(doTarget, "subscribe", pid, subscribeMetadata).then((result) => {
+  callChannel<SubscribeResult | undefined>("subscribe", pid, subscribeMetadata).then((result) => {
     applySubscribeAckFallback(result);
   }).catch((err: unknown) => {
     const error = err instanceof Error ? err : new Error(String(err));
@@ -1007,7 +1023,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     if (closed) throw new PubSubError("not connected", "connection");
     const { persist = true, attachments, idempotencyKey } = publishOptions;
 
-    const result = await rpc.call<{ id?: number }>(doTarget, "publish", pid, type, payload, {
+    const result = await callChannel<{ id?: number }>("publish", pid, type, payload, {
       persist,
       ref: undefined,
       senderMetadata: undefined,
@@ -1021,17 +1037,17 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     newMetadata: Partial<T>,
     updateOptions: UpdateMetadataOptions = {},
   ): Promise<void> {
-    await rpc.call(doTarget, "updateMetadata", pid, newMetadata);
+    await callChannel("updateMetadata", pid, newMetadata);
   }
 
   async function setTyping(active: boolean): Promise<void> {
-    await rpc.call(doTarget, "setTypingState", pid, active);
+    await callChannel("setTypingState", pid, active);
   }
 
   async function updateChannelConfig(
     config: Partial<ChannelConfig>,
   ): Promise<ChannelConfig> {
-    const newConfig = await rpc.call<ChannelConfig>(doTarget, "updateConfig", config);
+    const newConfig = await callChannel<ChannelConfig>("updateConfig", config);
     serverChannelConfig = newConfig;
     return newConfig;
   }
@@ -1123,7 +1139,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       if (!notifyProvider) {
         return Promise.resolve();
       }
-      const cancelPromise = rpc.call(doTarget, "cancelMethodCall", callId).then(() => undefined);
+      const cancelPromise = callChannel("cancelMethodCall", callId).then(() => undefined);
       if (waitForProvider) return cancelPromise;
       void cancelPromise.catch(() => {});
       return Promise.resolve();
@@ -1144,7 +1160,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
 
     if (!state.complete) {
       // Publish method-call via DO.
-      void rpc.call(doTarget, "callMethod", pid, providerId, callId, methodName, args ?? {}).catch((e: unknown) => {
+      void callChannel("callMethod", pid, providerId, callId, methodName, args ?? {}).catch((e: unknown) => {
         if (state.complete) return;
         const err = e instanceof Error ? e : new Error(String(e));
         state.complete = true;
@@ -1236,7 +1252,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     }
     executingMethods.clear();
     for (const handler of disconnectHandlers) handler();
-    rpc.call(doTarget, "unsubscribe", pid).catch(() => {});
+    callChannel("unsubscribe", pid).catch(() => {});
   }
 
   async function sendRaw(_message: Record<string, unknown>): Promise<void> {
@@ -1296,7 +1312,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     get chatMessageCount() { return serverChatMessageCount; },
     get firstChatMessageId() { return serverFirstChatMessageId; },
     async getMessagesBefore(beforeId: number, limit = 100) {
-      const result = await rpc.call<{
+      const result = await callChannel<{
         messages: Array<{
           id: number;
           type: string;
@@ -1316,7 +1332,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
           attachments?: WireAttachment[];
         }>;
         hasMore: boolean;
-      }>(doTarget, "getMessagesBefore", beforeId, limit);
+      }>("getMessagesBefore", beforeId, limit);
       // Convert wire-format attachments (base64) to client format (Uint8Array)
       return {
         messages: result.messages.map(m => ({

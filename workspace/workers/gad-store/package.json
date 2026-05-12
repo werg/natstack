@@ -9,7 +9,15 @@
     "entry": "index.ts",
     "durable": {
       "classes": [{ "className": "GadWorkspaceDO" }]
-    }
+    },
+    "services": [
+      {
+        "name": "gad.workspace",
+        "title": "gad Workspace Store",
+        "protocols": ["natstack.gad.workspace.v1"],
+        "durableObject": { "className": "GadWorkspaceDO", "objectKey": "workspace-gad" }
+      }
+    ]
   },
   "dependencies": {
     "@workspace/runtime": "workspace:*"

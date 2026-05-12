@@ -54,21 +54,31 @@ async function callDO<T = unknown>(
 
 // ─── Fork orchestration ─────────────────────────────────────────────────────
 
-const CHANNEL_REF = (key: string): DORef => ({
-  source: "workers/pubsub-channel",
-  className: "PubSubChannel",
-  objectKey: key,
-});
+const CHANNEL_SERVICE_PROTOCOL = "natstack.channel.v1";
+
+async function channelRef(runtime: ForkRuntime, key: string): Promise<DORef> {
+  const service = await runtime.callMain<DORef & { targetId?: string }>(
+    "workers.resolveService",
+    CHANNEL_SERVICE_PROTOCOL,
+    key,
+  );
+  return {
+    source: service.source,
+    className: service.className,
+    objectKey: service.objectKey,
+  };
+}
 
 export async function fork(runtime: ForkRuntime, opts: ForkOpts): Promise<ForkResult> {
   const { rpc } = runtime;
   const exclude = new Set(opts.exclude ?? []);
   const replace = opts.replace ?? {};
+  const sourceChannelRef = await channelRef(runtime, opts.channelId);
 
   // 1. Fetch roster and contextId from channel
   const [roster, contextId] = await Promise.all([
-    callDO<ParticipantInfo[]>(rpc, CHANNEL_REF(opts.channelId), "getParticipants"),
-    callDO<string | null>(rpc, CHANNEL_REF(opts.channelId), "getContextId"),
+    callDO<ParticipantInfo[]>(rpc, sourceChannelRef, "getParticipants"),
+    callDO<string | null>(rpc, sourceChannelRef, "getContextId"),
   ]);
 
   if (!contextId) throw new Error(`Channel ${opts.channelId} has no contextId`);
@@ -109,15 +119,16 @@ export async function fork(runtime: ForkRuntime, opts: ForkOpts): Promise<ForkRe
 
   // 3. Mutation phase — track cloned refs for rollback
   const forkedChannelId = `fork:${opts.channelId}:${crypto.randomUUID().slice(0, 8)}`;
+  const forkedChannelRef = await channelRef(runtime, forkedChannelId);
   const clonedRefs: DORef[] = [];
   const clonedParticipants: string[] = [];
   const replacedParticipants: string[] = [];
 
   try {
     // Clone channel
-    await runtime.callMain("workerd.cloneDO", CHANNEL_REF(opts.channelId), forkedChannelId);
-    clonedRefs.push(CHANNEL_REF(forkedChannelId));
-    await callDO(rpc, CHANNEL_REF(forkedChannelId), "postClone", opts.channelId, opts.forkPointPubsubId);
+    await runtime.callMain("workerd.cloneDO", sourceChannelRef, forkedChannelId);
+    clonedRefs.push(forkedChannelRef);
+    await callDO(rpc, forkedChannelRef, "postClone", opts.channelId, opts.forkPointPubsubId);
 
     // Clone each agent DO
     for (const p of toClone) {

@@ -42,7 +42,7 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `gitConfig` | value |  | Git HTTP endpoint and token derived from the gateway config. |
 | `pubsubConfig` | value |  | PubSub WebSocket endpoint and token derived from the gateway config. |
 | `env` | value |  |  |
-| `workers` | namespace | `create`, `destroy`, `update`, `list`, `status`, `listInstanceSources`, `getPort`, `restartAll`, `cloneDO`, `destroyDO` |  |
+| `workers` | namespace | `create`, `destroy`, `update`, `list`, `status`, `listInstanceSources`, `listServices`, `resolveService`, `getPort`, `restartAll`, `cloneDO`, `destroyDO` |  |
 | `normalizePath` | value |  |  |
 | `getFileName` | value |  |  |
 | `resolvePath` | value |  |  |
