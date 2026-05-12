@@ -12,7 +12,7 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 | `id` | value |  |  |
 | `rpc` | value |  |  |
 | `fs` | value |  |  |
-| `workers` | namespace | `create`, `destroy`, `update`, `list`, `status`, `listInstanceSources`, `getPort`, `restartAll`, `cloneDO`, `destroyDO` |  |
+| `workers` | namespace | `create`, `destroy`, `update`, `list`, `status`, `listInstanceSources`, `listServices`, `resolveService`, `getPort`, `restartAll`, `cloneDO`, `destroyDO` |  |
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo` |  |
 | `credentials` | namespace | `store`, `connect`, `configureClient`, `requestCredentialInput`, `getClientConfigStatus`, `deleteClientConfig`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
 | `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote`, `client` |  |
@@ -36,6 +36,70 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 | `handleRpcPost` | value |  |  |
 | `destroy` | value |  |  |
 <!-- END GENERATED: worker-runtime-surface -->
+
+## Userland Services
+
+When building a reusable service in `workspace/workers`, declare it in the
+worker package manifest with `natstack.services[]`. Other code should resolve
+the service by `name` or protocol through `workers.resolveService(...)`; do not
+hardcode `workers/foo`, DO class names, or `/_r/w/...` paths in callers.
+
+**Durable Object-backed service**:
+
+```json
+{
+  "natstack": {
+    "entry": "index.ts",
+    "durable": { "classes": [{ "className": "MyStore" }] },
+    "services": [
+      {
+        "name": "my-store",
+        "protocols": ["example.my-store.v1"],
+        "durableObject": { "className": "MyStore", "objectKey": "main" }
+      }
+    ]
+  }
+}
+```
+
+Resolve and call it:
+
+```ts
+const svc = await workers.resolveService("example.my-store.v1", "tenant-1");
+if (svc.kind !== "durable-object") throw new Error("Expected DO service");
+await rpc.call(svc.targetId, "methodName", arg);
+```
+
+**Stateless worker service**:
+
+```json
+{
+  "natstack": {
+    "entry": "index.ts",
+    "routes": [{ "path": "/api", "methods": ["POST"] }],
+    "services": [
+      {
+        "name": "my-api",
+        "protocols": ["example.my-api.v1"],
+        "worker": { "routePath": "/api" }
+      }
+    ]
+  }
+}
+```
+
+Resolve and fetch it:
+
+```ts
+const svc = await workers.resolveService("example.my-api.v1");
+if (svc.kind !== "worker") throw new Error("Expected worker service");
+await gatewayFetch(`${svc.routeBasePath}/jobs`, { method: "POST", body: JSON.stringify(payload) });
+```
+
+For stateless services, `worker.routePath` must match a regular
+`natstack.routes[]` entry in the same package. Stateless service routes are live
+only while the canonical worker instance is running. Use a DO-backed service for
+always-available persistence or singleton coordination.
 
 ## Store
 

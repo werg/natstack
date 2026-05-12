@@ -71,6 +71,21 @@ export interface PackageManifest {
   /** Durable Object classes exported by this worker (workers only). */
   durable?: { classes: Array<{ className: string }> };
   /**
+   * Userland services offered by this package. A service can be backed by a
+   * Durable Object class or by the package's canonical stateless worker route.
+   * Callers should resolve services by `name` or protocol instead of hardcoding
+   * source/class paths.
+   */
+  services?: Array<{
+    name: string;
+    title?: string;
+    description?: string;
+    protocols?: string[];
+  } & (
+    | { durableObject: { className: string; objectKey?: string }; worker?: never }
+    | { worker: { routePath: string }; durableObject?: never }
+  )>;
+  /**
    * HTTP routes this worker exposes via the gateway's `/_r/w/<source>/...` namespace.
    * Each entry binds either a DO class (when `durableObject` is set) or the worker's
    * default `fetch` export (regular-worker route, only bound on the canonical-name

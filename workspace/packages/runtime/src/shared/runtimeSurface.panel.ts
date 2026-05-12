@@ -46,6 +46,8 @@ export const panelRuntimeSurface: RuntimeSurface = {
       "list",
       "status",
       "listInstanceSources",
+      "listServices",
+      "resolveService",
       "getPort",
       "restartAll",
       "cloneDO",

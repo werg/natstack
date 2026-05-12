@@ -67,6 +67,16 @@ describe("createWorkerdClient", () => {
     expect(mock.rpc.call).toHaveBeenCalledWith("main", "workerd.listInstanceSources");
   });
 
+  it("listServices calls workers.listServices", async () => {
+    await client.listServices();
+    expect(mock.rpc.call).toHaveBeenCalledWith("main", "workers.listServices");
+  });
+
+  it("resolveService calls workers.resolveService", async () => {
+    await client.resolveService("natstack.channel.v1", "chat-1");
+    expect(mock.rpc.call).toHaveBeenCalledWith("main", "workers.resolveService", "natstack.channel.v1", "chat-1");
+  });
+
   it("getPort calls workerd.getPort", async () => {
     await client.getPort();
     expect(mock.rpc.call).toHaveBeenCalledWith("main", "workerd.getPort");

@@ -3,12 +3,11 @@ import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import { ServiceError, type ServiceContext } from "@natstack/shared/serviceDispatcher";
 import type { ApprovalPrincipal, UserlandApprovalSubject } from "@natstack/shared/approvals";
 import type { DODispatch } from "../doDispatch.js";
+import type { DORef } from "../doDispatch.js";
 import type { ApprovalQueue } from "./approvalQueue.js";
 import type { CodeIdentityResolver } from "./codeIdentityResolver.js";
 import type { UserlandApprovalGrantStore } from "./userlandApprovalGrantStore.js";
 
-const GAD_SOURCE = "workers/gad-store";
-const GAD_CLASS = "GadWorkspaceDO";
 const SQL_WRITE_SUBJECT: UserlandApprovalSubject = {
   id: "gad:raw-sql-write",
   label: "gad raw SQL writes",
@@ -176,18 +175,10 @@ const BlobPolicySchema = z.object({
 
 export interface GadServiceDeps {
   doDispatch: DODispatch;
-  workspaceId: string;
+  resolveStore: () => DORef;
   approvalQueue: ApprovalQueue;
   grantStore: Pick<UserlandApprovalGrantStore, "lookup" | "record" | "revoke">;
   codeIdentityResolver: Pick<CodeIdentityResolver, "resolveByCallerId">;
-}
-
-function gadRef(workspaceId: string) {
-  return {
-    source: GAD_SOURCE,
-    className: GAD_CLASS,
-    objectKey: workspaceId,
-  };
 }
 
 function stripLeadingSqlTrivia(sql: string): string {
@@ -262,7 +253,7 @@ async function describeSqlRisk(deps: GadServiceDeps, sql: string): Promise<Array
   }
   for (const table of tables.slice(0, 4)) {
     try {
-      const result = await deps.doDispatch.dispatch(gadRef(deps.workspaceId), "rawSql", `SELECT COUNT(*) AS count FROM "${table}"`, []);
+      const result = await deps.doDispatch.dispatch(deps.resolveStore(), "rawSql", `SELECT COUNT(*) AS count FROM "${table}"`, []);
       const rows = (result as { rows?: Array<Record<string, unknown>> }).rows ?? [];
       details.push({ label: `${table} rows`, value: String(rows[0]?.["count"] ?? "unknown") });
     } catch {
@@ -343,7 +334,7 @@ async function requireRawSqlWriteApproval(
 
 export function createGadService(deps: GadServiceDeps): ServiceDefinition {
   const dispatch = (method: string, args: unknown[]) =>
-    deps.doDispatch.dispatch(gadRef(deps.workspaceId), method, ...args);
+    deps.doDispatch.dispatch(deps.resolveStore(), method, ...args);
 
   return {
     name: "gad",

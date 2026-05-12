@@ -3,7 +3,8 @@
  *
  * Provides:
  * - listSources: available worker sources (durable.classes from manifests)
- * - getChannelWorkers: DOs subscribed to a channel (queries channel DO)
+ * - listServices / resolveService: manifest-declared userland services
+ * - getChannelWorkers: DOs subscribed to a channel (queries channel service)
  * - callDO: dispatch a method to a DO
  */
 
@@ -13,8 +14,10 @@ import type { FsService } from "@natstack/shared/fsService";
 import type { DODispatch } from "../doDispatch.js";
 import type { BuildSystemV2 } from "../buildV2/index.js";
 import { createDevLogger } from "@natstack/dev-log";
+import { resolveUserlandService, toDORef } from "../userlandServices.js";
 
 const log = createDevLogger("WorkerService");
+const CHANNEL_SERVICE_PROTOCOL = "natstack.channel.v1";
 
 export function createWorkerService(deps: {
   doDispatch: DODispatch;
@@ -37,6 +40,14 @@ export function createWorkerService(deps: {
       getChannelWorkers: {
         description: "Get DOs subscribed to a channel",
         args: z.tuple([z.string()]), // channelId
+      },
+      listServices: {
+        description: "List manifest-declared userland services",
+        args: z.tuple([]),
+      },
+      resolveService: {
+        description: "Resolve a userland service by name or protocol",
+        args: z.tuple([z.string(), z.string().nullable().optional()]),
       },
       callDO: {
         description: "Call a method on a DO",
@@ -67,11 +78,48 @@ export function createWorkerService(deps: {
             }));
         }
 
+        case "listServices": {
+          return buildSystem.getGraph()
+            .allNodes()
+            .filter((n) => n.kind === "worker")
+            .flatMap((n) => (n.manifest.services ?? []).map((service) => {
+              const base = {
+                name: service.name,
+                title: service.title,
+                description: service.description,
+                protocols: service.protocols ?? [],
+                source: n.relativePath,
+              };
+              if ("durableObject" in service && service.durableObject) {
+                return {
+                  ...base,
+                  kind: "durable-object",
+                  className: service.durableObject.className,
+                  defaultObjectKey: service.durableObject.objectKey ?? null,
+                };
+              }
+              return {
+                ...base,
+                kind: "worker",
+                routePath: service.worker.routePath,
+              };
+            }));
+        }
+
+        case "resolveService": {
+          return resolveUserlandService(
+            buildSystem,
+            args[0] as string,
+            (args[1] as string | null | undefined) ?? undefined,
+          );
+        }
+
         case "getChannelWorkers": {
           const channelId = args[0] as string;
-          // Query channel DO for participants
+          const channelService = resolveUserlandService(buildSystem, CHANNEL_SERVICE_PROTOCOL, channelId);
+          // Query channel service for participants.
           const participants = await doDispatch.dispatch(
-            { source: "workers/pubsub-channel", className: "PubSubChannel", objectKey: channelId },
+            toDORef(channelService),
             "getParticipants",
           ) as Array<{ participantId: string; metadata: Record<string, unknown> }>;
           return (participants ?? [])

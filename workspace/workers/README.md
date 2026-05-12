@@ -40,6 +40,66 @@ workspace/workers/my-agent/
 
 The `durable.classes` array declares which exported classes are DurableObjects. The `className` must match the exported class name exactly.
 
+### Userland Services
+
+Worker packages can advertise services in `natstack.services[]`. This lets
+panels, workers, and host services resolve capabilities by name or protocol
+instead of hardcoding `workers/foo`, DO class names, or route URLs.
+
+DO-backed service:
+
+```json
+{
+  "natstack": {
+    "entry": "index.ts",
+    "durable": { "classes": [{ "className": "MyStore" }] },
+    "services": [
+      {
+        "name": "my-store",
+        "protocols": ["example.my-store.v1"],
+        "durableObject": { "className": "MyStore", "objectKey": "main" }
+      }
+    ]
+  }
+}
+```
+
+Stateless worker service:
+
+```json
+{
+  "natstack": {
+    "entry": "index.ts",
+    "routes": [{ "path": "/api", "methods": ["POST"] }],
+    "services": [
+      {
+        "name": "my-api",
+        "protocols": ["example.my-api.v1"],
+        "worker": { "routePath": "/api" }
+      }
+    ]
+  }
+}
+```
+
+Resolve at runtime:
+
+```ts
+const svc = await workers.resolveService("example.my-store.v1", "tenant-1");
+if (svc.kind === "durable-object") {
+  await rpc.call(svc.targetId, "methodName");
+}
+
+const api = await workers.resolveService("example.my-api.v1");
+if (api.kind === "worker") {
+  await gatewayFetch(`${api.routeBasePath}/work`, { method: "POST" });
+}
+```
+
+Stateless services must point at a regular `natstack.routes[]` entry in the
+same package. Those routes are live only while the canonical worker instance is
+running.
+
 ### Entry Point (index.ts)
 
 ```typescript

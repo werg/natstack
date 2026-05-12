@@ -69,6 +69,55 @@ distinct packages.
 
 Regular-worker routes disappear when the canonical instance is destroyed.
 
+## Userland Services
+
+Workers can also advertise higher-level services in `natstack.services[]`.
+This is the stable discovery layer for userland capabilities: panels, workers,
+and server services should resolve by service `name` or protocol instead of
+hardcoding worker source paths, DO class names, or route URLs.
+
+Services can be backed by a Durable Object or by a stateless worker route:
+
+```jsonc
+{
+  "natstack": {
+    "durable": { "classes": [{ "className": "ChannelDO" }] },
+    "routes": [
+      { "path": "/api", "methods": ["POST"] }
+    ],
+    "services": [
+      {
+        "name": "channel",
+        "protocols": ["natstack.channel.v1"],
+        "durableObject": { "className": "ChannelDO" }
+      },
+      {
+        "name": "stateless-api",
+        "protocols": ["example.stateless.v1"],
+        "worker": { "routePath": "/api" }
+      }
+    ]
+  }
+}
+```
+
+Resolve services through the runtime:
+
+```ts
+const channel = await workers.resolveService("natstack.channel.v1", "chat-1");
+// { kind: "durable-object", targetId: "do:..." }
+
+const api = await workers.resolveService("example.stateless.v1");
+// { kind: "worker", routeBasePath: "/_r/w/workers/stateless-api/api" }
+```
+
+For DO-backed services, `objectKey` is supplied at resolution time, otherwise
+the service's manifest default is used, and finally the service name. For
+stateless worker services, `worker.routePath` must match a regular
+`natstack.routes[]` entry in the same package. Stateless service routes inherit
+the regular-worker lifecycle: the canonical worker instance must exist for the
+route to be live.
+
 ### Path patterns
 
 v1 supports literal path segments and `:name` params. No wildcards, no

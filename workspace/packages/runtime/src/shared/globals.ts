@@ -93,7 +93,7 @@ export function getInjectedConfig(): InjectedConfig {
     sourceRepo,
   };
   const pubsubConfig: PubSubConfig = {
-    serverUrl: `${toWebSocketUrl(g.__natstackGatewayConfig.serverUrl)}/_w/workers/pubsub-channel/PubSubChannel`,
+    serverUrl: toWebSocketUrl(g.__natstackGatewayConfig.serverUrl),
     token: g.__natstackGatewayConfig.token,
   };
 

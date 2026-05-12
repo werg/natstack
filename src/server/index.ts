@@ -1192,15 +1192,17 @@ async function main() {
   // ── gad provenance store ──
   {
     const { createGadService } = await import("./services/gadService.js");
+    const { resolveUserlandService, toDORef } = await import("./userlandServices.js");
     let gadDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null = null;
     container.register({
       name: "gad",
-      dependencies: ["doDispatch"],
+      dependencies: ["doDispatch", "buildSystem"],
       async start(resolve) {
         const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
+        const buildSystem = resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")!;
         gadDefinition = createGadService({
           doDispatch,
-          workspaceId: workspace.config.id,
+          resolveStore: () => toDORef(resolveUserlandService(buildSystem, "natstack.gad.workspace.v1")),
           approvalQueue,
           grantStore: userlandApprovalGrantStore,
           codeIdentityResolver,

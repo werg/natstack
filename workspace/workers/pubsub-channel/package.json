@@ -7,7 +7,15 @@
     "entry": "index.ts",
     "durable": {
       "classes": [{ "className": "PubSubChannel" }]
-    }
+    },
+    "services": [
+      {
+        "name": "channel",
+        "title": "Workspace Channel Service",
+        "protocols": ["natstack.channel.v1"],
+        "durableObject": { "className": "PubSubChannel" }
+      }
+    ]
   },
   "dependencies": {
     "@workspace/runtime": "workspace:*",

@@ -74,6 +74,28 @@ export interface WorkerSourceInfo {
   title?: string;
 }
 
+export type UserlandServiceInfo = {
+  name: string;
+  title?: string;
+  description?: string;
+  protocols: string[];
+  source: string;
+} & (
+  | { kind: "durable-object"; className: string; defaultObjectKey: string | null }
+  | { kind: "worker"; routePath: string }
+);
+
+export type ResolvedUserlandService = {
+  name: string;
+  title?: string;
+  description?: string;
+  protocols: string[];
+  source: string;
+} & (
+  | { kind: "durable-object"; className: string; objectKey: string; targetId: string }
+  | { kind: "worker"; routePath: string; routeBasePath: string }
+);
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -98,6 +120,10 @@ export interface WorkerdClient {
   status(name: string): Promise<WorkerInstanceInfo | null>;
   /** List available worker-instance sources from the build graph. */
   listInstanceSources(): Promise<WorkerSourceInfo[]>;
+  /** List manifest-declared userland services offered by worker packages. */
+  listServices(): Promise<UserlandServiceInfo[]>;
+  /** Resolve a manifest-declared userland service by name or protocol. */
+  resolveService(query: string, objectKey?: string | null): Promise<ResolvedUserlandService>;
   /** Get the workerd HTTP port (null if not running). */
   getPort(): Promise<number | null>;
   /** Restart all worker instances. */
@@ -111,6 +137,8 @@ export interface WorkerdClient {
 export function createWorkerdClient(rpc: RpcCaller): WorkerdClient {
   const call = <T>(method: string, ...args: unknown[]) =>
     rpc.call<T>("main", `workerd.${method}`, ...args);
+  const callWorkers = <T>(method: string, ...args: unknown[]) =>
+    rpc.call<T>("main", `workers.${method}`, ...args);
 
   return {
     create: (options) => call<WorkerInstanceInfo>("createInstance", options),
@@ -119,6 +147,8 @@ export function createWorkerdClient(rpc: RpcCaller): WorkerdClient {
     list: () => call<WorkerInstanceInfo[]>("listInstances"),
     status: (name) => call<WorkerInstanceInfo | null>("getInstanceStatus", name),
     listInstanceSources: () => call<WorkerSourceInfo[]>("listInstanceSources"),
+    listServices: () => callWorkers<UserlandServiceInfo[]>("listServices"),
+    resolveService: (query, objectKey) => callWorkers<ResolvedUserlandService>("resolveService", query, objectKey ?? null),
     getPort: () => call<number | null>("getPort"),
     restartAll: () => call<void>("restartAll"),
     cloneDO: (ref, newObjectKey) => call<DORefParam>("cloneDO", ref, newObjectKey),

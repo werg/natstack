@@ -30,7 +30,12 @@ function createMockRpc() {
   const removeListener = vi.fn();
 
   const rpc: MockRpc = {
-    call: vi.fn().mockResolvedValue(undefined),
+    call: vi.fn(async (target: string, method: string) => {
+      if (target === "main" && method === "workers.resolveService") {
+        return { kind: "durable-object", targetId: DO_TARGET };
+      }
+      return undefined;
+    }),
     onEvent: vi.fn().mockImplementation(
       (_event: string, listener: (fromId: string, payload: unknown) => void) => {
         eventListener = listener;
@@ -106,8 +111,10 @@ describe("connectViaRpc", () => {
   // ── 1. Subscribe + ready flow ──────────────────────────────────────────
 
   describe("subscribe + ready flow", () => {
-    it("registers event listener and calls subscribe on the DO", () => {
+    it("registers event listener and calls subscribe on the channel service", async () => {
       const client = connectViaRpc({ rpc: mockRpc as any, channel: CHANNEL });
+      await Promise.resolve();
+      await Promise.resolve();
 
       expect(mockRpc.onEvent).toHaveBeenCalledWith("channel:message", expect.any(Function));
       expect(mockRpc.call).toHaveBeenCalledWith(
@@ -148,32 +155,40 @@ describe("connectViaRpc", () => {
     });
 
     it("resolves ready() from the subscribe acknowledgment after applying fallback replay", async () => {
-      mockRpc.call.mockResolvedValueOnce({
-        ok: true,
-        initialReplay: [
-          {
-            kind: "replay",
-            id: 101,
-            type: "presence",
-            payload: { action: "join", metadata: { name: "Claude", type: "agent" } },
-            senderId: "agent-1",
-            ts: Date.now(),
-          },
-          {
-            kind: "replay",
-            id: 201,
-            type: "message",
-            payload: { id: "msg-201", content: "from replay" },
-            senderId: "agent-1",
-            ts: Date.now(),
-          },
-        ],
-        ready: {
-          contextId: "ctx-from-subscribe",
-          channelConfig: { title: "Ack Channel" },
-          totalCount: 1,
-          chatMessageCount: 1,
-        },
+      mockRpc.call.mockImplementation(async (target: string, method: string) => {
+        if (target === "main" && method === "workers.resolveService") {
+          return { kind: "durable-object", targetId: DO_TARGET };
+        }
+        if (method === "subscribe") {
+          return {
+            ok: true,
+            initialReplay: [
+              {
+                kind: "replay",
+                id: 101,
+                type: "presence",
+                payload: { action: "join", metadata: { name: "Claude", type: "agent" } },
+                senderId: "agent-1",
+                ts: Date.now(),
+              },
+              {
+                kind: "replay",
+                id: 201,
+                type: "message",
+                payload: { id: "msg-201", content: "from replay" },
+                senderId: "agent-1",
+                ts: Date.now(),
+              },
+            ],
+            ready: {
+              contextId: "ctx-from-subscribe",
+              channelConfig: { title: "Ack Channel" },
+              totalCount: 1,
+              chatMessageCount: 1,
+            },
+          };
+        }
+        return undefined;
       });
 
       const client = connectViaRpc({ rpc: mockRpc as any, channel: CHANNEL });
@@ -383,6 +398,8 @@ describe("connectViaRpc", () => {
       client.onDisconnect(disconnectFn);
 
       client.close();
+      await Promise.resolve();
+      await Promise.resolve();
 
       // Verify unsubscribe was called
       expect(mockRpc.call).toHaveBeenCalledWith(DO_TARGET, "unsubscribe", SELF_ID);
@@ -441,6 +458,8 @@ describe("connectViaRpc", () => {
 
       const controller = new AbortController();
       const handle = client.callMethod("provider-1", "slowWork", {}, { signal: controller.signal });
+      await Promise.resolve();
+      await Promise.resolve();
 
       expect(mockRpc.call).toHaveBeenCalledWith(
         DO_TARGET,

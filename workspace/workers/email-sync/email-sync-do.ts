@@ -5,8 +5,8 @@
  * 1. Panel calls startSync(connectionId, providerKey, intervalMs)
  * 2. DO stores config in state KV and sets first alarm
  * 3. On alarm: resolves a credential handle via RPC, fetches Gmail history via
- *    native fetch, publishes new-mail events to PubSub via RPC
- * 4. Panel subscribes to PubSub channel for real-time updates
+ *    native fetch, publishes new-mail events to the channel service via RPC
+ * 4. Panel subscribes to that channel for real-time updates
  * 5. Panel calls stopSync() to cancel polling
  *
  * Token acquisition: Uses the shared credential client via the RPC bridge
@@ -205,8 +205,17 @@ export class EmailSyncWorker extends DurableObjectBase {
 
     try {
       const channelId = config.pubsubChannel;
+      const channelService = await this.rpc.call<{ kind: string; targetId?: string }>(
+        "main",
+        "workers.resolveService",
+        "natstack.channel.v1",
+        channelId,
+      );
+      if (channelService.kind !== "durable-object" || !channelService.targetId) {
+        throw new Error("Channel service must resolve to a Durable Object service");
+      }
       await this.rpc.call(
-        `do:workers/pubsub-channel:PubSubChannel:${channelId}`,
+        channelService.targetId,
         "send",
         `email-sync:${config.connectionId}`,
         `sync-${Date.now()}`,

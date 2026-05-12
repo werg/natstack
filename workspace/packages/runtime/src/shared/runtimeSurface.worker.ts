@@ -15,6 +15,8 @@ export const workerRuntimeSurface: RuntimeSurface = {
       "list",
       "status",
       "listInstanceSources",
+      "listServices",
+      "resolveService",
       "getPort",
       "restartAll",
       "cloneDO",
