@@ -14,6 +14,8 @@ export type EventName =
   | "system-theme-changed"
   | "panel-tree-updated"
   | "open-workspace-switcher"
+  | "toggle-address-bar"
+  | "focus-address-bar"
   | "toggle-panel-devtools"
   | "panel-initialization-error"
   | "navigate-about"
@@ -79,6 +81,8 @@ export interface EventPayloads {
   "system-theme-changed": "light" | "dark";
   "panel-tree-updated": unknown[]; // Panel tree array
   "open-workspace-switcher": void;
+  "toggle-address-bar": void;
+  "focus-address-bar": void;
   "toggle-panel-devtools": void;
   "panel-initialization-error": { path: string; error: string };
   "navigate-about": { page: string };
@@ -145,6 +149,8 @@ export const VALID_EVENT_NAMES: EventName[] = [
   "system-theme-changed",
   "panel-tree-updated",
   "open-workspace-switcher",
+  "toggle-address-bar",
+  "focus-address-bar",
   "toggle-panel-devtools",
   "panel-initialization-error",
   "navigate-about",

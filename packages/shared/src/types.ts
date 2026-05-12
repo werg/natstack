@@ -166,6 +166,19 @@ export interface PanelSnapshot {
 }
 
 /**
+ * Runtime navigation state for the WebContents/WebView that is currently
+ * rendering a panel. This is intentionally not persisted as part of the
+ * snapshot; it reflects the live browser-like surface.
+ */
+export interface PanelNavigationState {
+  url?: string;
+  pageTitle?: string;
+  isLoading?: boolean;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
+}
+
+/**
  * Panel runtime state. Configuration comes from current snapshot.
  */
 export interface Panel {
@@ -181,6 +194,7 @@ export interface Panel {
 
   // Runtime only (not in snapshot)
   artifacts: PanelArtifacts;
+  navigation?: PanelNavigationState;
 }
 
 // =============================================================================
@@ -210,7 +224,16 @@ export interface SettingsData {
 }
 
 /** Actions available in panel context menus */
-export type PanelContextMenuAction = "reload" | "unload" | "archive";
+export type PanelContextMenuAction =
+  | "reload"
+  | "force-reload"
+  | "stop"
+  | "back"
+  | "forward"
+  | "copy-address"
+  | "open-external"
+  | "unload"
+  | "archive";
 
 // =============================================================================
 // Panel Move/Drag-and-Drop Types

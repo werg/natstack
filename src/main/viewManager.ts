@@ -19,10 +19,12 @@ import {
   BaseWindow,
   Menu,
   WebContentsView,
+  clipboard,
   type MenuItemConstructorOptions,
   type WebContents,
   type NativeImage,
   session,
+  shell,
 } from "electron";
 
 import { createDevLogger } from "@natstack/dev-log";
@@ -370,6 +372,34 @@ export class ViewManager {
         items.push({ type: "separator" });
       }
       items.push({ label: "Select All", role: "selectAll" });
+    }
+
+    if (params.linkURL) {
+      if (items.length > 0) items.push({ type: "separator" });
+      items.push(
+        { label: "Copy Link", click: () => clipboard.writeText(params.linkURL) },
+        {
+          label: "Open Link Externally",
+          click: () => {
+            void shell.openExternal(params.linkURL);
+          },
+        },
+      );
+    }
+
+    if (params.srcURL) {
+      if (items.length > 0) items.push({ type: "separator" });
+      items.push({ label: "Copy Media URL", click: () => clipboard.writeText(params.srcURL) });
+    }
+
+    if (!params.isEditable) {
+      if (items.length > 0) items.push({ type: "separator" });
+      items.push(
+        { label: "Back", enabled: contents.canGoBack(), click: () => contents.goBack() },
+        { label: "Forward", enabled: contents.canGoForward(), click: () => contents.goForward() },
+        { label: "Reload", click: () => contents.reload() },
+        { label: "Copy Page Address", click: () => clipboard.writeText(contents.getURL()) },
+      );
     }
 
     // Inspect Element (always available)
@@ -935,6 +965,14 @@ export class ViewManager {
   reload(id: string): void {
     const contents = this.getWebContents(id);
     contents?.reload();
+  }
+
+  /**
+   * Reload a view while bypassing Chromium's HTTP cache.
+   */
+  forceReload(id: string): void {
+    const contents = this.getWebContents(id);
+    contents?.reloadIgnoringCache();
   }
 
   /**

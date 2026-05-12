@@ -87,7 +87,15 @@ export function createMenuService(deps: {
 
           return new Promise<PanelContextMenuAction | null>((resolve) => {
             const template: MenuItemConstructorOptions[] = [
+              { label: "Back", click: () => resolve("back") },
+              { label: "Forward", click: () => resolve("forward") },
+              { type: "separator" },
               { label: "Reload", click: () => resolve("reload") },
+              { label: "Force Reload", click: () => resolve("force-reload") },
+              { label: "Stop Loading", click: () => resolve("stop") },
+              { type: "separator" },
+              { label: "Copy Address", click: () => resolve("copy-address") },
+              { label: "Open Externally", click: () => resolve("open-external") },
               { type: "separator" },
               { label: "Unload", click: () => resolve("unload") },
               { type: "separator" },

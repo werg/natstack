@@ -45,6 +45,7 @@ import type {
   PaginatedChildren,
   PaginatedRootPanels,
 } from "@natstack/shared/types";
+import type { PanelChromeState } from "@natstack/shared/panelChrome";
 
 // =============================================================================
 // App Service
@@ -67,6 +68,7 @@ export const panel = {
   notifyFocused: (panelId: string) => rpc.call<void>("main", "panel.notifyFocused", panelId),
   updateTheme: (theme: ThemeAppearance) => rpc.call<void>("main", "panel.updateTheme", theme),
   openDevTools: (panelId: string) => rpc.call<void>("main", "panel.openDevTools", panelId),
+  getChromeState: (panelId: string) => rpc.call<PanelChromeState>("main", "panel.getChromeState", panelId),
   reload: (panelId: string) => rpc.call<void>("main", "panel.reload", panelId),
   unload: (panelId: string) => rpc.call<void>("main", "panel.unload", panelId),
   archive: (panelId: string) => rpc.call<void>("main", "panel.archive", panelId),
@@ -79,6 +81,8 @@ export const panel = {
   /** Create a panel from any source path (not prefixed with "about/"). */
   createPanel: (source: string, options?: { name?: string; isRoot?: boolean }) =>
     rpc.call<{ id: string; title: string }>("main", "panel.create", source, options),
+  createBrowser: (url: string, options?: { name?: string; focus?: boolean }) =>
+    rpc.call<{ id: string; title: string }>("main", "panel.createBrowser", url, options),
   movePanel: (request: MovePanelRequest) =>
     rpc.call<void>("main", "panel.movePanel", request),
   getChildrenPaginated: (request: GetChildrenPaginatedRequest) =>
@@ -118,6 +122,8 @@ export const view = {
   browserGoForward: (browserId: string) =>
     rpc.call<void>("main", "view.browserGoForward", browserId),
   browserReload: (browserId: string) => rpc.call<void>("main", "view.browserReload", browserId),
+  browserForceReload: (browserId: string) =>
+    rpc.call<void>("main", "view.browserForceReload", browserId),
   browserStop: (browserId: string) => rpc.call<void>("main", "view.browserStop", browserId),
 };
 

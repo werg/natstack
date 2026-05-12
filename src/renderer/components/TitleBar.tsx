@@ -7,13 +7,18 @@ import {
   ChevronRightIcon,
   DividerVerticalIcon,
   PlusIcon,
+  ArrowLeftIcon,
+  ArrowRightIcon,
+  ReloadIcon,
+  StopIcon,
 } from "@radix-ui/react-icons";
-import { Box, Flex, IconButton, Text, Tooltip } from "@radix-ui/themes";
-import { useState, type CSSProperties, type MouseEvent } from "react";
+import { Badge, Box, Flex, IconButton, Text, TextField, Tooltip } from "@radix-ui/themes";
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
 import { useTouchDevice } from "@workspace/react/responsive";
 
 import { useNavigation } from "./NavigationContext";
 import { panel } from "../shell/client";
+import type { ChromeCommand } from "./PanelStack";
 import { ConnectionStatusBadge } from "./ConnectionStatusBadge";
 import { ConnectionSettingsDialog } from "./ConnectionSettingsDialog";
 
@@ -28,19 +33,25 @@ import type {
   DescendantSiblingGroup,
 } from "./navigationTypes";
 import type { PanelContextMenuAction } from "@natstack/shared/types";
+import type { PanelChromeState } from "@natstack/shared/panelChrome";
+import { formatRepoChip } from "@natstack/shared/panelChrome";
 import { menu } from "../shell/client";
 
 interface TitleBarProps {
   title: string;
+  chromeState?: PanelChromeState | null;
+  onChromeCommand?: (command: ChromeCommand) => void;
   onNavigateToId?: (panelId: string) => void;
   onPanelAction?: (panelId: string, action: PanelContextMenuAction) => void;
   onArchive?: (panelId: string) => void;
 }
 
-export function TitleBar({ title, onNavigateToId, onPanelAction, onArchive }: TitleBarProps) {
+export function TitleBar({ title, chromeState, onChromeCommand, onNavigateToId, onPanelAction, onArchive }: TitleBarProps) {
   const {
     mode: navigationMode,
     setMode,
+    addressBarVisible,
+    setAddressBarVisible,
     lazyTitleNavigation: navigationData,
     lazyStatusNavigation: statusNavigation,
   } = useNavigation();
@@ -98,6 +109,17 @@ export function TitleBar({ title, onNavigateToId, onPanelAction, onArchive }: Ti
             </IconButton>
           </Tooltip>
 
+          <Tooltip content={addressBarVisible ? "Hide address bar" : "Show address bar"}>
+            <IconButton
+              variant="ghost"
+              size="1"
+              onClick={() => setAddressBarVisible(!addressBarVisible)}
+              aria-label={addressBarVisible ? "Hide address bar" : "Show address bar"}
+            >
+              <Text size="1" weight="bold">URL</Text>
+            </IconButton>
+          </Tooltip>
+
           <Tooltip content="New panel (Cmd/Ctrl+T)">
             <IconButton
               variant="ghost"
@@ -125,14 +147,18 @@ export function TitleBar({ title, onNavigateToId, onPanelAction, onArchive }: Ti
             } as CSSProperties
           }
         >
-          <BreadcrumbBar
-            title={title}
-            navigationData={navigationData}
-            statusNavigation={statusNavigation}
-            onNavigateToId={onNavigateToId}
-            onPanelAction={onPanelAction}
-            onArchive={onArchive}
-          />
+          {addressBarVisible ? (
+            <AddressBar chromeState={chromeState} onChromeCommand={onChromeCommand} />
+          ) : (
+            <BreadcrumbBar
+              title={title}
+              navigationData={navigationData}
+              statusNavigation={statusNavigation}
+              onNavigateToId={onNavigateToId}
+              onPanelAction={onPanelAction}
+              onArchive={onArchive}
+            />
+          )}
         </Box>
 
         {/* Right side: connection badge + spacer for native window controls */}
@@ -173,6 +199,100 @@ function getWindowPositionFromRect(rect: DOMRect): { x: number; y: number } {
     x: Math.round(rect.left),
     y: Math.round(rect.bottom),
   };
+}
+
+function AddressBar({
+  chromeState,
+  onChromeCommand,
+}: {
+  chromeState?: PanelChromeState | null;
+  onChromeCommand?: (command: ChromeCommand) => void;
+}) {
+  const [value, setValue] = useState(chromeState?.editableAddress ?? "");
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const repoChip = formatRepoChip(chromeState?.repo);
+
+  useEffect(() => {
+    setValue(chromeState?.editableAddress ?? "");
+  }, [chromeState?.editableAddress]);
+
+  useEffect(() => {
+    const focusAddress = () => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    };
+    window.addEventListener("shell-focus-address", focusAddress);
+    return () => window.removeEventListener("shell-focus-address", focusAddress);
+  }, []);
+
+  const submit = () => {
+    if (!value.trim()) return;
+    onChromeCommand?.({ type: "navigate", value });
+  };
+
+  return (
+    <Flex
+      align="center"
+      gap="1"
+      style={{ appRegion: "no-drag", WebkitAppRegion: "no-drag", minWidth: 0 } as CSSProperties}
+    >
+      <Tooltip content="Back">
+        <IconButton
+          size="1"
+          variant="ghost"
+          disabled={!chromeState?.canGoBack}
+          onClick={() => onChromeCommand?.({ type: "back" })}
+          aria-label="Back"
+        >
+          <ArrowLeftIcon />
+        </IconButton>
+      </Tooltip>
+      <Tooltip content="Forward">
+        <IconButton
+          size="1"
+          variant="ghost"
+          disabled={!chromeState?.canGoForward}
+          onClick={() => onChromeCommand?.({ type: "forward" })}
+          aria-label="Forward"
+        >
+          <ArrowRightIcon />
+        </IconButton>
+      </Tooltip>
+      <Tooltip content={chromeState?.isLoading ? "Stop" : "Reload"}>
+        <IconButton
+          size="1"
+          variant="ghost"
+          onClick={() => onChromeCommand?.({ type: chromeState?.isLoading ? "stop" : "reload" })}
+          aria-label={chromeState?.isLoading ? "Stop" : "Reload"}
+        >
+          {chromeState?.isLoading ? <StopIcon /> : <ReloadIcon />}
+        </IconButton>
+      </Tooltip>
+      <TextField.Root
+        ref={inputRef}
+        size="1"
+        value={value}
+        onChange={(event) => setValue(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            submit();
+            inputRef.current?.blur();
+          } else if (event.key === "Escape") {
+            setValue(chromeState?.editableAddress ?? "");
+            inputRef.current?.blur();
+          }
+        }}
+        aria-label="Address"
+        style={{ flex: 1, minWidth: 80 }}
+      />
+      {chromeState?.kind === "panel" && repoChip && (
+        <Badge size="1" color={chromeState.repo?.dirty ? "orange" : "gray"} style={{ flexShrink: 0 }}>
+          {repoChip}
+        </Badge>
+      )}
+    </Flex>
+  );
 }
 
 // Shared styles for breadcrumb items

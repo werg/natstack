@@ -11,6 +11,12 @@ import {
 import type { LazyTitleNavigationData, LazyStatusNavigationData } from "./navigationTypes";
 import type { PanelContextMenuAction } from "@natstack/shared/types";
 import {
+  buildPanelChromeState,
+  isBrowserPanelSource,
+  parseAddressInput,
+  type PanelChromeState,
+} from "@natstack/shared/panelChrome";
+import {
   useRootPanels,
   useFullPanel,
   useAncestors,
@@ -25,12 +31,22 @@ import { SavePasswordBar } from "./SavePasswordBar";
 
 interface PanelStackProps {
   onTitleChange?: (title: string) => void;
+  onChromeStateChange?: (state: PanelChromeState | null) => void;
   hostTheme: "light" | "dark";
   onRegisterDevToolsHandler?: (handler: () => void) => void;
   onRegisterNavigateToId?: (navigate: (panelId: string) => void) => void;
   onRegisterPanelAction?: (handler: (panelId: string, action: PanelContextMenuAction) => void) => void;
   onRegisterArchive?: (handler: (panelId: string) => void) => void;
+  onRegisterChromeCommand?: (handler: (command: ChromeCommand) => void) => void;
 }
+
+export type ChromeCommand =
+  | { type: "back" }
+  | { type: "forward" }
+  | { type: "reload" }
+  | { type: "force-reload" }
+  | { type: "stop" }
+  | { type: "navigate"; value: string };
 
 function captureHostThemeCss(): string {
   if (typeof window === "undefined") {
@@ -63,11 +79,13 @@ function captureHostThemeCss(): string {
 
 export function PanelStack({
   onTitleChange,
+  onChromeStateChange,
   hostTheme,
   onRegisterDevToolsHandler,
   onRegisterNavigateToId,
   onRegisterPanelAction,
   onRegisterArchive,
+  onRegisterChromeCommand,
 }: PanelStackProps) {
   const {
     mode: navigationMode,
@@ -200,9 +218,33 @@ export function PanelStack({
   const handlePanelAction = useCallback(
     async (panelId: string, action: PanelContextMenuAction) => {
       switch (action) {
+        case "back":
+          await view.browserGoBack(panelId);
+          break;
+        case "forward":
+          await view.browserGoForward(panelId);
+          break;
         case "reload":
           await panelService.reload(panelId);
           break;
+        case "force-reload":
+          await view.browserForceReload(panelId);
+          break;
+        case "stop":
+          await view.browserStop(panelId);
+          break;
+        case "copy-address": {
+          const state = await panelService.getChromeState(panelId);
+          await navigator.clipboard.writeText(state.editableAddress);
+          break;
+        }
+        case "open-external": {
+          const state = await panelService.getChromeState(panelId);
+          if (state.resolvedUrl && /^https?:\/\//i.test(state.resolvedUrl)) {
+            window.open(state.resolvedUrl, "_blank", "noopener,noreferrer");
+          }
+          break;
+        }
         case "unload":
           // Unload panel resources but keep in tree (can be re-loaded later)
           await panelService.unload(panelId);
@@ -344,6 +386,59 @@ export function PanelStack({
     });
   }, [visiblePanel?.id]);
 
+  const runChromeCommand = useCallback(
+    (command: ChromeCommand) => {
+      const panelId = visiblePanel?.id;
+      if (!panelId) return;
+
+      switch (command.type) {
+        case "back":
+          void view.browserGoBack(panelId);
+          return;
+        case "forward":
+          void view.browserGoForward(panelId);
+          return;
+        case "reload":
+          void panelService.reload(panelId);
+          return;
+        case "force-reload":
+          void view.browserForceReload(panelId);
+          return;
+        case "stop":
+          void view.browserStop(panelId);
+          return;
+        case "navigate": {
+          const parsed = parseAddressInput(command.value);
+          if (!parsed) return;
+          if (parsed.type === "browser-url") {
+            if (visiblePanel && isBrowserPanelSource(visiblePanel.snapshot.source)) {
+              void view.browserNavigate(panelId, parsed.url);
+            } else {
+              void panelService.createBrowser(parsed.url, { focus: true })
+                .then((result) => navigateToPanelId(result.id));
+            }
+            return;
+          }
+          if (parsed.type === "panel-source") {
+            void panelService.createPanel(parsed.source, { isRoot: true })
+              .then((result) => navigateToPanelId(result.id));
+            return;
+          }
+          if (parsed.type === "search") {
+            const query = encodeURIComponent(parsed.query);
+            void panelService.createBrowser(`https://www.google.com/search?q=${query}`, { focus: true })
+              .then((result) => navigateToPanelId(result.id));
+          }
+        }
+      }
+    },
+    [navigateToPanelId, visiblePanel],
+  );
+
+  useEffect(() => {
+    onRegisterChromeCommand?.(runChromeCommand);
+  }, [onRegisterChromeCommand, runChromeCommand]);
+
   useEffect(() => {
     // Provide the actual handler so callers don't need to double-invoke
     onRegisterDevToolsHandler?.(openDevToolsForVisiblePanel);
@@ -355,6 +450,38 @@ export function PanelStack({
       onTitleChange(visiblePanel.title);
     }
   }, [onTitleChange, visiblePanel]);
+
+  useEffect(() => {
+    if (!visiblePanel) {
+      onChromeStateChange?.(null);
+      return;
+    }
+
+    const fallback = buildPanelChromeState({
+      panel: {
+        id: visiblePanel.id,
+        title: visiblePanel.title,
+        children: [],
+        selectedChildId: visiblePanel.selectedChildId,
+        snapshot: visiblePanel.snapshot,
+        artifacts: visiblePanel.artifacts,
+        navigation: visiblePanel.navigation,
+      },
+    });
+    onChromeStateChange?.(fallback);
+
+    let cancelled = false;
+    void panelService.getChromeState(visiblePanel.id)
+      .then((state) => {
+        if (!cancelled) onChromeStateChange?.(state);
+      })
+      .catch(() => {
+        // Fallback above is enough when git/server metadata is unavailable.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [onChromeStateChange, visiblePanel]);
 
   const isTreeNavigation = navigationMode === "tree";
 

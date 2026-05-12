@@ -11,8 +11,8 @@
  * - Uses safe area insets for status bar spacing
  */
 
-import React, { useCallback } from "react";
-import { View, Text, StyleSheet, Pressable, ActionSheetIOS, Platform, Alert } from "react-native";
+import React, { useCallback, useEffect, useState } from "react";
+import { View, Text, StyleSheet, Pressable, ActionSheetIOS, Platform, Alert, TextInput } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAtomValue } from "jotai";
 import { themeColorsAtom } from "../state/themeAtoms";
@@ -25,12 +25,45 @@ interface AppBarProps {
   onMenuPress: () => void;
   /** Called after a new panel is created, with the new panel's ID */
   onPanelCreated?: (panelId: string) => void;
+  addressBarVisible?: boolean;
+  address?: string;
+  metadata?: string | null;
+  isLoading?: boolean;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
+  onToggleAddressBar?: () => void;
+  onBack?: () => void;
+  onForward?: () => void;
+  onReload?: () => void;
+  onStop?: () => void;
+  onNavigateAddress?: (value: string) => void;
 }
 
-export function AppBar({ title, onMenuPress, onPanelCreated }: AppBarProps) {
+export function AppBar({
+  title,
+  onMenuPress,
+  onPanelCreated,
+  addressBarVisible = false,
+  address = "",
+  metadata = null,
+  isLoading = false,
+  canGoBack = false,
+  canGoForward = false,
+  onToggleAddressBar,
+  onBack,
+  onForward,
+  onReload,
+  onStop,
+  onNavigateAddress,
+}: AppBarProps) {
   const insets = useSafeAreaInsets();
   const colors = useAtomValue(themeColorsAtom);
   const shellClient = useAtomValue(shellClientAtom);
+  const [addressValue, setAddressValue] = useState(address);
+
+  useEffect(() => {
+    setAddressValue(address);
+  }, [address]);
 
   const handleCreatePanel = useCallback(() => {
     if (!shellClient) return;
@@ -99,9 +132,20 @@ export function AppBar({ title, onMenuPress, onPanelCreated }: AppBarProps) {
           style={[styles.title, { color: colors.text }]}
           numberOfLines={1}
           ellipsizeMode="tail"
+          onPress={onToggleAddressBar}
         >
           {title}
         </Text>
+
+        <Pressable
+          onPress={onToggleAddressBar}
+          style={styles.urlButton}
+          hitSlop={8}
+          accessibilityLabel={addressBarVisible ? "Hide address bar" : "Show address bar"}
+          accessibilityRole="button"
+        >
+          <Text style={[styles.urlButtonText, { color: colors.textSecondary }]}>URL</Text>
+        </Pressable>
 
         {/* Create new panel button */}
         <Pressable
@@ -114,6 +158,64 @@ export function AppBar({ title, onMenuPress, onPanelCreated }: AppBarProps) {
           <Text style={[styles.plusIcon, { color: colors.text }]}>+</Text>
         </Pressable>
       </View>
+      {addressBarVisible && (
+        <View style={[styles.addressRow, { borderTopColor: colors.border }]}>
+          <Pressable
+            onPress={onBack}
+            disabled={!canGoBack}
+            style={[styles.navButton, !canGoBack && styles.disabledButton]}
+            accessibilityLabel="Back"
+            accessibilityRole="button"
+          >
+            <Text style={[styles.navButtonText, { color: colors.text }]}>{"<"}</Text>
+          </Pressable>
+          <Pressable
+            onPress={onForward}
+            disabled={!canGoForward}
+            style={[styles.navButton, !canGoForward && styles.disabledButton]}
+            accessibilityLabel="Forward"
+            accessibilityRole="button"
+          >
+            <Text style={[styles.navButtonText, { color: colors.text }]}>{">"}</Text>
+          </Pressable>
+          <TextInput
+            value={addressValue}
+            onChangeText={setAddressValue}
+            onSubmitEditing={() => onNavigateAddress?.(addressValue)}
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="go"
+            selectTextOnFocus
+            style={[
+              styles.addressInput,
+              {
+                color: colors.text,
+                backgroundColor: colors.background,
+                borderColor: colors.border,
+              },
+            ]}
+            placeholder="Search or enter address"
+            placeholderTextColor={colors.textSecondary}
+          />
+          {metadata && (
+            <Text
+              style={[styles.metadataText, { color: colors.textSecondary }]}
+              numberOfLines={1}
+              ellipsizeMode="middle"
+            >
+              {metadata}
+            </Text>
+          )}
+          <Pressable
+            onPress={isLoading ? onStop : onReload}
+            style={styles.navButton}
+            accessibilityLabel={isLoading ? "Stop loading" : "Reload"}
+            accessibilityRole="button"
+          >
+            <Text style={[styles.navButtonText, { color: colors.text }]}>{isLoading ? "x" : "R"}</Text>
+          </Pressable>
+        </View>
+      )}
     </View>
   );
 }
@@ -128,6 +230,39 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     height: 48,
     paddingHorizontal: 8,
+  },
+  addressRow: {
+    height: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: 8,
+    gap: 6,
+  },
+  addressInput: {
+    flex: 1,
+    height: 32,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    fontSize: 14,
+  },
+  metadataText: {
+    maxWidth: 120,
+    fontSize: 11,
+  },
+  navButton: {
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  navButtonText: {
+    fontSize: 18,
+    fontWeight: "600",
+  },
+  disabledButton: {
+    opacity: 0.35,
   },
   iconButton: {
     width: 44,
@@ -151,6 +286,16 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     textAlign: "center",
     marginHorizontal: 8,
+  },
+  urlButton: {
+    paddingHorizontal: 6,
+    height: 28,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  urlButtonText: {
+    fontSize: 11,
+    fontWeight: "700",
   },
   plusIcon: {
     fontSize: 28,

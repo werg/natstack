@@ -945,6 +945,7 @@ app.on("ready", async () => {
             return getPanelView();
           },
           getViewManager,
+          serverClient: sc,
         })
       )
     );

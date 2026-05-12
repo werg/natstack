@@ -46,6 +46,19 @@ async function archiveFocusedPanel(mainWindow: Electron.BaseWindow): Promise<voi
   }
 }
 
+function reloadFocusedPanel(force = false): void {
+  const focusedId = _menuPanelRegistry?.getFocusedPanelId();
+  if (!focusedId || !_menuViewManager) return;
+  if (force) _menuViewManager.forceReload(focusedId);
+  else _menuViewManager.reload(focusedId);
+}
+
+function stopFocusedPanel(): void {
+  const focusedId = _menuPanelRegistry?.getFocusedPanelId();
+  if (!focusedId || !_menuViewManager) return;
+  _menuViewManager.stop(focusedId);
+}
+
 /**
  * Build common menu items that are shared between the app menu and hamburger popup.
  * These items need shell webcontents for IPC communication.
@@ -112,8 +125,17 @@ export function buildCommonMenuItems(
     view.push({ type: "separator" });
   }
   view.push(
-    { label: "Reload", accelerator: "CmdOrCtrl+R", role: "reload" },
-    { label: "Force Reload", accelerator: "CmdOrCtrl+Shift+R", role: "forceReload" },
+    { label: "Reload Panel", accelerator: "CmdOrCtrl+R", click: () => reloadFocusedPanel(false) },
+    { label: "Force Reload Panel", accelerator: "CmdOrCtrl+Shift+R", click: () => reloadFocusedPanel(true) },
+    { label: "Stop Loading", accelerator: "Esc", click: () => stopFocusedPanel() },
+    {
+      label: "Toggle Address Bar",
+      accelerator: "CmdOrCtrl+L",
+      click: () => {
+        eventService().emit("toggle-address-bar");
+        eventService().emit("focus-address-bar");
+      },
+    },
     { type: "separator" },
     {
       label: "Refresh Panel Display",
@@ -300,8 +322,18 @@ export function setupMenu(
       label: "View",
       submenu: [
         ...viewSubmenu,
-        { role: "reload" },
-        { role: "forceReload" },
+        { label: "Reload Panel", accelerator: "CmdOrCtrl+R", click: () => reloadFocusedPanel(false) },
+        { label: "Force Reload Panel", accelerator: "CmdOrCtrl+Shift+R", click: () => reloadFocusedPanel(true) },
+        { label: "Stop Loading", accelerator: "Esc", click: () => stopFocusedPanel() },
+        { type: "separator" },
+        {
+          label: "Toggle Address Bar",
+          accelerator: "CmdOrCtrl+L",
+          click: () => {
+            eventService().emit("toggle-address-bar");
+            eventService().emit("focus-address-bar");
+          },
+        },
         { type: "separator" },
         {
           label: "Refresh Panel Display",

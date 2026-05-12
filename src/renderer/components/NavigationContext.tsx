@@ -8,6 +8,8 @@ import type {
 interface NavigationContextValue {
   mode: NavigationMode;
   setMode: (mode: NavigationMode) => void;
+  addressBarVisible: boolean;
+  setAddressBarVisible: (visible: boolean) => void;
   // ID-based lazy navigation
   lazyTitleNavigation: LazyTitleNavigationData | null;
   setLazyTitleNavigation: (data: LazyTitleNavigationData | null) => void;
@@ -33,6 +35,13 @@ interface NavigationProviderProps {
 
 export function NavigationProvider({ children }: NavigationProviderProps) {
   const [mode, setMode] = useState<NavigationMode>("stack");
+  const [addressBarVisible, setAddressBarVisible] = useState(() => {
+    try {
+      return localStorage.getItem("address-bar-visible") === "true";
+    } catch {
+      return false;
+    }
+  });
 
   // ID-based lazy navigation state
   const [lazyTitleNavigation, setLazyTitleNavigation] = useState<LazyTitleNavigationData | null>(null);
@@ -56,6 +65,15 @@ export function NavigationProvider({ children }: NavigationProviderProps) {
     () => ({
       mode,
       setMode,
+      addressBarVisible,
+      setAddressBarVisible: (visible: boolean) => {
+        setAddressBarVisible(visible);
+        try {
+          localStorage.setItem("address-bar-visible", visible ? "true" : "false");
+        } catch {
+          // Ignore storage failures.
+        }
+      },
       lazyTitleNavigation,
       setLazyTitleNavigation,
       lazyStatusNavigation,
@@ -65,6 +83,7 @@ export function NavigationProvider({ children }: NavigationProviderProps) {
     }),
     [
       mode,
+      addressBarVisible,
       lazyTitleNavigation,
       lazyStatusNavigation,
       navigateToId,

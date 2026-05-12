@@ -41,6 +41,7 @@ export function createViewService(deps: {
       browserGoBack: { args: z.tuple([z.string()]) },
       browserGoForward: { args: z.tuple([z.string()]) },
       browserReload: { args: z.tuple([z.string()]) },
+      browserForceReload: { args: z.tuple([z.string()]) },
       browserStop: { args: z.tuple([z.string()]) },
     },
     handler: async (ctx, method, args) => {
@@ -107,6 +108,12 @@ export function createViewService(deps: {
           const browserId = args[0] as string;
           assertOwnsOrShell(ctx.callerId, browserId, "browserReload");
           vm.reload(browserId);
+          return;
+        }
+        case "browserForceReload": {
+          const browserId = args[0] as string;
+          assertOwnsOrShell(ctx.callerId, browserId, "browserForceReload");
+          vm.forceReload(browserId);
           return;
         }
         case "browserStop": {

@@ -134,6 +134,32 @@ class MobilePanels {
     return { id: result.panelId, title: result.title };
   }
 
+  async createBrowserPanel(
+    parentId: string | null,
+    url: string,
+    options?: { name?: string; focus?: boolean },
+  ): Promise<{ id: string; title: string }> {
+    const result = await this.requireManager().createBrowser(parentId, url, {
+      name: options?.name,
+      addAsRoot: parentId == null,
+    });
+    if (options?.focus !== false) {
+      await this.requireManager().notifyFocused(result.panelId);
+      this.deps.navigateToPanel(result.panelId);
+    }
+    return { id: result.panelId, title: result.title };
+  }
+
+  async createRootPanel(source: string): Promise<{ id: string; title: string }> {
+    const result = await this.requireManager().create(source, {
+      isRoot: true,
+      addAsRoot: true,
+    });
+    await this.requireManager().notifyFocused(result.panelId);
+    this.deps.navigateToPanel(result.panelId);
+    return { id: result.panelId, title: result.title };
+  }
+
   async setCollapsed(panelId: string, collapsed: boolean): Promise<void> {
     await this.requireManager().setCollapsed(panelId, collapsed);
   }
@@ -152,6 +178,11 @@ class MobilePanels {
 
   async updateTitle(panelId: string, title: string): Promise<void> {
     await this.requireManager().updateTitle(panelId, title);
+    this.deps.onTreeUpdated?.(this.getTree());
+  }
+
+  async updateBrowserUrl(panelId: string, url: string): Promise<void> {
+    await this.requireManager().updateContext(panelId, { source: `browser:${url}` });
     this.deps.onTreeUpdated?.(this.getTree());
   }
 

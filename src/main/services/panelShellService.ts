@@ -5,15 +5,49 @@ import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { PanelView } from "../panelView.js";
 import type { ViewManager } from "../viewManager.js";
 import type { ThemeAppearance } from "@natstack/shared/types";
+import type { ServerClient } from "../serverClient.js";
+import {
+  buildPanelChromeState,
+  isBrowserPanelSource,
+  type PanelChromeState,
+  type PanelRepoState,
+} from "@natstack/shared/panelChrome";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("PanelShellService");
+
+async function getRepoState(
+  source: string,
+  serverClient?: ServerClient | null,
+): Promise<PanelRepoState | undefined> {
+  if (!serverClient || isBrowserPanelSource(source) || source.startsWith("about/")) {
+    return undefined;
+  }
+
+  try {
+    const [branches, commit] = await Promise.all([
+      serverClient.call("git", "listBranches", [source]) as Promise<Array<{ name: string; current?: boolean }>>,
+      serverClient.call("git", "resolveRef", [source, "HEAD"]) as Promise<string>,
+    ]);
+    const currentBranch = branches.find((branch) => branch.current)?.name ?? null;
+    return {
+      repoPath: source,
+      branch: currentBranch,
+      commit,
+    };
+  } catch {
+    return {
+      repoPath: source,
+    };
+  }
+}
 
 export function createPanelShellService(deps: {
   panelOrchestrator: PanelOrchestrator;
   panelRegistry: PanelRegistry;
   panelView: PanelView;
   getViewManager: () => ViewManager;
+  serverClient?: ServerClient | null;
 }): ServiceDefinition {
   return {
     name: "panel",
@@ -25,6 +59,7 @@ export function createPanelShellService(deps: {
       notifyFocused: { args: z.tuple([z.string()]) },
       updateTheme: { args: z.tuple([z.unknown()]) },
       openDevTools: { args: z.tuple([z.string()]) },
+      getChromeState: { args: z.tuple([z.string()]) },
       reload: { args: z.tuple([z.string()]) },
       unload: { args: z.tuple([z.string()]) },
       archive: { args: z.tuple([z.string()]) },
@@ -33,6 +68,7 @@ export function createPanelShellService(deps: {
       updatePanelState: { args: z.tuple([z.string(), z.record(z.unknown())]) },
       createAboutPanel: { args: z.tuple([z.unknown()]) },
       create: { args: z.tuple([z.string(), z.object({ name: z.string().optional(), isRoot: z.boolean().optional() }).optional()]) },
+      createBrowser: { args: z.tuple([z.string(), z.object({ name: z.string().optional(), focus: z.boolean().optional() }).optional()]) },
       movePanel: { args: z.tuple([z.object({ panelId: z.string(), newParentId: z.string().nullable(), targetPosition: z.number() })]) },
       getChildrenPaginated: { args: z.tuple([z.object({ parentId: z.string(), offset: z.number(), limit: z.number() })]) },
       getRootPanelsPaginated: { args: z.tuple([z.object({ offset: z.number(), limit: z.number() })]) },
@@ -84,6 +120,14 @@ export function createPanelShellService(deps: {
           }
           pv.openDevTools(panelId);
           return;
+        }
+
+        case "getChromeState": {
+          const panelId = args[0] as string;
+          const panel = registry.getPanel(panelId);
+          if (!panel) throw new Error(`Panel not found: ${panelId}`);
+          const repo = await getRepoState(panel.snapshot.source, deps.serverClient);
+          return buildPanelChromeState({ panel, repo }) satisfies PanelChromeState;
         }
 
         case "reload": {
@@ -146,6 +190,12 @@ export function createPanelShellService(deps: {
           const source = args[0] as string;
           const opts = args[1] as { name?: string; isRoot?: boolean } | undefined;
           return lifecycle.createRootPanel(source, opts);
+        }
+
+        case "createBrowser": {
+          const url = args[0] as string;
+          const opts = args[1] as { name?: string; focus?: boolean } | undefined;
+          return lifecycle.createBrowserPanel("shell", url, { ...opts, focus: opts?.focus ?? true });
         }
 
         case "movePanel": {

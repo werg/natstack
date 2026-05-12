@@ -15,7 +15,8 @@ import { getCurrentSnapshot, getPanelSource, getPanelContextId } from "@natstack
 import { contextIdToPartition } from "@natstack/shared/contextIdToPartition.js";
 import { buildPanelUrl } from "@natstack/shared/panelFactory";
 import { isManagedHost, parsePanelUrl } from "@natstack/shared/shell/urlParsing.js";
-import type { Panel } from "@natstack/shared/types";
+import { isBrowserPanelSource, panelSourceFromBrowserUrl } from "@natstack/shared/panelChrome";
+import type { Panel, PanelNavigationState } from "@natstack/shared/types";
 import { logMemorySnapshot } from "./memoryMonitor.js";
 // Persistence removed — server panel service handles all persistence
 
@@ -227,7 +228,7 @@ export class PanelView implements PanelViewLike {
   // ==== Browser state tracking ==============================================
 
   private setupBrowserStateTracking(panelId: string, contents: Electron.WebContents): void {
-    let pendingState: Partial<{ url?: string; pageTitle?: string; isLoading?: boolean; canGoBack?: boolean; canGoForward?: boolean }> = {};
+    let pendingState: Partial<PanelNavigationState> = {};
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     let cleaned = false;
 
@@ -250,15 +251,23 @@ export class PanelView implements PanelViewLike {
       didNavigate: (_event: Electron.Event, url: string) => {
         log.verbose(` Panel ${panelId} navigated to: ${url}`);
         queueStateUpdate({ url });
-        try {
-          const parsed = new URL(url);
-          const pathSource = parsed.pathname.replace(/^\//, "").replace(/\/$/, "");
-          const panel = this.panelRegistry.getPanel(panelId);
-          if (panel && pathSource && getPanelSource(panel) !== pathSource) {
-            panel.snapshot.source = pathSource;
-            void this.panelOrchestrator.updatePanelContext(panelId, panel.snapshot.contextId, pathSource).catch(() => {});
+        const panel = this.panelRegistry.getPanel(panelId);
+        if (!panel) return;
+        const currentSource = getPanelSource(panel);
+        if (isBrowserPanelSource(currentSource) && /^https?:\/\//i.test(url)) {
+          const nextSource = panelSourceFromBrowserUrl(url);
+          if (nextSource !== currentSource) {
+            panel.snapshot.source = nextSource;
+            void this.panelOrchestrator.updatePanelContext(panelId, panel.snapshot.contextId, nextSource).catch(() => {});
           }
-        } catch { /* non-URL navigation */ }
+          return;
+        }
+
+        const parsed = parsePanelUrl(url, this.externalHost);
+        if (parsed && parsed.source !== currentSource) {
+          panel.snapshot.source = parsed.source;
+          void this.panelOrchestrator.updatePanelContext(panelId, panel.snapshot.contextId, parsed.source).catch(() => {});
+        }
       },
       didNavigateInPage: (_event: Electron.Event, url: string) => { queueStateUpdate({ url }); },
       didFailLoad: (_e: Electron.Event, code: number, desc: string, url: string) => {
@@ -327,13 +336,18 @@ export class PanelView implements PanelViewLike {
   /** Update panel metadata from webview navigation events. */
   private updatePanelState(
     panelId: string,
-    state: { url?: string; pageTitle?: string; isLoading?: boolean; canGoBack?: boolean; canGoForward?: boolean },
+    state: PanelNavigationState,
   ): void {
     const panel = this.panelRegistry.getPanel(panelId);
     if (!panel) return;
 
     const snapshot = getCurrentSnapshot(panel);
     if (state.url !== undefined) snapshot.resolvedUrl = state.url;
+
+    panel.navigation = {
+      ...(panel.navigation ?? {}),
+      ...state,
+    };
 
     if (state.pageTitle !== undefined) {
       panel.title = state.pageTitle;

@@ -36,6 +36,10 @@ export interface PanelNavigationEvent {
 export interface PanelWebViewHandle {
   injectTheme: (mode: "light" | "dark") => void;
   dispatchHostEvent: (event: string, payload: unknown) => void;
+  goBack: () => void;
+  goForward: () => void;
+  reload: () => void;
+  stop: () => void;
 }
 
 export interface PanelWebViewProps {
@@ -356,6 +360,10 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
         dispatchHostEvent("runtime:theme", { theme: mode });
       },
       dispatchHostEvent,
+      goBack: () => webViewRef.current?.goBack(),
+      goForward: () => webViewRef.current?.goForward(),
+      reload: () => webViewRef.current?.reload(),
+      stop: () => webViewRef.current?.stopLoading(),
     }), [dispatchHostEvent]);
 
     useEffect(() => {

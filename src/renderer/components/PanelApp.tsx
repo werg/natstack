@@ -8,10 +8,12 @@ import { PanelTreeProvider, PanelDndProvider } from "../shell/hooks/index.js";
 import { useShellEvent } from "../shell/useShellEvent";
 import { app, notification } from "../shell/client";
 import { PanelStack } from "./PanelStack";
+import type { ChromeCommand } from "./PanelStack";
 import { TitleBar } from "./TitleBar";
 import { NotificationBar } from "./NotificationBar";
 import { ConsentApprovalBar } from "./ConsentApprovalBar";
 import type { PanelContextMenuAction } from "@natstack/shared/types";
+import type { PanelChromeState } from "@natstack/shared/panelChrome";
 
 export function PanelApp() {
   return (
@@ -28,6 +30,7 @@ export function PanelApp() {
 function PanelAppContent() {
   const effectiveTheme = useThemeSynchronizer();
   const [currentTitle, setCurrentTitle] = useState("NatStack");
+  const [chromeState, setChromeState] = useState<PanelChromeState | null>(null);
 
   // Convert panel initialization errors into notifications
   useShellEvent("panel-initialization-error", useCallback((payload: { path: string; error: string }) => {
@@ -44,8 +47,9 @@ function PanelAppContent() {
     () => {}
   );
   const handleArchiveRef = useRef<(panelId: string) => void>(() => {});
+  const handleChromeCommandRef = useRef<(command: ChromeCommand) => void>(() => {});
 
-  const { navigateToId, registerNavigateToId } = useNavigation();
+  const { navigateToId, registerNavigateToId, addressBarVisible, setAddressBarVisible } = useNavigation();
 
   // Stable callbacks that delegate to refs
   const openPanelDevTools = useCallback(() => openPanelDevToolsRef.current(), []);
@@ -58,6 +62,10 @@ function PanelAppContent() {
     (panelId: string) => handleArchiveRef.current(panelId),
     []
   );
+  const handleChromeCommand = useCallback(
+    (command: ChromeCommand) => handleChromeCommandRef.current(command),
+    []
+  );
 
   // Keyboard shortcut for panel devtools
   useEffect(() => {
@@ -66,11 +74,28 @@ function PanelAppContent() {
         event.preventDefault();
         openPanelDevTools();
       }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "l") {
+        event.preventDefault();
+        setAddressBarVisible(true);
+        window.requestAnimationFrame(() => window.dispatchEvent(new CustomEvent("shell-focus-address")));
+      }
+      if (event.key === "Escape") {
+        handleChromeCommand({ type: "stop" });
+      }
     };
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [openPanelDevTools]);
+  }, [handleChromeCommand, openPanelDevTools, setAddressBarVisible]);
+
+  useShellEvent("toggle-address-bar", useCallback(() => {
+    setAddressBarVisible(!addressBarVisible);
+  }, [addressBarVisible, setAddressBarVisible]));
+
+  useShellEvent("focus-address-bar", useCallback(() => {
+    setAddressBarVisible(true);
+    window.requestAnimationFrame(() => window.dispatchEvent(new CustomEvent("shell-focus-address")));
+  }, [setAddressBarVisible]));
 
   // Listen for panel devtools toggle from native menu via shell event
   const handleTogglePanelDevTools = useCallback(() => {
@@ -96,11 +121,19 @@ function PanelAppContent() {
 
   return (
     <Flex direction="column" height="100dvh" style={{ overflow: "hidden" }}>
-      <TitleBar title={currentTitle} onNavigateToId={navigateToId} onPanelAction={handlePanelAction} onArchive={handleArchive} />
+      <TitleBar
+        title={currentTitle}
+        chromeState={chromeState}
+        onChromeCommand={handleChromeCommand}
+        onNavigateToId={navigateToId}
+        onPanelAction={handlePanelAction}
+        onArchive={handleArchive}
+      />
       <NotificationBar />
       <ConsentApprovalBar />
       <PanelStack
         onTitleChange={setCurrentTitle}
+        onChromeStateChange={setChromeState}
         hostTheme={effectiveTheme}
         onRegisterDevToolsHandler={(handler) => {
           openPanelDevToolsRef.current = handler;
@@ -111,6 +144,9 @@ function PanelAppContent() {
         }}
         onRegisterArchive={(handler) => {
           handleArchiveRef.current = handler;
+        }}
+        onRegisterChromeCommand={(handler) => {
+          handleChromeCommandRef.current = handler;
         }}
       />
     </Flex>

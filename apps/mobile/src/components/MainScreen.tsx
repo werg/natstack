@@ -10,6 +10,7 @@ import { ApprovalSheet } from "./ApprovalSheet";
 import { Toast } from "./Toast";
 import { useAppLifecycle } from "../hooks/useAppLifecycle";
 import type { PanelWebViewHandle, PanelNavigationEvent } from "./PanelWebView";
+import type { WebViewNavigation } from "react-native-webview/lib/WebViewTypes";
 import { shellClientAtom, panelTreeAtom } from "../state/shellClientAtom";
 import { colorSchemeAtom, themeColorsAtom } from "../state/themeAtoms";
 import { approvalDeepLinkAtom } from "../state/approvalDeepLinkAtom";
@@ -24,6 +25,13 @@ import {
   parseHostConfig,
   getExternalHost,
 } from "../services/panelUrls";
+import {
+  buildPanelChromeState,
+  formatRepoChip,
+  isBrowserPanelSource,
+  parseAddressInput,
+  type PanelRepoState,
+} from "@natstack/shared/panelChrome";
 import type { HostConfig } from "../services/panelUrls";
 import type { ApprovalDecision, PendingApproval } from "@natstack/shared/approvals";
 import { RPC_METHODS } from "@natstack/shared/approvalContract";
@@ -68,6 +76,9 @@ export function MainScreen() {
   const [webViewStack, setWebViewStack] = useState<WebViewEntry[]>([]);
   const [loadingPanelId, setLoadingPanelId] = useState<string | null>(null);
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
+  const [addressBarVisible, setAddressBarVisible] = useState(false);
+  const [webViewNavigation, setWebViewNavigation] = useState<Record<string, WebViewNavigation>>({});
+  const [activeRepoState, setActiveRepoState] = useState<PanelRepoState | undefined>();
   const webViewStackRef = useRef<WebViewEntry[]>([]);
   const webViewRefsMap = useRef<Map<string, PanelWebViewHandle | null>>(new Map());
   const pendingPanelLoads = useRef<Set<string>>(new Set());
@@ -116,6 +127,55 @@ export function MainScreen() {
     if (!linked) return pendingApprovals;
     return [linked, ...pendingApprovals.filter((approval) => approval.approvalId !== approvalDeepLinkId)];
   }, [approvalDeepLinkId, pendingApprovals]);
+
+  const activePanel = useMemo(() => {
+    if (!activePanelId || !shellClient) return null;
+    return shellClient.panels.registry.getPanel(activePanelId) ?? null;
+  }, [activePanelId, panelTree, shellClient]);
+
+  const activeChromeState = useMemo(() => {
+    if (!activePanel) return null;
+    const nav = activePanelId ? webViewNavigation[activePanelId] : undefined;
+    return buildPanelChromeState({
+      panel: {
+        ...activePanel,
+        navigation: nav ? {
+          url: nav.url,
+          pageTitle: nav.title,
+          isLoading: nav.loading,
+          canGoBack: nav.canGoBack,
+          canGoForward: nav.canGoForward,
+        } : activePanel.navigation,
+      },
+      repo: activeRepoState,
+    });
+  }, [activePanel, activePanelId, activeRepoState, webViewNavigation]);
+
+  useEffect(() => {
+    if (!activePanel || !shellClient || isBrowserPanelSource(activePanel.snapshot.source) || activePanel.snapshot.source.startsWith("about/")) {
+      setActiveRepoState(undefined);
+      return;
+    }
+
+    let cancelled = false;
+    const source = activePanel.snapshot.source;
+    void Promise.all([
+      shellClient.transport.call<Array<{ name: string; current?: boolean }>>("main", "git.listBranches", source),
+      shellClient.transport.call<string>("main", "git.resolveRef", source, "HEAD"),
+    ]).then(([branches, commit]) => {
+      if (cancelled) return;
+      setActiveRepoState({
+        repoPath: source,
+        branch: branches.find((branch) => branch.current)?.name ?? null,
+        commit,
+      });
+    }).catch(() => {
+      if (!cancelled) setActiveRepoState({ repoPath: source });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activePanel, shellClient]);
 
   useEffect(() => {
     if (!approvalDeepLinkId) return;
@@ -364,6 +424,74 @@ export function MainScreen() {
     activatePanel(panelId);
   }, [activatePanel]);
 
+  const handleActiveBack = useCallback(() => {
+    if (!activePanelId) return;
+    webViewRefsMap.current.get(activePanelId)?.goBack();
+  }, [activePanelId]);
+
+  const handleActiveForward = useCallback(() => {
+    if (!activePanelId) return;
+    webViewRefsMap.current.get(activePanelId)?.goForward();
+  }, [activePanelId]);
+
+  const handleActiveReload = useCallback(() => {
+    if (!activePanelId) return;
+    webViewRefsMap.current.get(activePanelId)?.reload();
+  }, [activePanelId]);
+
+  const handleActiveStop = useCallback(() => {
+    if (!activePanelId) return;
+    webViewRefsMap.current.get(activePanelId)?.stop();
+  }, [activePanelId]);
+
+  const handleNavigateAddress = useCallback((value: string) => {
+    if (!shellClient || !activePanelId) return;
+    const parsed = parseAddressInput(value);
+    if (!parsed) return;
+
+    if (parsed.type === "browser-url") {
+      const active = shellClient.panels.registry.getPanel(activePanelId);
+      if (active && isBrowserPanelSource(active.snapshot.source)) {
+        setWebViewStack((prev) => prev.map((entry) =>
+          entry.panelId === activePanelId ? { ...entry, url: parsed.url } : entry,
+        ));
+        setWebViewNavigation((prev) => ({
+          ...prev,
+          [activePanelId]: { ...(prev[activePanelId] as WebViewNavigation | undefined), url: parsed.url } as WebViewNavigation,
+        }));
+      } else {
+        void shellClient.panels.createBrowserPanel(activePanelId, parsed.url, { focus: true })
+          .catch((error: unknown) => pushToast({
+            title: "Navigation failed",
+            message: error instanceof Error ? error.message : "Could not open browser panel.",
+            tone: "danger",
+          }));
+      }
+      return;
+    }
+
+    if (parsed.type === "panel-source") {
+      void shellClient.panels.createFromSource(parsed.source)
+        .then((result) => activatePanel(result.id))
+        .catch((error: unknown) => pushToast({
+          title: "Navigation failed",
+          message: error instanceof Error ? error.message : "Could not open panel.",
+          tone: "danger",
+        }));
+      return;
+    }
+
+    if (parsed.type === "search") {
+      const url = `https://www.google.com/search?q=${encodeURIComponent(parsed.query)}`;
+      void shellClient.panels.createBrowserPanel(activePanelId, url, { focus: true })
+        .catch((error: unknown) => pushToast({
+          title: "Navigation failed",
+          message: error instanceof Error ? error.message : "Could not search.",
+          tone: "danger",
+        }));
+    }
+  }, [activatePanel, activePanelId, pushToast, shellClient]);
+
   const handlePanelNavigate = useCallback((event: PanelNavigationEvent) => {
     if (!shellClient) return;
 
@@ -409,6 +537,10 @@ export function MainScreen() {
     if (Platform.OS !== "android") return;
 
     const onBackPress = () => {
+      if (activePanelId && webViewNavigation[activePanelId]?.canGoBack) {
+        webViewRefsMap.current.get(activePanelId)?.goBack();
+        return true;
+      }
       if (activePanelParentId) {
         activatePanel(activePanelParentId);
         return true;
@@ -418,7 +550,7 @@ export function MainScreen() {
 
     const subscription = BackHandler.addEventListener("hardwareBackPress", onBackPress);
     return () => subscription.remove();
-  }, [activePanelParentId, activatePanel]);
+  }, [activePanelId, activePanelParentId, activatePanel, webViewNavigation]);
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -427,6 +559,18 @@ export function MainScreen() {
         title={activePanelTitle}
         onMenuPress={handleMenuPress}
         onPanelCreated={handlePanelCreated}
+        addressBarVisible={addressBarVisible}
+        address={activeChromeState?.editableAddress ?? ""}
+        metadata={activeChromeState?.kind === "panel" ? formatRepoChip(activeChromeState.repo) : null}
+        isLoading={activeChromeState?.isLoading}
+        canGoBack={activeChromeState?.canGoBack}
+        canGoForward={activeChromeState?.canGoForward}
+        onToggleAddressBar={() => setAddressBarVisible((visible) => !visible)}
+        onBack={handleActiveBack}
+        onForward={handleActiveForward}
+        onReload={handleActiveReload}
+        onStop={handleActiveStop}
+        onNavigateAddress={handleNavigateAddress}
       />
 
       <View style={styles.contentArea}>
@@ -477,6 +621,15 @@ export function MainScreen() {
                 panelInit={entry.panelInit}
                 externalHost={externalHost}
                 onPanelNavigate={handlePanelNavigate}
+                onNavigationStateChange={(navState) => {
+                  setWebViewNavigation((prev) => ({
+                    ...prev,
+                    [entry.panelId]: navState,
+                  }));
+                  if (!entry.managed && /^https?:\/\//i.test(navState.url)) {
+                    void shellClient?.panels.updateBrowserUrl(entry.panelId, navState.url).catch(() => {});
+                  }
+                }}
                 onTitleChange={handlePanelTitleChange}
                 onBridgeCall={handleBridgeCall}
                 onUnmount={handleWebViewUnmount}
