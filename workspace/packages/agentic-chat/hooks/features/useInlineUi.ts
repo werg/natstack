@@ -8,18 +8,21 @@
 import { useState, useEffect, useRef } from "react";
 import { CONTENT_TYPE_INLINE_UI } from "@natstack/pubsub";
 import { compileComponent } from "@workspace/eval";
+import type { LoadSourceFile, SandboxOptions } from "@workspace/eval";
 import { parseInlineUiData } from "../../components/InlineUiMessage";
 import type { ChatMessage, InlineUiComponentEntry } from "../../types";
 
 interface UseInlineUiOptions {
   messages: ChatMessage[];
+  loadSourceFile?: LoadSourceFile;
+  loadImport?: SandboxOptions["loadImport"];
 }
 
 export interface InlineUiState {
   inlineUiComponents: Map<string, InlineUiComponentEntry>;
 }
 
-export function useInlineUi({ messages }: UseInlineUiOptions): InlineUiState {
+export function useInlineUi({ messages, loadSourceFile, loadImport }: UseInlineUiOptions): InlineUiState {
   const [inlineUiComponents, setInlineUiComponents] = useState<Map<string, InlineUiComponentEntry>>(new Map());
 
   // Compile inline UI messages
@@ -32,9 +35,15 @@ export function useInlineUi({ messages }: UseInlineUiOptions): InlineUiState {
         if (inlineUiComponents.has(data.id)) continue;
 
         try {
-          const result = await compileComponent<import("react").ComponentType<{ props: Record<string, unknown>; chat: Record<string, unknown>; scope: Record<string, unknown>; scopes: Record<string, unknown> }>>(data.code, {
-            sourcePath: data.path,
-            sourceFiles: data.files,
+          const sourceCode = data.source.type === "file"
+            ? await loadSourceFile?.(data.source.path)
+            : data.source.code;
+          if (!sourceCode) throw new Error(`Unable to load inline UI source for ${data.id}`);
+          const sourcePath = data.source.type === "file" ? data.source.path : undefined;
+          const result = await compileComponent<import("react").ComponentType<{ props: Record<string, unknown>; chat: Record<string, unknown>; scope: Record<string, unknown>; scopes: Record<string, unknown> }>>(sourceCode, {
+            sourcePath,
+            loadSourceFile,
+            loadImport,
           });
           if (result.success) {
             setInlineUiComponents(prev => {
@@ -45,21 +54,21 @@ export function useInlineUi({ messages }: UseInlineUiOptions): InlineUiState {
           } else {
             setInlineUiComponents(prev => {
               const updated = new Map(prev);
-              updated.set(data.id, { cacheKey: data.code, error: result.error });
+              updated.set(data.id, { cacheKey: sourceCode, error: result.error });
               return updated;
             });
           }
         } catch (err) {
           setInlineUiComponents(prev => {
             const updated = new Map(prev);
-            updated.set(data.id, { cacheKey: data.code, error: err instanceof Error ? err.message : String(err) });
+            updated.set(data.id, { cacheKey: data.id, error: err instanceof Error ? err.message : String(err) });
             return updated;
           });
         }
       }
     };
     void compileInlineUiMessages();
-  }, [messages, inlineUiComponents]);
+  }, [messages, inlineUiComponents, loadSourceFile, loadImport]);
 
   // Cleanup when messages shrink (e.g. after trim in reducer)
   const prevMsgCountRef = useRef(0);

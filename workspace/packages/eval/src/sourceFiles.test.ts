@@ -71,6 +71,31 @@ describe("source file bundles", () => {
     expect(result.returnValue).toBe(42);
   });
 
+  it("infers bare npm imports from the nearest package.json", async () => {
+    const code = `import { double } from "math-lib"; return double(input);`;
+    const loadCalls: Array<{ specifier: string; ref: string | undefined }> = [];
+    const result = await executeSandbox(code, {
+      syntax: "typescript",
+      sourcePath: "packages/app/src/main.ts",
+      loadSourceFile: async (path) => {
+        if (path === "packages/app/src/main.ts") return code;
+        if (path === "packages/app/package.json") {
+          return JSON.stringify({ dependencies: { "math-lib": "^1.2.3" } });
+        }
+        throw new Error(`Missing ${path}`);
+      },
+      loadImport: async (specifier, ref) => {
+        loadCalls.push({ specifier, ref });
+        return `module.exports = { double: (n) => n * 2 };`;
+      },
+      bindings: { input: 21 },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.returnValue).toBe(42);
+    expect(loadCalls).toEqual([{ specifier: "math-lib", ref: "npm:^1.2.3" }]);
+  });
+
   it("compiles components with relative imports", async () => {
     const code = `import { label } from "./labels"; export default function App() { return label; }`;
     const result = await compileComponent<() => string>(code, {
@@ -83,5 +108,28 @@ describe("source file bundles", () => {
 
     expect(result.success).toBe(true);
     expect(result.Component?.()).toBe("ready");
+  });
+
+  it("compiles file components with package.json inferred imports", async () => {
+    const code = `import { label } from "label-lib"; export default function App() { return label; }`;
+    const loadCalls: Array<{ specifier: string; ref: string | undefined }> = [];
+    const result = await compileComponent<() => string>(code, {
+      sourcePath: "packages/app/ui/App.tsx",
+      loadSourceFile: async (path) => {
+        if (path === "packages/app/ui/App.tsx") return code;
+        if (path === "packages/app/package.json") {
+          return JSON.stringify({ dependencies: { "label-lib": "2" } });
+        }
+        throw new Error(`Missing ${path}`);
+      },
+      loadImport: async (specifier, ref) => {
+        loadCalls.push({ specifier, ref });
+        return `module.exports = { label: "ready" };`;
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.Component?.()).toBe("ready");
+    expect(loadCalls).toEqual([{ specifier: "label-lib", ref: "npm:2" }]);
   });
 });

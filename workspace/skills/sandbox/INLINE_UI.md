@@ -22,7 +22,9 @@ status that should remain pinned above chat history in the current panel, use
 
 You can send raw TSX with `code`, or put the component in a context-relative
 file and call `inline_ui({ path: ".natstack/ui/review.tsx", props: {...} })`.
-File-loaded components support static relative imports from that file.
+File-loaded components support static relative imports from that file and infer
+bare package imports from the nearest `package.json` when possible. Use
+`imports` for explicit package versions.
 
 ## Component Rules
 

@@ -24,7 +24,7 @@ How to use the chat panel's code execution sandbox — the eval tool, inline UI 
 
 ## Execution Modes
 
-All code runs in the same sandbox (Sucrase transform + CJS execution in the panel's browser context). Eval/UI tools accept either raw `code` or a context-relative `path` where noted; file-loaded sources support static relative imports. The execution modes differ in presentation:
+All code runs in the same sandbox (Sucrase transform + CJS execution in the panel's browser context). Eval/UI tools accept either raw `code` or a context-relative `path` where noted; file-loaded sources support static relative imports and infer bare package imports from the nearest `package.json` when possible. The execution modes differ in presentation:
 
 | Tool | Rendering | Lifecycle | Response |
 |------|-----------|-----------|----------|
@@ -57,7 +57,7 @@ These are pre-bundled with the panel and work as bare `import` statements:
 
 ### On-demand imports (require `imports` parameter)
 
-These are built on first use. Pass them in the eval `imports` parameter:
+These are built on first use. Pass them in the tool's `imports` parameter:
 
 | Module | `imports` value | What it provides |
 |--------|----------------|-----------------|
@@ -68,7 +68,7 @@ These are built on first use. Pass them in the eval `imports` parameter:
 
 Workspace packages (`@workspace*`, `@natstack/*`) are **auto-resolved** — just write the `import` statement in your code and they're built on-demand. No `imports` parameter needed.
 
-npm packages require the `imports` parameter with `"npm:<version>"`.
+npm packages require the `imports` parameter with `"npm:<version>"` for raw inline code. File-loaded code can infer dependency versions from the nearest `package.json`.
 
 To pin a workspace package to a specific git ref, use the `imports` parameter explicitly: `imports: { "pkg": "branch-name" }`.
 

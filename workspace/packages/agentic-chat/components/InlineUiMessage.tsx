@@ -180,7 +180,32 @@ export function InlineUiMessage({ data, compiledComponent: CompiledComponent, co
  */
 export function parseInlineUiData(content: string): InlineUiData | null {
   try {
-    return JSON.parse(content) as InlineUiData;
+    const value = JSON.parse(content) as unknown;
+    if (typeof value !== "object" || value === null) return null;
+    const record = value as Record<string, unknown>;
+    if (typeof record["id"] !== "string") return null;
+    const props = typeof record["props"] === "object" && record["props"] !== null && !Array.isArray(record["props"])
+      ? record["props"] as Record<string, unknown>
+      : undefined;
+    const source = record["source"];
+    if (typeof source === "object" && source !== null) {
+      const sourceRecord = source as Record<string, unknown>;
+      if (sourceRecord["type"] === "code" && typeof sourceRecord["code"] === "string") {
+        return { id: record["id"], source: { type: "code", code: sourceRecord["code"] }, props };
+      }
+      if (sourceRecord["type"] === "file" && typeof sourceRecord["path"] === "string") {
+        return { id: record["id"], source: { type: "file", path: sourceRecord["path"] }, props };
+      }
+    }
+
+    // Backward compatibility for older persisted inline UI payloads.
+    if (typeof record["code"] === "string") {
+      return { id: record["id"], source: { type: "code", code: record["code"] }, props };
+    }
+    if (typeof record["path"] === "string") {
+      return { id: record["id"], source: { type: "file", path: record["path"] }, props };
+    }
+    return null;
   } catch {
     return null;
   }

@@ -14,7 +14,7 @@
 import { useCallback, useMemo, useRef, useEffect, useState } from "react";
 import { z } from "zod";
 import type { ChannelConfig, MethodDefinition, MethodExecutionContext } from "@natstack/pubsub";
-import { executeSandbox, loadSourceFileBundle, ScopeManager, RpcScopePersistence } from "@workspace/eval";
+import { executeSandbox, ScopeManager, RpcScopePersistence } from "@workspace/eval";
 import type { SandboxOptions, SandboxResult, HydrateResult } from "@workspace/eval";
 import type { ActiveFeedbackSchema, FeedbackResult } from "@workspace/tool-ui";
 import { useChatCore } from "./core/useChatCore";
@@ -184,10 +184,18 @@ export function useAgenticChat({
     [],
   );
 
+  const loadSourceFile = useCallback((path: string) => (
+    sandboxRef.current.rpc.call("main", "fs.readFile", path, "utf8") as Promise<string>
+  ), []);
+  const loadImport = useCallback<NonNullable<SandboxOptions["loadImport"]>>((specifier, ref, externals) => (
+    sandboxRef.current.loadImport(specifier, ref, externals)
+  ), []);
+
   const feedback = useChatFeedback({
     addMethodHistoryEntry: core.addMethodHistoryEntry,
     updateMethodHistoryEntry: core.updateMethodHistoryEntry,
     chat,
+    loadImport,
     clientRef: core.clientRef,
     connected: core.connected,
   });
@@ -207,9 +215,9 @@ export function useAgenticChat({
 
   const debug = useChatDebug();
 
-  const inlineUi = useInlineUi({ messages: core.messages });
+  const inlineUi = useInlineUi({ messages: core.messages, loadSourceFile, loadImport });
   const [actionBarData, setActionBarData] = useState<ActionBarData | null>(null);
-  const actionBar = useActionBar({ data: actionBarData });
+  const actionBar = useActionBar({ data: actionBarData, loadSourceFile, loadImport });
   const lastLoadedActionBarKeyRef = useRef<string | null>(null);
 
   const publishActionBarContext = useCallback(async (
@@ -252,12 +260,14 @@ export function useAgenticChat({
     path,
     props,
     maxHeight,
+    imports,
     persistStateArgs = true,
     idempotencyKey,
   }: {
     path: string;
     props?: Record<string, unknown>;
     maxHeight?: number;
+    imports?: Record<string, string>;
     persistStateArgs?: boolean;
     idempotencyKey?: string;
   }): Promise<{ ok: true; id: string } | { ok: false; error: string }> => {
@@ -265,12 +275,9 @@ export function useAgenticChat({
     if (!trimmedPath) return { ok: false, error: "Missing path" };
 
     try {
-      const code = await sandboxRef.current.rpc.call("main", "fs.readFile", trimmedPath, "utf8") as string;
-      const files = (await loadSourceFileBundle(trimmedPath, async (filePath) => (
-        sandboxRef.current.rpc.call("main", "fs.readFile", filePath, "utf8") as Promise<string>
-      ), code)).files;
+      await loadSourceFile(trimmedPath);
       const id = crypto.randomUUID();
-      setActionBarData({ id, path: trimmedPath, code, files, props, maxHeight });
+      setActionBarData({ id, source: { type: "file", path: trimmedPath }, imports, props, maxHeight });
       lastLoadedActionBarKeyRef.current = actionBarLoadKey(trimmedPath, props, maxHeight);
       if (persistStateArgs) {
         await onActionBarFileChange?.({ path: trimmedPath, props, maxHeight });
@@ -295,7 +302,7 @@ export function useAgenticChat({
       });
       return { ok: false, error };
     }
-  }, [onActionBarFileChange, publishActionBarContext]);
+  }, [loadSourceFile, onActionBarFileChange, publishActionBarContext]);
 
   const clearActionBar = useCallback(async ({
     persistStateArgs = true,
@@ -391,7 +398,7 @@ export function useAgenticChat({
 Users can expand/collapse at any time. Persists in chat history.
 
 **Available imports:** react, @radix-ui/themes, @radix-ui/react-icons
-You may provide either \`code\` or \`path\`. \`path\` reads a context-relative TSX file and supports static relative imports.
+You may provide either \`code\` or \`path\`. \`path\` reads a context-relative TSX file, supports static relative imports, and infers bare package imports from the nearest package.json when possible. Use \`imports\` for explicit package versions.
 **Must use** \`export default\`
 
 **Example:**
@@ -437,24 +444,25 @@ export default function App({ props, chat }) {
             parameters: z.object({
               code: z.string().optional().describe("TSX source code for the component. Provide either code or path."),
               path: z.string().optional().describe("Context-relative TSX file to render instead of inline code. Supports static relative imports."),
+              imports: z.record(z.string(), z.string()).optional().describe("On-demand package builds. Same semantics as eval imports."),
               props: z.record(z.unknown()).optional().describe("Props passed to the component as { props }"),
             }),
             execute: async (args: unknown) => {
-              const { code, path, props } = args as { code?: string; path?: string; props?: Record<string, unknown> };
+              const { code, path, imports, props } = args as { code?: string; path?: string; imports?: Record<string, string>; props?: Record<string, unknown> };
               const trimmedPath = path?.trim();
-              const sourceCode = trimmedPath
-                ? await sandboxRef.current.rpc.call("main", "fs.readFile", trimmedPath, "utf8") as string
-                : code;
-              if (!sourceCode) return { ok: false, error: "Missing code or path" };
-              const files = trimmedPath
-                ? (await loadSourceFileBundle(trimmedPath, async (filePath) => (
-                  sandboxRef.current.rpc.call("main", "fs.readFile", filePath, "utf8") as Promise<string>
-                ), sourceCode)).files
-                : undefined;
+              if (trimmedPath) {
+                await loadSourceFile(trimmedPath);
+              } else if (!code) {
+                return { ok: false, error: "Missing code or path" };
+              }
+              if (imports && Object.keys(imports).length > 0) {
+                await executeSandbox("", { imports, loadImport });
+              }
               const client = core.clientRef.current;
               if (!client) return { ok: false, error: "Not connected" };
               const id = crypto.randomUUID();
-              const data = JSON.stringify({ id, code: sourceCode, path: trimmedPath, files, props });
+              const source = trimmedPath ? { type: "file" as const, path: trimmedPath } : { type: "code" as const, code: code! };
+              const data = JSON.stringify({ id, source, props });
               await client.publish("message", { id, content: data, contentType: "inline_ui" }, { persist: true, idempotencyKey: `inline_ui:${id}` });
               return { ok: true, id };
             },
@@ -465,7 +473,8 @@ export default function App({ props, chat }) {
 Use this for small always-available controls or status for the current workflow.
 The TSX source is read from a file in this panel's current filesystem context.
 The loaded component receives { props, chat, scope, scopes }, supports the same
-imports as inline_ui, supports static relative imports from the loaded file, and
+imports as inline_ui, supports static relative imports from the loaded file,
+infers bare package imports from the nearest package.json when possible, and
 must export default.
 
 Unlike inline_ui, load_action_bar does not add visible chat history. The latest
@@ -475,13 +484,15 @@ Keep it compact; the panel clamps the rendered height to a small scrollable area
 Use package imports available to inline_ui plus relative imports for local helper files.`,
             parameters: z.object({
               path: z.string().optional().describe("Context-relative TSX file to load. Required unless clear is true."),
+              imports: z.record(z.string(), z.string()).optional().describe("On-demand package builds. Same semantics as eval imports."),
               props: z.record(z.unknown()).optional().describe("Props passed to the component as { props }"),
               maxHeight: z.number().optional().describe("Preferred maximum height in pixels. Clamped between 64 and 240."),
               clear: z.boolean().optional().describe("When true, remove the current action bar."),
             }),
             execute: async (args: unknown) => {
-              const { path, props, maxHeight, clear } = args as {
+              const { path, imports, props, maxHeight, clear } = args as {
                 path?: string;
+                imports?: Record<string, string>;
                 props?: Record<string, unknown>;
                 maxHeight?: number;
                 clear?: boolean;
@@ -491,7 +502,7 @@ Use package imports available to inline_ui plus relative imports for local helpe
                 return { ok: true, cleared: true };
               }
               if (!path) return { ok: false, error: "Missing path" };
-              return loadActionBarFromFile({ path, props, maxHeight });
+              return loadActionBarFromFile({ path, imports, props, maxHeight });
             },
           },
           // ui_prompt — serves NatStackExtensionUIContext (select/confirm/input/editor)

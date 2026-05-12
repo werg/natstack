@@ -24,7 +24,8 @@ import {
   type ActiveFeedbackSchema,
   type ActiveFeedback,
 } from "@workspace/tool-ui";
-import { compileComponent, loadSourceFileBundle } from "@workspace/eval";
+import { compileComponent } from "@workspace/eval";
+import type { SandboxOptions } from "@workspace/eval";
 import type { FeedbackComponentProps } from "@workspace/tool-ui";
 import {
   parseEphemeralEvent,
@@ -36,6 +37,7 @@ interface UseChatFeedbackOptions {
   addMethodHistoryEntry: (entry: MethodHistoryEntry) => void;
   updateMethodHistoryEntry: (callId: string, updates: Partial<MethodHistoryEntry>) => void;
   chat: ChatSandboxValue;
+  loadImport?: SandboxOptions["loadImport"];
   clientRef: React.MutableRefObject<PubSubClient<any> | null>;
   connected: boolean;
 }
@@ -60,6 +62,7 @@ export function useChatFeedback({
   addMethodHistoryEntry,
   updateMethodHistoryEntry,
   chat,
+  loadImport,
   clientRef,
   connected,
 }: UseChatFeedbackOptions): ChatFeedbackState {
@@ -111,11 +114,6 @@ export function useChatFeedback({
         ? await chat.rpc.call("main", "fs.readFile", path, "utf8") as string
         : args.code;
       if (!sourceCode) throw new Error("Missing code or path");
-      const sourceFiles = path
-        ? (await loadSourceFileBundle(path, async (filePath) => (
-          chat.rpc.call("main", "fs.readFile", filePath, "utf8") as Promise<string>
-        ), sourceCode)).files
-        : undefined;
 
       if (!sourceCode.includes("onSubmit")) {
         console.warn(
@@ -126,8 +124,12 @@ export function useChatFeedback({
       let compiled: Awaited<ReturnType<typeof compileComponent<import("react").ComponentType<FeedbackComponentProps>>>>;
       try {
         compiled = await compileComponent<import("react").ComponentType<FeedbackComponentProps>>(sourceCode, {
+          imports: args.imports,
           sourcePath: path,
-          sourceFiles,
+          loadSourceFile: path
+            ? async (filePath: string) => chat.rpc.call("main", "fs.readFile", filePath, "utf8") as Promise<string>
+            : undefined,
+          loadImport,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -176,7 +178,7 @@ export function useChatFeedback({
         addFeedback(feedback);
       });
     },
-    [addFeedback, removeFeedback, addMethodHistoryEntry, updateMethodHistoryEntry, handleFeedbackResult, chat.rpc]
+    [addFeedback, removeFeedback, addMethodHistoryEntry, updateMethodHistoryEntry, handleFeedbackResult, chat.rpc, loadImport]
   );
 
   const onFeedbackDismiss = useCallback((callId: string) => { dismissFeedback(callId); }, [dismissFeedback]);
@@ -261,7 +263,7 @@ export function useChatFeedback({
 **Requirements:**
 - Component MUST use \`export default\`
 - Syntax: TSX (TypeScript + JSX)
-- Provide either \`code\` or \`path\`. \`path\` reads a context-relative TSX file and supports static relative imports.
+- Provide either \`code\` or \`path\`. \`path\` reads a context-relative TSX file, supports static relative imports, and infers bare package imports from the nearest package.json when possible. Use \`imports\` for explicit package versions.
 - Do NOT wrap in a Card — rendered inside a container with header and scroll area.
 
 **Available imports:** react, @radix-ui/themes, @radix-ui/react-icons

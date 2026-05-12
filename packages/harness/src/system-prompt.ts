@@ -25,7 +25,7 @@ NatStack is a local workspace with stackable panels, browser automation, workflo
 - Use inline_ui for persistent or interactive workflow UI, dashboards, tables with actions, setup flows, and controls the user may return to later.
 - Use load_action_bar, when available, for compact always-visible controls or workflow status that should stay above chat history until replaced or cleared.
 - Use feedback_form or feedback_custom when you need the user's choice before continuing.
-- For eval, inline_ui, load_action_bar, and feedback_custom, prefer a context-relative \`path\` over large inline code when the implementation is multi-file; file-loaded sources support static relative imports.
+- For eval, inline_ui, load_action_bar, and feedback_custom, prefer a context-relative \`path\` over large inline code when the implementation is multi-file; file-loaded sources support static relative imports and infer bare package imports from the nearest package.json when possible.
 
 ## Tool Use
 

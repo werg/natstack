@@ -21,7 +21,11 @@ export interface PreparedSource {
   localModuleIds: Set<string>;
 }
 
-type EnsureExternalRequires = (requires: string[]) => Promise<void>;
+export interface ExternalRequireContext {
+  importerPath?: string;
+}
+
+type EnsureExternalRequires = (requires: string[], context?: ExternalRequireContext) => Promise<void>;
 
 const EXTENSIONS = [".tsx", ".ts", ".jsx", ".js"];
 const INDEX_FILES = EXTENSIONS.map((ext) => `/index${ext}`);
@@ -63,6 +67,15 @@ function dirname(filePath: string): string {
   return normalized.slice(0, index);
 }
 
+function parentDir(dirPath: string): string | null {
+  const normalized = normalizeSourcePath(dirPath);
+  if (!normalized || normalized === "/") return null;
+  const index = normalized.lastIndexOf("/");
+  if (index < 0) return "";
+  if (index === 0) return "/";
+  return normalized.slice(0, index);
+}
+
 function candidatePaths(specifier: string, importerPath?: string): string[] {
   const base = normalizeSourcePath(specifier, importerPath ? dirname(importerPath) : undefined);
   if (hasKnownExtension(base)) return [base];
@@ -85,6 +98,89 @@ export function findRelativeSpecifiers(code: string): string[] {
     }
   }
   return Array.from(new Set(specifiers));
+}
+
+export function getPackageSpecifier(specifier: string): string | null {
+  if (!specifier || isRelativeSpecifier(specifier) || specifier.startsWith("/") || specifier.startsWith("#")) {
+    return null;
+  }
+  const parts = specifier.split("/");
+  if (specifier.startsWith("@")) {
+    return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : null;
+  }
+  return parts[0] ?? null;
+}
+
+interface PackageJsonShape {
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+}
+
+function getPackageDependencyVersion(pkg: PackageJsonShape, packageName: string): string | undefined {
+  return pkg.dependencies?.[packageName]
+    ?? pkg.peerDependencies?.[packageName]
+    ?? pkg.optionalDependencies?.[packageName]
+    ?? pkg.devDependencies?.[packageName];
+}
+
+function normalizeDependencyRef(specifier: string, version: string | undefined): string | undefined {
+  if (specifier.startsWith("@workspace") || specifier.startsWith("@natstack/")) {
+    if (!version || version.startsWith("workspace:")) return "latest";
+    return version;
+  }
+  if (!version) return undefined;
+  if (version.startsWith("npm:")) return version;
+  if (version.startsWith("workspace:")) return "latest";
+  if (/^(file|link|portal|patch):/.test(version)) return undefined;
+  return `npm:${version}`;
+}
+
+export async function findNearestPackageJson(
+  sourcePath: string | undefined,
+  loadSourceFile: LoadSourceFile | undefined,
+): Promise<{ path: string; packageJson: PackageJsonShape } | null> {
+  if (!sourcePath || !loadSourceFile) return null;
+  let dir: string | null = dirname(sourcePath);
+
+  while (dir !== null) {
+    const packagePath = normalizeSourcePath(dir ? `${dir}/package.json` : "package.json");
+    try {
+      const raw = await loadSourceFile(packagePath);
+      return { path: packagePath, packageJson: JSON.parse(raw) as PackageJsonShape };
+    } catch {
+      dir = parentDir(dir);
+    }
+  }
+
+  return null;
+}
+
+export async function inferImportsFromPackageJson(
+  specifiers: string[],
+  context: {
+    importerPath?: string;
+    loadSourceFile?: LoadSourceFile;
+    explicitImports?: Record<string, string>;
+  },
+): Promise<Record<string, string>> {
+  const inferred: Record<string, string> = {};
+  const packageJson = await findNearestPackageJson(context.importerPath, context.loadSourceFile);
+
+  for (const specifier of specifiers) {
+    if (context.explicitImports?.[specifier]) continue;
+    const packageName = getPackageSpecifier(specifier);
+    if (!packageName) continue;
+
+    const version = packageJson
+      ? getPackageDependencyVersion(packageJson.packageJson, packageName)
+      : undefined;
+    const ref = normalizeDependencyRef(specifier, version);
+    if (ref) inferred[specifier] = ref;
+  }
+
+  return inferred;
 }
 
 async function resolveSourceFile(
@@ -215,7 +311,7 @@ async function loadLocalModules(
 
       const transformed = await transformCode(rewritten, { syntax });
       const externalRequires = transformed.requires.filter((specifier) => !localModuleIds.has(specifier));
-      await ensureExternalRequires(externalRequires);
+      await ensureExternalRequires(externalRequires, { importerPath: normalized });
 
       const result = execute(transformed.code, { require: requireFn });
       moduleMap[normalized] = result.exports;

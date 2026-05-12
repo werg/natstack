@@ -30,7 +30,7 @@ export type {
 // ===========================================================================
 // UI-only types
 // ===========================================================================
-import type { AgentDebugPayload, Participant, AttachmentInput } from "@natstack/pubsub";
+import type { AgentDebugPayload, Participant, AttachmentInput, SandboxSource } from "@natstack/pubsub";
 import type { ActiveFeedback, ToolApprovalProps } from "@workspace/tool-ui";
 import type { PendingImage } from "./utils/imageUtils";
 import type { ComponentType } from "react";
@@ -63,12 +63,10 @@ export interface InlineUiComponentEntry {
 export interface ActionBarData {
   /** Unique ID for this action bar revision. New revisions replace old ones. */
   id: string;
-  /** Context-relative file path that provided this action bar. */
-  path?: string;
-  /** TSX source code for the component */
-  code: string;
-  /** Embedded source files for resolving relative imports */
-  files?: Record<string, string>;
+  /** Component source to compile and render. */
+  source: SandboxSource;
+  /** Optional explicit imports for the current compiled revision. */
+  imports?: Record<string, string>;
   /** Optional props to pass to the component */
   props?: Record<string, unknown>;
   /** Optional preferred maximum height in pixels. Clamped by the renderer. */

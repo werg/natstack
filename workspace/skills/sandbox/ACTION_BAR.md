@@ -24,7 +24,9 @@ export default function ActionBar({ props = {}, chat, scope, scopes }) {
 Available imports are the same as `inline_ui`: `react`, `@radix-ui/themes`,
 `@radix-ui/react-icons`, and preloaded workspace/runtime modules already
 available in the panel. Static relative imports from the action-bar file are
-supported for local helpers/components.
+supported for local helpers/components. Bare package imports are inferred from
+the nearest `package.json` when possible; use `imports` for explicit package
+versions.
 
 Keep the component compact. The chat panel clamps the action bar to a small
 scrollable area.

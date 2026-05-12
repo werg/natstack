@@ -14,8 +14,9 @@ For multi-file code, put the entry point in the workspace and use `path`:
 eval({ path: ".natstack/eval/check-project.ts" })
 ```
 
-File-loaded eval reads the entry file from the current context and supports
-static relative imports from that file, such as `./helpers` or `../shared/ui`.
+File-loaded eval reads the entry file from the current context, supports static
+relative imports from that file, and resolves bare imports from the nearest
+`package.json` when it can find one.
 
 ## Parameters
 
@@ -68,9 +69,9 @@ eval({ code: `...`, imports: { "@workspace-skills/paneldev": "my-branch" } })
 
 **Important:** Workspace packages are built from git, not from the working tree. If you edit source files, you must **commit and push** before changes take effect. Use `commitAndPush` from the paneldev skill or the GitClient API.
 
-### npm packages — require `imports` parameter
+### npm packages
 
-npm packages are NOT auto-resolved. Use the `imports` parameter with `"npm:<version>"`:
+For raw inline code, use the `imports` parameter with `"npm:<version>"`:
 
 ```
 eval({
@@ -100,6 +101,10 @@ Packages are installed with `--ignore-scripts` for security (no postinstall hook
 
 Installed packages and their bundles are both cached, so subsequent imports of the same package/version are fast. The first install of a new package may take 10-30 seconds (npm download + esbuild bundle); eval waits for that work to complete.
 
+For file-loaded code, npm package versions are inferred from the nearest
+`package.json` dependency fields when possible. Use `imports` to override or
+provide versions not declared there.
+
 ### Mixing workspace and npm imports
 
 ```
@@ -122,7 +127,7 @@ eval({
 - File-loaded code supports static relative `import`, `export ... from`, and
   literal `require()` specifiers only. Dynamic `import()` and computed
   `require()` are not supported.
-- npm packages are only available in `eval`, not in `inline_ui`, `load_action_bar`, or `feedback_custom` components. To use an npm package in a component, preload it via `eval` first (it will remain in the module map).
+- `eval`, `inline_ui`, `load_action_bar`, and `feedback_custom` all support explicit `imports`; file-loaded sources also infer bare imports from the nearest `package.json` when possible.
 - Only packages with standard npm names are accepted (e.g. `lodash`, `@scope/pkg`). URLs, file paths, and git specifiers are rejected.
 - Packages requiring native addons (`.node` binaries) won't work — esbuild cannot bundle them.
 

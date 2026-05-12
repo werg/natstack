@@ -139,8 +139,9 @@ export default function Shuffler({ props }) {
 ```
 
 For larger eval/UI code, prefer writing a context-relative file and using the
-tool's `path` parameter. Static relative imports from that file are resolved and
-embedded so replay does not need the original panel filesystem:
+tool's `path` parameter. Static relative imports from that file are resolved,
+and bare package imports are inferred from the nearest `package.json` when
+possible:
 
 ```ts
 eval({ path: ".natstack/eval/audit.ts" })

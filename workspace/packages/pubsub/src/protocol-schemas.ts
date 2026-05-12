@@ -173,6 +173,8 @@ export interface FeedbackCustomArgs {
   code?: string;
   /** Context-relative TSX file to load instead of inline code */
   path?: string;
+  /** On-demand package builds. Same semantics as eval imports. */
+  imports?: Record<string, string>;
   /** Optional title for the feedback container header (default: "Agent requires input") */
   title?: string;
 }
@@ -197,5 +199,6 @@ export const FeedbackFormArgsSchema = z.object({
 export const FeedbackCustomArgsSchema = z.object({
   code: z.string().optional(),
   path: z.string().optional(),
+  imports: z.record(z.string(), z.string()).optional(),
   title: z.string().optional(),
 }).strict();
