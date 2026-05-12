@@ -31,6 +31,7 @@ import type {
   PanelArtifacts,
 } from "@natstack/shared/types";
 import {
+  getCurrentSnapshot,
   getPanelContextId,
   getPanelSource,
   getPanelOptions,
@@ -53,7 +54,7 @@ export interface FullPanel {
   parentId: string | null;
   position: number;
   selectedChildId: string | null;
-  snapshot: Panel["snapshot"];
+  history: Panel["history"];
   navigation?: PanelNavigationState;
   artifacts: PanelArtifacts;
   path?: string;
@@ -342,7 +343,7 @@ function panelToFull(panel: Panel, parentId: string | null, position: number): F
     parentId,
     position,
     selectedChildId: panel.selectedChildId,
-    snapshot: panel.snapshot,
+    history: panel.history,
     navigation: panel.navigation,
     artifacts: panel.artifacts ?? {},
     path: source,

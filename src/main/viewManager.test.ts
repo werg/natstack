@@ -26,6 +26,7 @@ vi.mock("electron", () => {
     reload: vi.fn(),
     stop: vi.fn(),
     close: vi.fn(),
+    focus: vi.fn(),
     send: vi.fn(),
     on: vi.fn(),
     off: vi.fn(),
@@ -42,6 +43,7 @@ vi.mock("electron", () => {
     webContents: createMockWebContents(),
     setBounds: vi.fn(),
     setVisible: vi.fn(),
+    setBackgroundColor: vi.fn(),
     getBounds: vi.fn().mockReturnValue({ x: 0, y: 0, width: 100, height: 100 }),
   });
 
@@ -67,6 +69,10 @@ vi.mock("electron", () => {
   return {
     BaseWindow: vi.fn(() => mockBaseWindow),
     WebContentsView: vi.fn(createMockWebContentsView),
+    ipcMain: {
+      on: vi.fn(),
+      removeListener: vi.fn(),
+    },
     session: {
       fromPartition: vi.fn(() => mockSession),
       defaultSession: mockSession,
@@ -172,6 +178,35 @@ describe("ViewManager", () => {
       }).toThrow("View already exists: test-view");
     });
 
+  });
+
+  describe("native shell overlays", () => {
+    it("creates a bounded overlay view above panel views", () => {
+      const vm = new ViewManager({
+        window: mockWindow,
+        shellPreload: "/path/to/preload.js",
+        shellOverlayPreload: "/path/to/shellOverlayPreload.js",
+        shellHtmlPath: "/path/to/index.html",
+      });
+      const panelView = vm.createView({ id: "panel-1", type: "panel" });
+
+      vm.setViewVisible("panel-1", true);
+      vm.showNativeShellOverlay({
+        id: "menu-1",
+        html: "<!doctype html><button>Menu</button>",
+        bounds: { x: 20, y: 40, width: 240, height: 180 },
+      });
+
+      const results = (WebContentsView as unknown as Mock).mock.results;
+      const overlayView = results[results.length - 1]?.value;
+      expect(overlayView).toBeTruthy();
+      expect(overlayView.setBounds).toHaveBeenCalledWith({ x: 20, y: 40, width: 240, height: 180 });
+      expect(overlayView.setVisible).toHaveBeenCalledWith(true);
+      expect(overlayView.webContents.loadURL).toHaveBeenCalledWith(expect.stringContaining("data:text/html"));
+      expect(mockWindow.contentView.removeChildView).toHaveBeenCalledWith(overlayView);
+      expect(mockWindow.contentView.addChildView).toHaveBeenCalledWith(overlayView);
+      expect(panelView.setVisible).toHaveBeenCalledWith(true);
+    });
   });
 
   describe("view lifecycle", () => {

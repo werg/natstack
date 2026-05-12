@@ -53,6 +53,16 @@ function reloadFocusedPanel(force = false): void {
   else _menuViewManager.reload(focusedId);
 }
 
+function dispatchChromeCommand(command: "reload-panel" | "force-reload-view" | "stop"): void {
+  try {
+    eventService().emit("panel-chrome-command", { command });
+  } catch {
+    if (command === "reload-panel") reloadFocusedPanel(false);
+    if (command === "force-reload-view") reloadFocusedPanel(true);
+    if (command === "stop") stopFocusedPanel();
+  }
+}
+
 function stopFocusedPanel(): void {
   const focusedId = _menuPanelRegistry?.getFocusedPanelId();
   if (!focusedId || !_menuViewManager) return;
@@ -125,9 +135,9 @@ export function buildCommonMenuItems(
     view.push({ type: "separator" });
   }
   view.push(
-    { label: "Reload Panel", accelerator: "CmdOrCtrl+R", click: () => reloadFocusedPanel(false) },
-    { label: "Force Reload Panel", accelerator: "CmdOrCtrl+Shift+R", click: () => reloadFocusedPanel(true) },
-    { label: "Stop Loading", accelerator: "Esc", click: () => stopFocusedPanel() },
+    { label: "Reload Panel", accelerator: "CmdOrCtrl+R", click: () => dispatchChromeCommand("reload-panel") },
+    { label: "Force Reload View", accelerator: "CmdOrCtrl+Shift+R", click: () => dispatchChromeCommand("force-reload-view") },
+    { label: "Stop Loading", accelerator: "Esc", click: () => dispatchChromeCommand("stop") },
     {
       label: "Toggle Address Bar",
       accelerator: "CmdOrCtrl+L",
@@ -322,9 +332,9 @@ export function setupMenu(
       label: "View",
       submenu: [
         ...viewSubmenu,
-        { label: "Reload Panel", accelerator: "CmdOrCtrl+R", click: () => reloadFocusedPanel(false) },
-        { label: "Force Reload Panel", accelerator: "CmdOrCtrl+Shift+R", click: () => reloadFocusedPanel(true) },
-        { label: "Stop Loading", accelerator: "Esc", click: () => stopFocusedPanel() },
+        { label: "Reload Panel", accelerator: "CmdOrCtrl+R", click: () => dispatchChromeCommand("reload-panel") },
+        { label: "Force Reload View", accelerator: "CmdOrCtrl+Shift+R", click: () => dispatchChromeCommand("force-reload-view") },
+        { label: "Stop Loading", accelerator: "Esc", click: () => dispatchChromeCommand("stop") },
         { type: "separator" },
         {
           label: "Toggle Address Bar",

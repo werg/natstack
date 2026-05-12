@@ -8,6 +8,8 @@
 export interface CreateChildOptions {
   name?: string;
   env?: Record<string, string>;
+  /** Git branch, tag, or commit to load for this panel source. */
+  ref?: string;
   /** Typed as unknown to avoid zod dependency. At runtime this is EventSchemaMap (Record<string, ZodType>). */
   eventSchemas?: unknown;
   focus?: boolean;

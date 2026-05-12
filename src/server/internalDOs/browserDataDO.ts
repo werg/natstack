@@ -9,6 +9,8 @@ import type {
   ImportedPassword,
   ImportedPermission,
   ImportedSearchEngine,
+  RecordHistoryVisitRequest,
+  UpdateHistoryTitleRequest,
 } from "../../../packages/browser-data/src/types.js";
 
 const BATCH_SIZE = 1000;
@@ -109,6 +111,102 @@ export class BrowserDataDO extends DurableObjectBase {
       this.escapeFts5Query(query),
       limit,
     ).toArray();
+  }
+
+  searchHistoryForAutocomplete(query: { query: string; limit?: number }) {
+    const trimmed = query.query.trim();
+    const limit = query.limit ?? 50;
+    if (!trimmed) return this.getHistory({ limit });
+
+    const byId = new Map<number, Record<string, unknown>>();
+    const addRows = (rows: Record<string, unknown>[]) => {
+      for (const row of rows) {
+        const id = Number(row["id"]);
+        if (Number.isFinite(id) && !byId.has(id)) byId.set(id, row);
+      }
+    };
+
+    try {
+      addRows(this.sql.exec(
+        `SELECT h.* FROM history h
+         JOIN history_fts fts ON h.id = fts.rowid
+         WHERE history_fts MATCH ?
+         ORDER BY h.last_visit DESC
+         LIMIT ?`,
+        this.escapeFts5Query(trimmed.split(/\s+/).map((token) => `${token}*`).join(" ")),
+        limit,
+      ).toArray() as Record<string, unknown>[]);
+    } catch {
+      // FTS tokenization can reject unusual user input; LIKE fallback below still applies.
+    }
+
+    const pattern = `%${this.escapeLikePattern(trimmed)}%`;
+    addRows(this.sql.exec(
+      `SELECT * FROM history
+       WHERE url LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\'
+       ORDER BY last_visit DESC
+       LIMIT ?`,
+      pattern,
+      pattern,
+      limit,
+    ).toArray() as Record<string, unknown>[]);
+
+    return [...byId.values()]
+      .sort((a, b) => Number(b["last_visit"] ?? 0) - Number(a["last_visit"] ?? 0))
+      .slice(0, limit);
+  }
+
+  recordHistoryVisit(request: RecordHistoryVisitRequest): number {
+    const visitTime = request.visitTime ?? Date.now();
+    const title = request.title?.trim() || null;
+    const typedCount = request.typed ? 1 : 0;
+    const row = this.sql.exec(
+      `INSERT INTO history (url, title, visit_count, typed_count, first_visit, last_visit)
+       VALUES (?, ?, 1, ?, ?, ?)
+       ON CONFLICT(url) DO UPDATE SET
+         title = CASE
+           WHEN excluded.title IS NOT NULL AND length(excluded.title) > 0 THEN excluded.title
+           ELSE history.title
+         END,
+         visit_count = history.visit_count + 1,
+         typed_count = history.typed_count + excluded.typed_count,
+         first_visit = CASE
+           WHEN history.first_visit IS NULL THEN excluded.first_visit
+           WHEN excluded.first_visit IS NULL THEN history.first_visit
+           ELSE MIN(history.first_visit, excluded.first_visit)
+         END,
+         last_visit = MAX(history.last_visit, excluded.last_visit)
+       RETURNING id`,
+      request.url,
+      title,
+      typedCount,
+      visitTime,
+      visitTime,
+    ).one() as { id: number };
+
+    this.sql.exec(
+      `INSERT INTO history_visits (history_id, visit_time, transition, from_visit_id)
+       VALUES (?, ?, ?, NULL)`,
+      row.id,
+      visitTime,
+      request.transition ?? "link",
+    );
+    return row.id;
+  }
+
+  updateHistoryTitle(request: UpdateHistoryTitleRequest): void {
+    const title = request.title.trim();
+    if (!title) return;
+    const observedAt = request.observedAt ?? Date.now();
+    this.sql.exec(
+      `INSERT INTO history (url, title, visit_count, typed_count, first_visit, last_visit)
+       VALUES (?, ?, 0, 0, NULL, ?)
+       ON CONFLICT(url) DO UPDATE SET
+         title = excluded.title`,
+      request.url,
+      title,
+      observedAt,
+    );
   }
 
   deleteHistoryEntry(id: number): void {

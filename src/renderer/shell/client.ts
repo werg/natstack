@@ -45,7 +45,7 @@ import type {
   PaginatedChildren,
   PaginatedRootPanels,
 } from "@natstack/shared/types";
-import type { PanelChromeState } from "@natstack/shared/panelChrome";
+import type { BrowserAddressOptions, PanelAddressOptions, PanelChromeState } from "@natstack/shared/panelChrome";
 
 // =============================================================================
 // App Service
@@ -56,6 +56,7 @@ export const app = {
   getSystemTheme: () => rpc.call<ThemeAppearance>("main", "app.getSystemTheme"),
   setThemeMode: (mode: ThemeMode) => rpc.call<void>("main", "app.setThemeMode", mode),
   openDevTools: () => rpc.call<void>("main", "app.openDevTools"),
+  openExternal: (url: string) => rpc.call<void>("main", "app.openExternal", url),
   clearBuildCache: () => rpc.call<void>("main", "app.clearBuildCache"),
 };
 
@@ -69,7 +70,18 @@ export const panel = {
   updateTheme: (theme: ThemeAppearance) => rpc.call<void>("main", "panel.updateTheme", theme),
   openDevTools: (panelId: string) => rpc.call<void>("main", "panel.openDevTools", panelId),
   getChromeState: (panelId: string) => rpc.call<PanelChromeState>("main", "panel.getChromeState", panelId),
+  getAddressOptions: (source: string, ref?: string) =>
+    rpc.call<PanelAddressOptions>("main", "panel.getAddressOptions", source, ref),
+  getBrowserAddressOptions: (query: string) =>
+    rpc.call<BrowserAddressOptions>("main", "panel.getBrowserAddressOptions", query),
+  markBrowserNavigationIntent: (panelId: string, intent: { transition?: string; typed?: boolean }) =>
+    rpc.call<void>("main", "panel.markBrowserNavigationIntent", panelId, intent),
   reload: (panelId: string) => rpc.call<void>("main", "panel.reload", panelId),
+  reloadView: (panelId: string) => rpc.call<void>("main", "panel.reloadView", panelId),
+  forceReloadView: (panelId: string) => rpc.call<void>("main", "panel.forceReloadView", panelId),
+  rebuildPanel: (panelId: string) => rpc.call<void>("main", "panel.rebuildPanel", panelId),
+  goBack: (panelId: string) => rpc.call<void>("main", "panel.goBack", panelId),
+  goForward: (panelId: string) => rpc.call<void>("main", "panel.goForward", panelId),
   unload: (panelId: string) => rpc.call<void>("main", "panel.unload", panelId),
   archive: (panelId: string) => rpc.call<void>("main", "panel.archive", panelId),
   retryDirtyBuild: (panelId: string) => rpc.call<void>("main", "panel.retryDirtyBuild", panelId),
@@ -79,10 +91,16 @@ export const panel = {
   createAboutPanel: (page: string) =>
     rpc.call<{ id: string; title: string }>("main", "panel.createAboutPanel", page),
   /** Create a panel from any source path (not prefixed with "about/"). */
-  createPanel: (source: string, options?: { name?: string; isRoot?: boolean }) =>
+  navigate: (panelId: string, source: string, options?: { ref?: string; contextId?: string; stateArgs?: Record<string, unknown> }) =>
+    rpc.call<{ id: string; title: string }>("main", "panel.navigate", panelId, source, options),
+  createPanel: (source: string, options?: { name?: string; isRoot?: boolean; ref?: string }) =>
     rpc.call<{ id: string; title: string }>("main", "panel.create", source, options),
+  createChild: (parentId: string, source: string, options?: { name?: string; focus?: boolean; ref?: string }) =>
+    rpc.call<{ id: string; title: string }>("main", "panel.createChild", parentId, source, options),
   createBrowser: (url: string, options?: { name?: string; focus?: boolean }) =>
     rpc.call<{ id: string; title: string }>("main", "panel.createBrowser", url, options),
+  createBrowserChild: (parentId: string, url: string, options?: { name?: string; focus?: boolean }) =>
+    rpc.call<{ id: string; title: string }>("main", "panel.createBrowserChild", parentId, url, options),
   movePanel: (request: MovePanelRequest) =>
     rpc.call<void>("main", "panel.movePanel", request),
   getChildrenPaginated: (request: GetChildrenPaginatedRequest) =>
@@ -108,6 +126,23 @@ interface Bounds {
   height: number;
 }
 
+export interface NativeShellOverlayOptions {
+  id: string;
+  html: string;
+  bounds: Bounds;
+  focus?: boolean;
+}
+
+export interface NativeShellOverlayEvent {
+  overlayId: string;
+  type: string;
+  payload?: unknown;
+}
+
+type NativeShellOverlayBridge = {
+  onEvent: (handler: (event: NativeShellOverlayEvent) => void) => () => void;
+};
+
 export const view = {
   setVisible: (viewId: string, visible: boolean) =>
     rpc.call<void>("main", "view.setVisible", viewId, visible),
@@ -116,6 +151,12 @@ export const view = {
     rpc.call<void>("main", "view.updateLayout", layout),
   setShellOverlay: (active: boolean) =>
     rpc.call<void>("main", "view.setShellOverlay", active),
+  showNativeShellOverlay: (options: NativeShellOverlayOptions) =>
+    rpc.call<void>("main", "view.showNativeShellOverlay", options),
+  updateNativeShellOverlay: (options: Partial<NativeShellOverlayOptions> & { id?: string }) =>
+    rpc.call<void>("main", "view.updateNativeShellOverlay", options),
+  hideNativeShellOverlay: (id?: string) =>
+    rpc.call<void>("main", "view.hideNativeShellOverlay", id),
   browserNavigate: (browserId: string, url: string) =>
     rpc.call<void>("main", "view.browserNavigate", browserId, url),
   browserGoBack: (browserId: string) => rpc.call<void>("main", "view.browserGoBack", browserId),
@@ -125,6 +166,14 @@ export const view = {
   browserForceReload: (browserId: string) =>
     rpc.call<void>("main", "view.browserForceReload", browserId),
   browserStop: (browserId: string) => rpc.call<void>("main", "view.browserStop", browserId),
+};
+
+export const nativeShellOverlay = {
+  onEvent: (handler: (event: NativeShellOverlayEvent) => void) => {
+    const bridge = (globalThis as unknown as { __natstackShellOverlay?: NativeShellOverlayBridge }).__natstackShellOverlay;
+    if (!bridge) return () => {};
+    return bridge.onEvent(handler);
+  },
 };
 
 // =============================================================================

@@ -19,6 +19,8 @@ export interface PanelStore {
   getParentId(panelId: string): Promise<string | null> | string | null;
   getChildren(parentId: string): Promise<PanelSummary[]> | PanelSummary[];
   updatePanel(panelId: string, input: PanelStoreUpdateInput): Promise<void> | void;
+  pushHistorySnapshot(panelId: string, snapshot: PanelSnapshot): Promise<void> | void;
+  navigateHistory(panelId: string, delta: -1 | 1): Promise<Panel | null> | Panel | null;
   setSelectedChild(panelId: string, childId: string | null): Promise<void> | void;
   updateSelectedPath(focusedPanelId: string): Promise<void> | void;
   setTitle(panelId: string, title: string): Promise<void> | void;

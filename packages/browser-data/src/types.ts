@@ -59,6 +59,7 @@ export const HISTORY_TRANSITIONS = [
   "link", "typed", "auto_bookmark", "auto_subframe", "manual_subframe",
   "generated", "auto_toplevel", "form_submit", "reload", "keyword",
   "keyword_generated", "redirect_permanent", "redirect_temporary",
+  "back_forward",
 ] as const;
 
 export type HistoryTransition = (typeof HISTORY_TRANSITIONS)[number];
@@ -84,6 +85,25 @@ export interface ImportedHistoryEntry {
   firstVisitTime?: number;
   typedCount?: number;
   transition?: HistoryTransition;
+}
+
+export interface RecordHistoryVisitRequest {
+  url: string;
+  title?: string;
+  transition?: HistoryTransition;
+  visitTime?: number;
+  typed?: boolean;
+}
+
+export interface UpdateHistoryTitleRequest {
+  url: string;
+  title: string;
+  observedAt?: number;
+}
+
+export interface HistoryAutocompleteQuery {
+  query: string;
+  limit?: number;
 }
 
 export const SAME_SITE_VALUES = ["unspecified", "no_restriction", "lax", "strict"] as const;
@@ -279,6 +299,25 @@ export const HistoryQuerySchema = z.object({
   endTime: z.number().optional(),
   limit: z.number().optional(),
   offset: z.number().optional(),
+});
+
+export const RecordHistoryVisitSchema = z.object({
+  url: z.string(),
+  title: z.string().optional(),
+  transition: z.enum(HISTORY_TRANSITIONS).optional(),
+  visitTime: z.number().optional(),
+  typed: z.boolean().optional(),
+});
+
+export const UpdateHistoryTitleSchema = z.object({
+  url: z.string(),
+  title: z.string(),
+  observedAt: z.number().optional(),
+});
+
+export const HistoryAutocompleteQuerySchema = z.object({
+  query: z.string(),
+  limit: z.number().optional(),
 });
 
 // ---- Zod Schemas for Service Methods ----

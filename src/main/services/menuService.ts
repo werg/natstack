@@ -6,6 +6,9 @@ import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { ViewManager } from "../viewManager.js";
 import type { ServerClient } from "../serverClient.js";
 import type { PanelContextMenuAction } from "@natstack/shared/types";
+import { buildPanelChromeState } from "@natstack/shared/panelChrome";
+import { getAvailablePanelCommands, type PanelCommandId } from "@natstack/shared/panelCommands";
+import { getPanelSource } from "@natstack/shared/panel/accessors";
 import { buildHamburgerMenuTemplate } from "../menu.js";
 
 export function createMenuService(deps: {
@@ -48,13 +51,25 @@ export function createMenuService(deps: {
           const template = buildHamburgerMenuTemplate(shellContents, clearBuildCache, {
             onHistoryBack: () => {
               const panelId = registry.getFocusedPanelId();
-              if (!panelId || !registry.getPanel(panelId)) return;
-              vm.getWebContents(panelId)?.goBack();
+              const panel = panelId ? registry.getPanel(panelId) : null;
+              if (!panelId || !panel) return;
+              const contents = vm.getWebContents(panelId);
+              if (getPanelSource(panel).startsWith("browser:") && contents?.canGoBack()) {
+                contents.goBack();
+                return;
+              }
+              void lifecycle.navigatePanelHistory(panelId, -1);
             },
             onHistoryForward: () => {
               const panelId = registry.getFocusedPanelId();
-              if (!panelId || !registry.getPanel(panelId)) return;
-              vm.getWebContents(panelId)?.goForward();
+              const panel = panelId ? registry.getPanel(panelId) : null;
+              if (!panelId || !panel) return;
+              const contents = vm.getWebContents(panelId);
+              if (getPanelSource(panel).startsWith("browser:") && contents?.canGoForward()) {
+                contents.goForward();
+                return;
+              }
+              void lifecycle.navigatePanelHistory(panelId, 1);
             },
           });
           const menu = Menu.buildFromTemplate(template);
@@ -83,24 +98,48 @@ export function createMenuService(deps: {
         }
 
         case "showPanelContext": {
-          const [_panelId, position] = args as [string, { x: number; y: number }];
+          const [panelId, position] = args as [string, { x: number; y: number }];
+          const panel = registry.getPanel(panelId);
+          const chrome = panel ? buildPanelChromeState({ panel }) : null;
+          const commands = getAvailablePanelCommands({ chrome }, [
+            "back",
+            "forward",
+            "reload-panel",
+            "reload-view",
+            "force-reload-view",
+            "rebuild-panel",
+            "stop",
+            "copy-address",
+            "open-external",
+            "duplicate",
+            "unload",
+            "archive",
+          ]);
 
           return new Promise<PanelContextMenuAction | null>((resolve) => {
+            const addCommand = (id: PanelCommandId): MenuItemConstructorOptions | null => {
+              const command = commands.find((candidate) => candidate.id === id);
+              if (!command) return null;
+              return { label: command.label, click: () => resolve(id as PanelContextMenuAction) };
+            };
             const template: MenuItemConstructorOptions[] = [
-              { label: "Back", click: () => resolve("back") },
-              { label: "Forward", click: () => resolve("forward") },
+              addCommand("back"),
+              addCommand("forward"),
               { type: "separator" },
-              { label: "Reload", click: () => resolve("reload") },
-              { label: "Force Reload", click: () => resolve("force-reload") },
-              { label: "Stop Loading", click: () => resolve("stop") },
+              addCommand("reload-panel"),
+              addCommand("reload-view"),
+              addCommand("force-reload-view"),
+              addCommand("rebuild-panel"),
+              addCommand("stop"),
               { type: "separator" },
-              { label: "Copy Address", click: () => resolve("copy-address") },
-              { label: "Open Externally", click: () => resolve("open-external") },
+              addCommand("copy-address"),
+              addCommand("open-external"),
+              addCommand("duplicate"),
               { type: "separator" },
-              { label: "Unload", click: () => resolve("unload") },
+              addCommand("unload"),
               { type: "separator" },
-              { label: "Archive", click: () => resolve("archive") },
-            ];
+              addCommand("archive"),
+            ].filter(Boolean) as MenuItemConstructorOptions[];
             const menu = Menu.buildFromTemplate(template);
             menu.popup({
               window: vm.getWindow(),

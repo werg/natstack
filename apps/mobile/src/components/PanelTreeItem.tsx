@@ -61,6 +61,7 @@ interface PanelTreeItemProps {
     background: string;
   };
   onPress: (panelId: string) => void;
+  onLongPress?: (panelId: string) => void;
   onToggleCollapse: (panelId: string, collapsed: boolean) => void;
   onArchive: (panelId: string) => void;
 }
@@ -70,6 +71,7 @@ export function PanelTreeItem({
   isActive,
   colors,
   onPress,
+  onLongPress,
   onToggleCollapse,
   onArchive,
 }: PanelTreeItemProps) {
@@ -187,6 +189,7 @@ export function PanelTreeItem({
           {/* Panel title */}
           <Pressable
             onPress={handlePress}
+            onLongPress={() => onLongPress?.(item.id)}
             style={styles.titlePressable}
           >
             <Text

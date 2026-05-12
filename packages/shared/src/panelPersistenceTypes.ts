@@ -51,6 +51,8 @@ export interface PanelPersistence {
   panelExists(panelId: string): boolean | Promise<boolean>;
   getPanelCount(): number | Promise<number>;
   updatePanel(panelId: string, input: UpdatePanelInput): void | Promise<void>;
+  pushHistorySnapshot(panelId: string, snapshot: PanelSnapshot): void | Promise<void>;
+  navigateHistory(panelId: string, delta: -1 | 1): Panel | null | Promise<Panel | null>;
   setSelectedChild(panelId: string, childId: string | null): void | Promise<void>;
   updateSelectedPath(focusedPanelId: string): void | Promise<void>;
   setTitle(panelId: string, title: string): void | Promise<void>;
@@ -75,4 +77,3 @@ export interface PanelSearchIndex {
   updateTitle(panelId: string, title: string): void | Promise<void>;
   rebuildIndex(): void | Promise<void>;
 }
-

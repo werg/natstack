@@ -7,7 +7,7 @@
  */
 
 import { createDevLogger } from "@natstack/dev-log";
-import type { Panel } from "@natstack/shared/types";
+import type { Panel, PanelSnapshot } from "@natstack/shared/types";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { EventService } from "@natstack/shared/eventsService";
@@ -23,7 +23,7 @@ import type { WorkspaceConfig } from "@natstack/shared/workspace/types";
 import {
   buildPanelUrl,
 } from "@natstack/shared/panelFactory";
-import { getPanelSource, getPanelContextId, getPanelStateArgs } from "@natstack/shared/panel/accessors";
+import { getCurrentSnapshot, getPanelSource, getPanelContextId, getPanelRef, getPanelStateArgs } from "@natstack/shared/panel/accessors";
 
 const log = createDevLogger("PanelOrchestrator");
 
@@ -103,7 +103,7 @@ export class PanelOrchestrator implements BridgePanelManager {
       }
 
       // Update build state from cache
-      const buildCached = this.panelHttpServer?.hasBuild(result.source) ?? false;
+      const buildCached = this.panelHttpServer?.hasBuild(result.source, result.options["ref"] as string | undefined) ?? false;
       this.registry.updateArtifacts(result.panelId, {
         htmlPath: panelUrl ?? undefined,
         buildState: buildCached ? "ready" : "building",
@@ -119,6 +119,27 @@ export class PanelOrchestrator implements BridgePanelManager {
     }
   }
 
+  async navigatePanel(
+    panelId: string,
+    source: string,
+    options?: { ref?: string; contextId?: string; env?: Record<string, string>; stateArgs?: Record<string, unknown> },
+  ): Promise<{ id: string; title: string }> {
+    const result = await this.shellCore.navigate(panelId, source, options);
+    const panel = this.registry.getPanel(panelId);
+    if (!panel) throw new Error(`Panel not found after navigation: ${panelId}`);
+    await this.loadSnapshotIntoView(panelId, getCurrentSnapshot(panel));
+    this.focusPanel(panelId);
+    return { id: result.panelId, title: result.title };
+  }
+
+  async navigatePanelHistory(panelId: string, delta: -1 | 1): Promise<{ id: string; title: string } | null> {
+    const panel = await this.shellCore.navigateHistory(panelId, delta);
+    if (!panel) return null;
+    await this.loadSnapshotIntoView(panelId, getCurrentSnapshot(panel));
+    this.focusPanel(panelId);
+    return { id: panel.id, title: panel.title };
+  }
+
   /**
    * Create a root panel from an arbitrary source path.
    * Unlike createAboutPanel (which prefixes with "about/"), this method
@@ -127,12 +148,13 @@ export class PanelOrchestrator implements BridgePanelManager {
    */
   async createRootPanel(
     source: string,
-    options?: { name?: string; isRoot?: boolean },
+    options?: { name?: string; isRoot?: boolean; ref?: string },
   ): Promise<{ id: string; title: string }> {
     const name = options?.name ?? `${source.replace(/\//g, "-")}~${Date.now().toString(36)}`;
 
     const result = await this.shellCore.create(source, {
       name,
+      ref: options?.ref,
       isRoot: options?.isRoot ?? true,
       addAsRoot: true,
     });
@@ -392,8 +414,8 @@ export class PanelOrchestrator implements BridgePanelManager {
     return validated;
   }
 
-  async updatePanelContext(panelId: string, contextId: string, source?: string, stateArgs?: Record<string, unknown>): Promise<void> {
-    await this.shellCore.updateContext(panelId, {
+  async replaceCurrentSnapshot(panelId: string, contextId: string, source?: string, stateArgs?: Record<string, unknown>): Promise<void> {
+    await this.shellCore.replaceCurrentSnapshot(panelId, {
       contextId,
       ...(source !== undefined && { source }),
       ...(stateArgs !== undefined && { stateArgs }),
@@ -580,10 +602,46 @@ export class PanelOrchestrator implements BridgePanelManager {
     return buildPanelUrl({
       source,
       contextId: getPanelContextId(panel),
+      ref: getPanelRef(panel),
       gatewayPort: this.deps.gatewayPort,
       externalHost: this.externalHost,
       protocol: this.deps.protocol,
     });
+  }
+
+  private async loadSnapshotIntoView(panelId: string, snapshot: PanelSnapshot): Promise<void> {
+    const view = this.getPanelView();
+    if (!view) return;
+
+    if (view.hasView(panelId)) {
+      view.destroyView(panelId);
+    }
+
+    if (snapshot.source.startsWith("browser:")) {
+      const url = snapshot.source.slice("browser:".length);
+      if (view.createViewForBrowser) {
+        await view.createViewForBrowser(panelId, url, snapshot.contextId);
+      }
+      this.registry.updateArtifacts(panelId, { buildState: "ready", htmlPath: url });
+      this.registry.notifyPanelTreeUpdate();
+      return;
+    }
+
+    const panelUrl = buildPanelUrl({
+      source: snapshot.source,
+      contextId: snapshot.contextId,
+      ref: snapshot.options.ref,
+      gatewayPort: this.deps.gatewayPort,
+      externalHost: this.externalHost,
+      protocol: this.deps.protocol,
+    });
+    await view.createViewForPanel(panelId, panelUrl, snapshot.contextId);
+    this.registry.updateArtifacts(panelId, {
+      htmlPath: panelUrl,
+      buildState: this.panelHttpServer?.hasBuild(snapshot.source, snapshot.options.ref) ? "ready" : "building",
+      buildProgress: this.panelHttpServer?.hasBuild(snapshot.source, snapshot.options.ref) ? undefined : "Waiting for build...",
+    });
+    this.registry.notifyPanelTreeUpdate();
   }
 
   // =========================================================================

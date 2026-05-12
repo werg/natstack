@@ -81,6 +81,7 @@ export {
   getPanelOptions,
   getPanelEnv,
   getPanelContextId,
+  getPanelRef,
   getInjectHostThemeVariables,
   getBrowserResolvedUrl,
   getPanelStateArgs,

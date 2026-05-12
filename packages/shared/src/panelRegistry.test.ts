@@ -7,16 +7,17 @@ import type { Panel } from "./types.js";
 // ---------------------------------------------------------------------------
 
 function makePanel(id: string, overrides?: Partial<Panel>): Panel {
+  const snapshot = {
+    source: `panels/${id}`,
+    contextId: `ctx-${id}`,
+    options: {},
+  };
   return {
     id,
     title: id,
     children: [],
     selectedChildId: null,
-    snapshot: {
-      source: `panels/${id}`,
-      contextId: `ctx-${id}`,
-      options: {},
-    },
+    history: { entries: [snapshot], index: 0 },
     artifacts: {},
     ...overrides,
   };

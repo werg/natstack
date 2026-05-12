@@ -9,7 +9,8 @@
 export interface ParsedPanelUrl {
   source: string;
   contextId?: string;
-  options: { name?: string; contextId?: string; focus?: boolean };
+  ref?: string;
+  options: { name?: string; contextId?: string; focus?: boolean; ref?: string };
   stateArgs?: Record<string, unknown>;
 }
 
@@ -85,6 +86,7 @@ export function parsePanelUrl(url: string, externalHost: string): ParsedPanelUrl
   }
 
   const contextId = parsed.queryParams.get("contextId");
+  const ref = parsed.queryParams.get("ref");
   const name = parsed.queryParams.get("name");
   const focus = parsed.queryParams.get("focus");
   const rawStateArgs = parsed.queryParams.get("stateArgs");
@@ -92,8 +94,10 @@ export function parsePanelUrl(url: string, externalHost: string): ParsedPanelUrl
   return {
     source,
     contextId: contextId ?? undefined,
+    ref: ref ?? undefined,
     options: {
       contextId: contextId ?? undefined,
+      ref: ref ?? undefined,
       name: name ?? undefined,
       focus: focus === "true" || undefined,
     },

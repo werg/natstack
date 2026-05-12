@@ -6,6 +6,7 @@
  */
 
 import type { PendingApproval } from "./approvals.js";
+import type { PanelCommandId } from "./panelCommands.js";
 
 /**
  * Known event names that can be subscribed to.
@@ -16,6 +17,7 @@ export type EventName =
   | "open-workspace-switcher"
   | "toggle-address-bar"
   | "focus-address-bar"
+  | "panel-chrome-command"
   | "toggle-panel-devtools"
   | "panel-initialization-error"
   | "navigate-about"
@@ -83,6 +85,7 @@ export interface EventPayloads {
   "open-workspace-switcher": void;
   "toggle-address-bar": void;
   "focus-address-bar": void;
+  "panel-chrome-command": { command: PanelCommandId };
   "toggle-panel-devtools": void;
   "panel-initialization-error": { path: string; error: string };
   "navigate-about": { page: string };
@@ -151,6 +154,7 @@ export const VALID_EVENT_NAMES: EventName[] = [
   "open-workspace-switcher",
   "toggle-address-bar",
   "focus-address-bar",
+  "panel-chrome-command",
   "toggle-panel-devtools",
   "panel-initialization-error",
   "navigate-about",

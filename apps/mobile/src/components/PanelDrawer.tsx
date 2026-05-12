@@ -12,7 +12,7 @@
  */
 
 import React, { useCallback, useMemo, useState } from "react";
-import { View, Text, StyleSheet, FlatList, RefreshControl, Pressable } from "react-native";
+import { View, Text, StyleSheet, FlatList, RefreshControl, Pressable, Alert, ActionSheetIOS, Platform, Clipboard, Linking } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useNavigation } from "@react-navigation/native";
 import { useAtomValue, useSetAtom } from "jotai";
@@ -21,6 +21,9 @@ import { themeColorsAtom } from "../state/themeAtoms";
 import { activePanelIdAtom } from "../state/navigationAtoms";
 import { PanelTreeItem, type FlatPanelItem } from "./PanelTreeItem";
 import type { Panel } from "@natstack/shared/types";
+import { buildPanelChromeState, isBrowserPanelSource } from "@natstack/shared/panelChrome";
+import { getAvailablePanelCommands, type PanelCommandId } from "@natstack/shared/panelCommands";
+import { getCurrentSnapshot } from "@natstack/shared/panel/accessors";
 
 interface PanelDrawerProps {
   /** Called when a panel is selected; parent should close the drawer */
@@ -52,6 +55,15 @@ function flattenTree(
     }
   }
   return result;
+}
+
+function findPanelById(panels: Panel[], panelId: string): Panel | null {
+  for (const panel of panels) {
+    if (panel.id === panelId) return panel;
+    const child = findPanelById(panel.children, panelId);
+    if (child) return child;
+  }
+  return null;
 }
 
 export function PanelDrawer({ onSelectPanel }: PanelDrawerProps) {
@@ -113,6 +125,75 @@ export function PanelDrawer({ onSelectPanel }: PanelDrawerProps) {
     [shellClient],
   );
 
+  const performPanelCommand = useCallback((command: PanelCommandId, panelId: string) => {
+    if (!shellClient) return;
+    const panel = findPanelById(panelTree, panelId);
+    if (!panel) return;
+    const snapshot = getCurrentSnapshot(panel);
+
+    switch (command) {
+      case "copy-address":
+        Clipboard.setString(snapshot.source);
+        return;
+      case "open-external": {
+        const url = snapshot.resolvedUrl ?? (isBrowserPanelSource(snapshot.source) ? snapshot.source.slice("browser:".length) : null);
+        if (url && /^https?:\/\//i.test(url)) void Linking.openURL(url);
+        return;
+      }
+      case "duplicate":
+        if (isBrowserPanelSource(snapshot.source)) {
+          void shellClient.panels.createBrowserPanel(null, snapshot.source.slice("browser:".length), { focus: true })
+            .then((result) => onSelectPanel(result.id));
+        } else {
+          void shellClient.panels.createRootPanel(snapshot.source)
+            .then((result) => onSelectPanel(result.id));
+        }
+        return;
+      case "archive":
+        void shellClient.panels.archive(panelId).then(() => {
+          setPanelTree(shellClient.panels.getTree());
+        });
+        return;
+      default:
+        onSelectPanel(panelId);
+    }
+  }, [onSelectPanel, panelTree, setPanelTree, shellClient]);
+
+  const handlePanelLongPress = useCallback((panelId: string) => {
+    const panel = findPanelById(panelTree, panelId);
+    if (!panel) return;
+    const commands = getAvailablePanelCommands({ chrome: buildPanelChromeState({ panel }) }, [
+      "copy-address",
+      "open-external",
+      "duplicate",
+      "archive",
+    ]);
+    const labels = commands.map((command) => command.label);
+    if (Platform.OS === "ios") {
+      const destructiveIndex = commands.findIndex((command) => command.id === "archive");
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: [...labels, "Cancel"],
+          cancelButtonIndex: labels.length,
+          destructiveButtonIndex: destructiveIndex >= 0 ? destructiveIndex : undefined,
+        },
+        (buttonIndex) => {
+          const command = commands[buttonIndex];
+          if (command) performPanelCommand(command.id, panelId);
+        },
+      );
+      return;
+    }
+    Alert.alert(panel.title, undefined, [
+      ...commands.map((command) => ({
+        text: command.label,
+        onPress: () => performPanelCommand(command.id, panelId),
+        style: command.id === "archive" ? "destructive" as const : "default" as const,
+      })),
+      { text: "Cancel", style: "cancel" },
+    ]);
+  }, [panelTree, performPanelCommand]);
+
   const handleSettingsPress = useCallback(() => {
     navigation.getParent()?.navigate("Settings" as never);
   }, [navigation]);
@@ -124,11 +205,12 @@ export function PanelDrawer({ onSelectPanel }: PanelDrawerProps) {
         isActive={item.id === activePanelId}
         colors={colors}
         onPress={handlePanelPress}
+        onLongPress={handlePanelLongPress}
         onToggleCollapse={handleToggleCollapse}
         onArchive={handleArchive}
       />
     ),
-    [activePanelId, colors, handlePanelPress, handleToggleCollapse, handleArchive],
+    [activePanelId, colors, handlePanelPress, handlePanelLongPress, handleToggleCollapse, handleArchive],
   );
 
   const keyExtractor = useCallback((item: FlatPanelItem) => item.id, []);

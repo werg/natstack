@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createBrowserDataService } from "./browserDataService.js";
+import { ServiceAccessError, ServiceDispatcher } from "@natstack/shared/serviceDispatcher";
 import type { DODispatch } from "../doDispatch.js";
 import type { DORef } from "../../../workspace/packages/runtime/src/worker/durable-base.js";
 import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
@@ -94,6 +95,7 @@ describe("browserDataService — handler routing", () => {
       getBookmarks: () => [{ id: 1, title: "x" }],
       getHistory: () => [],
       searchHistory: () => [],
+      searchHistoryForAutocomplete: () => [],
       getPasswords: () => [],
       getPasswordForSite: () => [],
       getAutofillSuggestions: () => [],
@@ -109,6 +111,7 @@ describe("browserDataService — handler routing", () => {
     await svc.handler(ctx, "getBookmarks", [undefined]);
     await svc.handler(ctx, "getHistory", [{ limit: 10 }]);
     await svc.handler(ctx, "searchHistory", ["query", 5]);
+    await svc.handler(ctx, "searchHistoryForAutocomplete", [{ query: "query", limit: 5 }]);
     await svc.handler(ctx, "getPasswords", []);
     await svc.handler(ctx, "getPasswordForSite", ["https://x.test"]);
     await svc.handler(ctx, "getAutofillSuggestions", ["email"]);
@@ -119,6 +122,45 @@ describe("browserDataService — handler routing", () => {
     await svc.handler(ctx, "isNeverSavePassword", ["https://x.test"]);
 
     expect(evt.emitted).toHaveLength(0);
+  });
+
+  it("routes browser history recording and title updates as mutating history calls", async () => {
+    const fake = fakeDODispatch({
+      recordHistoryVisit: () => 12,
+      updateHistoryTitle: () => undefined,
+    });
+    const evt = fakeEventService();
+    const svc = createBrowserDataService({ eventService: evt.eventService, doDispatch: { dispatch: fake.dispatch } as DODispatch });
+
+    await expect(svc.handler(ctx, "recordHistoryVisit", [{
+      url: "https://example.test",
+      title: "Example",
+      transition: "back_forward",
+      typed: true,
+      visitTime: 10,
+    }])).resolves.toBe(12);
+    await svc.handler(ctx, "updateHistoryTitle", [{ url: "https://example.test", title: "Example 2", observedAt: 20 }]);
+
+    expect(fake.calls.map((call) => call.method)).toEqual(["recordHistoryVisit", "updateHistoryTitle"]);
+    expect(evt.emitted.map(e => (e.payload as { dataType: string }).dataType)).toEqual(["history", "history"]);
+  });
+
+  it("enforces shell-only browser history access through the dispatcher", async () => {
+    const fake = fakeDODispatch({
+      searchHistoryForAutocomplete: () => [],
+      recordHistoryVisit: () => 1,
+    });
+    const svc = createBrowserDataService({ eventService: fakeEventService().eventService, doDispatch: { dispatch: fake.dispatch } as DODispatch });
+    const dispatcher = new ServiceDispatcher();
+    dispatcher.registerService(svc);
+    dispatcher.markInitialized();
+
+    await expect(dispatcher.dispatch(ctx, "browser-data", "recordHistoryVisit", [{
+      url: "https://example.test",
+      transition: "back_forward",
+    }])).resolves.toBe(1);
+    await expect(dispatcher.dispatch({ callerId: "panel-1", callerKind: "panel" }, "browser-data", "searchHistoryForAutocomplete", [{ query: "ex", limit: 5 }]))
+      .rejects.toBeInstanceOf(ServiceAccessError);
   });
 
   it("translates DO bookmark rows into Netscape HTML and Chromium JSON exports", async () => {

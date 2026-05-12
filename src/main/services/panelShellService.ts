@@ -4,17 +4,70 @@ import type { PanelOrchestrator } from "../panelOrchestrator.js";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { PanelView } from "../panelView.js";
 import type { ViewManager } from "../viewManager.js";
-import type { ThemeAppearance } from "@natstack/shared/types";
+import type { BranchInfo, CommitInfo, ThemeAppearance, WorkspaceNode } from "@natstack/shared/types";
 import type { ServerClient } from "../serverClient.js";
 import {
   buildPanelChromeState,
   isBrowserPanelSource,
+  getSharedBrowserAddressOptions,
+  getSharedPanelAddressOptions,
+  type PanelAddressOptions,
+  type BrowserAddressOptions,
   type PanelChromeState,
   type PanelRepoState,
 } from "@natstack/shared/panelChrome";
+import { getPanelSource } from "@natstack/shared/panel/accessors";
+import { BROWSER_NAVIGATION_TRANSITIONS, type BrowserNavigationIntent } from "@natstack/shared/panelCommands";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("PanelShellService");
+
+async function getPanelAddressOptions(
+  source: string,
+  ref?: string,
+  serverClient?: ServerClient | null,
+): Promise<PanelAddressOptions> {
+  return getSharedPanelAddressOptions({
+    source,
+    ref,
+    git: serverClient ? createGitAdapter(serverClient) : null,
+  });
+}
+
+async function getBrowserAddressOptions(
+  query: string,
+  registry: PanelRegistry,
+  serverClient?: ServerClient | null,
+): Promise<BrowserAddressOptions> {
+  return getSharedBrowserAddressOptions({
+    query,
+    panels: registry.getSerializablePanelTree(),
+    browserData: serverClient ? createBrowserDataAdapter(serverClient) : null,
+  });
+}
+
+function createGitAdapter(serverClient: ServerClient) {
+  return {
+    getWorkspaceTree: () => serverClient.call("git", "getWorkspaceTree", []) as Promise<{ children: WorkspaceNode[] }>,
+    findRepoForPath: (source: string) => serverClient.call("git", "findRepoForPath", [source]) as Promise<{ repoPath: string; relativePath: string } | null>,
+    status: (repoPath: string) => serverClient.call("git", "status", [repoPath]) as Promise<PanelRepoState & { repoPath: string }>,
+    listBranches: (repoPath: string) => serverClient.call("git", "listBranches", [repoPath]) as Promise<BranchInfo[]>,
+    listCommits: (repoPath: string, ref: string, limit: number) => serverClient.call("git", "listCommits", [repoPath, ref, limit]) as Promise<CommitInfo[]>,
+  };
+}
+
+function createBrowserDataAdapter(serverClient: ServerClient) {
+  return {
+    searchHistoryForAutocomplete: (query: string, limit: number) =>
+      serverClient.call("browser-data", "searchHistoryForAutocomplete", [{ query, limit }]) as Promise<Record<string, unknown>[]>,
+    getHistory: (query: { limit: number }) =>
+      serverClient.call("browser-data", "getHistory", [query]) as Promise<Record<string, unknown>[]>,
+    searchBookmarks: (query: string) =>
+      serverClient.call("browser-data", "searchBookmarks", [query]) as Promise<Record<string, unknown>[]>,
+    getSearchEngines: () =>
+      serverClient.call("browser-data", "getSearchEngines", []) as Promise<Record<string, unknown>[]>,
+  };
+}
 
 async function getRepoState(
   source: string,
@@ -25,15 +78,22 @@ async function getRepoState(
   }
 
   try {
-    const [branches, commit] = await Promise.all([
-      serverClient.call("git", "listBranches", [source]) as Promise<Array<{ name: string; current?: boolean }>>,
-      serverClient.call("git", "resolveRef", [source, "HEAD"]) as Promise<string>,
-    ]);
-    const currentBranch = branches.find((branch) => branch.current)?.name ?? null;
+    const repo = await serverClient.call("git", "findRepoForPath", [source]) as {
+      repoPath: string;
+      relativePath: string;
+    } | null;
+    const repoPath = repo?.repoPath ?? source;
+    const status = await serverClient.call("git", "status", [repoPath]) as {
+      repoPath: string;
+      branch: string | null;
+      commit: string | null;
+      dirty: boolean;
+    };
     return {
-      repoPath: source,
-      branch: currentBranch,
-      commit,
+      repoPath: status.repoPath,
+      branch: status.branch,
+      commit: status.commit,
+      dirty: status.dirty,
     };
   } catch {
     return {
@@ -60,15 +120,26 @@ export function createPanelShellService(deps: {
       updateTheme: { args: z.tuple([z.unknown()]) },
       openDevTools: { args: z.tuple([z.string()]) },
       getChromeState: { args: z.tuple([z.string()]) },
+      getAddressOptions: { args: z.union([z.tuple([z.string()]), z.tuple([z.string(), z.string().optional()])]) },
+      getBrowserAddressOptions: { args: z.tuple([z.string()]) },
+      markBrowserNavigationIntent: { args: z.tuple([z.string(), z.object({ transition: z.enum(BROWSER_NAVIGATION_TRANSITIONS).optional(), typed: z.boolean().optional() })]) },
       reload: { args: z.tuple([z.string()]) },
+      reloadView: { args: z.tuple([z.string()]) },
+      forceReloadView: { args: z.tuple([z.string()]) },
+      rebuildPanel: { args: z.tuple([z.string()]) },
+      goBack: { args: z.tuple([z.string()]) },
+      goForward: { args: z.tuple([z.string()]) },
       unload: { args: z.tuple([z.string()]) },
       archive: { args: z.tuple([z.string()]) },
       retryDirtyBuild: { args: z.tuple([z.string()]) },
       initGitRepo: { args: z.tuple([z.string()]) },
       updatePanelState: { args: z.tuple([z.string(), z.record(z.unknown())]) },
       createAboutPanel: { args: z.tuple([z.unknown()]) },
-      create: { args: z.tuple([z.string(), z.object({ name: z.string().optional(), isRoot: z.boolean().optional() }).optional()]) },
+      navigate: { args: z.tuple([z.string(), z.string(), z.object({ ref: z.string().optional(), contextId: z.string().optional(), stateArgs: z.record(z.unknown()).optional() }).optional()]) },
+      create: { args: z.tuple([z.string(), z.object({ name: z.string().optional(), isRoot: z.boolean().optional(), ref: z.string().optional() }).optional()]) },
+      createChild: { args: z.tuple([z.string(), z.string(), z.object({ name: z.string().optional(), focus: z.boolean().optional(), ref: z.string().optional() }).optional()]) },
       createBrowser: { args: z.tuple([z.string(), z.object({ name: z.string().optional(), focus: z.boolean().optional() }).optional()]) },
+      createBrowserChild: { args: z.tuple([z.string(), z.string(), z.object({ name: z.string().optional(), focus: z.boolean().optional() }).optional()]) },
       movePanel: { args: z.tuple([z.object({ panelId: z.string(), newParentId: z.string().nullable(), targetPosition: z.number() })]) },
       getChildrenPaginated: { args: z.tuple([z.object({ parentId: z.string(), offset: z.number(), limit: z.number() })]) },
       getRootPanelsPaginated: { args: z.tuple([z.object({ offset: z.number(), limit: z.number() })]) },
@@ -126,17 +197,71 @@ export function createPanelShellService(deps: {
           const panelId = args[0] as string;
           const panel = registry.getPanel(panelId);
           if (!panel) throw new Error(`Panel not found: ${panelId}`);
-          const repo = await getRepoState(panel.snapshot.source, deps.serverClient);
+          const repo = await getRepoState(getPanelSource(panel), deps.serverClient);
           return buildPanelChromeState({ panel, repo }) satisfies PanelChromeState;
+        }
+
+        case "getAddressOptions": {
+          const source = args[0] as string;
+          const ref = args[1] as string | undefined;
+          return getPanelAddressOptions(source, ref, deps.serverClient);
+        }
+
+        case "getBrowserAddressOptions": {
+          return getBrowserAddressOptions(args[0] as string, registry, deps.serverClient);
+        }
+
+        case "markBrowserNavigationIntent": {
+          const [panelId, intent] = args as [string, BrowserNavigationIntent];
+          pv.markBrowserNavigationIntent?.(panelId, intent);
+          return;
         }
 
         case "reload": {
           const panelId = args[0] as string;
-          if (!pv.hasView(panelId)) {
-            await lifecycle.rebuildUnloadedPanel(panelId);
+          await lifecycle.reloadPanel(panelId);
+          return;
+        }
+
+        case "reloadView": {
+          const panelId = args[0] as string;
+          vm.reload(panelId);
+          return;
+        }
+
+        case "forceReloadView": {
+          const panelId = args[0] as string;
+          vm.forceReload(panelId);
+          return;
+        }
+
+        case "rebuildPanel": {
+          const panelId = args[0] as string;
+          await lifecycle.retryBuild(panelId);
+          return;
+        }
+
+        case "goBack": {
+          const panelId = args[0] as string;
+          const panel = registry.getPanel(panelId);
+          const contents = vm.getWebContents(panelId);
+          if (panel && getPanelSource(panel).startsWith("browser:") && contents?.canGoBack()) {
+            contents.goBack();
             return;
           }
-          vm.reload(panelId);
+          await lifecycle.navigatePanelHistory(panelId, -1);
+          return;
+        }
+
+        case "goForward": {
+          const panelId = args[0] as string;
+          const panel = registry.getPanel(panelId);
+          const contents = vm.getWebContents(panelId);
+          if (panel && getPanelSource(panel).startsWith("browser:") && contents?.canGoForward()) {
+            contents.goForward();
+            return;
+          }
+          await lifecycle.navigatePanelHistory(panelId, 1);
           return;
         }
 
@@ -188,14 +313,35 @@ export function createPanelShellService(deps: {
 
         case "create": {
           const source = args[0] as string;
-          const opts = args[1] as { name?: string; isRoot?: boolean } | undefined;
+          const opts = args[1] as { name?: string; isRoot?: boolean; ref?: string } | undefined;
           return lifecycle.createRootPanel(source, opts);
+        }
+
+        case "createChild": {
+          const parentId = args[0] as string;
+          const source = args[1] as string;
+          const opts = args[2] as { name?: string; focus?: boolean; ref?: string } | undefined;
+          return lifecycle.createPanel(parentId, source, opts);
+        }
+
+        case "navigate": {
+          const panelId = args[0] as string;
+          const source = args[1] as string;
+          const opts = args[2] as { ref?: string; contextId?: string; stateArgs?: Record<string, unknown> } | undefined;
+          return lifecycle.navigatePanel(panelId, source, opts);
         }
 
         case "createBrowser": {
           const url = args[0] as string;
           const opts = args[1] as { name?: string; focus?: boolean } | undefined;
           return lifecycle.createBrowserPanel("shell", url, { ...opts, focus: opts?.focus ?? true });
+        }
+
+        case "createBrowserChild": {
+          const parentId = args[0] as string;
+          const url = args[1] as string;
+          const opts = args[2] as { name?: string; focus?: boolean } | undefined;
+          return lifecycle.createBrowserPanel(parentId, url, { ...opts, focus: opts?.focus ?? true });
         }
 
         case "movePanel": {

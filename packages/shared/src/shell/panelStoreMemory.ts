@@ -1,4 +1,4 @@
-import type { Panel, PanelSummary } from "../types.js";
+import type { Panel, PanelSnapshot, PanelSummary } from "../types.js";
 import type { PanelStore, PanelStoreCreateInput, PanelStoreUpdateInput } from "./panelStore.js";
 
 interface StoredPanelRecord {
@@ -23,7 +23,7 @@ export class PanelStoreMemory implements PanelStore {
         title: input.title,
         children: [],
         selectedChildId: null,
-        snapshot: input.snapshot,
+        history: { entries: [input.snapshot], index: 0 },
         artifacts: {},
       },
       parentId: input.parentId,
@@ -59,11 +59,30 @@ export class PanelStoreMemory implements PanelStore {
       record.panel.selectedChildId = input.selectedChildId;
     }
     if (input.snapshot !== undefined) {
-      record.panel.snapshot = input.snapshot;
+      record.panel.history.entries[record.panel.history.index] = input.snapshot;
     }
     if (input.parentId !== undefined) {
       record.parentId = input.parentId;
     }
+  }
+
+  pushHistorySnapshot(panelId: string, snapshot: PanelSnapshot): void {
+    const record = this.requireRecord(panelId);
+    const history = record.panel.history;
+    history.entries = history.entries.slice(0, history.index + 1);
+    history.entries.push(snapshot);
+    history.index = history.entries.length - 1;
+  }
+
+  navigateHistory(panelId: string, delta: -1 | 1): Panel | null {
+    const record = this.requireRecord(panelId);
+    const history = record.panel.history;
+    const nextIndex = history.index + delta;
+    if (nextIndex < 0 || nextIndex >= history.entries.length) {
+      return this.clonePanel(record.panel);
+    }
+    history.index = nextIndex;
+    return this.clonePanel(record.panel);
   }
 
   setSelectedChild(panelId: string, childId: string | null): void {
@@ -170,10 +189,13 @@ export class PanelStoreMemory implements PanelStore {
   private clonePanel(panel: Panel): Panel {
     return {
       ...panel,
-      snapshot: {
-        ...panel.snapshot,
-        options: { ...panel.snapshot.options },
-        stateArgs: panel.snapshot.stateArgs ? { ...panel.snapshot.stateArgs } : panel.snapshot.stateArgs,
+      history: {
+        index: panel.history.index,
+        entries: panel.history.entries.map((snapshot) => ({
+          ...snapshot,
+          options: { ...snapshot.options },
+          stateArgs: snapshot.stateArgs ? { ...snapshot.stateArgs } : snapshot.stateArgs,
+        })),
       },
       artifacts: { ...panel.artifacts },
       children: panel.children.map((child) => this.clonePanel(child)),

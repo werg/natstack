@@ -19,6 +19,7 @@ const log = createDevLogger("App");
 import { PanelRegistry } from "@natstack/shared/panelRegistry";
 import { PanelOrchestrator } from "./panelOrchestrator.js";
 import { PanelView } from "./panelView.js";
+import { BrowserHistoryRecorder } from "./browserHistoryRecorder.js";
 import {
   setupMenu,
   setMenuPanelLifecycle,
@@ -448,6 +449,7 @@ function createWindow(): void {
   viewManager = new ViewManager({
     window: mainWindow,
     shellPreload: path.join(__dirname, "preload.cjs"),
+    shellOverlayPreload: path.join(__dirname, "shellOverlayPreload.cjs"),
     shellHtmlPath: path.join(__dirname, "index.html"),
     shellAdditionalArguments: [],
     devTools: false,
@@ -468,6 +470,7 @@ function createWindow(): void {
   }
 
   if (viewManager && panelRegistry && panelOrchestrator && cdpServer && serverSession) {
+    const browserHistoryRecorder = new BrowserHistoryRecorder(serverSession.serverClient);
     panelView = new PanelView({
       viewManager,
       panelRegistry,
@@ -484,6 +487,7 @@ function createWindow(): void {
       autofillPreloadPath: path.join(__dirname, "autofillPreload.cjs"),
       panelPreloadPath: path.join(__dirname, "panelPreload.cjs"),
       browserPreloadPath: path.join(__dirname, "browserPreload.cjs"),
+      browserHistoryRecorder,
     });
 
     // Wire autofill overlay to window, z-order changes, and panel switches

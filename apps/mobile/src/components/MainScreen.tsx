@@ -1,5 +1,5 @@
 import React, { useEffect, useCallback, useMemo, useRef, useState } from "react";
-import { View, Text, StyleSheet, BackHandler, Platform, Linking, Appearance, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, BackHandler, Platform, Linking, Appearance, ActivityIndicator, Alert, ActionSheetIOS, Clipboard } from "react-native";
 import { useNavigation, DrawerActions } from "@react-navigation/native";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { ConnectionBar } from "./ConnectionBar";
@@ -27,11 +27,26 @@ import {
 } from "../services/panelUrls";
 import {
   buildPanelChromeState,
+  buildAddressAutocompleteItems,
   formatRepoChip,
   isBrowserPanelSource,
   parseAddressInput,
+  type AddressAction,
+  type AddressAutocompleteItem,
+  type PanelAddressOptions,
   type PanelRepoState,
 } from "@natstack/shared/panelChrome";
+import {
+  applySearchTemplate,
+  canonicalizeBrowserHistoryUrl,
+  getAvailablePanelCommands,
+  getBrowserNavigationIntentForAddressAction,
+  getBrowserNavigationIntentForCommand,
+  type BrowserNavigationIntent,
+  type AddressNavigationMode,
+  type PanelCommandId,
+} from "@natstack/shared/panelCommands";
+import { getCurrentSnapshot } from "@natstack/shared/panel/accessors";
 import type { HostConfig } from "../services/panelUrls";
 import type { ApprovalDecision, PendingApproval } from "@natstack/shared/approvals";
 import { RPC_METHODS } from "@natstack/shared/approvalContract";
@@ -77,11 +92,19 @@ export function MainScreen() {
   const [loadingPanelId, setLoadingPanelId] = useState<string | null>(null);
   const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
   const [addressBarVisible, setAddressBarVisible] = useState(false);
+  const [addressQuery, setAddressQuery] = useState("");
+  const [addressSuggestions, setAddressSuggestions] = useState<AddressAutocompleteItem[]>([]);
+  const [panelAddressOptions, setPanelAddressOptions] = useState<PanelAddressOptions | null>(null);
+  const [selectedBranch, setSelectedBranch] = useState<string | null>(null);
+  const [selectedCommit, setSelectedCommit] = useState<string | null>(null);
   const [webViewNavigation, setWebViewNavigation] = useState<Record<string, WebViewNavigation>>({});
   const [activeRepoState, setActiveRepoState] = useState<PanelRepoState | undefined>();
   const webViewStackRef = useRef<WebViewEntry[]>([]);
   const webViewRefsMap = useRef<Map<string, PanelWebViewHandle | null>>(new Map());
   const pendingPanelLoads = useRef<Set<string>>(new Set());
+  const pendingHistoryIntentByUrl = useRef<Map<string, BrowserNavigationIntent>>(new Map());
+  const pendingHistoryIntentByPanel = useRef<Map<string, BrowserNavigationIntent>>(new Map());
+  const recentHistoryRecords = useRef<Map<string, number>>(new Map());
 
   useEffect(() => {
     webViewStackRef.current = webViewStack;
@@ -151,31 +174,80 @@ export function MainScreen() {
     });
   }, [activePanel, activePanelId, activeRepoState, webViewNavigation]);
 
+  const activePanelSnapshot = useMemo(() => {
+    if (!activePanel) return null;
+    return getCurrentSnapshot(activePanel);
+  }, [activePanel]);
+
   useEffect(() => {
-    if (!activePanel || !shellClient || isBrowserPanelSource(activePanel.snapshot.source) || activePanel.snapshot.source.startsWith("about/")) {
-      setActiveRepoState(undefined);
+    if (!addressBarVisible || !activeChromeState || !shellClient) {
+      setAddressSuggestions([]);
       return;
     }
 
     let cancelled = false;
-    const source = activePanel.snapshot.source;
-    void Promise.all([
-      shellClient.transport.call<Array<{ name: string; current?: boolean }>>("main", "git.listBranches", source),
-      shellClient.transport.call<string>("main", "git.resolveRef", source, "HEAD"),
-    ]).then(([branches, commit]) => {
+    const timer = setTimeout(() => {
+      const query = addressQuery.trim() || activeChromeState.editableAddress;
+      const request = activeChromeState.kind === "browser"
+        ? shellClient.panels.getBrowserAddressOptions(query).then((options) =>
+            buildAddressAutocompleteItems({
+              kind: "browser",
+              input: query,
+              browserSuggestions: options.suggestions,
+              limit: 8,
+            })
+          )
+        : shellClient.panels.getAddressOptions(query, selectedBranch ?? activeChromeState.ref).then((options) => {
+            setPanelAddressOptions(options);
+            return buildAddressAutocompleteItems({
+              kind: "panel",
+              input: query,
+              panelSuggestions: options.suggestions,
+              limit: 8,
+            });
+          });
+
+      void request
+        .then((items) => {
+          if (!cancelled) setAddressSuggestions(items);
+        })
+        .catch(() => {
+          if (!cancelled) setAddressSuggestions([]);
+        });
+    }, 120);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [activeChromeState, addressBarVisible, addressQuery, selectedBranch, shellClient]);
+
+  useEffect(() => {
+    setSelectedBranch(activeChromeState?.ref ?? activeChromeState?.repo?.branch ?? null);
+    setSelectedCommit(null);
+  }, [activeChromeState?.panelId, activeChromeState?.ref, activeChromeState?.repo?.branch]);
+
+  useEffect(() => {
+    if (!activePanel || !activePanelSnapshot || !shellClient || isBrowserPanelSource(activePanelSnapshot.source) || activePanelSnapshot.source.startsWith("about/")) {
+      setActiveRepoState(undefined);
+      setPanelAddressOptions(null);
+      return;
+    }
+
+    let cancelled = false;
+    const source = activePanelSnapshot.source;
+    void shellClient.panels.getAddressOptions(source, selectedBranch ?? activeChromeState?.ref)
+      .then((options) => {
       if (cancelled) return;
-      setActiveRepoState({
-        repoPath: source,
-        branch: branches.find((branch) => branch.current)?.name ?? null,
-        commit,
-      });
+      setPanelAddressOptions(options);
+      setActiveRepoState(options.repo);
     }).catch(() => {
       if (!cancelled) setActiveRepoState({ repoPath: source });
     });
     return () => {
       cancelled = true;
     };
-  }, [activePanel, shellClient]);
+  }, [activeChromeState?.ref, activePanel, activePanelSnapshot, selectedBranch, shellClient]);
 
   useEffect(() => {
     if (!approvalDeepLinkId) return;
@@ -257,10 +329,11 @@ export function MainScreen() {
     setLoadingPanelId(panelId);
 
     void (async () => {
-      const source = panel.snapshot.source;
+      const snapshot = getCurrentSnapshot(panel);
+      const source = snapshot.source;
       const managed = !source.startsWith("browser:");
       const url = managed
-        ? buildPanelUrl(source, panel.snapshot.contextId, hostConfig)
+        ? buildPanelUrl(source, snapshot.contextId, hostConfig)
         : source.slice("browser:".length);
       const panelInit = managed
         ? await shellClient.panels.getPanelInit(panelId)
@@ -426,71 +499,253 @@ export function MainScreen() {
 
   const handleActiveBack = useCallback(() => {
     if (!activePanelId) return;
+    pendingHistoryIntentByPanel.current.set(activePanelId, getBrowserNavigationIntentForCommand("back")!);
     webViewRefsMap.current.get(activePanelId)?.goBack();
   }, [activePanelId]);
 
   const handleActiveForward = useCallback(() => {
     if (!activePanelId) return;
+    pendingHistoryIntentByPanel.current.set(activePanelId, getBrowserNavigationIntentForCommand("forward")!);
     webViewRefsMap.current.get(activePanelId)?.goForward();
   }, [activePanelId]);
 
   const handleActiveReload = useCallback(() => {
     if (!activePanelId) return;
+    const currentUrl = webViewNavigation[activePanelId]?.url;
+    if (currentUrl) pendingHistoryIntentByUrl.current.set(canonicalHistoryKey(currentUrl), getBrowserNavigationIntentForCommand("reload-panel")!);
     webViewRefsMap.current.get(activePanelId)?.reload();
-  }, [activePanelId]);
+  }, [activePanelId, webViewNavigation]);
 
   const handleActiveStop = useCallback(() => {
     if (!activePanelId) return;
     webViewRefsMap.current.get(activePanelId)?.stop();
   }, [activePanelId]);
 
-  const handleNavigateAddress = useCallback((value: string) => {
-    if (!shellClient || !activePanelId) return;
-    const parsed = parseAddressInput(value);
-    if (!parsed) return;
+  const performPanelCommand = useCallback((command: PanelCommandId, panelId = activePanelId) => {
+    if (!shellClient || !panelId) return;
+    const panel = shellClient.panels.registry.getPanel(panelId);
 
-    if (parsed.type === "browser-url") {
-      const active = shellClient.panels.registry.getPanel(activePanelId);
-      if (active && isBrowserPanelSource(active.snapshot.source)) {
-        setWebViewStack((prev) => prev.map((entry) =>
-          entry.panelId === activePanelId ? { ...entry, url: parsed.url } : entry,
-        ));
-        setWebViewNavigation((prev) => ({
-          ...prev,
-          [activePanelId]: { ...(prev[activePanelId] as WebViewNavigation | undefined), url: parsed.url } as WebViewNavigation,
-        }));
-      } else {
-        void shellClient.panels.createBrowserPanel(activePanelId, parsed.url, { focus: true })
+    switch (command) {
+      case "back":
+        pendingHistoryIntentByPanel.current.set(panelId, getBrowserNavigationIntentForCommand("back")!);
+        webViewRefsMap.current.get(panelId)?.goBack();
+        return;
+      case "forward":
+        pendingHistoryIntentByPanel.current.set(panelId, getBrowserNavigationIntentForCommand("forward")!);
+        webViewRefsMap.current.get(panelId)?.goForward();
+        return;
+      case "reload-panel":
+      case "reload-view":
+      case "force-reload-view":
+      case "rebuild-panel":
+        {
+          const currentUrl = webViewNavigation[panelId]?.url;
+          if (currentUrl) pendingHistoryIntentByUrl.current.set(canonicalHistoryKey(currentUrl), getBrowserNavigationIntentForCommand("reload-panel")!);
+        }
+        webViewRefsMap.current.get(panelId)?.reload();
+        return;
+      case "stop":
+        webViewRefsMap.current.get(panelId)?.stop();
+        return;
+      case "copy-address": {
+        const address = panelId === activePanelId ? activeChromeState?.editableAddress : panel ? getCurrentSnapshot(panel).source : undefined;
+        if (address) {
+          Clipboard.setString(address);
+          pushToast({ title: "Address copied", message: address, tone: "success" });
+        }
+        return;
+      }
+      case "open-external": {
+        const url = panelId === activePanelId ? activeChromeState?.resolvedUrl : panel ? getCurrentSnapshot(panel).resolvedUrl : undefined;
+        if (url && /^https?:\/\//i.test(url)) void Linking.openURL(url);
+        return;
+      }
+      case "duplicate":
+        if (!panel) return;
+        const snapshot = getCurrentSnapshot(panel);
+        if (isBrowserPanelSource(snapshot.source)) {
+          const url = panelId === activePanelId
+            ? activeChromeState?.resolvedUrl
+            : snapshot.source.slice("browser:".length);
+          if (url) void shellClient.panels.createBrowserPanel(null, url, { focus: true })
+            .then((result) => activatePanel(result.id));
+        } else {
+          void shellClient.panels.createRootPanel(snapshot.source)
+            .then((result) => activatePanel(result.id));
+        }
+        return;
+      case "unload":
+        void shellClient.panels.unload(panelId);
+        setWebViewStack((prev) => prev.filter((entry) => entry.panelId !== panelId));
+        return;
+      case "archive":
+        void shellClient.panels.archive(panelId).then(refreshTree);
+        return;
+      case "focus-address":
+        setAddressBarVisible(true);
+        return;
+    }
+  }, [activatePanel, activeChromeState, activePanelId, pushToast, refreshTree, shellClient, webViewNavigation]);
+
+  const showPanelActions = useCallback((panelId = activePanelId) => {
+    if (!shellClient || !panelId) return;
+    const panel = shellClient.panels.registry.getPanel(panelId);
+    const chrome = panelId === activePanelId
+      ? activeChromeState
+      : panel
+        ? buildPanelChromeState({ panel })
+        : null;
+    const commands = getAvailablePanelCommands({ chrome, addressBarVisible }, [
+      "back",
+      "forward",
+      "reload-panel",
+      "reload-view",
+      "force-reload-view",
+      "rebuild-panel",
+      "stop",
+      "copy-address",
+      "open-external",
+      "duplicate",
+      "unload",
+      "archive",
+    ]);
+    const labels = commands.map((command) => command.label);
+
+    if (Platform.OS === "ios") {
+      const destructiveIndex = commands.findIndex((command) => command.id === "archive");
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: [...labels, "Cancel"],
+          cancelButtonIndex: labels.length,
+          destructiveButtonIndex: destructiveIndex >= 0 ? destructiveIndex : undefined,
+        },
+        (buttonIndex) => {
+          const command = commands[buttonIndex];
+          if (command) performPanelCommand(command.id, panelId);
+        },
+      );
+      return;
+    }
+
+    Alert.alert(panel?.title ?? "Panel", undefined, [
+      ...commands.map((command) => ({
+        text: command.label,
+        onPress: () => performPanelCommand(command.id, panelId),
+        style: command.id === "archive" ? "destructive" as const : "default" as const,
+      })),
+      { text: "Cancel", style: "cancel" },
+    ]);
+  }, [activeChromeState, activePanelId, addressBarVisible, performPanelCommand, shellClient]);
+
+  const executeAddressAction = useCallback((action: AddressAction, mode: AddressNavigationMode = "current") => {
+    if (!shellClient || !activePanelId) return;
+    if (action.type === "navigate-url") {
+      const intent = getBrowserNavigationIntentForAddressAction(action);
+      if (intent) pendingHistoryIntentByUrl.current.set(canonicalHistoryKey(action.url), intent);
+      if (mode === "external") {
+        void Linking.openURL(action.url);
+      } else if (mode === "child") {
+        void shellClient.panels.createBrowserPanel(activePanelId, action.url, { focus: true })
           .catch((error: unknown) => pushToast({
             title: "Navigation failed",
             message: error instanceof Error ? error.message : "Could not open browser panel.",
             tone: "danger",
           }));
+      } else if (mode === "root") {
+        void shellClient.panels.createBrowserPanel(null, action.url, { focus: true })
+          .then((result) => activatePanel(result.id))
+          .catch((error: unknown) => pushToast({
+            title: "Navigation failed",
+            message: error instanceof Error ? error.message : "Could not open browser panel.",
+            tone: "danger",
+          }));
+      } else {
+        const active = shellClient.panels.registry.getPanel(activePanelId);
+        if (active && isBrowserPanelSource(getCurrentSnapshot(active).source)) {
+          setWebViewStack((prev) => prev.map((entry) =>
+            entry.panelId === activePanelId ? { ...entry, url: action.url } : entry,
+          ));
+          setWebViewNavigation((prev) => ({
+            ...prev,
+            [activePanelId]: { ...(prev[activePanelId] as WebViewNavigation | undefined), url: action.url } as WebViewNavigation,
+          }));
+        } else {
+          void shellClient.panels.createBrowserPanel(activePanelId, action.url, { focus: true })
+            .catch((error: unknown) => pushToast({
+              title: "Navigation failed",
+              message: error instanceof Error ? error.message : "Could not open browser panel.",
+              tone: "danger",
+            }));
+        }
       }
       return;
     }
-
-    if (parsed.type === "panel-source") {
-      void shellClient.panels.createFromSource(parsed.source)
+    if (action.type === "search" || action.type === "keyword-search") {
+      const url = applySearchTemplate(action.query, action.template);
+      const intent = getBrowserNavigationIntentForAddressAction(action);
+      if (intent) pendingHistoryIntentByUrl.current.set(canonicalHistoryKey(url), intent);
+      if (mode === "external") {
+        void Linking.openURL(url);
+        return;
+      }
+      if (mode === "current") {
+        const active = shellClient.panels.registry.getPanel(activePanelId);
+        if (active && isBrowserPanelSource(getCurrentSnapshot(active).source)) {
+          setWebViewStack((prev) => prev.map((entry) =>
+            entry.panelId === activePanelId ? { ...entry, url } : entry,
+          ));
+          setWebViewNavigation((prev) => ({
+            ...prev,
+            [activePanelId]: { ...(prev[activePanelId] as WebViewNavigation | undefined), url } as WebViewNavigation,
+          }));
+          return;
+        }
+      }
+      void shellClient.panels.createBrowserPanel(mode === "child" ? activePanelId : null, url, { focus: true })
+        .then((result) => activatePanel(result.id))
+        .catch((error: unknown) => pushToast({
+          title: "Navigation failed",
+          message: error instanceof Error ? error.message : "Could not search.",
+          tone: "danger",
+        }));
+      return;
+    }
+    if (action.type === "panel-source") {
+      const ref = action.ref ?? selectedCommit ?? selectedBranch ?? undefined;
+      const created = mode === "current"
+        ? shellClient.panels.navigatePanel(activePanelId, action.source, { ref })
+        : mode === "child"
+          ? shellClient.panels.createChildPanel(activePanelId, action.source, { focus: true, ref })
+          : shellClient.panels.createRootPanel(action.source, { ref });
+      void created
         .then((result) => activatePanel(result.id))
         .catch((error: unknown) => pushToast({
           title: "Navigation failed",
           message: error instanceof Error ? error.message : "Could not open panel.",
           tone: "danger",
         }));
+    }
+  }, [activatePanel, activePanelId, pushToast, selectedBranch, selectedCommit, shellClient, webViewNavigation]);
+
+  const handleNavigateAddress = useCallback((value: string, mode: AddressNavigationMode = "current") => {
+    if (!shellClient || !activePanelId) return;
+    const parsed = parseAddressInput(value);
+    if (!parsed) return;
+
+    if (parsed.type === "browser-url") {
+      executeAddressAction({ type: "navigate-url", url: parsed.url, recordAsTyped: true }, mode);
+      return;
+    }
+
+    if (parsed.type === "panel-source") {
+      executeAddressAction({ type: "panel-source", source: parsed.source }, mode);
       return;
     }
 
     if (parsed.type === "search") {
-      const url = `https://www.google.com/search?q=${encodeURIComponent(parsed.query)}`;
-      void shellClient.panels.createBrowserPanel(activePanelId, url, { focus: true })
-        .catch((error: unknown) => pushToast({
-          title: "Navigation failed",
-          message: error instanceof Error ? error.message : "Could not search.",
-          tone: "danger",
-        }));
+      executeAddressAction({ type: "search", query: parsed.query, template: "https://www.google.com/search?q=%s", recordAsTyped: true }, mode);
     }
-  }, [activatePanel, activePanelId, pushToast, shellClient]);
+  }, [activePanelId, executeAddressAction, shellClient]);
 
   const handlePanelNavigate = useCallback((event: PanelNavigationEvent) => {
     if (!shellClient) return;
@@ -516,6 +771,11 @@ export function MainScreen() {
 
   const handlePanelTitleChange = useCallback((panelId: string, title: string) => {
     if (!shellClient) return;
+    const navUrl = webViewNavigation[panelId]?.url;
+    const panel = shellClient.panels.registry.getPanel(panelId);
+    if (navUrl && panel && isBrowserPanelSource(getCurrentSnapshot(panel).source)) {
+      void shellClient.panels.updateHistoryTitle({ url: navUrl, title }).catch(() => {});
+    }
     void shellClient.panels.updateTitle(panelId, title)
       .then(refreshTree)
       .catch((error: unknown) => {
@@ -524,7 +784,29 @@ export function MainScreen() {
           error,
         );
       });
-  }, [refreshTree, shellClient]);
+  }, [refreshTree, shellClient, webViewNavigation]);
+
+  const recordMobileBrowserNavigation = useCallback((panelId: string, navState: WebViewNavigation) => {
+    if (!shellClient || !/^https?:\/\//i.test(navState.url)) return;
+    const key = canonicalHistoryKey(navState.url);
+    const intent = pendingHistoryIntentByUrl.current.get(key)
+      ?? pendingHistoryIntentByPanel.current.get(panelId)
+      ?? { transition: "link", typed: false };
+    pendingHistoryIntentByUrl.current.delete(key);
+    pendingHistoryIntentByPanel.current.delete(panelId);
+    const duplicateKey = `${panelId}:${key}:${intent.transition ?? "link"}`;
+    const now = Date.now();
+    const previous = recentHistoryRecords.current.get(duplicateKey);
+    if (previous && now - previous < 1_000) return;
+    recentHistoryRecords.current.set(duplicateKey, now);
+    void shellClient.panels.recordHistoryVisit({
+      url: navState.url,
+      title: navState.title,
+      transition: intent.transition,
+      typed: intent.typed,
+      visitTime: now,
+    }).catch(() => {});
+  }, [shellClient]);
 
   const handleBridgeCall = useCallback(async (panelId: string, method: string, args: unknown[]) => {
     if (!shellClient) throw new Error("Shell client not available");
@@ -538,6 +820,7 @@ export function MainScreen() {
 
     const onBackPress = () => {
       if (activePanelId && webViewNavigation[activePanelId]?.canGoBack) {
+        pendingHistoryIntentByPanel.current.set(activePanelId, getBrowserNavigationIntentForCommand("back")!);
         webViewRefsMap.current.get(activePanelId)?.goBack();
         return true;
       }
@@ -571,6 +854,21 @@ export function MainScreen() {
         onReload={handleActiveReload}
         onStop={handleActiveStop}
         onNavigateAddress={handleNavigateAddress}
+        addressSuggestions={addressSuggestions}
+        onAddressQueryChange={setAddressQuery}
+        onSelectAddressSuggestion={(item) => executeAddressAction(item.action)}
+        chromeKind={activeChromeState?.kind}
+        branches={panelAddressOptions?.branches ?? []}
+        commits={panelAddressOptions?.commits ?? []}
+        selectedBranch={selectedBranch ?? panelAddressOptions?.repo?.branch ?? null}
+        selectedCommit={selectedCommit ?? panelAddressOptions?.repo?.commit ?? null}
+        dirty={Boolean(panelAddressOptions?.repo?.dirty ?? activeChromeState?.repo?.dirty)}
+        onSelectBranch={(branch) => {
+          setSelectedBranch(branch);
+          setSelectedCommit(null);
+        }}
+        onSelectCommit={setSelectedCommit}
+        onShowActions={() => showPanelActions()}
       />
 
       <View style={styles.contentArea}>
@@ -628,6 +926,7 @@ export function MainScreen() {
                   }));
                   if (!entry.managed && /^https?:\/\//i.test(navState.url)) {
                     void shellClient?.panels.updateBrowserUrl(entry.panelId, navState.url).catch(() => {});
+                    recordMobileBrowserNavigation(entry.panelId, navState);
                   }
                 }}
                 onTitleChange={handlePanelTitleChange}
@@ -655,6 +954,10 @@ export function MainScreen() {
       <Toast />
     </View>
   );
+}
+
+function canonicalHistoryKey(url: string): string {
+  return canonicalizeBrowserHistoryUrl(url) ?? url;
 }
 
 const styles = StyleSheet.create({

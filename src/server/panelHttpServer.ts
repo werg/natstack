@@ -1,5 +1,5 @@
 /**
- * PanelHttpServer — source-keyed static panel asset server.
+ * PanelHttpServer — source/ref-keyed static panel asset server.
  *
  * Panel identity is injected by the host shell before app code runs, so this
  * server resolves source builds and serves static assets from path-based URLs.
@@ -130,7 +130,7 @@ function shouldLogPanelResourceRequests(): boolean {
 // ---------------------------------------------------------------------------
 
 export class PanelHttpServer {
-  /** Serving cache: source -> last resolved build (for fast sub-resource serving within a page load) */
+  /** Serving cache: source/ref -> resolved build (for fast sub-resource serving within a page load) */
   private servingCache = new Map<string, CachedBuild>();
 
   /** Builds currently in flight (dedup concurrent requests) */
@@ -233,18 +233,18 @@ export class PanelHttpServer {
   }
 
   // =========================================================================
-  // Build cache (source-keyed, inherently server)
+  // Build cache (source/ref-keyed, inherently server)
   // =========================================================================
 
   /**
-   * Store a build result. Keyed by source, shared across panels.
+   * Store a build result. Keyed by source/ref.
    */
-  storeBuild(source: string, buildResult: BuildResult): void {
+  storeBuild(source: string, buildResult: BuildResult, ref?: string): void {
     if (!buildResult.html || !buildResult.bundle) {
       throw new Error(`Build result for ${source} missing HTML or bundle`);
     }
 
-    this.servingCache.set(source, {
+    this.servingCache.set(this.buildCacheKey(source, ref), {
       html: buildResult.html,
       bundle: buildResult.bundle,
       css: buildResult.css,
@@ -252,7 +252,7 @@ export class PanelHttpServer {
       metadata: buildResult.metadata,
     });
 
-    log.info(`Stored build: ${source}`);
+    log.info(`Stored build: ${this.buildCacheKey(source, ref)}`);
 
     // Notify callback (source-level — caller does per-panel fan-out)
     this.callbacks?.onBuildComplete?.(source);
@@ -263,15 +263,23 @@ export class PanelHttpServer {
    * Also clears build errors so force-rebuild retries cleanly.
    */
   invalidateBuild(source: string): void {
-    this.servingCache.delete(source);
-    this.buildErrors.delete(source);
+    for (const key of [...this.servingCache.keys()]) {
+      if (key === source || key.startsWith(`${source}@`)) {
+        this.servingCache.delete(key);
+      }
+    }
+    for (const key of [...this.buildErrors.keys()]) {
+      if (key === source || key.startsWith(`${source}@`)) {
+        this.buildErrors.delete(key);
+      }
+    }
   }
 
   /**
    * Check if a build is cached for a source.
    */
-  hasBuild(source: string): boolean {
-    return this.servingCache.has(source);
+  hasBuild(source: string, ref?: string): boolean {
+    return this.servingCache.has(this.buildCacheKey(source, ref));
   }
 
   async stop(): Promise<void> {
@@ -345,13 +353,13 @@ export class PanelHttpServer {
     const parsed = extractSourcePath(pathname);
     if (parsed) {
       const routeLabel = url.searchParams.get("contextId") || parsed.source;
-      const ref = url.searchParams.get("ref") || undefined;
+      const ref = url.searchParams.get("ref") || this.refFromReferer(req) || undefined;
       this.logPanelResourceRequest(req, res, parsed.source, parsed.resource, routeLabel);
       const isHtmlRequest = parsed.resource === "/" || parsed.resource === "/index.html";
       if (isHtmlRequest) {
         await this.resolveAndServeBuild(res, parsed.source, routeLabel, true, ref);
       } else {
-        const build = this.servingCache.get(parsed.source);
+        const build = this.servingCache.get(this.buildCacheKey(parsed.source, ref));
         if (build) {
           this.servePanelResource(res, build, parsed.resource);
         } else {
@@ -416,9 +424,7 @@ export class PanelHttpServer {
     waitForResult = true,
     ref?: string,
   ): Promise<void> {
-    // Composite key for in-flight dedup and error tracking — isolates ref from HEAD.
-    // servingCache uses plain source (sub-resources don't carry ?ref=).
-    const flightKey = ref ? `${source}@${ref}` : source;
+    const flightKey = this.buildCacheKey(source, ref);
 
     // Start build if not already in flight (dedup concurrent requests).
     // Always start a fresh getBuild — errors from previous attempts are
@@ -430,7 +436,7 @@ export class PanelHttpServer {
         return;
       }
       const promise = this.callbacks.getBuild(source, ref).then((result) => {
-        this.storeBuild(source, result);
+        this.storeBuild(source, result, ref);
         this.buildErrors.delete(flightKey);
         this.buildInFlight.delete(flightKey);
       }).catch((err) => {
@@ -456,7 +462,7 @@ export class PanelHttpServer {
     ]);
 
     if (resolved) {
-      const build = this.servingCache.get(source);
+      const build = this.servingCache.get(flightKey);
       if (build) {
         this.servePanelResource(res, build, "/");
       } else {
@@ -469,6 +475,21 @@ export class PanelHttpServer {
       }
     } else {
       this.serveBuildingPage(res, panelLabel);
+    }
+  }
+
+  private buildCacheKey(source: string, ref?: string): string {
+    return ref ? `${source}@${ref}` : source;
+  }
+
+  private refFromReferer(req: import("http").IncomingMessage): string | null {
+    const referer = req.headers.referer;
+    if (typeof referer !== "string") return null;
+    try {
+      const parsed = new URL(referer);
+      return parsed.searchParams.get("ref");
+    } catch {
+      return null;
     }
   }
 

@@ -26,6 +26,6 @@
       "@natstack/types": ["../../packages/types/src/index.ts"]
     }
   },
-  "include": ["src/**/*", "App.tsx", "jest.setup.ts"],
-  "exclude": ["node_modules", "ios", "android"]
+  "include": ["src/**/*", "App.tsx"],
+  "exclude": ["node_modules", "ios", "android", "**/*.test.ts", "**/*.test.tsx"]
 }

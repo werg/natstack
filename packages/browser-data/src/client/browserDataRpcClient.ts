@@ -1,5 +1,6 @@
 import type { ImportedPassword } from "../types.js";
-import type { StoredCookie, StoredPassword } from "../storage/types.js";
+import type { RecordHistoryVisitRequest, UpdateHistoryTitleRequest } from "../types.js";
+import type { StoredBookmark, StoredCookie, StoredHistory, StoredPassword, StoredSearchEngine } from "../storage/types.js";
 
 interface RpcLike {
   call(service: string, method: string, args: unknown[]): Promise<unknown>;
@@ -8,6 +9,18 @@ interface RpcLike {
 export interface BrowserDataClient {
   cookies: {
     getByDomain(domain?: string): Promise<StoredCookie[]>;
+  };
+  history: {
+    get(query: { limit: number }): Promise<StoredHistory[]>;
+    searchForAutocomplete(query: string, limit?: number): Promise<StoredHistory[]>;
+    recordVisit(request: RecordHistoryVisitRequest): Promise<number>;
+    updateTitle(request: UpdateHistoryTitleRequest): Promise<void>;
+  };
+  bookmarks: {
+    search(query: string): Promise<StoredBookmark[]>;
+  };
+  searchEngines: {
+    getAll(): Promise<StoredSearchEngine[]>;
   };
   passwords: {
     getForOrigin(origin: string): Promise<StoredPassword[]>;
@@ -29,6 +42,18 @@ export function createBrowserDataRpcClient(
   return {
     cookies: {
       getByDomain: (domain?: string) => call("getCookies", domain),
+    },
+    history: {
+      get: (query: { limit: number }) => call("getHistory", query),
+      searchForAutocomplete: (query: string, limit?: number) => call("searchHistoryForAutocomplete", { query, limit }),
+      recordVisit: (request: RecordHistoryVisitRequest) => call("recordHistoryVisit", request),
+      updateTitle: (request: UpdateHistoryTitleRequest) => call("updateHistoryTitle", request),
+    },
+    bookmarks: {
+      search: (query: string) => call("searchBookmarks", query),
+    },
+    searchEngines: {
+      getAll: () => call("getSearchEngines"),
     },
     passwords: {
       getForOrigin: (origin: string) => call("getPasswordForSite", origin),

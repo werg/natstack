@@ -30,6 +30,8 @@ export function createPanelPersistenceService(deps: { doDispatch: DODispatch; wo
       panelExists: anyArgs,
       getPanelCount: anyArgs,
       updatePanel: anyArgs,
+      pushHistorySnapshot: anyArgs,
+      navigateHistory: anyArgs,
       setSelectedChild: anyArgs,
       updateSelectedPath: anyArgs,
       setTitle: anyArgs,

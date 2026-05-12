@@ -1,8 +1,5 @@
 /**
- * Panel accessor functions for the unified PanelSnapshot architecture.
- *
- * These functions provide type-safe access to panel state via the
- * single current snapshot.
+ * Panel accessor functions for the PanelSnapshot history architecture.
  */
 
 import type { CreateChildOptions } from "@natstack/types";
@@ -11,36 +8,60 @@ import type { Panel, PanelSnapshot, PackageManifest, StateArgsValue } from "../t
 /**
  * Get the current snapshot for a panel.
  */
-export function getCurrentSnapshot(panel: Panel): PanelSnapshot {
-  return panel.snapshot;
+export function getCurrentSnapshot(panel: Pick<Panel, "id" | "history">): PanelSnapshot {
+  const snapshot = panel.history.entries[panel.history.index];
+  if (!snapshot) {
+    throw new Error(`Panel ${panel.id} has no snapshot at history index ${panel.history.index}`);
+  }
+  return snapshot;
+}
+
+export function replaceCurrentSnapshot(panel: Panel, snapshot: PanelSnapshot): void {
+  panel.history.entries[panel.history.index] = snapshot;
+}
+
+export function replacePanelHistory(panel: Panel, entries: PanelSnapshot[], index: number): void {
+  if (entries.length === 0) {
+    throw new Error(`Panel ${panel.id} history cannot be empty`);
+  }
+  const nextIndex = Math.max(0, Math.min(index, entries.length - 1));
+  panel.history = { entries, index: nextIndex };
+}
+
+export function pushPanelHistorySnapshot(panel: Panel, snapshot: PanelSnapshot): void {
+  replacePanelHistory(
+    panel,
+    panel.history.entries.slice(0, panel.history.index + 1).concat(snapshot),
+    panel.history.index + 1,
+  );
 }
 
 /**
  * Get the panel source (path or URL) from the current snapshot.
  */
-export function getPanelSource(panel: Panel): string {
-  return panel.snapshot.source;
+export function getPanelSource(panel: Pick<Panel, "id" | "history">): string {
+  return getCurrentSnapshot(panel).source;
 }
 
 /**
  * Get the panel options from the current snapshot.
  */
-export function getPanelOptions(panel: Panel): PanelSnapshot["options"] {
-  return panel.snapshot.options;
+export function getPanelOptions(panel: Pick<Panel, "id" | "history">): PanelSnapshot["options"] {
+  return getCurrentSnapshot(panel).options;
 }
 
 /**
  * Get panel environment variables from the current snapshot.
  */
-export function getPanelEnv(panel: Panel): Record<string, string> | undefined {
+export function getPanelEnv(panel: Pick<Panel, "id" | "history">): Record<string, string> | undefined {
   return getPanelOptions(panel).env;
 }
 
 /**
  * Get the resolved context ID for a panel.
  */
-export function getPanelContextId(panel: Panel): string {
-  return panel.snapshot.contextId;
+export function getPanelContextId(panel: Pick<Panel, "id" | "history">): string {
+  return getCurrentSnapshot(panel).contextId;
 }
 
 /**
@@ -53,16 +74,27 @@ export function getInjectHostThemeVariables(panel: Panel, manifest?: PackageMani
 /**
  * Get the resolved URL for a panel.
  */
-export function getBrowserResolvedUrl(panel: Panel): string | undefined {
-  return panel.snapshot.resolvedUrl;
+export function getBrowserResolvedUrl(panel: Pick<Panel, "id" | "history">): string | undefined {
+  return getCurrentSnapshot(panel).resolvedUrl;
+}
+
+export function getPanelRef(panel: Pick<Panel, "id" | "history">): string | undefined {
+  return getCurrentSnapshot(panel).options.ref;
+}
+
+export function getPanelHistoryState(panel: Panel): { canGoBack: boolean; canGoForward: boolean } {
+  return {
+    canGoBack: panel.history.index > 0,
+    canGoForward: panel.history.index < panel.history.entries.length - 1,
+  };
 }
 
 /**
  * Get the state args for a panel from the current snapshot.
  * Returns undefined if not set.
  */
-export function getPanelStateArgs(panel: Panel): StateArgsValue | undefined {
-  return panel.snapshot.stateArgs;
+export function getPanelStateArgs(panel: Pick<Panel, "id" | "history">): StateArgsValue | undefined {
+  return getCurrentSnapshot(panel).stateArgs;
 }
 
 /**

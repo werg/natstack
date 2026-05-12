@@ -25,6 +25,7 @@ import {
 } from "@natstack/shared/panelFactory";
 import {
   createSnapshot,
+  getCurrentSnapshot,
   getPanelSource,
   getPanelStateArgs,
 } from "@natstack/shared/panel/accessors";
@@ -142,7 +143,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
         }
         panel.children = kept;
       }
-      if (panel.snapshot.autoArchiveWhenEmpty && panel.children.length === 0) {
+      if (getCurrentSnapshot(panel).autoArchiveWhenEmpty && panel.children.length === 0) {
         try {
           await persist.archivePanel(panel.id);
         } catch (e) {
@@ -434,7 +435,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
           const existing = await persistence.getPanel(panelId);
           if (!existing) throw new Error(`Panel not found: ${panelId}`);
 
-          const updatedSnapshot = { ...existing.snapshot };
+          const updatedSnapshot = { ...getCurrentSnapshot(existing) };
           if (updates.contextId) updatedSnapshot.contextId = updates.contextId;
           if (updates.source) {
             // SECURITY (#9 in audit): validate the source resolves
@@ -524,7 +525,7 @@ export function createPanelService(deps: PanelServiceDeps): ServiceDefinition {
             throw new Error(`Invalid stateArgs: ${validation.error}`);
           }
 
-          const updatedSnapshot = { ...panel.snapshot, stateArgs: validation.data };
+          const updatedSnapshot = { ...getCurrentSnapshot(panel), stateArgs: validation.data };
           await persistence.updatePanel(panelId, { snapshot: updatedSnapshot });
 
           return validation.data;

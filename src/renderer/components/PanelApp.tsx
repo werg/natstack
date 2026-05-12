@@ -97,6 +97,10 @@ function PanelAppContent() {
     window.requestAnimationFrame(() => window.dispatchEvent(new CustomEvent("shell-focus-address")));
   }, [setAddressBarVisible]));
 
+  useShellEvent("panel-chrome-command", useCallback(({ command }) => {
+    handleChromeCommand({ type: command });
+  }, [handleChromeCommand]));
+
   // Listen for panel devtools toggle from native menu via shell event
   const handleTogglePanelDevTools = useCallback(() => {
     openPanelDevTools();

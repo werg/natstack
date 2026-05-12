@@ -3,6 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PanelRegistry } from "../panelRegistry.js";
+import { getCurrentSnapshot } from "../panel/accessors.js";
 import { PanelManager } from "./panelManager.js";
 import { PanelStoreMemory } from "./panelStoreMemory.js";
 
@@ -88,7 +89,7 @@ describe("PanelManager", () => {
 
     const nextStateArgs = await manager.updateStateArgs(created.panelId, { greeting: "updated" });
     expect(nextStateArgs).toEqual({ greeting: "updated" });
-    expect(registry.getPanel(created.panelId)?.snapshot.stateArgs).toEqual({ greeting: "updated" });
+    expect(getCurrentSnapshot(registry.getPanel(created.panelId)!).stateArgs).toEqual({ greeting: "updated" });
 
     const clearedStateArgs = await manager.updateStateArgs(created.panelId, { greeting: null });
     expect(clearedStateArgs).toEqual({});
@@ -142,5 +143,55 @@ describe("PanelManager", () => {
       serverUrl: "https://natstack.example.com",
       token: `rpc-${created.panelId}`,
     });
+  });
+
+  it("pushes current-panel navigation into snapshot history and traverses it", async () => {
+    const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-panel-manager-"));
+    tempDirs.push(workspacePath);
+
+    for (const name of ["first", "second"]) {
+      const panelDir = path.join(workspacePath, "panels", name);
+      fs.mkdirSync(panelDir, { recursive: true });
+      fs.writeFileSync(path.join(panelDir, "package.json"), JSON.stringify({
+        name,
+        natstack: { title: `${name} Panel` },
+      }));
+    }
+
+    const registry = new PanelRegistry({});
+    const manager = new PanelManager({
+      store: new PanelStoreMemory(),
+      registry,
+      workspacePath,
+      tokenClient: {
+        ensurePanelToken: vi.fn(async (panelId: string) => ({ token: `rpc-${panelId}` })),
+        revokePanelToken: vi.fn(async () => {}),
+        updatePanelContext: vi.fn(async () => {}),
+        updatePanelParent: vi.fn(async () => {}),
+      },
+      serverInfo: {
+        gatewayConfig: { serverUrl: "http://127.0.0.1:42773" },
+      },
+    });
+
+    const created = await manager.create("panels/first", {
+      isRoot: true,
+      addAsRoot: true,
+    });
+
+    await manager.navigate(created.panelId, "panels/second", { ref: "feature" });
+    const afterNavigate = registry.getPanel(created.panelId)!;
+    expect(getCurrentSnapshot(afterNavigate).source).toBe("panels/second");
+    expect(getCurrentSnapshot(afterNavigate).options.ref).toBe("feature");
+    expect(afterNavigate.history.entries.map((entry) => entry.source)).toEqual(["panels/first", "panels/second"]);
+    expect(afterNavigate.history.index).toBe(1);
+
+    await manager.navigateHistory(created.panelId, -1);
+    expect(getCurrentSnapshot(registry.getPanel(created.panelId)!).source).toBe("panels/first");
+    expect(registry.getPanel(created.panelId)?.history.index).toBe(0);
+
+    await manager.navigateHistory(created.panelId, 1);
+    expect(getCurrentSnapshot(registry.getPanel(created.panelId)!).source).toBe("panels/second");
+    expect(getCurrentSnapshot(registry.getPanel(created.panelId)!).options.ref).toBe("feature");
   });
 });

@@ -109,6 +109,8 @@ export function createGitService(deps: GitServiceDeps): ServiceDefinition {
     policy: { allowed: ["shell", "panel", "server", "worker"] },
     methods: {
       getWorkspaceTree: { args: z.tuple([]) },
+      findRepoForPath: { args: z.tuple([z.string()]) },
+      status: { args: z.tuple([z.string()]) },
       listBranches: { args: z.tuple([z.string()]) },
       listCommits: { args: z.tuple([z.string(), z.string(), z.number()]) },
       resolveRef: { args: z.tuple([z.string(), z.string()]) },
@@ -128,6 +130,19 @@ export function createGitService(deps: GitServiceDeps): ServiceDefinition {
 
       switch (method) {
         case "getWorkspaceTree": return g.getWorkspaceTree();
+        case "findRepoForPath": {
+          const inputPath = normalizeWorkspaceRepoPath(args[0] as string);
+          const tree = await g.getWorkspaceTree();
+          const repos = [...collectWorkspaceRepoPaths(tree.children as WorkspaceTreeNode[])]
+            .sort((a, b) => b.length - a.length);
+          const repoPath = repos.find((repo) => inputPath === repo || inputPath.startsWith(`${repo}/`));
+          if (!repoPath) return null;
+          return {
+            repoPath,
+            relativePath: inputPath === repoPath ? "" : inputPath.slice(repoPath.length + 1),
+          };
+        }
+        case "status": return g.status(args[0] as string);
         case "listBranches": return g.listBranches(args[0] as string);
         case "listCommits": {
           const repoPath = args[0] as string;

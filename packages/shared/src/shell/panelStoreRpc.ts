@@ -1,4 +1,4 @@
-import type { Panel, PanelSummary } from "../types.js";
+import type { Panel, PanelSnapshot, PanelSummary } from "../types.js";
 import type { PanelStore, PanelStoreCreateInput, PanelStoreUpdateInput } from "./panelStore.js";
 
 /**
@@ -47,6 +47,14 @@ export class PanelStoreRpc implements PanelStore {
 
   updatePanel(panelId: string, input: PanelStoreUpdateInput): Promise<void> {
     return this.call("updatePanel", [panelId, input]);
+  }
+
+  pushHistorySnapshot(panelId: string, snapshot: PanelSnapshot): Promise<void> {
+    return this.call("pushHistorySnapshot", [panelId, snapshot]);
+  }
+
+  navigateHistory(panelId: string, delta: -1 | 1): Promise<Panel | null> {
+    return this.call("navigateHistory", [panelId, delta]);
   }
 
   setSelectedChild(panelId: string, childId: string | null): Promise<void> {

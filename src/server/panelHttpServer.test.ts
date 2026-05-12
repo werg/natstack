@@ -110,11 +110,21 @@ describe("PanelHttpServer build cache", () => {
     expect(server.hasBuild("panels/other")).toBe(false);
   });
 
+  it("keys cached builds by ref", () => {
+    const server = new PanelHttpServer();
+    server.storeBuild("panels/my-app", buildResult, "main");
+    expect(server.hasBuild("panels/my-app")).toBe(false);
+    expect(server.hasBuild("panels/my-app", "main")).toBe(true);
+    expect(server.hasBuild("panels/my-app", "feature")).toBe(false);
+  });
+
   it("invalidateBuild removes cached build", () => {
     const server = new PanelHttpServer();
     server.storeBuild("panels/my-app", buildResult);
+    server.storeBuild("panels/my-app", buildResult, "feature");
     server.invalidateBuild("panels/my-app");
     expect(server.hasBuild("panels/my-app")).toBe(false);
+    expect(server.hasBuild("panels/my-app", "feature")).toBe(false);
   });
 
   it("storeBuild rejects build without html", () => {

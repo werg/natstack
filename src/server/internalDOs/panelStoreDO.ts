@@ -211,10 +211,46 @@ export class PanelStoreDO extends DurableObjectBase {
     }
     if (input.snapshot !== undefined) {
       updates.push("history = ?", "history_index = ?");
-      params.push(JSON.stringify([input.snapshot]), 0);
+      const row = this.requireRow(panelId);
+      const history = this.parseHistory(row);
+      const historyIndex = this.normalizeHistoryIndex(row, history);
+      history[historyIndex] = input.snapshot;
+      params.push(JSON.stringify(history), historyIndex);
     }
     params.push(panelId);
     this.sql.exec(`UPDATE panels SET ${updates.join(", ")} WHERE id = ?`, ...params);
+  }
+
+  pushHistorySnapshot(panelId: string, snapshot: PanelSnapshot): void {
+    const row = this.requireRow(panelId);
+    const history = this.parseHistory(row);
+    const historyIndex = this.normalizeHistoryIndex(row, history);
+    const nextHistory = history.slice(0, historyIndex + 1);
+    nextHistory.push(snapshot);
+    this.sql.exec(
+      `UPDATE panels SET history = ?, history_index = ?, updated_at = ? WHERE id = ?`,
+      JSON.stringify(nextHistory),
+      nextHistory.length - 1,
+      Date.now(),
+      panelId,
+    );
+  }
+
+  navigateHistory(panelId: string, delta: -1 | 1): Panel | null {
+    const row = this.requireRow(panelId);
+    const history = this.parseHistory(row);
+    const historyIndex = this.normalizeHistoryIndex(row, history);
+    const nextIndex = Math.max(0, Math.min(history.length - 1, historyIndex + delta));
+    if (nextIndex !== historyIndex) {
+      this.sql.exec(
+        `UPDATE panels SET history_index = ?, updated_at = ? WHERE id = ?`,
+        nextIndex,
+        Date.now(),
+        panelId,
+      );
+    }
+    const nextRow = { ...row, history_index: nextIndex };
+    return this.rowToPanel(nextRow);
   }
 
   setSelectedChild(panelId: string, childId: string | null): void {
@@ -474,19 +510,34 @@ export class PanelStoreDO extends DurableObjectBase {
   }
 
   private rowToPanel(row: DbPanelRow): Panel {
-    const history = JSON.parse(row.history) as PanelSnapshot[];
-    if (!Array.isArray(history) || history.length === 0) {
-      throw new Error(`Panel ${row.id} has invalid history: must be non-empty array`);
-    }
-    const historyIndex = row.history_index < 0 || row.history_index >= history.length ? 0 : row.history_index;
+    const history = this.parseHistory(row);
+    const historyIndex = this.normalizeHistoryIndex(row, history);
     return {
       id: row.id,
       title: row.title,
       children: [],
       selectedChildId: row.selected_child_id,
-      snapshot: history[historyIndex]!,
+      history: { entries: history, index: historyIndex },
       artifacts: {},
     };
+  }
+
+  private requireRow(panelId: string): DbPanelRow {
+    const row = this.sql.exec(`SELECT * FROM panels WHERE id = ?`, panelId).toArray()[0] as unknown as DbPanelRow | undefined;
+    if (!row) throw new Error(`Panel ${panelId} not found`);
+    return row;
+  }
+
+  private parseHistory(row: DbPanelRow): PanelSnapshot[] {
+    const history = JSON.parse(row.history) as PanelSnapshot[];
+    if (!Array.isArray(history) || history.length === 0) {
+      throw new Error(`Panel ${row.id} has invalid history: must be non-empty array`);
+    }
+    return history;
+  }
+
+  private normalizeHistoryIndex(row: DbPanelRow, history: PanelSnapshot[]): number {
+    return row.history_index < 0 || row.history_index >= history.length ? 0 : row.history_index;
   }
 
   private sanitizeQuery(query: string): string {

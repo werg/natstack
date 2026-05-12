@@ -86,7 +86,7 @@ export interface PanelViewLike {
  * HTTP panel server abstraction — optional in both modes.
  */
 export interface PanelHttpServerLike {
-  hasBuild(source: string): boolean;
+  hasBuild(source: string, ref?: string): boolean;
   invalidateBuild(source: string): void;
   getPort(): number;
 }
@@ -97,6 +97,7 @@ export interface PanelHttpServerLike {
 export type PanelCreateOptions = {
   name?: string;
   env?: Record<string, string>;
+  ref?: string;
   /**
    * Explicit context ID for storage partition sharing.
    * If provided, the panel will use this context ID instead of generating one.

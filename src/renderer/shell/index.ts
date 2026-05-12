@@ -4,3 +4,4 @@
 
 export * from "./client.js";
 export { useShellEvent, type EventPayloads } from "./useShellEvent.js";
+export { useNativeShellOverlay } from "./useNativeShellOverlay.js";

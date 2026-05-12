@@ -25,6 +25,8 @@ export function createPanelPersistenceClient(rpc: RpcLike): PanelPersistence & P
     panelExists: (panelId: string) => call("panelExists", panelId),
     getPanelCount: () => call("getPanelCount"),
     updatePanel: (panelId: string, input: UpdatePanelInput) => call("updatePanel", panelId, input),
+    pushHistorySnapshot: (panelId: string, snapshot) => call("pushHistorySnapshot", panelId, snapshot),
+    navigateHistory: (panelId: string, delta: -1 | 1) => call("navigateHistory", panelId, delta),
     setSelectedChild: (panelId: string, childId: string | null) => call("setSelectedChild", panelId, childId),
     updateSelectedPath: (focusedPanelId: string) => call("updateSelectedPath", focusedPanelId),
     setTitle: (panelId: string, title: string) => call("setTitle", panelId, title),
@@ -47,4 +49,3 @@ export function createPanelPersistenceClient(rpc: RpcLike): PanelPersistence & P
     rebuildIndex: () => call("rebuildIndex"),
   };
 }
-

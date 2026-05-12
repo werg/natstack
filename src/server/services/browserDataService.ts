@@ -5,9 +5,12 @@ import type { DODispatch } from "../doDispatch.js";
 import { INTERNAL_DO_SOURCE } from "../internalDOs/internalDoLoader.js";
 import {
   BookmarkSchema,
+  HistoryAutocompleteQuerySchema,
   HistoryQuerySchema,
   ImportRequestSchema,
   PasswordSchema,
+  RecordHistoryVisitSchema,
+  UpdateHistoryTitleSchema,
   detectBrowsers,
   exportChromiumBookmarks,
   exportCsvPasswords,
@@ -29,6 +32,8 @@ import type {
   ImportedPassword,
   ImportedPermission,
   ImportedSearchEngine,
+  RecordHistoryVisitRequest,
+  UpdateHistoryTitleRequest,
 } from "@natstack/browser-data";
 
 export function createBrowserDataService(deps: {
@@ -76,6 +81,9 @@ export function createBrowserDataService(deps: {
       deleteHistoryRange: { args: z.tuple([z.number(), z.number()]), policy: SHELL_ONLY },
       clearAllHistory: { args: z.tuple([]), policy: SHELL_ONLY },
       searchHistory: { args: z.tuple([z.string(), z.number().optional()]), policy: SHELL_ONLY },
+      searchHistoryForAutocomplete: { args: z.tuple([HistoryAutocompleteQuerySchema]), policy: SHELL_ONLY },
+      recordHistoryVisit: { args: z.tuple([RecordHistoryVisitSchema]), policy: SHELL_ONLY },
+      updateHistoryTitle: { args: z.tuple([UpdateHistoryTitleSchema]), policy: SHELL_ONLY },
       getPasswords: { args: z.tuple([]), policy: SHELL_ONLY },
       getPasswordForSite: { args: z.tuple([z.string()]), policy: SHELL_ONLY },
       addPassword: { args: z.tuple([PasswordSchema]), policy: SHELL_ONLY },
@@ -140,6 +148,12 @@ export function createBrowserDataService(deps: {
           return call("isNeverSave", args[0]);
         case "searchHistory":
           return call("searchHistory", ...args);
+        case "searchHistoryForAutocomplete":
+          return call("searchHistoryForAutocomplete", args[0]);
+        case "recordHistoryVisit":
+          return mutate("history", "recordHistoryVisit", validateHistoryVisit(args[0] as RecordHistoryVisitRequest));
+        case "updateHistoryTitle":
+          return mutate("history", "updateHistoryTitle", validateHistoryTitle(args[0] as UpdateHistoryTitleRequest));
         case "getPasswords":
           return call("getPasswords");
         case "getPasswordForSite":
@@ -215,6 +229,37 @@ function exportBookmarks(format: "html" | "json" | "chrome-json", allBookmarks: 
   if (format === "html") return exportNetscapeBookmarks(imported);
   if (format === "chrome-json") return exportChromiumBookmarks(imported);
   return JSON.stringify(imported, null, 2);
+}
+
+function validateHistoryVisit(request: RecordHistoryVisitRequest): RecordHistoryVisitRequest {
+  validateHttpUrl(request.url);
+  return {
+    ...request,
+    title: request.title?.trim() || undefined,
+    visitTime: request.visitTime ?? Date.now(),
+    transition: request.transition ?? "link",
+    typed: Boolean(request.typed),
+  };
+}
+
+function validateHistoryTitle(request: UpdateHistoryTitleRequest): UpdateHistoryTitleRequest {
+  validateHttpUrl(request.url);
+  return {
+    ...request,
+    title: request.title.trim(),
+    observedAt: request.observedAt ?? Date.now(),
+  };
+}
+
+function validateHttpUrl(url: string): void {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("unsupported protocol");
+    }
+  } catch {
+    throw new Error(`Invalid browser history URL (must be http/https): ${url}`);
+  }
 }
 
 function exportPasswords(format: "csv-chrome" | "csv-firefox" | "json", allPasswords: Array<Record<string, unknown>>) {

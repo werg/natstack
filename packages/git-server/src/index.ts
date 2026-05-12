@@ -7,6 +7,7 @@ export type {
   WorkspaceNode,
   BranchInfo,
   CommitInfo,
+  RepoStatus,
   GitWatcherLike,
   GitWriteAuthorizationRequest,
   GitWriteAuthorizationResult,

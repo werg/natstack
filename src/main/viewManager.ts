@@ -28,6 +28,7 @@ import {
 } from "electron";
 
 import { createDevLogger } from "@natstack/dev-log";
+import { ShellOverlayView, type ShellOverlayOptions } from "./shellOverlayView.js";
 
 const log = createDevLogger("ViewManager");
 
@@ -95,6 +96,7 @@ export class ViewManager {
   private window: BaseWindow;
   private views = new Map<string, ManagedView>();
   private shellView: WebContentsView;
+  private nativeShellOverlay: ShellOverlayView;
   private currentThemeCss: string | null = null;
   /** Per-view locks to prevent concurrent withViewVisible operations */
   private visibilityLocks = new Map<string, Promise<unknown>>();
@@ -130,6 +132,7 @@ export class ViewManager {
   constructor(options: {
     window: BaseWindow;
     shellPreload: string;
+    shellOverlayPreload?: string;
     shellHtmlPath: string;
     shellAdditionalArguments?: string[];
     devTools?: boolean;
@@ -146,6 +149,12 @@ export class ViewManager {
         additionalArguments: options.shellAdditionalArguments,
       },
     });
+    this.nativeShellOverlay = new ShellOverlayView(options.shellOverlayPreload ?? options.shellPreload, (event) => {
+      if (!this.shellView.webContents.isDestroyed()) {
+        this.shellView.webContents.send("natstack:shell-overlay:event", event);
+      }
+    });
+    this.nativeShellOverlay.setWindow(this.window);
 
     // Add shell to window and set it to fill
     this.window.contentView.addChildView(this.shellView);
@@ -522,6 +531,22 @@ export class ViewManager {
     }
   }
 
+  showNativeShellOverlay(options: ShellOverlayOptions): void {
+    this.nativeShellOverlay.show(options);
+  }
+
+  updateNativeShellOverlay(options: Partial<ShellOverlayOptions> & { id?: string }): void {
+    this.nativeShellOverlay.update(options);
+  }
+
+  hideNativeShellOverlay(id?: string): void {
+    this.nativeShellOverlay.hide(id);
+  }
+
+  isNativeShellOverlayVisible(): boolean {
+    return this.nativeShellOverlay.isVisible();
+  }
+
   /**
    * Calculate the bounds for the panel content area based on current layout state.
    */
@@ -602,6 +627,7 @@ export class ViewManager {
     for (const cb of this.viewOrderChangedCallbacks) {
       cb();
     }
+    this.nativeShellOverlay.bringToFront();
   }
 
   /**
@@ -989,6 +1015,7 @@ export class ViewManager {
   destroy(): void {
     this.stopCompositorKeepalive();
     this.stopCompositorStallDetector();
+    this.nativeShellOverlay.destroy();
 
     for (const id of this.views.keys()) {
       if (id !== "shell") {

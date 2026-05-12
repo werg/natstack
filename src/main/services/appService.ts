@@ -1,5 +1,5 @@
 import * as path from "path";
-import { app, nativeTheme } from "electron";
+import { app, nativeTheme, shell } from "electron";
 import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { ThemeMode } from "@natstack/shared/types";
@@ -23,6 +23,7 @@ export function createAppService(deps: {
       getSystemTheme: { args: z.tuple([]) },
       setThemeMode: { args: z.tuple([z.string()]) },
       openDevTools: { args: z.tuple([]) },
+      openExternal: { args: z.tuple([z.string()]) },
       getPanelPreloadPath: { args: z.tuple([]) },
       clearBuildCache: { args: z.tuple([]) },
       getShellPages: { args: z.tuple([]) },
@@ -49,6 +50,13 @@ export function createAppService(deps: {
         case "openDevTools": {
           const vm = deps.getViewManager();
           vm.openDevTools("shell");
+          return;
+        }
+
+        case "openExternal": {
+          const url = args[0] as string;
+          if (!/^https?:\/\//i.test(url)) throw new Error("Only http(s) URLs can be opened externally");
+          await shell.openExternal(url);
           return;
         }
 

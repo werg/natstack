@@ -121,6 +121,55 @@ describe("internal storage DOs under workerd", () => {
     await expect(harness.dispatch.dispatch(ref, "searchHistory", "durable", 10)).resolves.toEqual([]);
   }, 30_000);
 
+  it("records BrowserDataDO history visits and title updates without double-counting", async () => {
+    const harness = createWorkerdHarness();
+    manager = harness.manager;
+    await manager.registerAllDOClasses([
+      { source: INTERNAL_DO_SOURCE, className: "BrowserDataDO" },
+    ]);
+
+    const ref = { source: INTERNAL_DO_SOURCE, className: "BrowserDataDO", objectKey: "global-record" };
+    await harness.dispatch.dispatch(ref, "recordHistoryVisit", {
+      url: "https://example.com/app",
+      title: "Example App",
+      transition: "typed",
+      typed: true,
+      visitTime: 100,
+    });
+    await harness.dispatch.dispatch(ref, "updateHistoryTitle", {
+      url: "https://example.com/app",
+      title: "Example App Updated",
+      observedAt: 150,
+    });
+    await expect(harness.dispatch.dispatch(ref, "searchHistoryForAutocomplete", { query: "updated", limit: 10 })).resolves.toMatchObject([
+      {
+        url: "https://example.com/app",
+        title: "Example App Updated",
+        visit_count: 1,
+        typed_count: 1,
+        first_visit: 100,
+        last_visit: 100,
+      },
+    ]);
+    await harness.dispatch.dispatch(ref, "recordHistoryVisit", {
+      url: "https://example.com/app",
+      transition: "back_forward",
+      typed: false,
+      visitTime: 200,
+    });
+
+    await expect(harness.dispatch.dispatch(ref, "searchHistoryForAutocomplete", { query: "updated", limit: 10 })).resolves.toMatchObject([
+      {
+        url: "https://example.com/app",
+        title: "Example App Updated",
+        visit_count: 2,
+        typed_count: 1,
+        first_visit: 100,
+        last_visit: 200,
+      },
+    ]);
+  }, 30_000);
+
   it("returns affected counts for BrowserDataDO cookie clears", async () => {
     const harness = createWorkerdHarness();
     manager = harness.manager;

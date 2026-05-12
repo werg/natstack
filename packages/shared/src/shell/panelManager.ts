@@ -1,7 +1,7 @@
 import * as path from "path";
 import { createDevLogger } from "@natstack/dev-log";
 import type { PanelRegistry } from "../panelRegistry.js";
-import type { Panel, ThemeAppearance } from "../types.js";
+import type { Panel, PanelSnapshot, ThemeAppearance } from "../types.js";
 import type { PanelSearchIndex } from "../panelPersistenceTypes.js";
 import type { WorkspaceConfig } from "../workspace/types.js";
 import { loadPanelManifest } from "../panelTypes.js";
@@ -13,7 +13,7 @@ import {
   generateContextId,
   resolveSource,
 } from "../panelFactory.js";
-import { createSnapshot, getPanelContextId, getPanelSource, getPanelStateArgs } from "../panel/accessors.js";
+import { createSnapshot, getCurrentSnapshot, getPanelContextId, getPanelOptions, getPanelSource, getPanelStateArgs } from "../panel/accessors.js";
 import type { PanelStore } from "./panelStore.js";
 
 const log = createDevLogger("PanelManager");
@@ -39,6 +39,7 @@ export interface CreatePanelOptions {
   name?: string;
   contextId?: string;
   env?: Record<string, string>;
+  ref?: string;
   stateArgs?: Record<string, unknown>;
   isRoot?: boolean;
   addAsRoot?: boolean;
@@ -53,6 +54,13 @@ export interface CreatePanelResult {
   stateArgs: Record<string, unknown>;
   options: Record<string, unknown>;
   autoArchiveWhenEmpty?: boolean;
+}
+
+export interface NavigatePanelOptions {
+  contextId?: string;
+  env?: Record<string, string>;
+  ref?: string;
+  stateArgs?: Record<string, unknown>;
 }
 
 export interface PanelManagerDeps {
@@ -103,7 +111,7 @@ export class PanelManager {
 
     await this.tokenClient.ensurePanelToken(panelId, contextId, opts?.parentId ?? null, relativePath);
 
-    const snapshot = createSnapshot(relativePath, contextId, { env: opts?.env }, validatedStateArgs);
+    const snapshot = createSnapshot(relativePath, contextId, { env: opts?.env, ref: opts?.ref }, validatedStateArgs);
     if (opts?.autoArchiveWhenEmpty || manifest.autoArchiveWhenEmpty) {
       snapshot.autoArchiveWhenEmpty = true;
     }
@@ -132,7 +140,7 @@ export class PanelManager {
         source: relativePath,
         title: manifest.title,
         stateArgs: validatedStateArgs ?? {},
-        options: { env: opts?.env ?? {} },
+        options: { env: opts?.env ?? {}, ...(opts?.ref ? { ref: opts.ref } : {}) },
         autoArchiveWhenEmpty: snapshot.autoArchiveWhenEmpty,
       };
     } catch (error) {
@@ -261,18 +269,18 @@ export class PanelManager {
       throw new Error(`Invalid stateArgs: ${validation.error}`);
     }
 
-    const nextSnapshot = { ...panel.snapshot, stateArgs: validation.data };
+    const nextSnapshot = { ...getCurrentSnapshot(panel), stateArgs: validation.data };
     await this.store.updatePanel(panelId, { snapshot: nextSnapshot });
     this.registry.updateStateArgs(panelId, validation.data as Record<string, unknown>);
     return validation.data as Record<string, unknown>;
   }
 
-  async updateContext(
+  async replaceCurrentSnapshot(
     panelId: string,
     updates: { contextId?: string; source?: string; stateArgs?: Record<string, unknown> },
   ): Promise<void> {
     const panel = await this.requireStoredPanel(panelId);
-    const nextSnapshot = { ...panel.snapshot };
+    const nextSnapshot = { ...getCurrentSnapshot(panel) };
 
     if (updates.contextId) nextSnapshot.contextId = updates.contextId;
     if (updates.source) {
@@ -284,13 +292,60 @@ export class PanelManager {
     if (updates.stateArgs) nextSnapshot.stateArgs = updates.stateArgs;
 
     await this.store.updatePanel(panelId, { snapshot: nextSnapshot });
-    const livePanel = this.registry.getPanel(panelId);
-    if (livePanel) {
-      livePanel.snapshot = nextSnapshot;
-    }
+    if (this.registry.getPanel(panelId)) this.registry.replaceCurrentSnapshot(panelId, nextSnapshot);
     if (updates.contextId) {
       await this.tokenClient.updatePanelContext(panelId, updates.contextId);
     }
+  }
+
+  async navigate(panelId: string, source: string, opts?: NavigatePanelOptions): Promise<CreatePanelResult> {
+    const panel = await this.requireStoredPanel(panelId);
+    const nextSnapshot = this.createNavigationSnapshot(panel, source, opts);
+    const manifest = this.tryResolveManifestForSource(nextSnapshot.source) ?? { title: path.basename(nextSnapshot.source) };
+
+    await this.store.pushHistorySnapshot(panelId, nextSnapshot);
+    await this.store.setTitle(panelId, manifest.title);
+
+    const livePanel = this.registry.getPanel(panelId);
+    if (livePanel) {
+      const nextHistory = {
+        entries: livePanel.history.entries.slice(0, livePanel.history.index + 1).concat(nextSnapshot),
+        index: livePanel.history.index + 1,
+      };
+      livePanel.title = manifest.title;
+      this.registry.replaceCurrentSnapshot(panelId, nextSnapshot, nextHistory);
+    }
+
+    if (nextSnapshot.contextId !== getPanelContextId(panel)) {
+      await this.tokenClient.updatePanelContext(panelId, nextSnapshot.contextId);
+    }
+    this.indexPanel(panelId, manifest.title, nextSnapshot.source);
+
+    return {
+      panelId,
+      contextId: nextSnapshot.contextId,
+      source: nextSnapshot.source,
+      title: manifest.title,
+      stateArgs: (nextSnapshot.stateArgs ?? {}) as Record<string, unknown>,
+      options: nextSnapshot.options,
+      autoArchiveWhenEmpty: nextSnapshot.autoArchiveWhenEmpty,
+    };
+  }
+
+  async navigateHistory(panelId: string, delta: -1 | 1): Promise<Panel | null> {
+    const before = await this.requireStoredPanel(panelId);
+    const panel = await this.store.navigateHistory(panelId, delta);
+    if (!panel) return null;
+
+    const livePanel = this.registry.getPanel(panelId);
+    if (livePanel) {
+      livePanel.title = panel.title;
+      this.registry.replaceCurrentSnapshot(panelId, getCurrentSnapshot(panel), panel.history);
+    }
+    if (getPanelContextId(panel) !== getPanelContextId(before)) {
+      await this.tokenClient.updatePanelContext(panelId, getPanelContextId(panel));
+    }
+    return panel;
   }
 
   async updateTitle(panelId: string, title: string): Promise<void> {
@@ -394,8 +449,8 @@ export class PanelManager {
         serverUrl: this.serverInfo.gatewayConfig.serverUrl,
         token,
       },
-      env: (panel.snapshot.options.env ?? {}) as Record<string, string>,
-      stateArgs: (panel.snapshot.stateArgs ?? {}) as Record<string, unknown>,
+      env: (getPanelOptions(panel).env ?? {}) as Record<string, string>,
+      stateArgs: (getPanelStateArgs(panel) ?? {}) as Record<string, unknown>,
     });
   }
 
@@ -411,7 +466,7 @@ export class PanelManager {
         }
         panel.children = nextChildren;
       }
-      if (panel.snapshot.autoArchiveWhenEmpty && panel.children.length === 0) {
+      if (getCurrentSnapshot(panel).autoArchiveWhenEmpty && panel.children.length === 0) {
         await this.store.archivePanel(panel.id);
       }
     }
@@ -440,7 +495,7 @@ export class PanelManager {
   private hydratePanel(
     panelId: string,
     title: string,
-    snapshot: Panel["snapshot"],
+    snapshot: PanelSnapshot,
     artifacts: Panel["artifacts"] = { buildState: "building", buildProgress: "Starting build..." },
   ): Panel {
     return {
@@ -448,9 +503,28 @@ export class PanelManager {
       title,
       children: [],
       selectedChildId: null,
-      snapshot,
+      history: { entries: [snapshot], index: 0 },
       artifacts,
     };
+  }
+
+  private createNavigationSnapshot(panel: Panel, source: string, opts?: NavigatePanelOptions): PanelSnapshot {
+    const { relativePath, absolutePath } = resolveSource(source, this.workspacePath);
+    const manifest = this.resolveManifest(absolutePath, relativePath, this.allowMissingManifests);
+    const validatedStateArgs = this.validateManifestStateArgs(relativePath, manifest.stateArgs, opts?.stateArgs);
+    const currentSnapshot = getCurrentSnapshot(panel);
+    const previousOptions = currentSnapshot.options;
+    const snapshot = createSnapshot(
+      relativePath,
+      opts?.contextId ?? currentSnapshot.contextId,
+      {
+        env: opts?.env ?? previousOptions.env,
+        ref: opts?.ref,
+      },
+      validatedStateArgs,
+    );
+    if (manifest.autoArchiveWhenEmpty) snapshot.autoArchiveWhenEmpty = true;
+    return snapshot;
   }
 
   private resolveManifest(

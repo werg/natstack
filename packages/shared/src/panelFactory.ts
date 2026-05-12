@@ -40,6 +40,7 @@ export interface BuildBootstrapConfigOpts {
 export interface BuildPanelUrlOpts {
   source: string;
   contextId: string;
+  ref?: string;
   gatewayPort: number;
   externalHost: string;
   protocol: "http" | "https";
@@ -103,6 +104,7 @@ export function buildPanelUrl(opts: BuildPanelUrlOpts): string {
   const encodedPath = encodeURIComponent(opts.source).replace(/%2F/g, "/");
   const params = new URLSearchParams();
   params.set("contextId", opts.contextId);
+  if (opts.ref) params.set("ref", opts.ref);
   return `${opts.protocol}://${opts.externalHost}:${opts.gatewayPort}/${encodedPath}/?${params.toString()}`;
 }
 
@@ -169,7 +171,7 @@ export function buildPanelFromResult(
     title: result.title,
     children: [],
     selectedChildId: null,
-    snapshot: initialSnapshot,
+    history: { entries: [initialSnapshot], index: 0 },
     artifacts,
   };
 }

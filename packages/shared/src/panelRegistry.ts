@@ -14,7 +14,13 @@
 
 import { createDevLogger } from "@natstack/dev-log";
 import type { Panel, PanelArtifacts, PanelInfo, PanelSummary } from "./types.js";
-import { getPanelSource, getPanelContextId } from "./panel/accessors.js";
+import {
+  getCurrentSnapshot,
+  getPanelSource,
+  getPanelContextId,
+  replaceCurrentSnapshot as replacePanelCurrentSnapshot,
+  replacePanelHistory,
+} from "./panel/accessors.js";
 import { contextIdToPartition } from "./contextIdToPartition.js";
 import type { PanelRelationshipProvider } from "./panelInterfaces.js";
 
@@ -370,7 +376,17 @@ export class PanelRegistry implements PanelRelationshipProvider {
     if (!panel) {
       throw new Error(`Panel not found: ${panelId}`);
     }
-    panel.snapshot.stateArgs = stateArgs;
+    replacePanelCurrentSnapshot(panel, { ...getCurrentSnapshot(panel), stateArgs });
+  }
+
+  replaceCurrentSnapshot(panelId: string, snapshot: ReturnType<typeof getCurrentSnapshot>, history?: Panel["history"]): void {
+    const panel = this.panels.get(panelId);
+    if (!panel) {
+      throw new Error(`Panel not found: ${panelId}`);
+    }
+    if (history) replacePanelHistory(panel, history.entries, history.index);
+    else replacePanelCurrentSnapshot(panel, snapshot);
+    this.notifyPanelTreeUpdate();
   }
 
   /**

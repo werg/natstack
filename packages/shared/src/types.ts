@@ -178,6 +178,11 @@ export interface PanelNavigationState {
   canGoForward?: boolean;
 }
 
+export interface PanelSnapshotHistory {
+  entries: PanelSnapshot[];
+  index: number;
+}
+
 /**
  * Panel runtime state. Configuration comes from current snapshot.
  */
@@ -189,8 +194,7 @@ export interface Panel {
   children: Panel[];
   selectedChildId: string | null;
 
-  // Single current snapshot (replaces history array — browser handles history natively)
-  snapshot: PanelSnapshot;
+  history: PanelSnapshotHistory;
 
   // Runtime only (not in snapshot)
   artifacts: PanelArtifacts;
@@ -226,12 +230,17 @@ export interface SettingsData {
 /** Actions available in panel context menus */
 export type PanelContextMenuAction =
   | "reload"
+  | "reload-panel"
+  | "reload-view"
   | "force-reload"
+  | "force-reload-view"
+  | "rebuild-panel"
   | "stop"
   | "back"
   | "forward"
   | "copy-address"
   | "open-external"
+  | "duplicate"
   | "unload"
   | "archive";
 

@@ -11,9 +11,18 @@ import {
 import type { LazyTitleNavigationData, LazyStatusNavigationData } from "./navigationTypes";
 import type { PanelContextMenuAction } from "@natstack/shared/types";
 import {
+  DEFAULT_SEARCH_TEMPLATE,
+  applySearchTemplate,
+  getBrowserNavigationIntentForAddressAction,
+  getBrowserNavigationIntentForCommand,
+  type AddressNavigationMode,
+  type PanelCommandId,
+} from "@natstack/shared/panelCommands";
+import {
   buildPanelChromeState,
   isBrowserPanelSource,
   parseAddressInput,
+  type AddressAction,
   type PanelChromeState,
 } from "@natstack/shared/panelChrome";
 import {
@@ -23,7 +32,8 @@ import {
   useSiblings,
   useDescendantSiblingGroups,
 } from "../shell/hooks/PanelTreeContext";
-import { panel as panelService, view } from "../shell/client";
+import { app, panel as panelService, view } from "../shell/client";
+import { getCurrentSnapshot } from "@natstack/shared/panel/accessors";
 import { useNavigation } from "./NavigationContext";
 import { LazyPanelTreeSidebar } from "./LazyPanelTreeSidebar";
 import { useShellEvent } from "../shell/useShellEvent";
@@ -41,12 +51,8 @@ interface PanelStackProps {
 }
 
 export type ChromeCommand =
-  | { type: "back" }
-  | { type: "forward" }
-  | { type: "reload" }
-  | { type: "force-reload" }
-  | { type: "stop" }
-  | { type: "navigate"; value: string };
+  | { type: PanelCommandId }
+  | { type: "navigate"; value: string; mode?: AddressNavigationMode; ref?: string; action?: AddressAction };
 
 function captureHostThemeCss(): string {
   if (typeof window === "undefined") {
@@ -219,16 +225,29 @@ export function PanelStack({
     async (panelId: string, action: PanelContextMenuAction) => {
       switch (action) {
         case "back":
-          await view.browserGoBack(panelId);
+          await panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand("back")!);
+          await panelService.goBack(panelId);
           break;
         case "forward":
-          await view.browserGoForward(panelId);
+          await panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand("forward")!);
+          await panelService.goForward(panelId);
           break;
         case "reload":
+        case "reload-panel":
+          await panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand("reload-panel")!);
           await panelService.reload(panelId);
           break;
+        case "reload-view":
+          await panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand("reload-view")!);
+          await panelService.reloadView(panelId);
+          break;
         case "force-reload":
-          await view.browserForceReload(panelId);
+        case "force-reload-view":
+          await panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand("force-reload-view")!);
+          await panelService.forceReloadView(panelId);
+          break;
+        case "rebuild-panel":
+          await panelService.rebuildPanel(panelId);
           break;
         case "stop":
           await view.browserStop(panelId);
@@ -241,7 +260,20 @@ export function PanelStack({
         case "open-external": {
           const state = await panelService.getChromeState(panelId);
           if (state.resolvedUrl && /^https?:\/\//i.test(state.resolvedUrl)) {
-            window.open(state.resolvedUrl, "_blank", "noopener,noreferrer");
+            await app.openExternal(state.resolvedUrl);
+          }
+          break;
+        }
+        case "duplicate": {
+          const state = await panelService.getChromeState(panelId);
+          if (state.kind === "browser") {
+            if (state.resolvedUrl) {
+              const result = await panelService.createBrowser(state.resolvedUrl, { focus: true });
+              navigateToPanelId(result.id);
+            }
+          } else {
+            const result = await panelService.createPanel(state.source, { isRoot: true });
+            navigateToPanelId(result.id);
           }
           break;
         }
@@ -393,25 +425,87 @@ export function PanelStack({
 
       switch (command.type) {
         case "back":
-          void view.browserGoBack(panelId);
+          void panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand(command.type)!);
+          void panelService.goBack(panelId);
           return;
         case "forward":
-          void view.browserGoForward(panelId);
+          void panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand(command.type)!);
+          void panelService.goForward(panelId);
           return;
-        case "reload":
+        case "reload-panel":
+          void panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand(command.type)!);
           void panelService.reload(panelId);
           return;
-        case "force-reload":
-          void view.browserForceReload(panelId);
+        case "reload-view":
+          void panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand(command.type)!);
+          void panelService.reloadView(panelId);
+          return;
+        case "force-reload-view":
+          void panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand(command.type)!);
+          void panelService.forceReloadView(panelId);
+          return;
+        case "rebuild-panel":
+          void panelService.rebuildPanel(panelId);
           return;
         case "stop":
           void view.browserStop(panelId);
           return;
+        case "copy-address":
+          void panelService.getChromeState(panelId)
+            .then((state) => navigator.clipboard.writeText(state.editableAddress));
+          return;
+        case "open-external":
+          void panelService.getChromeState(panelId)
+            .then((state) => {
+              if (state.resolvedUrl && /^https?:\/\//i.test(state.resolvedUrl)) {
+                void app.openExternal(state.resolvedUrl);
+              }
+            });
+          return;
+        case "duplicate": {
+          if (!visiblePanel) return;
+          const snapshot = getCurrentSnapshot(visiblePanel);
+          if (isBrowserPanelSource(snapshot.source)) {
+            const url = visiblePanel.navigation?.url ?? snapshot.resolvedUrl;
+            if (url) void panelService.createBrowser(url, { focus: true }).then((result) => navigateToPanelId(result.id));
+          } else {
+            void panelService.createPanel(snapshot.source, {
+              isRoot: true,
+              ref: snapshot.options.ref,
+            }).then((result) => navigateToPanelId(result.id));
+          }
+          return;
+        }
+        case "unload":
+          void panelService.unload(panelId);
+          return;
+        case "archive":
+          void panelService.archive(panelId);
+          return;
+        case "focus-address":
+          window.dispatchEvent(new Event("shell-focus-address"));
+          return;
         case "navigate": {
+          if (command.action) {
+            executeAddressAction(panelId, command.action, command.mode ?? "current", command.ref);
+            return;
+          }
           const parsed = parseAddressInput(command.value);
           if (!parsed) return;
+          const mode = command.mode ?? "current";
           if (parsed.type === "browser-url") {
-            if (visiblePanel && isBrowserPanelSource(visiblePanel.snapshot.source)) {
+            const action: AddressAction = { type: "navigate-url", url: parsed.url, recordAsTyped: true };
+            const intent = getBrowserNavigationIntentForAddressAction(action);
+            if (intent) void panelService.markBrowserNavigationIntent(panelId, intent);
+            if (mode === "external") {
+              void app.openExternal(parsed.url);
+            } else if (mode === "child") {
+              void panelService.createBrowserChild(panelId, parsed.url, { focus: true })
+                .then((result) => navigateToPanelId(result.id));
+            } else if (mode === "root") {
+              void panelService.createBrowser(parsed.url, { focus: true })
+                .then((result) => navigateToPanelId(result.id));
+            } else if (visiblePanel && isBrowserPanelSource(getCurrentSnapshot(visiblePanel).source)) {
               void view.browserNavigate(panelId, parsed.url);
             } else {
               void panelService.createBrowser(parsed.url, { focus: true })
@@ -420,15 +514,83 @@ export function PanelStack({
             return;
           }
           if (parsed.type === "panel-source") {
-            void panelService.createPanel(parsed.source, { isRoot: true })
+            const ref = command.ref;
+            const creator = mode === "current"
+              ? panelService.navigate(panelId, parsed.source, { ref })
+              : mode === "child"
+                ? panelService.createChild(panelId, parsed.source, { focus: true, ref })
+                : panelService.createPanel(parsed.source, { isRoot: true, ref });
+            void creator
               .then((result) => navigateToPanelId(result.id));
             return;
           }
           if (parsed.type === "search") {
-            const query = encodeURIComponent(parsed.query);
-            void panelService.createBrowser(`https://www.google.com/search?q=${query}`, { focus: true })
+            const url = applySearchTemplate(parsed.query);
+            const action: AddressAction = { type: "search", query: parsed.query, template: DEFAULT_SEARCH_TEMPLATE, recordAsTyped: true };
+            const intent = getBrowserNavigationIntentForAddressAction(action);
+            if (intent) void panelService.markBrowserNavigationIntent(panelId, intent);
+            if (mode === "external") {
+              void app.openExternal(url);
+            return;
+          }
+          if (mode === "child") {
+            void panelService.createBrowserChild(panelId, url, { focus: true })
+              .then((result) => navigateToPanelId(result.id));
+          } else if (mode === "root") {
+            void panelService.createBrowser(url, { focus: true })
+              .then((result) => navigateToPanelId(result.id));
+          } else if (visiblePanel && isBrowserPanelSource(getCurrentSnapshot(visiblePanel).source)) {
+            void view.browserNavigate(panelId, url);
+          } else {
+            void panelService.createBrowser(url, { focus: true })
               .then((result) => navigateToPanelId(result.id));
           }
+          }
+        }
+      }
+
+      function executeAddressAction(targetPanelId: string, action: AddressAction, mode: AddressNavigationMode, ref?: string) {
+        if (action.type === "navigate-url") {
+          const intent = getBrowserNavigationIntentForAddressAction(action);
+          if (intent) void panelService.markBrowserNavigationIntent(targetPanelId, intent);
+          if (mode === "external") {
+            void app.openExternal(action.url);
+          } else if (mode === "child") {
+            void panelService.createBrowserChild(targetPanelId, action.url, { focus: true }).then((result) => navigateToPanelId(result.id));
+          } else if (mode === "root") {
+            void panelService.createBrowser(action.url, { focus: true }).then((result) => navigateToPanelId(result.id));
+          } else if (visiblePanel && isBrowserPanelSource(getCurrentSnapshot(visiblePanel).source)) {
+            void view.browserNavigate(targetPanelId, action.url);
+          } else {
+            void panelService.createBrowser(action.url, { focus: true }).then((result) => navigateToPanelId(result.id));
+          }
+          return;
+        }
+        if (action.type === "search" || action.type === "keyword-search") {
+          const url = applySearchTemplate(action.query, action.template);
+          const intent = getBrowserNavigationIntentForAddressAction(action);
+          if (intent) void panelService.markBrowserNavigationIntent(targetPanelId, intent);
+          if (mode === "external") {
+            void app.openExternal(url);
+          } else if (mode === "child") {
+            void panelService.createBrowserChild(targetPanelId, url, { focus: true }).then((result) => navigateToPanelId(result.id));
+          } else if (mode === "root") {
+            void panelService.createBrowser(url, { focus: true }).then((result) => navigateToPanelId(result.id));
+          } else if (visiblePanel && isBrowserPanelSource(getCurrentSnapshot(visiblePanel).source)) {
+            void view.browserNavigate(targetPanelId, url);
+          } else {
+            void panelService.createBrowser(url, { focus: true }).then((result) => navigateToPanelId(result.id));
+          }
+          return;
+        }
+        if (action.type === "panel-source") {
+          const actionRef = action.ref ?? ref;
+          const creator = mode === "current"
+            ? panelService.navigate(targetPanelId, action.source, { ref: actionRef })
+            : mode === "child"
+              ? panelService.createChild(targetPanelId, action.source, { focus: true, ref: actionRef })
+              : panelService.createPanel(action.source, { isRoot: true, ref: actionRef });
+          void creator.then((result) => navigateToPanelId(result.id));
         }
       }
     },
@@ -463,7 +625,7 @@ export function PanelStack({
         title: visiblePanel.title,
         children: [],
         selectedChildId: visiblePanel.selectedChildId,
-        snapshot: visiblePanel.snapshot,
+        history: visiblePanel.history,
         artifacts: visiblePanel.artifacts,
         navigation: visiblePanel.navigation,
       },

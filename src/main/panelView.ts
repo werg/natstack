@@ -11,18 +11,18 @@ import type { ViewManager } from "./viewManager.js";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { PanelViewLike, ServerInfoLike } from "@natstack/shared/panelInterfaces";
 import { BROWSER_SESSION_PARTITION } from "@natstack/shared/panelInterfaces";
-import { getCurrentSnapshot, getPanelSource, getPanelContextId } from "@natstack/shared/panelTypes";
+import { getCurrentSnapshot, getPanelSource, getPanelContextId, getPanelRef } from "@natstack/shared/panelTypes";
 import { contextIdToPartition } from "@natstack/shared/contextIdToPartition.js";
-import { buildPanelUrl } from "@natstack/shared/panelFactory";
 import { isManagedHost, parsePanelUrl } from "@natstack/shared/shell/urlParsing.js";
 import { isBrowserPanelSource, panelSourceFromBrowserUrl } from "@natstack/shared/panelChrome";
 import type { Panel, PanelNavigationState } from "@natstack/shared/types";
 import { logMemorySnapshot } from "./memoryMonitor.js";
+import type { BrowserHistoryRecorder, BrowserNavigationIntent } from "./browserHistoryRecorder.js";
 // Persistence removed — server panel service handles all persistence
 
 const log = createDevLogger("PanelView");
 
-// syncSnapshotFromManifest moved server-side (panelService.updateContext handles autoArchiveWhenEmpty)
+// syncSnapshotFromManifest moved server-side (panelService snapshot replacement handles autoArchiveWhenEmpty)
 
 // Narrow interfaces for dependencies
 interface CdpServerLike {
@@ -41,7 +41,12 @@ interface PanelOrchestratorLike {
     callerId: string, url: string,
     options?: { name?: string; focus?: boolean },
   ): Promise<{ id: string; title: string }>;
-  updatePanelContext(panelId: string, contextId: string, source?: string, stateArgs?: Record<string, unknown>): Promise<void>;
+  navigatePanel(
+    panelId: string,
+    source: string,
+    options?: { ref?: string; contextId?: string; stateArgs?: Record<string, unknown> },
+  ): Promise<{ id: string; title: string }>;
+  replaceCurrentSnapshot(panelId: string, contextId: string, source?: string, stateArgs?: Record<string, unknown>): Promise<void>;
   updatePanelTitle(panelId: string, title: string): Promise<void>;
 }
 
@@ -62,6 +67,7 @@ export class PanelView implements PanelViewLike {
   private autofillPreloadPath?: string;
   private panelPreloadPath?: string;
   private browserPreloadPath?: string;
+  private browserHistoryRecorder?: BrowserHistoryRecorder;
 
   private browserStateCleanup = new Map<string, { cleanup: () => void; destroyedHandler: () => void }>();
   private linkInterceptionHandlers = new Map<string, (event: Electron.Event, url: string) => void>();
@@ -83,6 +89,7 @@ export class PanelView implements PanelViewLike {
     autofillPreloadPath?: string;
     panelPreloadPath?: string;
     browserPreloadPath?: string;
+    browserHistoryRecorder?: BrowserHistoryRecorder;
   }) {
     this.viewManager = deps.viewManager;
     this.panelRegistry = deps.panelRegistry;
@@ -95,6 +102,7 @@ export class PanelView implements PanelViewLike {
     this.autofillPreloadPath = deps.autofillPreloadPath;
     this.panelPreloadPath = deps.panelPreloadPath;
     this.browserPreloadPath = deps.browserPreloadPath;
+    this.browserHistoryRecorder = deps.browserHistoryRecorder;
   }
 
   // ==== PanelViewLike implementation ========================================
@@ -208,6 +216,9 @@ export class PanelView implements PanelViewLike {
 
   openDevTools(panelId: string): void { this.viewManager.openDevTools(panelId); }
   getViewManager(): ViewManager { return this.viewManager; }
+  markBrowserNavigationIntent(panelId: string, intent: BrowserNavigationIntent): void {
+    this.browserHistoryRecorder?.markNext(panelId, intent);
+  }
 
   /** Handle a view crash — implements recovery policy with loop protection. */
   handleViewCrashed(viewId: string, reason: string): void {
@@ -255,18 +266,17 @@ export class PanelView implements PanelViewLike {
         if (!panel) return;
         const currentSource = getPanelSource(panel);
         if (isBrowserPanelSource(currentSource) && /^https?:\/\//i.test(url)) {
+          this.browserHistoryRecorder?.recordNavigation(panelId, url, panel.navigation?.pageTitle);
           const nextSource = panelSourceFromBrowserUrl(url);
           if (nextSource !== currentSource) {
-            panel.snapshot.source = nextSource;
-            void this.panelOrchestrator.updatePanelContext(panelId, panel.snapshot.contextId, nextSource).catch(() => {});
+            void this.panelOrchestrator.replaceCurrentSnapshot(panelId, getPanelContextId(panel), nextSource).catch(() => {});
           }
           return;
         }
 
         const parsed = parsePanelUrl(url, this.externalHost);
         if (parsed && parsed.source !== currentSource) {
-          panel.snapshot.source = parsed.source;
-          void this.panelOrchestrator.updatePanelContext(panelId, panel.snapshot.contextId, parsed.source).catch(() => {});
+          void this.panelOrchestrator.replaceCurrentSnapshot(panelId, getPanelContextId(panel), parsed.source).catch(() => {});
         }
       },
       didNavigateInPage: (_event: Electron.Event, url: string) => { queueStateUpdate({ url }); },
@@ -283,7 +293,14 @@ export class PanelView implements PanelViewLike {
         if (contents.isDestroyed()) return;
         queueStateUpdate({ isLoading: false, canGoBack: contents.canGoBack(), canGoForward: contents.canGoForward() });
       },
-      pageTitleUpdated: (_event: Electron.Event, title: string) => { queueStateUpdate({ pageTitle: title }); },
+      pageTitleUpdated: (_event: Electron.Event, title: string) => {
+        queueStateUpdate({ pageTitle: title });
+        const panel = this.panelRegistry.getPanel(panelId);
+        const url = panel?.navigation?.url ?? contents.getURL();
+        if (panel && isBrowserPanelSource(getPanelSource(panel))) {
+          this.browserHistoryRecorder?.updateTitle(url, title);
+        }
+      },
     };
 
     contents.on("did-navigate", handlers.didNavigate);
@@ -401,10 +418,11 @@ export class PanelView implements PanelViewLike {
       const targetContextId = parsed.contextId ?? currentContextId;
       const sourceChanged = parsed.source !== currentSource;
       const contextChanged = targetContextId !== currentContextId;
-      if (!sourceChanged && !contextChanged) return;
+      const refChanged = parsed.ref !== getPanelRef(panel);
+      if (!sourceChanged && !contextChanged && !refChanged) return;
 
       event.preventDefault();
-      void this.handleManagedNavigation(panelId, panel, parsed.source, targetContextId, parsed.stateArgs)
+      void this.handleManagedNavigation(panelId, panel, parsed.source, targetContextId, parsed.ref, parsed.stateArgs)
         .catch((err) => log.warn(`[PanelNav] Navigation failed for ${panelId}:`, err));
     };
 
@@ -438,43 +456,11 @@ export class PanelView implements PanelViewLike {
     panel: Panel,
     source: string,
     newContextId: string,
+    ref?: string,
     stateArgs?: Record<string, unknown>,
   ): Promise<void> {
     log.info(`[PanelNav] Panel ${panelId}: ${getPanelSource(panel)} -> ${source} (context ${getPanelContextId(panel)} -> ${newContextId})`);
-
-    const nextUrl = buildPanelUrl({
-      source,
-      contextId: newContextId,
-      gatewayPort: this.gatewayPort,
-      externalHost: this.externalHost,
-      protocol: this.serverInfo.protocol,
-    });
-
-    const oldSource = panel.snapshot.source;
-    const oldContextId = panel.snapshot.contextId;
-    const oldStateArgs = panel.snapshot.stateArgs;
-    const wasVisible = this.viewManager.isViewVisible(panelId);
-    panel.snapshot.source = source;
-    panel.snapshot.contextId = newContextId;
-    if (stateArgs !== undefined) panel.snapshot.stateArgs = stateArgs;
-
-    try {
-      await this.panelOrchestrator.updatePanelContext(panelId, newContextId, source, stateArgs);
-      if (this.viewManager.hasView(panelId)) {
-        this.destroyView(panelId);
-      }
-      await this.createViewForPanel(panelId, nextUrl, newContextId);
-      if (wasVisible) {
-        this.viewManager.setViewVisible(panelId, true);
-      }
-    } catch (err) {
-      panel.snapshot.source = oldSource;
-      panel.snapshot.contextId = oldContextId;
-      panel.snapshot.stateArgs = oldStateArgs;
-      await this.panelOrchestrator.updatePanelContext(panelId, oldContextId, oldSource, oldStateArgs).catch(() => {});
-      throw err;
-    }
-    this.panelRegistry.notifyPanelTreeUpdate();
+    await this.panelOrchestrator.navigatePanel(panelId, source, { contextId: newContextId, ref, stateArgs });
   }
 
   // ==== Crash recovery ======================================================

@@ -13,6 +13,7 @@ import type {
   WorkspaceTree,
   BranchInfo,
   CommitInfo,
+  RepoStatus,
   GitWatcherLike,
   GitWriteAuthorizer,
 } from "./types.js";
@@ -525,6 +526,46 @@ export class GitServer {
     }
 
     return branches;
+  }
+
+  async status(repoPath: string): Promise<RepoStatus> {
+    await this.getWorkspaceTree();
+
+    if (!this.isValidRepoPath(repoPath)) {
+      throw new Error(`Invalid repo path: ${repoPath}`);
+    }
+
+    const normalized = this.normalizePath(repoPath);
+    const absolutePath = this.toAbsolutePath(normalized);
+    const [branchResult, commitResult, porcelain] = await Promise.allSettled([
+      this.runGit(["branch", "--show-current"], absolutePath),
+      this.runGit(["rev-parse", "--verify", "HEAD"], absolutePath),
+      this.runGit(["status", "--porcelain=v1"], absolutePath),
+    ]);
+
+    const branch = branchResult.status === "fulfilled" && branchResult.value.trim()
+      ? branchResult.value.trim()
+      : null;
+    const commit = commitResult.status === "fulfilled" && commitResult.value.trim()
+      ? commitResult.value.trim()
+      : null;
+    const statusOutput = porcelain.status === "fulfilled" ? porcelain.value : "";
+    const files = statusOutput
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => ({
+        index: line.slice(0, 1).trim() || " ",
+        workingTree: line.slice(1, 2).trim() || " ",
+        path: line.slice(3).trim(),
+      }));
+
+    return {
+      repoPath: normalized,
+      branch,
+      commit,
+      dirty: files.length > 0,
+      files,
+    };
   }
 
   /**
