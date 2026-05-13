@@ -23,7 +23,7 @@ Flags worth knowing:
 - `--host` — the external hostname clients will connect to.
 - `--bind-host 0.0.0.0` — listen on all interfaces (LAN access). Default is loopback.
 - `--protocol https` + `--tls-cert` / `--tls-key` — strongly recommended for anything outside localhost. Self-signed certs are fine for home use; see §3.
-- `--print-token` — prints a machine-parseable `NATSTACK_ADMIN_TOKEN=...` line after startup, useful for scripting.
+- `--print-credentials` — prints machine-parseable `NATSTACK_ADMIN_TOKEN=...` and `NATSTACK_PAIRING_CODE=...` lines after startup, useful for scripting.
 
 On first boot the server generates an admin token (if `NATSTACK_ADMIN_TOKEN` isn't set) and persists it at `~/.config/natstack/admin-token` (`0o600`). That token is stable across restarts. Copy it — you'll enter it into clients next.
 

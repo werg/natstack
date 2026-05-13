@@ -63,7 +63,7 @@ Use `--help` for a full list of options:
 pnpm server --help
 ```
 
-The server will print its gateway URL and admin token on startup:
+The server prints its gateway URL, admin token file, and startup pairing code:
 
 ```
 natstack-server ready:
@@ -71,8 +71,8 @@ natstack-server ready:
   Git:         (via gateway /_git/)
   Workerd:     (via gateway /_w/)
   RPC:         wss://my-server.example.com:38291/rpc
-  Admin token: a1b2c3d4e5...
   Token file:  /path/to/workspace/state/admin-token
+  Pairing code: abc123...
 ```
 
 ### 2. Server CLI flags
@@ -92,7 +92,7 @@ natstack-server ready:
 | `--panel-port <port>` | — | Port for panel HTTP (default: auto-assigned) |
 | `--init` | — | Auto-create workspace from template if it doesn't exist |
 | `--log-level <level>` | `NATSTACK_LOG_LEVEL` | Log verbosity |
-| `--print-token` | — | Print `NATSTACK_ADMIN_TOKEN=...` for scripting |
+| `--print-credentials` | — | Print `NATSTACK_ADMIN_TOKEN=...` and `NATSTACK_PAIRING_CODE=...` for scripting |
 | `--public-url <url>` | `NATSTACK_PUBLIC_URL` | Externally-reachable base URL used to build OAuth redirect URIs, webhook advertisements, etc. Defaults to `${protocol}://${host}:${gatewayPort}` but should be set explicitly when a reverse proxy or DNS-facing hostname is in front. |
 | `--help` | — | Show usage and exit |
 
@@ -163,12 +163,13 @@ non-loopback `http://` remotes are intentionally rejected by the client.
 ## Connecting the Electron App
 
 Credentials are resolved in this order on each launch; the first source that
-provides both URL + token wins:
+provides both URL and admin bootstrap credential wins. After first connect,
+Electron also stores a device refresh credential and uses that for reconnects.
 
 | Source | Fields | Priority | Where it lives |
 |--------|--------|----------|----------------|
-| Environment | `NATSTACK_REMOTE_URL`, `NATSTACK_REMOTE_TOKEN`, (opt) `NATSTACK_REMOTE_CA`, `NATSTACK_REMOTE_FINGERPRINT` | 1 | — |
-| Credential store | URL + token (encrypted via Electron `safeStorage`), optional CA/fingerprint | 2 | `~/.config/natstack/remote-credentials.json` (`0o600`) |
+| Environment | `NATSTACK_REMOTE_URL`, `NATSTACK_REMOTE_TOKEN`, optional `NATSTACK_REMOTE_DEVICE_ID` / `NATSTACK_REMOTE_REFRESH_TOKEN`, optional CA/fingerprint | 1 | — |
+| Credential store | URL, admin bootstrap credential, device refresh credential, optional CA/fingerprint, encrypted via Electron `safeStorage` | 2 | `~/.config/natstack/remote-credentials.json` (`0o600`) |
 | Config file | `remote.url`, `remote.token`, `remote.caPath`, `remote.fingerprint` | 3 | `~/.config/natstack/config.yml` |
 
 ### Option A: Environment variables (bootstrap)
@@ -185,8 +186,9 @@ Useful for the very first launch. Once connected you can switch to (B).
 
 Click the connection badge in the title bar → **Remote server** → fill in URL,
 admin token, and (if using self-signed TLS) a CA path or fingerprint → **Save &
-relaunch**. The token is encrypted via the OS keychain (`safeStorage`). Use the
-**Disconnect** button to wipe credentials and return to local mode.
+relaunch**. The admin bootstrap credential and device refresh credential are
+encrypted via the OS keychain (`safeStorage`). Use the **Disconnect** button to
+wipe credentials and return to local mode.
 
 ### Option C: Config file
 
@@ -230,15 +232,21 @@ forward.
 
 1. Electron parses the remote URL and validates it (must be http or https)
    It must also be a trustworthy origin: `https://...`, or loopback `http://...`.
-2. Exchanges the admin token over `/_r/s/auth/exchange-admin-for-shell` for a
-   short-lived shell caller token
+2. Uses a stored device refresh credential to mint a short-lived shell caller
+   token, or provisions a new device credential with the admin token over
+   `/_r/s/auth/issue-device` if this client has not connected before.
 3. Opens a WebSocket to `ws[s]://<host>:<port>/rpc`
 4. Authenticates the WebSocket with the shell caller token. If the remote server
-   restarts and forgets in-memory caller tokens, Electron re-runs the exchange
-   before retrying the RPC WebSocket.
+   restarts and forgets in-memory caller tokens, Electron refreshes a new shell
+   token from the durable device credential before retrying the RPC WebSocket.
 5. Fetches workspace metadata from the server via RPC
 6. Creates an RPC-backed proxy for all panel HTTP operations
 7. All panel rendering, builds, git, AI, etc. are served by the remote server
+
+Mobile clients use the same durable device model, but start from a pairing
+code instead of the admin token. Standalone startup prints an initial pairing
+code. Admin callers can create another one later with
+`POST /_r/s/auth/create-pairing-code` if the startup code expires.
 
 ### Electron state in remote mode
 

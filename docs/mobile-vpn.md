@@ -8,8 +8,8 @@ The workflow uses:
 - an **internal Android build** (`com.natstack.mobile.internal`) that allows
   cleartext HTTP to VPN/LAN hosts;
 - a **stable gateway port** so the phone can keep using the same server URL;
-- a **QR/deep-link pairing command** that saves the server URL and token in the
-  app;
+- a **QR/deep-link pairing command** that saves the server URL and durable
+  device credential in the app;
 - **automatic Tailscale serve setup** so the phone connects over HTTPS via
   MagicDNS and OAuth callbacks land on the same URL — no per-machine setup
   beyond a one-time `tailscale set --operator=$USER`.
@@ -153,7 +153,7 @@ pnpm mobile:pair
 
 - `--serve-panels`
 - `--init`
-- `--print-token`
+- `--print-credentials`
 - `--gateway-port 3030`
 - a VPN/Tailscale host when one is detected, otherwise a LAN host
 
@@ -226,7 +226,8 @@ fresh template copy.
 
 ## Reconnecting later
 
-The app saves the paired server URL and token in the device credential store.
+The app saves the paired server URL and durable device credential in the device
+credential store.
 If the server comes back on the same host and gateway port, the phone can
 reconnect without scanning a new QR code.
 
@@ -238,12 +239,12 @@ node dist/server.mjs \
   --gateway-port 3030 \
   --serve-panels \
   --init \
-  --print-token
+  --print-credentials
 ```
 
-Set `NATSTACK_ADMIN_TOKEN` if you want to pin the token yourself. Otherwise the
-server persists the generated token under NatStack's central config and reuses
-it on later starts.
+Set `NATSTACK_ADMIN_TOKEN` if you want to pin the admin token yourself.
+Otherwise the server persists the generated admin token under NatStack's
+central config and reuses it on later starts.
 
 ## Notes
 

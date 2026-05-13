@@ -105,9 +105,10 @@ Auth threading uses the new `caller-token` mode on the route registry —
 
 ## Trusted Shell Identity
 
-Electron main exchanges the admin token for a shell caller token before opening
-RPC. Server policy checks use the authenticated WebSocket caller identity
-directly; the wire protocol does not support caller-identity forwarding.
+Electron main uses its durable remote device credential to mint an ephemeral
+shell caller token before opening RPC. Server policy checks use the
+authenticated WebSocket caller identity directly; the wire protocol does not
+support caller-identity forwarding.
 
 Shell-only methods remain restricted by method-level policies. `browser-data`
 relies on this: sensitive methods such as password, cookie, and history reads
