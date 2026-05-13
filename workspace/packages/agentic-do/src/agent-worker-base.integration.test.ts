@@ -161,6 +161,14 @@ class TestWorker extends AgentWorkerBase {
   }
 }
 
+function seedMessages(instance: unknown, channelId: string, messages: AgentMessage[]): void {
+  (instance as { messageCache: Map<string, AgentMessage[]> }).messageCache.set(channelId, messages);
+}
+
+function cachedMessages(instance: unknown, channelId: string): AgentMessage[] {
+  return (instance as { messageCache: Map<string, AgentMessage[]> }).messageCache.get(channelId) ?? [];
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function userMessage(content: string): ChannelEvent {
@@ -394,19 +402,14 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
     const { instance, sql } = await createTestDO(TestWorker);
     await (instance as any).getOrCreateRunner("ch-1");
 
-    sql.exec(
-      `INSERT INTO pi_messages (channel_id, idx, content) VALUES (?, ?, ?)`,
-      "ch-1",
-      0,
-      JSON.stringify({
+    seedMessages(instance, "ch-1", [{
         role: "toolResult",
         toolCallId: "tool-1",
         toolName: "write",
         content: [{ type: "text", text: "dispatched: approval" }],
         timestamp: 1,
         isError: false,
-      }),
-    );
+      } as AgentMessage]);
     sql.exec(
       `INSERT INTO dispatched_calls (
          call_id, channel_id, kind, tool_call_id, tool_name, params_json,
@@ -428,15 +431,14 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
 
     expect(instance.fakeState!.executeToolDirectCalls).toHaveLength(1);
     expect(sql.exec(`SELECT * FROM dispatched_calls WHERE call_id = ?`, "call-1").toArray()).toHaveLength(0);
-    const rows = sql.exec(`SELECT content FROM pi_messages WHERE channel_id = ? ORDER BY idx`, "ch-1").toArray();
-    const messages = rows.map((row) => JSON.parse(row["content"] as string));
+    const messages = cachedMessages(instance, "ch-1");
     expect(messages[0]).toMatchObject({
       role: "toolResult",
       toolCallId: "tool-1",
       toolName: "write",
       isError: false,
     });
-    expect(messages[0]!.content[0]!.text).toBe("executed");
+    expect(((messages[0]!.content as any[])[0] as { text?: string }).text).toBe("executed");
   });
 
   it("converts resume-time approval execution failures into error tool results", async () => {
@@ -446,19 +448,14 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
       throw new Error("boom on resume");
     };
 
-    sql.exec(
-      `INSERT INTO pi_messages (channel_id, idx, content) VALUES (?, ?, ?)`,
-      "ch-1",
-      0,
-      JSON.stringify({
+    seedMessages(instance, "ch-1", [{
         role: "toolResult",
         toolCallId: "tool-1",
         toolName: "write",
         content: [{ type: "text", text: "dispatched: approval" }],
         timestamp: 1,
         isError: false,
-      }),
-    );
+      } as AgentMessage]);
     sql.exec(
       `INSERT INTO dispatched_calls (
          call_id, channel_id, kind, tool_call_id, tool_name, params_json,
@@ -476,15 +473,13 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
     await instance.onCallResult("call-1", true, false);
 
     expect(sql.exec(`SELECT * FROM dispatched_calls WHERE call_id = ?`, "call-1").toArray()).toHaveLength(0);
-    const message = JSON.parse(
-      sql.exec(`SELECT content FROM pi_messages WHERE channel_id = ? AND idx = 0`, "ch-1").one()["content"] as string,
-    );
+    const message = cachedMessages(instance, "ch-1")[0]!;
     expect(message).toMatchObject({
       role: "toolResult",
       toolCallId: "tool-1",
       isError: true,
     });
-    expect(message.content[0].text).toContain("boom on resume");
+    expect(((message.content as any[])[0] as { text?: string }).text).toContain("boom on resume");
   });
 
   it("records dispatch results after interrupt without auto-continuing", async () => {
@@ -492,19 +487,14 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
     await (instance as any).getOrCreateRunner("ch-1");
     const createdAt = Date.now();
 
-    sql.exec(
-      `INSERT INTO pi_messages (channel_id, idx, content) VALUES (?, ?, ?)`,
-      "ch-1",
-      0,
-      JSON.stringify({
+    seedMessages(instance, "ch-1", [{
         role: "toolResult",
         toolCallId: "tool-1",
         toolName: "ask_user",
         content: [{ type: "text", text: "dispatched: ask-user" }],
         timestamp: 1,
         isError: false,
-      }),
-    );
+      } as AgentMessage]);
     sql.exec(
       `INSERT INTO dispatched_calls (
          call_id, channel_id, kind, tool_call_id, tool_name, params_json,
@@ -524,15 +514,13 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
     await flush();
 
     expect(sql.exec(`SELECT * FROM dispatched_calls WHERE call_id = ?`, "call-1").toArray()).toHaveLength(0);
-    const message = JSON.parse(
-      sql.exec(`SELECT content FROM pi_messages WHERE channel_id = ? AND idx = 0`, "ch-1").one()["content"] as string,
-    );
+    const message = cachedMessages(instance, "ch-1")[0]!;
     expect(message).toMatchObject({
       role: "toolResult",
       toolCallId: "tool-1",
       isError: false,
     });
-    expect(message.content[0].text).toBe("tool completed");
+    expect(((message.content as any[])[0] as { text?: string }).text).toBe("tool completed");
     expect(instance.fakeState!.continueCount).toBe(0);
   });
 
@@ -572,15 +560,13 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
     await (instance as any).drainDeferredDispatchesFor("ch-1");
 
     expect(sql.exec(`SELECT * FROM dispatched_calls WHERE call_id = ?`, "call-1").toArray()).toHaveLength(0);
-    const message = JSON.parse(
-      sql.exec(`SELECT content FROM pi_messages WHERE channel_id = ? AND idx = 0`, "ch-1").one()["content"] as string,
-    );
+    const message = cachedMessages(instance, "ch-1")[0]!;
     expect(message).toMatchObject({
       role: "toolResult",
       toolCallId: "tool-1",
       isError: true,
     });
-    expect(message.content[0].text).toBe("Dispatched call superseded by user message");
+    expect(((message.content as any[])[0] as { text?: string }).text).toBe("Dispatched call superseded by user message");
   });
 
   it("drops restart-orphaned dispatch rows whose placeholders were never persisted", async () => {
@@ -619,14 +605,13 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
       },
     ]);
 
-    const rows = sql.exec(`SELECT content FROM pi_messages WHERE channel_id = ? ORDER BY idx`, "ch-1").toArray();
-    expect(rows.map((row) => JSON.parse(row["content"] as string))).toEqual([
+    expect(cachedMessages(instance, "ch-1")).toEqual([
       { role: "user", content: "hello", timestamp: 1 },
     ]);
   });
 
   it("resumes the failed user turn after a model credential is connected", async () => {
-    const { instance, sql } = await createTestDO(TestWorker);
+    const { instance } = await createTestDO(TestWorker);
 
     await (instance as any).saveMessages("ch-1", [
       { role: "user", content: "hello", timestamp: 1 },
@@ -643,8 +628,7 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
     await flush();
 
     expect(instance.fakeState!.continueCount).toBe(1);
-    const rows = sql.exec(`SELECT content FROM pi_messages WHERE channel_id = ? ORDER BY idx`, "ch-1").toArray();
-    expect(rows.map((row) => JSON.parse(row["content"] as string))).toEqual([
+    expect(cachedMessages(instance, "ch-1")).toEqual([
       { role: "user", content: "hello", timestamp: 1 },
     ]);
   });
@@ -687,19 +671,14 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
   it("clears stale resolving tokens so buffered dispatch results can drain after restart", async () => {
     const { instance, sql } = await createTestDO(TestWorker);
 
-    sql.exec(
-      `INSERT INTO pi_messages (channel_id, idx, content) VALUES (?, ?, ?)`,
-      "ch-1",
-      0,
-      JSON.stringify({
+    seedMessages(instance, "ch-1", [{
         role: "toolResult",
         toolCallId: "tool-1",
         toolName: "ask_user",
         content: [{ type: "text", text: "dispatched: ask-user" }],
         timestamp: 1,
         isError: false,
-      }),
-    );
+      } as AgentMessage]);
     sql.exec(
       `INSERT INTO dispatched_calls (
          call_id, channel_id, kind, tool_call_id, tool_name, params_json,
@@ -722,15 +701,13 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
     await flush();
 
     expect(sql.exec(`SELECT * FROM dispatched_calls WHERE call_id = ?`, "call-1").toArray()).toHaveLength(0);
-    const message = JSON.parse(
-      sql.exec(`SELECT content FROM pi_messages WHERE channel_id = ? AND idx = 0`, "ch-1").one()["content"] as string,
-    );
+    const message = cachedMessages(instance, "ch-1")[0]!;
     expect(message).toMatchObject({
       role: "toolResult",
       toolCallId: "tool-1",
       isError: false,
     });
-    expect(message.content[0].text).toBe("submitted");
+    expect(((message.content as any[])[0] as { text?: string }).text).toBe("submitted");
     expect(instance.fakeState!.continueCount).toBe(1);
   });
 });

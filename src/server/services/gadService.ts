@@ -16,161 +16,74 @@ const SQL_WRITE_SUBJECT: UserlandApprovalSubject = {
 const JsonRecordSchema = z.record(z.unknown());
 const OptionalJsonRecordSchema = JsonRecordSchema.nullish();
 const JsonBindingsSchema = z.array(z.unknown()).optional();
-const RelationSchema = z.object({ targetType: z.string(), targetHash: z.string() }).strict();
 const ListOptsSchema = z.record(z.unknown()).optional();
 
-const RecordSessionSchema = z.object({
-  id: z.string(),
-  parentSessionId: z.string().nullable().optional(),
-  source: z.string(),
-  projectPath: z.string().nullable().optional(),
-  gitBranch: z.string().nullable().optional(),
-  branchId: z.string().nullable().optional(),
-  channelId: z.string().nullable().optional(),
-  contextId: z.string().nullable().optional(),
-  metadata: OptionalJsonRecordSchema,
-  startedAt: z.string().nullable().optional(),
-}).strict();
-
-const RecordTurnSchema = z.object({
-  sessionId: z.string(),
-  role: z.string(),
-  content: z.string(),
-  contentFormat: z.string().optional(),
-  turnIndex: z.number().int().optional(),
-  tokenCount: z.number().int().nullable().optional(),
-  timestamp: z.string().nullable().optional(),
-  messageIndex: z.number().int().nullable().optional(),
-  channelId: z.string().nullable().optional(),
-}).strict();
-
-const BeginToolCallSchema = z.object({
-  sessionId: z.string(),
-  turnId: z.number().int().nullable().optional(),
-  toolName: z.string(),
-  parameters: OptionalJsonRecordSchema,
-  isMutation: z.boolean().optional(),
-  gitBranch: z.string().nullable().optional(),
-  gitCommit: z.string().nullable().optional(),
-  branchId: z.string().nullable().optional(),
-  channelId: z.string().nullable().optional(),
-  contextId: z.string().nullable().optional(),
-  startedAt: z.string().nullable().optional(),
-}).strict();
-
-const RecordReadSchema = z.object({
-  toolCallId: z.number().int(),
-  readType: z.string().optional(),
-  filePath: z.string().nullable().optional(),
-  contentHash: z.string(),
-  contentSize: z.number().int().nullable().optional(),
-  sourceBlobHash: z.string().nullable().optional(),
-  startLine: z.number().int().nullable().optional(),
-  endLine: z.number().int().nullable().optional(),
-  byteOffset: z.number().int().nullable().optional(),
-  byteLength: z.number().int().nullable().optional(),
-  metadata: OptionalJsonRecordSchema,
-}).strict();
-
-const RecordMutationSchema = z.object({
-  toolCallId: z.number().int(),
-  filePath: z.string(),
-  renamedFromPath: z.string().nullable().optional(),
-  beforeHash: z.string().nullable().optional(),
-  afterHash: z.string().nullable().optional(),
-  beforeSize: z.number().int().nullable().optional(),
-  afterSize: z.number().int().nullable().optional(),
-  mutationType: z.string(),
-  oldString: z.string().nullable().optional(),
-  newString: z.string().nullable().optional(),
-  description: z.string().nullable().optional(),
-  branchId: z.string().nullable().optional(),
-}).strict();
-
-const EnsureBranchSchema = z.object({
-  id: z.string(),
-  name: z.string().optional(),
-  parentBranchId: z.string().nullable().optional(),
-  forkedFromSessionId: z.string().nullable().optional(),
-  forkedFromTurnId: z.number().int().nullable().optional(),
-  forkedFromMessageIndex: z.number().int().nullable().optional(),
-  createdBy: z.string().nullable().optional(),
-}).strict();
-
-const ForkBranchSchema = EnsureBranchSchema.extend({
-  parentBranchId: z.string(),
-}).strict();
-
-const CreateBranchSnapshotSchema = z.object({
+const EnsureGadBranchSchema = z.object({
+  workspaceId: z.string().nullable().optional(),
   branchId: z.string(),
-  parentSnapshotId: z.number().int().nullable().optional(),
-  sessionId: z.string().nullable().optional(),
-  turnId: z.number().int().nullable().optional(),
-  summary: z.string().nullable().optional(),
+  channelId: z.string().nullable().optional(),
+  contextId: z.string().nullable().optional(),
+  metadata: OptionalJsonRecordSchema,
 }).strict();
 
-const RecordPlanSchema = z.object({
-  content: z.string(),
-  sourcePath: z.string().nullable().optional(),
-  title: z.string().nullable().optional(),
-  sessionId: z.string().nullable().optional(),
-  toolCallId: z.number().int().nullable().optional(),
-  branchId: z.string().nullable().optional(),
+const GadHistoryItemSchema = z.object({
+  kind: z.enum([
+    "message_created",
+    "message_block_added",
+    "message_finalized",
+    "tool_call_requested",
+    "tool_result_observed",
+    "file_observed",
+    "file_read",
+    "file_mutation",
+    "workspace_observed",
+    "approval_requested",
+    "approval_resolved",
+    "dispatch_abandoned",
+    "branch_created",
+    "snapshot_marked",
+    "system_event",
+  ]),
+  actor: z.string().nullable().optional(),
+  payload: z.union([JsonRecordSchema, z.string()]).nullable().optional(),
+  messageId: z.string().nullable().optional(),
+  blockId: z.string().nullable().optional(),
+  toolCallId: z.string().nullable().optional(),
+  inputStateHash: z.string().nullable().optional(),
+  outputStateHash: z.string().nullable().optional(),
+  metadata: OptionalJsonRecordSchema,
 }).strict();
 
-const CreateChunkSchema = z.object({
-  content: z.string(),
-  topicLabel: z.string().nullable().optional(),
-  attribution: z.string().nullable().optional(),
-  sourceSessionId: z.string().nullable().optional(),
-  sourceTurnId: z.number().int().nullable().optional(),
-  relations: z.array(RelationSchema).nullable().optional(),
+const AppendGadHistoryBatchSchema = z.object({
+  workspaceId: z.string().nullable().optional(),
+  branchId: z.string(),
+  expectedHeadHash: z.string().nullable().optional(),
+  expectedStateHash: z.string().nullable().optional(),
+  items: z.array(GadHistoryItemSchema),
 }).strict();
 
-const AddChunkMentionSchema = z.object({
-  chunkHash: z.string(),
-  attribution: z.string().nullable().optional(),
-  sourceSessionId: z.string().nullable().optional(),
-  sourceTurnId: z.number().int().nullable().optional(),
+const BranchHeadSchema = z.object({
+  workspaceId: z.string().nullable().optional(),
+  branchId: z.string(),
 }).strict();
 
-const VectorSchema = z.object({
-  model: z.string(),
-  vector: z.array(z.number()),
-  k: z.number().int().positive().optional(),
-  dim: z.number().int().positive().optional(),
+const ForkGadBranchSchema = z.object({
+  workspaceId: z.string().nullable().optional(),
+  sourceBranchId: z.string(),
+  newBranchId: z.string().nullable().optional(),
+  historyHash: z.string().nullable().optional(),
+  historyId: z.number().int().nullable().optional(),
+  channelId: z.string().nullable().optional(),
+  contextId: z.string().nullable().optional(),
 }).strict();
 
-const ChunkEmbeddingSchema = VectorSchema.extend({ chunkHash: z.string() }).strict();
-const TurnEmbeddingSchema = VectorSchema.extend({ turnId: z.number().int() }).strict();
-
-const ParseFileVersionSchema = z.object({
-  filePath: z.string(),
-  contentHash: z.string(),
-  content: z.string(),
-  language: z.string().nullable().optional(),
-  includeLeaves: z.boolean().optional(),
+const BranchIdSchema = z.object({
+  workspaceId: z.string().nullable().optional(),
+  branchId: z.string(),
 }).strict();
 
-const IndexFileVersionSchema = z.object({
-  path: z.string(),
-  contentHash: z.string(),
-  content: z.string(),
-}).strict();
-
-const ReviewContextSchema = z.object({
-  filePath: z.string().nullable().optional(),
-  sessionId: z.string().nullable().optional(),
-  branchId: z.string().nullable().optional(),
+const BranchListOptsSchema = BranchIdSchema.extend({
   limit: z.number().int().positive().optional(),
-}).strict();
-
-const BlobPolicySchema = z.object({
-  hash: z.string(),
-  retentionClass: z.string().nullable().optional(),
-  privacyLevel: z.string().nullable().optional(),
-  expiresAt: z.string().nullable().optional(),
-  redactionReason: z.string().nullable().optional(),
 }).strict();
 
 export interface GadServiceDeps {
@@ -345,49 +258,40 @@ export function createGadService(deps: GadServiceDeps): ServiceDefinition {
       query: { args: z.tuple([z.string(), JsonBindingsSchema]) },
       status: { args: z.tuple([]) },
       ensureBlob: { args: z.tuple([z.string(), z.number().int().optional(), z.string().nullable().optional()]) },
-      ensureBranch: { args: z.tuple([EnsureBranchSchema]) },
-      recordSession: { args: z.tuple([RecordSessionSchema]) },
-      endSession: { args: z.tuple([z.string(), z.string().nullable().optional()]) },
-      recordTurn: { args: z.tuple([RecordTurnSchema]) },
-      beginToolCall: { args: z.tuple([BeginToolCallSchema]) },
-      completeToolCall: { args: z.tuple([z.number().int(), z.string().nullable().optional(), z.string().nullable().optional()]) },
-      recordRead: { args: z.tuple([RecordReadSchema]) },
-      recordMutation: { args: z.tuple([RecordMutationSchema]) },
-      listBranches: { args: z.tuple([]) },
-      getBranch: { args: z.tuple([z.string()]) },
-      listBranchFiles: { args: z.tuple([z.string()]) },
-      forkBranch: { args: z.tuple([ForkBranchSchema]) },
-      createBranchSnapshot: { args: z.tuple([CreateBranchSnapshotSchema]) },
-      listBranchSnapshots: { args: z.tuple([z.string().nullable().optional()]) },
-      recordPlan: { args: z.tuple([RecordPlanSchema]) },
-      supersedePlan: { args: z.tuple([z.number().int(), z.number().int()]) },
-      listPlans: { args: z.tuple([ListOptsSchema]) },
-      getPlanChain: { args: z.tuple([z.number().int()]) },
-      createChunk: { args: z.tuple([CreateChunkSchema]) },
-      addChunkMention: { args: z.tuple([AddChunkMentionSchema]) },
-      relateChunk: { args: z.tuple([z.string(), z.string(), z.string()]) },
-      listChunks: { args: z.tuple([ListOptsSchema]) },
-      getChunkMentions: { args: z.tuple([z.string()]) },
-      getChunksFor: { args: z.tuple([z.string(), z.string()]) },
-      getRelationsFor: { args: z.tuple([z.string()]) },
-      walkDependencies: { args: z.tuple([z.string(), ListOptsSchema]) },
-      upsertChunkEmbedding: { args: z.tuple([ChunkEmbeddingSchema]) },
-      upsertTurnEmbedding: { args: z.tuple([TurnEmbeddingSchema]) },
-      findSimilarChunks: { args: z.tuple([VectorSchema]) },
-      findSimilarTurns: { args: z.tuple([VectorSchema]) },
-      parseFileVersion: { args: z.tuple([ParseFileVersionSchema]) },
-      getStructures: { args: z.tuple([z.string(), ListOptsSchema]) },
-      findParsedByName: { args: z.tuple([z.string(), ListOptsSchema]) },
-      getStructuresInRange: { args: z.tuple([z.string(), z.number().int(), z.number().int()]) },
-      getSupportedLanguages: { args: z.tuple([]) },
-      indexTurn: { args: z.tuple([z.number().int()]) },
-      indexFileVersion: { args: z.tuple([IndexFileVersionSchema]) },
-      indexSession: { args: z.tuple([z.string()]) },
-      getReviewContext: { args: z.tuple([ReviewContextSchema]) },
-      setBlobPolicy: { args: z.tuple([BlobPolicySchema]) },
-      getBlobPolicy: { args: z.tuple([z.string()]) },
-      redactBlob: { args: z.tuple([z.string(), z.string().nullable().optional()]) },
-      listBlobReferences: { args: z.tuple([ListOptsSchema]) },
+      ensureGadBranch: { args: z.tuple([EnsureGadBranchSchema]) },
+      getGadBranchHead: { args: z.tuple([BranchHeadSchema]) },
+      appendGadHistoryBatch: { args: z.tuple([AppendGadHistoryBatchSchema]) },
+      materializePiMessages: { args: z.tuple([BranchHeadSchema]) },
+      listGadBranchHistory: { args: z.tuple([BranchListOptsSchema]) },
+      listGadBranchToolCalls: { args: z.tuple([BranchListOptsSchema]) },
+      forkGadBranch: { args: z.tuple([ForkGadBranchSchema]) },
+      listGadBranches: { args: z.tuple([ListOptsSchema]) },
+      listGadBranchFiles: { args: z.tuple([BranchIdSchema]) },
+      diffGadStates: { args: z.tuple([z.object({
+        workspaceId: z.string().nullable().optional(),
+        leftStateHash: z.string(),
+        rightStateHash: z.string(),
+      }).strict()]) },
+      readGadFileAtState: { args: z.tuple([z.object({
+        workspaceId: z.string().nullable().optional(),
+        stateHash: z.string(),
+        path: z.string(),
+      }).strict()]) },
+      getGadToolProvenance: { args: z.tuple([z.object({
+        workspaceId: z.string().nullable().optional(),
+        branchId: z.string(),
+        toolCallId: z.string(),
+      }).strict()]) },
+      enqueueGadIndexJob: { args: z.tuple([z.object({
+        workspaceId: z.string().nullable().optional(),
+        sourceHash: z.string(),
+        sourceKind: z.string(),
+        jobKind: z.string(),
+      }).strict()]) },
+      processGadIndexJobs: { args: z.tuple([ListOptsSchema]) },
+      rebuildGadReadModels: { args: z.tuple([BranchHeadSchema]) },
+      validateGadHashes: { args: z.tuple([ListOptsSchema]) },
+      clearDirtyAfterValidation: { args: z.tuple([ListOptsSchema]) },
       revokeRawSqlWriteApproval: { args: z.tuple([]), policy: { allowed: ["panel", "worker"] } },
     },
     handler: async (ctx, method, args) => {
@@ -405,92 +309,24 @@ export function createGadService(deps: GadServiceDeps): ServiceDefinition {
           return dispatch("getStatus", []);
         case "ensureBlob":
           return dispatch("ensureBlob", args);
-        case "ensureBranch":
-          return dispatch("ensureBranch", args);
-        case "recordSession":
-          return dispatch("recordSession", args);
-        case "endSession":
-          return dispatch("endSession", args);
-        case "recordTurn":
-          return dispatch("recordTurn", args);
-        case "beginToolCall":
-          return dispatch("beginToolCall", args);
-        case "completeToolCall":
-          return dispatch("completeToolCall", args);
-        case "recordRead":
-          return dispatch("recordRead", args);
-        case "recordMutation":
-          return dispatch("recordMutation", args);
-        case "listBranches":
-          return dispatch("listBranches", args);
-        case "getBranch":
-          return dispatch("getBranch", args);
-        case "listBranchFiles":
-          return dispatch("listBranchFiles", args);
-        case "forkBranch":
-          return dispatch("forkBranch", args);
-        case "createBranchSnapshot":
-          return dispatch("createBranchSnapshot", args);
-        case "listBranchSnapshots":
-          return dispatch("listBranchSnapshots", args);
-        case "recordPlan":
-          return dispatch("recordPlan", args);
-        case "supersedePlan":
-          return dispatch("supersedePlan", args);
-        case "listPlans":
-          return dispatch("listPlans", args);
-        case "getPlanChain":
-          return dispatch("getPlanChain", args);
-        case "createChunk":
-          return dispatch("createChunk", args);
-        case "addChunkMention":
-          return dispatch("addChunkMention", args);
-        case "relateChunk":
-          return dispatch("relateChunk", args);
-        case "listChunks":
-          return dispatch("listChunks", args);
-        case "getChunkMentions":
-          return dispatch("getChunkMentions", args);
-        case "getChunksFor":
-          return dispatch("getChunksFor", args);
-        case "getRelationsFor":
-          return dispatch("getRelationsFor", args);
-        case "walkDependencies":
-          return dispatch("walkDependencies", args);
-        case "upsertChunkEmbedding":
-          return dispatch("upsertChunkEmbedding", args);
-        case "upsertTurnEmbedding":
-          return dispatch("upsertTurnEmbedding", args);
-        case "findSimilarChunks":
-          return dispatch("findSimilarChunks", args);
-        case "findSimilarTurns":
-          return dispatch("findSimilarTurns", args);
-        case "parseFileVersion":
-          return dispatch("parseFileVersion", args);
-        case "getStructures":
-          return dispatch("getStructures", args);
-        case "findParsedByName":
-          return dispatch("findParsedByName", args);
-        case "getStructuresInRange":
-          return dispatch("getStructuresInRange", args);
-        case "getSupportedLanguages":
-          return dispatch("getSupportedLanguages", args);
-        case "indexTurn":
-          return dispatch("indexTurn", args);
-        case "indexFileVersion":
-          return dispatch("indexFileVersion", args);
-        case "indexSession":
-          return dispatch("indexSession", args);
-        case "getReviewContext":
-          return dispatch("getReviewContext", args);
-        case "setBlobPolicy":
-          return dispatch("setBlobPolicy", args);
-        case "getBlobPolicy":
-          return dispatch("getBlobPolicy", args);
-        case "redactBlob":
-          return dispatch("redactBlob", args);
-        case "listBlobReferences":
-          return dispatch("listBlobReferences", args);
+        case "ensureGadBranch":
+        case "getGadBranchHead":
+        case "appendGadHistoryBatch":
+        case "materializePiMessages":
+        case "listGadBranchHistory":
+        case "listGadBranchToolCalls":
+        case "forkGadBranch":
+        case "listGadBranches":
+        case "listGadBranchFiles":
+        case "diffGadStates":
+        case "readGadFileAtState":
+        case "getGadToolProvenance":
+        case "enqueueGadIndexJob":
+        case "processGadIndexJobs":
+        case "rebuildGadReadModels":
+        case "validateGadHashes":
+        case "clearDirtyAfterValidation":
+          return dispatch(method, args);
         case "revokeRawSqlWriteApproval": {
           const principal = await resolvePrincipal(deps, ctx);
           return deps.grantStore.revoke(principal.callerId, SQL_WRITE_SUBJECT.id);

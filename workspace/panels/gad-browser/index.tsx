@@ -50,10 +50,9 @@ function App() {
   const stateArgs = useStateArgs<StateArgs>();
   const [branches, setBranches] = useState<Row[]>([]);
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(stateArgs.branchId ?? null);
+  const [history, setHistory] = useState<Row[]>([]);
   const [files, setFiles] = useState<Row[]>([]);
-  const [snapshots, setSnapshots] = useState<Row[]>([]);
-  const [plans, setPlans] = useState<Row[]>([]);
-  const [chunks, setChunks] = useState<Row[]>([]);
+  const [toolCalls, setToolCalls] = useState<Row[]>([]);
   const [status, setStatus] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
   const selectedBranch = useMemo(
@@ -64,28 +63,27 @@ function App() {
   async function refresh() {
     setLoading(true);
     try {
-      const [nextStatus, nextBranches, nextPlans, nextChunks] = await Promise.all([
+      const [nextStatus, nextBranches] = await Promise.all([
         gad.status(),
-        gad.listBranches(),
-        gad.listPlans({ activeOnly: true }),
-        gad.listChunks(),
+        gad.listGadBranches(),
       ]);
       setStatus(nextStatus as unknown as Row[]);
       setBranches(nextBranches);
-      setPlans(nextPlans.slice(0, 100));
-      setChunks(nextChunks.slice(0, 100));
       const branchId = (selectedBranchId ?? asText(nextBranches[0]?.["id"])) || null;
       setSelectedBranchId(branchId);
       if (branchId) {
-        const [nextFiles, nextSnapshots] = await Promise.all([
-          gad.listBranchFiles(branchId),
-          gad.listBranchSnapshots(branchId),
+        const [nextHistory, nextFiles, nextToolCalls] = await Promise.all([
+          gad.listGadBranchHistory({ branchId }),
+          gad.listGadBranchFiles({ branchId }),
+          gad.listGadBranchToolCalls({ branchId }),
         ]);
+        setHistory(nextHistory);
         setFiles(nextFiles);
-        setSnapshots(nextSnapshots);
+        setToolCalls(nextToolCalls);
       } else {
+        setHistory([]);
         setFiles([]);
-        setSnapshots([]);
+        setToolCalls([]);
       }
     } finally {
       setLoading(false);
@@ -99,8 +97,9 @@ function App() {
   useEffect(() => {
     if (!selectedBranchId) return;
     void Promise.all([
-      gad.listBranchFiles(selectedBranchId).then(setFiles),
-      gad.listBranchSnapshots(selectedBranchId).then(setSnapshots),
+      gad.listGadBranchHistory({ branchId: selectedBranchId }).then(setHistory),
+      gad.listGadBranchFiles({ branchId: selectedBranchId }).then(setFiles),
+      gad.listGadBranchToolCalls({ branchId: selectedBranchId }).then(setToolCalls),
     ]);
   }, [selectedBranchId]);
 
@@ -140,25 +139,25 @@ function App() {
 
             <Tabs.Root defaultValue="files" style={{ minWidth: 0 }}>
               <Tabs.List>
+                <Tabs.Trigger value="branches">Branches</Tabs.Trigger>
+                <Tabs.Trigger value="history">History</Tabs.Trigger>
                 <Tabs.Trigger value="files">Files</Tabs.Trigger>
-                <Tabs.Trigger value="snapshots">Snapshots</Tabs.Trigger>
-                <Tabs.Trigger value="plans">Plans</Tabs.Trigger>
-                <Tabs.Trigger value="chunks">Chunks</Tabs.Trigger>
+                <Tabs.Trigger value="tool-calls">Tool Calls</Tabs.Trigger>
                 <Tabs.Trigger value="status">Status</Tabs.Trigger>
               </Tabs.List>
               <Box pt="3" style={{ height: "calc(100vh - 130px)" }}>
                 <ScrollArea type="auto" scrollbars="both" style={{ height: "100%" }}>
+                  <Tabs.Content value="branches">
+                    <DataTable rows={branches} columns={["id", "parent_branch_id", "head_history_hash", "head_state_hash", "dirty", "updated_at"]} />
+                  </Tabs.Content>
+                  <Tabs.Content value="history">
+                    <DataTable rows={history} columns={["history_id", "history_hash", "parent_hash", "kind", "actor", "message_id", "tool_call_id", "created_at"]} />
+                  </Tabs.Content>
                   <Tabs.Content value="files">
-                    <DataTable rows={files} columns={["path", "current_hash", "is_deleted", "updated_at"]} />
+                    <DataTable rows={files} columns={["path", "content_hash", "mode", "created_at"]} />
                   </Tabs.Content>
-                  <Tabs.Content value="snapshots">
-                    <DataTable rows={snapshots} columns={["id", "branch_id", "parent_snapshot_id", "session_id", "turn_id", "summary", "created_at"]} />
-                  </Tabs.Content>
-                  <Tabs.Content value="plans">
-                    <DataTable rows={plans} columns={["id", "title", "source_path", "branch_id", "session_id", "created_at", "superseded_by"]} />
-                  </Tabs.Content>
-                  <Tabs.Content value="chunks">
-                    <DataTable rows={chunks} columns={["content_hash", "topic_label", "content", "first_seen_at"]} />
+                  <Tabs.Content value="tool-calls">
+                    <DataTable rows={toolCalls} columns={["tool_call_id", "tool_name", "status", "result_summary", "requested_history_hash", "completed_history_hash"]} />
                   </Tabs.Content>
                   <Tabs.Content value="status">
                     <DataTable rows={status} columns={["metric", "value"]} />

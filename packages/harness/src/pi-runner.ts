@@ -28,6 +28,7 @@ import {
 } from "@mariozechner/pi-agent-core";
 import { getModel as piGetModel, type ImageContent } from "@mariozechner/pi-ai";
 import { Buffer } from "node:buffer";
+import { isAbsolute, relative as relativePath } from "node:path";
 
 import type { RuntimeFs } from "./tools/runtime-fs.js";
 import { type RpcCaller, loadNatStackResources } from "./resource-loader.js";
@@ -69,10 +70,10 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 const BUILTIN_TOOL_NAMES = ["read", "edit", "write", "grep", "find", "ls"] as const;
 
 export interface PiRunnerGadProvenance {
-  sessionId: string;
+  branchId: string;
+  workspaceId?: string | null;
   channelId?: string | null;
   contextId?: string | null;
-  branchId?: string | null;
   projectPath?: string | null;
   source?: string;
   metadata?: Record<string, unknown>;
@@ -125,13 +126,13 @@ export interface PiRunnerOptions {
    * on the next tool_call.
    */
   approvalLevel: ApprovalLevel;
-  /** Pre-existing message history for warm restore from SQL. */
+  /** Pre-existing message history materialized from gad for runner startup. */
   initialMessages?: AgentMessage[];
-  /** Called whenever a message_end / agent_end fires so the worker can persist. */
-  onPersist?: (messages: AgentMessage[]) => Promise<void> | void;
+  /** Called after gad history advances so the worker can drain execution-local state. */
+  onHistoryAdvanced?: () => Promise<void> | void;
   /** Working directory passed to file tools and the extension runtime. */
   cwd?: string;
-  /** Enables gad persistence for Pi sessions, turns, reads, and mutations. */
+  /** Enables immutable gad history/provenance for Pi sessions. */
   gad?: PiRunnerGadProvenance;
 }
 
@@ -150,8 +151,9 @@ export class PiRunner {
   private _approvalLevel: ApprovalLevel;
   private readonly preApprovedCallIds = new Set<string>();
   private recordedMessageCount = 0;
-  private lastGadTurnId: number | null = null;
-  private activeAssistantGadTurnId: number | null = null;
+  private gadHeadHash: string | null = null;
+  private gadStateHash: string | null = null;
+  private gadBranchId: string | null = null;
 
   constructor(private readonly options: PiRunnerOptions) {
     this._approvalLevel = options.approvalLevel;
@@ -239,9 +241,7 @@ export class PiRunner {
       getApiKey: this.options.getApiKey,
     });
     this.recordedMessageCount = this.options.initialMessages?.length ?? 0;
-    this.lastGadTurnId = null;
-    this.activeAssistantGadTurnId = null;
-    await this.recordGadSession();
+    await this.recordGadBranch();
 
     // 6. Forward Agent events into our handler.
     this.agentUnsub = this.agent.subscribe((event, _signal) =>
@@ -282,18 +282,23 @@ export class PiRunner {
         if (result?.block) {
           throw new Error(result.reason ?? `Tool "${tool.name}" blocked`);
         }
-        const gadToolCallId = await runner.beginGadToolCall(tool.name, params);
         const before = await runner.snapshotMutationTarget(tool.name, params);
         try {
           const toolResult = await tool.execute(toolCallId, params, signal, onUpdate);
-          await runner.recordGadToolEffect(gadToolCallId, tool.name, params, before, toolResult);
-          await runner.completeGadToolCall(gadToolCallId, runner.summarizeToolResult(toolResult));
+          await runner.recordGadToolEffect(toolCallId, tool.name, params, before, toolResult);
           return toolResult;
         } catch (err) {
-          await runner.completeGadToolCall(
-            gadToolCallId,
-            `error: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          await runner.appendGadItems([{
+            kind: "tool_result_observed",
+            actor: "tool",
+            toolCallId,
+            payload: {
+              toolName: tool.name,
+              isError: true,
+              summary: err instanceof Error ? err.message : String(err),
+              timestamp: Date.now(),
+            },
+          }]);
           throw err;
         }
       },
@@ -305,15 +310,17 @@ export class PiRunner {
     return this.options.gad;
   }
 
-  private async recordGadSession(): Promise<void> {
+  private async recordGadBranch(): Promise<void> {
     const gad = this.gad;
     if (!gad) return;
     try {
-      await this.options.rpc.call("main", "gad.recordSession", {
-        id: gad.sessionId,
-        source: gad.source ?? "pi-harness",
-        projectPath: gad.projectPath ?? this.options.cwd ?? null,
-        branchId: gad.branchId ?? null,
+      const head = await this.options.rpc.call<{
+        branchId: string;
+        headHistoryHash: string | null;
+        headStateHash: string;
+      }>("main", "gad.ensureGadBranch", {
+        workspaceId: gad.workspaceId ?? null,
+        branchId: gad.branchId,
         channelId: gad.channelId ?? null,
         contextId: gad.contextId ?? null,
         metadata: {
@@ -322,8 +329,11 @@ export class PiRunner {
           thinkingLevel: this.options.thinkingLevel ?? "medium",
         },
       });
+      this.gadBranchId = head.branchId;
+      this.gadHeadHash = head.headHistoryHash;
+      this.gadStateHash = head.headStateHash;
     } catch (err) {
-      console.warn("[PiRunner] gad.recordSession failed:", err);
+      console.warn("[PiRunner] gad.ensureGadBranch failed:", err);
     }
   }
 
@@ -331,97 +341,111 @@ export class PiRunner {
     const gad = this.gad;
     if (!gad || !this.agent) return;
     const messages = this.agent.state.messages as AgentMessage[];
+    const items: Array<{
+      kind: string;
+      actor?: string | null;
+      payload?: Record<string, unknown> | string | null;
+      messageId?: string | null;
+      blockId?: string | null;
+      toolCallId?: string | null;
+      metadata?: Record<string, unknown> | null;
+    }> = [];
     for (let i = this.recordedMessageCount; i < messages.length; i++) {
       const message = messages[i]!;
-      try {
-        const result = await this.options.rpc.call<{ id: number; turnIndex: number }>("main", "gad.recordTurn", {
-          sessionId: gad.sessionId,
+      const messageId = this.messageIdFor(i, message);
+      items.push({
+        kind: "message_created",
+        actor: this.messageRole(message),
+        messageId,
+        payload: {
           role: this.messageRole(message),
-          content: this.messageContentText(message),
-          contentFormat: "text",
+          timestamp: (message as { timestamp?: unknown }).timestamp ?? Date.now(),
           messageIndex: i,
-          channelId: gad.channelId ?? null,
-          timestamp: this.messageTimestampIso(message),
+        },
+      });
+      for (const [blockIndex, block] of this.messageBlocks(message).entries()) {
+        const blockId = `${messageId}:block:${blockIndex}`;
+        items.push({
+          kind: "message_block_added",
+          actor: this.messageRole(message),
+          messageId,
+          blockId,
+          toolCallId: this.toolCallIdFromBlock(block),
+          payload: {
+            block,
+            blockIndex,
+          },
         });
-        this.lastGadTurnId = result.id;
-        await this.indexGadTurn(result.id);
-      } catch (err) {
-        console.warn("[PiRunner] gad.recordTurn failed:", err);
+        const toolCallId = this.toolCallIdFromBlock(block);
+        if (toolCallId) {
+          items.push({
+            kind: "tool_call_requested",
+            actor: "assistant",
+            messageId,
+            blockId,
+            toolCallId,
+            payload: {
+              block,
+              toolName: this.toolNameFromBlock(block),
+              parameters: this.toolParamsFromBlock(block),
+            },
+          });
+        }
       }
+      items.push({
+        kind: "message_finalized",
+        actor: this.messageRole(message),
+        messageId,
+        payload: {
+          stopReason: (message as { stopReason?: unknown }).stopReason ?? null,
+          errorMessage: (message as { errorMessage?: unknown }).errorMessage ?? null,
+        },
+      });
       this.recordedMessageCount = i + 1;
     }
+    if (items.length > 0) await this.appendGadItems(items);
   }
 
-  private async beginGadToolCall(toolName: string, params: unknown): Promise<number | null> {
+  private async appendGadItems(items: Array<{
+    kind: string;
+    actor?: string | null;
+    payload?: Record<string, unknown> | string | null;
+    messageId?: string | null;
+    blockId?: string | null;
+    toolCallId?: string | null;
+    metadata?: Record<string, unknown> | null;
+  }>): Promise<void> {
     const gad = this.gad;
-    if (!gad) return null;
-    await this.recordNewGadMessages();
-    const turnId = await this.ensureActiveAssistantTurn(toolName);
+    if (!gad || items.length === 0) return;
     try {
-      const result = await this.options.rpc.call<{ id: number }>("main", "gad.beginToolCall", {
-        sessionId: gad.sessionId,
-        turnId,
-        toolName,
-        parameters: this.asJsonRecord(params),
-        isMutation: toolName === "edit" || toolName === "write",
-        branchId: gad.branchId ?? null,
-        channelId: gad.channelId ?? null,
-        contextId: gad.contextId ?? null,
+      const result = await this.options.rpc.call<{
+        headHistoryHash: string | null;
+        headStateHash: string;
+        branchId: string;
+      }>("main", "gad.appendGadHistoryBatch", {
+        workspaceId: gad.workspaceId ?? null,
+        branchId: this.gadBranchId ?? gad.branchId,
+        expectedHeadHash: this.gadHeadHash,
+        expectedStateHash: this.gadStateHash,
+        items,
       });
-      return result.id;
+      this.gadHeadHash = result.headHistoryHash;
+      this.gadStateHash = result.headStateHash;
+      this.gadBranchId = result.branchId;
+      await this.options.onHistoryAdvanced?.();
     } catch (err) {
-      console.warn("[PiRunner] gad.beginToolCall failed:", err);
-      return null;
-    }
-  }
-
-  private async ensureActiveAssistantTurn(toolName: string): Promise<number | null> {
-    if (this.activeAssistantGadTurnId != null) return this.activeAssistantGadTurnId;
-    const gad = this.gad;
-    if (!gad) return this.lastGadTurnId;
-    try {
-      const result = await this.options.rpc.call<{ id: number; turnIndex: number }>("main", "gad.recordTurn", {
-        sessionId: gad.sessionId,
-        role: "assistant",
-        content: `[tool call: ${toolName}]`,
-        contentFormat: "tool-call-placeholder",
-        channelId: gad.channelId ?? null,
-        timestamp: new Date().toISOString(),
-      });
-      this.activeAssistantGadTurnId = result.id;
-      this.lastGadTurnId = result.id;
-      return result.id;
-    } catch (err) {
-      console.warn("[PiRunner] gad.recordTurn placeholder failed:", err);
-      return this.lastGadTurnId;
-    }
-  }
-
-  private async completeGadToolCall(toolCallId: number | null, summary: string | null): Promise<void> {
-    if (toolCallId == null) return;
-    try {
-      await this.options.rpc.call("main", "gad.completeToolCall", toolCallId, summary);
-    } catch (err) {
-      console.warn("[PiRunner] gad.completeToolCall failed:", err);
-    }
-  }
-
-  private async indexGadTurn(turnId: number): Promise<void> {
-    try {
-      await this.options.rpc.call("main", "gad.indexTurn", turnId);
-    } catch (err) {
-      console.warn("[PiRunner] gad.indexTurn failed:", err);
+      console.warn("[PiRunner] gad.appendGadHistoryBatch failed:", err);
     }
   }
 
   private async recordGadToolEffect(
-    toolCallId: number | null,
+    toolCallId: string,
     toolName: string,
     params: unknown,
     before: GadBlobSnapshot | null,
     result: AgentToolResult<any>,
   ): Promise<void> {
-    if (toolCallId == null) return;
+    if (!this.gad) return;
     if (toolName === "edit" || toolName === "write") {
       await this.recordGadMutation(toolCallId, toolName, params, before);
       return;
@@ -430,7 +454,7 @@ export class PiRunner {
   }
 
   private async recordGadRead(
-    toolCallId: number,
+    toolCallId: string,
     toolName: string,
     params: unknown,
     result: AgentToolResult<any>,
@@ -438,57 +462,83 @@ export class PiRunner {
     const text = this.toolResultText(result);
     const blob = await this.putGadBlob(text);
     if (!blob) return;
-    const path = this.toolInputPath(toolName, params);
-    try {
-      await this.options.rpc.call("main", "gad.recordRead", {
+    const path = this.gadToolInputPath(toolName, params);
+    const items: Array<{
+      kind: string;
+      actor?: string | null;
+      payload?: Record<string, unknown> | string | null;
+      messageId?: string | null;
+      blockId?: string | null;
+      toolCallId?: string | null;
+      metadata?: Record<string, unknown> | null;
+    }> = [];
+    if (toolName === "read" && path) {
+      items.push({
+        kind: "file_observed",
+        actor: "tool",
         toolCallId,
-        readType: toolName === "read" ? "file" : toolName,
-        filePath: path,
-        contentHash: blob.digest,
-        contentSize: blob.size,
-        metadata: {
+        payload: {
+          path,
+          contentHash: blob.digest,
+          contentSize: blob.size,
           toolName,
           parameters: this.asJsonRecord(params),
-          details: result.details ?? null,
         },
       });
+    }
+    items.push({
+      kind: "file_read",
+      actor: "tool",
+      toolCallId,
+      payload: {
+        path,
+        contentHash: blob.digest,
+        contentSize: blob.size,
+        readType: toolName === "read" ? "file" : toolName,
+        summary: this.summarizeToolResult(result),
+      },
+      metadata: {
+        toolName,
+        parameters: this.asJsonRecord(params),
+        details: result.details ?? null,
+      },
+    });
+    try {
+      await this.appendGadItems(items);
     } catch (err) {
-      console.warn("[PiRunner] gad.recordRead failed:", err);
+      console.warn("[PiRunner] gad file_read failed:", err);
     }
   }
 
   private async recordGadMutation(
-    toolCallId: number,
+    toolCallId: string,
     toolName: string,
     params: unknown,
     before: GadBlobSnapshot | null,
   ): Promise<void> {
     const after = await this.snapshotMutationTarget(toolName, params);
-    const filePath = before?.path ?? after?.path ?? this.toolInputPath(toolName, params);
+    const filePath = this.gadPathFromAbsolute(before?.path ?? after?.path ?? this.toolInputPath(toolName, params));
     if (!filePath) return;
     try {
-      await this.options.rpc.call("main", "gad.recordMutation", {
+      await this.appendGadItems([{
+        kind: "file_mutation",
+        actor: "tool",
         toolCallId,
-        filePath,
-        beforeHash: before?.digest ?? null,
-        beforeSize: before?.size ?? null,
-        afterHash: after?.digest ?? null,
-        afterSize: after?.size ?? null,
-        mutationType: before?.digest ? "modify" : "create",
-        oldString: this.stringParam(params, "oldText"),
-        newString: this.stringParam(params, toolName === "write" ? "content" : "newText"),
-        description: `${toolName} ${filePath}`,
-        branchId: this.gad?.branchId ?? null,
-      });
-      if (after?.text != null && after.digest) {
-        await this.options.rpc.call("main", "gad.indexFileVersion", {
+        payload: {
+          operation: before?.digest ? "write" : "write",
           path: filePath,
-          contentHash: after.digest,
-          content: after.text,
-        });
-      }
+          beforeHash: before?.digest ?? null,
+          beforeSize: before?.size ?? null,
+          afterHash: after?.digest ?? null,
+          afterSize: after?.size ?? null,
+          oldString: this.stringParam(params, "oldText"),
+          newString: this.stringParam(params, toolName === "write" ? "content" : "newText"),
+          description: `${toolName} ${filePath}`,
+        },
+        metadata: { toolName },
+      }]);
     } catch (err) {
-      console.warn("[PiRunner] gad.recordMutation failed:", err);
+      console.warn("[PiRunner] gad file_mutation failed:", err);
     }
   }
 
@@ -535,6 +585,21 @@ export class PiRunner {
     return null;
   }
 
+  private gadToolInputPath(toolName: string, params: unknown): string | null {
+    return this.gadPathFromAbsolute(this.toolInputPath(toolName, params));
+  }
+
+  private gadPathFromAbsolute(filePath: string | null | undefined): string | null {
+    if (!filePath) return null;
+    const cwd = this.options.cwd ?? "/";
+    const relative = isAbsolute(filePath) ? relativePath(cwd, filePath) : filePath;
+    const normalized = relative.replace(/\\/gu, "/").replace(/\/+/gu, "/").replace(/^\.\//u, "");
+    if (!normalized || normalized === "." || normalized.startsWith("../") || normalized === ".." || normalized.startsWith("/")) {
+      return null;
+    }
+    return normalized;
+  }
+
   private summarizeToolResult(result: AgentToolResult<any>): string {
     const text = this.toolResultText(result).replace(/\s+/gu, " ").trim();
     return text.length > 240 ? `${text.slice(0, 237)}...` : text;
@@ -557,24 +622,44 @@ export class PiRunner {
     return (message as { role?: string }).role ?? "unknown";
   }
 
-  private messageTimestampIso(message: AgentMessage): string | null {
-    const timestamp = (message as { timestamp?: unknown }).timestamp;
-    if (typeof timestamp !== "number") return null;
-    return new Date(timestamp).toISOString();
+  private messageBlocks(message: AgentMessage): unknown[] {
+    const content = (message as { content?: unknown }).content;
+    if (typeof content === "string") return [{ type: "text", text: content }];
+    if (Array.isArray(content)) return content;
+    return [];
   }
 
-  private messageContentText(message: AgentMessage): string {
-    const content = (message as { content?: unknown }).content;
-    if (typeof content === "string") return content;
-    if (!Array.isArray(content)) return JSON.stringify(content ?? "");
-    return content.map((block) => {
-      if (!block || typeof block !== "object") return String(block);
-      const item = block as { type?: string; text?: string; thinking?: string; mimeType?: string };
-      if (item.type === "text") return item.text ?? "";
-      if (item.type === "thinking") return item.thinking ?? "";
-      if (item.type === "image") return `[image ${item.mimeType ?? "unknown"}]`;
-      return JSON.stringify(item);
-    }).filter(Boolean).join("\n");
+  private messageIdFor(index: number, message: AgentMessage): string {
+    const existing = (message as { id?: unknown; messageId?: unknown })["id"]
+      ?? (message as { id?: unknown; messageId?: unknown })["messageId"];
+    return typeof existing === "string" ? existing : `msg:${index}`;
+  }
+
+  private toolCallIdFromBlock(block: unknown): string | null {
+    if (!block || typeof block !== "object") return null;
+    const item = block as Record<string, unknown>;
+    return typeof item["id"] === "string"
+      ? item["id"]
+      : typeof item["toolCallId"] === "string"
+        ? item["toolCallId"]
+        : null;
+  }
+
+  private toolNameFromBlock(block: unknown): string | null {
+    if (!block || typeof block !== "object") return null;
+    const item = block as Record<string, unknown>;
+    return typeof item["name"] === "string"
+      ? item["name"]
+      : typeof item["toolName"] === "string"
+        ? item["toolName"]
+        : null;
+  }
+
+  private toolParamsFromBlock(block: unknown): Record<string, unknown> | null {
+    if (!block || typeof block !== "object") return null;
+    const item = block as Record<string, unknown>;
+    const params = item["input"] ?? item["arguments"] ?? item["args"];
+    return this.asJsonRecord(params);
   }
 
   private stringParam(params: unknown, key: string): string | null {
@@ -613,9 +698,6 @@ export class PiRunner {
    *   - Forward all events to user-supplied subscribers.
    */
   private async handleAgentEvent(event: AgentEvent): Promise<void> {
-    if (event.type === "message_start" && this.messageRole((event as { message?: AgentMessage }).message as AgentMessage) === "assistant") {
-      this.activeAssistantGadTurnId = null;
-    }
     if (event.type === "turn_start") {
       try {
         await this.extensionRuntime!.dispatch("turn_start", event);
@@ -626,12 +708,6 @@ export class PiRunner {
     }
     if (event.type === "message_end" || event.type === "agent_end") {
       await this.recordNewGadMessages();
-      if (event.type === "message_end") this.activeAssistantGadTurnId = null;
-      try {
-        await this.options.onPersist?.([...this.agent!.state.messages]);
-      } catch (err) {
-        console.error("[PiRunner] onPersist threw:", err);
-      }
     }
     for (const listener of this.listeners) {
       try {

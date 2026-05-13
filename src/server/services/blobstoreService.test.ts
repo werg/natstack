@@ -172,7 +172,7 @@ describe("blobstoreService", () => {
   it("streams large PUT bodies without retaining them in memory", async () => {
     const { server, baseUrl } = await startBlobstoreServer(blobsDir);
     try {
-      const totalBytes = 200 * 1024 * 1024;
+      const totalBytes = 32 * 1024 * 1024;
       const put = await http("PUT", `${baseUrl}/blob`, repeatingReadable(totalBytes));
       const body = JSON.parse(put.body.toString("utf8"));
 

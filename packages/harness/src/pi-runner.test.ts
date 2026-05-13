@@ -308,6 +308,39 @@ describe("PiRunner approval-gate tool wrapping", () => {
       lsTool.execute("call-1", { path: "." }, undefined),
     ).resolves.toBeDefined();
   });
+
+  it("records gad file mutations with workspace-relative paths", async () => {
+    const rpc = createMockRpc({
+      "main:gad.ensureGadBranch": {
+        branchId: "branch:channel:test",
+        headHistoryHash: null,
+        headStateHash: "state:empty",
+      },
+      "main:blobstore.putText": { digest: "blob:file", size: 12 },
+      "main:gad.appendGadHistoryBatch": {
+        branchId: "branch:channel:test",
+        headHistoryHash: "history:1",
+        headStateHash: "state:next",
+      },
+    });
+    const runner = new PiRunner(createOptions({
+      rpc,
+      cwd: "/workspace/project",
+      gad: { branchId: "branch:channel:test", channelId: "test" },
+    }));
+    await runner.init();
+
+    const tools: any[] = agentInstances[0].state.tools;
+    const writeTool = tools.find((t) => t.name === "write");
+    await writeTool.execute("call-1", { path: "src/app.ts", content: "hello" }, undefined);
+
+    expect(rpc.call).toHaveBeenCalledWith("main", "gad.appendGadHistoryBatch", expect.objectContaining({
+      items: [expect.objectContaining({
+        kind: "file_mutation",
+        payload: expect.objectContaining({ path: "src/app.ts" }),
+      })],
+    }));
+  });
 });
 
 describe("PiRunner event forwarding", () => {
@@ -333,9 +366,25 @@ describe("PiRunner event forwarding", () => {
     expect(events.map((e) => e.type)).toEqual(["agent_start", "message_end"]);
   });
 
-  it("calls onPersist on message_end and agent_end", async () => {
-    const onPersist = vi.fn();
-    const runner = new PiRunner(createOptions({ onPersist }));
+  it("appends gad history on message_end", async () => {
+    const onHistoryAdvanced = vi.fn();
+    const rpc = createMockRpc({
+      "main:gad.ensureGadBranch": {
+        branchId: "branch:channel:test",
+        headHistoryHash: null,
+        headStateHash: "state:empty",
+      },
+      "main:gad.appendGadHistoryBatch": {
+        branchId: "branch:channel:test",
+        headHistoryHash: "history:1",
+        headStateHash: "state:empty",
+      },
+    });
+    const runner = new PiRunner(createOptions({
+      rpc,
+      gad: { branchId: "branch:channel:test", channelId: "test" },
+      onHistoryAdvanced,
+    }));
     await runner.init();
 
     const agent = agentInstances[0];
@@ -349,11 +398,20 @@ describe("PiRunner event forwarding", () => {
       message: { role: "user", content: "hi", timestamp: 1 },
     });
     await Promise.resolve();
+    await Promise.resolve();
     cb({ type: "agent_end", messages: agent.state.messages });
     await Promise.resolve();
+    await Promise.resolve();
 
-    expect(onPersist).toHaveBeenCalledTimes(2);
-    expect(onPersist).toHaveBeenLastCalledWith(agent.state.messages);
+    expect(rpc.call).toHaveBeenCalledWith("main", "gad.appendGadHistoryBatch", expect.objectContaining({
+      branchId: "branch:channel:test",
+      items: expect.arrayContaining([
+        expect.objectContaining({ kind: "message_created", messageId: "msg:0" }),
+        expect.objectContaining({ kind: "message_block_added", messageId: "msg:0" }),
+        expect.objectContaining({ kind: "message_finalized", messageId: "msg:0" }),
+      ]),
+    }));
+    expect(onHistoryAdvanced).toHaveBeenCalledTimes(1);
   });
 
   it("refreshes active tools on turn_start", async () => {

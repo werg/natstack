@@ -4,9 +4,9 @@
  * Embeds `@mariozechner/pi-agent-core`'s `Agent` in-process via `PiRunner`
  * from `@natstack/harness`. One PiRunner per channel, owned by the DO for
  * the lifetime of the chat. The runner drives agent state (messages,
- * streaming, tool calls); the DO persists `AgentMessage[]` snapshots to
- * its SQL storage and forwards runner events to the channel as ephemeral
- * events.
+ * streaming, tool calls); durable transcript/history persistence lives in gad,
+ * while this DO only keeps execution-local runner/cache state and forwards
+ * runner events to the channel as ephemeral events.
  *
  * Composes:
  * - `DOIdentity`: stable DO ref + workerd session id
@@ -70,6 +70,15 @@ import { TurnDispatcher } from "./turn-dispatcher.js";
 const SAFE_TOOL_NAMES_DEFAULT: ReadonlySet<string> = new Set(["read", "ls", "grep", "find"]);
 const URL_BOUND_MODEL_CREDENTIAL_SENTINEL = "natstack-url-bound-model-credential";
 const URL_BOUND_MODEL_CREDENTIAL_SENTINEL_CLAIM = "https://natstack.local/url-bound-model-credential";
+
+function gadBranchIdForChannel(channelId: string): string {
+  return `branch:channel:${channelId}`;
+}
+
+function isExpectedTestServerFailure(error: unknown): boolean {
+  const cause = (error as { cause?: unknown } | null)?.cause;
+  return String(error).includes("test-server.invalid") || String(cause).includes("test-server.invalid");
+}
 
 export interface ModelCredentialSummary {
   id: string;
@@ -318,7 +327,7 @@ interface AgentAbortContext {
 }
 
 export abstract class AgentWorkerBase extends DurableObjectBase {
-  static override schemaVersion = 9;
+  static override schemaVersion = 10;
 
   protected identity: DOIdentity;
   protected subscriptions: SubscriptionManager;
@@ -347,8 +356,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   /** Dedup inline credential prompts per channel/provider while this DO is alive. */
   private credentialPromptCardsEmitted = new Set<string>();
 
-  /** Best-effort gad ids for in-flight non-builtin channel tool calls. */
-  private gadToolCallByDispatch = new Map<string, number>();
+  /** Materialized gad history cache; execution-local only. */
+  private messageCache = new Map<string, AgentMessage[]>();
 
   /** Phase 0D: Transient poison message tracker. Resets on hibernation. */
   private failedEvents = new Map<number, number>();
@@ -389,25 +398,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         last_delivered_seq INTEGER NOT NULL
       )
     `);
-    // Legacy table — kept for lazy migration to pi_messages.
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS pi_sessions (
-        channel_id TEXT PRIMARY KEY,
-        messages_blob TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-      )
-    `);
-    // Per-channel Pi agent message history for warm restore after DO hibernation.
-    // One row per message — avoids SQLITE_TOOBIG on long conversations and
-    // makes persist append-only instead of full-rewrite.
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS pi_messages (
-        channel_id TEXT NOT NULL,
-        idx INTEGER NOT NULL,
-        content TEXT NOT NULL,
-        PRIMARY KEY (channel_id, idx)
-      )
-    `);
+  }
+
+  protected override migrate(_fromVersion: number, _toVersion: number): void {
+    this.sql.exec(`DROP TABLE IF EXISTS pi_messages`);
+    this.sql.exec(`DROP TABLE IF EXISTS pi_sessions`);
   }
 
   // ── Identity bootstrap ──────────────────────────────────────────────────
@@ -819,8 +814,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     this.dispatches.deleteForChannel(channelId);
     this.subscriptions.deleteSubscription(channelId);
-    this.sql.exec(`DELETE FROM pi_messages WHERE channel_id = ?`, channelId);
-    this.sql.exec(`DELETE FROM pi_sessions WHERE channel_id = ?`, channelId);
+    this.messageCache.delete(channelId);
 
     return { ok: true };
   }
@@ -965,42 +959,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const existing = this.runners.get(channelId);
     if (existing) return existing.runner;
 
-    // Restore prior messages from SQL (warm-restart after DO hibernation,
-    // or freshly cloned DO whose parent's blob was copied in postClone).
-    let initialMessages: AgentMessage[] = [];
-
-    // Try normalized pi_messages table first.
-    const msgRows = this.sql.exec(
-      `SELECT content FROM pi_messages WHERE channel_id = ? ORDER BY idx`,
-      channelId,
-    ).toArray();
-    if (msgRows.length > 0) {
-      try {
-        initialMessages = msgRows.map(r => JSON.parse(r["content"] as string) as AgentMessage);
-      } catch (err) {
-        console.warn(`[AgentWorkerBase] failed to parse pi_messages for channel=${channelId}:`, err);
-      }
-    } else {
-      // Lazy migration: read from legacy pi_sessions blob, migrate to pi_messages.
-      const sessionRow = this.sql.exec(
-        `SELECT messages_blob FROM pi_sessions WHERE channel_id = ?`, channelId,
-      ).toArray();
-      if (sessionRow.length > 0 && sessionRow[0]!["messages_blob"]) {
-        try {
-          initialMessages = JSON.parse(sessionRow[0]!["messages_blob"] as string) as AgentMessage[];
-          // Migrate to normalized table.
-          for (let i = 0; i < initialMessages.length; i++) {
-            this.sql.exec(
-              `INSERT INTO pi_messages (channel_id, idx, content) VALUES (?, ?, ?)`,
-              channelId, i, JSON.stringify(initialMessages[i]),
-            );
-          }
-          this.sql.exec(`DELETE FROM pi_sessions WHERE channel_id = ?`, channelId);
-        } catch (err) {
-          console.warn(`[AgentWorkerBase] failed to migrate pi_sessions for channel=${channelId}:`, err);
-        }
-      }
-    }
+    await this.ensureGadBranch(channelId);
+    const initialMessages = await this.loadMessages(channelId);
 
     const runner = new PiRunner({
       rpc: {
@@ -1029,7 +989,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       approvalLevel: this.getApprovalLevel(channelId),
       initialMessages,
       gad: {
-        sessionId: `channel:${channelId}`,
+        branchId: gadBranchIdForChannel(channelId),
         channelId,
         contextId: this.subscriptions.getContextId(channelId),
         source: "agent-worker",
@@ -1037,8 +997,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           workerRef: this.identity.refOrNull,
         },
       },
-      onPersist: async (messages) => {
-        await this.saveMessages(channelId, runner.trimTrailingAbortedAssistant(messages));
+      onHistoryAdvanced: async () => {
+        const materialized = await this.loadMessages(channelId, { refresh: true });
+        runner.replaceHistory(runner.trimTrailingAbortedAssistant(materialized));
         await this.drainDeferredDispatchesFor(channelId);
       },
     });
@@ -1148,25 +1109,91 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     };
   }
 
-  private loadMessages(channelId: string): AgentMessage[] {
-    const rows = this.sql.exec(
-      `SELECT content FROM pi_messages WHERE channel_id = ? ORDER BY idx`,
+  private async ensureGadBranch(channelId: string): Promise<void> {
+    await this.rpc.call("main", "gad.ensureGadBranch", {
+      branchId: gadBranchIdForChannel(channelId),
       channelId,
-    ).toArray();
-    return rows.map((row) => JSON.parse(row["content"] as string) as AgentMessage);
+      contextId: this.subscriptions.getContextId(channelId),
+      metadata: { workerRef: this.identity.refOrNull },
+    });
+  }
+
+  private async loadMessages(channelId: string, opts: { refresh?: boolean } = {}): Promise<AgentMessage[]> {
+    if (!opts.refresh) {
+      const cached = this.messageCache.get(channelId);
+      if (cached) return cached;
+    }
+    try {
+      const result = await this.rpc.call<{ messages: AgentMessage[] }>("main", "gad.materializePiMessages", {
+        branchId: gadBranchIdForChannel(channelId),
+      });
+      const messages = trimTrailingEmptyAbortedAssistant(result.messages ?? []);
+      this.messageCache.set(channelId, messages);
+      return messages;
+    } catch (err) {
+      const fallback = this.messageCache.get(channelId) ?? [];
+      if (fallback.length > 0) {
+        console.warn(`[AgentWorkerBase] gad.materializePiMessages failed for channel=${channelId}; using cache:`, err);
+      }
+      return fallback;
+    }
+  }
+
+  private async appendGadItems(channelId: string, items: Array<Record<string, unknown>>): Promise<void> {
+    if (items.length === 0) return;
+    try {
+      const head = await this.rpc.call<{
+        branchId: string;
+        headHistoryHash: string | null;
+        headStateHash: string;
+      }>("main", "gad.getGadBranchHead", { branchId: gadBranchIdForChannel(channelId) });
+      await this.rpc.call("main", "gad.appendGadHistoryBatch", {
+        branchId: head.branchId,
+        expectedHeadHash: head.headHistoryHash,
+        expectedStateHash: head.headStateHash,
+        items,
+      });
+      await this.loadMessages(channelId, { refresh: true });
+    } catch (err) {
+      if (!isExpectedTestServerFailure(err)) {
+        console.warn(`[AgentWorkerBase] gad append failed for channel=${channelId}:`, err);
+      }
+    }
   }
 
   private async saveMessages(channelId: string, messages: AgentMessage[]): Promise<void> {
     messages = trimTrailingEmptyAbortedAssistant(messages);
-    this.sql.exec(`DELETE FROM pi_messages WHERE channel_id = ?`, channelId);
+    const previous = this.messageCache.get(channelId) ?? [];
+    const items: Array<Record<string, unknown>> = [];
     for (let i = 0; i < messages.length; i++) {
-      this.sql.exec(
-        `INSERT INTO pi_messages (channel_id, idx, content) VALUES (?, ?, ?)`,
-        channelId,
-        i,
-        JSON.stringify(messages[i]),
+      const message = messages[i]!;
+      if ((message as { role?: string }).role !== "toolResult") continue;
+      const toolCallId = (message as { toolCallId?: string }).toolCallId;
+      if (!toolCallId) continue;
+      const prior = previous.find((candidate) =>
+        (candidate as { role?: string; toolCallId?: string }).role === "toolResult" &&
+        (candidate as { toolCallId?: string }).toolCallId === toolCallId &&
+        JSON.stringify(candidate) === JSON.stringify(message)
       );
+      if (prior) continue;
+      items.push({
+        kind: "tool_result_observed",
+        actor: "worker",
+        messageId: messageIdFor(i, message),
+        toolCallId,
+        payload: {
+          toolCallId,
+          toolName: (message as { toolName?: string }).toolName ?? toolNameFromMessages(messages, toolCallId),
+          content: (message as { content?: unknown }).content ?? [],
+          details: (message as { details?: unknown }).details ?? null,
+          isError: (message as { isError?: boolean }).isError === true,
+          timestamp: (message as { timestamp?: unknown }).timestamp ?? Date.now(),
+          summary: summarizeUnknownResult((message as { content?: unknown }).content ?? ""),
+        },
+      });
     }
+    await this.appendGadItems(channelId, items);
+    this.messageCache.set(channelId, messages);
   }
 
   private async ensureChannelContext(channelId: string): Promise<void> {
@@ -1197,7 +1224,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private async recoverDispatchesForChannel(channelId: string): Promise<void> {
     if (this.recoveredChannels.has(channelId)) return;
 
-    const messages = this.loadMessages(channelId);
+    const messages = await this.loadMessages(channelId);
     const pending = this.dispatches.listForChannel(channelId);
     for (const breadcrumb of pending) {
       if (hasToolResultMessage(messages, breadcrumb.toolCallId)) continue;
@@ -1210,7 +1237,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private async drainDeferredDispatchesFor(channelId: string): Promise<void> {
     const deferred = this.dispatches.listDeferredForChannel(channelId);
     for (const breadcrumb of deferred) {
-      const messages = this.loadMessages(channelId);
+      const messages = await this.loadMessages(channelId);
       if (!hasToolResultMessage(messages, breadcrumb.toolCallId)) continue;
       const claimed = this.dispatches.tryClaim(breadcrumb.callId);
       if (!claimed) continue;
@@ -1327,8 +1354,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     if (!callerId) throw new Error(`Not subscribed to channel ${channelId}`);
 
     const callId = crypto.randomUUID();
-    const gadToolCallId = await this.beginGadChannelToolCall(channelId, toolCallId, participantHandle, method, args);
-    if (gadToolCallId != null) this.gadToolCallByDispatch.set(callId, gadToolCallId);
+    await this.beginGadChannelToolCall(channelId, toolCallId, participantHandle, method, args);
     if (onStreamUpdate) this.streamCallbacks.set(callId, onStreamUpdate);
     this.dispatches.store({
       callId,
@@ -1354,45 +1380,47 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     participantHandle: string,
     method: string,
     args: unknown,
-  ): Promise<number | null> {
+  ): Promise<void> {
     try {
-      const result = await this.rpc.call<{ id: number }>("main", "gad.beginToolCall", {
-        sessionId: `channel:${channelId}`,
-        toolName: `${participantHandle}.${method}`,
-        parameters: {
-          piToolCallId,
-          participantHandle,
-          method,
-          args,
+      await this.appendGadItems(channelId, [{
+        kind: "tool_call_requested",
+        actor: "worker",
+        toolCallId: piToolCallId,
+        payload: {
+          toolName: `${participantHandle}.${method}`,
+          providerHandle: participantHandle,
+          parameters: {
+            participantHandle,
+            method,
+            args,
+          },
         },
-        isMutation: false,
-        channelId,
-        contextId: this.subscriptions.getContextId(channelId),
-      });
-      return result.id;
+      }]);
     } catch (err) {
-      console.warn("[AgentWorkerBase] gad.beginToolCall for channel tool failed:", err);
-      return null;
+      console.warn("[AgentWorkerBase] gad tool_call_requested for channel tool failed:", err);
     }
   }
 
   private async completeGadChannelToolCall(callId: string, summary: string): Promise<void> {
-    const gadToolCallId = this.gadToolCallByDispatch.get(callId);
-    if (gadToolCallId == null) return;
-    this.gadToolCallByDispatch.delete(callId);
+    const breadcrumb = this.dispatches.peek(callId);
+    if (!breadcrumb) return;
     try {
-      await this.rpc.call("main", "gad.completeToolCall", gadToolCallId, summary);
-      const blob = await this.rpc.call<{ digest: string; size: number }>("main", "blobstore.putText", summary);
-      await this.rpc.call("main", "gad.recordRead", {
-        toolCallId: gadToolCallId,
-        readType: "channel_tool_result",
-        filePath: null,
-        contentHash: blob.digest,
-        contentSize: blob.size,
-        metadata: { dispatchCallId: callId },
-      });
+      await this.appendGadItems(breadcrumb.channelId, [{
+        kind: "tool_result_observed",
+        actor: "worker",
+        toolCallId: breadcrumb.toolCallId,
+        payload: {
+          toolCallId: breadcrumb.toolCallId,
+          toolName: breadcrumb.toolName ?? "channel_tool",
+          summary,
+          content: [{ type: "text", text: summary }],
+          details: { dispatchCallId: callId },
+          isError: summary.startsWith("error:"),
+          timestamp: Date.now(),
+        },
+      }]);
     } catch (err) {
-      console.warn("[AgentWorkerBase] gad.completeToolCall for channel tool failed:", err);
+      console.warn("[AgentWorkerBase] gad tool_result_observed for channel tool failed:", err);
     }
   }
 
@@ -1548,7 +1576,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     );
     this.dispatches.bufferResult(callId, result, isError);
 
-    const messages = this.loadMessages(breadcrumb.channelId);
+    const messages = await this.loadMessages(breadcrumb.channelId);
     if (!hasToolResultMessage(messages, breadcrumb.toolCallId)) return;
 
     const claimed = this.dispatches.tryClaim(callId);
@@ -1576,7 +1604,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     result: unknown,
     isError: boolean,
   ): Promise<void> {
-    let messages = this.loadMessages(breadcrumb.channelId);
+    let messages = await this.loadMessages(breadcrumb.channelId);
     const timestamp = Date.now();
 
     if (breadcrumb.kind === "approval") {
@@ -1854,7 +1882,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const entry = this.runners.get(channelId);
     if (!entry) return false;
 
-    const messages = this.loadMessages(channelId);
+    const messages = await this.loadMessages(channelId);
     const last = messages[messages.length - 1] as
       | { role?: string; stopReason?: string; errorMessage?: string }
       | undefined;
@@ -1929,9 +1957,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   /**
    * Called on the newly cloned agent DO after cloneDO copies parent's SQLite.
-   * Rewrites identity, clears ephemeral state, resubscribes to forked channel.
-   * The cloned worker boots its own PiRunner from the persisted pi_messages
-   * on first user message (optionally truncated to `forkAtMessageIndex`).
+   * Rewrites identity, clears ephemeral state, resubscribes to forked channel,
+   * and forks gad by moving only immutable head pointers.
    */
   async postClone(
     parentObjectKey: string,
@@ -1954,45 +1981,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.sql.exec(`DELETE FROM delivery_cursor`);
     this.sql.exec(`DELETE FROM dispatched_calls`);
 
-    // Migrate parent's message history from oldChannelId → newChannelId.
-    // Check pi_messages first (normalized), fall back to legacy pi_sessions blob.
-    const hasPiMessages = (this.sql.exec(
-      `SELECT COUNT(*) as cnt FROM pi_messages WHERE channel_id = ?`, oldChannelId,
-    ).toArray()[0]?.["cnt"] as number ?? 0) > 0;
-
-    if (hasPiMessages) {
-      // Normalized path: rename channel via UPDATE, trim via DELETE.
-      this.sql.exec(
-        `UPDATE pi_messages SET channel_id = ? WHERE channel_id = ?`,
-        newChannelId, oldChannelId,
-      );
-      if (forkAtMessageIndex != null) {
-        this.sql.exec(
-          `DELETE FROM pi_messages WHERE channel_id = ? AND idx >= ?`,
-          newChannelId, forkAtMessageIndex,
-        );
-      }
-    } else {
-      // Legacy blob path: migrate to pi_messages during fork.
-      const parentSession = this.sql.exec(
-        `SELECT messages_blob FROM pi_sessions WHERE channel_id = ?`, oldChannelId,
-      ).toArray();
-      if (parentSession.length > 0) {
-        try {
-          let messages = JSON.parse(parentSession[0]!["messages_blob"] as string) as AgentMessage[];
-          if (forkAtMessageIndex != null) messages = messages.slice(0, forkAtMessageIndex);
-          for (let i = 0; i < messages.length; i++) {
-            this.sql.exec(
-              `INSERT INTO pi_messages (channel_id, idx, content) VALUES (?, ?, ?)`,
-              newChannelId, i, JSON.stringify(messages[i]),
-            );
-          }
-          this.sql.exec(`DELETE FROM pi_sessions WHERE channel_id = ?`, oldChannelId);
-        } catch (err) {
-          console.warn(`[AgentWorkerBase] failed to migrate pi_sessions during fork:`, err);
-        }
-      }
-    }
+    await this.forkGadHistoryForClone(oldChannelId, newChannelId, forkAtMessageIndex);
 
     // Rename approvalLevel state key.
     const oldApprovalKey = `approvalLevel:${oldChannelId}`;
@@ -2036,6 +2025,53 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     _forkAtMessageIndex: number | null,
   ): Promise<void> {
     // Default: no-op
+  }
+
+  private async forkGadHistoryForClone(
+    oldChannelId: string,
+    newChannelId: string,
+    forkAtMessageIndex: number | null,
+  ): Promise<void> {
+    try {
+      await this.ensureGadBranch(oldChannelId);
+      const oldBranchId = gadBranchIdForChannel(oldChannelId);
+      const newBranchId = gadBranchIdForChannel(newChannelId);
+      const head = await this.rpc.call<{ headHistoryHash: string | null }>("main", "gad.getGadBranchHead", {
+        branchId: oldBranchId,
+      });
+      let historyHash = head.headHistoryHash;
+      let historyId: number | null = null;
+      if (forkAtMessageIndex != null) {
+        const chain = await this.rpc.call<Array<Record<string, unknown>>>("main", "gad.listGadBranchHistory", {
+          branchId: oldBranchId,
+        });
+        const targetMessageId = `msg:${Math.max(0, forkAtMessageIndex - 1)}`;
+        const target = [...chain].reverse().find((row) =>
+          row["message_id"] === targetMessageId && row["kind"] === "message_finalized"
+        ) ?? [...chain].reverse().find((row) => row["message_id"] === targetMessageId);
+        if (target) {
+          historyHash = typeof target["hash"] === "string" ? target["hash"] : historyHash;
+          historyId = typeof target["id"] === "number" ? target["id"] : null;
+        }
+      }
+      if (!historyHash && historyId == null) {
+        await this.ensureGadBranch(newChannelId);
+        return;
+      }
+      await this.rpc.call("main", "gad.forkGadBranch", {
+        sourceBranchId: oldBranchId,
+        newBranchId,
+        historyHash,
+        historyId,
+        channelId: newChannelId,
+        contextId: this.subscriptions.getContextId(oldChannelId),
+      });
+      this.messageCache.delete(oldChannelId);
+      this.messageCache.delete(newChannelId);
+    } catch (err) {
+      console.warn(`[AgentWorkerBase] gad fork failed:`, err);
+      await this.ensureGadBranch(newChannelId);
+    }
   }
 
   // ── Fetch override ───────────────────────────────────────────────────────
@@ -2136,13 +2172,13 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   override async getState(): Promise<Record<string, unknown>> {
     const subscriptions = this.sql.exec(`SELECT * FROM subscriptions`).toArray();
-    const piMessages = this.sql.exec(
-      `SELECT channel_id, idx, LENGTH(content) as content_len FROM pi_messages`,
-    ).toArray();
-    const piSessionsLegacy = this.sql.exec(`SELECT channel_id, updated_at FROM pi_sessions`).toArray();
     const dispatchedCalls = this.sql.exec(`SELECT * FROM dispatched_calls`).toArray();
     const deliveryCursors = this.sql.exec(`SELECT * FROM delivery_cursor`).toArray();
-    return { subscriptions, piMessages, piSessionsLegacy, dispatchedCalls, deliveryCursors };
+    const gadMessageCache = [...this.messageCache.entries()].map(([channelId, messages]) => ({
+      channelId,
+      messages: messages.length,
+    }));
+    return { subscriptions, gadMessageCache, dispatchedCalls, deliveryCursors };
   }
 
   // Reference SAFE_TOOL_NAMES_DEFAULT to suppress unused-import warnings;
@@ -2190,6 +2226,12 @@ function replaceToolResultMessage(
   const next = messages.slice();
   next[index] = replacement;
   return next;
+}
+
+function messageIdFor(index: number, message: AgentMessage): string {
+  const existing = (message as { id?: unknown; messageId?: unknown }).id
+    ?? (message as { id?: unknown; messageId?: unknown }).messageId;
+  return typeof existing === "string" ? existing : `msg:${index}`;
 }
 
 function toAgentToolResult(result: unknown): AgentToolResult<any> {

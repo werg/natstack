@@ -7,7 +7,7 @@
  * - ctx.ui.* prompts
  * - approval-gate prompts
  *
- * The row stays until the final method-result is applied back into pi_messages.
+ * The row stays until the final method-result is appended into gad history.
  * Fast results that arrive before the placeholder ToolResultMessage is persisted
  * are buffered in the same row.
  */

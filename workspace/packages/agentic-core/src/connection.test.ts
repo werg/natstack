@@ -2,8 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import { ConnectionManager } from "./connection.js";
 import type { ChatParticipantMetadata, ConnectionConfig } from "./types.js";
 
+const CHANNEL_TARGET = "do:workers/pubsub-channel:PubSubChannel:chat-1";
+
 function createConfig(): ConnectionConfig {
-  const call = vi.fn((_target: string, method: string) => {
+  const call = vi.fn((target: string, method: string) => {
+    if (target === "main" && method === "workers.resolveService") {
+      return Promise.resolve({ kind: "durable-object", targetId: CHANNEL_TARGET });
+    }
     if (method === "subscribe") return new Promise(() => {});
     return Promise.resolve(undefined);
   }) as NonNullable<ConnectionConfig["rpc"]>["call"];
@@ -31,11 +36,19 @@ describe("ConnectionManager", () => {
     const manager = new ConnectionManager({ config, metadata, callbacks: {} });
 
     const connectPromise = manager.connect({ channelId: "chat-1", methods: {} });
+    await vi.waitFor(() => {
+      expect(config.rpc!.call).toHaveBeenCalledWith(
+        CHANNEL_TARGET,
+        "subscribe",
+        "panel-1",
+        expect.any(Object),
+      );
+    });
     manager.disconnect();
 
     await expect(connectPromise).rejects.toThrow("ready aborted");
     expect(config.rpc!.call).toHaveBeenCalledWith(
-      "do:workers/pubsub-channel:PubSubChannel:chat-1",
+      CHANNEL_TARGET,
       "unsubscribe",
       "panel-1",
     );

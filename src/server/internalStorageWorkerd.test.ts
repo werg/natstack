@@ -149,33 +149,45 @@ describe("internal storage DOs under workerd", () => {
     ]);
 
     const ref = { source: "workers/gad-store", className: "GadWorkspaceDO", objectKey: "workspace-gad" };
-    await harness.dispatch.dispatch(ref, "recordSession", {
-      id: "session-live",
-      source: "integration-test",
+    const head = await harness.dispatch.dispatch(ref, "ensureGadBranch", {
+      branchId: "branch-live",
       channelId: "channel-live",
       contextId: "context-live",
-    });
-    await harness.dispatch.dispatch(ref, "recordTurn", {
-      sessionId: "session-live",
-      role: "user",
-      content: "write the file",
-    });
-    const tool = await harness.dispatch.dispatch(ref, "beginToolCall", {
-      sessionId: "session-live",
-      turnId: 1,
-      toolName: "write",
-      isMutation: true,
-    }) as { id: number };
-    await harness.dispatch.dispatch(ref, "recordMutation", {
-      toolCallId: tool.id,
-      filePath: "/src/live.ts",
-      afterHash: "d".repeat(64),
-      afterSize: 12,
-      mutationType: "create",
+    }) as { branchId: string; headHistoryHash: string | null; headStateHash: string };
+    await harness.dispatch.dispatch(ref, "appendGadHistoryBatch", {
+      branchId: head.branchId,
+      expectedHeadHash: head.headHistoryHash,
+      expectedStateHash: head.headStateHash,
+      items: [
+        {
+          kind: "message_created",
+          actor: "user",
+          messageId: "msg:0",
+          payload: { role: "user", timestamp: 1 },
+        },
+        {
+          kind: "message_block_added",
+          actor: "user",
+          messageId: "msg:0",
+          blockId: "msg:0:block:0",
+          payload: { block: { type: "text", text: "write the file" } },
+        },
+        {
+          kind: "file_mutation",
+          actor: "tool",
+          toolCallId: "tool-live",
+          payload: {
+            operation: "write",
+            path: "src/live.ts",
+            afterHash: "d".repeat(64),
+            afterSize: 12,
+          },
+        },
+      ],
     });
     const status = await harness.dispatch.dispatch(ref, "getStatus") as Array<{ metric: string; value: number }>;
-    expect(status.find((row) => row.metric === "Sessions")?.value).toBe(1);
-    expect(status.find((row) => row.metric === "File versions")?.value).toBe(1);
+    expect(status.find((row) => row.metric === "Branches")?.value).toBe(1);
+    expect(status.find((row) => row.metric === "History items")?.value).toBe(3);
   }, 30_000);
 
   it("returns affected counts for BrowserDataDO cookie clears", async () => {
