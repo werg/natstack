@@ -18,7 +18,8 @@ export const reactAdapter: FrameworkAdapter = {
   tsconfigJsx: "react-jsx",
 
   generateEntry(exposeEntryFile: string, entryFile: string): string {
-    return `import ${JSON.stringify(exposeEntryFile)};
+    return `import "@radix-ui/themes/styles.css";
+import ${JSON.stringify(exposeEntryFile)};
 import { autoMountReactPanel, shouldAutoMount } from "@workspace/react";
 import * as userModule from ${JSON.stringify(entryFile)};
 
@@ -28,10 +29,10 @@ if (shouldAutoMount(userModule)) {
 `;
   },
 
-  // Fallback HTML defaults (used only when no workspace template is found)
-  cdnStylesheets: [
-    "https://cdn.jsdelivr.net/npm/@radix-ui/themes@3.2.1/styles.css",
-  ],
+  // Fallback HTML defaults (used only when no workspace template is found).
+  // Radix CSS is imported into the generated entry above so panel loads do not
+  // depend on a third-party CDN at runtime.
+  cdnStylesheets: [],
   additionalCss: "#root, #root > .radix-themes { min-height: 100dvh; }",
   rootElementHtml: '<div id="root"></div>',
 };

@@ -10,6 +10,40 @@ interface ErrorBoundaryState {
   hasError: boolean;
   error: Error | null;
   errorInfo: React.ErrorInfo | null;
+  autoReloading: boolean;
+}
+
+const TRANSIENT_IMPORT_ERROR_RE = /failed to fetch dynamically imported module|error loading dynamically imported module|loading chunk \d+ failed|importing a module script failed/i;
+const AUTO_RELOAD_STORAGE_KEY = "__natstackTransientImportReload";
+const AUTO_RELOAD_WINDOW_MS = 30_000;
+
+function isTransientImportError(error: Error): boolean {
+  const text = `${error.name}\n${error.message}\n${error.stack ?? ""}`;
+  return TRANSIENT_IMPORT_ERROR_RE.test(text);
+}
+
+function shouldAutoReloadForTransientImport(): boolean {
+  try {
+    const now = Date.now();
+    const marker = window.sessionStorage.getItem(AUTO_RELOAD_STORAGE_KEY);
+    if (marker) {
+      const parsed = JSON.parse(marker) as { href?: unknown; at?: unknown };
+      if (
+        parsed.href === window.location.href &&
+        typeof parsed.at === "number" &&
+        now - parsed.at < AUTO_RELOAD_WINDOW_MS
+      ) {
+        return false;
+      }
+    }
+    window.sessionStorage.setItem(AUTO_RELOAD_STORAGE_KEY, JSON.stringify({
+      href: window.location.href,
+      at: now,
+    }));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -19,7 +53,7 @@ interface ErrorBoundaryState {
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
-    this.state = { hasError: false, error: null, errorInfo: null };
+    this.state = { hasError: false, error: null, errorInfo: null, autoReloading: false };
   }
 
   static getDerivedStateFromError(error: Error): Partial<ErrorBoundaryState> {
@@ -32,10 +66,20 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
     this.setState({ errorInfo });
     this.props.onError?.(error, errorInfo);
+
+    if (isTransientImportError(error) && shouldAutoReloadForTransientImport()) {
+      this.setState({ autoReloading: true });
+      window.setTimeout(() => window.location.reload(), 250);
+    }
   }
 
   handleRetry = (): void => {
-    this.setState({ hasError: false, error: null, errorInfo: null });
+    try {
+      window.sessionStorage.removeItem(AUTO_RELOAD_STORAGE_KEY);
+    } catch {
+      // Ignore storage failures; retry should still re-render.
+    }
+    this.setState({ hasError: false, error: null, errorInfo: null, autoReloading: false });
   };
 
   render(): ReactNode {
@@ -68,7 +112,9 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               Something went wrong
             </h2>
             <p style={{ marginBottom: "16px", opacity: 0.8 }}>
-              The chat panel encountered an error. You can try to recover or reload the panel.
+              {this.state.autoReloading
+                ? "The chat panel hit a transient network error while loading. Reloading..."
+                : "The chat panel encountered an error. You can try to recover or reload the panel."}
             </p>
             <details
               style={{
