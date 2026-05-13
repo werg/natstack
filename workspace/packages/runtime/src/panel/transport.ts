@@ -5,11 +5,16 @@ import {
   type RpcRequest,
   type RpcTransport,
 } from "@natstack/rpc";
+import { createRecoveryCoordinator } from "@natstack/shared/shell/recoveryCoordinator";
+import type { RecoveryCoordinator, RecoveryKind } from "@natstack/shared/shell/recoveryCoordinator";
 
 type NatstackTransportBridge = {
   send: (targetId: string, message: unknown) => void | Promise<void>;
   onMessage: (handler: (fromId: string, message: unknown) => void) => () => void;
+  onRecovery?: (kind: RecoveryKind, handler: () => void | Promise<void>) => () => void;
 };
+
+export const recoveryCoordinator: RecoveryCoordinator = createRecoveryCoordinator();
 
 function getTransportBridge(): NatstackTransportBridge {
   const bridge = (globalThis as any).__natstackTransport as NatstackTransportBridge | undefined;
@@ -40,6 +45,9 @@ export function createPanelTransport(): RpcTransport {
   const bridge = getTransportBridge();
   const registry = createHandlerRegistry({ context: "panel" });
   const electronServiceCall = getElectronServiceCall();
+
+  bridge.onRecovery?.("resubscribe", () => recoveryCoordinator.run("resubscribe"));
+  bridge.onRecovery?.("cold-recover", () => recoveryCoordinator.run("cold-recover"));
 
   bridge.onMessage((fromId, message) => {
     const sourceId = normalizeEndpointId(fromId);

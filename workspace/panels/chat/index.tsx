@@ -6,7 +6,7 @@
  * directly — no cross-context navigation needed.
  */
 
-import { pubsubConfig, id as panelClientId, contextId, rpc, focusPanel, useStateArgs, setStateArgs, buildPanelLink } from "@workspace/runtime";
+import { pubsubConfig, id as panelClientId, contextId, rpc, recoveryCoordinator, focusPanel, useStateArgs, setStateArgs, buildPanelLink } from "@workspace/runtime";
 import { usePanelTheme } from "@workspace/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Flex, Spinner, Text, Theme } from "@radix-ui/themes";
@@ -229,6 +229,7 @@ export default function ChatPanel() {
     token: pubsubConfig?.token ?? "",
     clientId: panelClientId,
     rpc,
+    recoveryCoordinator,
   };
 
   const handleNewConversation = useCallback(() => {

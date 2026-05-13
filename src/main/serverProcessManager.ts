@@ -3,10 +3,6 @@
  *
  * Uses utilityProcess.fork() in Electron or child_process.fork() in Node.js.
  * Communicates via IPC messages (ready, shutdown, error).
- *
- * Fail-fast on crash: if the server exits unexpectedly, the onCrash callback
- * fires (typically triggering app.relaunch + app.exit). No restart attempts —
- * stale tokens in running panels make partial recovery unreliable.
  */
 
 import {
@@ -27,6 +23,7 @@ export class ServerProcessManager {
   private proc: ProcessAdapter | null = null;
   private ports: ServerPorts | null = null;
   private isShuttingDown = false;
+  private restartTimestamps: number[] = [];
 
   constructor(private config: {
     /** Managed workspace root directory (contains source/ and state/) */
@@ -36,6 +33,8 @@ export class ServerProcessManager {
     logLevel?: string;
     /** Called if the server process exits unexpectedly */
     onCrash: (code: number | null) => void;
+    /** Called after an unexpected server process exit is restarted in-place. */
+    onRestart?: (ports: ServerPorts) => void;
     /**
      * Called when the server requests an Electron-app-level relaunch into a
      * different workspace (via `workspace.select`). Typical implementation:
@@ -78,7 +77,7 @@ export class ServerProcessManager {
     // Wire up crash handler after startup succeeds
     proc.on("exit", (code) => {
       if (!this.isShuttingDown) {
-        this.config.onCrash(code);
+        void this.handleUnexpectedExit(code);
       }
     });
 
@@ -148,6 +147,31 @@ export class ServerProcessManager {
 
   getPorts(): ServerPorts | null {
     return this.ports;
+  }
+
+  getCurrentGatewayUrl(): string | null {
+    return this.ports ? `ws://127.0.0.1:${this.ports.gatewayPort}/rpc` : null;
+  }
+
+  private async handleUnexpectedExit(code: number | null): Promise<void> {
+    const now = Date.now();
+    this.restartTimestamps = this.restartTimestamps.filter((ts) => now - ts < 60_000);
+    if (this.restartTimestamps.length >= 5) {
+      this.config.onCrash(code);
+      return;
+    }
+
+    this.restartTimestamps.push(now);
+    this.proc = null;
+    this.ports = null;
+
+    try {
+      const ports = await this.start();
+      this.config.onRestart?.(ports);
+    } catch (error) {
+      console.error("[ServerProcessManager] Restart failed:", error);
+      this.config.onCrash(code);
+    }
   }
 
   private spawn(): ProcessAdapter {

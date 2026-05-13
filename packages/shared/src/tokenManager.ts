@@ -1,6 +1,24 @@
 import { randomBytes, timingSafeEqual } from "crypto";
 import type { CallerKind } from "./serviceDispatcher.js";
 
+export type EphemeralConnectionId = string & { readonly __ephemeralConnectionId: unique symbol };
+
+export function ephemeralConnectionId(value: string): EphemeralConnectionId {
+  return value as EphemeralConnectionId;
+}
+
+export interface PersistedPanelTokenRecord {
+  panelId: string;
+  token: string;
+  callerKind: "panel";
+  parentId?: string | null;
+  ownerCallerId?: string;
+}
+
+export interface PanelTokenRecord extends PersistedPanelTokenRecord {
+  ownerConnectionId?: EphemeralConnectionId;
+}
+
 /**
  * Constant-time string comparison.
  *
@@ -41,8 +59,10 @@ export class TokenManager {
   private panelParentIds = new Map<string, string | null>();
   // panelId -> authenticated shell/client caller id that owns browser handoff
   private panelOwnerCallerIds = new Map<string, string>();
+  private panelOwnerConnectionIds = new Map<string, EphemeralConnectionId>();
   // revocation listeners
   private revokeListeners: ((callerId: string) => void)[] = [];
+  private panelTokenListeners: ((record: PanelTokenRecord | null, panelId: string) => void)[] = [];
   // admin token for privileged operations
   private adminToken: string | null = null;
 
@@ -57,6 +77,7 @@ export class TokenManager {
     const token = randomBytes(32).toString("hex");
     this.tokenToEntry.set(token, { callerId, callerKind });
     this.callerIdToToken.set(callerId, token);
+    if (callerKind === "panel") this.emitPanelTokenRecord(callerId);
     return token;
   }
 
@@ -89,6 +110,7 @@ export class TokenManager {
     if (this.tokenToEntry.has(token)) return false;
     this.tokenToEntry.set(token, { callerId, callerKind });
     this.callerIdToToken.set(callerId, token);
+    if (callerKind === "panel") this.emitPanelTokenRecord(callerId);
     return true;
   }
 
@@ -133,6 +155,8 @@ export class TokenManager {
     this.tokenToEntry.delete(token);
     this.panelParentIds.delete(callerId);
     this.panelOwnerCallerIds.delete(callerId);
+    this.panelOwnerConnectionIds.delete(callerId);
+    this.emitPanelTokenRecord(callerId);
 
     for (const listener of this.revokeListeners) {
       listener(callerId);
@@ -157,8 +181,10 @@ export class TokenManager {
     this.callerIdToToken.clear();
     this.panelParentIds.clear();
     this.panelOwnerCallerIds.clear();
+    this.panelOwnerConnectionIds.clear();
 
     for (const callerId of callerIds) {
+      this.emitPanelTokenRecord(callerId);
       for (const listener of this.revokeListeners) {
         listener(callerId);
       }
@@ -189,18 +215,62 @@ export class TokenManager {
 
   setPanelParent(panelId: string, parentId: string | null): void {
     this.panelParentIds.set(panelId, parentId);
+    this.emitPanelTokenRecord(panelId);
   }
 
   getPanelParent(panelId: string): string | null | undefined {
     return this.panelParentIds.get(panelId);
   }
 
-  setPanelOwner(panelId: string, ownerCallerId: string): void {
+  setPanelOwner(
+    panelId: string,
+    ownerCallerId: string,
+    ownerConnectionId?: EphemeralConnectionId | string,
+  ): void {
     this.panelOwnerCallerIds.set(panelId, ownerCallerId);
+    if (ownerConnectionId) {
+      this.panelOwnerConnectionIds.set(panelId, ephemeralConnectionId(ownerConnectionId));
+    } else {
+      this.panelOwnerConnectionIds.delete(panelId);
+    }
+    this.emitPanelTokenRecord(panelId);
   }
 
   getPanelOwner(panelId: string): string | undefined {
     return this.panelOwnerCallerIds.get(panelId);
+  }
+
+  getPanelOwnerConnection(panelId: string): EphemeralConnectionId | undefined {
+    return this.panelOwnerConnectionIds.get(panelId);
+  }
+
+  getPanelTokenRecord(panelId: string): PanelTokenRecord | null {
+    const token = this.callerIdToToken.get(panelId);
+    const entry = token ? this.tokenToEntry.get(token) : undefined;
+    if (!token || entry?.callerKind !== "panel") return null;
+    return {
+      panelId,
+      token,
+      callerKind: "panel",
+      parentId: this.panelParentIds.get(panelId),
+      ownerCallerId: this.panelOwnerCallerIds.get(panelId),
+      ownerConnectionId: this.panelOwnerConnectionIds.get(panelId),
+    };
+  }
+
+  listPanelTokenRecords(): PanelTokenRecord[] {
+    const records: PanelTokenRecord[] = [];
+    for (const callerId of this.callerIdToToken.keys()) {
+      const record = this.getPanelTokenRecord(callerId);
+      if (record) records.push(record);
+    }
+    return records;
+  }
+
+  onPanelTokenRecordChanged(
+    listener: (record: PanelTokenRecord | null, panelId: string) => void,
+  ): void {
+    this.panelTokenListeners.push(listener);
   }
 
   isPanelDescendantOf(panelId: string, ancestorId: string): boolean {
@@ -213,6 +283,13 @@ export class TokenManager {
       current = this.panelParentIds.get(current) ?? null;
     }
     return false;
+  }
+
+  private emitPanelTokenRecord(panelId: string): void {
+    const record = this.getPanelTokenRecord(panelId);
+    for (const listener of this.panelTokenListeners) {
+      listener(record, panelId);
+    }
   }
 
 }

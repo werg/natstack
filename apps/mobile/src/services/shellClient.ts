@@ -6,6 +6,8 @@ import { Appearance } from "react-native";
 import { WorkspaceClient } from "@natstack/shared/shell/workspaceClient";
 import { SettingsClient } from "@natstack/shared/shell/settingsClient";
 import { EventsClient } from "@natstack/shared/shell/eventsClient";
+import { createRecoveryCoordinator } from "@natstack/shared/shell/recoveryCoordinator";
+import type { RecoveryCoordinator } from "@natstack/shared/shell/recoveryCoordinator";
 import type { PanelManager } from "@natstack/shared/shell/panelManager";
 import {
   getSharedBrowserAddressOptions,
@@ -269,6 +271,7 @@ export class ShellClient {
   readonly workspaces: WorkspaceClient;
   readonly settings: SettingsClient;
   readonly events: EventsClient;
+  readonly recovery: RecoveryCoordinator;
   readonly credentials: Credentials;
   readonly serverUrl: string;
 
@@ -289,6 +292,10 @@ export class ShellClient {
       this.statusUnsub = this.transport.onStatusChange(config.onStatusChange);
     }
 
+    this.recovery = createRecoveryCoordinator();
+    this.transport.onRecovery("resubscribe", () => this.recovery.run("resubscribe"));
+    this.transport.onRecovery("cold-recover", () => this.recovery.run("cold-recover"));
+
     this.panels = new MobilePanels({
       serverUrl: config.credentials.serverUrl,
       transport: this.transport,
@@ -299,7 +306,10 @@ export class ShellClient {
     });
     this.workspaces = new WorkspaceClient(this.transport);
     this.settings = new SettingsClient(this.transport);
-    this.events = new EventsClient(this.transport);
+    this.events = new EventsClient(this.transport, this.recovery);
+    this.recovery.registerColdRecoverHandler("mobile-panel-tree", async () => {
+      await this.panels.refresh();
+    });
   }
 
   async init(): Promise<void> {

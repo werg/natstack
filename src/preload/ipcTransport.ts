@@ -39,5 +39,9 @@ export function createIpcTransport(): TransportBridge {
       listeners.add(handler);
       return () => listeners.delete(handler);
     },
+
+    onRecovery(): () => void {
+      return () => {};
+    },
   };
 }

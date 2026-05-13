@@ -505,6 +505,22 @@ async function main() {
   const deviceAuthStore = new DeviceAuthStore(path.join(statePath, "auth", "devices.json"));
   const startupPairingCode = !ipcChannel ? deviceAuthStore.createPairingCode() : null;
 
+  try {
+    const { recoverPersistedPanelTokens, installPanelTokenPersistence } =
+      await import("./persistedPanelTokens.js");
+    const summary = recoverPersistedPanelTokens(tokenManager, statePath);
+    installPanelTokenPersistence(tokenManager, statePath);
+    if (summary.recovered > 0 || summary.errors > 0) {
+      console.log(
+        `[Server] Recovered ${summary.recovered} persisted panel token(s)` +
+          (summary.errors > 0 ? ` (${summary.errors} unreadable)` : ""),
+      );
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[Server] Panel token recovery unavailable: ${msg}`);
+  }
+
   // Re-seed TokenManager from persisted DO state so DOs that wake from a
   // restart-survived alarm don't 401 with a token issued by a previous
   // server lifetime. See recoverPersistedDOTokens.ts for the rationale.

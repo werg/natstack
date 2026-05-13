@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as http from "node:http";
 import { generateKeyPairSync } from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type {
   AuditEntry,
@@ -11,6 +14,8 @@ import type {
 import type { ClientConfigRecord } from "../../../packages/shared/src/credentials/clientConfigStore.js";
 import { createCredentialService } from "./credentialService.js";
 import { CredentialSessionGrantStore } from "./credentialSessionGrants.js";
+import { TokenManager } from "@natstack/shared/tokenManager";
+import { installPanelTokenPersistence, recoverPersistedPanelTokens } from "../persistedPanelTokens.js";
 
 class MemoryCredentialStore {
   private readonly credentials = new Map<string, Credential>();
@@ -144,7 +149,11 @@ function approvingQueue(decision: "once" | "session" | "version" | "repo" = "ver
 function targetedOpenEventService(emit: ReturnType<typeof vi.fn>) {
   return {
     emit,
-    emitTo: vi.fn((callerId: string, event: string, payload: unknown) => {
+    emitToCaller: vi.fn((callerId: string, event: string, payload: unknown) => {
+      emit(event, payload);
+      return callerId.length > 0;
+    }),
+    emitToConnection: vi.fn((callerId: string, _connectionId: string, event: string, payload: unknown) => {
       emit(event, payload);
       return callerId.length > 0;
     }),
@@ -709,7 +718,10 @@ describe("credentialService", () => {
     const service = createCredentialService({
       credentialStore: new MemoryCredentialStore() as never,
       eventService: eventService as never,
-      tokenManager: { getPanelOwner: vi.fn(() => "shell:owner") } as never,
+      tokenManager: {
+        getPanelOwner: vi.fn(() => "shell:owner"),
+        getPanelOwnerConnection: vi.fn(() => "owner-conn"),
+      } as never,
       approvalQueue: approvingQueue() as never,
     });
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
@@ -738,14 +750,138 @@ describe("credentialService", () => {
       },
     }]) as Promise<StoredCredentialSummary>;
 
-    await vi.waitFor(() => expect(eventService.emitTo).toHaveBeenCalledWith(
+    await vi.waitFor(() => expect(eventService.emitToConnection).toHaveBeenCalledWith(
       "shell:owner",
+      "owner-conn",
       "external-open:open",
       expect.objectContaining({
         callerId: "worker:test",
         callerKind: "worker",
       }),
     ));
+    const authorizeUrl = new URL(emit.mock.calls[0]![1].url);
+    await deliverOAuthCallback(authorizeUrl.searchParams.get("redirect_uri")!, new URLSearchParams({
+      code: "code-1",
+      state: authorizeUrl.searchParams.get("state")!,
+    }));
+    await pending;
+  });
+
+  it("falls back to caller-wide browser handoff when a remembered owner connection is stale", async () => {
+    const emit = vi.fn();
+    const eventService = {
+      emit: vi.fn(),
+      emitToConnection: vi.fn(() => false),
+      emitToCaller: vi.fn((callerId: string, event: string, payload: unknown) => {
+        emit(event, payload);
+        return callerId.length > 0;
+      }),
+    };
+    const service = createCredentialService({
+      credentialStore: new MemoryCredentialStore() as never,
+      eventService: eventService as never,
+      tokenManager: {
+        getPanelOwner: vi.fn(() => "shell:owner"),
+        getPanelOwnerConnection: vi.fn(() => "stale-owner-conn"),
+      } as never,
+      approvalQueue: approvingQueue() as never,
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      access_token: "token",
+      expires_in: 3600,
+    }), { status: 200, headers: { "content-type": "application/json" } })));
+
+    const pending = service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
+      spec: {
+        flow: {
+          type: "oauth2-auth-code-pkce",
+          authorizeUrl: "https://auth.example.test/oauth/authorize",
+          tokenUrl: "https://auth.example.test/oauth/token",
+          clientId: "client-1",
+        },
+        credential: {
+          label: "Example OAuth",
+          audience: [{ url: "https://api.example.test/", match: "origin" }],
+          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        },
+        browser: "external",
+      },
+      handoffTarget: {
+        callerId: "panel:test",
+        callerKind: "panel",
+      },
+    }]) as Promise<StoredCredentialSummary>;
+
+    await vi.waitFor(() => expect(eventService.emitToConnection).toHaveBeenCalledWith(
+      "shell:owner",
+      "stale-owner-conn",
+      "external-open:open",
+      expect.any(Object),
+    ));
+    expect(eventService.emitToCaller).toHaveBeenCalledWith(
+      "shell:owner",
+      "external-open:open",
+      expect.objectContaining({ callerId: "worker:test" }),
+    );
+    const authorizeUrl = new URL(emit.mock.calls[0]![1].url);
+    await deliverOAuthCallback(authorizeUrl.searchParams.get("redirect_uri")!, new URLSearchParams({
+      code: "code-1",
+      state: authorizeUrl.searchParams.get("state")!,
+    }));
+    await pending;
+  });
+
+  it("uses caller-wide browser handoff after persisted panel recovery strips stale connection ids", async () => {
+    const statePath = mkdtempSync(join(tmpdir(), "natstack-credential-recovery-"));
+    const original = new TokenManager();
+    installPanelTokenPersistence(original, statePath);
+    original.createToken("panel:test", "panel");
+    original.setPanelOwner("panel:test", "shell:owner", "old-owner-conn");
+
+    const recovered = new TokenManager();
+    recoverPersistedPanelTokens(recovered, statePath);
+    expect(recovered.getPanelOwnerConnection("panel:test")).toBeUndefined();
+
+    const emit = vi.fn();
+    const eventService = targetedOpenEventService(emit);
+    const service = createCredentialService({
+      credentialStore: new MemoryCredentialStore() as never,
+      eventService: eventService as never,
+      tokenManager: recovered,
+      approvalQueue: approvingQueue() as never,
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      access_token: "token",
+      expires_in: 3600,
+    }), { status: 200, headers: { "content-type": "application/json" } })));
+
+    const pending = service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
+      spec: {
+        flow: {
+          type: "oauth2-auth-code-pkce",
+          authorizeUrl: "https://auth.example.test/oauth/authorize",
+          tokenUrl: "https://auth.example.test/oauth/token",
+          clientId: "client-1",
+        },
+        credential: {
+          label: "Example OAuth",
+          audience: [{ url: "https://api.example.test/", match: "origin" }],
+          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        },
+        browser: "external",
+      },
+      handoffTarget: {
+        callerId: "panel:test",
+        callerKind: "panel",
+      },
+    }]) as Promise<StoredCredentialSummary>;
+
+    await vi.waitFor(() => expect(eventService.emitToCaller).toHaveBeenCalledWith(
+      "shell:owner",
+      "external-open:open",
+      expect.objectContaining({ callerId: "worker:test" }),
+    ));
+    expect(eventService.emitToConnection).not.toHaveBeenCalled();
     const authorizeUrl = new URL(emit.mock.calls[0]![1].url);
     await deliverOAuthCallback(authorizeUrl.searchParams.get("redirect_uri")!, new URLSearchParams({
       code: "code-1",
@@ -789,7 +925,7 @@ describe("credentialService", () => {
       },
     }]) as Promise<StoredCredentialSummary>;
 
-    await vi.waitFor(() => expect(eventService.emitTo).toHaveBeenCalledWith(
+    await vi.waitFor(() => expect(eventService.emitToCaller).toHaveBeenCalledWith(
       "shell:owner",
       "browser-panel:open",
       expect.objectContaining({
@@ -811,7 +947,8 @@ describe("credentialService", () => {
       credentialStore: new MemoryCredentialStore() as never,
       eventService: {
         emit: vi.fn(),
-        emitTo: vi.fn(() => false),
+        emitToCaller: vi.fn(() => false),
+        emitToConnection: vi.fn(() => false),
       } as never,
       approvalQueue: approvingQueue() as never,
     });
@@ -838,12 +975,14 @@ describe("credentialService", () => {
   });
 
   it("fails immediately when a panel handoff has no connected shell owner", async () => {
-    const emitTo = vi.fn(() => true);
+    const emitToCaller = vi.fn(() => true);
+    const emitToConnection = vi.fn(() => true);
     const service = createCredentialService({
       credentialStore: new MemoryCredentialStore() as never,
       eventService: {
         emit: vi.fn(),
-        emitTo,
+        emitToCaller,
+        emitToConnection,
       } as never,
       tokenManager: { getPanelOwner: vi.fn(() => undefined) } as never,
       approvalQueue: approvingQueue() as never,
@@ -868,7 +1007,8 @@ describe("credentialService", () => {
         callerKind: "panel",
       },
     }])).rejects.toMatchObject({ code: "browser_unavailable" });
-    expect(emitTo).not.toHaveBeenCalled();
+    expect(emitToCaller).not.toHaveBeenCalled();
+    expect(emitToConnection).not.toHaveBeenCalled();
   });
 
   it("supports authenticated client-forwarded mobile callbacks by state", async () => {
@@ -963,7 +1103,7 @@ describe("credentialService", () => {
       },
     }]) as Promise<StoredCredentialSummary>;
 
-    await vi.waitFor(() => expect(eventService.emitTo).toHaveBeenCalledWith(
+    await vi.waitFor(() => expect(eventService.emitToCaller).toHaveBeenCalledWith(
       "shell:owner",
       "external-open:open",
       expect.objectContaining({

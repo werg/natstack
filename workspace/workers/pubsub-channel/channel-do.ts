@@ -260,6 +260,9 @@ export class PubSubChannel extends DurableObjectBase {
 
     // Re-subscribe with the same participant ID: replace the roster entry, but
     // only redeliver in-flight calls if the underlying client session changed.
+    // Clients should keep participantId stable for the logical viewer so
+    // cold recovery after a server restart can replay from the last seen id
+    // without creating duplicate roster participants.
     const existing = this.sql.exec(
       `SELECT session_id FROM participants WHERE id = ?`, participantId,
     ).toArray();

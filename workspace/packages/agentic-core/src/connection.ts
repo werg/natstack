@@ -100,6 +100,7 @@ export class ConnectionManager {
         clientId: this.config.clientId,
         methods,
         replayMode: "stream",
+        recoveryCoordinator: this.config.recoveryCoordinator,
       });
 
       // Wait for the initial replay to complete

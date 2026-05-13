@@ -26,8 +26,10 @@ function createServer() {
 function createClient(callerId = "panel-a"): WsClientState {
   return {
     callerId,
+    connectionId: "conn-1",
     callerKind: "panel",
     authenticated: true,
+    authenticatedAt: Date.now(),
     ws: {
       readyState: WebSocket.OPEN,
       send: vi.fn(),
@@ -36,6 +38,13 @@ function createClient(callerId = "panel-a"): WsClientState {
       off: vi.fn(),
     } as any,
   };
+}
+
+function createClientWithConnection(callerId: string, connectionId: string): WsClientState {
+  const client = createClient(callerId);
+  client.connectionId = connectionId;
+  client.authenticatedAt = connectionId === "conn-1" ? 1 : 2;
+  return client;
 }
 
 function createDeferred<T>() {
@@ -48,7 +57,225 @@ function createDeferred<T>() {
   return { promise, resolve, reject };
 }
 
+function createTestWs() {
+  const handlers = new Map<string, (...args: any[]) => void>();
+  return {
+    readyState: WebSocket.OPEN as number,
+    send: vi.fn(),
+    close: vi.fn(),
+    on: vi.fn((event: string, handler: (...args: any[]) => void) => {
+      handlers.set(event, handler);
+    }),
+    off: vi.fn(),
+    emitMessage(message: unknown) {
+      handlers.get("message")?.(Buffer.from(JSON.stringify(message)));
+    },
+    emitClose(code = 1006, reason = "network") {
+      this.readyState = WebSocket.CLOSED;
+      handlers.get("close")?.(code, Buffer.from(reason));
+    },
+  };
+}
+
+function registerClient(server: RpcServer, client: WsClientState): void {
+  (server as any).connections.addClient(client);
+}
+
 describe("RpcServer relay behavior", () => {
+  it("keeps distinct connections for the same caller authenticated simultaneously", () => {
+    const { server, tokenManager } = createServer();
+    const token = tokenManager.getToken("panel-a");
+    const ws1 = {
+      readyState: WebSocket.OPEN,
+      send: vi.fn(),
+      close: vi.fn(),
+      on: vi.fn(),
+      off: vi.fn(),
+    };
+    const ws2 = {
+      readyState: WebSocket.OPEN,
+      send: vi.fn(),
+      close: vi.fn(),
+      on: vi.fn(),
+      off: vi.fn(),
+    };
+
+    (server as any).handleAuth(ws1, token, "conn-1");
+    (server as any).handleAuth(ws2, token, "conn-2");
+
+    expect(ws1.close).not.toHaveBeenCalled();
+    expect(ws2.close).not.toHaveBeenCalled();
+    expect((server as any).connections.getCallerConnections("panel-a")).toHaveLength(2);
+    expect(JSON.parse(ws1.send.mock.calls[0]![0])).toMatchObject({
+      type: "ws:auth-result",
+      success: true,
+      connectionId: "conn-1",
+      serverBootId: expect.any(String),
+    });
+    expect(JSON.parse(ws2.send.mock.calls[0]![0])).toMatchObject({
+      type: "ws:auth-result",
+      success: true,
+      connectionId: "conn-2",
+      serverBootId: expect.any(String),
+    });
+  });
+
+  it("keeps the replacement bridge when the old same-connection socket closes late", () => {
+    const { server, tokenManager } = createServer();
+    const token = tokenManager.getToken("panel-a");
+    const ws1 = createTestWs();
+    const ws2 = createTestWs();
+
+    (server as any).handleAuth(ws1, token, "conn-1");
+    const firstBridge = server.getClientBridge("panel-a");
+    expect(firstBridge).toBeTruthy();
+
+    (server as any).handleAuth(ws2, token, "conn-1");
+    const replacementBridge = server.getClientBridge("panel-a");
+    expect(replacementBridge).toBeTruthy();
+    expect(replacementBridge).not.toBe(firstBridge);
+    expect(ws1.close).toHaveBeenCalledWith(4002, "Replaced by new connection");
+
+    ws1.emitClose(4002, "Replaced by new connection");
+
+    expect(server.getClientBridge("panel-a")).toBe(replacementBridge);
+    expect((server as any).connections.getCallerConnections("panel-a")).toEqual([
+      expect.objectContaining({ connectionId: "conn-1", ws: ws2 }),
+    ]);
+  });
+
+  it("ignores late frames from a replaced same-connection socket", async () => {
+    const { server, tokenManager } = createServer();
+    const token = tokenManager.getToken("panel-a");
+    const ws1 = createTestWs();
+    const ws2 = createTestWs();
+
+    (server as any).dispatcher.getPolicy.mockReturnValue({ allowed: ["panel"] });
+    (server as any).dispatcher.dispatch.mockResolvedValue("ok");
+
+    (server as any).handleAuth(ws1, token, "conn-1");
+    (server as any).handleAuth(ws2, token, "conn-1");
+
+    ws1.emitMessage({
+      type: "ws:rpc",
+      message: {
+        type: "request",
+        requestId: "late-old-frame",
+        method: "workspace.ping",
+        args: [],
+      },
+    });
+    await Promise.resolve();
+
+    expect((server as any).dispatcher.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("fans routed events out to every live connection for the target caller", () => {
+    const { server, tokenManager } = createServer();
+    tokenManager.setPanelParent("panel-b", "panel-a");
+    const source = createClientWithConnection("panel-a", "source-conn");
+    const target1 = createClientWithConnection("panel-b", "conn-1");
+    const target2 = createClientWithConnection("panel-b", "conn-2");
+    registerClient(server, target1);
+    registerClient(server, target2);
+
+    (server as any).handleRoute(source, "panel-b", {
+      type: "event",
+      fromId: "panel-a",
+      event: "test:event",
+      payload: { ok: true },
+    });
+
+    expect(target1.ws.send).toHaveBeenCalledTimes(1);
+    expect(target2.ws.send).toHaveBeenCalledTimes(1);
+    expect(JSON.parse((target1.ws.send as ReturnType<typeof vi.fn>).mock.calls[0]![0])).toMatchObject({
+      type: "ws:routed",
+      fromId: "panel-a",
+      message: { type: "event", event: "test:event", payload: { ok: true } },
+    });
+  });
+
+  it("steers routed responses back to the origin connection", async () => {
+    const { server, tokenManager } = createServer();
+    tokenManager.setPanelParent("panel-b", "panel-a");
+    const origin1 = createClientWithConnection("panel-a", "conn-1");
+    const origin2 = createClientWithConnection("panel-a", "conn-2");
+    const target = createClientWithConnection("panel-b", "target-conn");
+    registerClient(server, origin1);
+    registerClient(server, origin2);
+    registerClient(server, target);
+
+    (server as any).handleRoute(origin2, "panel-b", {
+      type: "request",
+      requestId: "req-origin-2",
+      method: "test.method",
+      args: [],
+    });
+    (target.ws.send as ReturnType<typeof vi.fn>).mockClear();
+
+    (server as any).handleRoute(target, "panel-a", {
+      type: "response",
+      requestId: "req-origin-2",
+      result: { ok: true },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(origin1.ws.send).not.toHaveBeenCalled();
+    expect(origin2.ws.send).toHaveBeenCalledTimes(1);
+    expect(JSON.parse((origin2.ws.send as ReturnType<typeof vi.fn>).mock.calls[0]![0])).toMatchObject({
+      type: "ws:routed",
+      fromId: "panel-b",
+      message: { type: "response", requestId: "req-origin-2", result: { ok: true } },
+    });
+  });
+
+  it("keeps routed response origins while the origin connection reconnects", async () => {
+    vi.useFakeTimers();
+    try {
+      const { server, tokenManager } = createServer();
+      tokenManager.setPanelParent("panel-b", "panel-a");
+      const origin1 = createClientWithConnection("panel-a", "conn-1");
+      const origin2 = createClientWithConnection("panel-a", "conn-2");
+      const target = createClientWithConnection("panel-b", "target-conn");
+      registerClient(server, origin1);
+      registerClient(server, origin2);
+      registerClient(server, target);
+
+      (server as any).handleRoute(origin2, "panel-b", {
+        type: "request",
+        requestId: "req-reconnect",
+        method: "test.method",
+        args: [],
+      });
+      (server as any).handleClose(origin2, 1006, "network");
+
+      (server as any).handleRoute(target, "panel-a", {
+        type: "response",
+        requestId: "req-reconnect",
+        result: { ok: true },
+      });
+      await Promise.resolve();
+
+      const reconnected = createClientWithConnection("panel-a", "conn-2");
+      registerClient(server, reconnected);
+      const waiter = (server as any).connectionReconnectWaiters.get("panel-a:conn-2");
+      expect(waiter).toBeTruthy();
+      waiter.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(origin1.ws.send).not.toHaveBeenCalled();
+      expect(reconnected.ws.send).toHaveBeenCalledTimes(1);
+      expect(JSON.parse((reconnected.ws.send as ReturnType<typeof vi.fn>).mock.calls[0]![0])).toMatchObject({
+        type: "ws:routed",
+        fromId: "panel-b",
+        message: { type: "response", requestId: "req-reconnect", result: { ok: true } },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("surfaces event relay auth failures with ws:routed-event-error", () => {
     const { server } = createServer();
     const client = createClient();

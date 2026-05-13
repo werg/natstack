@@ -11,6 +11,7 @@
 
 import type { RpcBridge, RpcMessage, RpcResponse, RpcEventListener } from "@natstack/rpc";
 import type { WsClientMessage, WsServerMessage } from "@natstack/shared/ws/protocol";
+import type { RecoveryKind } from "@natstack/shared/shell/recoveryCoordinator";
 
 /** Connection status reported via onStatusChange */
 export type ConnectionStatus = "connected" | "connecting" | "disconnected";
@@ -47,7 +48,10 @@ export class MobileTransport implements RpcBridge {
   private statusListeners = new Set<(status: ConnectionStatus) => void>();
   private eventListeners = new Map<string, Set<RpcEventListener>>();
   private reconnectListeners = new Set<() => void>();
+  private recoveryListeners = new Map<RecoveryKind, Set<() => void | Promise<void>>>();
   private hasConnectedBefore = false;
+  private lastSeenBootId: string | null = null;
+  private readonly connectionId = generateId();
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionalClose = false;
@@ -173,8 +177,22 @@ export class MobileTransport implements RpcBridge {
    * because the server destroys the old WsSubscriber with the old WebSocket).
    */
   onReconnect(listener: () => void): () => void {
-    this.reconnectListeners.add(listener);
-    return () => { this.reconnectListeners.delete(listener); };
+    return this.onRecovery("resubscribe", listener);
+  }
+
+  onRecovery(kind: RecoveryKind, listener: () => void | Promise<void>): () => void {
+    let listeners = this.recoveryListeners.get(kind);
+    if (!listeners) {
+      listeners = new Set();
+      this.recoveryListeners.set(kind, listeners);
+    }
+    listeners.add(listener);
+    return () => {
+      listeners?.delete(listener);
+      if (listeners?.size === 0) {
+        this.recoveryListeners.delete(kind);
+      }
+    };
   }
 
   /**
@@ -232,7 +250,7 @@ export class MobileTransport implements RpcBridge {
       void this.config.refreshShellToken().then((shellToken) => {
         if (generation !== this.connectionGeneration) return;
         if (this.ws !== ws || ws.readyState !== WebSocket.OPEN) return;
-        ws.send(JSON.stringify({ type: "ws:auth", token: shellToken }));
+        ws.send(JSON.stringify({ type: "ws:auth", token: shellToken, connectionId: this.connectionId }));
       }).catch((error) => {
         if (generation !== this.connectionGeneration) return;
         console.error("[MobileTransport] Failed to refresh shell token:", error);
@@ -282,16 +300,16 @@ export class MobileTransport implements RpcBridge {
       case "ws:auth-result": {
         if (msg.success) {
           const isReconnect = this.hasConnectedBefore;
+          const previousBootId = this.lastSeenBootId;
+          const nextBootId = msg.serverBootId ?? null;
           this.authenticated = true;
           this.hasConnectedBefore = true;
+          this.lastSeenBootId = nextBootId;
           this.reconnectAttempt = 0;
           this.setStatus("connected");
-          // After a reconnect, server-side subscriptions are lost (old WsSubscriber
-          // was destroyed with the old WebSocket). Notify listeners to re-subscribe.
-          if (isReconnect) {
-            for (const listener of this.reconnectListeners) {
-              try { listener(); } catch { /* ignore */ }
-            }
+          this.emitRecovery("resubscribe");
+          if (isReconnect && previousBootId && nextBootId && previousBootId !== nextBootId) {
+            this.emitRecovery("cold-recover");
           }
         } else {
           console.error("[MobileTransport] Auth failed:", msg.error);
@@ -337,6 +355,23 @@ export class MobileTransport implements RpcBridge {
       // Stream/tool messages not needed for mobile shell (no panel hosting yet)
       default:
         break;
+    }
+  }
+
+  private emitRecovery(kind: RecoveryKind): void {
+    const listeners = this.recoveryListeners.get(kind);
+    if (!listeners) return;
+    for (const listener of listeners) {
+      try {
+        void listener();
+      } catch {
+        // Recovery failures are handled by coordinators when present.
+      }
+    }
+    if (kind === "resubscribe") {
+      for (const listener of this.reconnectListeners) {
+        try { listener(); } catch { /* ignore */ }
+      }
     }
   }
 

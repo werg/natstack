@@ -37,6 +37,18 @@ export interface Subscriber {
 }
 
 /**
+ * A live transport instance for one authenticated caller.
+ *
+ * `callerId` is durable identity: it survives reconnects and may have multiple
+ * simultaneous live sessions. `connectionId` is transport identity: it names
+ * exactly one live connection and must not be persisted.
+ */
+export interface EventSession extends Subscriber {
+  callerId: string;
+  connectionId: string;
+}
+
+/**
  * WsSubscriber — delivers events over WebSocket as ws:event messages.
  */
 export class WsSubscriber implements Subscriber {
@@ -69,6 +81,17 @@ export class WsSubscriber implements Subscriber {
   }
 }
 
+export class WsEventSession extends WsSubscriber implements EventSession {
+  constructor(
+    ws: WebSocket,
+    callerKind: CallerKind,
+    public callerId: string,
+    public connectionId: string,
+  ) {
+    super(ws, callerKind);
+  }
+}
+
 // =============================================================================
 // Event service
 // =============================================================================
@@ -83,58 +106,123 @@ export class WsSubscriber implements Subscriber {
  *      event-keyed table (`subscribers`). Use for anything a caller opts
  *      into ("notify me when the panel tree changes").
  *
- *   2. **`emitTo(callerId, event, data)` — direct address.** Delivers to
- *      exactly one caller by ID, bypassing the subscription table. The
- *      target doesn't need to have called `events.subscribe` — being
- *      authenticated on the RPC server is sufficient (see
- *      `RpcServer.handleAuth`, which auto-registers a WsSubscriber on
- *      `subscribersByCallerId`). Use for initiator-scoped messages
- *      ("reply to the client that asked for this"): OAuth URLs, inline
- *      acks, per-request streams.
+ *   2. **`emitToCaller(callerId, event, data)` — direct caller address.**
+ *      Delivers to every live connection for one caller ID, bypassing the
+ *      subscription table. The target doesn't need to have called
+ *      `events.subscribe` — being authenticated on the RPC server is
+ *      sufficient (see `RpcServer.handleAuth`, which registers an
+ *      `EventSession`). Use when all live instances for one durable caller
+ *      should receive a message.
+ *
+ *   3. **`emitToConnection(callerId, connectionId, event, data)` — direct
+ *      session address.** Delivers to exactly one transport instance. Use for
+ *      request/response-adjacent handoffs where delivering to a sibling shell
+ *      or panel connection would be surprising.
  *
  * The two tables overlap deliberately. A caller who calls `events.subscribe`
  * for event X AND is authenticated will receive a `broadcast(X)` via `emit`
- * AND a direct-address via `emitTo(event=X)`. That's fine — `emitTo` doesn't
- * consult `subscribers`, and `emit` iterates `subscribers` only. A caller
- * who `events.unsubscribe`s from X still receives `emitTo(callerId, X, …)`
- * because direct-address semantics aren't governed by the subscription
- * table: the message is addressed to them specifically, not fanned out on
- * the event channel. If you want a caller to stop receiving direct events
- * entirely, disconnect or `unsubscribeAll()` + drop the subscriber (close
- * the WS); `registerSubscriber`'s onDestroyed hook will clean it up.
+ * AND a direct-address via `emitToCaller/emitToConnection(event=X)`. That's
+ * fine — direct delivery doesn't consult `subscribers`, and `emit` iterates
+ * `subscribers` only. A caller who `events.unsubscribe`s from X still
+ * receives direct delivery because direct-address semantics aren't governed by
+ * the subscription table. Live sessions are cleaned up by connection
+ * destruction, not by event-name unsubscription.
  */
 export class EventService {
-  private subscribers = new Map<EventName, Map<string, Subscriber>>();
-  private subscribersByCallerId = new Map<string, Subscriber>();
+  static readonly DEFAULT_CONNECTION_ID = "_default";
+
+  private subscribers = new Map<EventName, Map<string, Map<string, Subscriber>>>();
+  private sessionsByCallerId = new Map<string, Map<string, EventSession>>();
+
+  private getConnectionId(connectionId?: string): string {
+    return connectionId ?? EventService.DEFAULT_CONNECTION_ID;
+  }
+
+  private getSessionBucket(callerId: string, create: true): Map<string, EventSession>;
+  private getSessionBucket(callerId: string, create?: false): Map<string, EventSession> | undefined;
+  private getSessionBucket(
+    callerId: string,
+    create = false,
+  ): Map<string, EventSession> | undefined {
+    let bucket = this.sessionsByCallerId.get(callerId);
+    if (!bucket && create) {
+      bucket = new Map();
+      this.sessionsByCallerId.set(callerId, bucket);
+    }
+    return bucket;
+  }
+
+  private removeSubscriber(callerId: string, connectionId: string, subscriber?: Subscriber): void {
+    const bucket = this.sessionsByCallerId.get(callerId);
+    if (bucket) {
+      if (!subscriber || bucket.get(connectionId) === subscriber) {
+        bucket.delete(connectionId);
+      }
+      if (bucket.size === 0) {
+        this.sessionsByCallerId.delete(callerId);
+      }
+    }
+
+    for (const eventSubs of this.subscribers.values()) {
+      const callerSubs = eventSubs.get(callerId);
+      if (!callerSubs) continue;
+      if (!subscriber || callerSubs.get(connectionId) === subscriber) {
+        callerSubs.delete(connectionId);
+      }
+      if (callerSubs.size === 0) {
+        eventSubs.delete(callerId);
+      }
+    }
+  }
 
   /**
    * Subscribe a caller to an event.
-   * Uses callerId-keyed maps for stable identity across calls.
+   * Uses callerId + connectionId keyed maps for stable identity across calls.
    */
-  subscribe(event: EventName, callerId: string, subscriber: Subscriber): void {
+  subscribe(
+    event: EventName,
+    callerId: string,
+    subscriber: Subscriber,
+    connectionId?: string,
+  ): void {
     if (!this.subscribers.has(event)) {
       this.subscribers.set(event, new Map());
     }
 
     const subs = this.subscribers.get(event)!;
-    subs.set(callerId, subscriber);
+    let callerSubs = subs.get(callerId);
+    if (!callerSubs) {
+      callerSubs = new Map();
+      subs.set(callerId, callerSubs);
+    }
+    callerSubs.set(this.getConnectionId(connectionId), subscriber);
   }
 
   /**
    * Unsubscribe a caller from an event.
    */
-  unsubscribe(event: EventName, callerId: string): void {
-    this.subscribers.get(event)?.delete(callerId);
+  unsubscribe(event: EventName, callerId: string, connectionId?: string): void {
+    const callerSubs = this.subscribers.get(event)?.get(callerId);
+    if (!callerSubs) return;
+    callerSubs.delete(this.getConnectionId(connectionId));
+    if (callerSubs.size === 0) {
+      this.subscribers.get(event)?.delete(callerId);
+    }
   }
 
   /**
    * Unsubscribe a caller from all events.
    */
-  unsubscribeAll(callerId: string): void {
+  unsubscribeAll(callerId: string, connectionId?: string): void {
+    const resolvedConnectionId = this.getConnectionId(connectionId);
     for (const subs of this.subscribers.values()) {
-      subs.delete(callerId);
+      const callerSubs = subs.get(callerId);
+      if (!callerSubs) continue;
+      callerSubs.delete(resolvedConnectionId);
+      if (callerSubs.size === 0) {
+        subs.delete(callerId);
+      }
     }
-    this.subscribersByCallerId.delete(callerId);
   }
 
   /**
@@ -148,36 +236,55 @@ export class EventService {
     }
 
     const channel = `event:${event}`;
-    for (const [callerId, subscriber] of subs) {
-      if (subscriber.isAlive) {
-        subscriber.send(channel, data);
-      } else {
-        // Cleanup dead subscriber
+    for (const [callerId, callerSubs] of subs) {
+      for (const [connectionId, subscriber] of callerSubs) {
+        if (subscriber.isAlive) {
+          subscriber.send(channel, data);
+        } else {
+          this.removeSubscriber(callerId, connectionId, subscriber);
+        }
+      }
+      if (callerSubs.size === 0) {
         subs.delete(callerId);
       }
     }
   }
 
-  /**
-   * Send an event to a single caller, identified by `callerId`, bypassing the
-   * pub/sub event-name subscription table. Used for initiator-scoped messages
-   * (OAuth open-browser requests, reply-to-sender patterns) where exactly one
-   * client should receive the event — even if they haven't explicitly
-   * subscribed to the event name.
-   *
-   * Returns `true` if the subscriber was present and alive, `false` otherwise.
-   * Callers should NOT fall back to broadcast on `false`; the point of this
-   * method is to avoid fanning out to other connected clients. If the target
-   * is missing (e.g. disconnected after initiating the flow), the caller must
-   * decide how to handle it — typically aborting the flow.
-   */
-  emitTo<E extends EventName>(
+  /** Direct-address every live connection for one durable caller identity. */
+  emitToCaller<E extends EventName>(
     callerId: string,
     event: E,
     data?: EventPayloads[E],
   ): boolean {
-    const subscriber = this.subscribersByCallerId.get(callerId);
-    if (!subscriber || !subscriber.isAlive) return false;
+    const callerSubs = this.sessionsByCallerId.get(callerId);
+    if (!callerSubs || callerSubs.size === 0) return false;
+
+    let delivered = false;
+    const channel = `event:${event}`;
+    for (const [connectionId, subscriber] of callerSubs) {
+      if (subscriber.isAlive) {
+        subscriber.send(channel, data);
+        delivered = true;
+      } else {
+        this.removeSubscriber(callerId, connectionId, subscriber);
+      }
+    }
+    return delivered;
+  }
+
+  /** Direct-address exactly one live transport connection for a caller. */
+  emitToConnection<E extends EventName>(
+    callerId: string,
+    connectionId: string,
+    event: E,
+    data?: EventPayloads[E],
+  ): boolean {
+    const resolvedConnectionId = this.getConnectionId(connectionId);
+    const subscriber = this.sessionsByCallerId.get(callerId)?.get(resolvedConnectionId);
+    if (!subscriber || !subscriber.isAlive) {
+      if (subscriber) this.removeSubscriber(callerId, resolvedConnectionId, subscriber);
+      return false;
+    }
     subscriber.send(`event:${event}`, data);
     return true;
   }
@@ -186,46 +293,56 @@ export class EventService {
    * Get the number of subscribers for an event.
    */
   getSubscriberCount(event: EventName): number {
-    return this.subscribers.get(event)?.size ?? 0;
+    let count = 0;
+    for (const callerSubs of this.subscribers.get(event)?.values() ?? []) {
+      count += callerSubs.size;
+    }
+    return count;
   }
 
   /**
-   * Register an external subscriber (e.g., IPC-backed) for a callerId.
-   * Used when the caller doesn't have a WebSocket (shell IPC transport).
+   * Register a live direct-address delivery session.
    */
-  registerSubscriber(callerId: string, subscriber: Subscriber): void {
-    // Remove existing stale subscriber
-    const existing = this.subscribersByCallerId.get(callerId);
+  registerSession(session: EventSession): void {
+    const resolvedConnectionId = this.getConnectionId(session.connectionId);
+    const bucket = this.getSessionBucket(session.callerId, true);
+    const existing = bucket.get(resolvedConnectionId);
     if (existing) {
-      for (const eventSubs of this.subscribers.values()) {
-        eventSubs.delete(callerId);
-      }
-      this.subscribersByCallerId.delete(callerId);
+      this.removeSubscriber(session.callerId, resolvedConnectionId, existing);
     }
-    this.subscribersByCallerId.set(callerId, subscriber);
-    subscriber.onDestroyed(() => {
-      if (this.subscribersByCallerId.get(callerId) === subscriber) {
-        this.subscribersByCallerId.delete(callerId);
-        for (const eventSubs of this.subscribers.values()) {
-          eventSubs.delete(callerId);
-        }
-      }
+    this.getSessionBucket(session.callerId, true).set(resolvedConnectionId, session);
+    session.onDestroyed(() => {
+      this.removeSubscriber(session.callerId, resolvedConnectionId, session);
     });
+  }
+
+  /**
+   * Register an external subscriber (e.g., IPC-backed) for direct delivery.
+   * Used when the caller doesn't have a WebSocket. The optional connection ID
+   * still represents an ephemeral runtime session and must not be persisted.
+   */
+  registerSubscriber(callerId: string, subscriber: Subscriber, connectionId?: string): void {
+    const session = Object.assign(subscriber, {
+      callerId,
+      connectionId: this.getConnectionId(connectionId),
+    }) satisfies EventSession;
+    this.registerSession(session);
   }
 
   /**
    * Get or create a subscriber for a callerId from a WS client.
    */
   getOrCreateSubscriber(ctx: ServiceContext): Subscriber {
+    const connectionId = this.getConnectionId(ctx.connectionId);
     // Allow pre-registered subscribers (e.g., IPC-backed shell subscriber)
-    const preRegistered = this.subscribersByCallerId.get(ctx.callerId);
+    const preRegistered = this.sessionsByCallerId.get(ctx.callerId)?.get(connectionId);
     if (preRegistered && preRegistered.isAlive) return preRegistered;
 
     if (!ctx.wsClient) {
-      throw new Error("Event subscriptions require a WS connection");
+      throw new Error("Event subscriptions require a WS connection or pre-registered subscriber");
     }
 
-    const existing = this.subscribersByCallerId.get(ctx.callerId);
+    const existing = this.sessionsByCallerId.get(ctx.callerId)?.get(connectionId);
     // Cast ws from WsClientInfo.ws (unknown) to WebSocket -- eventsService
     // is server-only code that always receives the concrete WS instance.
     const ws = ctx.wsClient.ws as WebSocket;
@@ -235,24 +352,12 @@ export class EventService {
 
     // Remove stale subscriber's event entries if it was replaced
     if (existing) {
-      for (const eventSubs of this.subscribers.values()) {
-        eventSubs.delete(ctx.callerId);
-      }
-      this.subscribersByCallerId.delete(ctx.callerId);
+      this.removeSubscriber(ctx.callerId, connectionId, existing);
     }
 
-    const subscriber = new WsSubscriber(ws, ctx.callerKind);
-    this.subscribersByCallerId.set(ctx.callerId, subscriber);
-    subscriber.onDestroyed(() => {
-      // Only clean up if this is still the current subscriber (not replaced)
-      if (this.subscribersByCallerId.get(ctx.callerId) === subscriber) {
-        this.subscribersByCallerId.delete(ctx.callerId);
-        for (const eventSubs of this.subscribers.values()) {
-          eventSubs.delete(ctx.callerId);
-        }
-      }
-    });
-    return subscriber;
+    const session = new WsEventSession(ws, ctx.callerKind, ctx.callerId, connectionId);
+    this.registerSession(session);
+    return session;
   }
 }
 
@@ -278,7 +383,7 @@ export function createEventsServiceDefinition(eventService: EventService): Servi
             throw new Error(`Unknown event: ${eventName}`);
           }
           const subscriber = eventService.getOrCreateSubscriber(ctx);
-          eventService.subscribe(eventName, ctx.callerId, subscriber);
+          eventService.subscribe(eventName, ctx.callerId, subscriber, ctx.connectionId);
           return;
         }
         case "unsubscribe": {
@@ -286,11 +391,11 @@ export function createEventsServiceDefinition(eventService: EventService): Servi
           if (!isValidEventName(eventName)) {
             throw new Error(`Unknown event: ${eventName}`);
           }
-          eventService.unsubscribe(eventName, ctx.callerId);
+          eventService.unsubscribe(eventName, ctx.callerId, ctx.connectionId);
           return;
         }
         case "unsubscribeAll": {
-          eventService.unsubscribeAll(ctx.callerId);
+          eventService.unsubscribeAll(ctx.callerId, ctx.connectionId);
           return;
         }
         default:
