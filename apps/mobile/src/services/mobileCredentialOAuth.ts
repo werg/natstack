@@ -5,11 +5,9 @@
  * browser handoff and callback validation; mobile only forwards browser-open
  * events through the shell bridge.
  *
- * Default redirect strategy is "public" — the server's NATSTACK_PUBLIC_URL
- * (typically a Tailscale `*.ts.net` hostname) is reachable from the phone, so
- * the OAuth provider redirects straight to the server. Pass `redirectUri` or
- * `callbackOrigin` to opt into the legacy "client-forwarded" universal-link
- * path that requires a published mobile app and hosted relay domain.
+ * Redirect policy belongs to the caller that starts the OAuth flow. Mobile
+ * only preserves the requested strategy, with a convenience path for the
+ * legacy "client-forwarded" universal-link callback.
  */
 
 import { Linking } from "react-native";
@@ -65,7 +63,7 @@ export async function connectMobileOAuthCredential(
       callbackUri,
     };
   } else {
-    redirect = { ...(request.redirect ?? {}), type: "public" };
+    redirect = request.redirect;
   }
   return shellClient.transport.call<StoredCredentialSummary>(
     "main",
@@ -73,7 +71,7 @@ export async function connectMobileOAuthCredential(
     {
       flow: request.flow,
       credential: request.credential,
-      redirect,
+      ...(redirect ? { redirect } : {}),
       browser: request.browser ?? "external",
     },
   );

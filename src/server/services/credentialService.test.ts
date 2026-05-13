@@ -917,6 +917,131 @@ describe("credentialService", () => {
     await expect(pending).resolves.toMatchObject({ label: "Example OAuth" });
   });
 
+  it("supports authenticated client-loopback callbacks from the browser handoff shell", async () => {
+    const store = new MemoryCredentialStore();
+    const emit = vi.fn();
+    const eventService = targetedOpenEventService(emit);
+    const service = createCredentialService({
+      credentialStore: store as never,
+      eventService: eventService as never,
+      tokenManager: { getPanelOwner: vi.fn(() => "shell:owner") } as never,
+      approvalQueue: approvingQueue() as never,
+    });
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = init?.body as URLSearchParams;
+      expect(body.get("redirect_uri")).toBe("http://localhost:1455/auth/callback");
+      return new Response(JSON.stringify({
+        access_token: "token",
+        expires_in: 3600,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+
+    const pending = service.handler({ callerId: "worker:test", callerKind: "worker" }, "connect", [{
+      spec: {
+        flow: {
+          type: "oauth2-auth-code-pkce",
+          authorizeUrl: "https://auth.example.test/oauth/authorize",
+          tokenUrl: "https://auth.example.test/oauth/token",
+          clientId: "client-1",
+        },
+        credential: {
+          label: "Example OAuth",
+          audience: [{ url: "https://api.example.test/", match: "origin" }],
+          injection: { type: "header", name: "Authorization", valueTemplate: "Bearer {token}" },
+        },
+        redirect: {
+          type: "client-loopback",
+          host: "localhost",
+          port: 1455,
+          callbackPath: "/auth/callback",
+        },
+        browser: "external",
+      },
+      handoffTarget: {
+        callerId: "panel:test",
+        callerKind: "panel",
+      },
+    }]) as Promise<StoredCredentialSummary>;
+
+    await vi.waitFor(() => expect(eventService.emitTo).toHaveBeenCalledWith(
+      "shell:owner",
+      "external-open:open",
+      expect.objectContaining({
+        callerId: "worker:test",
+        oauthLoopback: expect.objectContaining({
+          redirectUri: "http://localhost:1455/auth/callback",
+          host: "localhost",
+          port: 1455,
+          callbackPath: "/auth/callback",
+        }),
+      }),
+    ));
+    const payload = emit.mock.calls[0]![1] as {
+      url: string;
+      oauthLoopback: { transactionId: string; state: string };
+    };
+    const authorizeUrl = new URL(payload.url);
+    expect(authorizeUrl.searchParams.get("redirect_uri")).toBe("http://localhost:1455/auth/callback");
+
+    await expect(service.handler({ callerId: "shell:other", callerKind: "shell" }, "forwardOAuthCallback", [{
+      transactionId: payload.oauthLoopback.transactionId,
+      url: `http://localhost:1455/auth/callback?code=code-1&state=${payload.oauthLoopback.state}`,
+    }])).rejects.toMatchObject({ code: "client_not_authorized" });
+
+    await service.handler({ callerId: "shell:owner", callerKind: "shell" }, "forwardOAuthCallback", [{
+      transactionId: payload.oauthLoopback.transactionId,
+      url: `http://localhost:1455/auth/callback?code=code-1&state=${payload.oauthLoopback.state}`,
+    }]);
+
+    await expect(pending).resolves.toMatchObject({ label: "Example OAuth" });
+    expect((await store.loadUrlBound((await pending).id))?.accessToken).toBe("token");
+  });
+
+  it("rejects client-loopback for OAuth1", async () => {
+    const service = createCredentialService({
+      credentialStore: new MemoryCredentialStore() as never,
+      eventService: targetedOpenEventService(vi.fn()) as never,
+      clientConfigStore: {
+        load: vi.fn(async () => ({
+          configId: "twitter",
+          title: "Twitter",
+          authorizeUrl: "https://auth.example.test/oauth/authorize",
+          tokenUrl: "https://auth.example.test/oauth/token",
+          fields: {
+            consumerKey: { type: "text", value: "key", updatedAt: Date.now() },
+            consumerSecret: { type: "secret", value: "secret", updatedAt: Date.now() },
+          },
+          flowTypes: ["oauth1a"],
+          status: "active",
+          updatedAt: Date.now(),
+        })),
+        summarize: vi.fn(),
+      } as never,
+      approvalQueue: approvingQueue() as never,
+    });
+
+    await expect(service.handler({ callerId: "shell", callerKind: "shell" }, "connect", [{
+      flow: {
+        type: "oauth1a",
+        requestTokenUrl: "https://auth.example.test/oauth/request_token",
+        authorizeUrl: "https://auth.example.test/oauth/authorize",
+        accessTokenUrl: "https://auth.example.test/oauth/access_token",
+        clientConfigId: "twitter",
+      },
+      credential: {
+        label: "Example OAuth1",
+        audience: [{ url: "https://api.example.test/", match: "origin" }],
+        injection: { type: "oauth1-signature" },
+      },
+      redirect: {
+        type: "client-loopback",
+        host: "localhost",
+        port: 1455,
+        callbackPath: "/auth/callback",
+      },
+    }])).rejects.toMatchObject({ code: "unsupported_flow" });
+  });
+
   it("rejects forwarded OAuth callbacks that do not match the bound redirect URI", async () => {
     const emit = vi.fn();
     const service = createCredentialService({

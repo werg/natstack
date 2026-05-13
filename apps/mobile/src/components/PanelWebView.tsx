@@ -64,7 +64,9 @@ export interface PanelWebViewProps {
 }
 
 const NATSTACK_USER_AGENT = `NatStack-Mobile/1.0 (${Platform.OS}; ${Platform.Version})`;
-const MANAGED_PANEL_LOAD_TIMEOUT_MS = 30_000;
+const MANAGED_PANEL_STALLED_TIMEOUT_MS = 45_000;
+const MANAGED_PANEL_MAX_LOAD_TIMEOUT_MS = 120_000;
+const MANAGED_PANEL_TIMEOUT_CHECK_MS = 5_000;
 const REFERRER_POLICY_SCRIPT = `try{var m=document.createElement('meta');m.name='referrer';m.content='no-referrer';document.head.appendChild(m);}catch(e){}true;`;
 const RANDOM_UUID_POLYFILL_SCRIPT = `
   (function () {
@@ -263,6 +265,7 @@ function buildBridgeBootstrapScript(panelInit: unknown, enableDebug: boolean): s
 
       try {
         globalThis.__natstackPanelInit = panelInit;
+        globalThis.__natstackHostPlatform = "mobile";
         if (panelInit !== null) {
           sessionStorage.setItem("__natstackPanelInit", JSON.stringify(panelInit));
         }
@@ -338,6 +341,9 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
     // bridge methods (createBrowserPanel, openExternal, auth.startOAuthLogin,
     // etc.). Initialised to the configured panel URL.
     const currentUrlRef = useRef<string>(url);
+    const loadStartedAtRef = useRef<number>(Date.now());
+    const lastLoadProgressAtRef = useRef<number>(Date.now());
+    const lastLoadProgressRef = useRef(0);
 
     const logDiagnostic = useCallback((message: string, extra?: unknown) => {
       if (!diagnosticsEnabled) return;
@@ -374,6 +380,9 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
 
     useEffect(() => {
       currentUrlRef.current = url;
+      loadStartedAtRef.current = Date.now();
+      lastLoadProgressAtRef.current = Date.now();
+      lastLoadProgressRef.current = 0;
       setHasError(false);
       setIsLoading(true);
       setErrorMessage("");
@@ -381,20 +390,37 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
 
     useEffect(() => {
       if (!managed || !visible || !isLoading || hasError) return;
-      const timeout = setTimeout(() => {
+      const timer = setInterval(() => {
+        const now = Date.now();
+        const elapsedMs = now - loadStartedAtRef.current;
+        const stalledMs = now - lastLoadProgressAtRef.current;
+        const progress = lastLoadProgressRef.current;
+        const maxTimedOut = elapsedMs >= MANAGED_PANEL_MAX_LOAD_TIMEOUT_MS;
+        const stalledTimedOut = stalledMs >= MANAGED_PANEL_STALLED_TIMEOUT_MS && progress < 0.95;
+        if (!maxTimedOut && !stalledTimedOut) return;
+
         const stalledUrl = currentUrlRef.current || url;
-        logDiagnostic("load timeout", { url: stalledUrl, timeoutMs: MANAGED_PANEL_LOAD_TIMEOUT_MS });
+        const seconds = Math.round(elapsedMs / 1000);
+        console.warn("[PanelWebView] Managed panel load timed out", {
+          panelId,
+          url: stalledUrl,
+          elapsedMs,
+          stalledMs,
+          progress,
+          reason: maxTimedOut ? "max-load-time" : "stalled-load",
+        });
+        logDiagnostic("load timeout", { url: stalledUrl, elapsedMs, stalledMs, progress });
         webViewRef.current?.stopLoading();
         setIsLoading(false);
         setHasError(true);
         setErrorMessage(
-          `Timed out loading the panel after ${Math.round(MANAGED_PANEL_LOAD_TIMEOUT_MS / 1000)}s.\n\n` +
+          `Timed out loading the panel after ${seconds}s.\n\n` +
           `Check that the phone can reach the NatStack server and retry.\n\n${stalledUrl}`,
         );
-      }, MANAGED_PANEL_LOAD_TIMEOUT_MS);
+      }, MANAGED_PANEL_TIMEOUT_CHECK_MS);
 
-      return () => clearTimeout(timeout);
-    }, [hasError, isLoading, logDiagnostic, managed, url, visible]);
+      return () => clearInterval(timer);
+    }, [hasError, isLoading, logDiagnostic, managed, panelId, url, visible]);
 
     const containerStyle = useMemo(
       () => [styles.container, !visible && styles.hidden],
@@ -564,6 +590,8 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
 
     const handleLoadEnd = useCallback(() => {
       logDiagnostic("load end", { url: currentUrlRef.current });
+      lastLoadProgressAtRef.current = Date.now();
+      lastLoadProgressRef.current = 1;
       setIsLoading(false);
       if (!managed || (!diagnosticsEnabled && !__DEV__)) return;
       webViewRef.current?.injectJavaScript(`
@@ -594,6 +622,12 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
 
     const handleLoadStart = useCallback(
       (syntheticEvent: { nativeEvent: { url?: string } }) => {
+        loadStartedAtRef.current = Date.now();
+        lastLoadProgressAtRef.current = Date.now();
+        lastLoadProgressRef.current = 0;
+        if (typeof syntheticEvent.nativeEvent.url === "string" && syntheticEvent.nativeEvent.url.length > 0) {
+          currentUrlRef.current = syntheticEvent.nativeEvent.url;
+        }
         logDiagnostic("load start", syntheticEvent.nativeEvent);
       },
       [logDiagnostic],
@@ -602,6 +636,13 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
     const handleLoadProgress = useCallback(
       (syntheticEvent: { nativeEvent: { progress?: number; url?: string } }) => {
         const progress = syntheticEvent.nativeEvent.progress;
+        if (typeof syntheticEvent.nativeEvent.url === "string" && syntheticEvent.nativeEvent.url.length > 0) {
+          currentUrlRef.current = syntheticEvent.nativeEvent.url;
+        }
+        if (typeof progress === "number" && progress > lastLoadProgressRef.current) {
+          lastLoadProgressRef.current = progress;
+          lastLoadProgressAtRef.current = Date.now();
+        }
         if (progress === undefined || progress === 1 || progress < 0.05 || progress > 0.95) {
           logDiagnostic("load progress", syntheticEvent.nativeEvent);
         }

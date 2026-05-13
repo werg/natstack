@@ -736,7 +736,11 @@ app.on("ready", async () => {
     if (event.startsWith("event:")) {
       const bareEvent = event.slice("event:".length);
       if (bareEvent === "external-open:open") {
-        const { url } = payload as { url?: string };
+        const { url, oauthLoopback } = payload as { url?: string; oauthLoopback?: unknown };
+        if (oauthLoopback) {
+          log.warn("[externalOpen] client-loopback OAuth handoff is not supported by Electron; ignoring external open request.");
+          return;
+        }
         if (typeof url === "string") {
           void shell.openExternal(url).catch((err: unknown) => {
             log.warn(

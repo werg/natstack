@@ -30,8 +30,21 @@ if (reactNativeGradlePluginDir == null) {
     throw new GradleException("Could not find node_modules/@react-native/gradle-plugin from ${rootDir}")
 }
 
+File mobileRoot = rootDir.parentFile
+File repoRoot = mobileRoot.parentFile.parentFile
+
 extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
-    ex.autolinkLibrariesFromCommand()
+    ex.autolinkLibrariesFromCommand(
+        ["npx", "@react-native-community/cli", "config"],
+        mobileRoot,
+        files(
+            new File(mobileRoot, "package.json"),
+            new File(mobileRoot, "react-native.config.js"),
+            new File(repoRoot, "package.json"),
+            new File(repoRoot, "pnpm-lock.yaml"),
+            new File(repoRoot, "pnpm-workspace.yaml")
+        )
+    )
 }
 
 // Also include as a regular composite build for classpath dependency substitution

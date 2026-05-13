@@ -63,6 +63,7 @@ const OAUTH_USERINFO_TIMEOUT_MS = 15_000;
 const DEFAULT_LOOPBACK_HOST = "127.0.0.1";
 const DEFAULT_CALLBACK_PATH = "/oauth/callback";
 const PUBLIC_OAUTH_CALLBACK_PATH = "/_r/s/credentials/oauth/callback";
+const CLIENT_LOOPBACK_TIMEOUT_SKEW_MS = 5_000;
 const RESERVED_OAUTH_AUTHORIZE_PARAMS = new Set([
   "client_id",
   "code_challenge",
@@ -223,7 +224,7 @@ const getClientConfigStatusParamsSchema = z.object({
 }).strict();
 
 const oauthRedirectStrategySchema = z.object({
-  type: z.enum(["loopback", "public", "client-forwarded"]).optional(),
+  type: z.enum(["loopback", "public", "client-forwarded", "client-loopback"]).optional(),
   host: z.string().optional(),
   port: z.number().int().min(0).max(65535).optional(),
   callbackPath: z.string().optional(),
@@ -585,8 +586,8 @@ function validateOAuthCredentialRequest(request: InternalOAuthConnectionRequest)
  * when Tailscale serve provisioning fell through.
  */
 function resolveDefaultRedirectStrategy(
-  requested: "loopback" | "public" | "client-forwarded" | undefined,
-): "loopback" | "public" | "client-forwarded" {
+  requested: OAuthRedirectStrategy | undefined,
+): OAuthRedirectStrategy {
   if (requested) return requested;
   return isPublicUrlVerified() ? "public" : "loopback";
 }
@@ -598,6 +599,42 @@ function isLoopbackHost(hostname: string): boolean {
   }
   const ipv4 = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
   return !!ipv4 && Number(ipv4[1]) === 127;
+}
+
+type OAuthRedirectStrategy = "loopback" | "public" | "client-forwarded" | "client-loopback";
+
+function buildClientLoopbackRedirectUri(redirect: NonNullable<ConnectCredentialRequest["redirect"]>): string {
+  const host = redirect.host ?? "localhost";
+  if (host !== "localhost" && host !== "127.0.0.1") {
+    throw new OAuthConnectionError("redirect_unavailable", "client-loopback redirects require localhost or 127.0.0.1");
+  }
+  const port = redirect.port;
+  if (!port || port < 1 || port > 65535) {
+    throw new OAuthConnectionError("redirect_unavailable", "client-loopback redirects require a fixed port");
+  }
+  const callbackPath = normalizeCallbackPath(redirect.callbackPath ?? DEFAULT_CALLBACK_PATH);
+  return `http://${host}:${port}${callbackPath}`;
+}
+
+function buildClientLoopbackHandoff(tx: OAuthConnectionTransaction, state: string): {
+  transactionId: string;
+  redirectUri: string;
+  host: string;
+  port: number;
+  callbackPath: string;
+  state: string;
+  timeoutMs: number;
+} {
+  const redirect = new URL(tx.redirectUri);
+  return {
+    transactionId: tx.id,
+    redirectUri: tx.redirectUri,
+    host: redirect.hostname,
+    port: Number(redirect.port),
+    callbackPath: redirect.pathname,
+    state,
+    timeoutMs: Math.max(1_000, tx.expiresAt - Date.now() - CLIENT_LOOPBACK_TIMEOUT_SKEW_MS),
+  };
 }
 
 interface CredentialServiceDeps {
@@ -661,7 +698,9 @@ interface OAuthConnectionTransaction {
   effectiveVersion: string;
   stateParam: string;
   redirectUri: string;
-  redirectStrategy: "loopback" | "public" | "client-forwarded";
+  redirectStrategy: OAuthRedirectStrategy;
+  deliveryCallerId?: string;
+  deliveryCallerKind?: "shell";
   callbackUsed: boolean;
   resolve: (value: { code: string; state: string; url: string }) => void;
   reject: (error: Error) => void;
@@ -1012,10 +1051,18 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     if (!tx) {
       throw new OAuthConnectionError("transaction_expired");
     }
-    if (tx.callerId !== ctx.callerId) {
-      throw new OAuthConnectionError("client_not_authorized");
-    }
-    if (tx.redirectStrategy !== "client-forwarded") {
+    if (tx.redirectStrategy === "client-loopback") {
+      if (!request.transactionId) {
+        throw new OAuthConnectionError("client_not_authorized", "client-loopback callbacks require a transaction id");
+      }
+      if (tx.deliveryCallerId !== ctx.callerId || tx.deliveryCallerKind !== "shell") {
+        throw new OAuthConnectionError("client_not_authorized");
+      }
+    } else if (tx.redirectStrategy === "client-forwarded") {
+      if (tx.callerId !== ctx.callerId) {
+        throw new OAuthConnectionError("client_not_authorized");
+      }
+    } else {
       throw new OAuthConnectionError("redirect_mismatch");
     }
     await receiveOAuthCallback(tx, {
@@ -2039,6 +2086,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     }
     const redirect = request.redirect ?? {};
     const redirectStrategy = resolveDefaultRedirectStrategy(redirect.type);
+    if (redirectStrategy === "client-loopback") {
+      throw new OAuthConnectionError("unsupported_flow", "client-loopback redirects are only supported for OAuth2 flows");
+    }
     let callback: HostOAuthCallback | null = null;
     let tx: OAuthConnectionTransaction | null = null;
     try {
@@ -2192,6 +2242,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       } else if (redirectStrategy === "client-forwarded") {
         transactionId = randomUUID();
         redirectUri = redirect.callbackUri ?? buildPublicUrl(PUBLIC_OAUTH_CALLBACK_PATH);
+      } else if (redirectStrategy === "client-loopback") {
+        transactionId = randomUUID();
+        redirectUri = buildClientLoopbackRedirectUri(redirect);
       } else {
         throw new OAuthConnectionError("redirect_unavailable");
       }
@@ -2231,14 +2284,24 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         throw new OAuthConnectionError("browser_unavailable");
       }
       const openMode = request.browser ?? "external";
+      if (redirectStrategy === "client-loopback" && openMode !== "external") {
+        throw new OAuthConnectionError("unsupported_browser_mode", "client-loopback OAuth requires an external browser");
+      }
       const browserTarget = resolveBrowserHandoffTarget(ctx, explicitHandoffTarget);
       if (!browserTarget) {
         throw new OAuthConnectionError("browser_unavailable", "OAuth browser handoff target is not connected");
+      }
+      if (redirectStrategy === "client-loopback") {
+        tx.deliveryCallerId = browserTarget.deliveryCallerId;
+        tx.deliveryCallerKind = browserTarget.deliveryCallerKind;
       }
       const openPayload = {
         url: started.authorizeUrl,
         callerId: ctx.callerId,
         callerKind: ctx.callerKind,
+        ...(redirectStrategy === "client-loopback"
+          ? { oauthLoopback: buildClientLoopbackHandoff(tx, started.state) }
+          : {}),
       };
       let browserDelivered = false;
       if (openMode === "internal") {
@@ -2950,6 +3013,8 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       redirectUri: string;
       redirectStrategy: OAuthConnectionTransaction["redirectStrategy"];
       stateParam: string;
+      deliveryCallerId?: string;
+      deliveryCallerKind?: "shell";
     },
   ): Promise<OAuthConnectionTransaction> {
     const identity = resolveApprovalIdentity(ctx);
@@ -2973,6 +3038,8 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       stateParam: params.stateParam,
       redirectUri: params.redirectUri,
       redirectStrategy: params.redirectStrategy,
+      deliveryCallerId: params.deliveryCallerId,
+      deliveryCallerKind: params.deliveryCallerKind,
       callbackUsed: false,
       resolve,
       reject,

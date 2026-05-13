@@ -45,7 +45,7 @@ describe("mobileCredentialOAuth", () => {
     expect(mockOpenURL).not.toHaveBeenCalled();
   });
 
-  it("delegates credential OAuth connection to the server with public redirect by default", async () => {
+  it("delegates credential OAuth connection without choosing a redirect strategy", async () => {
     const calls: Array<{ method: string; args: unknown[] }> = [];
     const shellClient = {
       transport: {
@@ -83,9 +83,9 @@ describe("mobileCredentialOAuth", () => {
       args: [expect.objectContaining({
         flow: expect.objectContaining({ clientId: "client" }),
         browser: "external",
-        redirect: { type: "public" },
       })],
     });
+    expect((calls[0]!.args[0] as { redirect?: unknown }).redirect).toBeUndefined();
   });
 
   it("opts into client-forwarded redirect when callbackOrigin is supplied", async () => {

@@ -92,18 +92,21 @@ interface ModelCredentialOAuthConfig {
 }
 
 interface ModelCredentialRedirectConfig {
-  type?: "loopback" | "public" | "client-forwarded";
+  type?: "loopback" | "public" | "client-forwarded" | "client-loopback";
   host?: string;
   port?: number;
   callbackPath?: string;
   fallback?: "dynamic-port";
 }
 
+type ModelCredentialRedirectPolicy = "loopback-required";
+
 interface ConnectModelCredentialOAuthArgs {
   providerId?: unknown;
   browserOpenMode?: unknown;
   browserHandoffCallerId?: unknown;
   browserHandoffCallerKind?: unknown;
+  browserHandoffPlatform?: unknown;
 }
 
 const MODEL_CREDENTIAL_REQUIRED_CARD_TSX = `
@@ -116,6 +119,13 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
   const flow = props.flow;
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");
+
+  const resolveBrowserHandoffPlatform = () => {
+    if (props.browserHandoffPlatform) return props.browserHandoffPlatform;
+    if (globalThis.__natstackHostPlatform === "mobile") return "mobile";
+    if (typeof navigator !== "undefined" && /\\bNatStack-Mobile\\//.test(navigator.userAgent)) return "mobile";
+    return undefined;
+  };
 
   const startOAuth = async (openMode) => {
     if (!flow || !modelBaseUrl) return;
@@ -131,6 +141,7 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
         browserOpenMode: openMode,
         browserHandoffCallerId: props.browserHandoffCallerId,
         browserHandoffCallerKind: props.browserHandoffCallerKind,
+        browserHandoffPlatform: resolveBrowserHandoffPlatform(),
       });
       setStatus("done");
       if (props.agentParticipantId) {
@@ -259,7 +270,8 @@ function isModelCredentialRedirectConfig(value: unknown): value is ModelCredenti
     (config["type"] === undefined ||
       config["type"] === "loopback" ||
       config["type"] === "public" ||
-      config["type"] === "client-forwarded") &&
+      config["type"] === "client-forwarded" ||
+      config["type"] === "client-loopback") &&
     (config["host"] === undefined || typeof config["host"] === "string") &&
     (config["port"] === undefined || typeof config["port"] === "number") &&
     (config["callbackPath"] === undefined || typeof config["callbackPath"] === "string") &&
@@ -504,6 +516,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private getModelCredentialOAuthConfig(providerId: string): {
     flow: ModelCredentialOAuthConfig & { type: "oauth2-auth-code-pkce" };
     redirect?: ModelCredentialRedirectConfig;
+    clientLoopbackRedirect?: ModelCredentialRedirectConfig;
+    redirectPolicy?: ModelCredentialRedirectPolicy;
     credentialLabel: string;
     accountIdentityJwtClaimRoot: string;
     accountIdentityJwtClaimField: string;
@@ -517,12 +531,16 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       throw new Error(`No OAuth setup is available for model provider: ${providerId}`);
     }
     const credentialLabel = setup?.["credentialLabel"];
-    const redirect = setup?.["loopback"];
+    const redirect = setup?.["redirect"];
+    const clientLoopbackRedirect = setup?.["clientLoopbackRedirect"];
+    const redirectPolicy = setup?.["redirectPolicy"];
     const accountIdentityJwtClaimRoot = setup?.["accountIdentityJwtClaimRoot"];
     const accountIdentityJwtClaimField = setup?.["accountIdentityJwtClaimField"];
     return {
       flow,
       ...(isModelCredentialRedirectConfig(redirect) ? { redirect } : {}),
+      ...(isModelCredentialRedirectConfig(clientLoopbackRedirect) ? { clientLoopbackRedirect } : {}),
+      ...(redirectPolicy === "loopback-required" ? { redirectPolicy } : {}),
       credentialLabel: typeof credentialLabel === "string"
         ? credentialLabel
         : `Model credential: ${providerId}`,
@@ -548,8 +566,18 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const browserHandoffCallerKind = args.browserHandoffCallerKind === "shell"
       ? "shell"
       : "panel";
+    const browserHandoffPlatform = typeof args.browserHandoffPlatform === "string"
+      ? args.browserHandoffPlatform
+      : undefined;
     const modelBaseUrl = this.getModelBaseUrl();
     const setup = this.getModelCredentialOAuthConfig(args.providerId);
+    const redirect = browserHandoffPlatform === "mobile" && setup.clientLoopbackRedirect
+      ? setup.clientLoopbackRedirect
+      : setup.redirect;
+    if (setup.redirectPolicy === "loopback-required"
+      && (!redirect || (redirect.type !== "loopback" && redirect.type !== "client-loopback"))) {
+      throw new Error(`Model provider ${args.providerId} requires a loopback OAuth redirect`);
+    }
     const spec = {
       flow: {
         ...setup.flow,
@@ -571,7 +599,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         },
       },
       browser: browserOpenMode,
-      ...(setup.redirect ? { redirect: setup.redirect } : {}),
+      ...(redirect ? { redirect } : {}),
     };
     return this.rpc.call<ModelCredentialSummary>(
       "main",
@@ -1487,6 +1515,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
     const channel = this.createChannelClient(channelId);
     let browserHandoffCallerId: string | undefined;
+    let browserHandoffPlatform: string | undefined;
     try {
       const participants = await channel.getParticipants();
       const panel = participants.find((p) => {
@@ -1494,6 +1523,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         return t === "panel" || t === "client";
       });
       browserHandoffCallerId = panel?.participantId;
+      browserHandoffPlatform = typeof panel?.metadata["hostPlatform"] === "string"
+        ? panel.metadata["hostPlatform"] as string
+        : undefined;
     } catch (err) {
       console.warn(`[AgentWorkerBase] Failed to resolve browser handoff panel for ${providerId}:`, err);
     }
@@ -1507,6 +1539,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         agentParticipantId: participantId,
         browserHandoffCallerId,
         browserHandoffCallerKind: browserHandoffCallerId ? "panel" : undefined,
+        browserHandoffPlatform,
         ...(this.getModelCredentialSetupProps(providerId) ?? {}),
       },
     });

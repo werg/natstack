@@ -44,7 +44,15 @@ describe("AiChatWorker model credential defaults", () => {
       credentialLabel: "ChatGPT Codex model credential",
       accountIdentityJwtClaimRoot: "https://api.openai.com/auth",
       accountIdentityJwtClaimField: "chatgpt_account_id",
-      loopback: {
+      redirectPolicy: "loopback-required",
+      redirect: {
+        type: "loopback",
+        host: "localhost",
+        port: 1455,
+        callbackPath: "/auth/callback",
+      },
+      clientLoopbackRedirect: {
+        type: "client-loopback",
         host: "localhost",
         port: 1455,
         callbackPath: "/auth/callback",
@@ -83,6 +91,7 @@ describe("AiChatWorker model credential defaults", () => {
             audience: [{ url: "https://chatgpt.com/backend-api", match: "path-prefix" }],
           }),
           redirect: {
+            type: "loopback",
             host: "localhost",
             port: 1455,
             callbackPath: "/auth/callback",
@@ -92,6 +101,28 @@ describe("AiChatWorker model credential defaults", () => {
           callerId: "panel-1",
           callerKind: "panel",
         },
+      }),
+    );
+
+    await worker.onMethodCall("ch-1", "call-2", "connectModelCredentialOAuth", {
+      providerId: "openai-codex",
+      browserOpenMode: "external",
+      browserHandoffCallerId: "panel-1",
+      browserHandoffCallerKind: "panel",
+      browserHandoffPlatform: "mobile",
+    });
+    expect(worker.rpcCall).toHaveBeenLastCalledWith(
+      "main",
+      "credentials.connect",
+      expect.objectContaining({
+        spec: expect.objectContaining({
+          redirect: {
+            type: "client-loopback",
+            host: "localhost",
+            port: 1455,
+            callbackPath: "/auth/callback",
+          },
+        }),
       }),
     );
   });

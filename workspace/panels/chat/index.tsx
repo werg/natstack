@@ -15,8 +15,24 @@ import type { ConnectionConfig, AgenticChatActions, ToolProvider, ToolProviderDe
 import { createPanelSandboxConfig, buildEvalTool } from "@workspace/agentic-core";
 import { resolveChatContextId } from "./bootstrap.js";
 
+function detectHostPlatform(): "mobile" | "electron" {
+  const explicitPlatform = (globalThis as { __natstackHostPlatform?: unknown }).__natstackHostPlatform;
+  if (explicitPlatform === "mobile") {
+    return "mobile";
+  }
+  if (typeof navigator !== "undefined" && /\bNatStack-Mobile\//.test(navigator.userAgent)) {
+    return "mobile";
+  }
+  return "electron";
+}
+
 /** Stable metadata object — avoids creating a new object every render */
-const PANEL_METADATA = { name: "Chat Panel", type: "panel" as const, handle: "user" };
+const PANEL_METADATA = {
+  name: "Chat Panel",
+  type: "panel" as const,
+  handle: "user",
+  hostPlatform: detectHostPlatform(),
+};
 
 /** Default DO worker source and class for the AI chat agent */
 const DEFAULT_WORKER_SOURCE = "workers/agent-worker";

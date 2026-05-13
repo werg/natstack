@@ -49,6 +49,7 @@ android {
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
+            buildConfigField "boolean", "REACT_NATIVE_DEV_SUPPORT", "true"
         }
         internal {
             initWith debug
@@ -57,11 +58,13 @@ android {
             versionNameSuffix "-internal"
             signingConfig signingConfigs.debug
             debuggable true
+            buildConfigField "boolean", "REACT_NATIVE_DEV_SUPPORT", "false"
         }
         release {
             minifyEnabled true
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
             signingConfig project.hasProperty('RELEASE_STORE_FILE') ? signingConfigs.release : signingConfigs.debug
+            buildConfigField "boolean", "REACT_NATIVE_DEV_SUPPORT", "false"
         }
     }
 

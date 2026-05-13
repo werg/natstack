@@ -34,7 +34,15 @@ export class AiChatWorker extends AgentWorkerBase {
       credentialLabel: "ChatGPT Codex model credential",
       accountIdentityJwtClaimRoot: OPENAI_CODEX_ACCOUNT_CLAIM,
       accountIdentityJwtClaimField: "chatgpt_account_id",
-      loopback: {
+      redirectPolicy: "loopback-required",
+      redirect: {
+        type: "loopback",
+        host: "localhost",
+        port: 1455,
+        callbackPath: "/auth/callback",
+      },
+      clientLoopbackRedirect: {
+        type: "client-loopback",
         host: "localhost",
         port: 1455,
         callbackPath: "/auth/callback",

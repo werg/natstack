@@ -25,6 +25,7 @@ import {
   parseHostConfig,
   getExternalHost,
 } from "../services/panelUrls";
+import { handleExternalOpen, type ExternalOpenPayload } from "../services/oauthLoopback";
 import {
   buildPanelChromeState,
   buildAddressAutocompleteItems,
@@ -401,8 +402,16 @@ export function MainScreen() {
     const unsubExternal = shellClient.transport.onEvent(
       "event:external-open:open",
       (_from: string, payload: unknown) => {
-        const { url } = payload as { url: string };
-        if (url) void Linking.openURL(url);
+        void handleExternalOpen(shellClient, payload as ExternalOpenPayload).catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn("[MainScreen] Failed to open external URL:", error);
+          pushToast({
+            title: "Could not open OAuth flow",
+            message,
+            tone: "danger",
+            durationMs: 10000,
+          });
+        });
       },
     );
 
