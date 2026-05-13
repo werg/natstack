@@ -27,6 +27,10 @@ export type GadHistoryKind =
   | "dispatch_abandoned"
   | "branch_created"
   | "snapshot_marked"
+  | "claim_asserted"
+  | "claim_revised"
+  | "contradiction_detected"
+  | "theory_updated"
   | "system_event";
 
 export interface GadHistoryItemSpec {
@@ -72,7 +76,7 @@ export interface GadAppendHistoryBatchResult {
   headHistoryId: number | null;
   headHistoryHash: string | null;
   headStateHash: string;
-  items: Array<{ id: number; hash: string; inputStateHash: string; outputStateHash: string }>;
+  items: Array<{ id: number; hash: string; inputStateHash: string | null; outputStateHash: string | null }>;
 }
 
 export interface GadClient {
@@ -84,6 +88,7 @@ export interface GadClient {
   getGadBranchHead(input: { workspaceId?: string | null; branchId: string }): Promise<GadBranchHead>;
   appendGadHistoryBatch(input: GadAppendHistoryBatchInput): Promise<GadAppendHistoryBatchResult>;
   materializePiMessages(input: { workspaceId?: string | null; branchId: string }): Promise<{ messages: GadJsonRecord[] }>;
+  listGadBranchTrajectory(input: { workspaceId?: string | null; branchId: string; limit?: number }): Promise<GadJsonRecord[]>;
   listGadBranchHistory(input: { workspaceId?: string | null; branchId: string; limit?: number }): Promise<GadJsonRecord[]>;
   listGadBranchToolCalls(input: { workspaceId?: string | null; branchId: string; limit?: number }): Promise<GadJsonRecord[]>;
   forkGadBranch(input: {
@@ -104,6 +109,15 @@ export interface GadClient {
   }>;
   readGadFileAtState(input: { workspaceId?: string | null; stateHash: string; path: string }): Promise<GadJsonRecord | null>;
   getGadToolProvenance(input: { workspaceId?: string | null; branchId: string; toolCallId: string }): Promise<GadJsonRecord | null>;
+  getGadStateProducer(input: { workspaceId?: string | null; stateHash: string; branchId?: string | null }): Promise<GadJsonRecord | null>;
+  blameGadFileSnippet(input: {
+    workspaceId?: string | null;
+    stateHash?: string | null;
+    fileVersionId?: number | null;
+    path: string;
+    startLine?: number | null;
+    endLine?: number | null;
+  }): Promise<GadJsonRecord[]>;
   enqueueGadIndexJob(input: { workspaceId?: string | null; sourceHash: string; sourceKind: string; jobKind: string }): Promise<{ id: number }>;
   processGadIndexJobs(input?: { workspaceId?: string | null; limit?: number }): Promise<{ processed: number }>;
   rebuildGadReadModels(input: { workspaceId?: string | null; branchId: string }): Promise<{ messages: number }>;
@@ -122,6 +136,7 @@ export function createGadClient(rpc: RpcCaller): GadClient {
     getGadBranchHead: (input) => rpc.call("main", "gad.getGadBranchHead", input),
     appendGadHistoryBatch: (input) => rpc.call("main", "gad.appendGadHistoryBatch", input),
     materializePiMessages: (input) => rpc.call("main", "gad.materializePiMessages", input),
+    listGadBranchTrajectory: (input) => rpc.call("main", "gad.listGadBranchTrajectory", input),
     listGadBranchHistory: (input) => rpc.call("main", "gad.listGadBranchHistory", input),
     listGadBranchToolCalls: (input) => rpc.call("main", "gad.listGadBranchToolCalls", input),
     forkGadBranch: (input) => rpc.call("main", "gad.forkGadBranch", input),
@@ -130,6 +145,8 @@ export function createGadClient(rpc: RpcCaller): GadClient {
     diffGadStates: (input) => rpc.call("main", "gad.diffGadStates", input),
     readGadFileAtState: (input) => rpc.call("main", "gad.readGadFileAtState", input),
     getGadToolProvenance: (input) => rpc.call("main", "gad.getGadToolProvenance", input),
+    getGadStateProducer: (input) => rpc.call("main", "gad.getGadStateProducer", input),
+    blameGadFileSnippet: (input) => rpc.call("main", "gad.blameGadFileSnippet", input),
     enqueueGadIndexJob: (input) => rpc.call("main", "gad.enqueueGadIndexJob", input),
     processGadIndexJobs: (input) => rpc.call("main", "gad.processGadIndexJobs", input),
     rebuildGadReadModels: (input) => rpc.call("main", "gad.rebuildGadReadModels", input),

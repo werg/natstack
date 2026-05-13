@@ -1,11 +1,11 @@
 ---
 name: gad-context
 description: >-
-  Use this skill when the user asks about Pi/gad history, provenance, why code
+  Use this skill when the user asks about Pi/gad trajectory, provenance, why code
   changed, assumptions behind a change, branch context, tracked edits, or gad.
-  Query NatStack's immutable gad service for branches, history items, message
-  blocks, tool calls, file activity, branch heads, state roots, and semantic
-  indexes.
+  Query NatStack's immutable gad service for branches, trajectory items,
+  message blocks, tool calls, state transitions, file blame, branch heads, and
+  semantic sidecars.
 ---
 
 # gad Context
@@ -16,14 +16,19 @@ the workspace blobstore.
 
 Core model:
 
-- `gad_history_items` is the authoritative append-only Pi history DAG.
-- `gad_branches` are mutable heads that point at immutable history and state
-  hashes.
+- `gad_trajectory_items` is the authoritative append-only Pi trajectory DAG.
+- `gad_branches` are mutable heads that point at immutable trajectory and state
+  hashes. Compatibility `head_history_*` fields remain for older callers.
+- `gad_state_transitions` records only real workspace state changes.
+- `gad_file_change_hunks` and `gad_file_blame_segments` connect file regions
+  directly back to the trajectory/tool call that edited them.
 - `gad_state_roots` point at persistent manifest trees. `gad_manifest_nodes`
   are content-addressed directory nodes; `gad_manifest_entries` links each
   directory entry name to either a child manifest hash or a file version.
-- `pi_messages_view`, `pi_message_blocks_view`, `gad_tool_calls_view`, and
+- `pi_messages_view`, `pi_message_blocks_view`, `gad_tool_calls`, and
   `gad_file_activity_view` are rebuildable read models.
+- `gad_claims`, `gad_claim_edges`, `gad_theories`,
+  `gad_theory_versions`, and `gad_contradictions` are semantic sidecars.
 - Blob bytes live in the builtin blobstore; `gad_blobs` stores metadata.
 - Direct writes to authoritative tables are break-glass operations.
 
@@ -35,7 +40,7 @@ the userland approval UI.
 import { gad } from "@workspace/runtime";
 
 const { rows } = await gad.query(
-  "SELECT id, head_history_hash, head_state_hash FROM gad_branches ORDER BY updated_at DESC LIMIT ?",
+  "SELECT id, head_trajectory_hash, head_state_hash FROM gad_branches ORDER BY updated_at DESC LIMIT ?",
   [10],
 );
 ```
@@ -52,20 +57,20 @@ await gad.status();
 
 ```sql
 SELECT id, channel_id, context_id, parent_branch_id,
-       head_history_hash, head_state_hash, dirty, updated_at
+       head_trajectory_hash, head_state_hash, dirty, updated_at
 FROM gad_branches
 ORDER BY updated_at DESC
 LIMIT 20;
 ```
 
-### Branch History
+### Branch Trajectory
 
 ```sql
-SELECT history_id, history_hash, parent_hash, kind, actor, message_id, block_id, tool_call_id,
+SELECT trajectory_id, trajectory_hash, parent_hash, kind, actor, message_id, block_id, tool_call_id,
        input_state_hash, output_state_hash, created_at
-FROM gad_branch_history_view
+FROM gad_branch_trajectory_view
 WHERE branch_id = ?
-ORDER BY history_id;
+ORDER BY trajectory_id;
 ```
 
 ### Materialized Messages
@@ -99,10 +104,39 @@ ORDER BY message_id, block_idx;
 
 ```sql
 SELECT tool_call_id, message_id, block_id, tool_name, provider_handle,
-       status, result_summary, requested_history_hash, completed_history_hash
-FROM gad_tool_calls_view
+       status, result_summary, request_trajectory_id, result_trajectory_id
+FROM gad_tool_calls
 WHERE branch_id = ?
 ORDER BY id;
+```
+
+### State Producer
+
+Prefer the service API:
+
+```ts
+const producer = await gad.getGadStateProducer({ stateHash, branchId });
+```
+
+Or query the sidecar:
+
+```sql
+SELECT st.*, ti.kind, ti.actor, tc.tool_name
+FROM gad_state_transitions st
+JOIN gad_trajectory_items ti ON ti.id = st.trajectory_id
+LEFT JOIN gad_tool_calls tc ON tc.tool_call_id = st.tool_call_id
+WHERE st.output_state_hash = ?;
+```
+
+### Snippet Blame
+
+```ts
+const rows = await gad.blameGadFileSnippet({
+  stateHash,
+  path: "src/index.ts",
+  startLine: 10,
+  endLine: 12,
+});
 ```
 
 ### File Activity
@@ -119,8 +153,8 @@ ORDER BY id;
 
 ```sql
 SELECT id, name, channel_id, context_id, parent_branch_id,
-       forked_from_history_id, forked_from_state_hash,
-       head_history_hash, head_state_hash, dirty, updated_at
+       forked_from_trajectory_id, forked_from_state_hash,
+       head_trajectory_hash, head_state_hash, dirty, updated_at
 FROM gad_branches
 ORDER BY updated_at DESC;
 ```

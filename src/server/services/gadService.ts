@@ -42,6 +42,10 @@ const GadHistoryItemSchema = z.object({
     "dispatch_abandoned",
     "branch_created",
     "snapshot_marked",
+    "claim_asserted",
+    "claim_revised",
+    "contradiction_detected",
+    "theory_updated",
     "system_event",
   ]),
   actor: z.string().nullable().optional(),
@@ -84,6 +88,21 @@ const BranchIdSchema = z.object({
 
 const BranchListOptsSchema = BranchIdSchema.extend({
   limit: z.number().int().positive().optional(),
+}).strict();
+
+const StateProducerSchema = z.object({
+  workspaceId: z.string().nullable().optional(),
+  stateHash: z.string(),
+  branchId: z.string().nullable().optional(),
+}).strict();
+
+const BlameSnippetSchema = z.object({
+  workspaceId: z.string().nullable().optional(),
+  stateHash: z.string().nullable().optional(),
+  fileVersionId: z.number().int().nullable().optional(),
+  path: z.string(),
+  startLine: z.number().int().positive().nullable().optional(),
+  endLine: z.number().int().positive().nullable().optional(),
 }).strict();
 
 export interface GadServiceDeps {
@@ -262,6 +281,7 @@ export function createGadService(deps: GadServiceDeps): ServiceDefinition {
       getGadBranchHead: { args: z.tuple([BranchHeadSchema]) },
       appendGadHistoryBatch: { args: z.tuple([AppendGadHistoryBatchSchema]) },
       materializePiMessages: { args: z.tuple([BranchHeadSchema]) },
+      listGadBranchTrajectory: { args: z.tuple([BranchListOptsSchema]) },
       listGadBranchHistory: { args: z.tuple([BranchListOptsSchema]) },
       listGadBranchToolCalls: { args: z.tuple([BranchListOptsSchema]) },
       forkGadBranch: { args: z.tuple([ForkGadBranchSchema]) },
@@ -282,6 +302,8 @@ export function createGadService(deps: GadServiceDeps): ServiceDefinition {
         branchId: z.string(),
         toolCallId: z.string(),
       }).strict()]) },
+      getGadStateProducer: { args: z.tuple([StateProducerSchema]) },
+      blameGadFileSnippet: { args: z.tuple([BlameSnippetSchema]) },
       enqueueGadIndexJob: { args: z.tuple([z.object({
         workspaceId: z.string().nullable().optional(),
         sourceHash: z.string(),
@@ -313,6 +335,7 @@ export function createGadService(deps: GadServiceDeps): ServiceDefinition {
         case "getGadBranchHead":
         case "appendGadHistoryBatch":
         case "materializePiMessages":
+        case "listGadBranchTrajectory":
         case "listGadBranchHistory":
         case "listGadBranchToolCalls":
         case "forkGadBranch":
@@ -321,6 +344,8 @@ export function createGadService(deps: GadServiceDeps): ServiceDefinition {
         case "diffGadStates":
         case "readGadFileAtState":
         case "getGadToolProvenance":
+        case "getGadStateProducer":
+        case "blameGadFileSnippet":
         case "enqueueGadIndexJob":
         case "processGadIndexJobs":
         case "rebuildGadReadModels":

@@ -48,7 +48,7 @@ describe("GadWorkspaceDO immutable persistence", () => {
     });
 
     expect(result.items).toHaveLength(3);
-    expect(result.headHistoryHash).toMatch(/^history:/);
+    expect(result.headHistoryHash).toMatch(/^trajectory:/);
     expect(result.headStateHash).toBe(head.headStateHash);
 
     const materialized = await call<{ messages: Array<{ role: string; content: unknown }> }>(
@@ -61,7 +61,7 @@ describe("GadWorkspaceDO immutable persistence", () => {
 
     const status = await call<Array<{ metric: string; value: number }>>("getStatus");
     expect(status.find((row) => row.metric === "Branches")?.value).toBe(1);
-    expect(status.find((row) => row.metric === "History items")?.value).toBe(3);
+    expect(status.find((row) => row.metric === "Trajectory items")?.value).toBe(3);
   });
 
   it("materializes observed tool result replacements", async () => {
@@ -148,7 +148,7 @@ describe("GadWorkspaceDO immutable persistence", () => {
       items: [{ kind: "system_event", actor: "test", payload: { stale: true } }],
     })).rejects.toThrow(/head conflict/);
 
-    const beforeHistory = await call<{ rows: Array<unknown> }>("query", "SELECT * FROM gad_history_items", []);
+    const beforeHistory = await call<{ rows: Array<unknown> }>("query", "SELECT * FROM gad_trajectory_items", []);
     const fork = await call<any>("forkGadBranch", {
       sourceBranchId: "branch-1",
       newBranchId: "branch-2",
@@ -156,7 +156,7 @@ describe("GadWorkspaceDO immutable persistence", () => {
     });
     expect(fork.branchId).toBe("branch-2");
     expect(fork.headHistoryHash).toBe(append.headHistoryHash);
-    const afterHistory = await call<{ rows: Array<unknown> }>("query", "SELECT * FROM gad_history_items", []);
+    const afterHistory = await call<{ rows: Array<unknown> }>("query", "SELECT * FROM gad_trajectory_items", []);
     expect(afterHistory.rows).toHaveLength(beforeHistory.rows.length);
 
     const branches = await call<Array<{ id: string }>>("listGadBranches", {});
@@ -185,14 +185,14 @@ describe("GadWorkspaceDO immutable persistence", () => {
         { kind: "message_finalized", actor: "user", messageId: "msg:0", payload: {} },
       ],
     });
-    const beforeHistory = await call<{ rows: Array<unknown> }>("query", "SELECT * FROM gad_history_items", []);
+    const beforeHistory = await call<{ rows: Array<unknown> }>("query", "SELECT * FROM gad_trajectory_items", []);
 
     await call("forkGadBranch", {
       sourceBranchId: "branch-a",
       newBranchId: "branch-b",
       historyHash: append.headHistoryHash,
     });
-    const afterForkHistory = await call<{ rows: Array<unknown> }>("query", "SELECT * FROM gad_history_items", []);
+    const afterForkHistory = await call<{ rows: Array<unknown> }>("query", "SELECT * FROM gad_trajectory_items", []);
     expect(afterForkHistory.rows).toHaveLength(beforeHistory.rows.length);
 
     const forked = await call<{ messages: Array<{ role: string; content: unknown }> }>(
@@ -212,7 +212,7 @@ describe("GadWorkspaceDO immutable persistence", () => {
     });
     const forkRows = await call<{ rows: Array<{ parent_hash: string | null; branch_id: string }> }>(
       "query",
-      "SELECT parent_hash, branch_id FROM gad_history_items WHERE branch_id = ? ORDER BY id",
+      "SELECT parent_hash, branch_id FROM gad_trajectory_items WHERE branch_id = ? ORDER BY id",
       ["branch-b"],
     );
     expect(forkRows.rows[0]).toEqual({ parent_hash: append.headHistoryHash, branch_id: "branch-b" });
@@ -268,6 +268,26 @@ describe("GadWorkspaceDO immutable persistence", () => {
       path: "src/lib/util.ts",
     });
     expect(nested).toMatchObject({ path: "src/lib/util.ts", content_hash: "blob:util" });
+
+    const producer = await call<Record<string, unknown>>("getGadStateProducer", {
+      stateHash: append.headStateHash,
+      branchId: head.branchId,
+    });
+    expect(producer).toMatchObject({
+      output_state_hash: append.headStateHash,
+      kind: "file_observed",
+    });
+
+    const blame = await call<Array<Record<string, unknown>>>("blameGadFileSnippet", {
+      stateHash: append.headStateHash,
+      path: "src/lib/util.ts",
+      startLine: 1,
+      endLine: 1,
+    });
+    expect(blame[0]).toMatchObject({
+      path: "src/lib/util.ts",
+      kind: "file_observed",
+    });
 
     const entries = await call<{ rows: Array<{ parent_hash: string; name: string; entry_kind: string; child_manifest_hash: string | null }> }>(
       "query",

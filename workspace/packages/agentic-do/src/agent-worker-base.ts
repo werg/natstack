@@ -1206,7 +1206,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const content = typeof payload?.["content"] === "string" ? payload["content"] : undefined;
     if (!content) return;
 
-    const messages = this.loadMessages(channelId);
+    const messages = await this.loadMessages(channelId);
     const eventKey = event.id > 0 ? `event:${event.id}` : `message:${event.messageId}`;
     if (messages.some((message) => {
       const details = (message as { details?: Record<string, unknown> }).details;
@@ -2121,7 +2121,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       let historyHash = head.headHistoryHash;
       let historyId: number | null = null;
       if (forkAtMessageIndex != null) {
-        const chain = await this.rpc.call<Array<Record<string, unknown>>>("main", "gad.listGadBranchHistory", {
+        const chain = await this.rpc.call<Array<Record<string, unknown>>>("main", "gad.listGadBranchTrajectory", {
           branchId: oldBranchId,
         });
         const targetMessageId = `msg:${Math.max(0, forkAtMessageIndex - 1)}`;
@@ -2129,8 +2129,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           row["message_id"] === targetMessageId && row["kind"] === "message_finalized"
         ) ?? [...chain].reverse().find((row) => row["message_id"] === targetMessageId);
         if (target) {
-          historyHash = typeof target["hash"] === "string" ? target["hash"] : historyHash;
-          historyId = typeof target["id"] === "number" ? target["id"] : null;
+          historyHash = typeof target["trajectory_hash"] === "string" ? target["trajectory_hash"] : historyHash;
+          historyId = typeof target["trajectory_id"] === "number" ? target["trajectory_id"] : null;
         }
       }
       if (!historyHash && historyId == null) {

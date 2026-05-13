@@ -2,7 +2,7 @@
 name: gad-review
 description: >-
   Use this skill when reviewing changes, planning changes, or asking whether
-  an edit is justified by user intent. Treat immutable gad history as the
+  an edit is justified by user intent. Treat immutable gad trajectory as the
   provenance graph and trace artifacts back to user message blocks.
 ---
 
@@ -17,7 +17,7 @@ The review question is:
 
 Authority order:
 
-1. User message blocks materialized from `gad_history_items`.
+1. User message blocks materialized from `gad_trajectory_items`.
 2. Tool request/result history linked by `(branch_id, tool_call_id)`.
 3. File activity, state hashes, and tree manifest entries.
 4. Plans, chunks, embeddings, and parsed structures, which are derived.
@@ -27,14 +27,14 @@ Authority order:
 Verify the branch head and runtime-critical read models:
 
 ```sql
-SELECT id, head_history_hash, head_state_hash, dirty, updated_at
+SELECT id, head_trajectory_hash, head_state_hash, dirty, updated_at
 FROM gad_branches
 WHERE id = ?;
 ```
 
 ```sql
 SELECT kind, COUNT(*) AS count
-FROM gad_branch_history_view
+FROM gad_branch_trajectory_view
 WHERE branch_id = ?
 GROUP BY kind
 ORDER BY kind;
@@ -45,10 +45,12 @@ normal provenance until validation succeeds.
 
 ## Starting Frontier
 
-- Branch id: start from `gad_branch_history_view` for that branch.
+- Branch id: start from `gad_branch_trajectory_view` for that branch.
 - File list: start from `gad_file_activity_view` for those paths.
 - Branch question: start from `gad_branches` and the branch head hashes.
-- Tool question: start from `gad_tool_calls_view`.
+- Tool question: start from `gad_tool_calls`.
+- State question: start from `gad_state_transitions`.
+- Snippet question: use `gad.blameGadFileSnippet(...)`.
 
 ## Expansion Operators
 
@@ -67,16 +69,16 @@ ORDER BY m.idx, b.block_idx;
 
 ```sql
 SELECT *
-FROM gad_tool_calls_view
+FROM gad_tool_calls
 WHERE branch_id = ? AND tool_call_id = ?;
 ```
 
 ```sql
-SELECT history_id, history_hash, kind, actor, message_id, block_id,
+SELECT trajectory_id, trajectory_hash, kind, actor, message_id, block_id,
        input_state_hash, output_state_hash, created_at
-FROM gad_branch_history_view
+FROM gad_branch_trajectory_view
 WHERE branch_id = ? AND tool_call_id = ?
-ORDER BY history_id;
+ORDER BY trajectory_id;
 ```
 
 ### From File Activity
@@ -93,8 +95,8 @@ LIMIT 20;
 ### From A Branch
 
 ```sql
-SELECT id, parent_branch_id, forked_from_history_id, forked_from_state_hash,
-       head_history_hash, head_state_hash, dirty
+SELECT id, parent_branch_id, forked_from_trajectory_id, forked_from_state_hash,
+       head_trajectory_hash, head_state_hash, dirty
 FROM gad_branches
 WHERE id = ?;
 ```

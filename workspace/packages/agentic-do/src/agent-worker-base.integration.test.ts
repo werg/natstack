@@ -257,8 +257,7 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
     await (instance as any).dispatchChannelEvent("ch-1", agentContext("load_action_bar(...) -> ok"));
     await flush();
 
-    const rows = sql.exec(`SELECT content FROM pi_messages WHERE channel_id = ? ORDER BY idx`, "ch-1").toArray();
-    const messages = rows.map((row) => JSON.parse(row["content"] as string));
+    const messages = cachedMessages(instance, "ch-1");
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({
       role: "user",

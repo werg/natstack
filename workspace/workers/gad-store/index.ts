@@ -16,9 +16,13 @@ const AUTHORITATIVE_TABLES = new Set([
   "gad_manifest_nodes",
   "gad_manifest_entries",
   "gad_state_roots",
-  "gad_history_items",
+  "gad_trajectory_items",
+  "gad_state_transitions",
+  "gad_tool_calls",
+  "gad_file_change_hunks",
+  "gad_file_blame_segments",
   "gad_branches",
-  "gad_branch_history_view",
+  "gad_branch_trajectory_view",
 ]);
 
 export type GadHistoryKind =
@@ -36,6 +40,10 @@ export type GadHistoryKind =
   | "dispatch_abandoned"
   | "branch_created"
   | "snapshot_marked"
+  | "claim_asserted"
+  | "claim_revised"
+  | "contradiction_detected"
+  | "theory_updated"
   | "system_event";
 
 export interface GadHistoryItemSpec {
@@ -102,7 +110,9 @@ interface StateTransitionPlan {
   stateHash: string;
   nodes: ManifestNodePlan[];
   files: ManifestFileEntry[];
+  oldFile: ManifestFileEntry | null;
   newFile: { path: string; contentHash: string; mode: number | null } | null;
+  newFileVersionId?: number | null;
 }
 
 function nowIso(): string {
@@ -223,6 +233,23 @@ function toolNameFromBlock(block: unknown): string | null {
   return asString(item["name"]) ?? asString(item["toolName"]) ?? null;
 }
 
+function textLineCount(text: string | null): number | null {
+  if (text == null) return null;
+  if (text.length === 0) return 0;
+  return text.split("\n").length;
+}
+
+function lineForSubstring(haystack: string | null, needle: string | null): number | null {
+  if (!haystack || !needle) return null;
+  const index = haystack.indexOf(needle);
+  if (index < 0) return null;
+  return haystack.slice(0, index).split("\n").length;
+}
+
+function byteLength(text: string | null): number | null {
+  return text == null ? null : new TextEncoder().encode(text).byteLength;
+}
+
 export class GadWorkspaceDO extends DurableObjectBase {
   static override schemaVersion = 4;
 
@@ -241,6 +268,13 @@ export class GadWorkspaceDO extends DurableObjectBase {
   }
 
   private dropOldTables(): void {
+    for (const view of [
+      "gad_tool_calls_view",
+      "gad_branch_history_view",
+      "gad_history_items",
+    ]) {
+      this.sql.exec(`DROP VIEW IF EXISTS ${view}`);
+    }
     for (const table of [
       "blob_policies",
       "embedding_vectors",
@@ -260,6 +294,17 @@ export class GadWorkspaceDO extends DurableObjectBase {
       "tracked_files",
       "branches",
       "blobs",
+      "gad_branch_trajectory_view",
+      "gad_trajectory_items",
+      "gad_state_transitions",
+      "gad_tool_calls",
+      "gad_file_change_hunks",
+      "gad_file_blame_segments",
+      "gad_claim_edges",
+      "gad_claims",
+      "gad_theory_versions",
+      "gad_theories",
+      "gad_contradictions",
       "gad_branch_history_view",
       "pi_messages_view",
       "pi_message_blocks_view",
@@ -341,6 +386,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
         workspace_id TEXT NOT NULL,
         state_hash TEXT NOT NULL,
         manifest_root_hash TEXT NOT NULL,
+        produced_by_trajectory_id INTEGER,
         metadata_json TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         PRIMARY KEY (workspace_id, state_hash)
@@ -355,8 +401,11 @@ export class GadWorkspaceDO extends DurableObjectBase {
         parent_branch_id TEXT,
         channel_id TEXT,
         context_id TEXT,
+        forked_from_trajectory_id INTEGER,
         forked_from_history_id INTEGER,
         forked_from_state_hash TEXT,
+        head_trajectory_id INTEGER,
+        head_trajectory_hash TEXT,
         head_history_id INTEGER,
         head_history_hash TEXT,
         head_state_hash TEXT NOT NULL,
@@ -369,7 +418,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
     `);
     this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_gad_branches_channel ON gad_branches(workspace_id, channel_id)`);
     this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS gad_history_items (
+      CREATE TABLE IF NOT EXISTS gad_trajectory_items (
         id INTEGER PRIMARY KEY,
         workspace_id TEXT NOT NULL,
         hash TEXT NOT NULL,
@@ -379,8 +428,8 @@ export class GadWorkspaceDO extends DurableObjectBase {
         kind TEXT NOT NULL,
         actor TEXT,
         payload_hash TEXT,
-        input_state_hash TEXT NOT NULL,
-        output_state_hash TEXT NOT NULL,
+        input_state_hash TEXT,
+        output_state_hash TEXT,
         message_id TEXT,
         block_id TEXT,
         tool_call_id TEXT,
@@ -389,25 +438,171 @@ export class GadWorkspaceDO extends DurableObjectBase {
         UNIQUE (workspace_id, hash)
       )
     `);
-    this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_gad_history_branch ON gad_history_items(workspace_id, branch_id, id)`);
-    this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_gad_history_tool_call ON gad_history_items(workspace_id, branch_id, tool_call_id)`);
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_gad_trajectory_branch ON gad_trajectory_items(workspace_id, branch_id, id)`);
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_gad_trajectory_tool_call ON gad_trajectory_items(workspace_id, branch_id, tool_call_id)`);
     this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS gad_branch_history_view (
+      CREATE TABLE IF NOT EXISTS gad_branch_trajectory_view (
         workspace_id TEXT NOT NULL,
         branch_id TEXT NOT NULL,
-        history_id INTEGER NOT NULL,
-        history_hash TEXT NOT NULL,
+        trajectory_id INTEGER NOT NULL,
+        trajectory_hash TEXT NOT NULL,
         parent_hash TEXT,
         kind TEXT NOT NULL,
         actor TEXT,
         message_id TEXT,
         block_id TEXT,
         tool_call_id TEXT,
+        input_state_hash TEXT,
+        output_state_hash TEXT,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (workspace_id, branch_id, trajectory_hash)
+      )
+    `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS gad_state_transitions (
+        id INTEGER PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        branch_id TEXT NOT NULL,
+        trajectory_id INTEGER NOT NULL,
+        trajectory_hash TEXT NOT NULL,
+        tool_call_id TEXT,
         input_state_hash TEXT NOT NULL,
         output_state_hash TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        PRIMARY KEY (workspace_id, branch_id, history_hash)
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
       )
+    `);
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_gad_state_transitions_output ON gad_state_transitions(workspace_id, output_state_hash)`);
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_gad_state_transitions_branch ON gad_state_transitions(workspace_id, branch_id, trajectory_id)`);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS gad_tool_calls (
+        id INTEGER PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        branch_id TEXT NOT NULL,
+        tool_call_id TEXT NOT NULL,
+        request_trajectory_id INTEGER,
+        result_trajectory_id INTEGER,
+        message_id TEXT,
+        block_id TEXT,
+        tool_name TEXT,
+        provider_handle TEXT,
+        parameters_json TEXT,
+        status TEXT NOT NULL DEFAULT 'requested',
+        result_summary TEXT,
+        started_at TEXT,
+        completed_at TEXT,
+        UNIQUE (workspace_id, branch_id, tool_call_id)
+      )
+    `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS gad_file_change_hunks (
+        id INTEGER PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        branch_id TEXT NOT NULL,
+        trajectory_id INTEGER NOT NULL,
+        trajectory_hash TEXT NOT NULL,
+        tool_call_id TEXT,
+        path TEXT NOT NULL,
+        before_file_version_id INTEGER,
+        after_file_version_id INTEGER,
+        old_start_line INTEGER,
+        old_line_count INTEGER,
+        new_start_line INTEGER,
+        new_line_count INTEGER,
+        old_start_byte INTEGER,
+        old_byte_count INTEGER,
+        new_start_byte INTEGER,
+        new_byte_count INTEGER,
+        old_text_hash TEXT,
+        new_text_hash TEXT
+      )
+    `);
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_gad_file_change_hunks_path ON gad_file_change_hunks(workspace_id, branch_id, path, trajectory_id)`);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS gad_file_blame_segments (
+        id INTEGER PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        file_version_id INTEGER NOT NULL,
+        path TEXT NOT NULL,
+        start_line INTEGER,
+        end_line INTEGER,
+        start_byte INTEGER,
+        end_byte INTEGER,
+        origin_trajectory_id INTEGER NOT NULL,
+        origin_tool_call_id TEXT,
+        origin_hunk_id INTEGER,
+        origin_branch_id TEXT NOT NULL,
+        introduced_at TEXT NOT NULL
+      )
+    `);
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_gad_file_blame_segments_range ON gad_file_blame_segments(workspace_id, file_version_id, start_line, end_line)`);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS gad_claims (
+        id INTEGER PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        claim_hash TEXT NOT NULL,
+        text TEXT NOT NULL,
+        normalized_text TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        confidence REAL,
+        created_trajectory_id INTEGER NOT NULL,
+        UNIQUE (workspace_id, claim_hash)
+      )
+    `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS gad_claim_edges (
+        id INTEGER PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        source_claim_id INTEGER NOT NULL,
+        target_type TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        relation TEXT NOT NULL,
+        trajectory_id INTEGER NOT NULL
+      )
+    `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS gad_theories (
+        id INTEGER PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        current_version_id INTEGER,
+        UNIQUE (workspace_id, name)
+      )
+    `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS gad_theory_versions (
+        id INTEGER PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        theory_id INTEGER NOT NULL,
+        trajectory_id INTEGER NOT NULL,
+        parent_version_id INTEGER,
+        summary TEXT,
+        status TEXT NOT NULL DEFAULT 'active'
+      )
+    `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS gad_contradictions (
+        id INTEGER PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        left_claim_id INTEGER,
+        right_claim_id INTEGER,
+        detected_trajectory_id INTEGER NOT NULL,
+        resolved_trajectory_id INTEGER,
+        status TEXT NOT NULL DEFAULT 'open',
+        notes TEXT
+      )
+    `);
+    this.sql.exec(`
+      CREATE VIEW IF NOT EXISTS gad_history_items AS
+      SELECT * FROM gad_trajectory_items
+    `);
+    this.sql.exec(`
+      CREATE VIEW IF NOT EXISTS gad_branch_history_view AS
+      SELECT workspace_id, branch_id,
+             trajectory_id AS history_id,
+             trajectory_hash AS history_hash,
+             parent_hash, kind, actor, message_id, block_id, tool_call_id,
+             input_state_hash, output_state_hash, created_at
+      FROM gad_branch_trajectory_view
     `);
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS pi_messages_view (
@@ -441,23 +636,18 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS gad_tool_calls_view (
-        id INTEGER PRIMARY KEY,
-        workspace_id TEXT NOT NULL,
-        branch_id TEXT NOT NULL,
-        tool_call_id TEXT NOT NULL,
-        message_id TEXT,
-        block_id TEXT,
-        tool_name TEXT,
-        provider_handle TEXT,
-        parameters_json TEXT,
-        status TEXT NOT NULL DEFAULT 'requested',
-        result_summary TEXT,
-        requested_history_hash TEXT,
-        completed_history_hash TEXT,
-        source_history_id INTEGER,
-        UNIQUE (workspace_id, branch_id, tool_call_id)
-      )
+      CREATE VIEW IF NOT EXISTS gad_tool_calls_view AS
+      SELECT tc.id, tc.workspace_id, tc.branch_id, tc.tool_call_id,
+             tc.message_id, tc.block_id, tc.tool_name, tc.provider_handle,
+             tc.parameters_json, tc.status, tc.result_summary,
+             req.hash AS requested_history_hash,
+             res.hash AS completed_history_hash,
+             COALESCE(tc.result_trajectory_id, tc.request_trajectory_id) AS source_history_id,
+             tc.request_trajectory_id,
+             tc.result_trajectory_id
+      FROM gad_tool_calls tc
+      LEFT JOIN gad_trajectory_items req ON req.id = tc.request_trajectory_id
+      LEFT JOIN gad_trajectory_items res ON res.id = tc.result_trajectory_id
     `);
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS gad_file_activity_view (
@@ -571,8 +761,8 @@ export class GadWorkspaceDO extends DurableObjectBase {
     return {
       workspaceId,
       branchId: input.branchId,
-      headHistoryId: row["head_history_id"] == null ? null : asNumber(row["head_history_id"]),
-      headHistoryHash: asString(row["head_history_hash"]),
+      headHistoryId: row["head_trajectory_id"] == null ? (row["head_history_id"] == null ? null : asNumber(row["head_history_id"])) : asNumber(row["head_trajectory_id"]),
+      headHistoryHash: asString(row["head_trajectory_hash"]) ?? asString(row["head_history_hash"]),
       headStateHash: asString(row["head_state_hash"]) ?? EMPTY_STATE_HASH,
       dirty: row["dirty"] === 1,
     };
@@ -584,7 +774,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
     headHistoryId: number | null;
     headHistoryHash: string | null;
     headStateHash: string;
-    items: Array<{ id: number; hash: string; inputStateHash: string; outputStateHash: string }>;
+    items: Array<{ id: number; hash: string; inputStateHash: string | null; outputStateHash: string | null }>;
   }> {
     this.ensureReady();
     const workspaceId = input.workspaceId ?? WORKSPACE_ID;
@@ -609,8 +799,8 @@ export class GadWorkspaceDO extends DurableObjectBase {
       payloadJson: string | null;
       payloadText: string | null;
       spec: GadHistoryItemSpec;
-      inputStateHash: string;
-      outputStateHash: string;
+      inputStateHash: string | null;
+      outputStateHash: string | null;
       parentHash: string | null;
       parentId: number | null;
       stateTransition?: StateTransitionPlan;
@@ -620,11 +810,12 @@ export class GadWorkspaceDO extends DurableObjectBase {
       const itemInputState = spec.inputStateHash ?? currentState;
       if (itemInputState !== currentState) throw new Error(`Invalid state transition for ${spec.kind}`);
       const stateTransition = await this.prepareStateTransition(workspaceId, currentState, spec, currentFiles ?? undefined);
-      const itemOutputState = spec.outputStateHash ?? stateTransition?.stateHash ?? currentState;
+      if (!stateTransition && spec.outputStateHash != null) throw new Error(`Non-mutating ${spec.kind} cannot set outputStateHash`);
+      const itemOutputState = stateTransition ? (spec.outputStateHash ?? stateTransition.stateHash) : (spec.outputStateHash ?? null);
       const payload = spec.payload ?? null;
       const payloadKind = typeof payload === "string" ? "text" : spec.kind;
       const payloadHash = payload == null ? null : await sha256("payload", { kind: payloadKind, payload });
-      const hash = await sha256("history", {
+      const hash = await sha256("trajectory", {
         parentHash,
         kind: spec.kind,
         actor: spec.actor ?? null,
@@ -651,11 +842,11 @@ export class GadWorkspaceDO extends DurableObjectBase {
       });
       parentHash = hash;
       parentId = null;
-      currentState = itemOutputState;
+      if (itemOutputState) currentState = itemOutputState;
       if (stateTransition) currentFiles = stateTransition.files;
     }
 
-    const created: Array<{ id: number; hash: string; inputStateHash: string; outputStateHash: string }> = [];
+    const created: Array<{ id: number; hash: string; inputStateHash: string | null; outputStateHash: string | null }> = [];
     this.transaction(() => {
       const pendingFileVersionIds = new Map<string, number>();
       for (const item of prepared) {
@@ -682,6 +873,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
               item.stateTransition.newFile.mode,
             );
             newFileVersionId = asNumber(this.sql.exec(`SELECT last_insert_rowid() AS id`).one()["id"]);
+            item.stateTransition.newFileVersionId = newFileVersionId;
             pendingFileVersionIds.set(item.stateTransition.newFile.path, newFileVersionId);
             this.ensureBlob(item.stateTransition.newFile.contentHash, 0, null, workspaceId);
           }
@@ -709,17 +901,9 @@ export class GadWorkspaceDO extends DurableObjectBase {
               );
             }
           }
-          this.sql.exec(
-            `INSERT OR IGNORE INTO gad_state_roots (workspace_id, state_hash, manifest_root_hash, metadata_json)
-             VALUES (?, ?, ?, ?)`,
-            workspaceId,
-            item.stateTransition.stateHash,
-            item.stateTransition.rootHash,
-            JSON.stringify({ source: "history", kind: item.spec.kind }),
-          );
         }
         this.sql.exec(
-          `INSERT INTO gad_history_items (
+          `INSERT INTO gad_trajectory_items (
              workspace_id, hash, parent_id, parent_hash, branch_id, kind, actor,
              payload_hash, input_state_hash, output_state_hash, message_id, block_id, tool_call_id, metadata_json
            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -741,6 +925,18 @@ export class GadWorkspaceDO extends DurableObjectBase {
         const id = asNumber(this.sql.exec(`SELECT last_insert_rowid() AS id`).one()["id"]);
         parentId = id;
         created.push({ id, hash: item.hash, inputStateHash: item.inputStateHash, outputStateHash: item.outputStateHash });
+        if (item.stateTransition) {
+          this.sql.exec(
+            `INSERT OR IGNORE INTO gad_state_roots (
+               workspace_id, state_hash, manifest_root_hash, produced_by_trajectory_id, metadata_json
+             ) VALUES (?, ?, ?, ?, ?)`,
+            workspaceId,
+            item.stateTransition.stateHash,
+            item.stateTransition.rootHash,
+            id,
+            JSON.stringify({ source: "trajectory", kind: item.spec.kind }),
+          );
+        }
         this.applyRuntimeReadModel(workspaceId, branchId, item, id);
       }
       const final = created.length > 0 ? created[created.length - 1] : undefined;
@@ -748,8 +944,12 @@ export class GadWorkspaceDO extends DurableObjectBase {
       const finalHeadHash = final?.hash ?? branch.headHistoryHash;
       this.sql.exec(
         `UPDATE gad_branches
-         SET head_history_id = ?, head_history_hash = ?, head_state_hash = ?, updated_at = ?
+         SET head_trajectory_id = ?, head_trajectory_hash = ?,
+             head_history_id = ?, head_history_hash = ?,
+             head_state_hash = ?, updated_at = ?
          WHERE workspace_id = ? AND id = ? AND head_history_hash IS ? AND head_state_hash = ?`,
+        finalHeadId,
+        finalHeadHash,
         finalHeadId,
         finalHeadHash,
         currentState,
@@ -797,27 +997,40 @@ export class GadWorkspaceDO extends DurableObjectBase {
     ).toArray() as JsonRecord[];
   }
 
+  listGadBranchTrajectory(input: { workspaceId?: string | null; branchId: string; limit?: number }): JsonRecord[] {
+    this.ensureReady();
+    return this.sql.exec(
+      `SELECT * FROM gad_branch_trajectory_view
+       WHERE workspace_id = ? AND branch_id = ?
+       ORDER BY trajectory_id DESC LIMIT ?`,
+      input.workspaceId ?? WORKSPACE_ID,
+      input.branchId,
+      input.limit ?? 200,
+    ).toArray() as JsonRecord[];
+  }
+
   forkGadBranch(input: ForkGadBranchInput): ReturnType<GadWorkspaceDO["getGadBranchHead"]> {
     this.ensureReady();
     const workspaceId = input.workspaceId ?? WORKSPACE_ID;
     const sourceBranch = this.getGadBranchHead({ workspaceId, branchId: input.sourceBranchId });
     const source = input.historyId != null
-      ? this.sql.exec(`SELECT * FROM gad_history_items WHERE workspace_id = ? AND id = ?`, workspaceId, input.historyId).toArray()[0]
+      ? this.sql.exec(`SELECT * FROM gad_trajectory_items WHERE workspace_id = ? AND id = ?`, workspaceId, input.historyId).toArray()[0]
       : input.historyHash
-        ? this.sql.exec(`SELECT * FROM gad_history_items WHERE workspace_id = ? AND hash = ?`, workspaceId, input.historyHash).toArray()[0]
+        ? this.sql.exec(`SELECT * FROM gad_trajectory_items WHERE workspace_id = ? AND hash = ?`, workspaceId, input.historyHash).toArray()[0]
         : null;
     const row = (source as JsonRecord | undefined) ?? null;
     if ((input.historyId != null || input.historyHash) && !row) throw new Error("Unknown fork history item");
     const forkHistoryId = row ? asNumber(row["id"]) : sourceBranch.headHistoryId;
     const forkHistoryHash = row ? asString(row["hash"]) : sourceBranch.headHistoryHash;
-    const stateHash = (row ? asString(row["output_state_hash"]) : sourceBranch.headStateHash) ?? EMPTY_STATE_HASH;
+    const stateHash = (row ? (asString(row["output_state_hash"]) ?? asString(row["input_state_hash"])) : sourceBranch.headStateHash) ?? EMPTY_STATE_HASH;
     const branchId = input.newBranchId ?? `${input.sourceBranchId}:fork:${Date.now()}`;
     this.sql.exec(
       `INSERT INTO gad_branches (
          workspace_id, id, name, parent_branch_id, channel_id, context_id,
-         forked_from_history_id, forked_from_state_hash, head_history_id,
+         forked_from_trajectory_id, forked_from_history_id, forked_from_state_hash,
+         head_trajectory_id, head_trajectory_hash, head_history_id,
          head_history_hash, head_state_hash
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       workspaceId,
       branchId,
       branchId,
@@ -825,7 +1038,10 @@ export class GadWorkspaceDO extends DurableObjectBase {
       input.channelId ?? null,
       input.contextId ?? null,
       forkHistoryId,
+      forkHistoryId,
       stateHash,
+      forkHistoryId,
+      forkHistoryHash,
       forkHistoryId,
       forkHistoryHash,
       stateHash,
@@ -1003,13 +1219,84 @@ export class GadWorkspaceDO extends DurableObjectBase {
     ).toArray()[0] as JsonRecord | undefined) ?? null;
   }
 
+  getGadStateProducer(input: { workspaceId?: string | null; stateHash: string; branchId?: string | null }): JsonRecord | null {
+    this.ensureReady();
+    const workspaceId = input.workspaceId ?? WORKSPACE_ID;
+    const branchClause = input.branchId ? "AND st.branch_id = ?" : "";
+    const args: SqlBinding[] = input.branchId
+      ? [workspaceId, input.stateHash, input.branchId]
+      : [workspaceId, input.stateHash];
+    return (this.sql.exec(
+      `SELECT st.*, ti.kind, ti.actor, ti.message_id, ti.block_id, ti.payload_hash,
+              tc.tool_name, tc.status AS tool_status, tc.result_summary
+       FROM gad_state_transitions st
+       JOIN gad_trajectory_items ti
+         ON ti.workspace_id = st.workspace_id AND ti.id = st.trajectory_id
+       LEFT JOIN gad_tool_calls tc
+         ON tc.workspace_id = st.workspace_id
+        AND tc.branch_id = st.branch_id
+        AND tc.tool_call_id = st.tool_call_id
+       WHERE st.workspace_id = ? AND st.output_state_hash = ? ${branchClause}
+       ORDER BY st.trajectory_id DESC
+       LIMIT 1`,
+      ...args,
+    ).toArray()[0] as JsonRecord | undefined) ?? null;
+  }
+
+  blameGadFileSnippet(input: {
+    workspaceId?: string | null;
+    stateHash?: string | null;
+    fileVersionId?: number | null;
+    path: string;
+    startLine?: number | null;
+    endLine?: number | null;
+  }): JsonRecord[] {
+    this.ensureReady();
+    const workspaceId = input.workspaceId ?? WORKSPACE_ID;
+    let fileVersionId = input.fileVersionId ?? null;
+    const path = normalizePath(input.path);
+    if (fileVersionId == null && input.stateHash) {
+      const file = this.readGadFileAtState({ workspaceId, stateHash: input.stateHash, path });
+      fileVersionId = typeof file?.["file_version_id"] === "number" ? file["file_version_id"] : null;
+    }
+    if (fileVersionId == null) return [];
+    const startLine = input.startLine ?? 1;
+    const endLine = input.endLine ?? startLine;
+    return this.sql.exec(
+      `SELECT bs.*, ti.hash AS origin_trajectory_hash, ti.kind, ti.actor,
+              tc.tool_name, tc.status AS tool_status, tc.result_summary
+       FROM gad_file_blame_segments bs
+       JOIN gad_trajectory_items ti
+         ON ti.workspace_id = bs.workspace_id AND ti.id = bs.origin_trajectory_id
+       LEFT JOIN gad_tool_calls tc
+         ON tc.workspace_id = bs.workspace_id
+        AND tc.branch_id = bs.origin_branch_id
+        AND tc.tool_call_id = bs.origin_tool_call_id
+       WHERE bs.workspace_id = ?
+         AND bs.file_version_id = ?
+         AND bs.path = ?
+         AND (bs.start_line IS NULL OR bs.start_line <= ?)
+         AND (bs.end_line IS NULL OR bs.end_line >= ?)
+       ORDER BY bs.start_line, bs.id`,
+      workspaceId,
+      fileVersionId,
+      path,
+      endLine,
+      startLine,
+    ).toArray() as JsonRecord[];
+  }
+
   getStatus(): { metric: string; value: number }[] {
     this.ensureReady();
     const count = (table: string) => asNumber(this.sql.exec(`SELECT COUNT(*) AS value FROM ${table}`).one()["value"]);
     return [
       { metric: "Branches", value: count("gad_branches") },
-      { metric: "History items", value: count("gad_history_items") },
-      { metric: "Branch history rows", value: count("gad_branch_history_view") },
+      { metric: "Trajectory items", value: count("gad_trajectory_items") },
+      { metric: "Branch trajectory rows", value: count("gad_branch_trajectory_view") },
+      { metric: "State transitions", value: count("gad_state_transitions") },
+      { metric: "Tool calls", value: count("gad_tool_calls") },
+      { metric: "File change hunks", value: count("gad_file_change_hunks") },
+      { metric: "Blame segments", value: count("gad_file_blame_segments") },
       { metric: "Payloads", value: count("gad_payloads") },
       { metric: "Blobs", value: count("gad_blobs") },
       { metric: "File versions", value: count("gad_file_versions") },
@@ -1022,23 +1309,40 @@ export class GadWorkspaceDO extends DurableObjectBase {
     hash: string;
     payloadHash: string | null;
     spec: GadHistoryItemSpec;
-    inputStateHash: string;
-    outputStateHash: string;
+    inputStateHash: string | null;
+    outputStateHash: string | null;
+    stateTransition?: StateTransitionPlan;
   }, historyId: number): void {
     const payload = item.payloadHash ? this.payloadFor(workspaceId, item.payloadHash) : {};
     this.sql.exec(
-      `INSERT OR IGNORE INTO gad_branch_history_view (
-         workspace_id, branch_id, history_id, history_hash, parent_hash, kind,
+      `INSERT OR IGNORE INTO gad_branch_trajectory_view (
+         workspace_id, branch_id, trajectory_id, trajectory_hash, parent_hash, kind,
          actor, message_id, block_id, tool_call_id, input_state_hash,
          output_state_hash, created_at
        ) SELECT workspace_id, ?, id, hash, parent_hash, kind, actor, message_id,
                 block_id, tool_call_id, input_state_hash, output_state_hash, created_at
-         FROM gad_history_items
+         FROM gad_trajectory_items
          WHERE workspace_id = ? AND id = ?`,
       branchId,
       workspaceId,
       historyId,
     );
+    if (item.stateTransition && item.inputStateHash && item.outputStateHash && item.inputStateHash !== item.outputStateHash) {
+      this.sql.exec(
+        `INSERT OR IGNORE INTO gad_state_transitions (
+           workspace_id, branch_id, trajectory_id, trajectory_hash, tool_call_id,
+           input_state_hash, output_state_hash
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        workspaceId,
+        branchId,
+        historyId,
+        item.hash,
+        item.spec.toolCallId ?? null,
+        item.inputStateHash,
+        item.outputStateHash,
+      );
+      this.recordFileProvenance(workspaceId, branchId, item, payload, historyId);
+    }
     const messageId = item.spec.messageId;
     if (item.spec.kind === "message_created" && messageId) {
       const idx = asNumber(this.sql.exec(
@@ -1108,14 +1412,14 @@ export class GadWorkspaceDO extends DurableObjectBase {
     }
     if (item.spec.kind === "tool_call_requested") {
       this.sql.exec(
-        `INSERT INTO gad_tool_calls_view (
+        `INSERT INTO gad_tool_calls (
            workspace_id, branch_id, tool_call_id, message_id, block_id, tool_name,
-           provider_handle, parameters_json, status, requested_history_hash, source_history_id
+           provider_handle, parameters_json, status, request_trajectory_id, started_at
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'requested', ?, ?)
          ON CONFLICT(workspace_id, branch_id, tool_call_id) DO UPDATE SET
            status = 'requested',
-           requested_history_hash = excluded.requested_history_hash,
-           source_history_id = excluded.source_history_id`,
+           request_trajectory_id = excluded.request_trajectory_id,
+           started_at = COALESCE(gad_tool_calls.started_at, excluded.started_at)`,
         workspaceId,
         branchId,
         item.spec.toolCallId,
@@ -1124,8 +1428,8 @@ export class GadWorkspaceDO extends DurableObjectBase {
         asString(payload["toolName"]) ?? toolNameFromBlock(payload["block"]),
         asString(payload["providerHandle"]),
         json(payload["parameters"] ?? null),
-        item.hash,
         historyId,
+        nowIso(),
       );
       return;
     }
@@ -1133,15 +1437,15 @@ export class GadWorkspaceDO extends DurableObjectBase {
       const toolCallId = item.spec.toolCallId ?? asString(payload["toolCallId"]);
       if (!toolCallId) return;
       this.sql.exec(
-        `INSERT INTO gad_tool_calls_view (
+        `INSERT INTO gad_tool_calls (
            workspace_id, branch_id, tool_call_id, message_id, block_id, tool_name,
-           status, result_summary, completed_history_hash, source_history_id
+           status, result_summary, result_trajectory_id, completed_at
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(workspace_id, branch_id, tool_call_id) DO UPDATE SET
            status = excluded.status,
            result_summary = excluded.result_summary,
-           completed_history_hash = excluded.completed_history_hash,
-         source_history_id = excluded.source_history_id`,
+           result_trajectory_id = excluded.result_trajectory_id,
+           completed_at = excluded.completed_at`,
         workspaceId,
         branchId,
         toolCallId,
@@ -1150,8 +1454,8 @@ export class GadWorkspaceDO extends DurableObjectBase {
         asString(payload["toolName"]),
         payload["isError"] === true ? "error" : "complete",
         asString(payload["summary"]),
-        item.hash,
         historyId,
+        nowIso(),
       );
       this.upsertToolResultMessageView(workspaceId, branchId, item, payload, historyId);
       return;
@@ -1175,7 +1479,179 @@ export class GadWorkspaceDO extends DurableObjectBase {
         json(payload),
       );
     }
+    if (item.spec.kind === "claim_asserted" || item.spec.kind === "claim_revised") {
+      this.recordSemanticClaim(workspaceId, item, payload, historyId);
+    }
+    if (item.spec.kind === "theory_updated") {
+      this.recordTheoryUpdate(workspaceId, payload, historyId);
+    }
+    if (item.spec.kind === "contradiction_detected") {
+      this.recordContradiction(workspaceId, payload, historyId);
+    }
     void historyId;
+  }
+
+  private recordSemanticClaim(workspaceId: string, item: { hash: string }, payload: JsonRecord, trajectoryId: number): void {
+    const text = asString(payload["text"]);
+    if (!text) return;
+    const claimHash = asString(payload["claimHash"]) ?? item.hash.replace(/^history:/u, "claim:").replace(/^trajectory:/u, "claim:");
+    this.sql.exec(
+      `INSERT INTO gad_claims (
+         workspace_id, claim_hash, text, normalized_text, status, confidence, created_trajectory_id
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(workspace_id, claim_hash) DO UPDATE SET
+         text = excluded.text,
+         normalized_text = excluded.normalized_text,
+         status = excluded.status,
+         confidence = excluded.confidence`,
+      workspaceId,
+      claimHash,
+      text,
+      asString(payload["normalizedText"]) ?? text.toLowerCase(),
+      asString(payload["status"]) ?? "active",
+      typeof payload["confidence"] === "number" ? payload["confidence"] : null,
+      trajectoryId,
+    );
+    const claimId = asNumber(this.sql.exec(
+      `SELECT id FROM gad_claims WHERE workspace_id = ? AND claim_hash = ?`,
+      workspaceId,
+      claimHash,
+    ).one()["id"]);
+    const edges = Array.isArray(payload["edges"]) ? payload["edges"] : [];
+    for (const edge of edges) {
+      if (!edge || typeof edge !== "object") continue;
+      const row = edge as JsonRecord;
+      const targetType = asString(row["targetType"]);
+      const targetId = asString(row["targetId"]);
+      const relation = asString(row["relation"]);
+      if (!targetType || !targetId || !relation) continue;
+      this.sql.exec(
+        `INSERT INTO gad_claim_edges (
+           workspace_id, source_claim_id, target_type, target_id, relation, trajectory_id
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+        workspaceId,
+        claimId,
+        targetType,
+        targetId,
+        relation,
+        trajectoryId,
+      );
+    }
+  }
+
+  private recordTheoryUpdate(workspaceId: string, payload: JsonRecord, trajectoryId: number): void {
+    const name = asString(payload["name"]);
+    if (!name) return;
+    this.sql.exec(
+      `INSERT INTO gad_theories (workspace_id, name) VALUES (?, ?)
+       ON CONFLICT(workspace_id, name) DO NOTHING`,
+      workspaceId,
+      name,
+    );
+    const theoryId = asNumber(this.sql.exec(
+      `SELECT id FROM gad_theories WHERE workspace_id = ? AND name = ?`,
+      workspaceId,
+      name,
+    ).one()["id"]);
+    this.sql.exec(
+      `INSERT INTO gad_theory_versions (
+         workspace_id, theory_id, trajectory_id, parent_version_id, summary, status
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+      workspaceId,
+      theoryId,
+      trajectoryId,
+      typeof payload["parentVersionId"] === "number" ? payload["parentVersionId"] : null,
+      asString(payload["summary"]),
+      asString(payload["status"]) ?? "active",
+    );
+    const versionId = asNumber(this.sql.exec(`SELECT last_insert_rowid() AS id`).one()["id"]);
+    this.sql.exec(
+      `UPDATE gad_theories SET current_version_id = ? WHERE workspace_id = ? AND id = ?`,
+      versionId,
+      workspaceId,
+      theoryId,
+    );
+  }
+
+  private recordContradiction(workspaceId: string, payload: JsonRecord, trajectoryId: number): void {
+    this.sql.exec(
+      `INSERT INTO gad_contradictions (
+         workspace_id, left_claim_id, right_claim_id, detected_trajectory_id, status, notes
+       ) VALUES (?, ?, ?, ?, ?, ?)`,
+      workspaceId,
+      typeof payload["leftClaimId"] === "number" ? payload["leftClaimId"] : null,
+      typeof payload["rightClaimId"] === "number" ? payload["rightClaimId"] : null,
+      trajectoryId,
+      asString(payload["status"]) ?? "open",
+      asString(payload["notes"]),
+    );
+  }
+
+  private recordFileProvenance(workspaceId: string, branchId: string, item: {
+    hash: string;
+    spec: GadHistoryItemSpec;
+    stateTransition?: StateTransitionPlan;
+  }, payload: JsonRecord, trajectoryId: number): void {
+    const transition = item.stateTransition;
+    if (!transition?.newFile && asString(payload["operation"]) !== "delete") return;
+    const path = transition.newFile?.path ?? asString(payload["path"]);
+    if (!path) return;
+    const oldString = asString(payload["oldString"]);
+    const newString = asString(payload["newString"]);
+    const beforeText = asString(payload["beforeText"]);
+    const afterText = asString(payload["afterText"]);
+    const oldStartLine = lineForSubstring(beforeText, oldString) ?? (oldString != null ? 1 : null);
+    const newStartLine = lineForSubstring(afterText, newString) ?? (newString != null ? 1 : null);
+    const oldLineCount = textLineCount(oldString);
+    const newLineCount = textLineCount(newString);
+    this.sql.exec(
+      `INSERT INTO gad_file_change_hunks (
+         workspace_id, branch_id, trajectory_id, trajectory_hash, tool_call_id,
+         path, before_file_version_id, after_file_version_id,
+         old_start_line, old_line_count, new_start_line, new_line_count,
+         old_start_byte, old_byte_count, new_start_byte, new_byte_count,
+         old_text_hash, new_text_hash
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      workspaceId,
+      branchId,
+      trajectoryId,
+      item.hash,
+      item.spec.toolCallId ?? null,
+      path,
+      transition.oldFile?.fileVersionId ?? null,
+      transition.newFileVersionId ?? null,
+      oldStartLine,
+      oldLineCount,
+      newStartLine,
+      newLineCount,
+      null,
+      byteLength(oldString),
+      null,
+      byteLength(newString),
+      asString(payload["beforeHash"]) ?? null,
+      asString(payload["afterHash"]) ?? asString(payload["contentHash"]) ?? null,
+    );
+    const hunkId = asNumber(this.sql.exec(`SELECT last_insert_rowid() AS id`).one()["id"]);
+    if (transition.newFileVersionId == null) return;
+    this.sql.exec(
+      `INSERT INTO gad_file_blame_segments (
+         workspace_id, file_version_id, path, start_line, end_line, start_byte, end_byte,
+         origin_trajectory_id, origin_tool_call_id, origin_hunk_id, origin_branch_id,
+         introduced_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      workspaceId,
+      transition.newFileVersionId,
+      path,
+      newStartLine,
+      newStartLine != null && newLineCount != null ? newStartLine + Math.max(newLineCount - 1, 0) : null,
+      null,
+      null,
+      trajectoryId,
+      item.spec.toolCallId ?? null,
+      hunkId,
+      branchId,
+      nowIso(),
+    );
   }
 
   private refreshMessageView(workspaceId: string, branchId: string, messageId: string): void {
@@ -1300,11 +1776,11 @@ export class GadWorkspaceDO extends DurableObjectBase {
   private copyBranchReadModels(workspaceId: string, sourceBranchId: string, targetBranchId: string, throughHistoryId: number | null): void {
     const through = throughHistoryId ?? Number.MAX_SAFE_INTEGER;
     this.sql.exec(
-      `INSERT OR IGNORE INTO gad_branch_history_view
-       SELECT workspace_id, ?, history_id, history_hash, parent_hash, kind, actor,
+      `INSERT OR IGNORE INTO gad_branch_trajectory_view
+       SELECT workspace_id, ?, trajectory_id, trajectory_hash, parent_hash, kind, actor,
               message_id, block_id, tool_call_id, input_state_hash, output_state_hash, created_at
-       FROM gad_branch_history_view
-       WHERE workspace_id = ? AND branch_id = ? AND history_id <= ?`,
+       FROM gad_branch_trajectory_view
+       WHERE workspace_id = ? AND branch_id = ? AND trajectory_id <= ?`,
       targetBranchId,
       workspaceId,
       sourceBranchId,
@@ -1332,16 +1808,31 @@ export class GadWorkspaceDO extends DurableObjectBase {
       through,
     );
     this.sql.exec(
-      `INSERT OR IGNORE INTO gad_tool_calls_view (
+      `INSERT OR IGNORE INTO gad_tool_calls (
          workspace_id, branch_id, tool_call_id, message_id, block_id, tool_name,
          provider_handle, parameters_json, status, result_summary,
-         requested_history_hash, completed_history_hash, source_history_id
+         request_trajectory_id, result_trajectory_id, started_at, completed_at
        )
        SELECT workspace_id, ?, tool_call_id, message_id, block_id, tool_name,
               provider_handle, parameters_json, status, result_summary,
-              requested_history_hash, completed_history_hash, source_history_id
-       FROM gad_tool_calls_view
-       WHERE workspace_id = ? AND branch_id = ? AND COALESCE(source_history_id, 0) <= ?`,
+              request_trajectory_id, result_trajectory_id, started_at, completed_at
+       FROM gad_tool_calls
+       WHERE workspace_id = ? AND branch_id = ?
+         AND COALESCE(result_trajectory_id, request_trajectory_id, 0) <= ?`,
+      targetBranchId,
+      workspaceId,
+      sourceBranchId,
+      through,
+    );
+    this.sql.exec(
+      `INSERT OR IGNORE INTO gad_state_transitions (
+         workspace_id, branch_id, trajectory_id, trajectory_hash, tool_call_id,
+         input_state_hash, output_state_hash, created_at
+       )
+       SELECT workspace_id, ?, trajectory_id, trajectory_hash, tool_call_id,
+              input_state_hash, output_state_hash, created_at
+       FROM gad_state_transitions
+       WHERE workspace_id = ? AND branch_id = ? AND trajectory_id <= ?`,
       targetBranchId,
       workspaceId,
       sourceBranchId,
@@ -1394,6 +1885,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
     for (const file of files) {
       next.set(file.path, file);
     }
+    const oldFile = next.get(path) ?? null;
     let newFile: { path: string; contentHash: string; mode: number | null } | null = null;
     if (operation === "delete") {
       next.delete(path);
@@ -1409,7 +1901,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
     const tree = await this.buildManifestTree(entries);
     const rootHash = tree.rootHash;
     const stateHash = await sha256("state", { manifestRootHash: rootHash });
-    return { rootHash, stateHash, nodes: tree.nodes, files: entries, newFile };
+    return { rootHash, stateHash, nodes: tree.nodes, files: entries, oldFile, newFile };
   }
 
   private filesForState(workspaceId: string, stateHash: string): JsonRecord[] {

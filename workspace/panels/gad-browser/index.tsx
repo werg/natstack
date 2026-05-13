@@ -50,7 +50,7 @@ function App() {
   const stateArgs = useStateArgs<StateArgs>();
   const [branches, setBranches] = useState<Row[]>([]);
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(stateArgs.branchId ?? null);
-  const [history, setHistory] = useState<Row[]>([]);
+  const [trajectory, setTrajectory] = useState<Row[]>([]);
   const [files, setFiles] = useState<Row[]>([]);
   const [toolCalls, setToolCalls] = useState<Row[]>([]);
   const [status, setStatus] = useState<Row[]>([]);
@@ -73,15 +73,15 @@ function App() {
       setSelectedBranchId(branchId);
       if (branchId) {
         const [nextHistory, nextFiles, nextToolCalls] = await Promise.all([
-          gad.listGadBranchHistory({ branchId }),
+          gad.listGadBranchTrajectory({ branchId }),
           gad.listGadBranchFiles({ branchId }),
           gad.listGadBranchToolCalls({ branchId }),
         ]);
-        setHistory(nextHistory);
+        setTrajectory(nextHistory);
         setFiles(nextFiles);
         setToolCalls(nextToolCalls);
       } else {
-        setHistory([]);
+        setTrajectory([]);
         setFiles([]);
         setToolCalls([]);
       }
@@ -97,7 +97,7 @@ function App() {
   useEffect(() => {
     if (!selectedBranchId) return;
     void Promise.all([
-      gad.listGadBranchHistory({ branchId: selectedBranchId }).then(setHistory),
+      gad.listGadBranchTrajectory({ branchId: selectedBranchId }).then(setTrajectory),
       gad.listGadBranchFiles({ branchId: selectedBranchId }).then(setFiles),
       gad.listGadBranchToolCalls({ branchId: selectedBranchId }).then(setToolCalls),
     ]);
@@ -140,7 +140,7 @@ function App() {
             <Tabs.Root defaultValue="files" style={{ minWidth: 0 }}>
               <Tabs.List>
                 <Tabs.Trigger value="branches">Branches</Tabs.Trigger>
-                <Tabs.Trigger value="history">History</Tabs.Trigger>
+                <Tabs.Trigger value="trajectory">Trajectory</Tabs.Trigger>
                 <Tabs.Trigger value="files">Files</Tabs.Trigger>
                 <Tabs.Trigger value="tool-calls">Tool Calls</Tabs.Trigger>
                 <Tabs.Trigger value="status">Status</Tabs.Trigger>
@@ -148,16 +148,16 @@ function App() {
               <Box pt="3" style={{ height: "calc(100vh - 130px)" }}>
                 <ScrollArea type="auto" scrollbars="both" style={{ height: "100%" }}>
                   <Tabs.Content value="branches">
-                    <DataTable rows={branches} columns={["id", "parent_branch_id", "head_history_hash", "head_state_hash", "dirty", "updated_at"]} />
+                    <DataTable rows={branches} columns={["id", "parent_branch_id", "head_trajectory_hash", "head_state_hash", "dirty", "updated_at"]} />
                   </Tabs.Content>
-                  <Tabs.Content value="history">
-                    <DataTable rows={history} columns={["history_id", "history_hash", "parent_hash", "kind", "actor", "message_id", "tool_call_id", "created_at"]} />
+                  <Tabs.Content value="trajectory">
+                    <DataTable rows={trajectory} columns={["trajectory_id", "trajectory_hash", "parent_hash", "kind", "actor", "message_id", "tool_call_id", "input_state_hash", "output_state_hash", "created_at"]} />
                   </Tabs.Content>
                   <Tabs.Content value="files">
                     <DataTable rows={files} columns={["path", "content_hash", "mode", "created_at"]} />
                   </Tabs.Content>
                   <Tabs.Content value="tool-calls">
-                    <DataTable rows={toolCalls} columns={["tool_call_id", "tool_name", "status", "result_summary", "requested_history_hash", "completed_history_hash"]} />
+                    <DataTable rows={toolCalls} columns={["tool_call_id", "tool_name", "status", "result_summary", "request_trajectory_id", "result_trajectory_id"]} />
                   </Tabs.Content>
                   <Tabs.Content value="status">
                     <DataTable rows={status} columns={["metric", "value"]} />

@@ -187,7 +187,7 @@ describe("internal storage DOs under workerd", () => {
     });
     const status = await harness.dispatch.dispatch(ref, "getStatus") as Array<{ metric: string; value: number }>;
     expect(status.find((row) => row.metric === "Branches")?.value).toBe(1);
-    expect(status.find((row) => row.metric === "History items")?.value).toBe(3);
+    expect(status.find((row) => row.metric === "Trajectory items")?.value).toBe(3);
   }, 30_000);
 
   it("records BrowserDataDO history visits and title updates without double-counting", async () => {

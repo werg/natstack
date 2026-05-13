@@ -533,6 +533,8 @@ export class PiRunner {
           afterSize: after?.size ?? null,
           oldString: this.stringParam(params, "oldText"),
           newString: this.stringParam(params, toolName === "write" ? "content" : "newText"),
+          beforeText: before?.text ?? null,
+          afterText: after?.text ?? null,
           description: `${toolName} ${filePath}`,
         },
         metadata: { toolName },
