@@ -7,17 +7,20 @@ export interface ConnectionBootstrap extends Credentials {
 }
 
 export async function getConnectionBootstrap(): Promise<ConnectionBootstrap | null> {
-  if (__DEV__ && devBootstrapConfig?.serverUrl && devBootstrapConfig.shellToken) {
+  if (__DEV__ && devBootstrapConfig?.serverUrl && devBootstrapConfig.deviceId && devBootstrapConfig.refreshToken) {
     return {
       serverUrl: devBootstrapConfig.serverUrl,
-      token: devBootstrapConfig.shellToken,
+      deviceId: devBootstrapConfig.deviceId,
+      refreshToken: devBootstrapConfig.refreshToken,
+      serverId: devBootstrapConfig.serverId,
+      workspaceId: devBootstrapConfig.workspaceId,
       autoConnect: devBootstrapConfig.autoConnect ?? true,
       source: "dev-bootstrap",
     };
   }
 
   const stored = await getCredentials();
-  if (stored?.serverUrl && stored.token) {
+  if (stored?.serverUrl && stored.deviceId && stored.refreshToken) {
     return {
       ...stored,
       autoConnect: true,

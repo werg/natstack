@@ -1,8 +1,8 @@
-// Parsing + validation for `natstack://connect?url=…&token=…` deep links.
+// Parsing + validation for `natstack://connect?url=…&code=…` deep links.
 //
 // The deep-link flow is user-triggered onboarding (scan QR, tap link), which
 // means any installed Android app can fire one. Without validation, an
-// attacker could redirect the client to a server they control with a token
+// attacker could redirect the client to a server they control with a pairing code
 // they chose. The checks below constrain what can be auto-applied:
 //
 //   - Only http:// or https:// server URLs.
@@ -11,21 +11,21 @@
 //     (which already encrypts end-to-end), or addressed by a single-label /
 //     .local hostname that only resolves in local trusted networks. Everything
 //     else requires https.
-//   - Token must match a plausible character set/length so obvious junk is
-//     rejected before we try to authenticate with it.
+//   - Pairing code must match a plausible character set/length so obvious junk
+//     is rejected before we try to pair with it.
 //
 // The UI layer is still responsible for asking the user to confirm before
 // overwriting credentials — this module only decides whether the link is
 // structurally safe to propose.
 
 export type ConnectDeepLinkResult =
-  | { kind: "ok"; serverUrl: string; shellToken: string }
+  | { kind: "ok"; serverUrl: string; pairingCode: string }
   | { kind: "error"; reason: string };
 
 const CONNECT_PREFIX = "natstack://connect";
-// Shell tokens are base64url-ish (A-Z, a-z, 0-9, -, _). Keep a generous range
+// Pairing codes are base64url-ish (A-Z, a-z, 0-9, -, _). Keep a generous range
 // to avoid false negatives while still rejecting whitespace / odd punctuation.
-const TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,512}$/;
+const CODE_PATTERN = /^[A-Za-z0-9_-]{16,512}$/;
 const TS_NET_SUFFIX = ".ts.net";
 
 function isSingleLabelHostname(host: string): boolean {
@@ -80,9 +80,9 @@ export function parseConnectDeepLink(rawUrl: string): ConnectDeepLinkResult {
   }
 
   const serverUrlRaw = deepLink.searchParams.get("url");
-  const shellToken = deepLink.searchParams.get("token");
-  if (!serverUrlRaw || !shellToken) {
-    return { kind: "error", reason: "Deep link is missing `url` or `token`" };
+  const pairingCode = deepLink.searchParams.get("code");
+  if (!serverUrlRaw || !pairingCode) {
+    return { kind: "error", reason: "Deep link is missing `url` or `code`" };
   }
 
   let server: URL;
@@ -110,12 +110,12 @@ export function parseConnectDeepLink(rawUrl: string): ConnectDeepLinkResult {
     };
   }
 
-  if (!TOKEN_PATTERN.test(shellToken)) {
-    return { kind: "error", reason: "Shell token has an unexpected format" };
+  if (!CODE_PATTERN.test(pairingCode)) {
+    return { kind: "error", reason: "Pairing code has an unexpected format" };
   }
 
   // Normalize: drop path/query/hash from the advertised server URL so we
   // store a canonical origin. Matches the format buildWsUrl expects.
   const canonical = `${server.protocol}//${server.host}`;
-  return { kind: "ok", serverUrl: canonical, shellToken };
+  return { kind: "ok", serverUrl: canonical, pairingCode };
 }

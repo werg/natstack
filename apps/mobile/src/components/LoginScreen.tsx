@@ -14,7 +14,7 @@ import {
 import type { StackNavigationProp } from "@react-navigation/stack";
 import { useSetAtom, useAtomValue } from "jotai";
 import type { RootStackParamList } from "../navigation/RootNavigator";
-import { saveCredentials } from "../services/auth";
+import { completePairing, saveCredentials, StoredCredentialsNeedRepairError, type Credentials } from "../services/auth";
 import { getConnectionBootstrap } from "../services/connectionBootstrap";
 import { ShellClient } from "../services/shellClient";
 import {
@@ -53,7 +53,7 @@ interface LoginScreenProps {
 
 export function LoginScreen({ navigation }: LoginScreenProps) {
   const [serverUrl, setServerUrl] = React.useState("");
-  const [token, setToken] = React.useState("");
+  const [pairingCode, setPairingCode] = React.useState("");
   const [bootstrapPending, setBootstrapPending] = React.useState(true);
   const [autoConnecting, setAutoConnecting] = React.useState(false);
   const colors = useAtomValue(themeColorsAtom);
@@ -69,17 +69,15 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
 
   // Reusable connect logic shared by auto-connect and manual button
   const connectWithCredentials = async (
-    url: string,
-    authToken: string,
+    credentials: Credentials,
     options?: { showAlert?: boolean },
-  ) => {
+  ): Promise<boolean> => {
     setAuthLoading(true);
     setAuthError(null);
 
     try {
       const client = new ShellClient({
-        serverUrl: url,
-        shellToken: authToken,
+        credentials,
         onStatusChange: (status) => {
           setConnectionStatus(status);
         },
@@ -92,11 +90,12 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
       client.startPeriodicSync();
 
       setShellClient(client);
-      setServerUrlAtom(url);
+      setServerUrlAtom(credentials.serverUrl);
       setAuthenticated(true);
       setAuthLoading(false);
 
       navigation.replace("Main");
+      return true;
     } catch (error) {
       setAuthLoading(false);
       const message = error instanceof Error ? error.message : "Connection failed";
@@ -104,12 +103,35 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
       if (options?.showAlert !== false) {
         Alert.alert("Connection Failed", message);
       }
+      return false;
     }
   };
 
   // Keep a ref so the mount effect always calls the latest version
   const connectRef = React.useRef(connectWithCredentials);
   connectRef.current = connectWithCredentials;
+
+  const pairAndConnect = async (
+    targetUrl: string,
+    code: string,
+    options?: { showAlert?: boolean },
+  ): Promise<boolean> => {
+    setAuthLoading(true);
+    setAuthError(null);
+    try {
+      const credentials = await completePairing(targetUrl, code);
+      await saveCredentials(credentials);
+      return await connectRef.current(credentials, options);
+    } catch (error) {
+      setAuthLoading(false);
+      const message = error instanceof Error ? error.message : "Pairing failed";
+      setAuthError(message);
+      if (options?.showAlert !== false) {
+        Alert.alert("Pairing Failed", message);
+      }
+      return false;
+    }
+  };
 
   React.useEffect(() => {
     let cancelled = false;
@@ -125,12 +147,11 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
       }
       const confirmed = await confirmConnectDeepLink(result.serverUrl);
       if (!confirmed) return false;
-      consumedDeepLink = true;
       setServerUrl(result.serverUrl);
-      setToken(result.shellToken);
-      await saveCredentials(result.serverUrl, result.shellToken);
-      await connectRef.current(result.serverUrl, result.shellToken, { showAlert: true });
-      return true;
+      setPairingCode(result.pairingCode);
+      const connected = await pairAndConnect(result.serverUrl, result.pairingCode, { showAlert: true });
+      consumedDeepLink = connected;
+      return connected;
     };
 
     const subscription = Linking.addEventListener("url", (event: { url: string }) => {
@@ -147,11 +168,19 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
         if (!bootstrap || cancelled) return;
 
         setServerUrl(bootstrap.serverUrl);
-        setToken(bootstrap.token);
+        setPairingCode("");
 
         if (bootstrap.autoConnect) {
           setAutoConnecting(true);
-          await connectRef.current(bootstrap.serverUrl, bootstrap.token, { showAlert: false });
+          await connectRef.current(bootstrap, { showAlert: false });
+        }
+      } catch (error) {
+        if (error instanceof StoredCredentialsNeedRepairError) {
+          setAuthError(error.message);
+          Alert.alert("Pairing Required", error.message);
+        } else {
+          const message = error instanceof Error ? error.message : String(error);
+          setAuthError(message);
         }
       } finally {
         if (!cancelled) {
@@ -169,19 +198,18 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
 
   const handleConnect = async () => {
     const trimmedUrl = serverUrl.trim();
-    const trimmedToken = token.trim();
+    const trimmedCode = pairingCode.trim();
 
     if (!trimmedUrl) {
       Alert.alert("Missing URL", "Please enter your NatStack server URL.");
       return;
     }
-    if (!trimmedToken) {
-      Alert.alert("Missing Token", "Please enter the shell token from your server.");
+    if (!trimmedCode) {
+      Alert.alert("Missing Pairing Code", "Please enter the pairing code from your server.");
       return;
     }
 
-    await saveCredentials(trimmedUrl, trimmedToken);
-    await connectWithCredentials(trimmedUrl, trimmedToken, { showAlert: true });
+    await pairAndConnect(trimmedUrl, trimmedCode, { showAlert: true });
   };
 
   if (bootstrapPending || autoConnecting) {
@@ -229,10 +257,10 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
 
         <TextInput
           style={[styles.input, { borderColor: colors.border, color: colors.text, backgroundColor: colors.surface }]}
-          placeholder="Shell token"
+          placeholder="Pairing code"
           placeholderTextColor={colors.textSecondary}
-          value={token}
-          onChangeText={setToken}
+          value={pairingCode}
+          onChangeText={setPairingCode}
           autoCapitalize="none"
           autoCorrect={false}
           secureTextEntry

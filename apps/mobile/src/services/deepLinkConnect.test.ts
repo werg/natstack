@@ -17,13 +17,13 @@ describe("deepLinkConnect", () => {
 
   it("parses a connect link with a single-label local hostname", () => {
     const result = parseConnectDeepLink(
-      "natstack://connect?url=http%3A%2F%2Fpop-os%3A3030&token=abc123abc123abc123",
+      "natstack://connect?url=http%3A%2F%2Fpop-os%3A3030&code=abc123abc123abc123",
     );
 
     expect(result).toEqual({
       kind: "ok",
       serverUrl: "http://pop-os:3030",
-      shellToken: "abc123abc123abc123",
+      pairingCode: "abc123abc123abc123",
     });
   });
 });

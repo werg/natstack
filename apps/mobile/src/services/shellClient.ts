@@ -17,10 +17,11 @@ import {
 import { createBridgeAdapter } from "./bridgeAdapter";
 import { MobileTransport, type ConnectionStatus } from "./mobileTransport";
 import { createMobileShellCore } from "../shellCore/createMobileShellCore";
+import type { Credentials } from "./auth";
+import { refreshShellToken } from "./auth";
 
 export interface ShellClientConfig {
-  serverUrl: string;
-  shellToken: string;
+  credentials: Credentials;
   onTreeUpdated?: (tree: Panel[]) => void;
   onStatusChange?: (status: ConnectionStatus) => void;
 }
@@ -268,7 +269,7 @@ export class ShellClient {
   readonly workspaces: WorkspaceClient;
   readonly settings: SettingsClient;
   readonly events: EventsClient;
-  readonly shellToken: string;
+  readonly credentials: Credentials;
   readonly serverUrl: string;
 
   private statusUnsub: (() => void) | null = null;
@@ -276,12 +277,12 @@ export class ShellClient {
   private periodicSyncTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: ShellClientConfig) {
-    this.shellToken = config.shellToken;
-    this.serverUrl = config.serverUrl;
+    this.credentials = config.credentials;
+    this.serverUrl = config.credentials.serverUrl;
 
     this.transport = new MobileTransport({
-      serverUrl: config.serverUrl,
-      shellToken: config.shellToken,
+      serverUrl: config.credentials.serverUrl,
+      refreshShellToken: async () => (await refreshShellToken(this.credentials)).shellToken,
     });
 
     if (config.onStatusChange) {
@@ -289,7 +290,7 @@ export class ShellClient {
     }
 
     this.panels = new MobilePanels({
-      serverUrl: config.serverUrl,
+      serverUrl: config.credentials.serverUrl,
       transport: this.transport,
       onTreeUpdated: config.onTreeUpdated,
       navigateToPanel: (panelId) => {

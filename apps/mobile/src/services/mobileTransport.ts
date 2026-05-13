@@ -18,8 +18,8 @@ export type ConnectionStatus = "connected" | "connecting" | "disconnected";
 export interface MobileTransportConfig {
   /** Server URL, e.g. "https://natstack.example.com" or "http://192.168.1.5:3000" */
   serverUrl: string;
-  /** Shell token printed by server at startup */
-  shellToken: string;
+  /** Mint a fresh shell token from the durable device credential. */
+  refreshShellToken: () => Promise<string>;
 }
 
 interface PendingCall {
@@ -53,6 +53,7 @@ export class MobileTransport implements RpcBridge {
   private intentionalClose = false;
   private _status: ConnectionStatus = "disconnected";
   private lastCloseInfo: { code?: number; reason?: string } | null = null;
+  private connectionGeneration = 0;
 
   constructor(config: MobileTransportConfig) {
     this.config = config;
@@ -76,6 +77,7 @@ export class MobileTransport implements RpcBridge {
    */
   connect(): void {
     this.intentionalClose = false;
+    this.clearReconnectTimer();
     this.teardownWs();
     this.setStatus("connecting");
     this.openWebSocket();
@@ -218,17 +220,30 @@ export class MobileTransport implements RpcBridge {
   private openWebSocket(): void {
     // Convert HTTP(S) URL to WS(S) URL with /rpc path
     const wsUrl = buildWsUrl(this.config.serverUrl);
+    const generation = ++this.connectionGeneration;
     this.lastCloseInfo = null;
     console.log(`[MobileTransport] Connecting WebSocket to ${wsUrl}`);
     const ws = new WebSocket(wsUrl);
     this.ws = ws;
 
     ws.onopen = () => {
+      if (generation !== this.connectionGeneration || this.ws !== ws) return;
       console.log(`[MobileTransport] WebSocket open, sending auth`);
-      ws.send(JSON.stringify({ type: "ws:auth", token: this.config.shellToken }));
+      void this.config.refreshShellToken().then((shellToken) => {
+        if (generation !== this.connectionGeneration) return;
+        if (this.ws !== ws || ws.readyState !== WebSocket.OPEN) return;
+        ws.send(JSON.stringify({ type: "ws:auth", token: shellToken }));
+      }).catch((error) => {
+        if (generation !== this.connectionGeneration) return;
+        console.error("[MobileTransport] Failed to refresh shell token:", error);
+        this.intentionalClose = true;
+        ws.close(4001, "Shell token refresh failed");
+        this.setStatus("disconnected");
+      });
     };
 
     ws.onmessage = (event) => {
+      if (generation !== this.connectionGeneration || this.ws !== ws) return;
       try {
         const msg = JSON.parse(event.data as string) as WsServerMessage;
         this.handleServerMessage(msg);
@@ -238,6 +253,7 @@ export class MobileTransport implements RpcBridge {
     };
 
     ws.onclose = (event: { code?: number; reason?: string }) => {
+      if (generation !== this.connectionGeneration || this.ws !== ws) return;
       this.authenticated = false;
       // Stash details so waitForConnection can surface a meaningful reason.
       this.lastCloseInfo = { code: event?.code, reason: event?.reason };
@@ -253,6 +269,7 @@ export class MobileTransport implements RpcBridge {
     };
 
     ws.onerror = (event: unknown) => {
+      if (generation !== this.connectionGeneration || this.ws !== ws) return;
       // RN's WebSocket onerror doesn't carry native error details, but logging
       // confirms we at least reached the error path.
       const message = (event as { message?: string })?.message;
@@ -278,7 +295,7 @@ export class MobileTransport implements RpcBridge {
           }
         } else {
           console.error("[MobileTransport] Auth failed:", msg.error);
-          // Don't reconnect on auth failure -- bad token
+          // Don't reconnect on auth failure; the device credential must be refreshed or re-paired.
           this.intentionalClose = true;
           this.ws?.close();
           this.setStatus("disconnected");
@@ -325,12 +342,15 @@ export class MobileTransport implements RpcBridge {
 
   private scheduleReconnect(): void {
     this.clearReconnectTimer();
+    if (this.intentionalClose) return;
+    const generation = this.connectionGeneration;
     const jitter = Math.random() * 500;
     const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempt) + jitter, 30_000);
     this.reconnectAttempt++;
     this.setStatus("connecting");
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
+      if (this.intentionalClose || generation !== this.connectionGeneration) return;
       this.openWebSocket();
     }, delay);
   }
@@ -343,6 +363,7 @@ export class MobileTransport implements RpcBridge {
   }
 
   private teardownWs(): void {
+    this.connectionGeneration++;
     if (this.ws) {
       // Prevent reconnect from old socket's close handler
       this.ws.onopen = null;

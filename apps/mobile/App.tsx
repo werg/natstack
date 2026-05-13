@@ -45,6 +45,12 @@ function AppContent() {
       cleanup = nextCleanup;
     }).catch((error) => {
       console.warn("[App] Failed to initialize push notifications:", error);
+      pushToast({
+        durationMs: 10000,
+        message: error instanceof Error ? error.message : String(error),
+        title: "Push notifications unavailable",
+        tone: "danger",
+      });
     });
 
     return () => {

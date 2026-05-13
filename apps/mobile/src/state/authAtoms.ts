@@ -16,5 +16,5 @@ export const isAuthenticatedAtom = atom<boolean>(false);
 /** Loading state for credential operations */
 export const authLoadingAtom = atom<boolean>(false);
 
-/** Auth error message (e.g., invalid token, connection refused) */
+/** Auth error message (e.g., invalid pairing code, connection refused) */
 export const authErrorAtom = atom<string | null>(null);
