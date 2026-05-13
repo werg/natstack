@@ -16,6 +16,7 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo` |  |
 | `credentials` | namespace | `store`, `connect`, `configureClient`, `requestCredentialInput`, `getClientConfigStatus`, `deleteClientConfig`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
 | `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote`, `client` |  |
+| `gad` | namespace | `rawSql`, `query`, `status`, `ensureBlob`, `ensureGadBranch`, `getGadBranchHead`, `appendGadHistoryBatch`, `materializePiMessages`, `listGadBranchHistory`, `listGadBranchToolCalls`, `forkGadBranch`, `listGadBranches`, `listGadBranchFiles`, `diffGadStates`, `readGadFileAtState`, `getGadToolProvenance`, `enqueueGadIndexJob`, `processGadIndexJobs`, `rebuildGadReadModels`, `validateGadHashes`, `clearDirtyAfterValidation`, `revokeRawSqlWriteApproval` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
 | `contextId` | value |  |  |

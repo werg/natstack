@@ -1,27 +1,41 @@
 ---
 name: gad-context
 description: >-
-  Use this skill when the user asks about change history, provenance, why code
+  Use this skill when the user asks about Pi/gad history, provenance, why code
   changed, assumptions behind a change, branch context, tracked edits, or gad.
-  Query the NatStack gad service for sessions, turns, tool calls, reads,
-  mutations, file versions, branches, plans, and semantic chunks.
+  Query NatStack's immutable gad service for branches, history items, message
+  blocks, tool calls, file activity, branch heads, state roots, and semantic
+  indexes.
 ---
 
 # gad Context
 
-gad is NatStack's workspace provenance database. It is exposed through the
-runtime `gad` service, backed by the `gad-store` workspace durable object and
+gad is NatStack's immutable workspace provenance database. It is exposed through
+the runtime `gad` service, backed by the `gad-store` workspace durable object and
 the workspace blobstore.
 
-Use `gad.query(sql, bindings)` for reads. Panels and workers may also call
-`gad.rawSql(sql, bindings)` for arbitrary SQL. Non-read-only raw SQL is gated
-by the userland approval UI for the calling panel or worker.
+Core model:
+
+- `gad_history_items` is the authoritative append-only Pi history DAG.
+- `gad_branches` are mutable heads that point at immutable history and state
+  hashes.
+- `gad_state_roots` point at persistent manifest trees. `gad_manifest_nodes`
+  are content-addressed directory nodes; `gad_manifest_entries` links each
+  directory entry name to either a child manifest hash or a file version.
+- `pi_messages_view`, `pi_message_blocks_view`, `gad_tool_calls_view`, and
+  `gad_file_activity_view` are rebuildable read models.
+- Blob bytes live in the builtin blobstore; `gad_blobs` stores metadata.
+- Direct writes to authoritative tables are break-glass operations.
+
+Use `gad.query(sql, bindings)` for reads. Panels and workers may call
+`gad.rawSql(sql, bindings)` for arbitrary SQL. Non-read-only SQL is gated by
+the userland approval UI.
 
 ```ts
 import { gad } from "@workspace/runtime";
 
 const { rows } = await gad.query(
-  "SELECT id, source, started_at FROM sessions ORDER BY started_at DESC LIMIT ?",
+  "SELECT id, head_history_hash, head_state_hash FROM gad_branches ORDER BY updated_at DESC LIMIT ?",
   [10],
 );
 ```
@@ -34,140 +48,131 @@ const { rows } = await gad.query(
 await gad.status();
 ```
 
-### Recent Sessions
+### Recent Branches
 
 ```sql
-SELECT id, source, branch_id, channel_id, context_id, started_at, ended_at
-FROM sessions
-ORDER BY started_at DESC
+SELECT id, channel_id, context_id, parent_branch_id,
+       head_history_hash, head_state_hash, dirty, updated_at
+FROM gad_branches
+ORDER BY updated_at DESC
 LIMIT 20;
 ```
 
-### Conversation Turns For A Session
+### Branch History
 
 ```sql
-SELECT id, turn_index, role, SUBSTR(content, 1, 800) AS preview, timestamp
-FROM conversation_turns
-WHERE session_id = ?
-ORDER BY turn_index;
+SELECT history_id, history_hash, parent_hash, kind, actor, message_id, block_id, tool_call_id,
+       input_state_hash, output_state_hash, created_at
+FROM gad_branch_history_view
+WHERE branch_id = ?
+ORDER BY history_id;
 ```
 
-### Tool Calls In A Session
+### Materialized Messages
+
+Prefer the service API when reconstructing chat history:
+
+```ts
+const { messages } = await gad.materializePiMessages({ branchId });
+```
+
+Or inspect the read model:
 
 ```sql
-SELECT id, tool_name, turn_id, is_mutation, branch_id, started_at, completed_at,
-       SUBSTR(result_summary, 1, 300) AS result_preview
-FROM tool_calls
-WHERE session_id = ?
+SELECT idx, message_id, role, message_json, finalized
+FROM pi_messages_view
+WHERE branch_id = ?
+ORDER BY idx;
+```
+
+### Message Blocks
+
+```sql
+SELECT message_id, block_id, block_idx, block_type, tool_call_id, tool_name,
+       SUBSTR(text, 1, 800) AS preview
+FROM pi_message_blocks_view
+WHERE branch_id = ?
+ORDER BY message_id, block_idx;
+```
+
+### Tool Calls
+
+```sql
+SELECT tool_call_id, message_id, block_id, tool_name, provider_handle,
+       status, result_summary, requested_history_hash, completed_history_hash
+FROM gad_tool_calls_view
+WHERE branch_id = ?
 ORDER BY id;
 ```
 
-### Mutations To A File
+### File Activity
 
 ```sql
-SELECT tcm.mutation_type, tcm.before_hash, tcm.after_hash,
-       SUBSTR(tcm.old_string, 1, 200) AS old_preview,
-       SUBSTR(tcm.new_string, 1, 200) AS new_preview,
-       tc.id AS tool_call_id, tc.session_id, tc.turn_id, tc.started_at
-FROM tool_call_mutations tcm
-JOIN tool_calls tc ON tcm.tool_call_id = tc.id
-WHERE tcm.file_path = ?
-ORDER BY tc.started_at DESC;
-```
-
-### Reads Before The Last Mutation To A File
-
-```sql
-SELECT tcr.file_path, tcr.read_type, tcr.content_hash, tcr.start_line, tcr.end_line,
-       tc.id AS tool_call_id, tc.tool_name, tc.started_at
-FROM tool_call_reads tcr
-JOIN tool_calls tc ON tcr.tool_call_id = tc.id
-WHERE tc.session_id = (
-    SELECT tc2.session_id
-    FROM tool_calls tc2
-    JOIN tool_call_mutations tcm ON tc2.id = tcm.tool_call_id
-    WHERE tcm.file_path = ?
-    ORDER BY tc2.started_at DESC
-    LIMIT 1
-  )
-  AND tc.id < (
-    SELECT tc2.id
-    FROM tool_calls tc2
-    JOIN tool_call_mutations tcm ON tc2.id = tcm.tool_call_id
-    WHERE tcm.file_path = ?
-    ORDER BY tc2.id DESC
-    LIMIT 1
-  )
-ORDER BY tc.id;
-```
-
-### File Versions
-
-```sql
-SELECT path, content_hash, branch_id, git_branch, git_commit,
-       session_id, tool_call_id, recorded_at
-FROM file_versions
-WHERE path = ?
-ORDER BY recorded_at DESC;
+SELECT operation, path, before_hash, after_hash,
+       input_state_hash, output_state_hash, history_hash
+FROM gad_file_activity_view
+WHERE branch_id = ?
+ORDER BY id;
 ```
 
 ### Branches
 
 ```sql
-SELECT id, name, parent_branch_id, forked_from_session_id,
-       forked_from_turn_id, forked_from_message_index, created_at, archived_at
-FROM branches
-ORDER BY created_at DESC;
+SELECT id, name, channel_id, context_id, parent_branch_id,
+       forked_from_history_id, forked_from_state_hash,
+       head_history_hash, head_state_hash, dirty, updated_at
+FROM gad_branches
+ORDER BY updated_at DESC;
 ```
 
-### Files In A Branch
+### Branch Files
 
-```sql
-SELECT path, current_hash, is_deleted, updated_at
-FROM branch_files
-WHERE branch_id = ?
-ORDER BY path;
-```
-
-### Semantic Signposts For A File
-
-```sql
-SELECT DISTINCT sc.content_hash, sc.topic_label, sc.content
-FROM semantic_chunks sc
-JOIN semantic_relations sr ON sc.content_hash = sr.chunk_hash
-WHERE sr.target_type = 'blob'
-  AND sr.target_hash IN (
-    SELECT content_hash FROM file_versions WHERE path = ?
-  );
-```
-
-### Turns Mentioning A Semantic Signpost
-
-```sql
-SELECT scm.source_session_id, scm.source_turn_id, scm.attribution,
-       ct.role, SUBSTR(ct.content, 1, 600) AS preview
-FROM semantic_chunk_mentions scm
-LEFT JOIN conversation_turns ct ON ct.id = scm.source_turn_id
-WHERE scm.chunk_hash = ?;
-```
-
-## Reading Blobs
-
-Blob contents live in the workspace blobstore. Use `blobstore.getText` through
-RPC when you need the text for a `content_hash`.
+Use the service API to list files at a branch head:
 
 ```ts
-const text = await rpc.call<string | null>("main", "blobstore.getText", hash);
+const files = await gad.listGadBranchFiles({ branchId });
+```
+
+Use tree-aware APIs for point reads and diffs:
+
+```ts
+const file = await gad.readGadFileAtState({ stateHash, path: "src/index.ts" });
+const diff = await gad.diffGadStates({ leftStateHash, rightStateHash });
+```
+
+Raw SQL over manifests should treat entries as a tree, not as flat paths:
+
+```sql
+SELECT parent_hash, name, entry_kind, child_manifest_hash, file_version_id
+FROM gad_manifest_entries
+WHERE parent_hash = ?;
+```
+
+### Raw History Append
+
+Agents should normally let the Pi harness append history. For custom workers,
+append immutable facts through the service API:
+
+```ts
+const head = await gad.getGadBranchHead({ branchId });
+await gad.appendGadHistoryBatch({
+  branchId: head.branchId,
+  expectedHeadHash: head.headHistoryHash,
+  expectedStateHash: head.headStateHash,
+  items: [{
+    kind: "system_event",
+    actor: "worker",
+    payload: { note: "indexed external source" },
+  }],
+});
 ```
 
 ## Writing SQL
 
-Use writes sparingly and explain the intent in the approval request. The runtime
-will ask the user to approve non-read-only SQL for the caller:
+Use raw writes sparingly. Approved writes to immutable/head tables mark branches
+or workspaces dirty and should be followed by validation/rebuild:
 
 ```ts
-await gad.rawSql(
-  "UPDATE branches SET archived_at = datetime('now') WHERE id = ?",
-  [branchId],
-);
+await gad.rawSql("UPDATE gad_branches SET dirty = 1 WHERE id = ?", [branchId]);
+await gad.validateGadHashes({});
 ```
