@@ -130,6 +130,7 @@ export const panelRuntimeSurface: RuntimeSurface = {
       "processGadIndexJobs",
       "validateGadHashes",
       "clearDirtyAfterValidation",
+      "checkGadIntegrity",
       "revokeRawSqlWriteApproval",
     ]),
     webhooks: namespaceEntry([

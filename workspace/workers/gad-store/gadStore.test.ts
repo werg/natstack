@@ -131,6 +131,59 @@ describe("GadWorkspaceDO immutable persistence", () => {
     ]);
   });
 
+  it("reconstructs orphan and duplicate tool call provenance and reports integrity errors", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    const head = await call<any>("ensureGadBranch", { branchId: "branch-tool-integrity" });
+    await call<any>("appendGadTrajectoryBatch", {
+      branchId: head.branchId,
+      expectedTrajectoryHash: head.headTrajectoryHash,
+      expectedStateHash: head.headStateHash,
+      items: [
+        {
+          kind: "tool_result_observed",
+          actor: "tool",
+          toolCallId: "orphan-tool",
+          payload: {
+            toolCallId: "orphan-tool",
+            toolName: "read",
+            summary: "observed without request",
+            isError: false,
+          },
+        },
+        {
+          kind: "tool_call_requested",
+          actor: "assistant",
+          toolCallId: "dup-tool",
+          payload: { toolName: "read", parameters: { path: "a.txt" } },
+        },
+        {
+          kind: "tool_call_requested",
+          actor: "assistant",
+          toolCallId: "dup-tool",
+          payload: { toolName: "read", parameters: { path: "b.txt" } },
+        },
+      ],
+    });
+
+    const calls = await call<Array<Record<string, unknown>>>("listGadBranchToolCalls", {
+      branchId: "branch-tool-integrity",
+    });
+    expect(calls.find((row) => row.tool_call_id === "orphan-tool")).toMatchObject({
+      status: "complete",
+      result_summary: "observed without request",
+    });
+
+    const integrity = await call<{ ok: boolean; errors: Array<{ code: string; toolCallId?: string }> }>(
+      "checkGadIntegrity",
+      { branchId: "branch-tool-integrity" },
+    );
+    expect(integrity.ok).toBe(false);
+    expect(integrity.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "tool_result_without_request", toolCallId: "orphan-tool" }),
+      expect.objectContaining({ code: "duplicate_tool_request", toolCallId: "dup-tool" }),
+    ]));
+  });
+
   it("materializes a cold-start LLM prefix from canonical trajectory payloads", async () => {
     const { call } = await createTestDO(GadWorkspaceDO);
     const head = await call<any>("ensureGadBranch", { branchId: "branch-prefix" });
@@ -327,7 +380,7 @@ describe("GadWorkspaceDO immutable persistence", () => {
       expectedStateHash: forkHead.headStateHash,
       items: [{ kind: "system_event", actor: "test", payload: { forkOnly: true } }],
     });
-    const forkTrajectory = await call<Array<{ kind: string; origin_branch_id: string }>>(
+    const forkTrajectory = await call<Array<{ kind: string; introduced_on_branch_id: string }>>(
       "listGadBranchTrajectory",
       { branchId: "branch-b", limit: 10 },
     );
@@ -337,13 +390,107 @@ describe("GadWorkspaceDO immutable persistence", () => {
       "message_finalized",
       "system_event",
     ]);
-    expect(new Set(forkTrajectory.map((row) => row.origin_branch_id))).toEqual(new Set(["branch-a", "branch-b"]));
-    const forkRows = await call<{ rows: Array<{ parent_hash: string | null; origin_branch_id: string }> }>(
+    expect(new Set(forkTrajectory.map((row) => row.introduced_on_branch_id))).toEqual(new Set(["branch-a", "branch-b"]));
+    const forkRows = await call<{ rows: Array<{ parent_hash: string | null; introduced_on_branch_id: string }> }>(
       "query",
-      "SELECT parent_hash, origin_branch_id FROM gad_trajectory_items WHERE origin_branch_id = ? ORDER BY id",
+      "SELECT parent_hash, introduced_on_branch_id FROM gad_trajectory_items WHERE introduced_on_branch_id = ? ORDER BY id",
       ["branch-b"],
     );
-    expect(forkRows.rows[0]).toEqual({ parent_hash: append.headTrajectoryHash, origin_branch_id: "branch-b" });
+    expect(forkRows.rows[0]).toEqual({ parent_hash: append.headTrajectoryHash, introduced_on_branch_id: "branch-b" });
+  });
+
+  it("forks from the middle of a trajectory and scopes inherited history recursively", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    const head = await call<any>("ensureGadBranch", { branchId: "main" });
+    const append = await call<any>("appendGadTrajectoryBatch", {
+      branchId: "main",
+      expectedTrajectoryHash: head.headTrajectoryHash,
+      expectedStateHash: head.headStateHash,
+      items: [
+        { kind: "system_event", actor: "test", payload: { step: 1 } },
+        { kind: "system_event", actor: "test", payload: { step: 2 } },
+        { kind: "system_event", actor: "test", payload: { step: 3 } },
+        { kind: "system_event", actor: "test", payload: { step: 4 } },
+        { kind: "system_event", actor: "test", payload: { step: 5 } },
+      ],
+    });
+    const beforeRows = await call<{ rows: Array<unknown> }>("query", "SELECT * FROM gad_trajectory_items", []);
+    const forkPoint = append.items[2].hash;
+
+    const fork = await call<any>("forkGadBranch", {
+      sourceBranchId: "main",
+      newBranchId: "child",
+      trajectoryHash: forkPoint,
+    });
+    expect(fork.headTrajectoryHash).toBe(forkPoint);
+    const afterForkRows = await call<{ rows: Array<unknown> }>("query", "SELECT * FROM gad_trajectory_items", []);
+    expect(afterForkRows.rows).toHaveLength(beforeRows.rows.length);
+
+    await call("appendGadTrajectoryBatch", {
+      branchId: "child",
+      expectedTrajectoryHash: fork.headTrajectoryHash,
+      expectedStateHash: fork.headStateHash,
+      items: [{ kind: "system_event", actor: "test", payload: { child: true } }],
+    });
+    const childTrajectory = await call<Array<{ trajectory_hash: string; kind: string; introduced_on_branch_id: string }>>(
+      "listGadBranchTrajectory",
+      { branchId: "child", limit: 10 },
+    );
+    expect(childTrajectory.map((row) => row.trajectory_hash).reverse()).toEqual([
+      append.items[0].hash,
+      append.items[1].hash,
+      append.items[2].hash,
+      expect.stringMatching(/^trajectory:/),
+    ]);
+    expect(new Set(childTrajectory.map((row) => row.introduced_on_branch_id))).toEqual(new Set(["main", "child"]));
+  });
+
+  it("scopes state producers across forked branches", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    const head = await call<any>("ensureGadBranch", { branchId: "main-state" });
+    const mainMutation = await call<any>("appendGadTrajectoryBatch", {
+      branchId: "main-state",
+      expectedTrajectoryHash: head.headTrajectoryHash,
+      expectedStateHash: head.headStateHash,
+      items: [{
+        kind: "file_observed",
+        actor: "main",
+        payload: { path: "state.txt", contentHash: "blob:main", operation: "write", mode: 0o100644 },
+      }],
+    });
+    const child = await call<any>("forkGadBranch", {
+      sourceBranchId: "main-state",
+      newBranchId: "child-state",
+      trajectoryHash: mainMutation.headTrajectoryHash,
+    });
+    const mainProducer = await call<Record<string, unknown>>("getGadStateProducer", {
+      stateHash: mainMutation.headStateHash,
+      branchId: "main-state",
+    });
+    const childInheritedProducer = await call<Record<string, unknown>>("getGadStateProducer", {
+      stateHash: mainMutation.headStateHash,
+      branchId: "child-state",
+    });
+    expect(childInheritedProducer?.trajectory_id).toBe(mainProducer?.trajectory_id);
+
+    const childMutation = await call<any>("appendGadTrajectoryBatch", {
+      branchId: "child-state",
+      expectedTrajectoryHash: child.headTrajectoryHash,
+      expectedStateHash: child.headStateHash,
+      items: [{
+        kind: "file_mutation",
+        actor: "child",
+        payload: { path: "state.txt", contentHash: "blob:child", operation: "write", mode: 0o100644 },
+      }],
+    });
+    expect(await call("getGadStateProducer", {
+      stateHash: childMutation.headStateHash,
+      branchId: "main-state",
+    })).toBeNull();
+    expect(await call<Record<string, unknown>>("getGadStateProducer", {
+      stateHash: childMutation.headStateHash,
+      branchId: "child-state",
+    })).toMatchObject({ actor: "child" });
   });
 
   it("does not expose session columns in gad tables", async () => {
@@ -452,6 +599,51 @@ describe("GadWorkspaceDO immutable persistence", () => {
     expect(validation).toEqual({ ok: true, errors: [] });
   });
 
+  it("does not assign output state or sidecars to no-op mutating actions", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    const head = await call<any>("ensureGadBranch", { branchId: "branch-noop" });
+    const initial = await call<any>("appendGadTrajectoryBatch", {
+      branchId: head.branchId,
+      expectedTrajectoryHash: head.headTrajectoryHash,
+      expectedStateHash: head.headStateHash,
+      items: [{
+        kind: "file_observed",
+        actor: "test",
+        payload: { path: "same.txt", contentHash: "blob:same", operation: "write", mode: 0o100644 },
+      }],
+    });
+    const noop = await call<any>("appendGadTrajectoryBatch", {
+      branchId: head.branchId,
+      expectedTrajectoryHash: initial.headTrajectoryHash,
+      expectedStateHash: initial.headStateHash,
+      items: [{
+        kind: "file_mutation",
+        actor: "test",
+        payload: { path: "same.txt", contentHash: "blob:same", operation: "write", mode: 0o100644 },
+      }],
+    });
+
+    expect(noop.headStateHash).toBe(initial.headStateHash);
+    expect(noop.items[0]).toMatchObject({
+      inputStateHash: initial.headStateHash,
+      outputStateHash: null,
+    });
+    const rows = await call<{ rows: Array<Record<string, unknown>> }>(
+      "query",
+      `SELECT ti.output_state_hash, st.id AS transition_id, h.id AS hunk_id
+       FROM gad_trajectory_items ti
+       LEFT JOIN gad_state_transitions st ON st.workspace_id = ti.workspace_id AND st.trajectory_id = ti.id
+       LEFT JOIN gad_file_change_hunks h ON h.workspace_id = ti.workspace_id AND h.trajectory_id = ti.id
+       WHERE ti.hash = ?`,
+      [noop.headTrajectoryHash],
+    );
+    expect(rows.rows[0]).toMatchObject({
+      output_state_hash: null,
+      transition_id: null,
+      hunk_id: null,
+    });
+  });
+
   it("traces snippet blame through file-version ancestry", async () => {
     const { call } = await createTestDO(GadWorkspaceDO);
     const head = await call<any>("ensureGadBranch", { branchId: "branch-blame" });
@@ -515,5 +707,138 @@ describe("GadWorkspaceDO immutable persistence", () => {
       kind: "file_mutation",
       origin_tool_call_id: "tool-edit",
     });
+  });
+
+  it("traces snippet blame across line shifts and unrelated later edits", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    const head = await call<any>("ensureGadBranch", { branchId: "branch-shift-blame" });
+    const initialText = "one\ntwo\nthree\nfour";
+    const insertedText = "intro\none\ntwo\nthree\nfour";
+    const targetEditedText = "intro\none\ntwo\nTHREE\nfour";
+    const laterEditedText = "intro\nONE\ntwo\nTHREE\nfour";
+    const initial = await call<any>("appendGadTrajectoryBatch", {
+      branchId: head.branchId,
+      expectedTrajectoryHash: head.headTrajectoryHash,
+      expectedStateHash: head.headStateHash,
+      items: [{
+        kind: "file_observed",
+        actor: "initial",
+        payload: {
+          path: "shift.txt",
+          contentHash: "blob:shift:1",
+          operation: "write",
+          mode: 0o100644,
+          afterText: initialText,
+          newString: initialText,
+        },
+      }],
+    });
+    const inserted = await call<any>("appendGadTrajectoryBatch", {
+      branchId: head.branchId,
+      expectedTrajectoryHash: initial.headTrajectoryHash,
+      expectedStateHash: initial.headStateHash,
+      items: [{
+        kind: "file_mutation",
+        actor: "insert",
+        payload: {
+          path: "shift.txt",
+          contentHash: "blob:shift:2",
+          operation: "write",
+          mode: 0o100644,
+          beforeText: initialText,
+          afterText: insertedText,
+          oldString: "",
+          newString: "intro\n",
+        },
+      }],
+    });
+    const targetEdited = await call<any>("appendGadTrajectoryBatch", {
+      branchId: head.branchId,
+      expectedTrajectoryHash: inserted.headTrajectoryHash,
+      expectedStateHash: inserted.headStateHash,
+      items: [{
+        kind: "file_mutation",
+        actor: "target",
+        payload: {
+          path: "shift.txt",
+          contentHash: "blob:shift:3",
+          operation: "write",
+          mode: 0o100644,
+          beforeText: insertedText,
+          afterText: targetEditedText,
+          oldString: "three",
+          newString: "THREE",
+        },
+      }],
+    });
+    const laterEdited = await call<any>("appendGadTrajectoryBatch", {
+      branchId: head.branchId,
+      expectedTrajectoryHash: targetEdited.headTrajectoryHash,
+      expectedStateHash: targetEdited.headStateHash,
+      items: [{
+        kind: "file_mutation",
+        actor: "later",
+        payload: {
+          path: "shift.txt",
+          contentHash: "blob:shift:4",
+          operation: "write",
+          mode: 0o100644,
+          beforeText: targetEditedText,
+          afterText: laterEditedText,
+          oldString: "one",
+          newString: "ONE",
+        },
+      }],
+    });
+
+    const targetLine = await call<Array<Record<string, unknown>>>("blameGadFileSnippet", {
+      stateHash: laterEdited.headStateHash,
+      path: "shift.txt",
+      startLine: 4,
+      endLine: 4,
+    });
+    expect(targetLine[0]).toMatchObject({ actor: "target", kind: "file_mutation" });
+
+    const shiftedUnchangedLine = await call<Array<Record<string, unknown>>>("blameGadFileSnippet", {
+      stateHash: laterEdited.headStateHash,
+      path: "shift.txt",
+      startLine: 5,
+      endLine: 5,
+    });
+    expect(shiftedUnchangedLine[0]).toMatchObject({ actor: "initial", kind: "file_observed" });
+  });
+
+  it("reports structured integrity errors for corrupted graph rows", async () => {
+    const { call } = await createTestDO(GadWorkspaceDO);
+    const head = await call<any>("ensureGadBranch", { branchId: "branch-corrupt" });
+    const append = await call<any>("appendGadTrajectoryBatch", {
+      branchId: head.branchId,
+      expectedTrajectoryHash: head.headTrajectoryHash,
+      expectedStateHash: head.headStateHash,
+      items: [
+        { kind: "system_event", actor: "test", payload: { parent: true } },
+        {
+          kind: "file_observed",
+          actor: "test",
+          payload: { path: "corrupt.txt", contentHash: "blob:corrupt", operation: "write", mode: 0o100644 },
+        },
+      ],
+    });
+
+    await call("rawSql", "UPDATE gad_trajectory_items SET parent_hash = 'trajectory:wrong' WHERE id = ?", [append.items[1].id]);
+    await call("rawSql", "UPDATE gad_branches SET head_trajectory_hash = 'trajectory:wrong-head' WHERE id = ?", ["branch-corrupt"]);
+    await call("rawSql", "UPDATE gad_state_transitions SET output_state_hash = 'state:missing' WHERE trajectory_id = ?", [append.items[1].id]);
+    await call("rawSql", "UPDATE gad_file_change_hunks SET after_file_version_id = 99999 WHERE trajectory_id = ?", [append.items[1].id]);
+
+    const integrity = await call<{ ok: boolean; errors: Array<{ code: string }> }>("checkGadIntegrity", {
+      branchId: "branch-corrupt",
+    });
+    expect(integrity.ok).toBe(false);
+    expect(integrity.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "parent_hash_mismatch" }),
+      expect.objectContaining({ code: "branch_head_hash_mismatch" }),
+      expect.objectContaining({ code: "state_transition_missing_output_state" }),
+      expect.objectContaining({ code: "file_hunk_missing_file_version" }),
+    ]));
   });
 });

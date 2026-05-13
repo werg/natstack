@@ -20,8 +20,8 @@ parent chain, not a materialized membership table.
   is discovered by walking parents.
 - `gad_branches` are mutable refs into the DAG. They keep the branch head
   trajectory and the current workspace state hash.
-- `origin_branch_id` on `gad_trajectory_items` is only where an item was first
-  appended. It is not branch membership.
+- `introduced_on_branch_id` on `gad_trajectory_items` is only where an item was
+  first appended. It is not branch membership.
 - There is no branch trajectory membership table, precomputed tool-call table,
   precomputed Pi message table, file activity view, or file blame segment cache.
 - Sidecars join directly to trajectory ids when they store typed facts:
@@ -68,6 +68,8 @@ ORDER BY id;
 
 Use this CTE whenever a query says "for this branch" or "in this trajectory".
 Do not add branch-local membership tables to avoid the recursive query.
+See [gad-query-recipes.md](./gad-query-recipes.md) for copy-pasteable query
+patterns.
 
 ## State Roots
 
@@ -152,6 +154,10 @@ The blame result includes the origin trajectory hash, kind, actor, and tool call
 id. From there callers can continue to the tool request/result items, message
 blocks, and user-directed trajectory.
 
+If a requested range spans multiple independently edited regions, the current
+snippet blame API returns the first overlapping hunk rather than split
+line-by-line blame.
+
 ## Tool Calls
 
 Tool calls are not a separate stored entity. They are reconstructed from
@@ -164,6 +170,19 @@ trajectory items:
 
 Branch-scoped tool call queries fold the recursive branch chain by
 `tool_call_id`.
+
+## Integrity
+
+`checkGadIntegrity` validates graph shape and typed sidecars without mutating or
+repairing data:
+
+```ts
+const integrity = await gad.checkGadIntegrity({ branchId });
+```
+
+It reports structured errors for broken trajectory parents, branch heads, state
+transitions, file hunk lineage, and tool request/result chains.
+`validateGadHashes` remains the hash recomputation and dirty-clearing path.
 
 ## Runtime APIs
 
@@ -216,6 +235,6 @@ dirty.
 
 ## Schema Reset
 
-This is pre-release state. `GadWorkspaceDO` schema version 7 resets gad storage
+This is pre-release state. `GadWorkspaceDO` schema version 8 resets gad storage
 to the recursive trajectory and sidecar schema. `AgentWorkerBase` schema version
 11 removes local Pi persistence tables; Pi state lives in gad.

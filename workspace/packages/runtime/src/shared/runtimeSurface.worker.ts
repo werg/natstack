@@ -77,6 +77,7 @@ export const workerRuntimeSurface: RuntimeSurface = {
       "processGadIndexJobs",
       "validateGadHashes",
       "clearDirtyAfterValidation",
+      "checkGadIntegrity",
       "revokeRawSqlWriteApproval",
     ]),
     webhooks: namespaceEntry([

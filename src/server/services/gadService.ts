@@ -105,6 +105,11 @@ const BlameSnippetSchema = z.object({
   endLine: z.number().int().positive().nullable().optional(),
 }).strict();
 
+const IntegrityCheckSchema = z.object({
+  workspaceId: z.string().nullable().optional(),
+  branchId: z.string().nullable().optional(),
+}).strict();
+
 export interface GadServiceDeps {
   doDispatch: DODispatch;
   resolveStore: () => DORef;
@@ -312,6 +317,7 @@ export function createGadService(deps: GadServiceDeps): ServiceDefinition {
       processGadIndexJobs: { args: z.tuple([ListOptsSchema]) },
       validateGadHashes: { args: z.tuple([ListOptsSchema]) },
       clearDirtyAfterValidation: { args: z.tuple([ListOptsSchema]) },
+      checkGadIntegrity: { args: z.tuple([IntegrityCheckSchema.optional()]) },
       revokeRawSqlWriteApproval: { args: z.tuple([]), policy: { allowed: ["panel", "worker"] } },
     },
     handler: async (ctx, method, args) => {
@@ -347,6 +353,7 @@ export function createGadService(deps: GadServiceDeps): ServiceDefinition {
         case "processGadIndexJobs":
         case "validateGadHashes":
         case "clearDirtyAfterValidation":
+        case "checkGadIntegrity":
           return dispatch(method, args);
         case "revokeRawSqlWriteApproval": {
           const principal = await resolvePrincipal(deps, ctx);

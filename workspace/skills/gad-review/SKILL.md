@@ -64,6 +64,15 @@ ORDER BY kind;
 If `dirty = 1`, report that raw SQL or external drift may have invalidated
 normal provenance until validation succeeds.
 
+For graph-level validation, use:
+
+```ts
+const integrity = await gad.checkGadIntegrity({ branchId });
+```
+
+Treat any integrity error as a provenance caveat before making claims about
+grounding.
+
 ## Starting Frontier
 
 - Branch id: start from `gad_branches`, then recurse through
@@ -202,3 +211,4 @@ hash. For a specific file, use `gad.readGadFileAtState({ stateHash, path })`.
   materialized user messages.
 - If a tool result exists without a matching `tool_call_requested`, report a
   broken provenance chain.
+- For reusable SQL patterns, consult `docs/gad-query-recipes.md`.

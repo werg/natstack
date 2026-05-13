@@ -151,7 +151,7 @@ function App() {
                     <DataTable rows={branches} columns={["id", "parent_branch_id", "head_trajectory_hash", "head_state_hash", "dirty", "updated_at"]} />
                   </Tabs.Content>
                   <Tabs.Content value="trajectory">
-                    <DataTable rows={trajectory} columns={["trajectory_id", "trajectory_hash", "parent_hash", "kind", "actor", "message_id", "tool_call_id", "input_state_hash", "output_state_hash", "created_at"]} />
+                    <DataTable rows={trajectory} columns={["trajectory_id", "trajectory_hash", "parent_hash", "introduced_on_branch_id", "kind", "actor", "message_id", "tool_call_id", "input_state_hash", "output_state_hash", "created_at"]} />
                   </Tabs.Content>
                   <Tabs.Content value="files">
                     <DataTable rows={files} columns={["path", "content_hash", "mode", "created_at"]} />

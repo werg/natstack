@@ -22,8 +22,8 @@ Core model:
   `gad_trajectory_items.parent_id`.
 - `gad_branches` are mutable heads that point at immutable trajectory and state
   hashes.
-- `origin_branch_id` records where an item was first appended. It is not branch
-  membership.
+- `introduced_on_branch_id` records where an item was first appended. It is not
+  branch membership.
 - `gad_state_transitions` records only real workspace state changes.
   Non-mutating trajectory items have no transition row and no output state.
 - `gad_file_change_hunks` connects file regions directly back to the trajectory
@@ -93,11 +93,13 @@ WITH RECURSIVE branch_chain AS (
    AND parent.id = child.parent_id
 )
 SELECT id AS trajectory_id, hash AS trajectory_hash, parent_hash,
-       origin_branch_id, kind, actor, message_id, block_id, tool_call_id,
+       introduced_on_branch_id, kind, actor, message_id, block_id, tool_call_id,
        input_state_hash, output_state_hash, created_at
 FROM branch_chain
 ORDER BY trajectory_id;
 ```
+
+For more complete SQL recipes, see `docs/gad-query-recipes.md`.
 
 ### Materialized Messages
 
@@ -205,6 +207,15 @@ const rows = await gad.blameGadFileSnippet({
   endLine: 12,
 });
 ```
+
+### Integrity
+
+```ts
+const result = await gad.checkGadIntegrity({ branchId });
+```
+
+Use this for structured graph/sidecar validation. Use `validateGadHashes` only
+when you specifically need hash recomputation and dirty clearing.
 
 ### Branch Files
 

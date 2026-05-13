@@ -79,6 +79,17 @@ export interface GadAppendTrajectoryBatchResult {
   items: Array<{ id: number; hash: string; inputStateHash: string | null; outputStateHash: string | null }>;
 }
 
+export interface GadIntegrityError {
+  code: string;
+  message: string;
+  trajectoryId?: number;
+  trajectoryHash?: string;
+  branchId?: string;
+  stateHash?: string;
+  path?: string;
+  toolCallId?: string;
+}
+
 export interface GadClient {
   rawSql(sql: string, bindings?: GadSqlBinding[]): Promise<GadSqlResult>;
   query(sql: string, bindings?: GadSqlBinding[]): Promise<GadSqlResult>;
@@ -121,6 +132,7 @@ export interface GadClient {
   processGadIndexJobs(input?: { workspaceId?: string | null; limit?: number }): Promise<{ processed: number }>;
   validateGadHashes(input?: { workspaceId?: string | null }): Promise<{ ok: boolean; errors: string[] }>;
   clearDirtyAfterValidation(input?: { workspaceId?: string | null }): Promise<{ ok: boolean; errors: string[] }>;
+  checkGadIntegrity(input?: { workspaceId?: string | null; branchId?: string | null }): Promise<{ ok: boolean; errors: GadIntegrityError[] }>;
   revokeRawSqlWriteApproval(): Promise<boolean>;
 }
 
@@ -148,6 +160,7 @@ export function createGadClient(rpc: RpcCaller): GadClient {
     processGadIndexJobs: (input) => rpc.call("main", "gad.processGadIndexJobs", input),
     validateGadHashes: (input) => rpc.call("main", "gad.validateGadHashes", input),
     clearDirtyAfterValidation: (input) => rpc.call("main", "gad.clearDirtyAfterValidation", input),
+    checkGadIntegrity: (input) => rpc.call("main", "gad.checkGadIntegrity", input),
     revokeRawSqlWriteApproval: () => rpc.call("main", "gad.revokeRawSqlWriteApproval"),
   };
 }
