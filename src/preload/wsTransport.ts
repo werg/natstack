@@ -7,12 +7,14 @@
 
 import type { RpcMessage, RpcEvent } from "@natstack/rpc";
 import type { WsClientMessage, WsServerMessage } from "@natstack/shared/ws/protocol";
+import type { RecoveryKind } from "@natstack/shared/shell/recoveryCoordinator";
 
 type AnyMessageHandler = (fromId: string, message: unknown) => void;
 
 export type TransportBridge = {
   send: (targetId: string, message: unknown) => Promise<void>;
   onMessage: (handler: AnyMessageHandler) => () => void;
+  onRecovery: (kind: RecoveryKind, handler: () => void | Promise<void>) => () => void;
 };
 
 export interface WsTransportConfig {
@@ -38,6 +40,13 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
   let ws: WebSocket | null = null;
   let authenticated = false;
   let reconnectAttempt = 0;
+  let hasConnectedBefore = false;
+  let lastSeenBootId: string | null = null;
+  let authToken = config.authToken;
+  let refreshingAuth = false;
+  let authRefreshReconnectScheduled = false;
+  const connectionId = makeConnectionId();
+  const recoveryListeners = new Map<RecoveryKind, Set<() => void | Promise<void>>>();
 
   const deliver = (fromId: string, message: RpcMessage) => {
     if (!transportReady) {
@@ -105,10 +114,20 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
       case "ws:auth-result": {
         if (msg.success) {
           authenticated = true;
+          const previousBootId = lastSeenBootId;
+          const nextBootId = msg.serverBootId ?? null;
+          const isReconnect = hasConnectedBefore;
+          hasConnectedBefore = true;
+          lastSeenBootId = nextBootId;
           reconnectAttempt = 0;
           flushOutgoing();
+          emitRecovery("resubscribe");
+          if (isReconnect && previousBootId && nextBootId && previousBootId !== nextBootId) {
+            emitRecovery("cold-recover");
+          }
         } else {
           console.error("[WsTransport] Auth failed:", msg.error);
+          void refreshAuthTokenAndReconnect();
         }
         break;
       }
@@ -170,13 +189,53 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
     }
   };
 
+  const refreshAuthTokenAndReconnect = async (): Promise<void> => {
+    if (refreshingAuth) return;
+    refreshingAuth = true;
+    try {
+      const shell = (globalThis as any).__natstackShell ?? (globalThis as any).__natstackElectron;
+      if (!shell || typeof shell.getPanelInit !== "function") return;
+      const panelInit = await shell.getPanelInit();
+      const nextToken = panelInit?.gatewayConfig?.token;
+      if (typeof nextToken !== "string" || nextToken.length === 0 || nextToken === authToken) return;
+      authToken = nextToken;
+      (globalThis as any).__natstackGatewayToken = nextToken;
+      try {
+        sessionStorage.setItem("__natstackPanelInit", JSON.stringify(panelInit));
+      } catch {
+        // Ignore storage failures; the in-memory token is enough for this reconnect.
+      }
+      authenticated = false;
+      authRefreshReconnectScheduled = true;
+      ws?.close(4000, "Refreshing auth token");
+      setTimeout(() => {
+        connect();
+        authRefreshReconnectScheduled = false;
+      }, 0);
+    } finally {
+      refreshingAuth = false;
+    }
+  };
+
+  const emitRecovery = (kind: RecoveryKind): void => {
+    const listeners = recoveryListeners.get(kind);
+    if (!listeners) return;
+    for (const listener of listeners) {
+      try {
+        void listener();
+      } catch (error) {
+        console.error(`[WsTransport] Recovery listener failed for ${kind}:`, error);
+      }
+    }
+  };
+
   const connect = () => {
     const url = config.wsUrl ?? `ws://127.0.0.1:${config.wsPort}`;
     ws = new WebSocket(url);
 
     ws.onopen = () => {
       // Send auth message immediately — callerKind determined server-side
-      ws!.send(JSON.stringify({ type: "ws:auth", token: config.authToken }));
+      ws!.send(JSON.stringify({ type: "ws:auth", token: authToken, connectionId }));
     };
 
     ws.onmessage = (event) => {
@@ -205,6 +264,7 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
         }
         return;
       }
+      if (authRefreshReconnectScheduled) return;
       const jitter = Math.random() * 500;
       const delay = Math.min(1000 * Math.pow(2, reconnectAttempt) + jitter, 10000);
       reconnectAttempt++;
@@ -268,5 +328,24 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
       }
       return () => listeners.delete(handler);
     },
+    onRecovery(kind, handler) {
+      let handlers = recoveryListeners.get(kind);
+      if (!handlers) {
+        handlers = new Set();
+        recoveryListeners.set(kind, handlers);
+      }
+      handlers.add(handler);
+      return () => {
+        handlers?.delete(handler);
+        if (handlers?.size === 0) recoveryListeners.delete(kind);
+      };
+    },
   };
+}
+
+function makeConnectionId(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }

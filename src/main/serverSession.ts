@@ -305,10 +305,16 @@ export async function establishServerSession(args: {
         console.error(`[App] Server process crashed with code ${code}`);
         dialog.showErrorBox(
           "Server Process Crashed",
-          "The NatStack server process exited unexpectedly. The app will now restart."
+          "The NatStack server process exited repeatedly and could not be recovered. The app will now restart."
         );
         app.relaunch();
         app.exit(1);
+      },
+      onRestart: (restartedPorts) => {
+        Object.assign(ports, restartedPorts);
+        gatewayConfig.serverUrl = `http://127.0.0.1:${ports.gatewayPort}`;
+        args.onConnectionStatusChanged?.("connecting");
+        log.info(`[Server] Child process restarted (Gateway: ${ports.gatewayPort})`);
       },
       onIpcRequest: async (type, msg) => {
         if (type === "workspace-list-request") {
@@ -350,6 +356,21 @@ export async function establishServerSession(args: {
       throw new Error("Local server did not provide a shell caller token");
     }
     serverClient = await createServerClient(localGatewayPort, shellToken, {
+      reconnect: true,
+      maxReconnectAttempts: 10,
+      getWsUrl: () => {
+        const url = serverProcessManager?.getCurrentGatewayUrl();
+        return url ?? `ws://127.0.0.1:${ports.gatewayPort}/rpc`;
+      },
+      refreshAuthToken: async () => {
+        if (!ports.shellToken) {
+          throw new Error("Local server has not issued a replacement shell token yet");
+        }
+        return ports.shellToken;
+      },
+      onConnectionStatusChanged: (status) => {
+        args.onConnectionStatusChanged?.(status);
+      },
       onDisconnect: () => {
         console.error("[App] Server process disconnected");
       },

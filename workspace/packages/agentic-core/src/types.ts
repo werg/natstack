@@ -10,6 +10,7 @@
  */
 
 import type { MethodDefinition } from "@natstack/pubsub";
+import type { RecoveryCoordinator } from "@natstack/shared/shell/recoveryCoordinator";
 import type { ScopesApi } from "@workspace/eval";
 import type { SandboxOptions, SandboxResult } from "@workspace/eval";
 
@@ -32,6 +33,7 @@ export interface ConnectionConfig {
     onEvent(event: string, listener: (fromId: string, payload: unknown) => void): () => void;
     selfId: string;
   };
+  recoveryCoordinator?: Pick<RecoveryCoordinator, "registerColdRecoverHandler">;
 }
 
 /** Inject platform-specific navigation */

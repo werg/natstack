@@ -11,6 +11,7 @@ import { randomUUID } from "crypto";
 import * as fs from "fs";
 import type { RpcMessage, RpcResponse } from "@natstack/rpc";
 import type { WsClientMessage, WsServerMessage } from "@natstack/shared/ws/protocol";
+import type { RecoveryKind } from "@natstack/shared/shell/recoveryCoordinator";
 import { redactTokenIn } from "@natstack/shared/redact";
 import { createPinnedTlsSocket } from "./tlsPinning.js";
 
@@ -42,6 +43,8 @@ export interface ServerClient {
 export interface ServerClientOptions {
   /** Full WebSocket URL (e.g., "ws://127.0.0.1:3000" or "ws://remote.example.com:8080/rpc") */
   wsUrl?: string;
+  /** Dynamic WebSocket URL provider, consulted before each connect/reconnect. */
+  getWsUrl?: () => string;
   /** TLS pinning options — only honored for wss:// URLs */
   tls?: TlsPinningOptions;
   /** Called when the connection is permanently lost (after all retries exhausted) */
@@ -50,6 +53,8 @@ export interface ServerClientOptions {
   onConnectionStatusChanged?: (status: ConnectionStatus) => void;
   /** Called when the server sends an event */
   onEvent?: (event: string, payload: unknown) => void;
+  /** Called after auth when the transport needs subscriptions or state replayed. */
+  onRecovery?: (kind: RecoveryKind) => void | Promise<void>;
   /** Enable automatic reconnection on disconnect (default: false for local, true if wsUrl is set) */
   reconnect?: boolean;
   /** Maximum number of reconnection attempts (default: 10) */
@@ -69,8 +74,9 @@ class ServerAuthError extends Error {
 async function connectAndAuth(
   wsUrl: string,
   authToken: string,
-  tlsOpts?: TlsPinningOptions
-): Promise<WebSocket> {
+  tlsOpts: TlsPinningOptions | undefined,
+  connectionId: string,
+): Promise<{ ws: WebSocket; serverBootId?: string }> {
   const isTls = wsUrl.startsWith("wss://");
   const wsOptions: Record<string, unknown> = {};
 
@@ -104,6 +110,7 @@ async function connectAndAuth(
   }
 
   const ws = new WebSocket(wsUrl, wsOptions);
+  let serverBootId: string | undefined;
 
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -117,7 +124,7 @@ async function connectAndAuth(
     });
 
     ws.on("open", () => {
-      const authMsg: WsClientMessage = { type: "ws:auth", token: authToken };
+      const authMsg: WsClientMessage = { type: "ws:auth", token: authToken, connectionId };
       ws.send(JSON.stringify(authMsg));
     });
 
@@ -127,6 +134,7 @@ async function connectAndAuth(
         ws.off("message", onAuth);
         clearTimeout(timeout);
         if (msg.success) {
+          serverBootId = msg.serverBootId;
           resolve();
         } else {
           ws.close();
@@ -136,7 +144,7 @@ async function connectAndAuth(
     });
   });
 
-  return ws;
+  return { ws, serverBootId };
 }
 
 /**
@@ -152,16 +160,18 @@ export async function createServerClient(
   options?: ServerClientOptions
 ): Promise<ServerClient> {
   const pendingCalls = new Map<string, PendingCall>();
-  const wsUrl = options?.wsUrl ?? `ws://127.0.0.1:${serverRpcPort}/rpc`;
-  const shouldReconnect = options?.reconnect ?? !!options?.wsUrl;
+  const getWsUrl = options?.getWsUrl ?? (() => options?.wsUrl ?? `ws://127.0.0.1:${serverRpcPort}/rpc`);
+  const shouldReconnect = options?.reconnect ?? !!(options?.wsUrl || options?.getWsUrl);
   const maxAttempts = options?.maxReconnectAttempts ?? 10;
   const tls = options?.tls;
+  const connectionId = randomUUID();
 
   let ws: WebSocket;
   let activeAuthToken = authToken;
   let connectionStatus: ConnectionStatus = "connecting";
   let closed = false; // true after explicit close()
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastSeenBootId: string | undefined;
 
   function setStatus(status: ConnectionStatus) {
     if (status === connectionStatus) return;
@@ -225,11 +235,26 @@ export async function createServerClient(
     wireCloseHandler(socket);
   }
 
-  async function connectWithActiveToken(): Promise<WebSocket> {
-    return connectAndAuth(wsUrl, activeAuthToken, tls);
+  function emitRecovery(serverBootId?: string) {
+    const previousBootId = lastSeenBootId;
+    lastSeenBootId = serverBootId;
+    void options?.onRecovery?.("resubscribe");
+    if (previousBootId && serverBootId && previousBootId !== serverBootId) {
+      void options?.onRecovery?.("cold-recover");
+    }
   }
 
-  async function refreshAndConnect(): Promise<WebSocket | null> {
+  async function connectWithActiveToken(): Promise<{ socket: WebSocket; serverBootId?: string }> {
+    const { ws: socket, serverBootId } = await connectAndAuth(
+      getWsUrl(),
+      activeAuthToken,
+      tls,
+      connectionId,
+    );
+    return { socket, serverBootId };
+  }
+
+  async function refreshAndConnect(): Promise<{ socket: WebSocket; serverBootId?: string } | null> {
     if (!options?.refreshAuthToken) return null;
     activeAuthToken = await options.refreshAuthToken();
     return connectWithActiveToken();
@@ -256,9 +281,11 @@ export async function createServerClient(
       if (closed) return;
 
       try {
-        ws = await connectWithActiveToken();
+        const connected = await connectWithActiveToken();
+        ws = connected.socket;
         wireSocket(ws);
         setStatus("connected");
+        emitRecovery(connected.serverBootId);
         console.log(`[ServerClient] Reconnected successfully`);
         return;
       } catch (err) {
@@ -266,9 +293,10 @@ export async function createServerClient(
           try {
             const refreshed = await refreshAndConnect();
             if (refreshed) {
-              ws = refreshed;
+              ws = refreshed.socket;
               wireSocket(ws);
               setStatus("connected");
+              emitRecovery(refreshed.serverBootId);
               console.log("[ServerClient] Reconnected successfully after refreshing caller token");
               return;
             }
@@ -313,9 +341,11 @@ export async function createServerClient(
   }
 
   // Initial connection
-  ws = await connectWithActiveToken();
+  const initial = await connectWithActiveToken();
+  ws = initial.socket;
   wireSocket(ws);
   setStatus("connected");
+  emitRecovery(initial.serverBootId);
 
   const client: ServerClient = {
     call(service: string, method: string, args: unknown[]): Promise<unknown> {

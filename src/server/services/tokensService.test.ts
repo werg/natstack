@@ -18,7 +18,7 @@ describe("tokensService", () => {
   it("records the authenticated shell websocket as the panel browser handoff owner", async () => {
     const { service, tokenManager } = createService();
 
-    await service.handler({ callerId: "shell:abc", callerKind: "shell" }, "ensurePanelToken", [
+    await service.handler({ callerId: "shell:abc", callerKind: "shell", connectionId: "conn-1" }, "ensurePanelToken", [
       "panel-1",
       "ctx-1",
       null,
@@ -26,6 +26,7 @@ describe("tokensService", () => {
     ]);
 
     expect(tokenManager.getPanelOwner("panel-1")).toBe("shell:abc");
+    expect(tokenManager.getPanelOwnerConnection("panel-1")).toBe("conn-1");
   });
 
   it("records the authenticated local admin websocket as the panel browser handoff owner", async () => {

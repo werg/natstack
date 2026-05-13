@@ -144,7 +144,7 @@ function approvingQueue(decision: "once" | "session" | "version" | "repo" = "ver
 function targetedOpenEventService(emit: ReturnType<typeof vi.fn>) {
   return {
     emit,
-    emitTo: vi.fn((callerId: string, event: string, payload: unknown) => {
+    emitTo: vi.fn((callerId: string, event: string, payload: unknown, _opts?: unknown) => {
       emit(event, payload);
       return callerId.length > 0;
     }),
@@ -709,7 +709,10 @@ describe("credentialService", () => {
     const service = createCredentialService({
       credentialStore: new MemoryCredentialStore() as never,
       eventService: eventService as never,
-      tokenManager: { getPanelOwner: vi.fn(() => "shell:owner") } as never,
+      tokenManager: {
+        getPanelOwner: vi.fn(() => "shell:owner"),
+        getPanelOwnerConnection: vi.fn(() => "owner-conn"),
+      } as never,
       approvalQueue: approvingQueue() as never,
     });
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
@@ -745,6 +748,7 @@ describe("credentialService", () => {
         callerId: "worker:test",
         callerKind: "worker",
       }),
+      { connectionId: "owner-conn" },
     ));
     const authorizeUrl = new URL(emit.mock.calls[0]![1].url);
     await deliverOAuthCallback(authorizeUrl.searchParams.get("redirect_uri")!, new URLSearchParams({

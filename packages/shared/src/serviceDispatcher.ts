@@ -60,6 +60,7 @@ export type CallerKind = "panel" | "shell" | "server" | "worker" | "harness";
 export interface WsClientInfo {
   ws: unknown;
   callerId: string;
+  connectionId: string;
   callerKind: CallerKind;
   authenticated: boolean;
 }
@@ -69,6 +70,8 @@ export type ServiceContext = {
   callerId: string;
   /** Whether the caller is a panel, worker, shell, or external server */
   callerKind: CallerKind;
+  /** WS transport instance ID when caller connected via WebSocket. */
+  connectionId?: string;
   /** WS client state when caller connected via WebSocket */
   wsClient?: WsClientInfo;
 };

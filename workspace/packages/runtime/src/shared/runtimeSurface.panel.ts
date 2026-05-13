@@ -30,6 +30,7 @@ export const panelRuntimeSurface: RuntimeSurface = {
     onFocus: valueEntry(),
     exposeMethod: valueEntry(),
     contextId: valueEntry(),
+    recoveryCoordinator: valueEntry("Panel transport recovery phase coordinator."),
     parentId: valueEntry(),
     fs: valueEntry(),
     createGatewayFetch: valueEntry("Create a gateway-authenticated fetch helper from an explicit config."),

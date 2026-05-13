@@ -5,7 +5,7 @@ if (typeof globalThis.Buffer === "undefined") {
   globalThis.Buffer = Buffer;
 }
 
-import { createPanelTransport } from "./transport.js";
+import { createPanelTransport, recoveryCoordinator } from "./transport.js";
 import { fs } from "./fs.js"; // RPC-backed fs (server-side per-context folders)
 import { initRuntime } from "../setup/initRuntime.js";
 import { helpfulNamespace } from "../shared/helpfulNamespace.js";
@@ -83,6 +83,7 @@ export {
   onFocus,
   exposeMethod,
   contextId,
+  recoveryCoordinator,
   runtimeParentId as parentId,
 };
 

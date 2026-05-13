@@ -17,6 +17,7 @@ import type { ToolExecutionResult } from "../types.js";
 export interface WsAuthMessage {
   type: "ws:auth";
   token: string;
+  connectionId?: string;
 }
 
 export interface WsRpcMessage {
@@ -35,6 +36,7 @@ export interface WsRouteMessage {
   type: "ws:route";
   targetId: string;
   message: RpcMessage;
+  targetConnectionId?: string;
 }
 
 export type WsClientMessage =
@@ -52,6 +54,8 @@ export interface WsAuthResultMessage {
   success: boolean;
   callerId?: string;
   callerKind?: string;
+  connectionId?: string;
+  serverBootId?: string;
   error?: string;
 }
 

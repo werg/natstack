@@ -57,6 +57,7 @@ import { base64ToUint8Array } from "./image-utils.js";
 import { zodToJsonSchema as convertZodToJsonSchema } from "zod-to-json-schema";
 import { z } from "zod";
 import type { PubSubClient } from "./client.js";
+import type { RecoveryCoordinator } from "@natstack/shared/shell/recoveryCoordinator";
 
 const CHANNEL_SOURCE = "workers/pubsub-channel";
 const CHANNEL_CLASS = "PubSubChannel";
@@ -159,6 +160,7 @@ export interface RpcConnectOptions<T extends ParticipantMetadata = ParticipantMe
   handle?: string;
   replayMode?: "collect" | "stream" | "skip";
   methods?: Record<string, MethodDefinition>;
+  recoveryCoordinator?: Pick<RecoveryCoordinator, "registerColdRecoverHandler">;
 }
 
 export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadata>(
@@ -899,6 +901,11 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     }
   }
 
+  const unregisterColdRecover = opts.recoveryCoordinator?.registerColdRecoverHandler(
+    `pubsub:${channel}:${pid}`,
+    attemptResubscription,
+  );
+
   const touchInterval = setInterval(() => {
     if (closed) return;
     rpc.call(doTarget, "touch", pid).then(() => {
@@ -1212,6 +1219,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
 
   function close(): void {
     closed = true;
+    unregisterColdRecover?.();
     rejectReady(new PubSubError("connection closed before ready", "connection"));
     clearInterval(touchInterval);
     eventsFanout.close();

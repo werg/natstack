@@ -1,7 +1,7 @@
 import { createHash, createHmac, createPublicKey, createSign, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import * as http from "node:http";
 import { z } from "zod";
-import type { EventService } from "@natstack/shared/eventsService";
+import type { EventName, EventPayloads, EventService } from "@natstack/shared/eventsService";
 import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { ServiceRouteDecl } from "../routeRegistry.js";
 import { buildPublicUrl, isPublicUrlVerified } from "../publicUrl.js";
@@ -642,7 +642,7 @@ interface CredentialServiceDeps {
   clientConfigStore?: ClientConfigStore;
   auditLog?: AuditLog;
   eventService?: Pick<EventService, "emit" | "emitTo">;
-  tokenManager?: Pick<TokenManager, "getPanelOwner">;
+  tokenManager?: Pick<TokenManager, "getPanelOwner" | "getPanelOwnerConnection">;
   egressProxy?: Pick<EgressProxy, "forwardProxyFetch" | "forwardGitHttp">;
   codeIdentityResolver?: Pick<CodeIdentityResolver, "resolveByCallerId">;
   approvalQueue?: ApprovalQueue;
@@ -740,12 +740,17 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   ): {
     deliveryCallerId: string;
     deliveryCallerKind: "shell";
+    deliveryConnectionId?: string;
     parentPanelId?: string;
   } | null {
     const targetCallerId = handoffTarget?.callerId ?? ctx.callerId;
     const targetCallerKind = handoffTarget?.callerKind ?? ctx.callerKind;
     if (targetCallerKind === "shell") {
-      return { deliveryCallerId: targetCallerId, deliveryCallerKind: "shell" };
+      return {
+        deliveryCallerId: targetCallerId,
+        deliveryCallerKind: "shell",
+        deliveryConnectionId: targetCallerId === ctx.callerId ? ctx.connectionId : undefined,
+      };
     }
     if (targetCallerKind === "panel") {
       const ownerCallerId = tokenManager?.getPanelOwner(targetCallerId) ?? (!tokenManager ? targetCallerId : undefined);
@@ -753,10 +758,31 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       return {
         deliveryCallerId: ownerCallerId,
         deliveryCallerKind: "shell",
+        deliveryConnectionId: tokenManager?.getPanelOwnerConnection?.(targetCallerId),
         parentPanelId: targetCallerId,
       };
     }
     return null;
+  }
+
+  function emitToBrowserTarget<E extends EventName>(
+    target: { deliveryCallerId: string; deliveryConnectionId?: string },
+    event: E,
+    payload?: EventPayloads[E],
+  ): boolean {
+    if (!eventService) return false;
+    if (!target.deliveryConnectionId) {
+      return eventService.emitTo(target.deliveryCallerId, event, payload);
+    }
+    return (
+      eventService.emitTo(
+        target.deliveryCallerId,
+        event,
+        payload,
+        { connectionId: target.deliveryConnectionId },
+      ) ||
+      eventService.emitTo(target.deliveryCallerId, event, payload)
+    );
   }
 
   async function storeCredential(
@@ -2008,7 +2034,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
     });
     const browserTarget = resolveBrowserHandoffTarget(ctx);
-    if (!browserTarget || !eventService.emitTo(browserTarget.deliveryCallerId, "external-open:open", {
+    if (!browserTarget || !emitToBrowserTarget(browserTarget, "external-open:open", {
       url: verificationUrl,
       callerId: ctx.callerId,
       callerKind: ctx.callerKind,
@@ -2151,7 +2177,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         throw new OAuthConnectionError("browser_unavailable");
       }
       const browserTarget = resolveBrowserHandoffTarget(ctx, handoffTarget);
-      if (!browserTarget || !eventService.emitTo(browserTarget.deliveryCallerId, "external-open:open", {
+      if (!browserTarget || !emitToBrowserTarget(browserTarget, "external-open:open", {
         url: authorizeUrl.toString(),
         callerId: ctx.callerId,
         callerKind: ctx.callerKind,
@@ -2308,14 +2334,14 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         if (!browserTarget.parentPanelId) {
           throw new OAuthConnectionError("browser_unavailable", "Internal OAuth handoff requires a panel target");
         }
-        browserDelivered = eventService.emitTo(browserTarget.deliveryCallerId, "browser-panel:open", {
+        browserDelivered = emitToBrowserTarget(browserTarget, "browser-panel:open", {
           url: started.authorizeUrl,
           parentPanelId: browserTarget.parentPanelId,
           callerId: ctx.callerId,
           callerKind: ctx.callerKind,
         });
       } else {
-        browserDelivered = eventService.emitTo(browserTarget.deliveryCallerId, "external-open:open", openPayload);
+        browserDelivered = emitToBrowserTarget(browserTarget, "external-open:open", openPayload);
       }
       if (!browserDelivered) {
         throw new OAuthConnectionError("browser_unavailable", "OAuth browser handoff target is not connected");

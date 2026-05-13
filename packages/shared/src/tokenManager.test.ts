@@ -110,12 +110,31 @@ describe("TokenManager", () => {
 
   it("tracks and clears panel browser handoff owners", () => {
     tm.createToken("panel-1", "panel");
-    tm.setPanelOwner("panel-1", "shell:owner");
+    tm.setPanelOwner("panel-1", "shell:owner", "conn-1");
 
     expect(tm.getPanelOwner("panel-1")).toBe("shell:owner");
+    expect(tm.getPanelOwnerConnection("panel-1")).toBe("conn-1");
 
     tm.revokeToken("panel-1");
 
     expect(tm.getPanelOwner("panel-1")).toBeUndefined();
+    expect(tm.getPanelOwnerConnection("panel-1")).toBeUndefined();
+  });
+
+  it("notifies panel token record listeners for panel metadata changes", () => {
+    const listener = vi.fn();
+    tm.onPanelTokenRecordChanged(listener);
+    const token = tm.createToken("panel-1", "panel");
+    tm.setPanelParent("panel-1", "parent");
+    tm.setPanelOwner("panel-1", "shell:owner", "conn-1");
+
+    expect(listener).toHaveBeenLastCalledWith({
+      panelId: "panel-1",
+      token,
+      callerKind: "panel",
+      parentId: "parent",
+      ownerCallerId: "shell:owner",
+      ownerConnectionId: "conn-1",
+    }, "panel-1");
   });
 });
