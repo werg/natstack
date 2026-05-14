@@ -85,9 +85,10 @@ A `BUILD_CACHE_VERSION` bump in buildV2 changes the **build key** but not the **
   "private": true,
   "type": "module",
   "natstack": {
+    "displayName": "Git Tools",
+    "entry": "index.ts",
+    "sourcemap": true,
     "extension": {
-      "displayName": "Git Tools",
-      "entry": "index.ts",
       "activationEvents": ["*"]
     }
   },
@@ -97,15 +98,20 @@ A `BUILD_CACHE_VERSION` bump in buildV2 changes the **build key** but not the **
 }
 ```
 
+The manifest follows the **shared workspace-unit shape**: top-level keys under `natstack.*` are common to every unit kind, and a single kind-specific sub-block (`natstack.extension`, `natstack.worker`, `natstack.panel`) declares what kind the unit is. A unit must have exactly one kind-specific sub-block.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `displayName` | string | package name | Human-readable name for UI |
-| `entry` | string | `index.ts` | Entry source file (built JIT by buildV2 as a node-target ESM bundle) |
-| `activationEvents` | string[] | `["*"]` | When to activate. `"*"` = eager at startup. Reserved for future lazy triggers; values other than `"*"` fail validation in v1. |
+| `natstack.displayName` | string | package name | Human-readable name. Shared across all unit kinds. |
+| `natstack.entry` | string | `index.ts` (extension), `index.tsx` (panel), `index.ts` (worker) | Entry source file. Shared across kinds. |
+| `natstack.sourcemap` | boolean | `true` | Inline sourcemaps in the bundle. Shared across kinds (mandatory `true` for extensions in v1). |
+| `natstack.extension.activationEvents` | string[] | `["*"]` | When to activate. `"*"` = eager at startup. Other values fail validation in v1. |
 
-The presence of `natstack.extension` in `package.json` is what marks the unit as an extension to the package graph. Manifests are validated against a JSON schema at install time and again at boot; validation failures fail closed (extension is not activated and an error is recorded in the registry).
+The presence of `natstack.extension` is what marks the unit as an extension to the package graph. Manifests are validated against a JSON schema at install time and again at boot; validation failures fail closed (extension is not activated and an error is recorded in the registry).
 
 No `dist/` — extensions ship TypeScript source, the workspace build pipeline produces the runtime bundle. Cross-extension type sharing is not a first-class concern in v1.
+
+This shape is harmonized with workers and panels (today's panel manifests use a flat `natstack.{title, entry, ...}` layout that should converge to the same `natstack.*` shared + `natstack.panel.*` kind-specific shape in a follow-up pass). See "Workspace-unit conventions" below for the broader contract.
 
 ## Build pipeline integration
 
@@ -191,6 +197,12 @@ interface ExtensionContext {
 
   // Lifecycle. Disposables are disposed in LIFO order on deactivate.
   readonly subscriptions: Disposable[];
+
+  // Structured logger. ctx.log.{info,warn,error,debug}(message, fields?)
+  // writes records to the extension's stdout/stderr; the host captures them
+  // and routes into the workspace-wide log stream keyed by
+  // (workspaceId, unitName, kind). See "Workspace-unit conventions" below.
+  // Direct console.log / console.error also work and are captured the same way.
   readonly log: Logger;
 
   // Events (visible to subscribed panels, workers, and other extensions)
@@ -225,9 +237,13 @@ If an extension process exits unexpectedly (non-zero exit, signal, ready-handsha
 
 "Unexpected" is defined by the ready handshake: if the extension exited *before* sending `ready`, treat as a crash regardless of exit code. If it exited *after* `ready` with exit code 0, treat as intentional deactivation — no respawn, status `stopped` — until the next host restart or manual reload. Any non-zero exit code, or any signal-induced termination, is always a crash.
 
-## The single `extensions` surface
+## Reaching extensions from userland
 
-There is exactly one way to reach an extension from outside its process: the dispatcher service named `extensions`. It mounts onto the existing dispatcher and is callable by every userland kind (`panel`, `worker`, `shell`, `extension`).
+Extensions have two callable surfaces. The **RPC** surface (the `extensions` dispatcher service) is the canonical one — every extension has it, and it's where management methods (install / uninstall / setEnabled / reload) also live. The **HTTP fetch** surface is optional: an extension that wants to be reachable like a worker can export a default `fetch` handler, and the gateway will route `/_r/ext/<name>/*` to it.
+
+### RPC: the `extensions` service
+
+There is exactly one RPC entry point: the dispatcher service named `extensions`. It mounts onto the existing dispatcher and is callable by every userland kind (`panel`, `worker`, `shell`, `extension`).
 
 ```ts
 // dispatcher
@@ -292,6 +308,42 @@ interface ExtensionsClient {
   reload(name: string): Promise<void>;                           // elevated if ref changed
 }
 ```
+
+### HTTP fetch (optional)
+
+An extension can additionally expose an HTTP handler by including a default export with a `fetch` method, matching the worker convention. If present, the gateway registers `/_r/ext/<extension-name>/*` and routes matching requests to the extension process.
+
+```ts
+import type { ExtensionContext, ExtensionFetchContext } from "@natstack/extension";
+
+let ctx: ExtensionContext;
+
+export async function activate(_ctx: ExtensionContext): Promise<MyApi> {
+  ctx = _ctx;
+  // ... setup, return RPC API
+}
+
+export default {
+  async fetch(request: Request, _ctx: ExtensionFetchContext): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === "/blame") {
+      return Response.json(await someBlameQuery(...));
+    }
+    return new Response("Not Found", { status: 404 });
+  },
+};
+```
+
+- `request` and the returned `Response` use the standard Fetch API types.
+- The `ExtensionFetchContext` passed to `fetch` is the same activated `ExtensionContext` the extension received at `activate`, plus a `waitUntil(promise)` method for fire-and-forget background work the host should wait on before considering the response complete. The activated `ctx` and the fetch `ctx` are not different objects; this is one long-lived context, not a per-request one.
+- The host marshals each Request to the extension process over the existing WebSocket as a structured "fetch envelope" frame, awaits the Response, and proxies bytes back to the caller. Streaming bodies are buffered to a configurable cap (default 10 MB) in v1; true streaming is a future-work item.
+- Routes under `/_r/ext/<extension-name>/*` inherit the gateway's standard authentication. By default only authenticated NatStack callers (panels, workers, other extensions, the shell) can hit them; public exposure is out of scope for v1.
+- A request that arrives before the extension finishes `activate`, while it's in `pending-approval`, or while it's in `error` gets a 503 with a descriptive body. No queueing.
+- The fetch handler runs in the same process as `activate` — they share state, can call each other's helpers, can share connection pools. If you want a route to call into the extension's RPC API for free, just call your API methods directly inside `fetch`.
+
+The fetch handler is **optional**. Extensions without a default export `fetch` have no HTTP routes registered. The RPC surface is the canonical one; fetch is for cases where another part of NatStack — or a userland HTTP-shaped consumer — wants a fetch-call ergonomics.
+
+Consumers reach the HTTP surface the same way they reach any internal route, using the existing `@workspace/runtime` fetch helpers (specifics shared with the worker fetch path).
 
 ## Elevated approvals — informed-consent UX
 
@@ -512,6 +564,88 @@ packages/extension-host/
 `childRuntime.ts` is the entry actually executed by the forked process. It reads the bundle path and gateway URL from `process.env`, opens the WebSocket, requires the bundle, calls `module.activate(ctx)`, and serves invoke requests by looking up the returned API object. The user's bundle is loaded as a normal Node module — no `vm.createContext`, no sandbox — `vm.createContext` adds nothing once the process boundary is in place.
 
 The host runs in-process with the server. It mounts the `extensions` dispatcher service onto the existing dispatcher. The Electron main process consumes the same package — there is one extension host per running NatStack instance regardless of mode.
+
+`childRuntime.ts` also handles the fetch envelope frames described in "HTTP fetch (optional)" — when the host forwards an HTTP request, the child invokes the bundle's default-export `fetch`, awaits the Response, and frames the bytes back.
+
+## Workspace-unit conventions
+
+Extensions are one kind of **workspace unit**, alongside workers and panels. The conventions in this section apply to all kinds — they are not extension-specific — and represent the surfaces that should converge as workers and panels migrate to match. Implementation may land incrementally; the contract is the target.
+
+### Manifest shape
+
+Shared keys at `natstack.*` (`displayName`, `entry`, `sourcemap`, …). One kind-specific sub-block (`natstack.extension`, `natstack.worker`, `natstack.panel`) declares the kind. A unit has exactly one kind-specific sub-block. The discriminator is **block presence**, not a separate `kind` field.
+
+Documented in the unit's `package.json`, validated at install/boot, lives in workspace git. See "Manifest" above for the extension-specific table.
+
+### Unified status surface
+
+A workspace-wide RPC, mounted on the dispatcher as `workspace.units`:
+
+```ts
+interface UnitsClient {
+  list(): Promise<UnitStatus[]>;
+  watch(): AsyncIterable<UnitStatus[]>;       // observable for UIs
+  inspector(name: string): Promise<{ url: string } | null>;  // dev only
+  restart(name: string): Promise<void>;       // approval-gated for extensions
+}
+
+interface UnitStatus {
+  kind: "extension" | "worker" | "panel";
+  name: string;
+  displayName: string;
+  ev: string;
+  lastBuiltAt: number;
+  status: "running" | "stopped" | "error" | "pending-approval" | "building";
+  lastError: string | null;
+  bindings?: Record<string, unknown>;          // worker-specific (DOs, env, …)
+  pendingApproval?: { kind: string; submittedAt: number };  // extension-specific
+  respawn?: { attempts: number; nextAttemptAt: number | null };
+  inspectorUrl?: string;                       // when the unit was launched with --inspect
+}
+```
+
+This is the single surface a "running units" panel reads from. Pending elevated approvals for extensions surface as the `pendingApproval` field on the affected row; the panel can deep-link to the approvals UI. Crash respawn state surfaces in `respawn`. Build state surfaces as `building`. The panel sees all unit kinds in one inventory and is allowed to assume the schema is uniform.
+
+`workspace.units` is read by panels and extensions via the standard dispatcher policy. `restart` for extensions is approval-gated (it can produce a fresh `extension.run` request if the EV changed since the running instance started).
+
+### Logs
+
+Every workspace unit's logs flow to a single workspace-wide stream keyed by `(workspaceId, unitName, kind)`. Records have a uniform schema:
+
+```ts
+interface UnitLogRecord {
+  workspaceId: string;
+  unitName: string;
+  kind: "extension" | "worker" | "panel";
+  timestamp: number;
+  level: "debug" | "info" | "warn" | "error";
+  message: string;
+  fields?: Record<string, unknown>;
+  source?: "stdout" | "stderr" | "ctx.log" | "console";
+}
+```
+
+For extensions, `ctx.log` writes to this stream; bare `console.log` / `console.error` are also captured (the runtime intercepts stdout/stderr in the forked process and lifts each line into a record). Workers' `console.*` flow into the same stream by capturing workerd's output. Panels are out of scope today but the same schema accommodates browser-console mirroring later.
+
+A single log-viewer panel reads the stream filtered by unit, with severity and time-range filters. The log stream is also addressable by `workspace.units.logs(name, { since, level })` for programmatic consumption.
+
+### Debugger
+
+In development mode each extension process is launched with `--inspect=0` (random port). The chosen URL is exposed as `inspectorUrl` on `UnitStatus`; the running-units panel renders "Open Inspector" as a single click. Sourcemaps are inlined (`sourcemap: true` is the mandatory default for extensions), so the debugger lands in the original TypeScript.
+
+Workers expose workerd's inspector through the same `UnitStatus.inspectorUrl` field — different underlying protocol, same UI affordance. The user clicks "Open Inspector" and the host opens whichever URL is appropriate.
+
+In production mode (`NATSTACK_PROD=1` or equivalent), `--inspect` is not enabled and `inspectorUrl` is `null`. This is purely a dev convenience.
+
+### Reload UX
+
+The push trigger uniformly drives "code changed → rebuild → reload" for every workspace-unit kind. The differences in user-visible behavior reflect trust shape, not implementation:
+
+- **Workers**: rebuilt on push; the next inbound request hits the new bundle. No prompt — workerd's sandbox is the boundary.
+- **Panels**: rebuilt on push; the next page load hits the new bundle. No prompt — the panel's per-call approvals already gate any sensitive operation.
+- **Extensions**: rebuilt on push; the new bundle waits in `pendingEv` for an elevated approval. The `dev-session` decision is the explicit opt-in to a workers-like auto-reload loop. The first push during an active dev iteration is the natural moment for the prompt to lead with the dev-session option; after the user picks it, subsequent pushes match the worker auto-reload feel.
+
+The status surface, log stream, and inspector affordance described above are what make the three reload modes feel like one system from the user's perspective. The trust-shape difference is intentional and visible only in the elevated approval prompt.
 
 ## Future work
 
