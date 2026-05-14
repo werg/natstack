@@ -6,12 +6,12 @@ NatStack extensions are **long-lived Node processes** that run alongside the ser
 
 Extensions are **trusted, first-party-installed Node code**. They get two ways to do work, and they choose which to use per call:
 
-- The **userland runtime** (`ctx.fs`, `ctx.credentials`, …): same clients panels and workers see. Calls flow through the dispatcher with `callerKind: "extension"` and hit the same per-call approvals userland code hits. This is the path to take when you want the user to see what the extension is doing and have the option to refuse.
+- The **userland runtime** (`ctx.fs`, `ctx.credentials`, …): same host-substrate clients panels and workers see, plus extension-only helpers for approving extension-owned actions against the original caller. Calls flow through the dispatcher with `callerKind: "extension"` and are attributed to the extension. Extension APIs decide themselves when a user-visible approval is needed.
 - **Raw Node** (`import "node:fs"`, `child_process`, native addons, sockets, anything Node can do): direct, unprompted, ambient. Authorized once at install time by the elevated approval and not asked again.
 
-A given extension can use both. The trade-off is the extension author's call: route through `ctx.fs` for visibility and user-attributable auditing, or call Node directly for silent operations the user has already broadly consented to. Per-call approvals from extensions are useful for transparency, not as a security boundary — the install consent is what actually grants capability.
+A given extension can use both. The trade-off is the extension author's call: route through `ctx.fs` for visibility and user-attributable auditing, ask the original panel/worker caller for an extension-specific decision, or call Node directly for silent operations the user has already broadly consented to. Per-call approvals initiated by extensions are useful for user intent and transparency, not as a security boundary against the extension itself — the install consent is what actually grants capability.
 
-Every extension install and every code change to an installed extension goes through an **elevated approval flow** — a visually distinct, informed-consent prompt that calls out the trust level being granted. That is the boundary.
+Every extension install, every accepted source change to an installed extension's active branch, and every explicit dependency update goes through an **elevated approval flow** — a visually distinct, informed-consent prompt that calls out the trust level being granted. That is the boundary.
 
 Each extension runs in its **own forked Node process** (`utilityProcess.fork` in Electron, `child_process.fork` in standalone). Isolation is for **robustness, not security**: a buggy extension that crashes, leaks memory, segfaults a native addon, or hangs the event loop affects only its own process and can be respawned without touching the host.
 
@@ -41,7 +41,7 @@ workspace/extensions/
         └── ...
 ```
 
-By convention, workspace-internal extensions use the `@workspace-extensions/*` scope; extensions installed from external sources keep whatever scope their `package.json` specifies. Cross-extension imports are not first-class in v1 (see Future work).
+By convention, workspace-internal extensions use the `@workspace-extensions/*` scope. Cross-extension imports are not first-class in v1 (see Future work).
 
 There is no per-user `{userData}/extensions/installed/` tree. Source lives in workspace git (every extension is a workspace unit, even those originally fetched from a remote source — they're cloned into `workspace/extensions/<name>/` at install time). Bundles live in `{userData}/builds/<key>/` keyed by content hash. Per-extension scratch lives at `{userData}/extensions/storage/<workspaceId>/<name>/`.
 
@@ -51,30 +51,24 @@ The registry is a small JSON in workspace state. It holds **operational state on
 interface RegistryEntry {
   name: string;                  // "@workspace-extensions/git-tools"
   version: string;
-  source: ExtensionSource;       // user-supplied (kind + url/repo + ref)
+  source: ExtensionSource;       // workspace-internal git repo + ref
   installedAt: number;
 
-  // Effective version is the approval gate — buildV2 already computes it
-  // and it cascades through every workspace and external-dep change.
-  resolvedEv: string;            // current EV (what would run if approved)
-  resolvedSha: string;           // commit at the extension's own repo, for diff display
-  activeEv: string | null;       // EV of the bundle currently running, if any
+  activeEv: string | null;       // workspace-source EV of the approved/running build
   activeSha: string | null;
   activeBundleKey: string | null;
-
-  pendingEv: string | null;      // built but not yet known-approved
-  pendingSha: string | null;
-  pendingBundleKey: string | null;
+  activeDependencyEvs: Record<string, string>; // workspace deps pinned into active bundle
+  activeRuntimeDepsKey: string | null; // persisted external dependency lock/materialization
 
   enabled: boolean;
-  status: "running" | "stopped" | "error" | "pending-approval";
+  status: "running" | "stopped" | "error" | "pending-approval" | "building";
   lastError: string | null;
 }
 ```
 
-Activation is gated by an explicit `approvals.request(...)` call that names the **effective version** — not the source sha. The EV captures both the extension's own source (via its tree hash) and the EVs of every workspace dependency it transitively depends on; package.json changes (including external npm dep version bumps) are part of the tree hash. Any rebuild that produces a different bundle produces a different EV, and a different EV is a different consent. The approvals system stores decisions keyed by `(extension, ev)`; the manager never inspects that state, just calls request and obeys the answer. On grant, the manager promotes `pendingEv → activeEv`, `pendingBundleKey → activeBundleKey`, and starts/restarts the extension process.
+Approval is action-based, not build-hash-based. Installing an extension, pushing to an installed extension's active branch, and explicitly updating an extension's dependency set are the approval boundaries. Build hashes/content keys remain internal build-cache and integrity details; they are not the durable approval subject. On approval, the manager records the resulting bundle and dependency materialization as active and starts/restarts the extension process.
 
-A `BUILD_CACHE_VERSION` bump in buildV2 changes the **build key** but not the **EV**, so a NatStack-side build-pipeline change that rebuilds extensions without changing their semantic content does **not** re-prompt. The user approves their code, not our build.
+A `BUILD_CACHE_VERSION` bump in buildV2 may change the cache **build key**, but it does not create a new user approval by itself. The user approves extension install/update/push actions, not our cache version.
 
 ## Manifest
 
@@ -106,8 +100,6 @@ The manifest follows the **shared workspace-unit shape**: top-level keys under `
 | `natstack.entry` | string | `index.ts` (extension), `index.tsx` (panel), `index.ts` (worker) | Entry source file. Shared across kinds. |
 | `natstack.sourcemap` | boolean | `true` | Inline sourcemaps in the bundle. Shared across kinds (mandatory `true` for extensions in v1). |
 | `natstack.extension.activationEvents` | string[] | `["*"]` | When to activate. `"*"` = eager at startup. Other values fail validation in v1. |
-| `natstack.extension.routes` | string[] | `[]` | HTTP route prefixes the extension wants to claim outside its default `/_r/ext/<name>/*` namespace. See "Reaching extensions from userland → HTTP fetch" for the claim semantics. |
-
 The presence of `natstack.extension` is what marks the unit as an extension to the package graph. Manifests are validated against a JSON schema at install time and again at boot; validation failures fail closed (extension is not activated and an error is recorded in the registry).
 
 No `dist/` — extensions ship TypeScript source, the workspace build pipeline produces the runtime bundle. Cross-extension type sharing is not a first-class concern in v1.
@@ -116,7 +108,7 @@ This shape is harmonized with workers and panels (today's panel manifests use a 
 
 ## Build pipeline integration
 
-Extensions are first-class buildV2 units. In `src/server/buildV2/packageGraph.ts`, `GraphNode["kind"]` gains `"extension"`; the package graph scans `workspace/extensions/` and discovers extension units alongside packages, panels, workers, and templates. The push trigger reacts to changes; effective-version computation, source extraction from git, and shared external-deps installation behave exactly as for any other buildable unit.
+Extensions are first-class buildV2 units. In `src/server/buildV2/packageGraph.ts`, `GraphNode["kind"]` gains `"extension"`; the package graph scans `workspace/extensions/` and discovers extension units alongside packages, panels, workers, and templates. Extension source pushes on the active branch are gated before the ref is updated; dependency changes do not automatically rebuild extensions. Effective-version computation, source extraction from git, and shared external-deps installation otherwise behave like other buildable units.
 
 The new `extension` build kind is a node-target ESM build modeled on the worker build at `builder.ts:1443`. Concretely:
 
@@ -125,9 +117,11 @@ The new `extension` build kind is a node-target ESM build modeled on the worker 
 - Reads the manifest from the extracted source tree (not `node.manifest`) so ref-pinned builds use the manifest at the requested commit. Same source-of-truth pattern as the worker build.
 - Plugins: workspace resolve (node conditions: `["import", "default"]`), TS extension plugin, dedupe plugin. No workerd-specific shims (crypto, buffer, node-stub plugins are dropped — Node provides these natively).
 - `mainFields: ["module", "main"]` fallback for packages without an `exports` field.
-- Native addons externalized via `KNOWN_NATIVE_EXTERNALS` (`*.node`, `fsevents`, `bufferutil`, `utf-8-validate`, `node-pty`, `cpu-features`, `@parcel/watcher`). Extensions resolve native addons at runtime from a per-extension `node_modules/` installed at activation time.
+- Native addons externalized via `KNOWN_NATIVE_EXTERNALS` (`*.node`, `fsevents`, `bufferutil`, `utf-8-validate`, `node-pty`, `cpu-features`, `@parcel/watcher`). Extensions resolve externalized packages at runtime from a per-extension runtime dependency install keyed by `(resolved deps lock hash, platform, arch, node ABI)`.
 - **Inline sourcemaps always on** so stack traces and the Node inspector point at the original TypeScript.
 - Output: `bundle.js` plus a generated `package.json` (`{"type":"module"}`), stored under `{userData}/builds/<key>/`.
+
+Runtime dependency layout is separate from the existing shared `external-deps` cache used during bundling. Build-time `ensureExternalDeps(...)` continues to install with scripts disabled so panels/workers remain safe. Extension builds first resolve an extension dependency lock/materialization record; that record is persisted with the active bundle. Activation runs an extension-specific dependency materialization step for that exact lock. That step may run package lifecycle scripts because the user has already granted the extension native-code trust; its result is linked into the bundle directory as `node_modules` (or the process is launched with an equivalent resolver hook) so Node's ESM resolver can satisfy imports that esbuild left external. A failed runtime dependency install leaves the extension in `error` with the install log attached to `lastError`.
 
 The stale `agent` build kind described in `BUILD_SYSTEM.md` was never actually implemented in `builder.ts` and never reached `GraphNode["kind"]`. It corresponded to a removed `workspace/agents/` directory. The `extension` kind takes the slot the docs reserved for "node-target ESM", and stale references in `BUILD_SYSTEM.md` and the comment header of `packageGraph.ts` are removed in the same change.
 
@@ -151,7 +145,25 @@ export async function activate(ctx: ExtensionContext): Promise<GitToolsApi> {
   );
 
   return {
-    async blame(path: string) { /* ... */ return []; },
+    async blame(path: string) {
+      const invocation = ctx.invocation.current();
+      if (invocation?.userlandCaller) {
+        const decision = await ctx.approvals.requestForCaller({
+          subject: { id: "git-tools:blame", label: "Git blame" },
+          title: "Allow Git Tools to inspect blame data?",
+          summary: `Requested by ${invocation.userlandCaller.callerId}`,
+          options: [
+            { value: "allow", label: "Allow", tone: "primary" },
+            { value: "deny", label: "Deny", tone: "danger" },
+          ],
+        });
+        if (decision.kind !== "choice" || decision.choice !== "allow") {
+          throw Object.assign(new Error("Denied"), { code: "EACCES" });
+        }
+      }
+      /* ... */
+      return [];
+    },
   };
 }
 
@@ -163,6 +175,38 @@ export async function deactivate(): Promise<void> {
 `activate` returns the extension's **public API** — a plain object whose own enumerable function properties are callable from the host via RPC. There is no per-method registration step and no allowlist captured at activation time. The dispatcher resolves a call by reading `api[method]` and checking `Object.hasOwn(api, method) && typeof api[method] === "function"` at the time of the call. Anything else (`then`, `constructor`, inherited prototype methods, non-function properties) returns `ENOMETHOD`.
 
 The API object is held by the extension process, not the host. The host knows the extension exposes some surface (recorded for `list`), and routes invocations across the wire.
+
+Every invocation is delivered with a host-stamped `ExtensionInvocation` envelope. The extension method signature stays ergonomic (`api.method(...args)`); the child runtime wraps the method call in `AsyncLocalStorage`, and extension code reads the active envelope from `ctx.invocation.current()`. This is how extensions learn who asked them to do work and decide whether to prompt.
+
+```ts
+interface ExtensionInvocation {
+  requestId: string;
+  extensionName: string;
+  method: string;
+
+  // The immediate RPC caller that invoked this extension.
+  caller: {
+    callerId: string;
+    callerKind: "panel" | "worker" | "shell" | "extension" | "http";
+    connectionId?: string;
+  };
+
+  // Present only when the immediate caller is a panel/worker.
+  // This is the principal used by ctx.approvals.requestForCaller(...).
+  // Extension-to-extension calls do not inherit an upstream panel identity:
+  // the downstream extension sees callerKind "extension" and no userlandCaller.
+  // If caller consent matters, the upstream extension asks for it before
+  // delegating.
+  userlandCaller?: {
+    callerId: string;
+    callerKind: "panel" | "worker";
+    repoPath: string;
+    effectiveVersion: string;
+  };
+}
+```
+
+This avoids making extension APIs ambient privileged services by accident. An extension may intentionally expose an unauthenticated API, but it has enough caller context to make that an explicit decision. The host does not impose a blanket approval gate on `extensions.invoke`; the extension owns its authorization policy.
 
 Returning `void` is valid — the extension is then fire-and-forget (only useful for side effects, e.g. registering event handlers).
 
@@ -179,8 +223,9 @@ interface ExtensionContext {
 
   // Userland runtime — at parity with what panels and workers get today.
   // Dispatched back to the host over the extension's WebSocket connection.
-  // Calls here hit standard per-call approvals; use these when you want
-  // user-visible, auditable operations. For silent ambient work, import
+  // Calls here are attributed to the extension. Extension APIs that need
+  // explicit user intent call ctx.approvals.requestForCaller(...) using the
+  // current invocation envelope. For silent ambient work, import
   // "node:fs" etc. directly. ctx.fs for extensions is NOT context-scoped —
   // it covers the whole host filesystem, matching the raw-Node access the
   // extension already has.
@@ -203,6 +248,10 @@ interface ExtensionContext {
   readonly approvals: ApprovalsClient;
   readonly notifications: NotificationsClient;
   readonly extensions: ExtensionsClient;
+
+  // Current inbound extension invocation, if execution is inside an API method
+  // or fetch handler. Backed by AsyncLocalStorage in the child runtime.
+  readonly invocation: ExtensionInvocationClient;
 
   // Lifecycle. Disposables are disposed in LIFO order on deactivate.
   readonly subscriptions: Disposable[];
@@ -238,9 +287,29 @@ interface HealthDetail {
   reasons?: string[];              // optional bullets shown when the user drills in
   retryAt?: number;                // epoch ms — if set, the UI shows a countdown
 }
+
+interface ExtensionInvocationClient {
+  current(): ExtensionInvocation | null;
+}
+
+interface ApprovalsClient {
+  // Existing panel/worker approval client methods remain available where
+  // applicable. Extensions also get this helper:
+  //
+  // Submit a userland approval request against the active invocation's
+  // userlandCaller, using the same namespaced ApprovalQueue /
+  // UserlandApprovalGrantStore path panels and workers use today. The host
+  // supplies the principal from the invocation envelope and the issuer from
+  // the extension identity; the extension supplies only the local subject,
+  // copy, details, and options. Throws ENOCALLER when there is no immediate
+  // panel/worker principal to ask.
+  requestForCaller(req: UserlandApprovalRequest): Promise<UserlandApprovalChoice>;
+}
 ```
 
-Clients on `ctx` are bound through the extension process's WebSocket connection to the dispatcher with `callerKind: "extension"` and `callerId: <extension name>`. Every call is attributed to the extension for logs and approval prompts.
+Clients on `ctx` are bound through the extension process's WebSocket connection to the dispatcher with `callerKind: "extension"` and `callerId: <extension name>`. Host-service calls are attributed to the extension for logs. When an extension asks its caller for a userland approval, the prompt shows both sides: the original panel/worker principal being asked, and the extension that issued the request.
+
+`ctx.approvals.requestForCaller(...)` is the extension-specific approval path. It reuses the existing userland approval request system, including the same subject/options model, grant storage, pending queue, and shell UI. The key difference is principal and issuer derivation: panels and workers still call `userlandApproval.request` directly and the service derives both the principal and default issuer from `ServiceContext`; extensions call through the extension host, and the host derives the principal from the current `ExtensionInvocation.userlandCaller` and the issuer from the extension identity. The extension never sends `repoPath`, `effectiveVersion`, `callerKind`, or issuer identity as trusted input.
 
 **Parity now, narrower later.** The starting set above mirrors what `@workspace/runtime` already exposes to panels and workers, so an extension has feature parity with the rest of userland from day one and no consumer of the runtime has to learn a new shape. The longer-term target is narrower: only host *substrate* (`fs`, `panel`, `workspace`, `db`, `credentials`, `approvals`, `notifications`, `extensions`) genuinely belongs on `ctx.*`. The capability clients (`ai`, the user-facing portion of `git`, the `webhooks` subscription surface) are migration candidates that should become extensions in their own right and be reached via `ctx.extensions.use(...)` once that work lands. Each capability migration drops its entry from `ctx.*` across all three runtimes (panel, worker, extension) in the same change. The principle: `ctx.*` is what the host *has to* provide; anything that's a discrete capability — even one shipped by default — eventually moves out.
 
@@ -253,7 +322,7 @@ Each extension runs in its own forked Node process. The host owns an `ExtensionP
 - Spawns the process via `packages/process-adapter/` — `utilityProcess.fork` in Electron, `child_process.fork` in standalone Node.
 - Hands the child an environment containing the gateway URL, the bundle path, a per-extension WebSocket token, and the extension's identity.
 - Waits for a `ready` handshake (a message after the extension finishes `activate` and the WebSocket is connected).
-- Forwards `extensions.invoke` calls from the dispatcher to the extension process's WebSocket.
+- Forwards `extensions.invoke` calls from the dispatcher to the extension process's WebSocket with a host-stamped `ExtensionInvocation` envelope.
 - Routes the extension's outbound RPC calls (`ctx.fs.write(...)` etc.) into the dispatcher as ordinary client calls.
 - Detects crashes, applies the crash policy (below), and respawns or marks `error`.
 
@@ -287,14 +356,15 @@ There is exactly one RPC entry point: the dispatcher service named `extensions`.
     list:       { args: [] },
     on:         { args: [z.string(), z.string()] }, // (extName, event) — returns subscription id
     install:    { /* elevated-approval-gated */ },
-    uninstall:  { /* elevated-approval-gated */ },
+    uninstall:  { /* approval-gated */ },
     setEnabled: { /* approval-gated */ },
-    reload:     { /* approval-gated, elevated when ref changed */ },
+    update:     { /* elevated-approval-gated */ },
+    reload:     { /* approval-gated; restarts active approved build */ },
   },
 }
 ```
 
-`invoke`, `list`, and `on` are not approval-gated — they're userland code talking to userland code. The management methods are approval-gated, and the install / reload-on-new-ref paths use the **elevated** approval treatment described below.
+`invoke`, `list`, and `on` are not host approval-gated — they're userland code talking to userland code. `invoke` is still caller-aware: the host stamps the immediate caller and, when available, the original panel/worker principal into the invocation envelope delivered to the extension. The extension decides whether the requested method needs an approval and calls `ctx.approvals.requestForCaller(...)` when it does. The management methods are approval-gated, and install/update plus extension main/master push acceptance use the extension-specific approval treatment described below.
 
 Consumers — panels, workers, and other extensions — use the same thin client from `@workspace/runtime`:
 
@@ -308,18 +378,15 @@ const lines = await git.blame("/foo.ts");
 extensions.on("@workspace-extensions/git-tools", "indexed", (payload) => {
   // ...
 });
-
-// Wait for an extension that may activate later (useful from another extension's activate())
-extensions.onActivate<GitToolsApi>("@workspace-extensions/git-tools", (api) => {
-  // ...
-});
 ```
 
 `extensions.use()` returns a `Proxy` that turns property access into `rpc.call("extensions", "invoke", [name, prop, args])`. The proxy's `get` trap returns `undefined` for `then`, `Symbol.toPrimitive`, and other well-known protocol properties. Calls to a non-existent or stopped extension fail with `ENOEXT` at invocation time; the proxy itself is always defined.
 
+Extension-to-extension calls are intentionally not delegated as the original panel/worker. The downstream extension sees the immediate extension caller and decides whether to serve that extension. If a panel/worker approval is needed for the composite operation, the upstream extension requests it before making the downstream call.
+
 Events ride the existing `RpcEvent` channel. `ctx.emit(event, payload)` in an extension fans out to subscribers via `extensions.on(name, event, cb)`. Internally, extension events are namespaced by extension name on the wire (`RpcEvent { service: "extensions", event: "<name>::<event>", payload }`) so two extensions emitting the same event name don't collide.
 
-Extensions activate in unspecified order. Consumers that need another extension during their own `activate` must use `extensions.onActivate(name, cb)`. Peer extensions are guaranteed callable only after both have completed their `activate`; a callback that fires during a slow peer activation is queued and dispatched once both sides are ready. There is no declarative dependency graph.
+Extensions activate independently. There is no coordination API in v1: calls to an extension that is not ready fail with `ENOTREADY` / `ENOEXT`, and callers that care should retry later.
 
 ### `ExtensionsClient` surface
 
@@ -330,14 +397,14 @@ interface ExtensionsClient {
   // Calling an extension
   use<T>(name: string): T;                                       // returns a proxy
   on(name: string, event: string, cb: (payload: unknown) => void): Disposable;
-  onActivate<T>(name: string, cb: (api: T) => void): Disposable;
   list(): Promise<RegistryEntry[]>;
 
-  // Management — all approval-gated; elevated when capability-granting
+  // Management — approval-gated, with install/update using the extension approval UI.
   install(spec: InstallSpec): Promise<void>;                     // elevated
   uninstall(name: string, opts?: { purge?: boolean }): Promise<void>;
   setEnabled(name: string, enabled: boolean): Promise<void>;
-  reload(name: string): Promise<void>;                           // elevated if ref changed
+  update(name: string): Promise<void>;                           // extension approval if deps changed
+  reload(name: string): Promise<void>;                           // restart active approved build
 }
 ```
 
@@ -358,107 +425,99 @@ export async function activate(_ctx: ExtensionContext): Promise<MyApi> {
 export default {
   async fetch(request: Request, _ctx: ExtensionFetchContext): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname.startsWith("/webhooks/github")) {
-      return await handleGithubWebhook(request);
-    }
+    if (url.pathname === "/status") return Response.json({ ok: true });
     return new Response("Not Found", { status: 404 });
   },
 };
 ```
 
-Two route namespaces are available to an extension that exposes `fetch`:
+One route namespace is available to an extension that exposes `fetch`:
 
-1. **Auto-prefix** `/_r/ext/<extension-name>/*` — always available, no manifest declaration needed. Internal consumers (panels, workers, other extensions) use this to reach the extension over HTTP.
-2. **Claimed routes** declared in `natstack.extension.routes` — extension-chosen prefixes outside the auto-prefix namespace, for cases where the upstream caller can't be reconfigured (webhook endpoints, OAuth callbacks, status pages, custom protocols).
-
-#### Route claims
-
-```json
-{
-  "natstack": {
-    "extension": {
-      "routes": ["/webhooks/github", "/webhooks/stripe", "/oauth/callback"]
-    }
-  }
-}
-```
-
-Route claims are **capability** — claiming `/webhooks/github` means HTTP requests to that path on the user's gateway run native-Node code inside this extension. The user grants this at the elevated install approval (the claimed routes show up in the prompt detail).
-
-Arbitration rules:
-
-- **Install-time conflict check.** When an extension is installed, the host checks its claimed routes against every other installed extension's claimed routes. Any overlap (one claim is a prefix of, or identical to, another) fails the install with `EROUTECONFLICT`. Two extensions cannot share a claim. The user is told which extension already owns the route.
-- **Resolution order at request time.** The auto-prefix `/_r/ext/<name>/*` always routes to the named extension. For other paths, the most-specific claimed prefix wins (so `/webhooks/github/issues` routes to whichever extension claimed `/webhooks/github/issues` over one that only claimed `/webhooks/github`). If no claim matches, the gateway returns 404.
-- **Reserved prefixes.** `/_r/*` (host RPC routes), `/_w/*` (worker routes), and `/_*` generally are off-limits; the manifest validator rejects claims that overlap reserved namespaces.
-- **Authentication policy is per-prefix.** Auto-prefix routes (`/_r/ext/<name>/*`) inherit gateway auth — only authenticated NatStack callers reach them. Claimed routes default to **public** (anyone who can reach the gateway socket can hit them), because the typical use case is "upstream service POSTs a webhook"; authentication is the extension's responsibility (HMAC validation, etc.). An extension can opt back into gateway auth on a claim with `routes: [{ prefix: "/private", auth: "gateway" }]`. The default-public stance for claims is the riskier default, which is exactly why route claims require elevated approval to install.
-- **Claim changes require re-approval.** Adding or modifying a route in `natstack.extension.routes` between extension versions is a capability change; the resulting `extension.update` prompt highlights the new claim explicitly.
+**Auto-prefix** `/_r/ext/<extension-name>/*` is always available, no manifest declaration needed. Internal consumers (panels, workers, other extensions) use this to reach the extension over HTTP. There are no custom top-level HTTP routes in v1.
 
 #### Fetch-handler semantics
 
 - `request` and the returned `Response` use the standard Fetch API types.
 - The `ExtensionFetchContext` passed to `fetch` is the same activated `ExtensionContext` the extension received at `activate`, plus a `waitUntil(promise)` method for fire-and-forget background work the host should wait on before considering the response complete. The activated `ctx` and the fetch `ctx` are not different objects; this is one long-lived context, not a per-request one.
 - The host marshals each Request to the extension process over the existing WebSocket as a structured "fetch envelope" frame, awaits the Response, and proxies bytes back to the caller. Streaming bodies are buffered to a configurable cap (default 10 MB) in v1; true streaming is a future-work item.
+- Fetch handlers also run under `ctx.invocation.current()`. Auto-prefix requests get the authenticated caller in the envelope and `userlandCaller` when that caller is a panel/worker.
 - A request that arrives before the extension finishes `activate`, while it's in `pending-approval`, or while it's in `error` gets a 503 with a descriptive body. No queueing.
 - The fetch handler runs in the same process as `activate` — they share state, can call each other's helpers, can share connection pools. If you want a route to call into the extension's RPC API for free, just call your API methods directly inside `fetch`.
 
-The fetch handler is **optional**. Extensions without a default export `fetch` have no HTTP routes registered (even if they declared `routes` in the manifest — the manifest validator warns). The RPC surface is the canonical one; fetch is for cases where another part of NatStack, an external upstream, or a userland HTTP-shaped consumer wants fetch-call ergonomics.
+The fetch handler is **optional**. Extensions without a default export `fetch` have no HTTP route registered. The RPC surface is the canonical one; fetch is for cases where another part of NatStack or a userland HTTP-shaped consumer wants fetch-call ergonomics.
+
+Implementation note: the current `RouteRegistry` only owns `/_r/` worker/service dispatch. Extension fetch adds one entry to that layer:
+
+- an `extension-auto` route kind under `/_r/ext/<encoded-name>/*`, with caller-token auth.
 
 Consumers reach the auto-prefix HTTP surface the same way they reach any internal route, using the existing `@workspace/runtime` fetch helpers.
 
-## Elevated approvals — informed-consent UX
+## Extension approvals — informed-consent UX
 
-The extension subsystem **always** calls `approvals.request(...)` before running code at a given EV, regardless of context — at install, at push-trigger pickup, at reload, at boot. The approvals system decides whether to auto-grant (from a stored decision), prompt the user, or hold pending. Callers never inspect or branch on stored decisions; that's the approvals system's job.
+NatStack already requests approval for git pushes. Extensions add one special case to that existing path: a push to an installed extension's active branch (`main` / `master` in v1) uses extension-specific copy and decision handling, because accepting that push changes trusted native code. No separate build-hash approval key is introduced.
 
-Three elevated-category sub-kinds cover all the cases, and their prompts deliberately look different from each other because the **threat models are different**:
+Two extension-specific approval sub-kinds cover the non-git management cases:
 
 1. **`extension.install`** — user-initiated. The user just typed `extensions.install(...)` or clicked Install in a manager UI; they're at the keyboard, focused on the action, and asked for code to be installed. The prompt is forward-looking and informational: "Here's what you asked to install. Confirm."
-2. **`extension.update`** — push-driven. A push to the extension's own repo changed its source. The user may or may not have initiated the push themselves — the prompt arrives passively while the user is doing something else. The trust question is not just "is this code OK?" but **"did I expect this to happen?"** Prompts here lead with provenance (who pushed, when, what the commit says) and use defensive verbs.
-3. **`extension.dep-update`** — push-driven against a non-extension unit, cascading into one or more extensions' EVs. Same passive-trigger concern as `update`, but the trust shape is different again: the user previously approved each extension's authored behavior, and only the library underneath changed. The prompt batches affected extensions and leads with the dep that changed.
+2. **`extension.update`** — user-initiated dependency refresh. Dependency-only changes never trigger this prompt automatically; the manager offers an explicit update action instead.
 
-The install/update distinction matters: an install prompt is the user confirming what they just asked for, an update prompt is the user being told that **running code changed unexpectedly** and asked whether to let the new code run. Default copy, verb choice, and what's surfaced first all differ.
+Source updates are handled by the git push approval flow, not by `extensions.update`. The push is the user's intent signal and the approval decision is scoped to that git write. If approved, the push lands; the extension manager then rebuilds and activates from the new branch state. If denied, the push fails and no extension state changes.
 
-At every server boot the manager also issues an **`extension.run`** request for each enabled extension at its `resolvedEv`. Same elevated category, but in the common case the approvals system has a stored decision keyed by `(name, ev)` from a prior install / update / dep-update and auto-grants without prompting.
+Extension-owned per-call approvals are standard userland approvals submitted with `ctx.approvals.requestForCaller(...)`. They reuse the same approval pipeline panels and workers use, but the trusted principal comes from the current invocation envelope rather than from extension-supplied input. Host services reached through other `ctx.*` clients are still called as `callerKind: "extension"` and may apply their own service-specific policy; they are not the primary authorization mechanism for extension APIs. Disable, enable, reload, and uninstall are also standard.
 
-Routine approvals (per-call `fs.write`, `credentials.read`, etc. through `ctx.*` clients) are standard-category — the same approval pipeline panels and workers use, attributed to the extension's `callerId`. Disable, enable (when the EV is unchanged), and uninstall are also standard.
+### Namespaced userland approval artifacts
+
+Userland approval artifacts are namespaced for every issuer, not only extensions. A pending request, persisted grant, notification cancel key, and audit record all carry:
+
+```ts
+interface UserlandApprovalIssuer {
+  kind: "panel" | "worker" | "extension";
+  id: string;              // callerId for panel/worker, extension name for extension
+  repoPath?: string;       // present for panel/worker issuers
+  effectiveVersion?: string;
+}
+
+interface NamespacedUserlandApprovalSubject {
+  issuer: UserlandApprovalIssuer;
+  local: UserlandApprovalSubject;  // the subject supplied by userland code
+}
+```
+
+The durable key is `canonicalKey(["userland-grant", principal.callerId, issuer.kind, issuer.id, local.id])`. Direct panel/worker calls to `userlandApproval.request(...)` get `issuer = principal`; extension calls to `requestForCaller(...)` get `issuer = { kind: "extension", id: extensionName }`. UI copy shows both: "Panel X is being asked by extension Y", or for direct panel/worker requests simply "Panel X requests your decision". This prevents two independent pieces of userland from sharing a grant just because they chose the same local subject id.
 
 ### Approval payload
 
-All four kinds share the same payload shape; UI treatment branches on `kind`. Fields that don't apply to a kind are `null` or empty arrays.
+Install and explicit dependency-update prompts share the same payload shape. Fields that don't apply to a kind are `null` or empty arrays.
 
 ```ts
 await approvals.request({
-  kind: "extension.install",   // or "extension.update", "extension.dep-update", "extension.run"
-  category: "extension-elevated",
-  callerId: ctx.callerId,
+  kind: "extension.install",   // or "extension.update"
+  category: "extension-management",
+  callerId: approvalIssuer.callerId,
   detail: {
     name: "@workspace-extensions/git-tools",
     version: "1.2.0",
     source: { kind: "internal-git", repo: "extensions/git-tools", ref: "v1.2.0" },
 
-    // The approval gate
-    ev: "ev_2a9f...",                // EV the user is being asked to approve
-    previousEv: "ev_117c...",        // EV currently running (or last approved); null on install
+    // Build context, shown for diagnostics only. Not an approval key.
+    ev: "ev_2a9f...",                // workspace-source EV, shown for diff/debug context
+    previousEv: "ev_117c...",        // source EV currently running; null on install
 
     // Diff layers
-    extensionDiff: {                 // null on install or pure dep-update
+    extensionDiff: {                 // null on install or dependency-only update
       sha: "abc123...",
       previousSha: "def456...",
       stat: { filesChanged: 7, insertions: 142, deletions: 11 },
-      // Provenance — populated on push-triggered kinds (update, dep-update).
-      // On install the source ref above is what was requested; provenance below is null.
+      // Provenance — null for dependency-only updates.
       commit: {
         author: { name: "...", email: "..." },
         committer: { name: "...", email: "..." },
         message: "fix blame regression on submodules",
         timestamp: 1715000000,
       },
-      push: {                        // null when not push-triggered
-        pushedAt: 1715000010,
-        pushedBy: "user-id-or-name",  // workspace identity that pushed; null if unattributable
-        ref: "refs/heads/main",
-      },
+      push: null,
     },
-    workspaceDepChanges: [           // empty on a pure same-source update
+    workspaceDepChanges: [           // populated only for explicit dependency update
       { name: "@workspace/runtime", fromEv: "ev_a1...", toEv: "ev_b2...",
         sha: "...", previousSha: "...",
         stat: { filesChanged: 3, insertions: 18, deletions: 4 },
@@ -469,24 +528,20 @@ await approvals.request({
       { name: "zod", fromVersion: "3.22.4", toVersion: "3.23.8" },
     ],
 
-    // Capabilities and route claims — surfaced prominently in the prompt
+    // Capabilities surfaced prominently in the prompt
     integrity: "sha256-...",
     capabilities: ["node:fs", "node:child_process", "node:net", "userland:*"],
-    claimedRoutes: [                 // routes declared in natstack.extension.routes
-      { prefix: "/webhooks/github", auth: "public", added: true },
-      { prefix: "/webhooks/stripe", auth: "public", added: false },  // already approved at this prefix
-    ],
   },
 });
 ```
 
 ### Shared UI requirements
 
-These apply to all elevated approvals regardless of kind:
+These apply to extension install/update approvals and to the extension-specific git push prompt:
 
 - **Visually distinct from regular approvals.** Different card style, different icon, more spacing, plain-language framing.
 - **Show all populated diff layers**, each collapsible. Sections with no changes are hidden, not shown empty.
-- **Decision options**: `once` and `deny` are always offered. `session` is offered with the user-facing label "dev session"; when picked it stores a session-scope decision in the approvals system, scoped to this extension, and subsequent elevated requests for the same extension auto-grant within the window regardless of which EV ships next. The standard `version` and `repo` keys are **not** offered: a future EV is a future trust grant.
+- **Decision options**: `once` and `deny` are always offered. For extension source pushes, `session` is offered with the user-facing label "dev session"; when picked it stores a session-scope decision in the existing git-push approval system, scoped to this extension repo and active branch. Subsequent extension `main` / `master` pushes during the window auto-grant. No build-hash-scoped grant is stored.
 - **Deferred default**: the default action when the prompt is dismissed (window closed, navigated away) is `deny`, never grant.
 
 ### Install prompt (`extension.install`)
@@ -494,62 +549,54 @@ These apply to all elevated approvals regardless of kind:
 The user just initiated this. The prompt is informational and forward-looking.
 
 - **Title and lead**: "Install **@acme/git-tools** v1.2.0?" Then on a second line, the capability sentence: "This will run as native code on your machine with access to your filesystem, network, and ability to launch other programs."
-- **Provenance section is short**: the source (`internal-git`, `git`, `tarball`) and ref the user supplied. There's no commit-author surprise to disclose; the user typed the ref.
-- **Route claims**, if any, get their own section near the top of the card — "This extension wants to handle HTTP requests at: `/webhooks/github`, `/webhooks/stripe`". The card flags `auth: "public"` claims with a `public` badge so the user can see at a glance which paths will be reachable without authentication. Empty `claimedRoutes` means the section is hidden.
+- **Provenance section is short**: the internal git repo and ref the user supplied. There's no commit-author surprise to disclose; the user selected the workspace repo/ref.
 - **Verb pair**: "Install and run" / "Don't install".
 
 ### Update prompt (`extension.update`)
 
-A push changed running code, and the user didn't necessarily push it themselves. The prompt has to make "what happened?" answerable before "is this OK?" becomes meaningful.
+`extension.update` is only for explicit dependency refreshes. Source updates use the git push approval flow.
 
-- **Title and lead**: "**@acme/git-tools** changed and wants to update." Then on a second line, in stronger language than install: "Running code on your machine is about to change. If you didn't make or expect this change, deny it."
-- **Provenance is the first content section** (above the diff): the commit author and committer (highlighting when they differ — that's exactly the case where someone other than the user committed under the user's identity), the commit message, the commit and push timestamps, the workspace identity that pushed, and the ref. If the push happened in the last 60 seconds *and* `pushedBy` matches the local session's identity, the prompt subtly notes "you just pushed this" to dampen confusion in the common case of self-initiated dev; otherwise it stays neutral.
-- **Route-claim changes get a separate prominent section** between provenance and the diff. New claims (`added: true`) are highlighted; existing claims that are still in place are listed neutrally; removed claims would be shown but in practice route-removal is just deactivation of those routes. If any new claim has `auth: "public"`, the card promotes the section into a warning-styled callout — adding a new public route is a meaningful capability change and the user should see it before they read code diffs.
-- **Diff sections** (extension source, then workspace dep changes if any) follow provenance and route changes.
-- **Verb pair**: "Run the new version" / "Don't run". Notice the verbs are about *running*, not *installing* — the previous bundle keeps running until the user explicitly chooses the new one.
-- **Dev-session decision** carries a clarifying caption when offered here ("Allow updates to @acme/git-tools without asking, for the next 4 hours — use while you're actively iterating on this extension"). This is the dev-loop escape hatch and is the right answer when the user is hacking on their own extension; it's the wrong answer in any other situation.
+- **Title and lead**: "**@acme/git-tools** dependency update." Then on a second line: "This will rebuild the extension against newer approved workspace or external dependencies."
+- **Dependency changes** are the primary content. A push to `@workspace/runtime` does not automatically enqueue extension approvals; the extension manager can show that `@acme/git-tools` has an available dependency update, and the user chooses whether to run it.
+- **Diff sections** show workspace and external dependency diffs.
+- **Verb pair**: "Update and run" / "Cancel".
 
-### Workspace dep-update prompt (`extension.dep-update`)
+### Extension push prompt
 
-A push to a non-extension unit (typically a shared library) cascades into one or more extensions' EVs. The prompt is the most "passive-trigger" of the three — the user didn't push the extension *or* its library *for this extension's sake*, the cascade is incidental.
+The existing git push approval UI gets extension-specific treatment when the push targets an installed extension's `main` / `master` branch.
 
-- **Title and lead**: "**@workspace/runtime** updated; N of your extensions will run different code." Then the capability sentence is shorter than install — the user previously approved each affected extension's behavior and the dep change doesn't grant new capability classes, only different code runs.
-- **Provenance** of the dep push leads: who pushed `@workspace/runtime`, when, what the commit says.
-- **Batch by dep, not by extension**. Each affected extension's `extension.dep-update` request still goes through the approvals system independently; the UI aggregates what's in the queue and surfaces a single card listing the N affected extensions as sub-rows. Each row is expandable to show the per-extension diff layers. The user can grant or deny the whole batch in one action, or split individual decisions out.
-- **Verb pair**: "Run new versions" / "Don't run". Same running-not-installing framing as `extension.update`.
-- **Dev-session decisions** offered here are **per extension**, not per dep. Granting dev-session for one extension in the batch doesn't auto-grant for the others.
+- **Title and lead**: "**@acme/git-tools** source push." Then on a second line: "Accepting this push updates trusted native extension code."
+- **Git context**: repo, ref, pushing identity, and any commit summary already available to the git server's push approval path. The prompt does not need to build or hash the candidate bundle before asking.
+- **Verb pair**: "Allow push" / "Reject push". Rejecting fails the git push.
+- **Dev-session decision**: "Allow extension pushes to @acme/git-tools without asking, for the next 4 hours" stores a session grant in the git push approval system, scoped to this extension repo and active branch.
 
-This batching mitigates the obvious approval-fatigue problem: a `@workspace/runtime` change in a workspace with a dozen extensions doesn't fire a dozen modal prompts in series, just one card with twelve sub-rows.
+### Dependency update path
 
-### Run-at-boot prompt (`extension.run`)
+A push to a non-extension unit (typically a shared library) can make newer extension builds available, but it does not automatically rebuild or reload extensions. Installed extensions continue running the build they were approved for, including the workspace dependency EVs captured in `activeDependencyEvs` and the external dependency materialization pointed to by `activeRuntimeDepsKey`.
 
-This kind exists for the gate-on-EV principle (the manager always requests before running). In the common case it auto-resolves from a stored decision and is invisible to the user. If it does reach the UI — meaning no stored decision covers `(name, resolvedEv)` and no dev-session is active — the prompt uses the same treatment as `extension.update` (provenance first, "running code is about to change"), because that's effectively what happened (the EV doesn't match what was last approved, so something changed without the user being asked).
+The manager may surface an available-update indicator when the current workspace graph or an explicit external-dependency refresh would change the extension's runtime inputs. The user can choose `extensions.update(name)` / "Update extension", which resolves the current dependency graph, builds the candidate, and submits `extension.update`. On grant, that build becomes active. On deny or dismissal, nothing changes; the existing extension keeps running.
 
-### Push-triggered updates
+### Git push gate
 
-`pushTrigger` (in `src/server/buildV2/pushTrigger.ts`) reacts to **any push that changes an extension's EV** — not just pushes to the extension's own repo. The EV cascade is what buildV2 already computes: a push to `@workspace/runtime` recomputes EVs for every unit transitively depending on it, including extensions.
+Pushes to installed extension repos are branch-sensitive:
 
-For each affected extension:
+- **`main` / `master`**: gated before the ref is updated. Deny/dismissal/timeout fails the git push.
+- **Other branches**: accepted like ordinary workspace git refs and do not affect the running extension.
+- **Non-extension repos**: never trigger extension approvals automatically.
 
-1. Build the new bundle (using buildV2's normal incremental path).
-2. Update `resolvedEv` and `resolvedSha` in the registry; stash the new build artifact in `pendingEv` / `pendingSha` / `pendingBundleKey`. The currently running bundle is unchanged — `activeEv` / `activeBundleKey` stay as they were.
-3. Decide which sub-kind of approval to request based on what changed:
-   - Extension's own source changed → `extension.update`.
-   - Only transitive deps changed (no extension source diff) → `extension.dep-update`.
-   - Both → `extension.update` (it subsumes dep-update; one prompt covers all the layers).
-4. Call `approvals.request({ kind, category: "extension-elevated", detail: { ev, previousEv, extensionDiff, workspaceDepChanges, externalDepChanges, ... } })`. On grant: promote `pendingEv → activeEv`, etc., reload the process. On deny: discard the pending fields. The trigger does not look at stored decisions; auto-grant from a dev-session decision is handled transparently inside the approvals system.
+The git server already requests approval for pushes. Extension push gating is a special case inside that existing approval path: when the target repo is an installed extension and the target branch is `main` / `master`, the approval copy and audit category identify it as a trusted extension source update. No pre-receive build, quarantine-object inspection, or build-hash approval key is required.
 
-This means **no bundle change ever silently activates**. A pure source change, a transitive dep change, a npm version bump in package.json — all of them flip the EV, and the EV is what's approved.
+For an extension `main`/`master` push:
 
-### Boot-time activation consent
+1. Authenticate and perform normal write authorization.
+2. If the repo is an installed extension and the ref is `refs/heads/main` or `refs/heads/master`, request the existing git push approval with extension-specific copy/category.
+3. On grant or active dev-session auto-grant: allow the git push.
+4. On deny, dismissal, or timeout: reject the git push. The branch ref remains unchanged and the old extension keeps running.
+5. After an accepted push completes, the extension manager rebuilds from the updated branch. If build and activation succeed, it records the new bundle as active and replaces the running process. If build or activation fails, the previous active bundle keeps running and `lastError` records the failed update.
 
-At server boot, the manager walks the registry. For each enabled extension it computes `resolvedEv` (this is cheap — buildV2 caches it) and calls `approvals.request({ kind: "extension.run", category: "extension-elevated", detail: { name, ev: resolvedEv } })`. The approvals system replies:
+This means **no source push to an active extension branch can land without explicit push approval**. Dependency-only changes are deliberately outside this path; they are handled by explicit update.
 
-- **Grant** (typically from a stored install / update / dep-update decision matching `(name, ev)`, or from an active dev-session decision for this extension): activate.
-- **Deny**: mark `error`.
-- **Pending** (no stored decision, no consumer available to prompt): set `status: "pending-approval"` and leave the request open. When a UI later consents (or denies), the manager reacts accordingly.
-
-**Headless mode**: same flow. Sensitive operations always request approval regardless of UI presence. EVs with a stored grant auto-resolve and activate normally with no UI in the loop. Requests without a stored decision stay pending until a UI client connects and answers them. There is no "skip the approval in headless" path.
+**Headless mode**: enabled extensions with an active bundle start normally on boot; their approval happened at install, source-push, or explicit update time. Extension main/master pushes still require the existing git push approval and fail if no approval UI can answer within the receive timeout.
 
 ## Userland extension management
 
@@ -563,22 +610,23 @@ await extensions.list();
 
 // Elevated approval
 await extensions.install({
-  source: { kind: "internal-git", repo: "extensions/git-tools", ref: "v1.2.0" },
-  // or { kind: "git",     url: "https://github.com/acme/git-tools", ref: "v1.2.0" }
-  // or { kind: "tarball", url: "...", sha256: "..." }
+  source: { kind: "internal-git", repo: "extensions/git-tools", ref: "main" },
 });
 
-// Standard approval (disable/enable when EV unchanged)
+// Standard approval
 await extensions.setEnabled("@workspace-extensions/git-tools", false);
 
 // Standard approval (uninstall)
 await extensions.uninstall("@workspace-extensions/git-tools");
 
-// Elevated approval if reload would change the resolved sha, standard otherwise
+// Extension approval if current dependency state would change runtime inputs
+await extensions.update("@workspace-extensions/git-tools");
+
+// Standard approval; restarts the active approved build
 await extensions.reload("@workspace-extensions/git-tools");
 ```
 
-For all sources, `install` fetches into `workspace/extensions/<name>/` as a new workspace unit (cloning from `internal-git`, or initializing a fresh git repo from the fetched `git` / `tarball` content). From that point on every extension is a workspace git unit and rides buildV2 normally — there is no special "local source" code path. Dev iteration happens by editing in `workspace/extensions/<name>/` and pushing to its internal-git repo, optionally with a dev-session approval to avoid the per-push prompt.
+`install` only supports workspace-internal git sources in v1. The source repo must already exist under workspace git, and installing records it as an extension unit in the registry. There is no non-workspace install path in v1. Dev iteration happens by editing in `workspace/extensions/<name>/` and pushing `main` / `master` to its internal-git repo; that push is the approval gate for running the new extension build. A dev-session approval can avoid the per-push prompt while the user is actively iterating.
 
 | Method | Approval | Notes |
 |--------|----------|-------|
@@ -586,29 +634,33 @@ For all sources, `install` fetches into `workspace/extensions/<name>/` as a new 
 | `install` | `extension.install` (elevated) | Fetches into workspace, registers, builds, activates |
 | `uninstall` | `extension.uninstall` | Deactivates, removes workspace unit, updates registry; `storage/<workspaceId>/<name>/` is retained unless `purge: true` |
 | `setEnabled` | `extension.toggle` | Persisted in registry; on disable, kills the extension process |
-| `reload` | `extension.reload` (elevated if EV changed) | Re-resolves the source ref, rebuilds, respawns the process |
+| `update` | `extension.update` | Re-resolves the current extension source and dependency graph, builds, approves, activates; no-op if runtime inputs are unchanged |
+| `reload` | `extension.reload` | Restarts the active approved build; does not adopt dependency changes |
 
-There is no `readFile` / `writeFile` over the RPC surface. Source authoring happens against the workspace git; to push changes, commit and let the push trigger prepare the update.
+There is no `readFile` / `writeFile` over the RPC surface. Source authoring happens against the workspace git; to push extension changes, commit and push `main` / `master`. Dependency-only refreshes happen through `extensions.update(name)` or the equivalent manager UI action.
 
 ## Activation lifecycle
 
 - **Boot**:
-  1. Read the registry. For each enabled extension, compute `resolvedEv` (via the buildV2 cache) and call `approvals.request({ kind: "extension.run", category: "extension-elevated", detail: { name, ev: resolvedEv } })`.
-  2. On grant: spawn the process, wait for the ready handshake (timeout: 10s), call `activate(ctx)` over the wire, record the exposed API metadata, set `activeEv = resolvedEv` and `status = "running"`. On pending: set `status = "pending-approval"` and hold; spawn when the approval resolves. On deny: set `status = "error"`.
+  1. Read the registry. For each enabled extension with an active bundle, spawn that bundle.
+  2. Wait for the ready handshake (timeout: 10s), call `activate(ctx)` over the wire, record the exposed API metadata, and set `status = "running"`.
   3. Throws during `activate` are caught, logged, marked `error` in the registry, and emitted as `extensions:error` events. The process is killed. One extension's failure does not block others.
 - **Eager only for v1**. `activationEvents` is plumbed through but only `"*"` is accepted; other values fail validation.
 - **Hot install**: a freshly installed extension activates immediately — the manager spawns the process after the elevated approval resolves and the build completes.
-- **Hot reload**: `reload` calls `deactivate()` on the running process (with a 5s grace period), then kills it, rebuilds if the EV changed, and spawns a fresh process. Subscribers receive an `extensions:reloaded` event before the old subscriptions go dead.
+- **Extension source push**: a `main` / `master` push is approved before the ref moves. After receive completes, the manager records the approved build as active and replaces the running process.
+- **Dependency update**: `update(name)` computes the current candidate build from the extension source plus current dependency graph. If runtime inputs changed, it requests `extension.update`; on grant it records the build as active and replaces the running process.
+- **Hot reload**: `reload` restarts the currently active approved build. It does not implicitly pull dependency changes into the extension; use `update` for that.
 - **Crash**: handled by the crash policy above. The process boundary contains the failure; the host keeps running.
 
-## Dispatcher integration
+## Dispatcher and approval integration
 
-Minimal change to `packages/shared/src/serviceDispatcher.ts`:
+Core dispatcher changes:
 
 - Add `"extension"` to `CallerKind`.
 - `ServiceContext.callerId` for an extension call is the extension name.
-- Every existing service definition gets `"extension"` added to its `policy.allowed` list explicitly.
-- Approval prompts attributed to an extension caller use the standard prompt style, **not** the elevated one — those are reserved for install/update events. The standard prompt's caller-attribution string surfaces the extension name; the prompt is fundamentally a transparency mechanism (the extension chose to route through `ctx.*` rather than call Node directly), not a security boundary.
+- Existing service definitions are reviewed one by one. Host-substrate services extensions need (`workspace`, `credentials`, `notifications`, `events`, etc.) explicitly add `"extension"` to `policy.allowed`; shell/admin-only services do not get extension access by default.
+- `CodeIdentityResolver`, approval shared types, `UserlandApprovalGrantStore`, approval copy, and `userlandApprovalService` stay panel/worker-principal based. They are extended only enough for an extension-host internal call to submit `ApprovalQueue.requestUserland(...)` using a host-stamped `ExtensionInvocation.userlandCaller`.
+- Approval prompts initiated by extensions use the standard userland prompt style, **not** the elevated one — elevated prompts are reserved for install, dependency update, and extension source-push events. The standard prompt's caller-attribution string surfaces both the panel/worker being asked and the extension asking. The prompt is fundamentally a user-intent mechanism (the extension chose to ask the caller) rather than a security boundary against already-installed Node code.
 
 `ctx.fs` for an extension is **unrestricted** — it covers the whole host filesystem, matching the ambient `node:fs` access the extension already has. There is no per-context root and no path scoping. This is a deliberate departure from panel/worker semantics; per-context rooting would be theater, since the extension can write anywhere via `node:fs` directly. The userland `ctx.fs` exists for callers that want auditable, user-attributable writes; the unrestricted scope makes that path strictly more capable than scoped, not less.
 
@@ -625,10 +677,10 @@ packages/extension-host/
 │   ├── childRuntime.ts           # entry shipped into the child process — sets up WS,
 │   │                             # imports the bundle, calls activate, handles invokes
 │   ├── service.ts                # dispatcher service ("extensions") handler — invoke / on / management
-│   └── installer.ts              # install / uninstall / reload pipeline + push-trigger integration
+│   └── installer.ts              # install / uninstall / update / reload pipeline + git-push gate integration
 ```
 
-`childRuntime.ts` is the entry actually executed by the forked process. It reads the bundle path and gateway URL from `process.env`, opens the WebSocket, requires the bundle, calls `module.activate(ctx)`, and serves invoke requests by looking up the returned API object. The user's bundle is loaded as a normal Node module — no `vm.createContext`, no sandbox — `vm.createContext` adds nothing once the process boundary is in place.
+`childRuntime.ts` is the entry actually executed by the forked process. It reads the bundle path and gateway URL from `process.env`, opens the WebSocket, loads the ESM bundle with `await import(pathToFileURL(bundlePath).href)`, calls `module.activate(ctx)`, and serves invoke requests by looking up the returned API object. The user's bundle is loaded as a normal Node module — no `vm.createContext`, no sandbox — `vm.createContext` adds nothing once the process boundary is in place.
 
 The host runs in-process with the server. It mounts the `extensions` dispatcher service onto the existing dispatcher. The Electron main process consumes the same package — there is one extension host per running NatStack instance regardless of mode.
 
@@ -665,11 +717,11 @@ interface UnitStatus {
   status: "running" | "stopped" | "error" | "pending-approval" | "building";
   lastError: string | null;
   bindings?: Record<string, unknown>;          // worker-specific (DOs, env, …)
-  pendingApproval?: { kind: string; submittedAt: number };  // extension-specific
+  pendingApproval?: { kind: string; submittedAt: number };  // extension install/update
+  availableUpdate?: { reason: "dependency"; checkedAt: number }; // extension-specific
   respawn?: { attempts: number; nextAttemptAt: number | null };
   inspectorUrl?: string;                       // when the unit was launched with --inspect
   health?: UnitHealth;                         // self-reported when status === "running"
-  routes?: RouteClaim[];                       // claimed HTTP routes (extension-specific)
 }
 
 interface UnitHealth {
@@ -680,15 +732,11 @@ interface UnitHealth {
   retryAt?: number;
 }
 
-interface RouteClaim {
-  prefix: string;                              // e.g. "/webhooks/github"
-  auth: "gateway" | "public";
-}
 ```
 
-This is the single surface a "running units" panel reads from. Pending elevated approvals for extensions surface as the `pendingApproval` field on the affected row; the panel can deep-link to the approvals UI. Crash respawn state surfaces in `respawn`. Build state surfaces as `building`. Self-reported operational health surfaces in `health` (see below). The panel sees all unit kinds in one inventory and is allowed to assume the schema is uniform.
+This is the single surface a "running units" panel reads from. Pending install/update approvals surface as `pendingApproval`; extension source-push approvals stay in the git push UI. Dependency-only refreshes surface as `availableUpdate` until the user chooses to update. Crash respawn state surfaces in `respawn`. Build state surfaces as `building`. Self-reported operational health surfaces in `health` (see below). The panel sees all unit kinds in one inventory and is allowed to assume the schema is uniform.
 
-`workspace.units` is read by panels and extensions via the standard dispatcher policy. `restart` for extensions is approval-gated (it can produce a fresh `extension.run` request if the EV changed since the running instance started).
+`workspace.units` is read by panels and extensions via the standard dispatcher policy. `restart` for extensions is approval-gated and restarts the currently active approved build; it does not implicitly adopt dependency changes.
 
 ### Health states
 
@@ -739,11 +787,11 @@ In production mode (`NATSTACK_PROD=1` or equivalent), `--inspect` is not enabled
 
 ### Reload UX
 
-The push trigger uniformly drives "code changed → rebuild → reload" for every workspace-unit kind. The differences in user-visible behavior reflect trust shape, not implementation:
+Reload behavior is intentionally different by unit kind:
 
 - **Workers**: rebuilt on push; the next inbound request hits the new bundle. No prompt — workerd's sandbox is the boundary.
 - **Panels**: rebuilt on push; the next page load hits the new bundle. No prompt — the panel's per-call approvals already gate any sensitive operation.
-- **Extensions**: rebuilt on push; the new bundle waits in `pendingEv` for an elevated approval. The `dev-session` decision is the explicit opt-in to a workers-like auto-reload loop. The first push during an active dev iteration is the natural moment for the prompt to lead with the dev-session option; after the user picks it, subsequent pushes match the worker auto-reload feel.
+- **Extensions**: source pushes to `main` / `master` are approved before the branch ref moves, then the approved build reloads. Dependency changes do not auto-reload extensions; they only surface an available update until the user chooses to update. The `dev-session` decision is the explicit opt-in to a workers-like source-push loop while actively iterating on an extension.
 
 The status surface, log stream, and inspector affordance described above are what make the three reload modes feel like one system from the user's perspective. The trust-shape difference is intentional and visible only in the elevated approval prompt.
 
@@ -753,15 +801,11 @@ A survey of `src/server/services/` against the extension fit criteria suggests t
 
 ### Canaries
 
-1. **`webhookIngressService`** — first migration. Exercises:
-   - The HTTP fetch surface end-to-end (it serves HMAC-validated ingress).
-   - **Route claims** — webhook URLs must be at fixed, upstream-configured paths (`/webhooks/github`, `/webhooks/stripe`), not under `/_r/ext/*`. The primary smoke test for the manifest `routes` field and the install-time conflict check.
-   - DO-backed state (subscriptions are persisted).
-   - Health reporting (degraded when upstream secret validation rate-limits, unhealthy when the DO is unreachable).
-
-2. **`imageService`** — second migration. Exercises:
+1. **`imageService`** — first migration. Exercises:
    - The "extension replaces in-tree service" pattern. Existing `ctx.image.*` call sites migrate mechanically to `extensions.use<ImageApi>("@workspace-extensions/image-service").*` — a one-time codemod. After migration `ctx.image` is gone from the host runtime; consumers reach the image extension explicitly through `extensions.use`. Swapping implementations later means uninstalling and installing a different extension at the same canonical name.
    - Pure compute, no statefulness — minimal blast radius if it goes sideways.
+
+2. **`typecheckService`** — second migration. Compute-heavy, long-running TS server. Tests an extension that holds substantial in-memory state across many calls.
 
 ### Follow-on (after canaries land)
 
@@ -769,7 +813,7 @@ A survey of `src/server/services/` against the extension fit criteria suggests t
 
 4. **`browserDataService`** — bookmarks/history/cookies import from Chrome/Firefox profiles. Needs platform-specific native crypto for cookie decryption — exercises native-addon externalization in the build, and the lifecycle around extensions that need optional native deps (health: degraded when libsecret missing on Linux, etc.).
 
-5. **`typecheckService`** — TS typecheck driver. Compute-heavy, long-running TS server. Tests an extension that holds substantial in-memory state across many calls.
+5. **`webhookIngressService`** — deferred until custom/public HTTP routes exist. Webhook URLs must be at fixed, upstream-configured paths (`/webhooks/github`, `/webhooks/stripe`), not under `/_r/ext/*`.
 
 ### Workspace-wide refactors (touch panels and workers, not just extensions)
 
@@ -779,11 +823,11 @@ These are migrations where the current in-host service is exposed on `ctx.*` to 
 
 7. **`gitService`'s user-facing methods** (`blame`, `log`, `branches`, etc.) — same shape as ai, but with a complication: the in-host git service has *two* caller populations. Build-internal callers (the build pipeline depends on git tree hashing, source extraction, push events) must stay in-host. User-facing callers (panels viewing repo state, extensions inspecting commit history) should migrate. Requires teasing apart the in-host caller graph before migration is mechanical.
 
-8. **`webhooks` consumer surface** — once `webhookIngressService` (canary 1) lands as an extension, the corresponding `ctx.webhooks` subscription client also goes away in favor of `extensions.use<WebhookApi>("@workspace-extensions/webhook-ingress")`. Done as a follow-on cleanup after canary 1, before the next canary.
+8. **`webhooks` consumer surface** — once `webhookIngressService` eventually lands as an extension, the corresponding `ctx.webhooks` subscription client also goes away in favor of `extensions.use<WebhookApi>("@workspace-extensions/webhook-ingress")`.
 
 ### Will need new design work before migrating
 
-9. **`egressProxy`** — needs a port-allocation primitive (no current design for "extension binds its own listening port and publishes it"). Defer until a port-claim mechanism is added, parallel to route claims but for raw TCP.
+9. **`egressProxy`** — needs a port-allocation primitive (no current design for "extension binds its own listening port and publishes it"). Defer until a raw TCP port-claim mechanism is added.
 
 ### Must stay in-host
 
@@ -801,9 +845,10 @@ Listed here so future readers don't waste time considering them:
 
 ### Gaps surfaced by the migration plan
 
-The webhookIngressService and imageService canaries cover route claims, HTTP fetch, and health. Two additional gaps the rest of the migration plan flags, **not addressed in v1**:
+The imageService and typecheckService canaries cover the RPC migration shape and long-lived process state. Additional gaps the rest of the migration plan flags, **not addressed in v1**:
 
-- **Port-claim mechanism for non-HTTP listeners.** Required for egressProxy. Parallel to route claims; same install-time conflict check, same elevated-approval surfacing. Defer until a candidate forces it.
+- **Custom/public HTTP routes.** Required for webhookIngressService and OAuth callbacks. Defer until a candidate forces it.
+- **Port-claim mechanism for non-HTTP listeners.** Required for egressProxy. Defer until a candidate forces it.
 - **Scheduled-work primitive.** Email-sync-style "poll every 5 minutes, survive restarts" — works today with `setInterval` plus self-managed persistence, but ergonomically wants a `ctx.schedule(name, intervalOrCron, handler)` helper that uses the extension's storage. Defer; not blocking the first migrations.
 
 A "named capabilities" / `provides` mechanism was considered and rejected: paths suffice. The canonical name for a given capability (e.g. `@workspace-extensions/image-service`) is a convention, swapping implementations means uninstalling and installing a different extension at the same name, and migration from an in-host service drops `ctx.image` in favor of explicit `extensions.use(...)` calls at the call sites. Introducing a host-side capability registry would add provider conflict resolution, missing-provider semantics, and asymmetry in `ctx.*` (some entries host-direct, others extension-routed) — none of which buy more than the path-based convention already does.
@@ -813,13 +858,13 @@ A "named capabilities" / `provides` mechanism was considered and rejected: paths
 Out of scope for v1, kept as forward-compat anchors:
 
 - **Lazy activation**: the `activationEvents` field is plumbed through but only `"*"` is honored.
-- **Port-claim mechanism**: parallel to HTTP route claims but for raw TCP/UDP listeners. Needed for egressProxy and any future protocol-bridge extension. Same install-time conflict and elevated-approval surfacing.
+- **Custom/public HTTP routes**: top-level gateway paths such as `/webhooks/github`. Needed for webhookIngressService and OAuth callbacks, deliberately out of v1.
+- **Port-claim mechanism**: raw TCP/UDP listeners. Needed for egressProxy and any future protocol-bridge extension. Same install-time conflict and elevated-approval surfacing.
 - **Scheduled-work primitive**: `ctx.schedule(name, intervalOrCron, handler)` with restart-survival via the extension's storage scope. Email-sync-style use cases work today with `setInterval` + self-managed persistence, but the ergonomics could be much better.
 - **HTTP fetch streaming**: v1 buffers bodies to ~10 MB. True streaming over the WebSocket fetch envelope is a bigger frame protocol change.
 - **Per-workspace extension catalogs**: today extensions are workspace units. A central catalog of vetted extensions could layer on top.
 - **Cross-extension type sharing**: today consumers either define interfaces themselves or duplicate types. A generated aggregate `.d.ts` from active extensions becomes pressing once a few services migrate.
 - **Resource limits**: per-extension RSS caps and CPU quotas. The OS can enforce these via `setrlimit`-equivalents; not wired in v1.
-- **npm registry as a source**: currently internal-git / git / tarball. npm can be added later.
 - **Extensions shipping panels**: deliberately out of scope. Extensions register RPC APIs and HTTP routes; a separate panel can call into the extension.
 - **Config schema in manifest**: `natstack.extension.config: <jsonschema>` paired with a host-rendered generic config UI. Several migration candidates (push, browserData, image) have user-tweakable settings; shipping a panel per extension is heavy.
 
