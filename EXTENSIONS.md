@@ -106,6 +106,7 @@ The manifest follows the **shared workspace-unit shape**: top-level keys under `
 | `natstack.entry` | string | `index.ts` (extension), `index.tsx` (panel), `index.ts` (worker) | Entry source file. Shared across kinds. |
 | `natstack.sourcemap` | boolean | `true` | Inline sourcemaps in the bundle. Shared across kinds (mandatory `true` for extensions in v1). |
 | `natstack.extension.activationEvents` | string[] | `["*"]` | When to activate. `"*"` = eager at startup. Other values fail validation in v1. |
+| `natstack.extension.routes` | string[] | `[]` | HTTP route prefixes the extension wants to claim outside its default `/_r/ext/<name>/*` namespace. See "Reaching extensions from userland → HTTP fetch" for the claim semantics. |
 
 The presence of `natstack.extension` is what marks the unit as an extension to the package graph. Manifests are validated against a JSON schema at install time and again at boot; validation failures fail closed (extension is not activated and an error is recorded in the registry).
 
@@ -205,8 +206,29 @@ interface ExtensionContext {
   // Direct console.log / console.error also work and are captured the same way.
   readonly log: Logger;
 
+  // Health reporting. The extension self-reports its operational health,
+  // surfaced on workspace.units status rows. Default state immediately
+  // after activate() resolves is "healthy"; the extension can downgrade
+  // (or upgrade back) at any time. See "Workspace-unit conventions →
+  // Health states" for the contract.
+  readonly health: HealthClient;
+
   // Events (visible to subscribed panels, workers, and other extensions)
   emit(event: string, payload: unknown): void;
+}
+
+interface HealthClient {
+  report(state: "healthy" | "degraded" | "unhealthy", detail?: HealthDetail): void;
+  // Convenience wrappers — same as report() with the corresponding state.
+  healthy(detail?: HealthDetail): void;
+  degraded(detail: HealthDetail): void;       // detail required — must say why
+  unhealthy(detail: HealthDetail): void;      // detail required — must say why
+}
+
+interface HealthDetail {
+  summary: string;                 // one-line description for the status row
+  reasons?: string[];              // optional bullets shown when the user drills in
+  retryAt?: number;                // epoch ms — if set, the UI shows a countdown
 }
 ```
 
@@ -311,7 +333,7 @@ interface ExtensionsClient {
 
 ### HTTP fetch (optional)
 
-An extension can additionally expose an HTTP handler by including a default export with a `fetch` method, matching the worker convention. If present, the gateway registers `/_r/ext/<extension-name>/*` and routes matching requests to the extension process.
+An extension can additionally expose an HTTP handler by including a default export with a `fetch` method, matching the worker convention. If present, the gateway routes matching requests to the extension process.
 
 ```ts
 import type { ExtensionContext, ExtensionFetchContext } from "@natstack/extension";
@@ -326,24 +348,52 @@ export async function activate(_ctx: ExtensionContext): Promise<MyApi> {
 export default {
   async fetch(request: Request, _ctx: ExtensionFetchContext): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname === "/blame") {
-      return Response.json(await someBlameQuery(...));
+    if (url.pathname.startsWith("/webhooks/github")) {
+      return await handleGithubWebhook(request);
     }
     return new Response("Not Found", { status: 404 });
   },
 };
 ```
 
+Two route namespaces are available to an extension that exposes `fetch`:
+
+1. **Auto-prefix** `/_r/ext/<extension-name>/*` — always available, no manifest declaration needed. Internal consumers (panels, workers, other extensions) use this to reach the extension over HTTP.
+2. **Claimed routes** declared in `natstack.extension.routes` — extension-chosen prefixes outside the auto-prefix namespace, for cases where the upstream caller can't be reconfigured (webhook endpoints, OAuth callbacks, status pages, custom protocols).
+
+#### Route claims
+
+```json
+{
+  "natstack": {
+    "extension": {
+      "routes": ["/webhooks/github", "/webhooks/stripe", "/oauth/callback"]
+    }
+  }
+}
+```
+
+Route claims are **capability** — claiming `/webhooks/github` means HTTP requests to that path on the user's gateway run native-Node code inside this extension. The user grants this at the elevated install approval (the claimed routes show up in the prompt detail).
+
+Arbitration rules:
+
+- **Install-time conflict check.** When an extension is installed, the host checks its claimed routes against every other installed extension's claimed routes. Any overlap (one claim is a prefix of, or identical to, another) fails the install with `EROUTECONFLICT`. Two extensions cannot share a claim. The user is told which extension already owns the route.
+- **Resolution order at request time.** The auto-prefix `/_r/ext/<name>/*` always routes to the named extension. For other paths, the most-specific claimed prefix wins (so `/webhooks/github/issues` routes to whichever extension claimed `/webhooks/github/issues` over one that only claimed `/webhooks/github`). If no claim matches, the gateway returns 404.
+- **Reserved prefixes.** `/_r/*` (host RPC routes), `/_w/*` (worker routes), and `/_*` generally are off-limits; the manifest validator rejects claims that overlap reserved namespaces.
+- **Authentication policy is per-prefix.** Auto-prefix routes (`/_r/ext/<name>/*`) inherit gateway auth — only authenticated NatStack callers reach them. Claimed routes default to **public** (anyone who can reach the gateway socket can hit them), because the typical use case is "upstream service POSTs a webhook"; authentication is the extension's responsibility (HMAC validation, etc.). An extension can opt back into gateway auth on a claim with `routes: [{ prefix: "/private", auth: "gateway" }]`. The default-public stance for claims is the riskier default, which is exactly why route claims require elevated approval to install.
+- **Claim changes require re-approval.** Adding or modifying a route in `natstack.extension.routes` between extension versions is a capability change; the resulting `extension.update` prompt highlights the new claim explicitly.
+
+#### Fetch-handler semantics
+
 - `request` and the returned `Response` use the standard Fetch API types.
 - The `ExtensionFetchContext` passed to `fetch` is the same activated `ExtensionContext` the extension received at `activate`, plus a `waitUntil(promise)` method for fire-and-forget background work the host should wait on before considering the response complete. The activated `ctx` and the fetch `ctx` are not different objects; this is one long-lived context, not a per-request one.
 - The host marshals each Request to the extension process over the existing WebSocket as a structured "fetch envelope" frame, awaits the Response, and proxies bytes back to the caller. Streaming bodies are buffered to a configurable cap (default 10 MB) in v1; true streaming is a future-work item.
-- Routes under `/_r/ext/<extension-name>/*` inherit the gateway's standard authentication. By default only authenticated NatStack callers (panels, workers, other extensions, the shell) can hit them; public exposure is out of scope for v1.
 - A request that arrives before the extension finishes `activate`, while it's in `pending-approval`, or while it's in `error` gets a 503 with a descriptive body. No queueing.
 - The fetch handler runs in the same process as `activate` — they share state, can call each other's helpers, can share connection pools. If you want a route to call into the extension's RPC API for free, just call your API methods directly inside `fetch`.
 
-The fetch handler is **optional**. Extensions without a default export `fetch` have no HTTP routes registered. The RPC surface is the canonical one; fetch is for cases where another part of NatStack — or a userland HTTP-shaped consumer — wants a fetch-call ergonomics.
+The fetch handler is **optional**. Extensions without a default export `fetch` have no HTTP routes registered (even if they declared `routes` in the manifest — the manifest validator warns). The RPC surface is the canonical one; fetch is for cases where another part of NatStack, an external upstream, or a userland HTTP-shaped consumer wants fetch-call ergonomics.
 
-Consumers reach the HTTP surface the same way they reach any internal route, using the existing `@workspace/runtime` fetch helpers (specifics shared with the worker fetch path).
+Consumers reach the auto-prefix HTTP surface the same way they reach any internal route, using the existing `@workspace/runtime` fetch helpers.
 
 ## Elevated approvals — informed-consent UX
 
@@ -409,8 +459,13 @@ await approvals.request({
       { name: "zod", fromVersion: "3.22.4", toVersion: "3.23.8" },
     ],
 
+    // Capabilities and route claims — surfaced prominently in the prompt
     integrity: "sha256-...",
     capabilities: ["node:fs", "node:child_process", "node:net", "userland:*"],
+    claimedRoutes: [                 // routes declared in natstack.extension.routes
+      { prefix: "/webhooks/github", auth: "public", added: true },
+      { prefix: "/webhooks/stripe", auth: "public", added: false },  // already approved at this prefix
+    ],
   },
 });
 ```
@@ -430,6 +485,7 @@ The user just initiated this. The prompt is informational and forward-looking.
 
 - **Title and lead**: "Install **@acme/git-tools** v1.2.0?" Then on a second line, the capability sentence: "This will run as native code on your machine with access to your filesystem, network, and ability to launch other programs."
 - **Provenance section is short**: the source (`internal-git`, `git`, `tarball`) and ref the user supplied. There's no commit-author surprise to disclose; the user typed the ref.
+- **Route claims**, if any, get their own section near the top of the card — "This extension wants to handle HTTP requests at: `/webhooks/github`, `/webhooks/stripe`". The card flags `auth: "public"` claims with a `public` badge so the user can see at a glance which paths will be reachable without authentication. Empty `claimedRoutes` means the section is hidden.
 - **Verb pair**: "Install and run" / "Don't install".
 
 ### Update prompt (`extension.update`)
@@ -438,7 +494,8 @@ A push changed running code, and the user didn't necessarily push it themselves.
 
 - **Title and lead**: "**@acme/git-tools** changed and wants to update." Then on a second line, in stronger language than install: "Running code on your machine is about to change. If you didn't make or expect this change, deny it."
 - **Provenance is the first content section** (above the diff): the commit author and committer (highlighting when they differ — that's exactly the case where someone other than the user committed under the user's identity), the commit message, the commit and push timestamps, the workspace identity that pushed, and the ref. If the push happened in the last 60 seconds *and* `pushedBy` matches the local session's identity, the prompt subtly notes "you just pushed this" to dampen confusion in the common case of self-initiated dev; otherwise it stays neutral.
-- **Diff sections** (extension source, then workspace dep changes if any) follow provenance.
+- **Route-claim changes get a separate prominent section** between provenance and the diff. New claims (`added: true`) are highlighted; existing claims that are still in place are listed neutrally; removed claims would be shown but in practice route-removal is just deactivation of those routes. If any new claim has `auth: "public"`, the card promotes the section into a warning-styled callout — adding a new public route is a meaningful capability change and the user should see it before they read code diffs.
+- **Diff sections** (extension source, then workspace dep changes if any) follow provenance and route changes.
 - **Verb pair**: "Run the new version" / "Don't run". Notice the verbs are about *running*, not *installing* — the previous bundle keeps running until the user explicitly chooses the new one.
 - **Dev-session decision** carries a clarifying caption when offered here ("Allow updates to @acme/git-tools without asking, for the next 4 hours — use while you're actively iterating on this extension"). This is the dev-loop escape hatch and is the right answer when the user is hacking on their own extension; it's the wrong answer in any other situation.
 
@@ -601,12 +658,45 @@ interface UnitStatus {
   pendingApproval?: { kind: string; submittedAt: number };  // extension-specific
   respawn?: { attempts: number; nextAttemptAt: number | null };
   inspectorUrl?: string;                       // when the unit was launched with --inspect
+  health?: UnitHealth;                         // self-reported when status === "running"
+  routes?: RouteClaim[];                       // claimed HTTP routes (extension-specific)
+}
+
+interface UnitHealth {
+  state: "healthy" | "degraded" | "unhealthy";
+  summary: string;
+  reasons?: string[];
+  reportedAt: number;
+  retryAt?: number;
+}
+
+interface RouteClaim {
+  prefix: string;                              // e.g. "/webhooks/github"
+  auth: "gateway" | "public";
 }
 ```
 
-This is the single surface a "running units" panel reads from. Pending elevated approvals for extensions surface as the `pendingApproval` field on the affected row; the panel can deep-link to the approvals UI. Crash respawn state surfaces in `respawn`. Build state surfaces as `building`. The panel sees all unit kinds in one inventory and is allowed to assume the schema is uniform.
+This is the single surface a "running units" panel reads from. Pending elevated approvals for extensions surface as the `pendingApproval` field on the affected row; the panel can deep-link to the approvals UI. Crash respawn state surfaces in `respawn`. Build state surfaces as `building`. Self-reported operational health surfaces in `health` (see below). The panel sees all unit kinds in one inventory and is allowed to assume the schema is uniform.
 
 `workspace.units` is read by panels and extensions via the standard dispatcher policy. `restart` for extensions is approval-gated (it can produce a fresh `extension.run` request if the EV changed since the running instance started).
+
+### Health states
+
+`status` reports **lifecycle** state (is this unit running at all?); `health` reports **operational** state (is the running unit doing its job?). The two are independent: a `running` extension can be `degraded` (e.g. its upstream FCM credentials expired, but it's still serving cached state).
+
+Extensions self-report via `ctx.health.report(state, detail)` or the convenience wrappers `ctx.health.healthy()` / `degraded(detail)` / `unhealthy(detail)`. The host writes the latest report to `UnitStatus.health`; consumers of `workspace.units.list()` and `watch()` see it.
+
+| State | Meaning | `detail` required |
+|-------|---------|---|
+| `healthy` | Operating normally. The default immediately after `activate()` resolves, until the extension says otherwise. | No |
+| `degraded` | Partially functional. Some callers may get correct results, others may get errors or stale data. The extension is *still trying*. | Yes — must explain what's degraded |
+| `unhealthy` | Cannot do its job. Calls into this extension will likely fail until something changes. | Yes — must explain why |
+
+`HealthDetail.summary` is a one-line description shown on the status row (`"FCM credentials expired"`, `"native libvips missing — falling back to JS encoder"`). `reasons` is an optional list of bullet points shown when the user expands the row. `retryAt` (epoch ms), when set, indicates when the extension expects the situation to resolve and gives the UI material to render a countdown.
+
+Workers report health through the same channel (via their own runtime hook); panels are out of scope today. The unified status surface is allowed to assume `health` is present and recent for any `running` unit; an extension that crashes between health reports stays at its last reported state until its `status` flips.
+
+Health is **observability**, not a gate. The host does not refuse calls to an `unhealthy` extension — it surfaces the state so consumers and users can decide. An extension that wants to refuse inbound calls in some condition should throw / return errors itself.
 
 ### Logs
 
@@ -647,16 +737,74 @@ The push trigger uniformly drives "code changed → rebuild → reload" for ever
 
 The status surface, log stream, and inspector affordance described above are what make the three reload modes feel like one system from the user's perspective. The trust-shape difference is intentional and visible only in the elevated approval prompt.
 
+## Migration candidates
+
+A survey of `src/server/services/` against the extension fit criteria suggests the following migration order. The first two are the canaries that exercise every feature this plan introduces; later ones are nice-to-have rather than load-bearing.
+
+### Canaries
+
+1. **`webhookIngressService`** — first migration. Exercises:
+   - The HTTP fetch surface end-to-end (it serves HMAC-validated ingress).
+   - **Route claims** — webhook URLs must be at fixed, upstream-configured paths (`/webhooks/github`, `/webhooks/stripe`), not under `/_r/ext/*`. The primary smoke test for the manifest `routes` field and the install-time conflict check.
+   - DO-backed state (subscriptions are persisted).
+   - Health reporting (degraded when upstream secret validation rate-limits, unhealthy when the DO is unreachable).
+
+2. **`imageService`** — second migration. Exercises:
+   - The "extension replaces in-tree service" pattern. Currently every caller does `ctx.image.resize(...)`; after migration, a caller does `extensions.use<ImageApi>("@workspace-extensions/image").resize(...)`. **This will surface the `provides`-a-named-capability gap** flagged below: if we want `ctx.image` to keep working, we need a host-side capability registry that routes to whichever extension claims `image`. Otherwise every consumer changes shape.
+   - Pure compute, no statefulness — minimal blast radius if it goes sideways.
+
+### Follow-on (after canaries land)
+
+3. **`pushService` + `approvalPushBridge`** — FCM push for mobile shells. Optional capability (only relevant if mobile push is wanted), self-contained, has its own credentials needs. Good test of `ctx.credentials` from an extension and of long-lived outbound connections.
+
+4. **`browserDataService`** — bookmarks/history/cookies import from Chrome/Firefox profiles. Needs platform-specific native crypto for cookie decryption — exercises native-addon externalization in the build, and the lifecycle around extensions that need optional native deps (health: degraded when libsecret missing on Linux, etc.).
+
+5. **`typecheckService`** — TS typecheck driver. Compute-heavy, long-running TS server. Tests an extension that holds substantial in-memory state across many calls.
+
+### Will need new design work before migrating
+
+6. **`egressProxy`** — needs a port-allocation primitive (no current design for "extension binds its own listening port and publishes it"). Defer until a port-claim mechanism is added, parallel to route claims but for raw TCP.
+
+7. **`gitService`'s user-facing methods** — could split (user-facing methods migrate, build-internal methods stay) but requires teasing apart the in-host caller graph. Worth a separate plan rather than a rote migration.
+
+### Must stay in-host
+
+Listed here so future readers don't waste time considering them:
+
+- **Dispatcher, route registry, transport, `ServiceContainer`** — the substrate extensions plug into.
+- **Approvals system** (`approvalQueue`, `shellApprovalService`, `userlandApprovalService`, `capabilityPermission`, `capabilityGrantStore`) — the single source of truth for user consent.
+- **Auth and identity** (`authService`, `tokensService`, `deviceAuthStore`, `codeIdentityResolver`) — every RPC's caller identity flows through these.
+- **Build pipeline** (`buildService`, buildV2) — builds the extensions.
+- **Worker lifecycle** (`workerdService`, `workerService`, `workerLogService`) — co-equal infrastructure.
+- **Panel orchestration** (`panelService`, `panelPersistenceService`).
+- **Core services other services use** (`blobstoreService`, `scopeService`, `metaService`, `notificationService`).
+- **Credential storage** (`credentialService`, `credentialLifecycle`) — host-rooted trust. Additional credential *backends* (hardware tokens, etc.) could be extensions; the core stays.
+- **`auditService`** — security audit log. Could technically be an extension, but making auditing optional weakens it as a property. Keep in-host.
+
+### Gaps surfaced by the migration plan
+
+The webhookIngressService and imageService canaries cover route claims, HTTP fetch, and health. Three additional gaps the rest of the migration plan flags, **not addressed in v1**:
+
+- **`provides`-a-named-capability mechanism.** Without it, moving any in-tree service that has many consumers (imageService is the lead example) means every consumer changes its call shape. With it, the host registry routes `ctx.image.resize(...)` to whichever extension claims `image`, and the consumer code is unchanged. Needed before imageService can migrate cleanly — currently a future-work item; promote.
+- **Port-claim mechanism for non-HTTP listeners.** Required for egressProxy. Parallel to route claims; same install-time conflict check, same elevated-approval surfacing. Defer until a candidate forces it.
+- **Scheduled-work primitive.** Email-sync-style "poll every 5 minutes, survive restarts" — works today with `setInterval` plus self-managed persistence, but ergonomically wants a `ctx.schedule(name, intervalOrCron, handler)` helper that uses the extension's storage. Defer; not blocking the first migrations.
+
 ## Future work
 
 Out of scope for v1, kept as forward-compat anchors:
 
 - **Lazy activation**: the `activationEvents` field is plumbed through but only `"*"` is honored.
+- **Named-capability `provides` mechanism**: `natstack.extension.provides: ["image"]` + a host-side capability registry that routes generic `ctx.image.*` calls to whichever extension claims `image`. Needed before the imageService migration can keep call shapes stable for existing consumers. See "Migration candidates → Gaps".
+- **Port-claim mechanism**: parallel to HTTP route claims but for raw TCP/UDP listeners. Needed for egressProxy and any future protocol-bridge extension. Same install-time conflict and elevated-approval surfacing.
+- **Scheduled-work primitive**: `ctx.schedule(name, intervalOrCron, handler)` with restart-survival via the extension's storage scope. Email-sync-style use cases work today with `setInterval` + self-managed persistence, but the ergonomics could be much better.
+- **HTTP fetch streaming**: v1 buffers bodies to ~10 MB. True streaming over the WebSocket fetch envelope is a bigger frame protocol change.
 - **Per-workspace extension catalogs**: today extensions are workspace units. A central catalog of vetted extensions could layer on top.
-- **Cross-extension type sharing**: today consumers either define interfaces themselves or duplicate types.
+- **Cross-extension type sharing**: today consumers either define interfaces themselves or duplicate types. A generated aggregate `.d.ts` from active extensions becomes pressing once a few services migrate.
 - **Resource limits**: per-extension RSS caps and CPU quotas. The OS can enforce these via `setrlimit`-equivalents; not wired in v1.
+- **Health-aware routing**: today health is observability only. A future "automatically route around `unhealthy` providers when multiple extensions claim the same capability" mode depends on the `provides` mechanism existing.
 - **npm registry as a source**: currently internal-git / git / tarball. npm can be added later.
-- **Extensions shipping panels**: deliberately out of scope. Extensions register RPC APIs; a separate panel can call into the extension.
+- **Extensions shipping panels**: deliberately out of scope. Extensions register RPC APIs and HTTP routes; a separate panel can call into the extension.
+- **Config schema in manifest**: `natstack.extension.config: <jsonschema>` paired with a host-rendered generic config UI. Several migration candidates (push, browserData, image) have user-tweakable settings; shipping a panel per extension is heavy.
 
 ## Related cleanup
 
