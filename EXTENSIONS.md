@@ -297,21 +297,21 @@ interface ExtensionsClient {
 
 The extension subsystem **always** calls `approvals.request(...)` before running code at a given EV, regardless of context — at install, at push-trigger pickup, at reload, at boot. The approvals system decides whether to auto-grant (from a stored decision), prompt the user, or hold pending. Callers never inspect or branch on stored decisions; that's the approvals system's job.
 
-Three elevated-category sub-kinds cover all the cases:
+Three elevated-category sub-kinds cover all the cases, and their prompts deliberately look different from each other because the **threat models are different**:
 
-1. **`extension.install`** — first time this extension is being installed. Native-capability code is about to land in the workspace and run.
-2. **`extension.update`** — a push changed the extension's *own* source. Issued by the push trigger and by `reload`.
-3. **`extension.dep-update`** — the extension's EV changed because a transitive workspace dep or external npm dep changed, **without** any change to the extension's own source. Issued by the push trigger when a non-extension unit's push cascades into an extension's EV.
+1. **`extension.install`** — user-initiated. The user just typed `extensions.install(...)` or clicked Install in a manager UI; they're at the keyboard, focused on the action, and asked for code to be installed. The prompt is forward-looking and informational: "Here's what you asked to install. Confirm."
+2. **`extension.update`** — push-driven. A push to the extension's own repo changed its source. The user may or may not have initiated the push themselves — the prompt arrives passively while the user is doing something else. The trust question is not just "is this code OK?" but **"did I expect this to happen?"** Prompts here lead with provenance (who pushed, when, what the commit says) and use defensive verbs.
+3. **`extension.dep-update`** — push-driven against a non-extension unit, cascading into one or more extensions' EVs. Same passive-trigger concern as `update`, but the trust shape is different again: the user previously approved each extension's authored behavior, and only the library underneath changed. The prompt batches affected extensions and leads with the dep that changed.
 
-The `dep-update` sub-kind is intentionally separate because the trust shape is different: the user already trusted this extension's authored behavior; what changed is the library underneath. The prompt leads with that framing ("@workspace/runtime updated; @acme/git-tools and @acme/other-thing run different code now") rather than re-introducing the extension. See "Workspace dep update prompt" below.
+The install/update distinction matters: an install prompt is the user confirming what they just asked for, an update prompt is the user being told that **running code changed unexpectedly** and asked whether to let the new code run. Default copy, verb choice, and what's surfaced first all differ.
 
 At every server boot the manager also issues an **`extension.run`** request for each enabled extension at its `resolvedEv`. Same elevated category, but in the common case the approvals system has a stored decision keyed by `(name, ev)` from a prior install / update / dep-update and auto-grants without prompting.
 
 Routine approvals (per-call `fs.write`, `credentials.read`, etc. through `ctx.*` clients) are standard-category — the same approval pipeline panels and workers use, attributed to the extension's `callerId`. Disable, enable (when the EV is unchanged), and uninstall are also standard.
 
-### What the prompt has to communicate
+### Approval payload
 
-The elevated approval payload includes everything needed for the UI to render an informed-consent card distinct from the standard approval prompt:
+All four kinds share the same payload shape; UI treatment branches on `kind`. Fields that don't apply to a kind are `null` or empty arrays.
 
 ```ts
 await approvals.request({
@@ -327,16 +327,31 @@ await approvals.request({
     ev: "ev_2a9f...",                // EV the user is being asked to approve
     previousEv: "ev_117c...",        // EV currently running (or last approved); null on install
 
-    // Diff information for the prompt — three layers
+    // Diff layers
     extensionDiff: {                 // null on install or pure dep-update
       sha: "abc123...",
       previousSha: "def456...",
       stat: { filesChanged: 7, insertions: 142, deletions: 11 },
+      // Provenance — populated on push-triggered kinds (update, dep-update).
+      // On install the source ref above is what was requested; provenance below is null.
+      commit: {
+        author: { name: "...", email: "..." },
+        committer: { name: "...", email: "..." },
+        message: "fix blame regression on submodules",
+        timestamp: 1715000000,
+      },
+      push: {                        // null when not push-triggered
+        pushedAt: 1715000010,
+        pushedBy: "user-id-or-name",  // workspace identity that pushed; null if unattributable
+        ref: "refs/heads/main",
+      },
     },
     workspaceDepChanges: [           // empty on a pure same-source update
       { name: "@workspace/runtime", fromEv: "ev_a1...", toEv: "ev_b2...",
         sha: "...", previousSha: "...",
-        stat: { filesChanged: 3, insertions: 18, deletions: 4 } },
+        stat: { filesChanged: 3, insertions: 18, deletions: 4 },
+        commit: { author: {...}, committer: {...}, message: "...", timestamp: 1715000000 },
+        push: { pushedAt: 1715000010, pushedBy: "...", ref: "refs/heads/main" } },
     ],
     externalDepChanges: [            // empty when package.json/lockfile is unchanged
       { name: "zod", fromVersion: "3.22.4", toVersion: "3.23.8" },
@@ -348,25 +363,48 @@ await approvals.request({
 });
 ```
 
-UI requirements (these are contract, not implementation details):
+### Shared UI requirements
+
+These apply to all elevated approvals regardless of kind:
 
 - **Visually distinct from regular approvals.** Different card style, different icon, more spacing, plain-language framing.
-- **Lead with capability, not provenance.** The first sentence is "This will run as native code on your machine with access to your filesystem, network, and ability to launch other programs." Provenance comes second.
-- **Show all three diff layers.** Extension source diff, workspace dep EV changes (with their own commit diffs), external npm version changes. Each layer is collapsible; on a pure extension update the dep sections are empty and hidden; on a pure dep update the extension section is empty and hidden, and the prompt's title leads with the dep that changed (see "Workspace dep update prompt").
-- **Decision options.** `once` and `deny` are always offered. `session` is offered with the user-facing label "dev session", and when picked it stores a session-scope decision in the approvals system, scoped to this extension — subsequent elevated requests for the same extension within that session auto-grant without prompting, regardless of which EV ships next. This is the dev-loop escape hatch. The standard `version` and `repo` decision keys are **not** offered for elevated approvals: a future EV is a future trust grant, and shouldn't carry over from an EV the user previously saw.
-- **Distinct decision verbs.** "Install and run" / "Don't install" rather than "Allow" / "Deny". Verb choice matters when the action is qualitatively different.
-- **Deferred default.** The default action when the user dismisses the prompt (closes the window, navigates away) is `deny`, never grant.
+- **Show all populated diff layers**, each collapsible. Sections with no changes are hidden, not shown empty.
+- **Decision options**: `once` and `deny` are always offered. `session` is offered with the user-facing label "dev session"; when picked it stores a session-scope decision in the approvals system, scoped to this extension, and subsequent elevated requests for the same extension auto-grant within the window regardless of which EV ships next. The standard `version` and `repo` keys are **not** offered: a future EV is a future trust grant.
+- **Deferred default**: the default action when the prompt is dismissed (window closed, navigated away) is `deny`, never grant.
 
-### Workspace dep update prompt
+### Install prompt (`extension.install`)
 
-When a push to a non-extension unit cascades into an extension's EV (e.g. `@workspace/runtime` was pushed; three extensions depend on it), the push trigger issues an `extension.dep-update` request for each affected extension. The UI's treatment is distinct from `extension.install` and `extension.update`:
+The user just initiated this. The prompt is informational and forward-looking.
 
-- **Title leads with the dep.** "An update to `@workspace/runtime` changes 3 of your extensions" rather than re-introducing the extension. The capability framing is shorter — the user previously approved each extension and that authored behavior is unchanged; only the library underneath has new code.
-- **Batch by dep, not by extension.** If one push to `@workspace/runtime` affects N extensions, the UI surfaces a single combined card listing all N, not N separate cards. Each extension's `extension.dep-update` request still goes through the approvals system independently; the UI's batching is an aggregation over what's in the queue. A "review and approve all" path is available; a per-extension expand-to-inspect is always available.
-- **Diff sections.** The dep diff (commit / stat / link) is the lead. Per-extension subsections list which EVs changed and let the user drill into the dep diff or the extension's own state. The extension source-diff section is empty for dep-updates (no extension source changed).
-- **Decision still per-extension.** Granting the batched prompt issues a `once`-equivalent grant per extension, all keyed to the new EVs. Decline declines all (still per-extension on the wire). The user can split out individual decisions from the batch UI.
+- **Title and lead**: "Install **@acme/git-tools** v1.2.0?" Then on a second line, the capability sentence: "This will run as native code on your machine with access to your filesystem, network, and ability to launch other programs."
+- **Provenance section is short**: the source (`internal-git`, `git`, `tarball`) and ref the user supplied. There's no commit-author surprise to disclose; the user typed the ref.
+- **Verb pair**: "Install and run" / "Don't install".
 
-This mitigates the obvious approval-fatigue problem: a `@workspace/runtime` change in a workspace with a dozen extensions doesn't fire a dozen modal prompts in series, just one card describing the cascade with twelve sub-rows.
+### Update prompt (`extension.update`)
+
+A push changed running code, and the user didn't necessarily push it themselves. The prompt has to make "what happened?" answerable before "is this OK?" becomes meaningful.
+
+- **Title and lead**: "**@acme/git-tools** changed and wants to update." Then on a second line, in stronger language than install: "Running code on your machine is about to change. If you didn't make or expect this change, deny it."
+- **Provenance is the first content section** (above the diff): the commit author and committer (highlighting when they differ — that's exactly the case where someone other than the user committed under the user's identity), the commit message, the commit and push timestamps, the workspace identity that pushed, and the ref. If the push happened in the last 60 seconds *and* `pushedBy` matches the local session's identity, the prompt subtly notes "you just pushed this" to dampen confusion in the common case of self-initiated dev; otherwise it stays neutral.
+- **Diff sections** (extension source, then workspace dep changes if any) follow provenance.
+- **Verb pair**: "Run the new version" / "Don't run". Notice the verbs are about *running*, not *installing* — the previous bundle keeps running until the user explicitly chooses the new one.
+- **Dev-session decision** carries a clarifying caption when offered here ("Allow updates to @acme/git-tools without asking, for the next 4 hours — use while you're actively iterating on this extension"). This is the dev-loop escape hatch and is the right answer when the user is hacking on their own extension; it's the wrong answer in any other situation.
+
+### Workspace dep-update prompt (`extension.dep-update`)
+
+A push to a non-extension unit (typically a shared library) cascades into one or more extensions' EVs. The prompt is the most "passive-trigger" of the three — the user didn't push the extension *or* its library *for this extension's sake*, the cascade is incidental.
+
+- **Title and lead**: "**@workspace/runtime** updated; N of your extensions will run different code." Then the capability sentence is shorter than install — the user previously approved each affected extension's behavior and the dep change doesn't grant new capability classes, only different code runs.
+- **Provenance** of the dep push leads: who pushed `@workspace/runtime`, when, what the commit says.
+- **Batch by dep, not by extension**. Each affected extension's `extension.dep-update` request still goes through the approvals system independently; the UI aggregates what's in the queue and surfaces a single card listing the N affected extensions as sub-rows. Each row is expandable to show the per-extension diff layers. The user can grant or deny the whole batch in one action, or split individual decisions out.
+- **Verb pair**: "Run new versions" / "Don't run". Same running-not-installing framing as `extension.update`.
+- **Dev-session decisions** offered here are **per extension**, not per dep. Granting dev-session for one extension in the batch doesn't auto-grant for the others.
+
+This batching mitigates the obvious approval-fatigue problem: a `@workspace/runtime` change in a workspace with a dozen extensions doesn't fire a dozen modal prompts in series, just one card with twelve sub-rows.
+
+### Run-at-boot prompt (`extension.run`)
+
+This kind exists for the gate-on-EV principle (the manager always requests before running). In the common case it auto-resolves from a stored decision and is invisible to the user. If it does reach the UI — meaning no stored decision covers `(name, resolvedEv)` and no dev-session is active — the prompt uses the same treatment as `extension.update` (provenance first, "running code is about to change"), because that's effectively what happened (the EV doesn't match what was last approved, so something changed without the user being asked).
 
 ### Push-triggered updates
 
