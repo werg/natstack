@@ -1,12 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import {
-  Box,
-  Card,
-  Flex,
-  Heading,
-  Spinner,
-  Text,
-} from "@radix-ui/themes";
+import { Box, Card, Flex, Heading, Spinner, Text } from "@radix-ui/themes";
 
 import type { LazyTitleNavigationData, LazyStatusNavigationData } from "./navigationTypes";
 import type { PanelContextMenuAction } from "@natstack/shared/types";
@@ -45,13 +38,21 @@ interface PanelStackProps {
   hostTheme: "light" | "dark";
   onRegisterDevToolsHandler?: (handler: () => void) => void;
   onRegisterNavigateToId?: (navigate: (panelId: string) => void) => void;
-  onRegisterPanelAction?: (handler: (panelId: string, action: PanelContextMenuAction) => void) => void;
+  onRegisterPanelAction?: (
+    handler: (panelId: string, action: PanelContextMenuAction) => void
+  ) => void;
   onRegisterChromeCommand?: (handler: (command: ChromeCommand) => void) => void;
 }
 
 export type ChromeCommand =
   | { type: PanelCommandId }
-  | { type: "navigate"; value: string; mode?: AddressNavigationMode; ref?: string; action?: AddressAction };
+  | {
+      type: "navigate";
+      value: string;
+      mode?: AddressNavigationMode;
+      ref?: string;
+      action?: AddressAction;
+    };
 
 function captureHostThemeCss(): string {
   if (typeof window === "undefined") {
@@ -80,7 +81,6 @@ function captureHostThemeCss(): string {
 
   return `${cssVariables}\n${baseline}`;
 }
-
 
 export function PanelStack({
   onTitleChange,
@@ -192,15 +192,12 @@ export function PanelStack({
   }, [setLazyStatusNavigation, lazyStatusNavigationData]);
 
   // Navigate to a specific panel by ID
-  const navigateToPanelId = useCallback(
-    (panelId: string) => {
-      if (!panelId) {
-        return;
-      }
-      setVisiblePanelId(panelId);
-    },
-    []
-  );
+  const navigateToPanelId = useCallback((panelId: string) => {
+    if (!panelId) {
+      return;
+    }
+    setVisiblePanelId(panelId);
+  }, []);
 
   // Register navigate function with context
   useEffect(() => {
@@ -214,79 +211,97 @@ export function PanelStack({
   }, [onRegisterNavigateToId, navigateToPanelId]);
 
   // Listen for navigate-to-panel events from main process (e.g., when new panels are created with focus: true)
-  useShellEvent("navigate-to-panel", useCallback(({ panelId }) => {
-    navigateToPanelId(panelId);
-  }, [navigateToPanelId]));
+  useShellEvent(
+    "navigate-to-panel",
+    useCallback(
+      ({ panelId }) => {
+        navigateToPanelId(panelId);
+      },
+      [navigateToPanelId]
+    )
+  );
 
   // Handle panel context menu actions (reload, unload)
-  const handlePanelAction = useCallback(
-    async (panelId: string, action: PanelContextMenuAction) => {
-      switch (action) {
-        case "back":
-          await panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand("back")!);
-          await panelService.goBack(panelId);
-          break;
-        case "forward":
-          await panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand("forward")!);
-          await panelService.goForward(panelId);
-          break;
-        case "reload":
-        case "reload-panel":
-          await panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand("reload-panel")!);
-          await panelService.reload(panelId);
-          break;
-        case "reload-view":
-          await panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand("reload-view")!);
-          await panelService.reloadView(panelId);
-          break;
-        case "force-reload":
-        case "force-reload-view":
-          await panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand("force-reload-view")!);
-          await panelService.forceReloadView(panelId);
-          break;
-        case "rebuild-panel":
-          await panelService.rebuildPanel(panelId);
-          break;
-        case "stop":
-          await view.browserStop(panelId);
-          break;
-        case "copy-address": {
-          const state = await panelService.getChromeState(panelId);
-          await navigator.clipboard.writeText(state.editableAddress);
-          break;
+  const handlePanelAction = useCallback(async (panelId: string, action: PanelContextMenuAction) => {
+    switch (action) {
+      case "back":
+        await panelService.markBrowserNavigationIntent(
+          panelId,
+          getBrowserNavigationIntentForCommand("back")!
+        );
+        await panelService.goBack(panelId);
+        break;
+      case "forward":
+        await panelService.markBrowserNavigationIntent(
+          panelId,
+          getBrowserNavigationIntentForCommand("forward")!
+        );
+        await panelService.goForward(panelId);
+        break;
+      case "reload":
+      case "reload-panel":
+        await panelService.markBrowserNavigationIntent(
+          panelId,
+          getBrowserNavigationIntentForCommand("reload-panel")!
+        );
+        await panelService.reload(panelId);
+        break;
+      case "reload-view":
+        await panelService.markBrowserNavigationIntent(
+          panelId,
+          getBrowserNavigationIntentForCommand("reload-view")!
+        );
+        await panelService.reloadView(panelId);
+        break;
+      case "force-reload":
+      case "force-reload-view":
+        await panelService.markBrowserNavigationIntent(
+          panelId,
+          getBrowserNavigationIntentForCommand("force-reload-view")!
+        );
+        await panelService.forceReloadView(panelId);
+        break;
+      case "rebuild-panel":
+        await panelService.rebuildPanel(panelId);
+        break;
+      case "stop":
+        await view.browserStop(panelId);
+        break;
+      case "copy-address": {
+        const state = await panelService.getChromeState(panelId);
+        await navigator.clipboard.writeText(state.editableAddress);
+        break;
+      }
+      case "open-external": {
+        const state = await panelService.getChromeState(panelId);
+        if (state.resolvedUrl && /^https?:\/\//i.test(state.resolvedUrl)) {
+          await app.openExternal(state.resolvedUrl);
         }
-        case "open-external": {
-          const state = await panelService.getChromeState(panelId);
-          if (state.resolvedUrl && /^https?:\/\//i.test(state.resolvedUrl)) {
-            await app.openExternal(state.resolvedUrl);
-          }
-          break;
-        }
-        case "duplicate": {
-          const state = await panelService.getChromeState(panelId);
-          if (state.kind === "browser") {
-            if (state.resolvedUrl) {
-              const result = await panelService.createBrowser(state.resolvedUrl, { focus: true });
-              navigateToPanelId(result.id);
-            }
-          } else {
-            const result = await panelService.createPanel(state.source, { isRoot: true });
+        break;
+      }
+      case "duplicate": {
+        const state = await panelService.getChromeState(panelId);
+        if (state.kind === "browser") {
+          if (state.resolvedUrl) {
+            const result = await panelService.createBrowser(state.resolvedUrl, { focus: true });
             navigateToPanelId(result.id);
           }
-          break;
+        } else {
+          const result = await panelService.createPanel(state.source, { isRoot: true });
+          navigateToPanelId(result.id);
         }
-        case "unload":
-          // Unload panel resources but keep in tree (can be re-loaded later)
-          await panelService.unload(panelId);
-          break;
-        case "archive":
-          // Archive panel (remove from tree)
-          await panelService.archive(panelId);
-          break;
+        break;
       }
-    },
-    []
-  );
+      case "unload":
+        // Unload panel resources but keep in tree (can be re-loaded later)
+        await panelService.unload(panelId);
+        break;
+      case "archive":
+        // Archive panel (remove from tree)
+        await panelService.archive(panelId);
+        break;
+    }
+  }, []);
 
   // Register panel action handler with parent
   useEffect(() => {
@@ -294,12 +309,9 @@ export function PanelStack({
   }, [onRegisterPanelAction, handlePanelAction]);
 
   // Handle direct archive button clicks (X button in tree sidebar)
-  const handleArchive = useCallback(
-    async (panelId: string) => {
-      await panelService.archive(panelId);
-    },
-    []
-  );
+  const handleArchive = useCallback(async (panelId: string) => {
+    await panelService.archive(panelId);
+  }, []);
 
   const startSidebarResize = (event: React.PointerEvent) => {
     event.preventDefault();
@@ -339,8 +351,12 @@ export function PanelStack({
 
     return () => {
       window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", stopResize, { capture: true } as EventListenerOptions);
-      window.removeEventListener("pointercancel", stopResize, { capture: true } as EventListenerOptions);
+      window.removeEventListener("pointerup", stopResize, {
+        capture: true,
+      } as EventListenerOptions);
+      window.removeEventListener("pointercancel", stopResize, {
+        capture: true,
+      } as EventListenerOptions);
     };
   }, [isResizingSidebar]);
 
@@ -370,33 +386,42 @@ export function PanelStack({
 
     // Hide previous panel's view when switching panels
     if (previousVisiblePanelId.current && previousVisiblePanelId.current !== panelId) {
-      void view.setVisible(previousVisiblePanelId.current, false).catch((err: unknown) => console.warn("[PanelStack] Failed to hide panel:", err));
+      void view
+        .setVisible(previousVisiblePanelId.current, false)
+        .catch((err: unknown) => console.warn("[PanelStack] Failed to hide panel:", err));
     }
     previousVisiblePanelId.current = panelId;
 
     // Only interact with view if it exists (htmlPath set after build)
     // Panels with errors, still building, or unloaded (pending) have no view to show
     const buildState = visiblePanel?.artifacts?.buildState;
-    const isUnloaded = buildState === "pending" || buildState === "building" || buildState === "error";
+    const isUnloaded =
+      buildState === "pending" || buildState === "building" || buildState === "error";
     if (!isUnloaded && htmlPath) {
       // Show current panel's view - main process handles bounds calculation
-      void view.setVisible(panelId, true).catch((err: unknown) => console.warn("[PanelStack] Failed to show panel:", err));
+      void view
+        .setVisible(panelId, true)
+        .catch((err: unknown) => console.warn("[PanelStack] Failed to show panel:", err));
     }
   }, [visiblePanel?.id, visiblePanel?.artifacts?.htmlPath, visiblePanel?.artifacts?.buildState]);
 
   // Notify main process of layout changes (sidebar visibility and width)
   const sidebarVisible = navigationMode === "tree";
   useEffect(() => {
-    void view.updateLayout({
-      sidebarVisible,
-      sidebarWidth,
-    }).catch((err: unknown) => console.warn("[PanelStack] Layout update failed:", err));
+    void view
+      .updateLayout({
+        sidebarVisible,
+        sidebarWidth,
+      })
+      .catch((err: unknown) => console.warn("[PanelStack] Layout update failed:", err));
   }, [sidebarVisible, sidebarWidth]);
 
   // Send theme CSS to main process for injection into views
   useEffect(() => {
     if (hostThemeCss) {
-      void view.setThemeCss(hostThemeCss).catch((err: unknown) => console.warn("[PanelStack] Theme CSS injection failed:", err));
+      void view
+        .setThemeCss(hostThemeCss)
+        .catch((err: unknown) => console.warn("[PanelStack] Theme CSS injection failed:", err));
     }
   }, [hostThemeCss]);
 
@@ -418,23 +443,38 @@ export function PanelStack({
 
       switch (command.type) {
         case "back":
-          void panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand(command.type)!);
+          void panelService.markBrowserNavigationIntent(
+            panelId,
+            getBrowserNavigationIntentForCommand(command.type)!
+          );
           void panelService.goBack(panelId);
           return;
         case "forward":
-          void panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand(command.type)!);
+          void panelService.markBrowserNavigationIntent(
+            panelId,
+            getBrowserNavigationIntentForCommand(command.type)!
+          );
           void panelService.goForward(panelId);
           return;
         case "reload-panel":
-          void panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand(command.type)!);
+          void panelService.markBrowserNavigationIntent(
+            panelId,
+            getBrowserNavigationIntentForCommand(command.type)!
+          );
           void panelService.reload(panelId);
           return;
         case "reload-view":
-          void panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand(command.type)!);
+          void panelService.markBrowserNavigationIntent(
+            panelId,
+            getBrowserNavigationIntentForCommand(command.type)!
+          );
           void panelService.reloadView(panelId);
           return;
         case "force-reload-view":
-          void panelService.markBrowserNavigationIntent(panelId, getBrowserNavigationIntentForCommand(command.type)!);
+          void panelService.markBrowserNavigationIntent(
+            panelId,
+            getBrowserNavigationIntentForCommand(command.type)!
+          );
           void panelService.forceReloadView(panelId);
           return;
         case "rebuild-panel":
@@ -444,28 +484,33 @@ export function PanelStack({
           void view.browserStop(panelId);
           return;
         case "copy-address":
-          void panelService.getChromeState(panelId)
+          void panelService
+            .getChromeState(panelId)
             .then((state) => navigator.clipboard.writeText(state.editableAddress));
           return;
         case "open-external":
-          void panelService.getChromeState(panelId)
-            .then((state) => {
-              if (state.resolvedUrl && /^https?:\/\//i.test(state.resolvedUrl)) {
-                void app.openExternal(state.resolvedUrl);
-              }
-            });
+          void panelService.getChromeState(panelId).then((state) => {
+            if (state.resolvedUrl && /^https?:\/\//i.test(state.resolvedUrl)) {
+              void app.openExternal(state.resolvedUrl);
+            }
+          });
           return;
         case "duplicate": {
           if (!visiblePanel) return;
           const snapshot = getCurrentSnapshot(visiblePanel);
           if (isBrowserPanelSource(snapshot.source)) {
             const url = visiblePanel.navigation?.url ?? snapshot.resolvedUrl;
-            if (url) void panelService.createBrowser(url, { focus: true }).then((result) => navigateToPanelId(result.id));
+            if (url)
+              void panelService
+                .createBrowser(url, { focus: true })
+                .then((result) => navigateToPanelId(result.id));
           } else {
-            void panelService.createPanel(snapshot.source, {
-              isRoot: true,
-              ref: snapshot.options.ref,
-            }).then((result) => navigateToPanelId(result.id));
+            void panelService
+              .createPanel(snapshot.source, {
+                isRoot: true,
+                ref: snapshot.options.ref,
+              })
+              .then((result) => navigateToPanelId(result.id));
           }
           return;
         }
@@ -487,75 +532,109 @@ export function PanelStack({
           if (!parsed) return;
           const mode = command.mode ?? "current";
           if (parsed.type === "browser-url") {
-            const action: AddressAction = { type: "navigate-url", url: parsed.url, recordAsTyped: true };
+            const action: AddressAction = {
+              type: "navigate-url",
+              url: parsed.url,
+              recordAsTyped: true,
+            };
             const intent = getBrowserNavigationIntentForAddressAction(action);
             if (intent) void panelService.markBrowserNavigationIntent(panelId, intent);
             if (mode === "external") {
               void app.openExternal(parsed.url);
             } else if (mode === "child") {
-              void panelService.createBrowserChild(panelId, parsed.url, { focus: true })
+              void panelService
+                .createBrowserChild(panelId, parsed.url, { focus: true })
                 .then((result) => navigateToPanelId(result.id));
             } else if (mode === "root") {
-              void panelService.createBrowser(parsed.url, { focus: true })
+              void panelService
+                .createBrowser(parsed.url, { focus: true })
                 .then((result) => navigateToPanelId(result.id));
-            } else if (visiblePanel && isBrowserPanelSource(getCurrentSnapshot(visiblePanel).source)) {
+            } else if (
+              visiblePanel &&
+              isBrowserPanelSource(getCurrentSnapshot(visiblePanel).source)
+            ) {
               void view.browserNavigate(panelId, parsed.url);
             } else {
-              void panelService.createBrowser(parsed.url, { focus: true })
+              void panelService
+                .createBrowser(parsed.url, { focus: true })
                 .then((result) => navigateToPanelId(result.id));
             }
             return;
           }
           if (parsed.type === "panel-source") {
             const ref = command.ref;
-            const creator = mode === "current"
-              ? panelService.navigate(panelId, parsed.source, { ref })
-              : mode === "child"
-                ? panelService.createChild(panelId, parsed.source, { focus: true, ref })
-                : panelService.createPanel(parsed.source, { isRoot: true, ref });
-            void creator
-              .then((result) => navigateToPanelId(result.id));
+            const creator =
+              mode === "current"
+                ? panelService.navigate(panelId, parsed.source, { ref })
+                : mode === "child"
+                  ? panelService.createChild(panelId, parsed.source, { focus: true, ref })
+                  : panelService.createPanel(parsed.source, { isRoot: true, ref });
+            void creator.then((result) => navigateToPanelId(result.id));
             return;
           }
           if (parsed.type === "search") {
             const url = applySearchTemplate(parsed.query);
-            const action: AddressAction = { type: "search", query: parsed.query, template: DEFAULT_SEARCH_TEMPLATE, recordAsTyped: true };
+            const action: AddressAction = {
+              type: "search",
+              query: parsed.query,
+              template: DEFAULT_SEARCH_TEMPLATE,
+              recordAsTyped: true,
+            };
             const intent = getBrowserNavigationIntentForAddressAction(action);
             if (intent) void panelService.markBrowserNavigationIntent(panelId, intent);
             if (mode === "external") {
               void app.openExternal(url);
+            } else if (mode === "child") {
+              void panelService
+                .createBrowserChild(panelId, url, { focus: true })
+                .then((result) => navigateToPanelId(result.id));
+            } else if (mode === "root") {
+              void panelService
+                .createBrowser(url, { focus: true })
+                .then((result) => navigateToPanelId(result.id));
+            } else if (
+              visiblePanel &&
+              isBrowserPanelSource(getCurrentSnapshot(visiblePanel).source)
+            ) {
+              void view.browserNavigate(panelId, url);
+            } else {
+              void panelService
+                .createBrowser(url, { focus: true })
+                .then((result) => navigateToPanelId(result.id));
+            }
             return;
-          }
-          if (mode === "child") {
-            void panelService.createBrowserChild(panelId, url, { focus: true })
-              .then((result) => navigateToPanelId(result.id));
-          } else if (mode === "root") {
-            void panelService.createBrowser(url, { focus: true })
-              .then((result) => navigateToPanelId(result.id));
-          } else if (visiblePanel && isBrowserPanelSource(getCurrentSnapshot(visiblePanel).source)) {
-            void view.browserNavigate(panelId, url);
-          } else {
-            void panelService.createBrowser(url, { focus: true })
-              .then((result) => navigateToPanelId(result.id));
-          }
           }
         }
       }
 
-      function executeAddressAction(targetPanelId: string, action: AddressAction, mode: AddressNavigationMode, ref?: string) {
+      function executeAddressAction(
+        targetPanelId: string,
+        action: AddressAction,
+        mode: AddressNavigationMode,
+        ref?: string
+      ) {
         if (action.type === "navigate-url") {
           const intent = getBrowserNavigationIntentForAddressAction(action);
           if (intent) void panelService.markBrowserNavigationIntent(targetPanelId, intent);
           if (mode === "external") {
             void app.openExternal(action.url);
           } else if (mode === "child") {
-            void panelService.createBrowserChild(targetPanelId, action.url, { focus: true }).then((result) => navigateToPanelId(result.id));
+            void panelService
+              .createBrowserChild(targetPanelId, action.url, { focus: true })
+              .then((result) => navigateToPanelId(result.id));
           } else if (mode === "root") {
-            void panelService.createBrowser(action.url, { focus: true }).then((result) => navigateToPanelId(result.id));
-          } else if (visiblePanel && isBrowserPanelSource(getCurrentSnapshot(visiblePanel).source)) {
+            void panelService
+              .createBrowser(action.url, { focus: true })
+              .then((result) => navigateToPanelId(result.id));
+          } else if (
+            visiblePanel &&
+            isBrowserPanelSource(getCurrentSnapshot(visiblePanel).source)
+          ) {
             void view.browserNavigate(targetPanelId, action.url);
           } else {
-            void panelService.createBrowser(action.url, { focus: true }).then((result) => navigateToPanelId(result.id));
+            void panelService
+              .createBrowser(action.url, { focus: true })
+              .then((result) => navigateToPanelId(result.id));
           }
           return;
         }
@@ -566,28 +645,41 @@ export function PanelStack({
           if (mode === "external") {
             void app.openExternal(url);
           } else if (mode === "child") {
-            void panelService.createBrowserChild(targetPanelId, url, { focus: true }).then((result) => navigateToPanelId(result.id));
+            void panelService
+              .createBrowserChild(targetPanelId, url, { focus: true })
+              .then((result) => navigateToPanelId(result.id));
           } else if (mode === "root") {
-            void panelService.createBrowser(url, { focus: true }).then((result) => navigateToPanelId(result.id));
-          } else if (visiblePanel && isBrowserPanelSource(getCurrentSnapshot(visiblePanel).source)) {
+            void panelService
+              .createBrowser(url, { focus: true })
+              .then((result) => navigateToPanelId(result.id));
+          } else if (
+            visiblePanel &&
+            isBrowserPanelSource(getCurrentSnapshot(visiblePanel).source)
+          ) {
             void view.browserNavigate(targetPanelId, url);
           } else {
-            void panelService.createBrowser(url, { focus: true }).then((result) => navigateToPanelId(result.id));
+            void panelService
+              .createBrowser(url, { focus: true })
+              .then((result) => navigateToPanelId(result.id));
           }
           return;
         }
         if (action.type === "panel-source") {
           const actionRef = action.ref ?? ref;
-          const creator = mode === "current"
-            ? panelService.navigate(targetPanelId, action.source, { ref: actionRef })
-            : mode === "child"
-              ? panelService.createChild(targetPanelId, action.source, { focus: true, ref: actionRef })
-              : panelService.createPanel(action.source, { isRoot: true, ref: actionRef });
+          const creator =
+            mode === "current"
+              ? panelService.navigate(targetPanelId, action.source, { ref: actionRef })
+              : mode === "child"
+                ? panelService.createChild(targetPanelId, action.source, {
+                    focus: true,
+                    ref: actionRef,
+                  })
+                : panelService.createPanel(action.source, { isRoot: true, ref: actionRef });
           void creator.then((result) => navigateToPanelId(result.id));
         }
       }
     },
-    [navigateToPanelId, visiblePanel],
+    [navigateToPanelId, visiblePanel]
   );
 
   useEffect(() => {
@@ -626,7 +718,8 @@ export function PanelStack({
     onChromeStateChange?.(fallback);
 
     let cancelled = false;
-    void panelService.getChromeState(visiblePanel.id)
+    void panelService
+      .getChromeState(visiblePanel.id)
       .then((state) => {
         if (!cancelled) onChromeStateChange?.(state);
       })
@@ -674,13 +767,7 @@ export function PanelStack({
     // Error state
     if (artifacts?.error) {
       return (
-        <Flex
-          direction="column"
-          align="center"
-          justify="center"
-          height="100%"
-          p="4"
-        >
+        <Flex direction="column" align="center" justify="center" height="100%" p="4">
           <Text color="red" size="4" weight="bold" mb="2">
             Panel Build Error
           </Text>
@@ -694,16 +781,9 @@ export function PanelStack({
     if (!artifacts?.htmlPath) {
       // Panel loading state (while build is in progress)
       return (
-        <Flex
-          direction="column"
-          align="center"
-          justify="center"
-          height="100%"
-        >
+        <Flex direction="column" align="center" justify="center" height="100%">
           <Spinner size="3" />
-          <Text mt="3">
-            {"Preparing panel..."}
-          </Text>
+          <Text mt="3">{"Preparing panel..."}</Text>
         </Flex>
       );
     }
@@ -773,7 +853,17 @@ export function PanelStack({
         {/* Current Panel Content */}
         <Flex direction="column" flexGrow="1" gap="0" minHeight="0">
           <SavePasswordBar visiblePanelId={visiblePanelId} />
-          <Card size="3" style={{ flex: 1, minHeight: 0, overflow: "hidden", padding: 0, display: "flex", flexDirection: "column" }}>
+          <Card
+            size="3"
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflow: "hidden",
+              padding: 0,
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
             <Box style={{ flex: 1, minHeight: 0, position: "relative" }}>
               {renderPanelContent()}
             </Box>
