@@ -783,11 +783,11 @@ app.on("ready", async () => {
   // a known-sensitive set on every session that gets created (default,
   // persist:browser, persist:panel:*).
   //
-  // TODO(security-audit-agent-1): the shell partition currently shares the
-  // default session with panels. Once shell is moved to its own partition
-  // (audit C4 hardening — owned by another agent in src/main/viewManager.ts
-  // and the shell BrowserWindow setup), the shell partition can be allowed
-  // to request these permissions while panel partitions stay default-deny.
+  // TODO(security): the shell partition currently shares the default session
+  // with panels. Once shell is moved to its own partition (see the related
+  // hardening work in src/main/viewManager.ts and the shell BrowserWindow
+  // setup), the shell partition can be allowed to request these permissions
+  // while panel partitions stay default-deny.
   // -------------------------------------------------------------------------
   const SENSITIVE_PERMISSIONS = new Set<string>([
     "geolocation",
