@@ -2,35 +2,63 @@
  * Tests for panelIdUtils: sanitizePanelIdSegment, generatePanelNonce, computePanelId.
  */
 
-import {
-  sanitizePanelIdSegment,
-  generatePanelNonce,
-  computePanelId,
-} from "./panelIdUtils.js";
+import { sanitizePanelIdSegment, generatePanelNonce, computePanelId } from "./panelIdUtils.js";
 
 vi.mock("crypto", () => ({
   randomBytes: vi.fn(() => Buffer.from([0xde, 0xad, 0xbe, 0xef])),
 }));
 
 describe("sanitizePanelIdSegment", () => {
+  // --- valid inputs ---
   it("returns trimmed segment for valid input", () => {
     expect(sanitizePanelIdSegment("  my-panel  ")).toBe("my-panel");
   });
 
+  it("allows alphanumeric-only segment", () => {
+    expect(sanitizePanelIdSegment("foo")).toBe("foo");
+  });
+
+  it("allows segment with hyphens and underscores", () => {
+    expect(sanitizePanelIdSegment("foo-bar_baz")).toBe("foo-bar_baz");
+  });
+
+  it("allows tilde in segment (used by system for about-panel names)", () => {
+    // About-panels generate segments of the form `<page>~<timestamp36>`, e.g. "new~lk2f8g"
+    expect(sanitizePanelIdSegment("new~lk2f8g")).toBe("new~lk2f8g");
+  });
+
+  // --- invalid inputs: path-traversal and shape-violation cases ---
   it("throws for empty string", () => {
     expect(() => sanitizePanelIdSegment("")).toThrow("Invalid panel identifier segment");
   });
 
-  it("throws for dot segment", () => {
+  it("throws for dot segment (.)", () => {
     expect(() => sanitizePanelIdSegment(".")).toThrow("Invalid panel identifier segment");
   });
 
-  it("throws for segment containing /", () => {
+  it("throws for double-dot segment (..) [C3: path-traversal fix]", () => {
+    // Previously allowed by the deny-list; now rejected by the allow-list.
+    expect(() => sanitizePanelIdSegment("..")).toThrow("Invalid panel identifier segment");
+  });
+
+  it("throws for triple-dot segment (...)", () => {
+    expect(() => sanitizePanelIdSegment("...")).toThrow("Invalid panel identifier segment");
+  });
+
+  it("throws for segment containing / (path separator)", () => {
     expect(() => sanitizePanelIdSegment("a/b")).toThrow("Invalid panel identifier segment");
   });
 
   it("throws for segment containing backslash", () => {
     expect(() => sanitizePanelIdSegment("a\\b")).toThrow("Invalid panel identifier segment");
+  });
+
+  it("throws for segment with leading hyphen", () => {
+    expect(() => sanitizePanelIdSegment("-foo")).toThrow("Invalid panel identifier segment");
+  });
+
+  it("throws for segment with leading underscore", () => {
+    expect(() => sanitizePanelIdSegment("_foo")).toThrow("Invalid panel identifier segment");
   });
 });
 
