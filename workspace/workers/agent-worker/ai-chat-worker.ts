@@ -112,7 +112,10 @@ export class AiChatWorker extends AgentWorkerBase {
       case "credentialConnected":
         return {
           result: {
-            resumed: await this.resumeAfterModelCredentialConnected(channelId),
+            resumed: await this.resumeAfterModelCredentialConnected(
+              channelId,
+              _args as { providerId?: string; modelBaseUrl?: string },
+            ),
           },
         };
       default:

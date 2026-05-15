@@ -890,7 +890,7 @@ function HoverableBreadcrumbItem({
   const isTouch = useTouchDevice();
 
   const archivePanel = () => {
-    void menu.archivePanel(panelId).catch((error) => {
+    void panel.archive(panelId).catch((error) => {
       console.error("Failed to archive panel from title bar", error);
     });
   };

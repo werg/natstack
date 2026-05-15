@@ -159,6 +159,13 @@ class TestWorker extends AgentWorkerBase {
   resumeAfterCredential(channelId: string): Promise<boolean> {
     return this.resumeAfterModelCredentialConnected(channelId);
   }
+
+  resumeAfterCredentialFor(
+    channelId: string,
+    opts: { providerId?: string; modelBaseUrl?: string },
+  ): Promise<boolean> {
+    return this.resumeAfterModelCredentialConnected(channelId, opts);
+  }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -684,6 +691,36 @@ describe("AgentWorkerBase — onChannelEvent → TurnDispatcher wiring", () => {
     expect(rows.map((row) => JSON.parse(row["content"] as string))).toEqual([
       { role: "user", content: "hello", timestamp: 1 },
     ]);
+  });
+
+  it("resumes a fresh workspace credential interruption before the assistant error is persisted", async () => {
+    const { instance, sql } = await createTestDO(TestWorker);
+
+    await (instance as any).saveMessages("ch-1", [
+      { role: "user", content: "hello", timestamp: 1 },
+    ]);
+    (instance as any).recordModelCredentialInterruption(
+      "ch-1",
+      "openai-codex",
+      "https://api.openai.com/v1",
+    );
+
+    const resumed = await (instance as TestWorker).resumeAfterCredentialFor("ch-1", {
+      providerId: "openai-codex",
+      modelBaseUrl: "https://api.openai.com/v1",
+    });
+    await flush();
+
+    expect(resumed).toBe(true);
+    expect(instance.fakeState!.continueCount).toBe(1);
+    const rows = sql.exec(`SELECT content FROM pi_messages WHERE channel_id = ? ORDER BY idx`, "ch-1").toArray();
+    expect(rows.map((row) => JSON.parse(row["content"] as string))).toEqual([
+      { role: "user", content: "hello", timestamp: 1 },
+    ]);
+    expect(sql.exec(
+      `SELECT * FROM model_credential_interruptions WHERE channel_id = ?`,
+      "ch-1",
+    ).toArray()).toHaveLength(0);
   });
 
   it("does not resume after unrelated assistant errors", async () => {
