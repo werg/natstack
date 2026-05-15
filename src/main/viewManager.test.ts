@@ -278,6 +278,24 @@ describe("ViewManager", () => {
       expect(view.setVisible).toHaveBeenCalledWith(false);
       expect(vm.isViewVisible("test-view")).toBe(false);
     });
+
+    it("ignores hiding a missing view", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      expect(() => vm.setViewVisible("missing-view", false)).not.toThrow();
+
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it("warns when showing a missing view", () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      vm.setViewVisible("missing-view", true);
+
+      expect(warnSpy).toHaveBeenCalledWith("[ViewManager] View not found: missing-view");
+      warnSpy.mockRestore();
+    });
   });
 
   describe("getWebContents", () => {

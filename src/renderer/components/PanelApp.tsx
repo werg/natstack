@@ -46,7 +46,6 @@ function PanelAppContent() {
   const handlePanelActionRef = useRef<(panelId: string, action: PanelContextMenuAction) => void>(
     () => {}
   );
-  const handleArchiveRef = useRef<(panelId: string) => void>(() => {});
   const handleChromeCommandRef = useRef<(command: ChromeCommand) => void>(() => {});
 
   const { navigateToId, registerNavigateToId, addressBarVisible, setAddressBarVisible } = useNavigation();
@@ -56,10 +55,6 @@ function PanelAppContent() {
   const handlePanelAction = useCallback(
     (panelId: string, action: PanelContextMenuAction) =>
       handlePanelActionRef.current(panelId, action),
-    []
-  );
-  const handleArchive = useCallback(
-    (panelId: string) => handleArchiveRef.current(panelId),
     []
   );
   const handleChromeCommand = useCallback(
@@ -131,7 +126,6 @@ function PanelAppContent() {
         onChromeCommand={handleChromeCommand}
         onNavigateToId={navigateToId}
         onPanelAction={handlePanelAction}
-        onArchive={handleArchive}
       />
       <NotificationBar />
       <ConsentApprovalBar />
@@ -145,9 +139,6 @@ function PanelAppContent() {
         onRegisterNavigateToId={registerNavigateToId}
         onRegisterPanelAction={(handler) => {
           handlePanelActionRef.current = handler;
-        }}
-        onRegisterArchive={(handler) => {
-          handleArchiveRef.current = handler;
         }}
         onRegisterChromeCommand={(handler) => {
           handleChromeCommandRef.current = handler;

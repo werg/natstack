@@ -25,6 +25,7 @@ export function createMenuService(deps: {
       showHamburger: { args: z.tuple([z.object({ x: z.number(), y: z.number() })]) },
       showContext: { args: z.tuple([z.array(z.object({ id: z.string(), label: z.string() })), z.object({ x: z.number(), y: z.number() })]) },
       showPanelContext: { args: z.tuple([z.string(), z.object({ x: z.number(), y: z.number() })]) },
+      archivePanel: { args: z.tuple([z.string()]) },
     },
     handler: async (_ctx, method, args) => {
       const vm = deps.getViewManager();
@@ -148,6 +149,12 @@ export function createMenuService(deps: {
               callback: () => resolve(null),
             });
           });
+        }
+
+        case "archivePanel": {
+          const panelId = args[0] as string;
+          await lifecycle.closePanel(panelId);
+          return;
         }
 
         default:

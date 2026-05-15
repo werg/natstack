@@ -281,10 +281,22 @@ export class PanelOrchestrator implements BridgePanelManager {
     // Determine sibling to focus before removal
     const parentId = this.registry.findParentId(panelId);
     const parent = parentId ? this.registry.getPanel(parentId) : null;
+    const focusedPanelId = this.registry.getFocusedPanelId();
+    const focusedPanelWillClose = Boolean(
+      focusedPanelId &&
+      (focusedPanelId === panelId || this.registry.isDescendantOf(focusedPanelId, panelId)),
+    );
     let siblingToFocus: string | null = null;
-    if (parent && parent.selectedChildId === panelId) {
+    if (focusedPanelWillClose && parent) {
       const siblings = parent.children.filter((c) => c.id !== panelId);
       siblingToFocus = siblings.length > 0 ? siblings[siblings.length - 1]!.id : parentId;
+    } else if (focusedPanelWillClose && !parentId) {
+      const roots = this.registry.getRootPanels();
+      const rootIndex = roots.findIndex((p) => p.id === panelId);
+      const nextRoot = rootIndex >= 0
+        ? (roots[rootIndex + 1] ?? roots[rootIndex - 1])
+        : undefined;
+      siblingToFocus = nextRoot?.id ?? null;
     }
 
     // Server handles recursive close + resource cleanup

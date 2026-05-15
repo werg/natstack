@@ -165,6 +165,11 @@ export function createPanelShellService(deps: {
 
         case "notifyFocused": {
           const panelId = args[0] as string;
+          if (!registry.getPanel(panelId)) {
+            log.verbose(` Ignoring focus notification for missing panel: ${panelId}`);
+            return;
+          }
+
           try {
             // Orchestrator handles: registry.updateSelectedPath, server persist,
             // sendPanelEvent(focus), navigate-to-panel event
@@ -274,7 +279,12 @@ export function createPanelShellService(deps: {
 
         case "archive": {
           const panelId = args[0] as string;
-          await lifecycle.closePanel(panelId);
+          try {
+            await lifecycle.closePanel(panelId);
+          } catch (error) {
+            log.warn(` Archive failed for panel ${panelId}: ${error instanceof Error ? error.message : String(error)}`);
+            throw error;
+          }
           return;
         }
 

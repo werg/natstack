@@ -17,7 +17,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { useTouchDevice } from "@workspace/react/responsive";
 
 import { useNavigation } from "./NavigationContext";
-import { panel } from "../shell/client";
 import type { ChromeCommand } from "./PanelStack";
 import { ConnectionStatusBadge } from "./ConnectionStatusBadge";
 import { ConnectionSettingsDialog } from "./ConnectionSettingsDialog";
@@ -44,7 +43,7 @@ import {
   type PanelSourceSuggestion,
 } from "@natstack/shared/panelChrome";
 import { getAddressNavigationModeFromModifiers } from "@natstack/shared/panelCommands";
-import { menu, type NativeShellOverlayEvent, type NativeShellOverlayOptions } from "../shell/client";
+import { menu, panel, type NativeShellOverlayEvent, type NativeShellOverlayOptions } from "../shell/client";
 import { useNativeShellOverlay } from "../shell/useNativeShellOverlay";
 
 interface TitleBarProps {
@@ -53,10 +52,9 @@ interface TitleBarProps {
   onChromeCommand?: (command: ChromeCommand) => void;
   onNavigateToId?: (panelId: string) => void;
   onPanelAction?: (panelId: string, action: PanelContextMenuAction) => void;
-  onArchive?: (panelId: string) => void;
 }
 
-export function TitleBar({ title, chromeState, onChromeCommand, onNavigateToId, onPanelAction, onArchive }: TitleBarProps) {
+export function TitleBar({ title, chromeState, onChromeCommand, onNavigateToId, onPanelAction }: TitleBarProps) {
   const {
     mode: navigationMode,
     setMode,
@@ -166,7 +164,6 @@ export function TitleBar({ title, chromeState, onChromeCommand, onNavigateToId, 
               statusNavigation={statusNavigation}
               onNavigateToId={onNavigateToId}
               onPanelAction={onPanelAction}
-              onArchive={onArchive}
             />
           )}
         </Box>
@@ -193,7 +190,6 @@ interface BreadcrumbBarProps {
   statusNavigation?: LazyStatusNavigationData | null;
   onNavigateToId?: (panelId: string) => void;
   onPanelAction?: (panelId: string, action: PanelContextMenuAction) => void;
-  onArchive?: (panelId: string) => void;
 }
 
 const MAX_VISIBLE_ANCESTORS = 2;
@@ -851,12 +847,14 @@ function iconText(kind) {
 
 // Shared styles for breadcrumb items
 const itemStyle: CSSProperties = {
+  appRegion: "no-drag",
+  WebkitAppRegion: "no-drag",
   padding: "2px 6px",
   borderRadius: "3px",
   cursor: "pointer",
   whiteSpace: "nowrap",
   transition: "background-color 100ms",
-};
+} as CSSProperties;
 
 // Style for sibling group container
 const groupStyle = {
@@ -878,7 +876,6 @@ interface HoverableBreadcrumbItemProps {
   isCurrent: boolean;
   onNavigate: () => void;
   onContextMenu: (e: MouseEvent<HTMLSpanElement>) => void;
-  onArchive?: (panelId: string) => void;
 }
 
 function HoverableBreadcrumbItem({
@@ -888,14 +885,20 @@ function HoverableBreadcrumbItem({
   isCurrent,
   onNavigate,
   onContextMenu,
-  onArchive,
 }: HoverableBreadcrumbItemProps) {
   const [isHovered, setIsHovered] = useState(false);
   const isTouch = useTouchDevice();
 
+  const archivePanel = () => {
+    void menu.archivePanel(panelId).catch((error) => {
+      console.error("Failed to archive panel from title bar", error);
+    });
+  };
+
   const handleArchive = (e: MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
     e.stopPropagation();
-    onArchive?.(panelId);
+    archivePanel();
   };
 
   return (
@@ -918,7 +921,7 @@ function HoverableBreadcrumbItem({
       >
         {title}
       </Text>
-      {(isHovered || isTouch) && onArchive && (
+      {(isHovered || isTouch) && (
         <IconButton
           size="1"
           variant="ghost"
@@ -928,6 +931,8 @@ function HoverableBreadcrumbItem({
           onClick={handleArchive}
           className="breadcrumb-archive-btn"
           style={{
+            appRegion: "no-drag",
+            WebkitAppRegion: "no-drag",
             position: "absolute",
             right: 2,
             top: "50%",
@@ -936,7 +941,7 @@ function HoverableBreadcrumbItem({
             height: 16,
             padding: 0,
             opacity: 0.6,
-          }}
+          } as CSSProperties}
         >
           <Cross2Icon width={10} height={10} />
         </IconButton>
@@ -951,7 +956,6 @@ function BreadcrumbBar({
   statusNavigation,
   onNavigateToId,
   onPanelAction,
-  onArchive,
 }: BreadcrumbBarProps) {
   const ancestors = navigationData?.ancestors ?? [];
   const currentSiblings = navigationData?.currentSiblings ?? [];
@@ -988,7 +992,6 @@ function BreadcrumbBar({
       isCurrent={isCurrent}
       onNavigate={() => onNavigateToId?.(panel.id)}
       onContextMenu={(e) => handlePanelContextMenu(e, panel)}
-      onArchive={onArchive}
     />
   );
 
@@ -1001,7 +1004,6 @@ function BreadcrumbBar({
       isCurrent={false}
       onNavigate={() => onNavigateToId?.(ancestor.id)}
       onContextMenu={(e) => handlePanelContextMenu(e, ancestor)}
-      onArchive={onArchive}
     />
   );
 

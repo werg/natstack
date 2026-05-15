@@ -197,6 +197,8 @@ export const menu = {
     rpc.call<string | null>("main", "menu.showContext", items, position),
   showPanelContext: (panelId: string, position: Position) =>
     rpc.call<PanelContextMenuAction | null>("main", "menu.showPanelContext", panelId, position),
+  archivePanel: (panelId: string) =>
+    rpc.call<void>("main", "menu.archivePanel", panelId),
 };
 
 // =============================================================================

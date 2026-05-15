@@ -46,7 +46,6 @@ interface PanelStackProps {
   onRegisterDevToolsHandler?: (handler: () => void) => void;
   onRegisterNavigateToId?: (navigate: (panelId: string) => void) => void;
   onRegisterPanelAction?: (handler: (panelId: string, action: PanelContextMenuAction) => void) => void;
-  onRegisterArchive?: (handler: (panelId: string) => void) => void;
   onRegisterChromeCommand?: (handler: (command: ChromeCommand) => void) => void;
 }
 
@@ -90,7 +89,6 @@ export function PanelStack({
   onRegisterDevToolsHandler,
   onRegisterNavigateToId,
   onRegisterPanelAction,
-  onRegisterArchive,
   onRegisterChromeCommand,
 }: PanelStackProps) {
   const {
@@ -302,11 +300,6 @@ export function PanelStack({
     },
     []
   );
-
-  // Register archive handler with parent (for titlebar X buttons)
-  useEffect(() => {
-    onRegisterArchive?.(handleArchive);
-  }, [onRegisterArchive, handleArchive]);
 
   const startSidebarResize = (event: React.PointerEvent) => {
     event.preventDefault();

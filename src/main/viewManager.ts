@@ -474,6 +474,9 @@ export class ViewManager {
   setViewVisible(id: string, visible: boolean): void {
     const managed = this.views.get(id);
     if (!managed) {
+      if (!visible) {
+        return;
+      }
       console.warn(`[ViewManager] View not found: ${id}`);
       return;
     }

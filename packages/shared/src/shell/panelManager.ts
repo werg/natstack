@@ -238,9 +238,13 @@ export class PanelManager {
   async close(panelId: string): Promise<{ closedIds: string[] }> {
     const closedIds = this.collectSubtree(panelId);
     for (const id of closedIds) {
-      await this.tokenClient.revokePanelToken(id);
       await this.store.archivePanel(id);
       this.registry.removePanel(id);
+    }
+    for (const id of closedIds) {
+      await this.tokenClient.revokePanelToken(id).catch((error: unknown) => {
+        log.warn(`Failed to revoke panel token for ${id}: ${error instanceof Error ? error.message : String(error)}`);
+      });
     }
     return { closedIds };
   }
