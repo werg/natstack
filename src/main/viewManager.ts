@@ -116,7 +116,7 @@ export class ViewManager {
 
   // View protection state
   private protectedViewIds = new Set<string>();
-  private crashCallback: ((viewId: string, reason: string) => void) | null = null;
+  private crashCallbacks: Array<(viewId: string, reason: string) => void> = [];
   private windowVisible = true;
   /** Reverse index for O(1) IPC sender webContents lookup */
   private webContentsIdToViewId = new Map<number, string>();
@@ -320,8 +320,10 @@ export class ViewManager {
         }
       },
       renderProcessGone: (_event: Electron.Event, details: Electron.RenderProcessGoneDetails) => {
-        if (this.crashCallback && ["crashed", "oom", "launch-failed"].includes(details.reason)) {
-          this.crashCallback(config.id, details.reason);
+        if (["crashed", "oom", "launch-failed"].includes(details.reason)) {
+          for (const cb of this.crashCallbacks) {
+            cb(config.id, details.reason);
+          }
         }
       },
     };
@@ -1049,6 +1051,11 @@ export class ViewManager {
     // Shell is destroyed with window
     this.views.clear();
     this.webContentsIdToViewId.clear();
+
+    // Clear all callbacks
+    this.viewOrderChangedCallbacks.length = 0;
+    this.viewHiddenCallbacks.length = 0;
+    this.crashCallbacks.length = 0;
   }
 
   // =========================================================================
@@ -1203,9 +1210,14 @@ export class ViewManager {
   /**
    * Register callback for when a view's renderer crashes.
    * Only called for 'crashed', 'oom', and 'launch-failed' reasons.
+   * Returns a cleanup function to unregister the callback.
    */
-  onViewCrashed(callback: (viewId: string, reason: string) => void): void {
-    this.crashCallback = callback;
+  onViewCrashed(callback: (viewId: string, reason: string) => void): () => void {
+    this.crashCallbacks.push(callback);
+    return () => {
+      const idx = this.crashCallbacks.indexOf(callback);
+      if (idx >= 0) this.crashCallbacks.splice(idx, 1);
+    };
   }
 
   /**

@@ -551,8 +551,9 @@ async function handleCredentialSessionCaptureRequest(
 
         // Listen for navigation events
         const onNavigate = (_event: Electron.Event, url: string) => checkUrl(url);
-        const onRedirect = (_event: Electron.Event, _oldUrl: string, newUrl: string) =>
-          checkUrl(newUrl);
+        const onRedirect = (
+          details: Electron.Event<Electron.WebContentsDidRedirectNavigationEventParams>
+        ) => checkUrl(details.url);
 
         webContents.on("did-navigate", onNavigate);
         webContents.on("did-navigate-in-page", onNavigate);
