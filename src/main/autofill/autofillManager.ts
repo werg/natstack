@@ -32,8 +32,17 @@ const log = createDevLogger("Autofill");
 interface PasswordStoreLike {
   getForOrigin(origin: string): Promise<StoredPassword[]> | StoredPassword[];
   updateLastUsed(id: number): Promise<void> | void;
-  update(id: number, partial: Partial<{ username: string; password: string; actionUrl: string; realm: string }>): Promise<void> | void;
-  add(password: { url: string; username: string; password: string; actionUrl?: string; realm?: string }): Promise<number> | number;
+  update(
+    id: number,
+    partial: Partial<{ username: string; password: string; actionUrl: string; realm: string }>
+  ): Promise<void> | void;
+  add(password: {
+    url: string;
+    username: string;
+    password: string;
+    actionUrl?: string;
+    realm?: string;
+  }): Promise<number> | number;
   addNeverSave(origin: string): Promise<void> | void;
   isNeverSave(origin: string): Promise<boolean> | boolean;
 }
@@ -44,13 +53,34 @@ interface FieldInfo {
   passwordSelector?: string;
   formSelector?: string | null;
   actionUrl?: string | null;
-  passwordRect?: { x: number; y: number; width: number; height: number; viewportX: number; viewportY: number };
-  usernameRect?: { x: number; y: number; width: number; height: number; viewportX: number; viewportY: number } | null;
+  passwordRect?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    viewportX: number;
+    viewportY: number;
+  };
+  usernameRect?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    viewportX: number;
+    viewportY: number;
+  } | null;
 }
 
 interface FocusInfo {
   fieldType: "username" | "password";
-  rect: { x: number; y: number; width: number; height: number; viewportX: number; viewportY: number };
+  rect: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    viewportX: number;
+    viewportY: number;
+  };
 }
 
 interface PendingSnapshot {
@@ -95,6 +125,19 @@ interface PendingCredential {
   isUpdate: boolean;
   existingId?: number;
 }
+
+type AutofillTrackedWebContents = WebContents & {
+  __autofillHandlers?: {
+    domReady: () => void;
+    didNavigate: (_event: Electron.Event, url: string) => void;
+    inPageNav: () => void;
+    willNavigate: () => void;
+  };
+};
+
+type WebRequestDetailsWithWebContentsId = Electron.OnCompletedListenerDetails & {
+  webContentsId?: number;
+};
 
 export class AutofillManager {
   private panelState = new Map<number, AutofillPanelState>();
@@ -150,7 +193,7 @@ export class AutofillManager {
         if (!state.warnedSubFrameOrigins.has(subOrigin)) {
           state.warnedSubFrameOrigins.add(subOrigin);
           log.warn(
-            ` Autofill sub-frame request ignored — top-frame-only policy. wc=${wcId} subOrigin=${subOrigin}`,
+            ` Autofill sub-frame request ignored — top-frame-only policy. wc=${wcId} subOrigin=${subOrigin}`
           );
         }
         return;
@@ -252,7 +295,7 @@ export class AutofillManager {
     // Sub-frame login flows simply do not autofill.
 
     // Store handlers for cleanup
-    (webContents as any).__autofillHandlers = {
+    (webContents as AutofillTrackedWebContents).__autofillHandlers = {
       domReady: domReadyHandler,
       didNavigate: didNavigateHandler,
       inPageNav: inPageNavHandler,
@@ -279,13 +322,14 @@ export class AutofillManager {
 
     // Remove event listeners
     if (webContents && !webContents.isDestroyed()) {
-      const handlers = (webContents as any).__autofillHandlers;
+      const trackedWebContents = webContents as AutofillTrackedWebContents;
+      const handlers = trackedWebContents.__autofillHandlers;
       if (handlers) {
         webContents.off("dom-ready", handlers.domReady);
         webContents.off("did-navigate", handlers.didNavigate);
         webContents.off("did-navigate-in-page", handlers.inPageNav);
         webContents.off("will-navigate", handlers.willNavigate);
-        delete (webContents as any).__autofillHandlers;
+        delete trackedWebContents.__autofillHandlers;
       }
     }
 
@@ -353,9 +397,7 @@ export class AutofillManager {
     state.hasInjected = true;
 
     try {
-      await wc.executeJavaScriptInIsolatedWorld(AUTOFILL_WORLD_ID, [
-        { code: getContentScript() },
-      ]);
+      await wc.executeJavaScriptInIsolatedWorld(AUTOFILL_WORLD_ID, [{ code: getContentScript() }]);
       log.verbose(` Injected content script into wc ${wcId}`);
     } catch (err) {
       log.verbose(` Failed to inject content script: ${err}`);
@@ -373,7 +415,7 @@ export class AutofillManager {
   private async executeInActiveFrame(
     wc: WebContents,
     _state: AutofillPanelState,
-    code: string,
+    code: string
   ): Promise<unknown> {
     return wc.executeJavaScriptInIsolatedWorld(AUTOFILL_WORLD_ID, [{ code }]);
   }
@@ -402,7 +444,7 @@ export class AutofillManager {
     wcId: number,
     wc: WebContents,
     state: AutofillPanelState,
-    pulled: PulledState,
+    pulled: PulledState
   ): Promise<void> {
     // Update origin from actual URL
     const currentOrigin = this.deriveOrigin(wc);
@@ -412,12 +454,12 @@ export class AutofillManager {
     }
 
     // Handle field detection — accept new fields or field type changes (SPA transitions)
-    const fieldsChanged = pulled.fields && (
-      !state.fields ||
-      pulled.fields.type !== state.fields.type ||
-      pulled.fields.passwordSelector !== state.fields.passwordSelector ||
-      pulled.fields.usernameSelector !== state.fields.usernameSelector
-    );
+    const fieldsChanged =
+      pulled.fields &&
+      (!state.fields ||
+        pulled.fields.type !== state.fields.type ||
+        pulled.fields.passwordSelector !== state.fields.passwordSelector ||
+        pulled.fields.usernameSelector !== state.fields.usernameSelector);
     if (pulled.fields && fieldsChanged) {
       state.fields = pulled.fields;
       state.hasAutoFilled = false; // Reset for new field set
@@ -438,7 +480,9 @@ export class AutofillManager {
         // Multi-step: auto-fill username
         const matchedCred = state.usernameContext
           ? state.credentials.find((c) => c.username === state.usernameContext)
-          : state.credentials.length === 1 ? state.credentials[0] : null;
+          : state.credentials.length === 1
+            ? state.credentials[0]
+            : null;
         if (matchedCred && pulled.fields.usernameSelector) {
           await this.fillUsernameOnly(wcId, wc, state, matchedCred, pulled.fields.usernameSelector);
           state.hasAutoFilled = true;
@@ -458,7 +502,12 @@ export class AutofillManager {
     // Handle field focus -> show dropdown or re-fill
     if (pulled.focus && state.credentials.length >= 2) {
       this.showOverlay(wcId, wc, state, pulled.focus);
-    } else if (pulled.focus && state.credentials.length === 1 && state.fields && !state.hasAutoFilled) {
+    } else if (
+      pulled.focus &&
+      state.credentials.length === 1 &&
+      state.fields &&
+      !state.hasAutoFilled
+    ) {
       // Single credential + first focus (before auto-fill) -> fill now
       await this.fillCredential(wcId, wc, state.credentials[0]!, state.fields);
       state.hasAutoFilled = true;
@@ -490,7 +539,7 @@ export class AutofillManager {
     wcId: number,
     wc: WebContents,
     credential: StoredPassword,
-    fields: FieldInfo,
+    fields: FieldInfo
   ): Promise<void> {
     if (wc.isDestroyed() || !fields.passwordSelector) return;
     const state = this.panelState.get(wcId);
@@ -507,7 +556,7 @@ export class AutofillManager {
       fields.usernameSelector,
       fields.passwordSelector,
       credential.username,
-      credential.password,
+      credential.password
     );
 
     try {
@@ -524,7 +573,7 @@ export class AutofillManager {
     wc: WebContents,
     state: AutofillPanelState,
     credential: StoredPassword,
-    usernameSelector: string,
+    usernameSelector: string
   ): Promise<void> {
     if (wc.isDestroyed()) return;
 
@@ -533,12 +582,7 @@ export class AutofillManager {
     // sensitive (e.g. an email used as account identifier).
     if (!this.verifyTopFrameOriginForFill(wc, state, credential)) return;
 
-    const script = getFillScript(
-      usernameSelector,
-      "___nonexistent___",
-      credential.username,
-      "",
-    );
+    const script = getFillScript(usernameSelector, "___nonexistent___", credential.username, "");
 
     try {
       await this.executeInActiveFrame(wc, state, script);
@@ -560,7 +604,7 @@ export class AutofillManager {
   private verifyTopFrameOriginForFill(
     wc: WebContents,
     state: AutofillPanelState,
-    credential: StoredPassword,
+    credential: StoredPassword
   ): boolean {
     const liveOrigin = this.deriveOrigin(wc);
     if (!liveOrigin) {
@@ -569,14 +613,14 @@ export class AutofillManager {
     }
     if (liveOrigin !== state.origin) {
       log.warn(
-        ` Aborting fill — top frame navigated since credential match (matched=${state.origin} live=${liveOrigin}).`,
+        ` Aborting fill — top frame navigated since credential match (matched=${state.origin} live=${liveOrigin}).`
       );
       return false;
     }
     const credentialOrigin = this.originFromUrl(credential.origin_url);
     if (!credentialOrigin || credentialOrigin !== liveOrigin) {
       log.warn(
-        ` Aborting fill — credential origin does not match live top frame (cred=${credentialOrigin ?? "<invalid>"} live=${liveOrigin}).`,
+        ` Aborting fill — credential origin does not match live top frame (cred=${credentialOrigin ?? "<invalid>"} live=${liveOrigin}).`
       );
       return false;
     }
@@ -587,7 +631,7 @@ export class AutofillManager {
     wcId: number,
     wc: WebContents,
     state: AutofillPanelState,
-    focus: FocusInfo,
+    focus: FocusInfo
   ): void {
     const vm = this.getViewManager();
     const viewId = vm.findViewIdByWebContentsId(wcId);
@@ -656,10 +700,7 @@ export class AutofillManager {
     state.signalCounts[tier]++;
 
     const { strong, medium, weak } = state.signalCounts;
-    const shouldSave =
-      strong >= 1 ||
-      medium >= 2 ||
-      (medium >= 1 && weak >= 1);
+    const shouldSave = strong >= 1 || medium >= 2 || (medium >= 1 && weak >= 1);
 
     // Single medium with no other signals: check if credential changed (update existing only)
     const shouldCheckChange = medium === 1 && strong === 0 && weak === 0;
@@ -688,7 +729,9 @@ export class AutofillManager {
     let snapshot: PendingSnapshot | null;
     try {
       const result = await this.executeInActiveFrame(wc, state, readScript);
-      snapshot = onlyIfChanged ? (result as PulledState)?.pending : result as PendingSnapshot | null;
+      snapshot = onlyIfChanged
+        ? (result as PulledState)?.pending
+        : (result as PendingSnapshot | null);
     } catch {
       return;
     }
@@ -698,9 +741,7 @@ export class AutofillManager {
     const origin = state.origin;
 
     // Check store for existing credential
-    const existing = state.credentials.find(
-      (c) => c.username === snapshot!.username,
-    );
+    const existing = state.credentials.find((c) => c.username === snapshot!.username);
 
     if (existing) {
       if (existing.password === snapshot.password) {
@@ -717,7 +758,13 @@ export class AutofillManager {
       this.cleanupWebRequest(wcId, state);
       // Clear snapshot from content script if we haven't already
       if (onlyIfChanged) {
-        try { await this.executeInActiveFrame(wc, state, getReadSnapshotScript()); } catch {}
+        try {
+          await this.executeInActiveFrame(wc, state, getReadSnapshotScript());
+        } catch (error) {
+          log.verbose(
+            ` Unable to clear changed credential snapshot: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
       }
       this.pendingCredentials.set(viewId, {
         username: snapshot.username,
@@ -771,7 +818,7 @@ export class AutofillManager {
       if (details.statusCode < 200 || details.statusCode >= 400) return;
 
       // Narrow to the specific webContents that made the request
-      const sourceWcId = (details as any).webContentsId as number | undefined;
+      const sourceWcId = (details as WebRequestDetailsWithWebContentsId).webContentsId;
 
       for (const [wcId, watcher] of this.webRequestWatchers) {
         // Only attribute signal to the panel that actually made the request
@@ -781,9 +828,10 @@ export class AutofillManager {
         if (!details.url.startsWith(watcher.origin)) continue;
 
         // Header names can vary in casing across servers/Electron versions
-        const setsCookie = details.responseHeaders != null &&
+        const setsCookie =
+          details.responseHeaders != null &&
           Object.keys(details.responseHeaders).some(
-            (k) => k.toLowerCase() === "set-cookie" && details.responseHeaders![k]!.length > 0,
+            (k) => k.toLowerCase() === "set-cookie" && details.responseHeaders![k]!.length > 0
           );
 
         const matchesAction = watcher.actionUrl
@@ -803,7 +851,7 @@ export class AutofillManager {
     wcId: number,
     wc: WebContents,
     origin: string,
-    actionUrl?: string,
+    actionUrl?: string
   ): void {
     const state = this.panelState.get(wcId);
     if (!state) return;
@@ -834,7 +882,10 @@ export class AutofillManager {
     this.webRequestWatchers.delete(wcId);
   }
 
-  private async handleConfirmSave(panelId: string, action: "save" | "never" | "dismiss"): Promise<void> {
+  private async handleConfirmSave(
+    panelId: string,
+    action: "save" | "never" | "dismiss"
+  ): Promise<void> {
     const pending = this.pendingCredentials.get(panelId);
     if (!pending) return;
 
@@ -868,7 +919,11 @@ export class AutofillManager {
     }
   }
 
-  private async injectKeyIcon(wc: WebContents, state: AutofillPanelState, fieldSelector: string): Promise<void> {
+  private async injectKeyIcon(
+    wc: WebContents,
+    state: AutofillPanelState,
+    fieldSelector: string
+  ): Promise<void> {
     if (wc.isDestroyed()) return;
     try {
       await this.executeInActiveFrame(wc, state, getInjectKeyIconScript(fieldSelector));

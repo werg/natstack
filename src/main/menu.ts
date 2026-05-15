@@ -177,8 +177,16 @@ export function buildCommonMenuItems(
     view.push({ type: "separator" });
   }
   view.push(
-    { label: "Reload Panel", accelerator: "CmdOrCtrl+R", click: () => dispatchChromeCommand("reload-panel") },
-    { label: "Force Reload View", accelerator: "CmdOrCtrl+Shift+R", click: () => dispatchChromeCommand("force-reload-view") },
+    {
+      label: "Reload Panel",
+      accelerator: "CmdOrCtrl+R",
+      click: () => dispatchChromeCommand("reload-panel"),
+    },
+    {
+      label: "Force Reload View",
+      accelerator: "CmdOrCtrl+Shift+R",
+      click: () => dispatchChromeCommand("force-reload-view"),
+    },
     { label: "Stop Loading", accelerator: "Esc", click: () => dispatchChromeCommand("stop") },
     {
       label: "Toggle Address Bar",
@@ -374,8 +382,16 @@ export function setupMenu(
       label: "View",
       submenu: [
         ...viewSubmenu,
-        { label: "Reload Panel", accelerator: "CmdOrCtrl+R", click: () => dispatchChromeCommand("reload-panel") },
-        { label: "Force Reload View", accelerator: "CmdOrCtrl+Shift+R", click: () => dispatchChromeCommand("force-reload-view") },
+        {
+          label: "Reload Panel",
+          accelerator: "CmdOrCtrl+R",
+          click: () => dispatchChromeCommand("reload-panel"),
+        },
+        {
+          label: "Force Reload View",
+          accelerator: "CmdOrCtrl+Shift+R",
+          click: () => dispatchChromeCommand("force-reload-view"),
+        },
         { label: "Stop Loading", accelerator: "Esc", click: () => dispatchChromeCommand("stop") },
         { type: "separator" },
         {

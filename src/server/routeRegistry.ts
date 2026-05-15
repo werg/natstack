@@ -54,13 +54,13 @@ export interface ServiceRouteDecl {
   handler: (
     req: IncomingMessage,
     res: ServerResponse,
-    params: Record<string, string>,
+    params: Record<string, string>
   ) => void | Promise<void>;
   onUpgrade?: (
     req: IncomingMessage,
     socket: Duplex,
     head: Buffer,
-    params: Record<string, string>,
+    params: Record<string, string>
   ) => void;
 }
 
@@ -154,10 +154,7 @@ function compilePattern(rawPath: string): CompiledPattern {
   return { regex: new RegExp("^" + body + "/?$"), paramNames };
 }
 
-function matchPattern(
-  pattern: CompiledPattern,
-  path: string,
-): Record<string, string> | null {
+function matchPattern(pattern: CompiledPattern, path: string): Record<string, string> | null {
   const m = pattern.regex.exec(path);
   if (!m) return null;
   const params: Record<string, string> = {};
@@ -182,11 +179,7 @@ export class RouteRegistry {
    * pass the full `manifest.natstack.routes` list; only entries whose
    * `durableObject.className` matches `className` are registered.
    */
-  registerDoRoutes(
-    source: string,
-    className: string,
-    routes: ManifestRouteDecl[],
-  ): void {
+  registerDoRoutes(source: string, className: string, routes: ManifestRouteDecl[]): void {
     for (const r of routes) {
       if (!r.durableObject) continue;
       if (r.durableObject.className !== className) continue;
@@ -211,7 +204,7 @@ export class RouteRegistry {
   registerWorkerRoutes(
     source: string,
     canonicalInstanceName: string,
-    routes: ManifestRouteDecl[],
+    routes: ManifestRouteDecl[]
   ): void {
     for (const r of routes) {
       if (r.durableObject) continue;
@@ -267,7 +260,7 @@ export class RouteRegistry {
     source: string,
     newRoutes: ManifestRouteDecl[],
     liveDoClasses: Set<string>,
-    canonicalInstanceName: string | null,
+    canonicalInstanceName: string | null
   ): void {
     // Drop all existing entries for this source and rebuild from scratch.
     // **This is safe only because route entries carry no per-registration
@@ -324,9 +317,7 @@ export class RouteRegistry {
       return true;
     });
     if (idx !== -1) {
-      log.warn(
-        `Duplicate route registration for ${source} path=${entry.rawPath}; replacing`,
-      );
+      log.warn(`Duplicate route registration for ${source} path=${entry.rawPath}; replacing`);
       list[idx] = entry;
     } else {
       list.push(entry);
@@ -355,7 +346,7 @@ export class RouteRegistry {
       const idx = list.findIndex((e) => e.rawPath === entry.rawPath);
       if (idx !== -1) {
         log.warn(
-          `Duplicate service-route registration for ${r.serviceName} path=${entry.rawPath}; replacing`,
+          `Duplicate service-route registration for ${r.serviceName} path=${entry.rawPath}; replacing`
         );
         list[idx] = entry;
       } else {
@@ -380,7 +371,7 @@ export class RouteRegistry {
   lookup(
     urlPath: string,
     method: string,
-    isUpgrade: boolean,
+    isUpgrade: boolean
   ): LookupResult | "method-not-allowed" | null {
     if (!urlPath.startsWith("/_r/")) return null;
     const afterPrefix = urlPath.slice(3); // starts with "/"

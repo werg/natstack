@@ -51,12 +51,14 @@ export function createWorkerService(deps: {
       },
       callDO: {
         description: "Call a method on a DO",
-        args: z.tuple([
-          z.string(), // source
-          z.string(), // className
-          z.string(), // objectKey
-          z.string(), // method
-        ]).rest(z.unknown()), // ...args
+        args: z
+          .tuple([
+            z.string(), // source
+            z.string(), // className
+            z.string(), // objectKey
+            z.string(), // method
+          ])
+          .rest(z.unknown()), // ...args
       },
     },
     handler: async (ctx, method, args) => {
@@ -65,10 +67,9 @@ export function createWorkerService(deps: {
           const graph = buildSystem.getGraph();
           return graph
             .allNodes()
-            .filter((n) =>
-              n.kind === "worker" &&
-              n.manifest.durable &&
-              n.manifest.durable.classes.length > 0
+            .filter(
+              (n) =>
+                n.kind === "worker" && n.manifest.durable && n.manifest.durable.classes.length > 0
             )
             .map((n) => ({
               name: n.name,
@@ -79,49 +80,56 @@ export function createWorkerService(deps: {
         }
 
         case "listServices": {
-          return buildSystem.getGraph()
+          return buildSystem
+            .getGraph()
             .allNodes()
             .filter((n) => n.kind === "worker")
-            .flatMap((n) => (n.manifest.services ?? []).map((service) => {
-              const base = {
-                name: service.name,
-                title: service.title,
-                description: service.description,
-                protocols: service.protocols ?? [],
-                source: n.relativePath,
-              };
-              if ("durableObject" in service && service.durableObject) {
+            .flatMap((n) =>
+              (n.manifest.services ?? []).map((service) => {
+                const base = {
+                  name: service.name,
+                  title: service.title,
+                  description: service.description,
+                  protocols: service.protocols ?? [],
+                  source: n.relativePath,
+                };
+                if ("durableObject" in service && service.durableObject) {
+                  return {
+                    ...base,
+                    kind: "durable-object",
+                    className: service.durableObject.className,
+                    defaultObjectKey: service.durableObject.objectKey ?? null,
+                  };
+                }
                 return {
                   ...base,
-                  kind: "durable-object",
-                  className: service.durableObject.className,
-                  defaultObjectKey: service.durableObject.objectKey ?? null,
+                  kind: "worker",
+                  routePath: service.worker.routePath,
                 };
-              }
-              return {
-                ...base,
-                kind: "worker",
-                routePath: service.worker.routePath,
-              };
-            }));
+              })
+            );
         }
 
         case "resolveService": {
           return resolveUserlandService(
             buildSystem,
             args[0] as string,
-            (args[1] as string | null | undefined) ?? undefined,
+            (args[1] as string | null | undefined) ?? undefined
           );
         }
 
         case "getChannelWorkers": {
           const channelId = args[0] as string;
-          const channelService = resolveUserlandService(buildSystem, CHANNEL_SERVICE_PROTOCOL, channelId);
+          const channelService = resolveUserlandService(
+            buildSystem,
+            CHANNEL_SERVICE_PROTOCOL,
+            channelId
+          );
           // Query channel service for participants.
-          const participants = await doDispatch.dispatch(
+          const participants = (await doDispatch.dispatch(
             toDORef(channelService),
-            "getParticipants",
-          ) as Array<{ participantId: string; metadata: Record<string, unknown> }>;
+            "getParticipants"
+          )) as Array<{ participantId: string; metadata: Record<string, unknown> }>;
           return (participants ?? [])
             .filter((p) => p.participantId.startsWith("do:"))
             .map((p) => {
@@ -173,12 +181,14 @@ export function createWorkerService(deps: {
             const result = await doDispatch.dispatch(
               { source, className, objectKey },
               doMethod,
-              ...doArgs,
+              ...doArgs
             );
             log.info(`[callDO] ${source}:${className}/${objectKey}.${doMethod} => OK`);
             return result;
           } catch (err) {
-            log.warn(`[callDO] ${source}:${className}/${objectKey}.${doMethod} => FAILED: ${err instanceof Error ? err.message : String(err)}`);
+            log.warn(
+              `[callDO] ${source}:${className}/${objectKey}.${doMethod} => FAILED: ${err instanceof Error ? err.message : String(err)}`
+            );
             throw err;
           }
         }

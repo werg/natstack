@@ -11,23 +11,22 @@ export {};
 
 // Type augmentation so TS doesn't complain
 declare global {
-  // eslint-disable-next-line no-var
   var __natstackModuleMap__: Record<string, unknown>;
-  // eslint-disable-next-line no-var
+
   var __natstackRequire__: (id: string) => unknown;
-  // eslint-disable-next-line no-var
+
   var __natstackRequireAsync__: (id: string) => Promise<unknown>;
-  // eslint-disable-next-line no-var
+
   var __natstackId: string | undefined;
-  // eslint-disable-next-line no-var
+
   var __natstackContextId: string | undefined;
 }
 
 // Panel runtime globals
-(globalThis as any).__natstackModuleMap__ = (globalThis as any).__natstackModuleMap__ ?? {};
-(globalThis as any).__natstackRequire__ = (id: string) => (globalThis as any).__natstackModuleMap__[id];
-(globalThis as any).__natstackRequireAsync__ = async (id: string) => (globalThis as any).__natstackModuleMap__[id];
+globalThis.__natstackModuleMap__ = globalThis.__natstackModuleMap__ ?? {};
+globalThis.__natstackRequire__ = (id: string) => globalThis.__natstackModuleMap__[id];
+globalThis.__natstackRequireAsync__ = async (id: string) => globalThis.__natstackModuleMap__[id];
 
 // Panel identity stubs
-(globalThis as any).__natstackId = "test-panel";
-(globalThis as any).__natstackContextId = "ctx-test";
+globalThis.__natstackId = "test-panel";
+globalThis.__natstackContextId = "ctx-test";

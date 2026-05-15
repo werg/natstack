@@ -2,14 +2,15 @@
  * Tests for context-scoping middleware.
  */
 
-import { resolveContextScope, type ContextScope } from "../contextMiddleware.js";
+import { resolveContextScope } from "../contextMiddleware.js";
+import type { ContextFolderManager } from "@natstack/shared/contextFolderManager";
 import * as path from "path";
 
 // Mock ContextFolderManager
 function createMockContextFolderManager(contextRoot: string) {
   return {
     ensureContextFolder: async (_contextId: string) => contextRoot,
-  } as any;
+  } as unknown as ContextFolderManager;
 }
 
 describe("resolveContextScope", () => {
@@ -35,9 +36,7 @@ describe("resolveContextScope", () => {
     const manager = createMockContextFolderManager(root);
 
     const scope = await resolveContextScope(manager, "test-ctx");
-    expect(() => scope.resolvePath("../../../etc/passwd")).toThrow(
-      "Path escapes context root"
-    );
+    expect(() => scope.resolvePath("../../../etc/passwd")).toThrow("Path escapes context root");
   });
 
   it("validatePath succeeds for paths within root", async () => {
@@ -53,8 +52,6 @@ describe("resolveContextScope", () => {
     const manager = createMockContextFolderManager(root);
 
     const scope = await resolveContextScope(manager, "test-ctx");
-    expect(() => scope.validatePath("/etc/passwd")).toThrow(
-      "file_path escapes panel root"
-    );
+    expect(() => scope.validatePath("/etc/passwd")).toThrow("file_path escapes panel root");
   });
 });

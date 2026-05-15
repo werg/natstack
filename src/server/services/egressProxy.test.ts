@@ -30,22 +30,26 @@ function createCredential(overrides: Partial<Credential> = {}): Credential {
     id: "cred-1",
     label: "Example",
     owner: { sourceId: "/repo", sourceKind: "workspace", label: "/repo" },
-    bindings: [{
-      id: "api",
-      use: "fetch",
-      audience: [{ url: "https://api.example.test/v1", match: "path-prefix" }],
-      injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
-    }],
-    grants: [{
-      bindingId: "api",
-      use: "fetch",
-      resource: "https://api.example.test/v1",
-      action: "use",
-      scope: "caller",
-      callerId: "worker:test",
-      grantedAt: 1,
-      grantedBy: "self",
-    }],
+    bindings: [
+      {
+        id: "api",
+        use: "fetch",
+        audience: [{ url: "https://api.example.test/v1", match: "path-prefix" }],
+        injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
+      },
+    ],
+    grants: [
+      {
+        bindingId: "api",
+        use: "fetch",
+        resource: "https://api.example.test/v1",
+        action: "use",
+        scope: "caller",
+        callerId: "worker:test",
+        grantedAt: 1,
+        grantedBy: "self",
+      },
+    ],
     providerId: "url-bound",
     connectionId: "cred-1",
     connectionLabel: "Example",
@@ -56,14 +60,20 @@ function createCredential(overrides: Partial<Credential> = {}): Credential {
   };
 }
 
-function createProxy(credential = createCredential(), auditLog = new MemoryAuditLog()): EgressProxy {
+function createProxy(
+  credential = createCredential(),
+  auditLog = new MemoryAuditLog()
+): EgressProxy {
   return new EgressProxy({
-    credentialStore: new MemoryCredentialStore(new Map([[credential.id ?? credential.connectionId, credential]])),
+    credentialStore: new MemoryCredentialStore(
+      new Map([[credential.id ?? credential.connectionId, credential]])
+    ),
     auditLog: auditLog as never,
     codeIdentityResolver: {
-      resolveByCallerId: (callerId: string) => callerId === "worker:test"
-        ? { callerId, callerKind: "worker", repoPath: "/repo", effectiveVersion: "hash-1" }
-        : null,
+      resolveByCallerId: (callerId: string) =>
+        callerId === "worker:test"
+          ? { callerId, callerKind: "worker", repoPath: "/repo", effectiveVersion: "hash-1" }
+          : null,
     },
   });
 }
@@ -84,7 +94,7 @@ describe("EgressProxy", () => {
         "x-safe": "keep",
         Connection: "close",
       },
-      createCredential(),
+      createCredential()
     );
 
     expect(prepared.targetUrl.toString()).toBe("https://api.example.test/v1/items");
@@ -99,59 +109,81 @@ describe("EgressProxy", () => {
 
   it("injects query-param credentials by replacing any incoming value", () => {
     const credential = createCredential({
-      bindings: [{
-        id: "api",
-        use: "fetch",
-        audience: [{ url: "https://api.example.test/v1", match: "path-prefix" }],
-        injection: { type: "query-param", name: "key" },
-      }],
-      grants: [{
-        bindingId: "github-git",
-        use: "git-http",
-        resource: "https://github.com/acme/project.git",
-        action: "read",
-        scope: "caller",
-        callerId: "worker:test",
-        grantedAt: 1,
-        grantedBy: "self",
-      }],
+      bindings: [
+        {
+          id: "api",
+          use: "fetch",
+          audience: [{ url: "https://api.example.test/v1", match: "path-prefix" }],
+          injection: { type: "query-param", name: "key" },
+        },
+      ],
+      grants: [
+        {
+          bindingId: "github-git",
+          use: "git-http",
+          resource: "https://github.com/acme/project.git",
+          action: "read",
+          scope: "caller",
+          callerId: "worker:test",
+          grantedAt: 1,
+          grantedBy: "self",
+        },
+      ],
     });
     const proxy = createProxy(credential);
     const prepared = proxy.prepareForwardRequest(
       new URL("https://api.example.test/v1/items?key=attacker&x=1"),
       { authorization: "Bearer attacker" },
-      credential,
+      credential
     );
 
-    expect(prepared.targetUrl.toString()).toBe("https://api.example.test/v1/items?x=1&key=secret-token");
+    expect(prepared.targetUrl.toString()).toBe(
+      "https://api.example.test/v1/items?x=1&key=secret-token"
+    );
     expect(prepared.headers.authorization).toBeUndefined();
   });
 
   it("injects only cookie-session cookies matching request domain and path", () => {
     const credential = createCredential({
-      bindings: [{
-        id: "app",
-        use: "fetch",
-        audience: [{ url: "https://app.example.test/", match: "origin" }],
-        injection: { type: "cookie" },
-      }],
-      grants: [{
-        bindingId: "app",
-        use: "fetch",
-        resource: "https://app.example.test/",
-        action: "use",
-        scope: "caller",
-        callerId: "worker:test",
-        grantedAt: 1,
-        grantedBy: "self",
-      }],
+      bindings: [
+        {
+          id: "app",
+          use: "fetch",
+          audience: [{ url: "https://app.example.test/", match: "origin" }],
+          injection: { type: "cookie" },
+        },
+      ],
+      grants: [
+        {
+          bindingId: "app",
+          use: "fetch",
+          resource: "https://app.example.test/",
+          action: "use",
+          scope: "caller",
+          callerId: "worker:test",
+          grantedAt: 1,
+          grantedBy: "self",
+        },
+      ],
       cookieHeader: "sid=secret; admin=wrong-path",
       cookieSession: {
         origins: ["https://app.example.test"],
         cookies: [
           { name: "sid", value: "secret", domain: "app.example.test", path: "/", secure: true },
-          { name: "admin", value: "wrong-path", domain: "app.example.test", path: "/admin", secure: true },
-          { name: "other", value: "wrong-domain", domain: "other.example.test", path: "/", secure: true },
+          {
+            name: "admin",
+            value: "wrong-path",
+            domain: "app.example.test",
+            path: "/admin",
+            secure: true,
+          },
+          {
+            name: "other",
+            value: "wrong-domain",
+            domain: "other.example.test",
+            path: "/",
+            secure: true,
+          },
         ],
       },
     });
@@ -159,7 +191,7 @@ describe("EgressProxy", () => {
     const prepared = proxy.prepareForwardRequest(
       new URL("https://app.example.test/dashboard"),
       {},
-      credential,
+      credential
     );
 
     expect(prepared.headers.cookie).toBe("sid=secret");
@@ -167,33 +199,37 @@ describe("EgressProxy", () => {
 
   it("injects basic auth credentials for git-http bindings", () => {
     const credential = createCredential({
-      bindings: [{
-        id: "github-git",
-        use: "git-http",
-        audience: [{ url: "https://github.com/", match: "origin" }],
-        injection: {
-          type: "basic-auth",
-          usernameTemplate: "x-access-token",
-          passwordTemplate: "{token}",
+      bindings: [
+        {
+          id: "github-git",
+          use: "git-http",
+          audience: [{ url: "https://github.com/", match: "origin" }],
+          injection: {
+            type: "basic-auth",
+            usernameTemplate: "x-access-token",
+            passwordTemplate: "{token}",
+          },
         },
-      }],
-      grants: [{
-        bindingId: "github-git",
-        use: "git-http",
-        resource: "https://github.com/acme/project.git",
-        action: "read",
-        scope: "caller",
-        callerId: "worker:test",
-        grantedAt: 1,
-        grantedBy: "self",
-      }],
+      ],
+      grants: [
+        {
+          bindingId: "github-git",
+          use: "git-http",
+          resource: "https://github.com/acme/project.git",
+          action: "read",
+          scope: "caller",
+          callerId: "worker:test",
+          grantedAt: 1,
+          grantedBy: "self",
+        },
+      ],
     });
     const proxy = createProxy(credential);
     const prepared = proxy.prepareForwardRequest(
       new URL("https://github.com/acme/project.git/info/refs?service=git-upload-pack"),
       { authorization: "Bearer attacker" },
       credential,
-      credential.bindings![0],
+      credential.bindings![0]
     );
 
     expect(prepared.headers.authorization).toBe("Basic eC1hY2Nlc3MtdG9rZW46c2VjcmV0LXRva2Vu");
@@ -204,12 +240,14 @@ describe("EgressProxy", () => {
       accessToken: "AKIATEST",
       awsSecretAccessKey: "aws-secret",
       awsSessionToken: "session-token",
-      bindings: [{
-        id: "aws",
-        use: "fetch",
-        audience: [{ url: "https://s3.us-east-1.amazonaws.com/", match: "origin" }],
-        injection: { type: "aws-sigv4", service: "s3", region: "us-east-1" },
-      }],
+      bindings: [
+        {
+          id: "aws",
+          use: "fetch",
+          audience: [{ url: "https://s3.us-east-1.amazonaws.com/", match: "origin" }],
+          injection: { type: "aws-sigv4", service: "s3", region: "us-east-1" },
+        },
+      ],
     });
     const proxy = createProxy(credential);
     const prepared = proxy.prepareForwardRequest(
@@ -217,7 +255,7 @@ describe("EgressProxy", () => {
       { authorization: "Bearer attacker" },
       credential,
       credential.bindings![0],
-      "GET",
+      "GET"
     );
 
     expect(prepared.headers.authorization).toMatch(/^AWS4-HMAC-SHA256 Credential=AKIATEST\//);
@@ -229,17 +267,22 @@ describe("EgressProxy", () => {
   it("redacts query-param credentials from audit URLs", async () => {
     const auditLog = new MemoryAuditLog();
     const credential = createCredential({
-      bindings: [{
-        id: "api",
-        use: "fetch",
-        audience: [{ url: "https://api.example.test/v1", match: "path-prefix" }],
-        injection: { type: "query-param", name: "key" },
-      }],
+      bindings: [
+        {
+          id: "api",
+          use: "fetch",
+          audience: [{ url: "https://api.example.test/v1", match: "path-prefix" }],
+          injection: { type: "query-param", name: "key" },
+        },
+      ],
     });
     const proxy = createProxy(credential, auditLog);
-    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL) =>
-      new Response("ok", { status: 200, statusText: "OK" })
-    ));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async (_input: RequestInfo | URL) => new Response("ok", { status: 200, statusText: "OK" })
+      )
+    );
 
     await proxy.forwardProxyFetch({
       callerId: "worker:test",
@@ -249,18 +292,23 @@ describe("EgressProxy", () => {
     });
 
     expect(String(fetch).includes("secret-token")).toBe(false);
-    expect(auditLog.entries[0]?.url).toBe("https://api.example.test/v1/items?key=%5Bredacted%5D&x=1");
+    expect(auditLog.entries[0]?.url).toBe(
+      "https://api.example.test/v1/items?key=%5Bredacted%5D&x=1"
+    );
     expect(JSON.stringify(auditLog.entries)).not.toContain("secret-token");
   });
 
   it("forwards fetches through matching URL-bound credentials", async () => {
     const auditLog = new MemoryAuditLog();
     const proxy = createProxy(createCredential(), auditLog);
-    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      expect(String(_input)).toBe("https://api.example.test/v1/items");
-      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer secret-token");
-      return new Response("ok", { status: 200, statusText: "OK" });
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        expect(String(_input)).toBe("https://api.example.test/v1/items");
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer secret-token");
+        return new Response("ok", { status: 200, statusText: "OK" });
+      })
+    );
 
     const response = await proxy.forwardProxyFetch({
       callerId: "worker:test",
@@ -291,7 +339,11 @@ describe("EgressProxy", () => {
     const store = new MemoryCredentialStore(new Map([[credential.id!, credential]]));
     const credentialLifecycle = {
       refreshIfNeeded: vi.fn(async (current: Credential & { id: string }) => {
-        const updated = { ...current, accessToken: "fresh-token", expiresAt: Date.now() + 3_600_000 };
+        const updated = {
+          ...current,
+          accessToken: "fresh-token",
+          expiresAt: Date.now() + 3_600_000,
+        };
         store.saveUrlBound(updated);
         return updated;
       }),
@@ -301,13 +353,21 @@ describe("EgressProxy", () => {
       auditLog: auditLog as never,
       credentialLifecycle: credentialLifecycle as never,
       codeIdentityResolver: {
-        resolveByCallerId: () => ({ callerId: "worker:test", callerKind: "worker", repoPath: "/repo", effectiveVersion: "hash-1" }),
+        resolveByCallerId: () => ({
+          callerId: "worker:test",
+          callerKind: "worker",
+          repoPath: "/repo",
+          effectiveVersion: "hash-1",
+        }),
       },
     });
-    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer fresh-token");
-      return new Response("ok", { status: 200, statusText: "OK" });
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer fresh-token");
+        return new Response("ok", { status: 200, statusText: "OK" });
+      })
+    );
 
     await proxy.forwardProxyFetch({
       callerId: "worker:test",
@@ -335,52 +395,68 @@ describe("EgressProxy", () => {
         }),
       } as never,
       codeIdentityResolver: {
-        resolveByCallerId: () => ({ callerId: "worker:test", callerKind: "worker", repoPath: "/repo", effectiveVersion: "hash-1" }),
+        resolveByCallerId: () => ({
+          callerId: "worker:test",
+          callerKind: "worker",
+          repoPath: "/repo",
+          effectiveVersion: "hash-1",
+        }),
       },
     });
     vi.stubGlobal("fetch", vi.fn());
 
-    await expect(proxy.forwardProxyFetch({
-      callerId: "worker:test",
-      credentialId: "cred-1",
-      url: "https://api.example.test/v1/items",
-      method: "GET",
-    })).rejects.toThrow("client_not_authorized");
+    await expect(
+      proxy.forwardProxyFetch({
+        callerId: "worker:test",
+        credentialId: "cred-1",
+        url: "https://api.example.test/v1/items",
+        method: "GET",
+      })
+    ).rejects.toThrow("client_not_authorized");
     expect(fetch).not.toHaveBeenCalled();
   });
 
   it("forwards git HTTP requests through git-http bindings", async () => {
     const auditLog = new MemoryAuditLog();
     const credential = createCredential({
-      bindings: [{
-        id: "github-git",
-        use: "git-http",
-        audience: [{ url: "https://github.com/", match: "origin" }],
-        injection: {
-          type: "basic-auth",
-          usernameTemplate: "x-access-token",
-          passwordTemplate: "{token}",
+      bindings: [
+        {
+          id: "github-git",
+          use: "git-http",
+          audience: [{ url: "https://github.com/", match: "origin" }],
+          injection: {
+            type: "basic-auth",
+            usernameTemplate: "x-access-token",
+            passwordTemplate: "{token}",
+          },
         },
-      }],
-      grants: [{
-        bindingId: "github-git",
-        use: "git-http",
-        resource: "https://github.com/acme/project.git",
-        action: "read",
-        scope: "caller",
-        callerId: "worker:test",
-        grantedAt: 1,
-        grantedBy: "self",
-      }],
+      ],
+      grants: [
+        {
+          bindingId: "github-git",
+          use: "git-http",
+          resource: "https://github.com/acme/project.git",
+          action: "read",
+          scope: "caller",
+          callerId: "worker:test",
+          grantedAt: 1,
+          grantedBy: "self",
+        },
+      ],
     });
     const proxy = createProxy(credential, auditLog);
-    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      expect(String(_input)).toBe("https://github.com/acme/project.git/git-upload-pack");
-      expect(new Headers(init?.headers).get("authorization")).toBe("Basic eC1hY2Nlc3MtdG9rZW46c2VjcmV0LXRva2Vu");
-      const body = new Uint8Array(await new Response(init?.body).arrayBuffer());
-      expect(Array.from(body)).toEqual([1, 2, 3]);
-      return new Response(new Uint8Array([4, 5]), { status: 200, statusText: "OK" });
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        expect(String(_input)).toBe("https://github.com/acme/project.git/git-upload-pack");
+        expect(new Headers(init?.headers).get("authorization")).toBe(
+          "Basic eC1hY2Nlc3MtdG9rZW46c2VjcmV0LXRva2Vu"
+        );
+        const body = new Uint8Array(await new Response(init?.body).arrayBuffer());
+        expect(Array.from(body)).toEqual([1, 2, 3]);
+        return new Response(new Uint8Array([4, 5]), { status: 200, statusText: "OK" });
+      })
+    );
 
     const response = await proxy.forwardGitHttp({
       callerId: "worker:test",
@@ -403,16 +479,18 @@ describe("EgressProxy", () => {
   it("requests git-specific approval copy metadata for git HTTP writes", async () => {
     const credential = createCredential({
       grants: [],
-      bindings: [{
-        id: "github-git",
-        use: "git-http",
-        audience: [{ url: "https://github.com/", match: "origin" }],
-        injection: {
-          type: "basic-auth",
-          usernameTemplate: "x-access-token",
-          passwordTemplate: "{token}",
+      bindings: [
+        {
+          id: "github-git",
+          use: "git-http",
+          audience: [{ url: "https://github.com/", match: "origin" }],
+          injection: {
+            type: "basic-auth",
+            usernameTemplate: "x-access-token",
+            passwordTemplate: "{token}",
+          },
         },
-      }],
+      ],
     });
     const approvalQueue = {
       request: vi.fn(async () => "once" as const),
@@ -432,7 +510,10 @@ describe("EgressProxy", () => {
         }),
       },
     });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(new Uint8Array(), { status: 200, statusText: "OK" })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(new Uint8Array(), { status: 200, statusText: "OK" }))
+    );
 
     await proxy.forwardGitHttp({
       callerId: "worker:test",
@@ -441,27 +522,32 @@ describe("EgressProxy", () => {
       method: "POST",
     });
 
-    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      credentialUse: "git-http",
-      gitOperation: {
-        action: "write",
-        label: "git push",
-        remote: "https://github.com/acme/project.git",
-        service: "git-receive-pack",
-      },
-    }));
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        credentialUse: "git-http",
+        gitOperation: {
+          action: "write",
+          label: "git push",
+          remote: "https://github.com/acme/project.git",
+          service: "git-receive-pack",
+        },
+      })
+    );
   });
 
   it("retries replay-safe retryable responses and records retry count", async () => {
     const auditLog = new MemoryAuditLog();
     const proxy = createProxy(createCredential(), auditLog);
     let calls = 0;
-    vi.stubGlobal("fetch", vi.fn(async () => {
-      calls += 1;
-      return calls === 1
-        ? new Response("busy", { status: 503, statusText: "Service Unavailable" })
-        : new Response("ok", { status: 200, statusText: "OK" });
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        calls += 1;
+        return calls === 1
+          ? new Response("busy", { status: 503, statusText: "Service Unavailable" })
+          : new Response("ok", { status: 200, statusText: "OK" });
+      })
+    );
 
     const response = await proxy.forwardProxyFetch({
       callerId: "worker:test",
@@ -479,19 +565,23 @@ describe("EgressProxy", () => {
     const proxy = createProxy();
     vi.stubGlobal("fetch", vi.fn());
 
-    await expect(proxy.forwardProxyFetch({
-      callerId: "worker:test",
-      credentialId: "cred-1",
-      url: "https://api.example.test/v2/items",
-      method: "GET",
-    })).rejects.toThrow(/credential-audience-mismatch/);
+    await expect(
+      proxy.forwardProxyFetch({
+        callerId: "worker:test",
+        credentialId: "cred-1",
+        url: "https://api.example.test/v2/items",
+        method: "GET",
+      })
+    ).rejects.toThrow(/credential-audience-mismatch/);
 
-    await expect(proxy.forwardProxyFetch({
-      callerId: "worker:other",
-      credentialId: "cred-1",
-      url: "https://api.example.test/v1/items",
-      method: "GET",
-    })).rejects.toThrow(/credential-caller-not-granted/);
+    await expect(
+      proxy.forwardProxyFetch({
+        callerId: "worker:other",
+        credentialId: "cred-1",
+        url: "https://api.example.test/v1/items",
+        method: "GET",
+      })
+    ).rejects.toThrow(/credential-caller-not-granted/);
 
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -512,13 +602,21 @@ describe("EgressProxy", () => {
       codeIdentityResolver: {
         resolveByCallerId: (callerId: string) => {
           if (callerId === "worker:first" || callerId === "do:worker:first") {
-            return { callerId, callerKind: "worker", repoPath: "/repo", effectiveVersion: "hash-1" };
+            return {
+              callerId,
+              callerKind: "worker",
+              repoPath: "/repo",
+              effectiveVersion: "hash-1",
+            };
           }
           return null;
         },
       },
     });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("ok", { status: 200, statusText: "OK" })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("ok", { status: 200, statusText: "OK" }))
+    );
 
     await proxy.forwardProxyFetch({
       callerId: "worker:first",
@@ -537,52 +635,63 @@ describe("EgressProxy", () => {
     expect(store.loadUrlBound("cred-1")?.grants).toEqual([]);
   });
 
-  it.each(["version", "repo"] as const)("reuses persisted %s grants across callers", async (decision) => {
-    const credential = createCredential({ grants: [] });
-    const store = new MemoryCredentialStore(new Map([[credential.id!, credential]]));
-    const approvalQueue = {
-      request: vi.fn(async () => decision),
-      resolve: vi.fn(),
-      listPending: vi.fn(() => []),
-    };
-    const proxy = new EgressProxy({
-      credentialStore: store,
-      auditLog: new MemoryAuditLog() as never,
-      approvalQueue: approvalQueue as never,
-      codeIdentityResolver: {
-        resolveByCallerId: (callerId: string) => {
-          if (callerId === "worker:first" || callerId === "do:worker:first") {
-            return { callerId, callerKind: "worker", repoPath: "/repo", effectiveVersion: "hash-1" };
-          }
-          return null;
+  it.each(["version", "repo"] as const)(
+    "reuses persisted %s grants across callers",
+    async (decision) => {
+      const credential = createCredential({ grants: [] });
+      const store = new MemoryCredentialStore(new Map([[credential.id!, credential]]));
+      const approvalQueue = {
+        request: vi.fn(async () => decision),
+        resolve: vi.fn(),
+        listPending: vi.fn(() => []),
+      };
+      const proxy = new EgressProxy({
+        credentialStore: store,
+        auditLog: new MemoryAuditLog() as never,
+        approvalQueue: approvalQueue as never,
+        codeIdentityResolver: {
+          resolveByCallerId: (callerId: string) => {
+            if (callerId === "worker:first" || callerId === "do:worker:first") {
+              return {
+                callerId,
+                callerKind: "worker",
+                repoPath: "/repo",
+                effectiveVersion: "hash-1",
+              };
+            }
+            return null;
+          },
         },
-      },
-    });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("ok", { status: 200, statusText: "OK" })));
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response("ok", { status: 200, statusText: "OK" }))
+      );
 
-    await proxy.forwardProxyFetch({
-      callerId: "worker:first",
-      credentialId: "cred-1",
-      url: "https://api.example.test/v1/items",
-      method: "GET",
-    });
-    await proxy.forwardProxyFetch({
-      callerId: "do:worker:first",
-      credentialId: "cred-1",
-      url: "https://api.example.test/v1/items",
-      method: "GET",
-    });
+      await proxy.forwardProxyFetch({
+        callerId: "worker:first",
+        credentialId: "cred-1",
+        url: "https://api.example.test/v1/items",
+        method: "GET",
+      });
+      await proxy.forwardProxyFetch({
+        callerId: "do:worker:first",
+        credentialId: "cred-1",
+        url: "https://api.example.test/v1/items",
+        method: "GET",
+      });
 
-    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
-    expect(store.loadUrlBound("cred-1")?.grants).toContainEqual(
-      expect.objectContaining({
-        bindingId: "api",
-        resource: "https://api.example.test/v1",
-        action: "use",
-        scope: decision,
-        repoPath: "/repo",
-        grantedBy: decision,
-      }),
-    );
-  });
+      expect(approvalQueue.request).toHaveBeenCalledTimes(1);
+      expect(store.loadUrlBound("cred-1")?.grants).toContainEqual(
+        expect.objectContaining({
+          bindingId: "api",
+          resource: "https://api.example.test/v1",
+          action: "use",
+          scope: decision,
+          repoPath: "/repo",
+          grantedBy: decision,
+        })
+      );
+    }
+  );
 });

@@ -1,9 +1,14 @@
 import { useEffect, useRef } from "react";
-import { nativeShellOverlay, view, type NativeShellOverlayEvent, type NativeShellOverlayOptions } from "./client";
+import {
+  nativeShellOverlay,
+  view,
+  type NativeShellOverlayEvent,
+  type NativeShellOverlayOptions,
+} from "./client";
 
 export function useNativeShellOverlay(
   options: (NativeShellOverlayOptions & { open: boolean }) | null,
-  onEvent?: (event: NativeShellOverlayEvent) => void,
+  onEvent?: (event: NativeShellOverlayEvent) => void
 ): void {
   const visibleIdRef = useRef<string | null>(null);
   const lastOptionsKeyRef = useRef<string | null>(null);
@@ -31,7 +36,16 @@ export function useNativeShellOverlay(
       bounds: options.bounds,
       focus: options.focus,
     });
-  }, [options?.bounds.height, options?.bounds.width, options?.bounds.x, options?.bounds.y, options?.focus, options?.html, options?.id, options?.open]);
+  }, [
+    options?.bounds.height,
+    options?.bounds.width,
+    options?.bounds.x,
+    options?.bounds.y,
+    options?.focus,
+    options?.html,
+    options?.id,
+    options?.open,
+  ]);
 
   useEffect(() => {
     if (!onEvent) return;

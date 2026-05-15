@@ -1,6 +1,7 @@
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
+import { app } from "electron";
 import { getCentralDataPath } from "@natstack/env-paths";
 import {
   createRuntimeLayout,
@@ -133,7 +134,6 @@ export function getContextScopePath(workspaceId: string, contextId: string): str
   return scopePath;
 }
 
-
 /**
  * Get the NatStack application root directory.
  * This is where packages/, node_modules/, and src/ exist.
@@ -178,14 +178,14 @@ export function getAppRoot(): string {
   }
   // Production
   try {
-    const { app } = require("electron");
     const appPath = app.getAppPath();
     if (DEBUG) console.log("[paths] getAppRoot (production/electron):", appPath);
     return appPath;
   } catch {
     // Not in Electron — use env-var (required for headless production mode)
     if (process.env["NATSTACK_APP_ROOT"]) {
-      if (DEBUG) console.log("[paths] getAppRoot (production/headless):", process.env["NATSTACK_APP_ROOT"]);
+      if (DEBUG)
+        console.log("[paths] getAppRoot (production/headless):", process.env["NATSTACK_APP_ROOT"]);
       return process.env["NATSTACK_APP_ROOT"];
     }
     throw new Error(
@@ -249,16 +249,13 @@ export function getPhysicalAppPath(relativePath: string): string {
 /**
  * Entry point used to start the managed NatStack server process.
  *
- * Development can fork the bundled server directly from `dist/`. Packaged
- * builds fork a small unpacked bootstrap that loads the actual server bundle
- * from the app archive, keeping module resolution tied to the packaged app
- * while satisfying Electron's requirement for a real entry file.
+ * The main process forks the bundled server directly from `dist/` in both
+ * development and packaged builds.
  */
 export function getServerProcessEntryPath(): string {
-  if (isDev()) {
-    return path.join(getAppRoot(), "dist", "server-electron.cjs");
-  }
-  return getPhysicalAppPath(path.join("dist", "server-bootstrap.cjs"));
+  return isDev()
+    ? path.join(getAppRoot(), "dist", "server-electron.cjs")
+    : getPhysicalAppPath(path.join("dist", "server-electron.cjs"));
 }
 
 /**
@@ -292,7 +289,6 @@ export function getEsbuildBinaryPath(): string | null {
   const binaryPath = getPlatformPackageBinaryPath(getAppRoot(), `@esbuild/${pkg}`, binaryName);
   return fs.existsSync(binaryPath) ? binaryPath : null;
 }
-
 
 /**
  * Get the directory containing shipped (pre-built) panels.

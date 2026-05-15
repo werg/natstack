@@ -164,10 +164,6 @@ function toStringArray(value: unknown): string[] {
     : [];
 }
 
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function globMatches(pattern: string, value: string): boolean {
   if (pattern === value) return true;
   const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*");
@@ -516,70 +512,92 @@ async function handleCredentialSessionCaptureRequest(
         return null;
       };
 
-      // If no completion pattern, try immediate capture then poll briefly
-      if (!completionPattern) {
-        const immediate = await tryCaptureCredentials();
-        if (immediate) return immediate;
+      type CaptureResult = Record<string, unknown> | { error: string };
+      type CookieChangeCause =
+        | "explicit"
+        | "overwrite"
+        | "expired"
+        | "evicted"
+        | "expired-overwrite";
 
-        // Poll with longer intervals since we don't have a completion signal
-        const deadline = Date.now() + timeout;
-        while (Date.now() < deadline) {
-          if (webContents.isDestroyed()) {
-            return { error: "user closed sign-in window" };
-          }
-          await wait(2_000);
-          const result = await tryCaptureCredentials();
-          if (result) return result;
-        }
-        return { error: "session capture timed out" };
-      }
+      const immediate = await tryCaptureCredentials();
+      if (immediate && !completionPattern) return immediate;
 
-      // Use event-based navigation detection when completion pattern is provided
-      const navigationPromise = new Promise<string>((resolve) => {
-        const checkUrl = (url: string) => {
-          if (globMatches(completionPattern, url)) {
-            resolve(url);
-          }
+      const captureResult = await new Promise<CaptureResult>((resolve) => {
+        let settled = false;
+        let completionReached =
+          !completionPattern ||
+          (!!webContents.getURL() && globMatches(completionPattern, webContents.getURL()));
+        let captureInFlight: Promise<void> | null = null;
+
+        const cleanup = () => {
+          clearTimeout(timeoutId);
+          browserSession.cookies.off("changed", onCookiesChanged);
+          webContents.off("did-navigate", onNavigate);
+          webContents.off("did-navigate-in-page", onNavigate);
+          webContents.off("did-redirect-navigation", onRedirect);
+          webContents.off("destroyed", onDestroyed);
         };
 
-        // Check current URL first
-        const currentUrl = webContents.getURL();
-        if (currentUrl && globMatches(completionPattern, currentUrl)) {
-          resolve(currentUrl);
-          return;
-        }
+        const finish = (result: CaptureResult) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve(result);
+        };
 
-        // Listen for navigation events
-        const onNavigate = (_event: Electron.Event, url: string) => checkUrl(url);
+        const attemptCapture = () => {
+          if (settled || !completionReached || captureInFlight) return;
+          captureInFlight = tryCaptureCredentials()
+            .then((result) => {
+              if (result) finish(result);
+            })
+            .catch((error: unknown) => {
+              finish({ error: error instanceof Error ? error.message : String(error) });
+            })
+            .finally(() => {
+              captureInFlight = null;
+            });
+        };
+
+        const markCompletionIfMatched = (url: string) => {
+          if (completionPattern && globMatches(completionPattern, url)) {
+            completionReached = true;
+          }
+          attemptCapture();
+        };
+
+        const onCookiesChanged = (
+          _event: Electron.Event,
+          cookie: Electron.Cookie,
+          _cause: CookieChangeCause,
+          removed: boolean
+        ) => {
+          if (removed || !cookieNames.includes(cookie.name)) return;
+          attemptCapture();
+        };
+        const onNavigate = (_event: Electron.Event, url: string) => markCompletionIfMatched(url);
         const onRedirect = (
           details: Electron.Event<Electron.WebContentsDidRedirectNavigationEventParams>
-        ) => checkUrl(details.url);
+        ) => markCompletionIfMatched(details.url);
+        const onDestroyed = () => finish({ error: "user closed sign-in window" });
+        const timeoutId = setTimeout(() => finish({ error: "session capture timed out" }), timeout);
 
+        browserSession.cookies.on("changed", onCookiesChanged);
         webContents.on("did-navigate", onNavigate);
         webContents.on("did-navigate-in-page", onNavigate);
         webContents.on("did-redirect-navigation", onRedirect);
+        webContents.on("destroyed", onDestroyed);
+
+        if (immediate && completionReached) {
+          finish(immediate);
+          return;
+        }
+
+        attemptCapture();
       });
 
-      const destroyedPromise = new Promise<"destroyed">((resolve) => {
-        webContents.once("destroyed", () => resolve("destroyed"));
-      });
-
-      const timeoutPromise = wait(timeout).then(() => "timeout" as const);
-
-      const result = await Promise.race([navigationPromise, destroyedPromise, timeoutPromise]);
-
-      if (result === "destroyed") {
-        return { error: "user closed sign-in window" };
-      }
-      if (result === "timeout") {
-        return { error: "session capture timed out" };
-      }
-
-      // Navigation matched completion pattern, capture credentials
-      const credentials = await tryCaptureCredentials();
-      if (credentials) return credentials;
-
-      return { error: "completion URL reached but cookies not found" };
+      return captureResult;
     } finally {
       // Always close the panel on exit (success, timeout, or user close)
       await panelOrchestrator.closePanel(panel.id).catch(() => {});

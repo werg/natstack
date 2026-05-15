@@ -7,7 +7,12 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from "http";
+import {
+  createServer,
+  type Server as HttpServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "http";
 import { TokenManager } from "@natstack/shared/tokenManager";
 import { Gateway } from "./gateway.js";
 import { RouteRegistry } from "./routeRegistry.js";
@@ -59,7 +64,10 @@ async function stopHarness(h: Harness): Promise<void> {
   await new Promise<void>((resolve) => h.workerdServer.close(() => resolve()));
 }
 
-async function fetchText(url: string, init?: RequestInit): Promise<{ status: number; body: string }> {
+async function fetchText(
+  url: string,
+  init?: RequestInit
+): Promise<{ status: number; body: string }> {
   const resp = await fetch(url, init);
   const body = await resp.text();
   return { status: resp.status, body };
@@ -67,18 +75,24 @@ async function fetchText(url: string, init?: RequestInit): Promise<{ status: num
 
 describe("RouteRegistry × Gateway integration", () => {
   let h: Harness;
-  beforeAll(async () => { h = await startHarness(); });
-  afterAll(async () => { await stopHarness(h); });
+  beforeAll(async () => {
+    h = await startHarness();
+  });
+  afterAll(async () => {
+    await stopHarness(h);
+  });
 
   it("dispatches a service route in-process", async () => {
-    h.registry.registerService([{
-      serviceName: "ping",
-      path: "/ping",
-      handler: (_req, res) => {
-        res.writeHead(200, { "Content-Type": "text/plain" });
-        res.end("pong");
+    h.registry.registerService([
+      {
+        serviceName: "ping",
+        path: "/ping",
+        handler: (_req, res) => {
+          res.writeHead(200, { "Content-Type": "text/plain" });
+          res.end("pong");
+        },
       },
-    }]);
+    ]);
 
     const { status, body } = await fetchText(`http://127.0.0.1:${h.gatewayPort}/_r/s/ping/ping`);
     expect(status).toBe(200);
@@ -86,14 +100,16 @@ describe("RouteRegistry × Gateway integration", () => {
   });
 
   it("rewrites DO routes to /_w/{source}/{class}/{key}/{path}", async () => {
-    h.registry.registerDoRoutes("workers/hello-test", "HelloDO", [{
-      path: "/callback",
-      durableObject: { className: "HelloDO", objectKey: "singleton" },
-    }]);
+    h.registry.registerDoRoutes("workers/hello-test", "HelloDO", [
+      {
+        path: "/callback",
+        durableObject: { className: "HelloDO", objectKey: "singleton" },
+      },
+    ]);
 
     const before = h.workerdPaths.length;
     const { status, body } = await fetchText(
-      `http://127.0.0.1:${h.gatewayPort}/_r/w/workers/hello-test/callback?q=1`,
+      `http://127.0.0.1:${h.gatewayPort}/_r/w/workers/hello-test/callback?q=1`
     );
     expect(status).toBe(200);
     expect(h.workerdPaths.length).toBe(before + 1);
@@ -103,13 +119,15 @@ describe("RouteRegistry × Gateway integration", () => {
   });
 
   it("rewrites regular-worker routes to /<instance>/<path>", async () => {
-    h.registry.registerWorkerRoutes("workers/regular-test", "regular-test", [{
-      path: "/hello",
-    }]);
+    h.registry.registerWorkerRoutes("workers/regular-test", "regular-test", [
+      {
+        path: "/hello",
+      },
+    ]);
 
     const before = h.workerdPaths.length;
     const { status } = await fetchText(
-      `http://127.0.0.1:${h.gatewayPort}/_r/w/workers/regular-test/hello`,
+      `http://127.0.0.1:${h.gatewayPort}/_r/w/workers/regular-test/hello`
     );
     expect(status).toBe(200);
     const seen = h.workerdPaths[h.workerdPaths.length - 1]!;
@@ -119,42 +137,47 @@ describe("RouteRegistry × Gateway integration", () => {
 
   it("returns 404 for unknown /_r/ paths", async () => {
     const { status } = await fetchText(
-      `http://127.0.0.1:${h.gatewayPort}/_r/s/nonexistent-svc/anything`,
+      `http://127.0.0.1:${h.gatewayPort}/_r/s/nonexistent-svc/anything`
     );
     expect(status).toBe(404);
   });
 
   it("returns 405 when path matches but method does not", async () => {
-    h.registry.registerService([{
-      serviceName: "only-get",
-      path: "/x",
-      methods: ["GET"],
-      handler: (_req, res) => { res.end("ok"); },
-    }]);
-    const { status } = await fetchText(
-      `http://127.0.0.1:${h.gatewayPort}/_r/s/only-get/x`,
-      { method: "POST" },
-    );
+    h.registry.registerService([
+      {
+        serviceName: "only-get",
+        path: "/x",
+        methods: ["GET"],
+        handler: (_req, res) => {
+          res.end("ok");
+        },
+      },
+    ]);
+    const { status } = await fetchText(`http://127.0.0.1:${h.gatewayPort}/_r/s/only-get/x`, {
+      method: "POST",
+    });
     expect(status).toBe(405);
   });
 
   it("rejects admin-token-auth route without token", async () => {
-    h.registry.registerService([{
-      serviceName: "admin",
-      path: "/secret",
-      auth: "admin-token",
-      handler: (_req, res) => { res.end("allowed"); },
-    }]);
-    const { status } = await fetchText(
-      `http://127.0.0.1:${h.gatewayPort}/_r/s/admin/secret`,
-    );
+    h.registry.registerService([
+      {
+        serviceName: "admin",
+        path: "/secret",
+        auth: "admin-token",
+        handler: (_req, res) => {
+          res.end("allowed");
+        },
+      },
+    ]);
+    const { status } = await fetchText(`http://127.0.0.1:${h.gatewayPort}/_r/s/admin/secret`);
     expect(status).toBe(401);
   });
 
   it("accepts admin-token-auth route with correct bearer", async () => {
     const { status, body } = await fetchText(
       `http://127.0.0.1:${h.gatewayPort}/_r/s/admin/secret`,
-      { headers: { "Authorization": "Bearer secret-token" } },
+      { headers: { Authorization: "Bearer secret-token" } }
     );
     expect(status).toBe(200);
     expect(body).toBe("allowed");
@@ -162,59 +185,66 @@ describe("RouteRegistry × Gateway integration", () => {
 
   it("rejects admin-token-auth route with correct token via query", async () => {
     const { status } = await fetchText(
-      `http://127.0.0.1:${h.gatewayPort}/_r/s/admin/secret?token=secret-token`,
+      `http://127.0.0.1:${h.gatewayPort}/_r/s/admin/secret?token=secret-token`
     );
     expect(status).toBe(401);
   });
 
   it("rejects admin-token-auth route with wrong token", async () => {
-    const { status } = await fetchText(
-      `http://127.0.0.1:${h.gatewayPort}/_r/s/admin/secret`,
-      { headers: { "Authorization": "Bearer wrong" } },
-    );
+    const { status } = await fetchText(`http://127.0.0.1:${h.gatewayPort}/_r/s/admin/secret`, {
+      headers: { Authorization: "Bearer wrong" },
+    });
     expect(status).toBe(401);
   });
 
   it("accepts caller-token routes with panel and worker tokens", async () => {
-    h.registry.registerService([{
-      serviceName: "caller",
-      path: "/token",
-      auth: "caller-token",
-      handler: (_req, res) => { res.end("caller allowed"); },
-    }]);
+    h.registry.registerService([
+      {
+        serviceName: "caller",
+        path: "/token",
+        auth: "caller-token",
+        handler: (_req, res) => {
+          res.end("caller allowed");
+        },
+      },
+    ]);
 
     const panelToken = h.tokenManager.ensureToken("p1", "panel");
     const workerToken = h.tokenManager.ensureToken("w1", "worker");
 
-    await expect(fetchText(
-      `http://127.0.0.1:${h.gatewayPort}/_r/s/caller/token`,
-      { headers: { "Authorization": `Bearer ${panelToken}` } },
-    )).resolves.toEqual({ status: 200, body: "caller allowed" });
+    await expect(
+      fetchText(`http://127.0.0.1:${h.gatewayPort}/_r/s/caller/token`, {
+        headers: { Authorization: `Bearer ${panelToken}` },
+      })
+    ).resolves.toEqual({ status: 200, body: "caller allowed" });
 
-    await expect(fetchText(
-      `http://127.0.0.1:${h.gatewayPort}/_r/s/caller/token`,
-      { headers: { "Authorization": `Bearer ${workerToken}` } },
-    )).resolves.toEqual({ status: 200, body: "caller allowed" });
+    await expect(
+      fetchText(`http://127.0.0.1:${h.gatewayPort}/_r/s/caller/token`, {
+        headers: { Authorization: `Bearer ${workerToken}` },
+      })
+    ).resolves.toEqual({ status: 200, body: "caller allowed" });
   });
 
   it("rejects admin and unknown tokens for caller-token routes", async () => {
-    h.registry.registerService([{
-      serviceName: "caller-reject",
-      path: "/token",
-      auth: "caller-token",
-      handler: (_req, res) => { res.end("caller allowed"); },
-    }]);
+    h.registry.registerService([
+      {
+        serviceName: "caller-reject",
+        path: "/token",
+        auth: "caller-token",
+        handler: (_req, res) => {
+          res.end("caller allowed");
+        },
+      },
+    ]);
 
-    const admin = await fetchText(
-      `http://127.0.0.1:${h.gatewayPort}/_r/s/caller-reject/token`,
-      { headers: { "Authorization": "Bearer secret-token" } },
-    );
+    const admin = await fetchText(`http://127.0.0.1:${h.gatewayPort}/_r/s/caller-reject/token`, {
+      headers: { Authorization: "Bearer secret-token" },
+    });
     expect(admin.status).toBe(401);
 
-    const unknown = await fetchText(
-      `http://127.0.0.1:${h.gatewayPort}/_r/s/caller-reject/token`,
-      { headers: { "Authorization": "Bearer unknown" } },
-    );
+    const unknown = await fetchText(`http://127.0.0.1:${h.gatewayPort}/_r/s/caller-reject/token`, {
+      headers: { Authorization: "Bearer unknown" },
+    });
     expect(unknown.status).toBe(401);
   });
 });

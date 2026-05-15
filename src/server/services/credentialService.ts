@@ -1,4 +1,12 @@
-import { createHash, createHmac, createPublicKey, createSign, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  createPublicKey,
+  createSign,
+  generateKeyPairSync,
+  randomBytes,
+  randomUUID,
+} from "node:crypto";
 import * as http from "node:http";
 import { z } from "zod";
 import { createDevLogger } from "@natstack/dev-log";
@@ -7,7 +15,10 @@ import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { ServiceRouteDecl } from "../routeRegistry.js";
 import { buildPublicUrl, isPublicUrlVerified } from "../publicUrl.js";
 import type { AuditLog } from "../../../packages/shared/src/credentials/audit.js";
-import { ClientConfigStore, type ClientConfigRecord } from "../../../packages/shared/src/credentials/clientConfigStore.js";
+import {
+  ClientConfigStore,
+  type ClientConfigRecord,
+} from "../../../packages/shared/src/credentials/clientConfigStore.js";
 import { CredentialStore } from "../../../packages/shared/src/credentials/store.js";
 import type {
   AccountIdentity,
@@ -20,7 +31,6 @@ import type {
   CredentialBindingUse,
   CredentialFlowType,
   CredentialGrantAction,
-  CredentialGrantScope,
   CredentialUseGrant,
   DeleteClientConfigRequest,
   ForwardOAuthCallbackRequest,
@@ -59,7 +69,10 @@ const log = createDevLogger("CredentialService");
 const IDENTIFIER_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9._@+=:-]{0,127}$/;
 const identifierSchema = z
   .string()
-  .regex(IDENTIFIER_REGEX, "Invalid identifier (must be a safe path component matching /^[a-zA-Z0-9][a-zA-Z0-9._@+=:-]{0,127}$/)");
+  .regex(
+    IDENTIFIER_REGEX,
+    "Invalid identifier (must be a safe path component matching /^[a-zA-Z0-9][a-zA-Z0-9._@+=:-]{0,127}$/)"
+  );
 const PENDING_OAUTH_TTL_MS = 10 * 60 * 1000;
 const OAUTH_USERINFO_TIMEOUT_MS = 15_000;
 const DEFAULT_LOOPBACK_HOST = "127.0.0.1";
@@ -76,109 +89,152 @@ const RESERVED_OAUTH_AUTHORIZE_PARAMS = new Set([
   "state",
 ]);
 
-const urlAudienceSchema = z.object({
-  url: z.string().url(),
-  match: z.enum(["origin", "path-prefix", "exact"]).optional(),
-}).strict();
+const urlAudienceSchema = z
+  .object({
+    url: z.string().url(),
+    match: z.enum(["origin", "path-prefix", "exact"]).optional(),
+  })
+  .strict();
 
 const credentialInjectionSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("header"),
-    name: z.string().min(1).max(128),
-    valueTemplate: z.string().min(1).max(256),
-    stripIncoming: z.array(z.string().min(1).max(128)).optional(),
-  }).strict(),
-  z.object({
-    type: z.literal("query-param"),
-    name: z.string().min(1).max(128),
-  }).strict(),
-  z.object({
-    type: z.literal("basic-auth"),
-    usernameTemplate: z.string().min(1).max(256),
-    passwordTemplate: z.string().min(1).max(256),
-    stripIncoming: z.array(z.string().min(1).max(128)).optional(),
-  }).strict(),
-  z.object({
-    type: z.literal("oauth1-signature"),
-  }).strict(),
-  z.object({
-    type: z.literal("cookie"),
-  }).strict(),
-  z.object({
-    type: z.literal("aws-sigv4"),
-    service: identifierSchema,
-    region: identifierSchema,
-  }).strict(),
-  z.object({
-    type: z.literal("ssh-key"),
-  }).strict(),
+  z
+    .object({
+      type: z.literal("header"),
+      name: z.string().min(1).max(128),
+      valueTemplate: z.string().min(1).max(256),
+      stripIncoming: z.array(z.string().min(1).max(128)).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("query-param"),
+      name: z.string().min(1).max(128),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("basic-auth"),
+      usernameTemplate: z.string().min(1).max(256),
+      passwordTemplate: z.string().min(1).max(256),
+      stripIncoming: z.array(z.string().min(1).max(128)).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("oauth1-signature"),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("cookie"),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("aws-sigv4"),
+      service: identifierSchema,
+      region: identifierSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("ssh-key"),
+    })
+    .strict(),
 ]);
 
-const credentialBindingSchema = z.object({
-  id: identifierSchema,
-  use: z.enum(["fetch", "git-http", "git-ssh"]),
-  audience: z.array(urlAudienceSchema).min(1).max(16),
-  injection: credentialInjectionSchema,
-}).strict();
+const credentialBindingSchema = z
+  .object({
+    id: identifierSchema,
+    use: z.enum(["fetch", "git-http", "git-ssh"]),
+    audience: z.array(urlAudienceSchema).min(1).max(16),
+    injection: credentialInjectionSchema,
+  })
+  .strict();
 
-const accountIdentitySchema = z.object({
-  email: z.string().max(320).optional(),
-  username: z.string().max(256).optional(),
-  workspaceName: z.string().max(256).optional(),
-  providerUserId: z.string().max(256).optional(),
-}).strict();
+const accountIdentitySchema = z
+  .object({
+    email: z.string().max(320).optional(),
+    username: z.string().max(256).optional(),
+    workspaceName: z.string().max(256).optional(),
+    providerUserId: z.string().max(256).optional(),
+  })
+  .strict();
 
-const oauthAccountValidationSchema = z.object({
-  userinfo: z.object({
-    url: z.string().url(),
-    idField: z.string().min(1).max(128).optional(),
-    emailField: z.string().min(1).max(128).optional(),
-    usernameField: z.string().min(1).max(128).optional(),
-    workspaceField: z.string().min(1).max(128).optional(),
-  }).strict().optional(),
-}).strict();
+const oauthAccountValidationSchema = z
+  .object({
+    userinfo: z
+      .object({
+        url: z.string().url(),
+        idField: z.string().min(1).max(128).optional(),
+        emailField: z.string().min(1).max(128).optional(),
+        usernameField: z.string().min(1).max(128).optional(),
+        workspaceField: z.string().min(1).max(128).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
 
-const storeUrlBoundCredentialParamsSchema = z.object({
-  label: z.string().min(1).max(256),
-  audience: z.array(urlAudienceSchema).min(1).max(16),
-  injection: credentialInjectionSchema,
-  bindings: z.array(credentialBindingSchema).min(1).max(8).optional(),
-  material: z.object({
-    type: z.enum(["bearer-token", "api-key", "oauth1-token", "cookie-session", "saml-session", "aws-sigv4", "ssh-key"]),
-    token: z.string().min(1).max(65536),
-  }).strict(),
-  accountIdentity: accountIdentitySchema.optional(),
-  scopes: z.array(z.string().max(256)).optional(),
-  expiresAt: z.number().positive().optional(),
-  metadata: z.record(z.string(), z.string()).optional(),
-}).strict();
+const storeUrlBoundCredentialParamsSchema = z
+  .object({
+    label: z.string().min(1).max(256),
+    audience: z.array(urlAudienceSchema).min(1).max(16),
+    injection: credentialInjectionSchema,
+    bindings: z.array(credentialBindingSchema).min(1).max(8).optional(),
+    material: z
+      .object({
+        type: z.enum([
+          "bearer-token",
+          "api-key",
+          "oauth1-token",
+          "cookie-session",
+          "saml-session",
+          "aws-sigv4",
+          "ssh-key",
+        ]),
+        token: z.string().min(1).max(65536),
+      })
+      .strict(),
+    accountIdentity: accountIdentitySchema.optional(),
+    scopes: z.array(z.string().max(256)).optional(),
+    expiresAt: z.number().positive().optional(),
+    metadata: z.record(z.string(), z.string()).optional(),
+  })
+  .strict();
 
-const connectCredentialDetailsSchema = z.object({
-  label: z.string().min(1).max(256),
-  audience: z.array(urlAudienceSchema).min(1).max(16),
-  injection: credentialInjectionSchema,
-  bindings: z.array(credentialBindingSchema).min(1).max(8).optional(),
-  accountIdentity: accountIdentitySchema.optional(),
-  scopes: z.array(z.string().max(256)).optional(),
-  metadata: z.record(z.string(), z.string()).optional(),
-}).strict();
+const connectCredentialDetailsSchema = z
+  .object({
+    label: z.string().min(1).max(256),
+    audience: z.array(urlAudienceSchema).min(1).max(16),
+    injection: credentialInjectionSchema,
+    bindings: z.array(credentialBindingSchema).min(1).max(8).optional(),
+    accountIdentity: accountIdentitySchema.optional(),
+    scopes: z.array(z.string().max(256)).optional(),
+    metadata: z.record(z.string(), z.string()).optional(),
+  })
+  .strict();
 
-const clientConfigFieldSchema = z.object({
-  name: identifierSchema,
-  label: z.string().min(1).max(128),
-  type: z.enum(["text", "secret"]),
-  required: z.boolean().optional(),
-  description: z.string().max(512).optional(),
-}).strict();
+const clientConfigFieldSchema = z
+  .object({
+    name: identifierSchema,
+    label: z.string().min(1).max(128),
+    type: z.enum(["text", "secret"]),
+    required: z.boolean().optional(),
+    description: z.string().max(512).optional(),
+  })
+  .strict();
 
-const requestClientConfigParamsSchema = z.object({
-  configId: identifierSchema,
-  title: z.string().min(1).max(256),
-  description: z.string().max(1024).optional(),
-  authorizeUrl: z.string().url(),
-  tokenUrl: z.string().url(),
-  fields: z.array(clientConfigFieldSchema).min(1).max(16),
-}).strict();
+const requestClientConfigParamsSchema = z
+  .object({
+    configId: identifierSchema,
+    title: z.string().min(1).max(256),
+    description: z.string().max(1024).optional(),
+    authorizeUrl: z.string().url(),
+    tokenUrl: z.string().url(),
+    fields: z.array(clientConfigFieldSchema).min(1).max(16),
+  })
+  .strict();
 
 const credentialFlowTypeSchema = z.enum([
   "oauth2-auth-code-pkce",
@@ -195,266 +251,342 @@ const credentialFlowTypeSchema = z.enum([
   "saml-browser-session",
 ]);
 
-const configureClientParamsSchema = requestClientConfigParamsSchema.extend({
-  flowTypes: z.array(credentialFlowTypeSchema).min(1).max(8).optional(),
-  status: z.enum(["active", "disabled"]).optional(),
-  allowRefreshWhenDisabled: z.boolean().optional(),
-}).strict();
+const configureClientParamsSchema = requestClientConfigParamsSchema
+  .extend({
+    flowTypes: z.array(credentialFlowTypeSchema).min(1).max(8).optional(),
+    status: z.enum(["active", "disabled"]).optional(),
+    allowRefreshWhenDisabled: z.boolean().optional(),
+  })
+  .strict();
 
-const requestCredentialInputParamsSchema = z.object({
-  title: z.string().min(1).max(256),
-  description: z.string().max(1024).optional(),
-  credential: z.object({
-    label: z.string().min(1).max(256),
-    audience: z.array(urlAudienceSchema).min(1).max(16),
-    injection: credentialInjectionSchema,
-    bindings: z.array(credentialBindingSchema).min(1).max(8).optional(),
-    accountIdentity: accountIdentitySchema.optional(),
-    scopes: z.array(z.string().max(256)).optional(),
-    metadata: z.record(z.string(), z.string()).optional(),
-  }).strict(),
-  fields: z.array(clientConfigFieldSchema).length(1),
-  material: z.object({
-    type: z.enum(["bearer-token", "api-key"]),
-    tokenField: identifierSchema,
-  }).strict(),
-}).strict();
-
-const getClientConfigStatusParamsSchema = z.object({
-  configId: identifierSchema,
-  fields: z.array(clientConfigFieldSchema).max(16).optional(),
-}).strict();
-
-const oauthRedirectStrategySchema = z.object({
-  type: z.enum(["loopback", "public", "client-forwarded", "client-loopback"]).optional(),
-  host: z.string().optional(),
-  port: z.number().int().min(0).max(65535).optional(),
-  callbackPath: z.string().optional(),
-  callbackUri: z.string().url().optional(),
-  fallback: z.literal("dynamic-port").optional(),
-}).strict();
-
-const tokenAuthSchema = z.enum(["none", "client_secret_post", "client_secret_basic", "private_key_jwt"]);
-
-const browserHandoffTargetSchema = z.object({
-  callerId: z.string().min(1).max(512),
-  callerKind: z.enum(["panel", "shell"]),
-}).strict();
-
-const connectCredentialSpecSchema = z.object({
-  flow: z.discriminatedUnion("type", [
-    z.object({
-      type: z.literal("oauth2-auth-code-pkce"),
-      authorizeUrl: z.string().url().optional(),
-      tokenUrl: z.string().url().optional(),
-      clientId: z.string().min(1).max(512).optional(),
-      clientConfigId: identifierSchema.optional(),
-      scopes: z.array(z.string().max(256)).optional(),
-      extraAuthorizeParams: z.record(z.string(), z.string()).optional(),
-      tokenAuth: tokenAuthSchema.optional(),
-      persistRefreshToken: z.boolean().optional(),
-      allowMissingExpiry: z.boolean().optional(),
-      accountValidation: oauthAccountValidationSchema.optional(),
-      revocationUrl: z.string().url().optional(),
-    }).strict(),
-    z.object({
-      type: z.literal("oauth2-auth-code"),
-      authorizeUrl: z.string().url().optional(),
-      tokenUrl: z.string().url().optional(),
-      clientId: z.string().min(1).max(512).optional(),
-      clientConfigId: identifierSchema.optional(),
-      scopes: z.array(z.string().max(256)).optional(),
-      extraAuthorizeParams: z.record(z.string(), z.string()).optional(),
-      tokenAuth: tokenAuthSchema.optional(),
-      persistRefreshToken: z.boolean().optional(),
-      accountValidation: oauthAccountValidationSchema.optional(),
-      revocationUrl: z.string().url().optional(),
-      pkce: z.literal(false),
-      compatibilityReason: z.string().min(1).max(1024),
-      requiresConfidentialClient: z.boolean().optional(),
-    }).strict(),
-    z.object({
-      type: z.literal("oauth2-device-code"),
-      deviceAuthorizationUrl: z.string().url(),
-      tokenUrl: z.string().url(),
-      clientId: z.string().min(1).max(512).optional(),
-      clientConfigId: identifierSchema.optional(),
-      scopes: z.array(z.string().max(256)).optional(),
-      tokenAuth: tokenAuthSchema.optional(),
-      pollIntervalSeconds: z.number().int().positive().optional(),
-      expiresInSeconds: z.number().int().positive().optional(),
-      accountValidation: oauthAccountValidationSchema.optional(),
-      persistRefreshToken: z.boolean().optional(),
-      revocationUrl: z.string().url().optional(),
-    }).strict(),
-    z.object({
-      type: z.literal("oauth2-client-credentials"),
-      tokenUrl: z.string().url(),
-      clientConfigId: identifierSchema,
-      tokenAuth: z.enum(["client_secret_post", "client_secret_basic", "private_key_jwt"]),
-      scopes: z.array(z.string().max(256)).optional(),
-      audienceParam: z.string().max(512).optional(),
-      resourceParam: z.string().max(512).optional(),
-      accountValidation: oauthAccountValidationSchema.optional(),
-      revocationUrl: z.string().url().optional(),
-    }).strict(),
-    z.object({
-      type: z.literal("oauth2-jwt-bearer"),
-      tokenUrl: z.string().url(),
-      clientConfigId: identifierSchema,
-      issuer: z.string().min(1).max(512).optional(),
-      subject: z.string().min(1).max(512).optional(),
-      audience: z.string().min(1).max(2048).optional(),
-      scopes: z.array(z.string().max(256)).optional(),
-      accountValidation: oauthAccountValidationSchema.optional(),
-      persistRefreshToken: z.boolean().optional(),
-      revocationUrl: z.string().url().optional(),
-    }).strict(),
-    z.object({
-      type: z.literal("oauth2-token-exchange"),
-      tokenUrl: z.string().url(),
-      clientConfigId: identifierSchema,
-      subjectCredentialId: identifierSchema,
-      subjectTokenType: z.enum(["access_token", "jwt"]).optional(),
-      requestedTokenType: z.string().min(1).max(512).optional(),
-      scopes: z.array(z.string().max(256)).optional(),
-      audience: z.string().min(1).max(2048).optional(),
-      resource: z.string().min(1).max(2048).optional(),
-      tokenAuth: z.enum(["client_secret_post", "client_secret_basic", "private_key_jwt"]).optional(),
-      accountValidation: oauthAccountValidationSchema.optional(),
-      persistRefreshToken: z.boolean().optional(),
-      revocationUrl: z.string().url().optional(),
-    }).strict(),
-    z.object({
-      type: z.literal("oauth1a"),
-      requestTokenUrl: z.string().url(),
-      authorizeUrl: z.string().url(),
-      accessTokenUrl: z.string().url(),
-      clientConfigId: identifierSchema,
-      callbackConfirmedParam: z.string().max(128).optional(),
-      signatureMethod: z.literal("HMAC-SHA1").optional(),
-      accountValidation: z.enum(["none", "http-probe"]).optional(),
-    }).strict(),
-    z.object({
-      type: z.literal("api-key"),
-      title: z.string().min(1).max(256).optional(),
-      description: z.string().max(1024).optional(),
-      fields: z.array(clientConfigFieldSchema).min(1).max(16),
-      materialTemplate: z.object({
+const requestCredentialInputParamsSchema = z
+  .object({
+    title: z.string().min(1).max(256),
+    description: z.string().max(1024).optional(),
+    credential: z
+      .object({
+        label: z.string().min(1).max(256),
+        audience: z.array(urlAudienceSchema).min(1).max(16),
+        injection: credentialInjectionSchema,
+        bindings: z.array(credentialBindingSchema).min(1).max(8).optional(),
+        accountIdentity: accountIdentitySchema.optional(),
+        scopes: z.array(z.string().max(256)).optional(),
+        metadata: z.record(z.string(), z.string()).optional(),
+      })
+      .strict(),
+    fields: z.array(clientConfigFieldSchema).length(1),
+    material: z
+      .object({
         type: z.enum(["bearer-token", "api-key"]),
-        valueTemplate: z.string().min(1).max(4096),
-      }).strict(),
-      accountValidation: z.enum(["http-probe", "none"]).optional(),
-    }).strict(),
-    z.object({
-      type: z.literal("aws-sigv4"),
-      title: z.string().min(1).max(256).optional(),
-      description: z.string().max(1024).optional(),
-      accountValidation: z.enum(["http-probe", "none"]).optional(),
-    }).strict(),
-    z.object({
-      type: z.literal("ssh-key"),
-      mode: z.enum(["generate", "import"]).optional(),
-      algorithm: z.literal("ed25519").optional(),
-      title: z.string().min(1).max(256).optional(),
-      description: z.string().max(1024).optional(),
-      accountValidation: z.literal("none").optional(),
-    }).strict(),
-    z.object({
-      type: z.literal("browser-cookie-session"),
-      signInUrl: z.string().url(),
-      capture: z.object({
-        cookies: z.array(z.string().min(1).max(256)).min(1).max(64),
-        origins: z.array(z.string().url()).min(1).max(16),
-      }).strict(),
-      completionUrlPattern: z.string().max(1024).optional(),
-      accountValidation: z.enum(["http-probe", "none"]).optional(),
-      maxTtlSeconds: z.number().int().positive().optional(),
-    }).strict(),
-    z.object({
-      type: z.literal("saml-browser-session"),
-      signInUrl: z.string().url(),
-      spAudience: z.string().min(1).max(2048),
-      capture: z.object({
-        cookies: z.array(z.string().min(1).max(256)).min(1).max(64).optional(),
-        assertion: z.object({
-          issuer: z.string().min(1).max(2048),
-          audience: z.string().min(1).max(2048),
-          recipient: z.string().min(1).max(2048),
-          persistAssertion: z.boolean().optional(),
-        }).strict().optional(),
-      }).strict(),
-      completionUrlPattern: z.string().max(1024).optional(),
-      maxTtlSeconds: z.number().int().positive().optional(),
-      accountValidation: z.enum(["saml-assertion-claims", "http-probe", "none"]).optional(),
-    }).strict(),
-  ]),
-  credential: connectCredentialDetailsSchema,
-  redirect: oauthRedirectStrategySchema.optional(),
-  browser: z.enum(["external", "internal"]).optional(),
-}).strict();
+        tokenField: identifierSchema,
+      })
+      .strict(),
+  })
+  .strict();
+
+const getClientConfigStatusParamsSchema = z
+  .object({
+    configId: identifierSchema,
+    fields: z.array(clientConfigFieldSchema).max(16).optional(),
+  })
+  .strict();
+
+const oauthRedirectStrategySchema = z
+  .object({
+    type: z.enum(["loopback", "public", "client-forwarded", "client-loopback"]).optional(),
+    host: z.string().optional(),
+    port: z.number().int().min(0).max(65535).optional(),
+    callbackPath: z.string().optional(),
+    callbackUri: z.string().url().optional(),
+    fallback: z.literal("dynamic-port").optional(),
+  })
+  .strict();
+
+const tokenAuthSchema = z.enum([
+  "none",
+  "client_secret_post",
+  "client_secret_basic",
+  "private_key_jwt",
+]);
+
+const browserHandoffTargetSchema = z
+  .object({
+    callerId: z.string().min(1).max(512),
+    callerKind: z.enum(["panel", "shell"]),
+  })
+  .strict();
+
+const connectCredentialSpecSchema = z
+  .object({
+    flow: z.discriminatedUnion("type", [
+      z
+        .object({
+          type: z.literal("oauth2-auth-code-pkce"),
+          authorizeUrl: z.string().url().optional(),
+          tokenUrl: z.string().url().optional(),
+          clientId: z.string().min(1).max(512).optional(),
+          clientConfigId: identifierSchema.optional(),
+          scopes: z.array(z.string().max(256)).optional(),
+          extraAuthorizeParams: z.record(z.string(), z.string()).optional(),
+          tokenAuth: tokenAuthSchema.optional(),
+          persistRefreshToken: z.boolean().optional(),
+          allowMissingExpiry: z.boolean().optional(),
+          accountValidation: oauthAccountValidationSchema.optional(),
+          revocationUrl: z.string().url().optional(),
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("oauth2-auth-code"),
+          authorizeUrl: z.string().url().optional(),
+          tokenUrl: z.string().url().optional(),
+          clientId: z.string().min(1).max(512).optional(),
+          clientConfigId: identifierSchema.optional(),
+          scopes: z.array(z.string().max(256)).optional(),
+          extraAuthorizeParams: z.record(z.string(), z.string()).optional(),
+          tokenAuth: tokenAuthSchema.optional(),
+          persistRefreshToken: z.boolean().optional(),
+          accountValidation: oauthAccountValidationSchema.optional(),
+          revocationUrl: z.string().url().optional(),
+          pkce: z.literal(false),
+          compatibilityReason: z.string().min(1).max(1024),
+          requiresConfidentialClient: z.boolean().optional(),
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("oauth2-device-code"),
+          deviceAuthorizationUrl: z.string().url(),
+          tokenUrl: z.string().url(),
+          clientId: z.string().min(1).max(512).optional(),
+          clientConfigId: identifierSchema.optional(),
+          scopes: z.array(z.string().max(256)).optional(),
+          tokenAuth: tokenAuthSchema.optional(),
+          pollIntervalSeconds: z.number().int().positive().optional(),
+          expiresInSeconds: z.number().int().positive().optional(),
+          accountValidation: oauthAccountValidationSchema.optional(),
+          persistRefreshToken: z.boolean().optional(),
+          revocationUrl: z.string().url().optional(),
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("oauth2-client-credentials"),
+          tokenUrl: z.string().url(),
+          clientConfigId: identifierSchema,
+          tokenAuth: z.enum(["client_secret_post", "client_secret_basic", "private_key_jwt"]),
+          scopes: z.array(z.string().max(256)).optional(),
+          audienceParam: z.string().max(512).optional(),
+          resourceParam: z.string().max(512).optional(),
+          accountValidation: oauthAccountValidationSchema.optional(),
+          revocationUrl: z.string().url().optional(),
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("oauth2-jwt-bearer"),
+          tokenUrl: z.string().url(),
+          clientConfigId: identifierSchema,
+          issuer: z.string().min(1).max(512).optional(),
+          subject: z.string().min(1).max(512).optional(),
+          audience: z.string().min(1).max(2048).optional(),
+          scopes: z.array(z.string().max(256)).optional(),
+          accountValidation: oauthAccountValidationSchema.optional(),
+          persistRefreshToken: z.boolean().optional(),
+          revocationUrl: z.string().url().optional(),
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("oauth2-token-exchange"),
+          tokenUrl: z.string().url(),
+          clientConfigId: identifierSchema,
+          subjectCredentialId: identifierSchema,
+          subjectTokenType: z.enum(["access_token", "jwt"]).optional(),
+          requestedTokenType: z.string().min(1).max(512).optional(),
+          scopes: z.array(z.string().max(256)).optional(),
+          audience: z.string().min(1).max(2048).optional(),
+          resource: z.string().min(1).max(2048).optional(),
+          tokenAuth: z
+            .enum(["client_secret_post", "client_secret_basic", "private_key_jwt"])
+            .optional(),
+          accountValidation: oauthAccountValidationSchema.optional(),
+          persistRefreshToken: z.boolean().optional(),
+          revocationUrl: z.string().url().optional(),
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("oauth1a"),
+          requestTokenUrl: z.string().url(),
+          authorizeUrl: z.string().url(),
+          accessTokenUrl: z.string().url(),
+          clientConfigId: identifierSchema,
+          callbackConfirmedParam: z.string().max(128).optional(),
+          signatureMethod: z.literal("HMAC-SHA1").optional(),
+          accountValidation: z.enum(["none", "http-probe"]).optional(),
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("api-key"),
+          title: z.string().min(1).max(256).optional(),
+          description: z.string().max(1024).optional(),
+          fields: z.array(clientConfigFieldSchema).min(1).max(16),
+          materialTemplate: z
+            .object({
+              type: z.enum(["bearer-token", "api-key"]),
+              valueTemplate: z.string().min(1).max(4096),
+            })
+            .strict(),
+          accountValidation: z.enum(["http-probe", "none"]).optional(),
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("aws-sigv4"),
+          title: z.string().min(1).max(256).optional(),
+          description: z.string().max(1024).optional(),
+          accountValidation: z.enum(["http-probe", "none"]).optional(),
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("ssh-key"),
+          mode: z.enum(["generate", "import"]).optional(),
+          algorithm: z.literal("ed25519").optional(),
+          title: z.string().min(1).max(256).optional(),
+          description: z.string().max(1024).optional(),
+          accountValidation: z.literal("none").optional(),
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("browser-cookie-session"),
+          signInUrl: z.string().url(),
+          capture: z
+            .object({
+              cookies: z.array(z.string().min(1).max(256)).min(1).max(64),
+              origins: z.array(z.string().url()).min(1).max(16),
+            })
+            .strict(),
+          completionUrlPattern: z.string().max(1024).optional(),
+          accountValidation: z.enum(["http-probe", "none"]).optional(),
+          maxTtlSeconds: z.number().int().positive().optional(),
+        })
+        .strict(),
+      z
+        .object({
+          type: z.literal("saml-browser-session"),
+          signInUrl: z.string().url(),
+          spAudience: z.string().min(1).max(2048),
+          capture: z
+            .object({
+              cookies: z.array(z.string().min(1).max(256)).min(1).max(64).optional(),
+              assertion: z
+                .object({
+                  issuer: z.string().min(1).max(2048),
+                  audience: z.string().min(1).max(2048),
+                  recipient: z.string().min(1).max(2048),
+                  persistAssertion: z.boolean().optional(),
+                })
+                .strict()
+                .optional(),
+            })
+            .strict(),
+          completionUrlPattern: z.string().max(1024).optional(),
+          maxTtlSeconds: z.number().int().positive().optional(),
+          accountValidation: z.enum(["saml-assertion-claims", "http-probe", "none"]).optional(),
+        })
+        .strict(),
+    ]),
+    credential: connectCredentialDetailsSchema,
+    redirect: oauthRedirectStrategySchema.optional(),
+    browser: z.enum(["external", "internal"]).optional(),
+  })
+  .strict();
 
 const connectCredentialParamsSchema = z.union([
   connectCredentialSpecSchema,
-  z.object({
-    spec: connectCredentialSpecSchema,
-    handoffTarget: browserHandoffTargetSchema,
-  }).strict(),
+  z
+    .object({
+      spec: connectCredentialSpecSchema,
+      handoffTarget: browserHandoffTargetSchema,
+    })
+    .strict(),
 ]);
 
-const deleteClientConfigParamsSchema = z.object({
-  configId: identifierSchema,
-}).strict();
+const deleteClientConfigParamsSchema = z
+  .object({
+    configId: identifierSchema,
+  })
+  .strict();
 
-const forwardOAuthCallbackParamsSchema = z.object({
-  transactionId: identifierSchema.optional(),
-  url: z.string().url().optional(),
-  code: z.string().min(1).max(4096).optional(),
-  state: z.string().min(1).max(4096).optional(),
-}).strict();
+const forwardOAuthCallbackParamsSchema = z
+  .object({
+    transactionId: identifierSchema.optional(),
+    url: z.string().url().optional(),
+    code: z.string().min(1).max(4096).optional(),
+    state: z.string().min(1).max(4096).optional(),
+  })
+  .strict();
 
-const credentialIdParamsSchema = z.object({
-  credentialId: identifierSchema,
-}).strict();
+const credentialIdParamsSchema = z
+  .object({
+    credentialId: identifierSchema,
+  })
+  .strict();
 
-const grantCredentialParamsSchema = z.object({
-  credentialId: identifierSchema,
-  callerId: identifierSchema,
-  grantedBy: z.string().min(1).max(128).optional(),
-}).strict();
+const grantCredentialParamsSchema = z
+  .object({
+    credentialId: identifierSchema,
+    callerId: identifierSchema,
+    grantedBy: z.string().min(1).max(128).optional(),
+  })
+  .strict();
 
-const resolveCredentialParamsSchema = z.object({
-  url: z.string().url(),
-  credentialId: identifierSchema.optional(),
-  use: z.enum(["fetch", "git-http", "git-ssh"]).optional(),
-}).strict();
+const resolveCredentialParamsSchema = z
+  .object({
+    url: z.string().url(),
+    credentialId: identifierSchema.optional(),
+    use: z.enum(["fetch", "git-http", "git-ssh"]).optional(),
+  })
+  .strict();
 
-const proxyFetchParamsSchema = z.object({
-  url: z.string().url(),
-  method: z.string().min(1).max(16),
-  headers: z.record(z.string()).optional(),
-  body: z.string().optional(),
-  credentialId: identifierSchema.optional(),
-}).strict();
+const proxyFetchParamsSchema = z
+  .object({
+    url: z.string().url(),
+    method: z.string().min(1).max(16),
+    headers: z.record(z.string()).optional(),
+    body: z.string().optional(),
+    credentialId: identifierSchema.optional(),
+  })
+  .strict();
 
-const proxyGitHttpParamsSchema = z.object({
-  url: z.string().url(),
-  method: z.string().min(1).max(16).optional(),
-  headers: z.record(z.string()).optional(),
-  bodyBase64: z.string().optional(),
-  credentialId: identifierSchema.optional(),
-}).strict();
+const proxyGitHttpParamsSchema = z
+  .object({
+    url: z.string().url(),
+    method: z.string().min(1).max(16).optional(),
+    headers: z.record(z.string()).optional(),
+    bodyBase64: z.string().optional(),
+    credentialId: identifierSchema.optional(),
+  })
+  .strict();
 
-const auditParamsSchema = z.object({
-  filter: z.object({
-    providerId: z.string().optional(),
-    connectionId: z.string().optional(),
-    callerId: z.string().optional(),
-    since: z.number().optional(),
-  }).optional(),
-  limit: z.number().int().positive().max(1000).optional(),
-  after: z.number().optional(),
-}).strict();
+const auditParamsSchema = z
+  .object({
+    filter: z
+      .object({
+        providerId: z.string().optional(),
+        connectionId: z.string().optional(),
+        callerId: z.string().optional(),
+        since: z.number().optional(),
+      })
+      .optional(),
+    limit: z.number().int().positive().max(1000).optional(),
+    after: z.number().optional(),
+  })
+  .strict();
 
 type StoreUrlBoundCredentialParams = z.infer<typeof storeUrlBoundCredentialParamsSchema>;
 type RequestClientConfigParams = z.infer<typeof requestClientConfigParamsSchema>;
@@ -549,9 +681,17 @@ function validateClientConfigUrls(authorizeUrl: string, tokenUrl: string): void 
 }
 
 function validateOAuthCredentialRequest(request: InternalOAuthConnectionRequest): void {
-  validateClientConfigUrls(canonicalUrl(request.flow.authorizeUrl), canonicalUrl(request.flow.tokenUrl));
+  validateClientConfigUrls(
+    canonicalUrl(request.flow.authorizeUrl),
+    canonicalUrl(request.flow.tokenUrl)
+  );
   const redirect = new URL(request.redirectUri);
-  if (!((redirect.protocol === "http:" && isLoopbackHost(redirect.hostname)) || redirect.protocol === "https:")) {
+  if (
+    !(
+      (redirect.protocol === "http:" && isLoopbackHost(redirect.hostname)) ||
+      redirect.protocol === "https:"
+    )
+  ) {
     throw new Error("OAuth redirectUri must be host-created loopback HTTP or public HTTPS");
   }
   if (redirect.hash || redirect.search) {
@@ -588,7 +728,7 @@ function validateOAuthCredentialRequest(request: InternalOAuthConnectionRequest)
  * when Tailscale serve provisioning fell through.
  */
 function resolveDefaultRedirectStrategy(
-  requested: OAuthRedirectStrategy | undefined,
+  requested: OAuthRedirectStrategy | undefined
 ): OAuthRedirectStrategy {
   if (requested) return requested;
   return isPublicUrlVerified() ? "public" : "loopback";
@@ -605,20 +745,31 @@ function isLoopbackHost(hostname: string): boolean {
 
 type OAuthRedirectStrategy = "loopback" | "public" | "client-forwarded" | "client-loopback";
 
-function buildClientLoopbackRedirectUri(redirect: NonNullable<ConnectCredentialRequest["redirect"]>): string {
+function buildClientLoopbackRedirectUri(
+  redirect: NonNullable<ConnectCredentialRequest["redirect"]>
+): string {
   const host = redirect.host ?? "localhost";
   if (host !== "localhost" && host !== "127.0.0.1") {
-    throw new OAuthConnectionError("redirect_unavailable", "client-loopback redirects require localhost or 127.0.0.1");
+    throw new OAuthConnectionError(
+      "redirect_unavailable",
+      "client-loopback redirects require localhost or 127.0.0.1"
+    );
   }
   const port = redirect.port;
   if (!port || port < 1 || port > 65535) {
-    throw new OAuthConnectionError("redirect_unavailable", "client-loopback redirects require a fixed port");
+    throw new OAuthConnectionError(
+      "redirect_unavailable",
+      "client-loopback redirects require a fixed port"
+    );
   }
   const callbackPath = normalizeCallbackPath(redirect.callbackPath ?? DEFAULT_CALLBACK_PATH);
   return `http://${host}:${port}${callbackPath}`;
 }
 
-function buildClientLoopbackHandoff(tx: OAuthConnectionTransaction, state: string): {
+function buildClientLoopbackHandoff(
+  tx: OAuthConnectionTransaction,
+  state: string
+): {
   transactionId: string;
   redirectUri: string;
   host: string;
@@ -730,15 +881,17 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   const approvalQueue = deps.approvalQueue;
   const sessionGrantStore = deps.sessionGrantStore ?? new CredentialSessionGrantStore();
   const sessionCredentialCapture = deps.sessionCredentialCapture;
-  const credentialLifecycle = deps.credentialLifecycle ?? new CredentialLifecycle({
-    credentialStore,
-    clientConfigStore,
-  });
+  const credentialLifecycle =
+    deps.credentialLifecycle ??
+    new CredentialLifecycle({
+      credentialStore,
+      clientConfigStore,
+    });
   const oauthTransactions = new Map<string, OAuthConnectionTransaction>();
 
   function resolveBrowserHandoffTarget(
     ctx: ServiceContext,
-    handoffTarget?: { callerId: string; callerKind: "panel" | "shell" },
+    handoffTarget?: { callerId: string; callerKind: "panel" | "shell" }
   ): {
     deliveryCallerId: string;
     deliveryCallerKind: "shell";
@@ -755,7 +908,8 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       };
     }
     if (targetCallerKind === "panel") {
-      const ownerCallerId = tokenManager?.getPanelOwner(targetCallerId) ?? (!tokenManager ? targetCallerId : undefined);
+      const ownerCallerId =
+        tokenManager?.getPanelOwner(targetCallerId) ?? (!tokenManager ? targetCallerId : undefined);
       if (!ownerCallerId) return null;
       return {
         deliveryCallerId: ownerCallerId,
@@ -770,18 +924,20 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   function emitToBrowserTarget<E extends EventName>(
     target: { deliveryCallerId: string; deliveryConnectionId?: string },
     event: E,
-    payload?: EventPayloads[E],
+    payload?: EventPayloads[E]
   ): boolean {
     if (!eventService) return false;
     if (!target.deliveryConnectionId) {
       return eventService.emitToCaller(target.deliveryCallerId, event, payload);
     }
-    if (eventService.emitToConnection(
-      target.deliveryCallerId,
-      target.deliveryConnectionId,
-      event,
-      payload,
-    )) {
+    if (
+      eventService.emitToConnection(
+        target.deliveryCallerId,
+        target.deliveryConnectionId,
+        event,
+        payload
+      )
+    ) {
       return true;
     }
     log.warn("Browser handoff owner connection missing; falling back to caller-wide delivery", {
@@ -800,7 +956,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       preapprovedUseDecision?: Exclude<GrantedDecision, "deny">;
       replaceCredentialId?: string;
       replacementCredentialLabel?: string;
-    } = {},
+    } = {}
   ): Promise<StoredCredentialSummary> {
     const request = params as StoreUrlBoundCredentialRequest;
     const id = opts.replaceCredentialId ?? randomUUID();
@@ -810,20 +966,22 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     const identity = codeIdentityResolver?.resolveByCallerId(ctx.callerId) ?? null;
     const now = Date.now();
     const approvalIdentity = resolveApprovalIdentity(ctx);
-    const approvalDecision = opts.approvalDecision ?? (await requestCredentialApproval(ctx, {
-      credentialId: id,
-      credentialLabel: request.label,
-      audience,
-      injection,
-      accountIdentity: normalizeAccountIdentity(request.accountIdentity, ctx.callerId),
-      scopes: request.scopes ?? [],
-      identity: approvalIdentity,
-      metadata: request.metadata,
-      replacementCredentialLabel: opts.replacementCredentialLabel,
-    }));
+    if (!opts.approvalDecision) {
+      await requestCredentialApproval(ctx, {
+        credentialId: id,
+        credentialLabel: request.label,
+        audience,
+        injection,
+        accountIdentity: normalizeAccountIdentity(request.accountIdentity, ctx.callerId),
+        scopes: request.scopes ?? [],
+        identity: approvalIdentity,
+        metadata: request.metadata,
+        replacementCredentialLabel: opts.replacementCredentialLabel,
+      });
+    }
     const owner = {
       sourceId: identity?.repoPath ?? ctx.callerId,
-      sourceKind: identity ? "workspace" as const : "user" as const,
+      sourceKind: identity ? ("workspace" as const) : ("user" as const),
       label: identity?.repoPath ?? ctx.callerId,
     };
     const accountIdentity = normalizeAccountIdentity(request.accountIdentity, ctx.callerId);
@@ -849,12 +1007,20 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     };
 
     if (opts.preapprovedUseDecision) {
-      applyPreapprovedCredentialUseGrants(ctx, credential as Credential & { id: string }, bindings, opts.preapprovedUseDecision, now);
+      applyPreapprovedCredentialUseGrants(
+        ctx,
+        credential as Credential & { id: string },
+        bindings,
+        opts.preapprovedUseDecision,
+        now
+      );
     }
 
     await credentialStore.saveUrlBound(credential as Credential & { id: string });
     await appendAudit({
-      type: opts.replaceCredentialId ? "connection_credential.replaced" : "connection_credential.created",
+      type: opts.replaceCredentialId
+        ? "connection_credential.replaced"
+        : "connection_credential.created",
       ts: now,
       callerId: ctx.callerId,
       providerId: "url-bound",
@@ -867,10 +1033,12 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   function createOAuthAuthorizeRequest(
     request: InternalOAuthConnectionRequest,
-    state: string,
+    state: string
   ): { state: string; authorizeUrl: string; codeVerifier?: string } {
     const codeVerifier = request.pkce ? randomBytes(32).toString("base64url") : undefined;
-    const codeChallenge = codeVerifier ? createHash("sha256").update(codeVerifier).digest("base64url") : undefined;
+    const codeChallenge = codeVerifier
+      ? createHash("sha256").update(codeVerifier).digest("base64url")
+      : undefined;
     const authorizeUrl = new URL(request.flow.authorizeUrl);
     authorizeUrl.searchParams.set("response_type", "code");
     authorizeUrl.searchParams.set("client_id", request.flow.clientId);
@@ -894,7 +1062,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function requestClientConfig(
     ctx: ServiceContext,
-    params: RequestClientConfigParams,
+    params: RequestClientConfigParams
   ): Promise<ClientConfigStatus> {
     const request = params as ConfigureClientRequest;
     if (!approvalQueue || (ctx.callerKind !== "panel" && ctx.callerKind !== "worker")) {
@@ -1005,7 +1173,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function configureClient(
     ctx: ServiceContext,
-    params: ConfigureClientParams,
+    params: ConfigureClientParams
   ): Promise<ClientConfigStatus> {
     const request = params as ConfigureClientRequest;
     const status = await requestClientConfig(ctx, request);
@@ -1018,11 +1186,17 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function getClientConfigStatus(
     ctx: ServiceContext,
-    params: GetClientConfigStatusParams,
+    params: GetClientConfigStatusParams
   ): Promise<ClientConfigStatus> {
     const request = params as GetClientConfigStatusRequest;
     const record = await clientConfigStore.load(request.configId);
-    if (record?.owner && !isSameConfigTrustScope({ ...resolveApprovalIdentity(ctx), callerId: ctx.callerId }, record.owner)) {
+    if (
+      record?.owner &&
+      !isSameConfigTrustScope(
+        { ...resolveApprovalIdentity(ctx), callerId: ctx.callerId },
+        record.owner
+      )
+    ) {
       throw new OAuthConnectionError("client_not_authorized");
     }
     return clientConfigStore.summarize(request.configId, record, request.fields);
@@ -1030,12 +1204,18 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function deleteClientConfig(
     ctx: ServiceContext,
-    params: DeleteClientConfigParams,
+    params: DeleteClientConfigParams
   ): Promise<void> {
     const request = params as DeleteClientConfigRequest;
     const existing = await clientConfigStore.load(request.configId);
     if (!existing) return;
-    if (existing.owner && !isSameConfigTrustScope({ ...resolveApprovalIdentity(ctx), callerId: ctx.callerId }, existing.owner)) {
+    if (
+      existing.owner &&
+      !isSameConfigTrustScope(
+        { ...resolveApprovalIdentity(ctx), callerId: ctx.callerId },
+        existing.owner
+      )
+    ) {
       throw new Error("Client config deletion is not authorized for this caller");
     }
     if (approvalQueue && (ctx.callerKind === "panel" || ctx.callerKind === "worker")) {
@@ -1073,7 +1253,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function forwardOAuthCallback(
     ctx: ServiceContext,
-    params: ForwardOAuthCallbackParams,
+    params: ForwardOAuthCallbackParams
   ): Promise<void> {
     const request = params as ForwardOAuthCallbackRequest;
     const parsed = request.url ? new URL(request.url) : null;
@@ -1086,7 +1266,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     }
     if (tx.redirectStrategy === "client-loopback") {
       if (!request.transactionId) {
-        throw new OAuthConnectionError("client_not_authorized", "client-loopback callbacks require a transaction id");
+        throw new OAuthConnectionError(
+          "client_not_authorized",
+          "client-loopback callbacks require a transaction id"
+        );
       }
       if (tx.deliveryCallerId !== ctx.callerId || tx.deliveryCallerKind !== "shell") {
         throw new OAuthConnectionError("client_not_authorized");
@@ -1108,7 +1291,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function requestCredentialInput(
     ctx: ServiceContext,
-    params: RequestCredentialInputParams,
+    params: RequestCredentialInputParams
   ): Promise<StoredCredentialSummary> {
     const request = params as RequestCredentialInputRequest;
     if (!approvalQueue || (ctx.callerKind !== "panel" && ctx.callerKind !== "worker")) {
@@ -1129,7 +1312,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     }
     const audience = normalizeUrlAudiences(request.credential.audience);
     const injection = normalizeCredentialInjection(request.credential.injection);
-    const accountIdentity = normalizeAccountIdentity(request.credential.accountIdentity, ctx.callerId);
+    const accountIdentity = normalizeAccountIdentity(
+      request.credential.accountIdentity,
+      ctx.callerId
+    );
     const identity = resolveApprovalIdentity(ctx);
     const result = await approvalQueue.requestCredentialInput({
       kind: "credential-input",
@@ -1161,28 +1347,32 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       throw new Error(`Credential input field is required: ${request.material.tokenField}`);
     }
 
-    return storeCredential(ctx, {
-      label: request.credential.label,
-      audience,
-      injection,
-      bindings: request.credential.bindings,
-      material: {
-        type: request.material.type,
-        token,
+    return storeCredential(
+      ctx,
+      {
+        label: request.credential.label,
+        audience,
+        injection,
+        bindings: request.credential.bindings,
+        material: {
+          type: request.material.type,
+          token,
+        },
+        accountIdentity,
+        scopes: request.credential.scopes ?? [],
+        metadata: request.credential.metadata,
       },
-      accountIdentity,
-      scopes: request.credential.scopes ?? [],
-      metadata: request.credential.metadata,
-    }, { approvalDecision: "session" });
+      { approvalDecision: "session" }
+    );
   }
 
   async function connectCredential(
     ctx: ServiceContext,
-    params: ConnectCredentialParams,
+    params: ConnectCredentialParams
   ): Promise<StoredCredentialSummary> {
     const parsedParams = connectCredentialParamsSchema.parse(params);
     const { request, handoffTarget } = normalizeConnectInvocation(ctx, parsedParams);
-      switch (request.flow.type) {
+    switch (request.flow.type) {
       case "oauth2-auth-code-pkce":
         return connectOAuth2AuthCode(ctx, normalizePkceConnectRequest(request), handoffTarget);
       case "oauth2-auth-code":
@@ -1214,7 +1404,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   function normalizeConnectInvocation(
     ctx: ServiceContext,
-    params: ConnectCredentialParams,
+    params: ConnectCredentialParams
   ): {
     request: ConnectCredentialRequest;
     handoffTarget?: { callerId: string; callerKind: "panel" | "shell" };
@@ -1223,7 +1413,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       if (ctx.callerKind === "panel") {
         throw new OAuthConnectionError(
           "client_not_authorized",
-          "Panel callers cannot specify a credential browser handoff target",
+          "Panel callers cannot specify a credential browser handoff target"
         );
       }
       return {
@@ -1263,7 +1453,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     if (!flow.authorizeUrl || !flow.tokenUrl || !flow.clientId) {
       throw new OAuthConnectionError(
         "invalid_connection_spec",
-        "oauth2-auth-code-pkce requires authorizeUrl, tokenUrl, and clientId or a clientConfigId",
+        "oauth2-auth-code-pkce requires authorizeUrl, tokenUrl, and clientId or a clientConfigId"
       );
     }
     return {
@@ -1286,7 +1476,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     };
   }
 
-  function normalizeAuthCodeConnectRequest(request: ConnectCredentialRequest): AuthCodeConnectRequest {
+  function normalizeAuthCodeConnectRequest(
+    request: ConnectCredentialRequest
+  ): AuthCodeConnectRequest {
     const flow = request.flow;
     if (flow.type !== "oauth2-auth-code") {
       throw new OAuthConnectionError("unsupported_flow");
@@ -1338,7 +1530,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function connectApiKey(
     ctx: ServiceContext,
-    request: ConnectCredentialRequest,
+    request: ConnectCredentialRequest
   ): Promise<StoredCredentialSummary> {
     if (request.flow.type !== "api-key") {
       throw new OAuthConnectionError("unsupported_flow");
@@ -1350,15 +1542,21 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       if (field.type !== "secret" || field.required !== true) {
         throw new OAuthConnectionError(
           "invalid_connection_spec",
-          "api-key fields must be required secret fields",
+          "api-key fields must be required secret fields"
         );
       }
     }
     const audience = normalizeUrlAudiences(request.credential.audience);
     const injection = normalizeCredentialInjection(request.credential.injection);
-    const accountIdentity = normalizeAccountIdentity(request.credential.accountIdentity, ctx.callerId);
+    const accountIdentity = normalizeAccountIdentity(
+      request.credential.accountIdentity,
+      ctx.callerId
+    );
     const identity = resolveApprovalIdentity(ctx);
-    validateApiKeyMaterialTemplate(request.flow.materialTemplate.valueTemplate, request.flow.fields.map((field) => field.name));
+    validateApiKeyMaterialTemplate(
+      request.flow.materialTemplate.valueTemplate,
+      request.flow.fields.map((field) => field.name)
+    );
     const result = await approvalQueue.requestCredentialInput({
       kind: "credential-input",
       callerId: ctx.callerId,
@@ -1383,31 +1581,41 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     if (result.decision !== "submit") {
       throw new OAuthConnectionError("approval_denied");
     }
-    const material = renderApiKeyMaterialTemplate(request.flow.materialTemplate.valueTemplate, result.values);
+    const material = renderApiKeyMaterialTemplate(
+      request.flow.materialTemplate.valueTemplate,
+      result.values
+    );
     if (!material) {
-      throw new OAuthConnectionError("invalid_connection_spec", "api-key material template produced empty material");
+      throw new OAuthConnectionError(
+        "invalid_connection_spec",
+        "api-key material template produced empty material"
+      );
     }
-    return storeCredential(ctx, {
-      label: request.credential.label,
-      audience,
-      injection,
-      bindings: request.credential.bindings,
-      material: {
-        type: request.flow.materialTemplate.type,
-        token: material,
+    return storeCredential(
+      ctx,
+      {
+        label: request.credential.label,
+        audience,
+        injection,
+        bindings: request.credential.bindings,
+        material: {
+          type: request.flow.materialTemplate.type,
+          token: material,
+        },
+        accountIdentity,
+        scopes: request.credential.scopes ?? [],
+        metadata: {
+          ...(request.credential.metadata ?? {}),
+          flowType: "api-key",
+        },
       },
-      accountIdentity,
-      scopes: request.credential.scopes ?? [],
-      metadata: {
-        ...(request.credential.metadata ?? {}),
-        flowType: "api-key",
-      },
-    }, { approvalDecision: "session" });
+      { approvalDecision: "session" }
+    );
   }
 
   async function connectAwsSigV4(
     ctx: ServiceContext,
-    request: ConnectCredentialRequest,
+    request: ConnectCredentialRequest
   ): Promise<StoredCredentialSummary> {
     if (request.flow.type !== "aws-sigv4") {
       throw new OAuthConnectionError("unsupported_flow");
@@ -1420,11 +1628,19 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     }
     const audience = normalizeUrlAudiences(request.credential.audience);
     const injection = normalizeCredentialInjection(request.credential.injection);
-    const accountIdentity = normalizeAccountIdentity(request.credential.accountIdentity, ctx.callerId);
+    const accountIdentity = normalizeAccountIdentity(
+      request.credential.accountIdentity,
+      ctx.callerId
+    );
     const identity = resolveApprovalIdentity(ctx);
     const fields = [
       { name: "accessKeyId", label: "Access key ID", type: "secret" as const, required: true },
-      { name: "secretAccessKey", label: "Secret access key", type: "secret" as const, required: true },
+      {
+        name: "secretAccessKey",
+        label: "Secret access key",
+        type: "secret" as const,
+        required: true,
+      },
       { name: "sessionToken", label: "Session token", type: "secret" as const, required: false },
     ];
     const result = await approvalQueue.requestCredentialInput({
@@ -1449,24 +1665,33 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     const secretAccessKey = result.values["secretAccessKey"]?.trim() ?? "";
     const sessionToken = result.values["sessionToken"]?.trim() ?? "";
     if (!accessKeyId || !secretAccessKey) {
-      throw new OAuthConnectionError("invalid_connection_spec", "AWS SigV4 credentials require access key ID and secret access key");
+      throw new OAuthConnectionError(
+        "invalid_connection_spec",
+        "AWS SigV4 credentials require access key ID and secret access key"
+      );
     }
-    const stored = await storeCredential(ctx, {
-      label: request.credential.label,
-      audience,
-      injection,
-      bindings: request.credential.bindings,
-      material: { type: "aws-sigv4", token: accessKeyId },
-      accountIdentity: request.credential.accountIdentity ?? { providerUserId: `aws:${accessKeyId}` },
-      scopes: request.credential.scopes ?? [],
-      metadata: {
-        ...(request.credential.metadata ?? {}),
-        flowType: "aws-sigv4",
-        awsAccessKeyId: accessKeyId,
-        awsService: request.credential.injection.service,
-        awsRegion: request.credential.injection.region,
+    const stored = await storeCredential(
+      ctx,
+      {
+        label: request.credential.label,
+        audience,
+        injection,
+        bindings: request.credential.bindings,
+        material: { type: "aws-sigv4", token: accessKeyId },
+        accountIdentity: request.credential.accountIdentity ?? {
+          providerUserId: `aws:${accessKeyId}`,
+        },
+        scopes: request.credential.scopes ?? [],
+        metadata: {
+          ...(request.credential.metadata ?? {}),
+          flowType: "aws-sigv4",
+          awsAccessKeyId: accessKeyId,
+          awsService: request.credential.injection.service,
+          awsRegion: request.credential.injection.region,
+        },
       },
-    }, { approvalDecision: "session" });
+      { approvalDecision: "session" }
+    );
     const persisted = await credentialStore.loadUrlBound(stored.id);
     if (persisted?.id) {
       await credentialStore.saveUrlBound({
@@ -1480,14 +1705,17 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function connectSshKey(
     ctx: ServiceContext,
-    request: ConnectCredentialRequest,
+    request: ConnectCredentialRequest
   ): Promise<StoredCredentialSummary> {
     if (request.flow.type !== "ssh-key") {
       throw new OAuthConnectionError("unsupported_flow");
     }
     const bindings = request.credential.bindings;
     if (!bindings?.length || bindings.some((binding) => binding.use !== "git-ssh")) {
-      throw new OAuthConnectionError("invalid_connection_spec", "ssh-key credentials require explicit git-ssh bindings");
+      throw new OAuthConnectionError(
+        "invalid_connection_spec",
+        "ssh-key credentials require explicit git-ssh bindings"
+      );
     }
     if (request.credential.injection.type !== "ssh-key") {
       throw new OAuthConnectionError("unsupported_injection");
@@ -1495,7 +1723,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     const audience = normalizeUrlAudiences(request.credential.audience);
     const injection = normalizeCredentialInjection(request.credential.injection);
     const identity = resolveApprovalIdentity(ctx);
-    const approvalAccount = normalizeAccountIdentity(request.credential.accountIdentity, ctx.callerId);
+    const approvalAccount = normalizeAccountIdentity(
+      request.credential.accountIdentity,
+      ctx.callerId
+    );
     const approvalDecision = await requestCredentialApproval(ctx, {
       credentialId: randomUUID(),
       credentialLabel: request.credential.label,
@@ -1536,9 +1767,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         injection,
         accountIdentity: approvalAccount,
         scopes: request.credential.scopes ?? [],
-        fields: [
-          { name: "privateKey", label: "SSH private key", type: "secret", required: true },
-        ],
+        fields: [{ name: "privateKey", label: "SSH private key", type: "secret", required: true }],
       });
       if (result.decision !== "submit") {
         throw new OAuthConnectionError("approval_denied");
@@ -1547,28 +1776,36 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       if (!privateKey) {
         throw new OAuthConnectionError("invalid_connection_spec", "SSH private key is required");
       }
-      publicKey = openSshEd25519PublicKey(createPublicKey(privateKey).export({ type: "spki", format: "der" }));
+      publicKey = openSshEd25519PublicKey(
+        createPublicKey(privateKey).export({ type: "spki", format: "der" })
+      );
     }
     const fingerprint = sshPublicKeyFingerprint(publicKey);
-    const stored = await storeCredential(ctx, {
-      label: request.credential.label,
-      audience,
-      injection,
-      bindings,
-      material: { type: "ssh-key", token: publicKey },
-      accountIdentity: request.credential.accountIdentity ?? { providerUserId: `ssh:${fingerprint}` },
-      scopes: request.credential.scopes ?? [],
-      metadata: {
-        ...(request.credential.metadata ?? {}),
-        flowType: "ssh-key",
-        sshAlgorithm: "ed25519",
-        sshPublicKeyFingerprint: fingerprint,
-        sshPublicKey: publicKey,
+    const stored = await storeCredential(
+      ctx,
+      {
+        label: request.credential.label,
+        audience,
+        injection,
+        bindings,
+        material: { type: "ssh-key", token: publicKey },
+        accountIdentity: request.credential.accountIdentity ?? {
+          providerUserId: `ssh:${fingerprint}`,
+        },
+        scopes: request.credential.scopes ?? [],
+        metadata: {
+          ...(request.credential.metadata ?? {}),
+          flowType: "ssh-key",
+          sshAlgorithm: "ed25519",
+          sshPublicKeyFingerprint: fingerprint,
+          sshPublicKey: publicKey,
+        },
       },
-    }, {
-      approvalDecision,
-      preapprovedUseDecision: approvalDecision,
-    });
+      {
+        approvalDecision,
+        preapprovedUseDecision: approvalDecision,
+      }
+    );
     const persisted = await credentialStore.loadUrlBound(stored.id);
     if (persisted?.id) {
       await credentialStore.saveUrlBound({
@@ -1582,16 +1819,22 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function connectOAuthClientCredentials(
     ctx: ServiceContext,
-    request: ConnectCredentialRequest,
+    request: ConnectCredentialRequest
   ): Promise<StoredCredentialSummary> {
     if (request.flow.type !== "oauth2-client-credentials") {
       throw new OAuthConnectionError("unsupported_flow");
     }
-    const config = await loadClientConfigForFlow(request.flow.clientConfigId, "oauth2-client-credentials");
+    const config = await loadClientConfigForFlow(
+      request.flow.clientConfigId,
+      "oauth2-client-credentials"
+    );
     const clientId = config.fields["clientId"]?.value;
     const clientSecret = config.fields["clientSecret"]?.value;
     const privateKeyPem = config.fields["privateKeyPem"]?.value;
-    if (!clientId || (request.flow.tokenAuth === "private_key_jwt" ? !privateKeyPem : !clientSecret)) {
+    if (
+      !clientId ||
+      (request.flow.tokenAuth === "private_key_jwt" ? !privateKeyPem : !clientSecret)
+    ) {
       throw new OAuthConnectionError("client_config_unavailable");
     }
     const audience = normalizeUrlAudiences(request.credential.audience);
@@ -1602,7 +1845,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       credentialLabel: request.credential.label,
       audience,
       injection,
-      accountIdentity: normalizeAccountIdentity(request.credential.accountIdentity, request.flow.clientConfigId),
+      accountIdentity: normalizeAccountIdentity(
+        request.credential.accountIdentity,
+        request.flow.clientConfigId
+      ),
       scopes: request.credential.scopes ?? request.flow.scopes ?? [],
       identity,
       metadata: {
@@ -1623,35 +1869,39 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       audienceParam: request.flow.audienceParam,
       resourceParam: request.flow.resourceParam,
     });
-    return storeCredential(ctx, {
-      label: request.credential.label,
-      audience,
-      injection,
-      bindings: request.credential.bindings,
-      material: { type: "bearer-token", token: token.accessToken },
-      accountIdentity: request.credential.accountIdentity ?? {
-        providerUserId: `service:${request.flow.clientConfigId}`,
+    return storeCredential(
+      ctx,
+      {
+        label: request.credential.label,
+        audience,
+        injection,
+        bindings: request.credential.bindings,
+        material: { type: "bearer-token", token: token.accessToken },
+        accountIdentity: request.credential.accountIdentity ?? {
+          providerUserId: `service:${request.flow.clientConfigId}`,
+        },
+        scopes: request.credential.scopes ?? request.flow.scopes ?? token.scopes ?? [],
+        expiresAt: token.expiresAt,
+        metadata: {
+          ...(request.credential.metadata ?? {}),
+          flowType: request.flow.type,
+          clientConfigId: request.flow.clientConfigId,
+          clientConfigVersion: config.currentVersion ?? String(config.updatedAt),
+          oauthTokenAuth: request.flow.tokenAuth,
+          oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
+          ...(request.flow.revocationUrl ? { oauthRevocationUrl: request.flow.revocationUrl } : {}),
+        },
       },
-      scopes: request.credential.scopes ?? request.flow.scopes ?? token.scopes ?? [],
-      expiresAt: token.expiresAt,
-      metadata: {
-        ...(request.credential.metadata ?? {}),
-        flowType: request.flow.type,
-        clientConfigId: request.flow.clientConfigId,
-        clientConfigVersion: config.currentVersion ?? String(config.updatedAt),
-        oauthTokenAuth: request.flow.tokenAuth,
-        oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
-        ...(request.flow.revocationUrl ? { oauthRevocationUrl: request.flow.revocationUrl } : {}),
-      },
-    }, {
-      approvalDecision,
-      preapprovedUseDecision: approvalDecision,
-    });
+      {
+        approvalDecision,
+        preapprovedUseDecision: approvalDecision,
+      }
+    );
   }
 
   async function connectOAuthJwtBearer(
     ctx: ServiceContext,
-    request: ConnectCredentialRequest,
+    request: ConnectCredentialRequest
   ): Promise<StoredCredentialSummary> {
     if (request.flow.type !== "oauth2-jwt-bearer") {
       throw new OAuthConnectionError("unsupported_flow");
@@ -1670,7 +1920,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       credentialLabel: request.credential.label,
       audience,
       injection,
-      accountIdentity: normalizeAccountIdentity(request.credential.accountIdentity, request.flow.subject ?? clientId),
+      accountIdentity: normalizeAccountIdentity(
+        request.credential.accountIdentity,
+        request.flow.subject ?? clientId
+      ),
       scopes: request.credential.scopes ?? request.flow.scopes ?? [],
       identity,
       metadata: {
@@ -1691,29 +1944,38 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       scopes: request.flow.scopes,
       persistRefreshToken: request.flow.persistRefreshToken,
     });
-    const stored = await storeCredential(ctx, {
-      label: request.credential.label,
-      audience,
-      injection,
-      bindings: request.credential.bindings,
-      material: { type: "bearer-token", token: token.accessToken },
-      accountIdentity: request.credential.accountIdentity ?? { providerUserId: request.flow.subject ?? clientId },
-      scopes: request.credential.scopes ?? request.flow.scopes ?? token.scopes ?? [],
-      expiresAt: token.expiresAt,
-      metadata: {
-        ...(request.credential.metadata ?? {}),
-        flowType: request.flow.type,
-        clientConfigId: request.flow.clientConfigId,
-        clientConfigVersion: config.currentVersion ?? String(config.updatedAt),
-        oauthTokenAuth: "private_key_jwt",
-        oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
-        ...(request.flow.revocationUrl ? { oauthRevocationUrl: request.flow.revocationUrl } : {}),
+    const stored = await storeCredential(
+      ctx,
+      {
+        label: request.credential.label,
+        audience,
+        injection,
+        bindings: request.credential.bindings,
+        material: { type: "bearer-token", token: token.accessToken },
+        accountIdentity: request.credential.accountIdentity ?? {
+          providerUserId: request.flow.subject ?? clientId,
+        },
+        scopes: request.credential.scopes ?? request.flow.scopes ?? token.scopes ?? [],
+        expiresAt: token.expiresAt,
+        metadata: {
+          ...(request.credential.metadata ?? {}),
+          flowType: request.flow.type,
+          clientConfigId: request.flow.clientConfigId,
+          clientConfigVersion: config.currentVersion ?? String(config.updatedAt),
+          oauthTokenAuth: "private_key_jwt",
+          oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
+          ...(request.flow.revocationUrl ? { oauthRevocationUrl: request.flow.revocationUrl } : {}),
+        },
       },
-    }, { approvalDecision, preapprovedUseDecision: approvalDecision });
+      { approvalDecision, preapprovedUseDecision: approvalDecision }
+    );
     if (token.refreshToken) {
       const persisted = await credentialStore.loadUrlBound(stored.id);
       if (persisted?.id) {
-        await credentialStore.saveUrlBound({ ...persisted, refreshToken: token.refreshToken } as Credential & { id: string });
+        await credentialStore.saveUrlBound({
+          ...persisted,
+          refreshToken: token.refreshToken,
+        } as Credential & { id: string });
       }
     }
     return stored;
@@ -1721,14 +1983,19 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function connectOAuthTokenExchange(
     ctx: ServiceContext,
-    request: ConnectCredentialRequest,
+    request: ConnectCredentialRequest
   ): Promise<StoredCredentialSummary> {
     if (request.flow.type !== "oauth2-token-exchange") {
       throw new OAuthConnectionError("unsupported_flow");
     }
-    const config = await loadClientConfigForFlow(request.flow.clientConfigId, "oauth2-token-exchange");
+    const config = await loadClientConfigForFlow(
+      request.flow.clientConfigId,
+      "oauth2-token-exchange"
+    );
     const clientId = config.fields["clientId"]?.value;
-    const tokenAuth = request.flow.tokenAuth ?? (config.fields["privateKeyPem"]?.value ? "private_key_jwt" : "client_secret_post");
+    const tokenAuth =
+      request.flow.tokenAuth ??
+      (config.fields["privateKeyPem"]?.value ? "private_key_jwt" : "client_secret_post");
     const clientSecret = config.fields["clientSecret"]?.value;
     const privateKeyPem = config.fields["privateKeyPem"]?.value;
     if (!clientId || (tokenAuth === "private_key_jwt" ? !privateKeyPem : !clientSecret)) {
@@ -1741,11 +2008,21 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     const subjectBinding = subject.bindings?.[0];
     const subjectAudience = subjectBinding?.audience[0]?.url;
     if (!subjectBinding || !subjectAudience) {
-      throw new OAuthConnectionError("client_not_authorized", "Subject credential has no usable binding");
+      throw new OAuthConnectionError(
+        "client_not_authorized",
+        "Subject credential has no usable binding"
+      );
     }
-    const subjectUsage = credentialUseContext(subject, new URL(subjectAudience), subjectBinding.use);
+    const subjectUsage = credentialUseContext(
+      subject,
+      new URL(subjectAudience),
+      subjectBinding.use
+    );
     if (!subjectUsage) {
-      throw new OAuthConnectionError("client_not_authorized", "Subject credential binding cannot be authorized");
+      throw new OAuthConnectionError(
+        "client_not_authorized",
+        "Subject credential binding cannot be authorized"
+      );
     }
     await authorizeCredentialUse(ctx, subject, subjectUsage);
     const audience = normalizeUrlAudiences(request.credential.audience);
@@ -1756,7 +2033,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       credentialLabel: request.credential.label,
       audience,
       injection,
-      accountIdentity: subject.accountIdentity ?? normalizeAccountIdentity(request.credential.accountIdentity, ctx.callerId),
+      accountIdentity:
+        subject.accountIdentity ??
+        normalizeAccountIdentity(request.credential.accountIdentity, ctx.callerId),
       scopes: request.credential.scopes ?? request.flow.scopes ?? [],
       identity,
       metadata: {
@@ -1781,30 +2060,37 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       resource: request.flow.resource,
       persistRefreshToken: request.flow.persistRefreshToken,
     });
-    const stored = await storeCredential(ctx, {
-      label: request.credential.label,
-      audience,
-      injection,
-      bindings: request.credential.bindings,
-      material: { type: "bearer-token", token: token.accessToken },
-      accountIdentity: request.credential.accountIdentity ?? subject.accountIdentity,
-      scopes: request.credential.scopes ?? request.flow.scopes ?? token.scopes ?? [],
-      expiresAt: token.expiresAt,
-      metadata: {
-        ...(request.credential.metadata ?? {}),
-        flowType: request.flow.type,
-        clientConfigId: request.flow.clientConfigId,
-        clientConfigVersion: config.currentVersion ?? String(config.updatedAt),
-        subjectCredentialId: request.flow.subjectCredentialId,
-        oauthTokenAuth: tokenAuth,
-        oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
-        ...(request.flow.revocationUrl ? { oauthRevocationUrl: request.flow.revocationUrl } : {}),
+    const stored = await storeCredential(
+      ctx,
+      {
+        label: request.credential.label,
+        audience,
+        injection,
+        bindings: request.credential.bindings,
+        material: { type: "bearer-token", token: token.accessToken },
+        accountIdentity: request.credential.accountIdentity ?? subject.accountIdentity,
+        scopes: request.credential.scopes ?? request.flow.scopes ?? token.scopes ?? [],
+        expiresAt: token.expiresAt,
+        metadata: {
+          ...(request.credential.metadata ?? {}),
+          flowType: request.flow.type,
+          clientConfigId: request.flow.clientConfigId,
+          clientConfigVersion: config.currentVersion ?? String(config.updatedAt),
+          subjectCredentialId: request.flow.subjectCredentialId,
+          oauthTokenAuth: tokenAuth,
+          oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
+          ...(request.flow.revocationUrl ? { oauthRevocationUrl: request.flow.revocationUrl } : {}),
+        },
       },
-    }, { approvalDecision, preapprovedUseDecision: approvalDecision });
+      { approvalDecision, preapprovedUseDecision: approvalDecision }
+    );
     if (token.refreshToken) {
       const persisted = await credentialStore.loadUrlBound(stored.id);
       if (persisted?.id) {
-        await credentialStore.saveUrlBound({ ...persisted, refreshToken: token.refreshToken } as Credential & { id: string });
+        await credentialStore.saveUrlBound({
+          ...persisted,
+          refreshToken: token.refreshToken,
+        } as Credential & { id: string });
       }
     }
     return stored;
@@ -1812,7 +2098,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function connectBrowserCookieSession(
     ctx: ServiceContext,
-    request: ConnectCredentialRequest,
+    request: ConnectCredentialRequest
   ): Promise<StoredCredentialSummary> {
     if (request.flow.type !== "browser-cookie-session") {
       throw new OAuthConnectionError("unsupported_flow");
@@ -1821,7 +2107,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       throw new OAuthConnectionError("unsupported_injection");
     }
     if (!sessionCredentialCapture) {
-      throw new OAuthConnectionError("browser_unavailable", "Session credential capture is unavailable on this platform");
+      throw new OAuthConnectionError(
+        "browser_unavailable",
+        "Session credential capture is unavailable on this platform"
+      );
     }
     const audience = normalizeUrlAudiences(request.credential.audience);
     const injection = normalizeCredentialInjection(request.credential.injection);
@@ -1852,28 +2141,32 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     if (!captured.cookieHeader) {
       throw new OAuthConnectionError("session_capture_failed");
     }
-    const stored = await storeCredential(ctx, {
-      label: request.credential.label,
-      audience,
-      injection,
-      bindings: request.credential.bindings,
-      material: { type: "cookie-session", token: captured.cookieHeader },
-      accountIdentity: {
-        ...(captured.accountIdentity ?? {}),
-        ...(request.credential.accountIdentity ?? {}),
+    const stored = await storeCredential(
+      ctx,
+      {
+        label: request.credential.label,
+        audience,
+        injection,
+        bindings: request.credential.bindings,
+        material: { type: "cookie-session", token: captured.cookieHeader },
+        accountIdentity: {
+          ...(captured.accountIdentity ?? {}),
+          ...(request.credential.accountIdentity ?? {}),
+        },
+        scopes: request.credential.scopes ?? [],
+        expiresAt: captured.expiresAt,
+        metadata: {
+          ...(request.credential.metadata ?? {}),
+          flowType: request.flow.type,
+          sessionSignInOrigin: new URL(request.flow.signInUrl).origin,
+          capturedCookieNames: request.flow.capture.cookies.join(","),
+        },
       },
-      scopes: request.credential.scopes ?? [],
-      expiresAt: captured.expiresAt,
-      metadata: {
-        ...(request.credential.metadata ?? {}),
-        flowType: request.flow.type,
-        sessionSignInOrigin: new URL(request.flow.signInUrl).origin,
-        capturedCookieNames: request.flow.capture.cookies.join(","),
-      },
-    }, {
-      approvalDecision,
-      preapprovedUseDecision: approvalDecision,
-    });
+      {
+        approvalDecision,
+        preapprovedUseDecision: approvalDecision,
+      }
+    );
     const persisted = await credentialStore.loadUrlBound(stored.id);
     if (persisted?.id) {
       await credentialStore.saveUrlBound({
@@ -1887,7 +2180,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function connectSamlBrowserSession(
     ctx: ServiceContext,
-    request: ConnectCredentialRequest,
+    request: ConnectCredentialRequest
   ): Promise<StoredCredentialSummary> {
     if (request.flow.type !== "saml-browser-session") {
       throw new OAuthConnectionError("unsupported_flow");
@@ -1896,7 +2189,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       throw new OAuthConnectionError("unsupported_injection");
     }
     if (!sessionCredentialCapture?.captureSamlSession) {
-      throw new OAuthConnectionError("browser_unavailable", "SAML session capture is unavailable on this platform");
+      throw new OAuthConnectionError(
+        "browser_unavailable",
+        "SAML session capture is unavailable on this platform"
+      );
     }
     if (!request.flow.capture.cookies?.length && !request.flow.capture.assertion) {
       throw new OAuthConnectionError("invalid_connection_spec");
@@ -1933,29 +2229,33 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       throw new OAuthConnectionError("saml_assertion_failed");
     }
     const material = captured.cookieHeader ?? captured.assertion ?? "";
-    const stored = await storeCredential(ctx, {
-      label: request.credential.label,
-      audience,
-      injection,
-      bindings: request.credential.bindings,
-      material: { type: "saml-session", token: material },
-      accountIdentity: {
-        ...(captured.accountIdentity ?? {}),
-        ...(request.credential.accountIdentity ?? {}),
+    const stored = await storeCredential(
+      ctx,
+      {
+        label: request.credential.label,
+        audience,
+        injection,
+        bindings: request.credential.bindings,
+        material: { type: "saml-session", token: material },
+        accountIdentity: {
+          ...(captured.accountIdentity ?? {}),
+          ...(request.credential.accountIdentity ?? {}),
+        },
+        scopes: request.credential.scopes ?? [],
+        expiresAt: captured.expiresAt,
+        metadata: {
+          ...(request.credential.metadata ?? {}),
+          flowType: request.flow.type,
+          sessionSignInOrigin: new URL(request.flow.signInUrl).origin,
+          spAudience: request.flow.spAudience,
+          capturedCookieNames: request.flow.capture.cookies?.join(",") ?? "",
+        },
       },
-      scopes: request.credential.scopes ?? [],
-      expiresAt: captured.expiresAt,
-      metadata: {
-        ...(request.credential.metadata ?? {}),
-        flowType: request.flow.type,
-        sessionSignInOrigin: new URL(request.flow.signInUrl).origin,
-        spAudience: request.flow.spAudience,
-        capturedCookieNames: request.flow.capture.cookies?.join(",") ?? "",
-      },
-    }, {
-      approvalDecision,
-      preapprovedUseDecision: approvalDecision,
-    });
+      {
+        approvalDecision,
+        preapprovedUseDecision: approvalDecision,
+      }
+    );
     const persisted = await credentialStore.loadUrlBound(stored.id);
     if (persisted?.id) {
       await credentialStore.saveUrlBound({
@@ -1970,7 +2270,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function connectOAuthDeviceCode(
     ctx: ServiceContext,
-    request: ConnectCredentialRequest,
+    request: ConnectCredentialRequest
   ): Promise<StoredCredentialSummary> {
     if (request.flow.type !== "oauth2-device-code") {
       throw new OAuthConnectionError("unsupported_flow");
@@ -1985,7 +2285,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     if (!clientId) {
       throw new OAuthConnectionError("client_config_unavailable");
     }
-    if (tokenAuth !== "none" && (tokenAuth === "private_key_jwt" ? !privateKeyPem : !clientSecret)) {
+    if (
+      tokenAuth !== "none" &&
+      (tokenAuth === "private_key_jwt" ? !privateKeyPem : !clientSecret)
+    ) {
       throw new OAuthConnectionError("client_config_unavailable");
     }
     const audience = normalizeUrlAudiences(request.credential.audience);
@@ -2030,22 +2333,27 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     const presentation = approvalQueue?.presentDeviceCode({
       kind: "device-code",
       callerId: ctx.callerId,
-      callerKind: ctx.callerKind === "panel" || ctx.callerKind === "worker" ? ctx.callerKind : "panel",
+      callerKind:
+        ctx.callerKind === "panel" || ctx.callerKind === "worker" ? ctx.callerKind : "panel",
       repoPath: identity.repoPath,
       effectiveVersion: identity.effectiveVersion,
       credentialLabel: request.credential.label,
       userCode: device.userCode,
       verificationUri: device.verificationUri,
       verificationUriComplete: device.verificationUriComplete,
-      expiresAt: Date.now() + Math.max(1, request.flow.expiresInSeconds ?? device.expiresInSeconds) * 1000,
+      expiresAt:
+        Date.now() + Math.max(1, request.flow.expiresInSeconds ?? device.expiresInSeconds) * 1000,
       oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
     });
     const browserTarget = resolveBrowserHandoffTarget(ctx);
-    if (!browserTarget || !emitToBrowserTarget(browserTarget, "external-open:open", {
-      url: verificationUrl,
-      callerId: ctx.callerId,
-      callerKind: ctx.callerKind,
-    })) {
+    if (
+      !browserTarget ||
+      !emitToBrowserTarget(browserTarget, "external-open:open", {
+        url: verificationUrl,
+        callerId: ctx.callerId,
+        callerKind: ctx.callerKind,
+      })
+    ) {
       presentation?.dispose();
       throw new OAuthConnectionError("browser_unavailable");
     }
@@ -2068,33 +2376,40 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     } finally {
       presentation?.dispose();
     }
-    const stored = await storeCredential(ctx, {
-      label: request.credential.label,
-      audience,
-      injection,
-      bindings: request.credential.bindings,
-      material: { type: "bearer-token", token: token.accessToken },
-      accountIdentity: request.credential.accountIdentity,
-      scopes: request.credential.scopes ?? request.flow.scopes ?? token.scopes ?? [],
-      expiresAt: token.expiresAt,
-      metadata: {
-        ...(request.credential.metadata ?? {}),
-        flowType: request.flow.type,
-        ...(request.flow.clientConfigId ? { clientConfigId: request.flow.clientConfigId } : {}),
-        ...(config?.currentVersion ? { clientConfigVersion: config.currentVersion } : {}),
-        oauthTokenAuth: tokenAuth,
-        oauthDeviceVerificationOrigin: new URL(verificationUrl).origin,
-        oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
-        ...(request.flow.revocationUrl ? { oauthRevocationUrl: request.flow.revocationUrl } : {}),
+    const stored = await storeCredential(
+      ctx,
+      {
+        label: request.credential.label,
+        audience,
+        injection,
+        bindings: request.credential.bindings,
+        material: { type: "bearer-token", token: token.accessToken },
+        accountIdentity: request.credential.accountIdentity,
+        scopes: request.credential.scopes ?? request.flow.scopes ?? token.scopes ?? [],
+        expiresAt: token.expiresAt,
+        metadata: {
+          ...(request.credential.metadata ?? {}),
+          flowType: request.flow.type,
+          ...(request.flow.clientConfigId ? { clientConfigId: request.flow.clientConfigId } : {}),
+          ...(config?.currentVersion ? { clientConfigVersion: config.currentVersion } : {}),
+          oauthTokenAuth: tokenAuth,
+          oauthDeviceVerificationOrigin: new URL(verificationUrl).origin,
+          oauthTokenOrigin: new URL(request.flow.tokenUrl).origin,
+          ...(request.flow.revocationUrl ? { oauthRevocationUrl: request.flow.revocationUrl } : {}),
+        },
       },
-    }, {
-      approvalDecision,
-      preapprovedUseDecision: approvalDecision,
-    });
+      {
+        approvalDecision,
+        preapprovedUseDecision: approvalDecision,
+      }
+    );
     if (token.refreshToken) {
       const persisted = await credentialStore.loadUrlBound(stored.id);
       if (persisted?.id) {
-        await credentialStore.saveUrlBound({ ...persisted, refreshToken: token.refreshToken } as Credential & { id: string });
+        await credentialStore.saveUrlBound({
+          ...persisted,
+          refreshToken: token.refreshToken,
+        } as Credential & { id: string });
       }
     }
     return stored;
@@ -2103,7 +2418,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   async function connectOAuth1a(
     ctx: ServiceContext,
     request: ConnectCredentialRequest,
-    handoffTarget?: { callerId: string; callerKind: "panel" | "shell" },
+    handoffTarget?: { callerId: string; callerKind: "panel" | "shell" }
   ): Promise<StoredCredentialSummary> {
     if (request.flow.type !== "oauth1a") {
       throw new OAuthConnectionError("unsupported_flow");
@@ -2113,14 +2428,18 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     }
     const config = await loadClientConfigForFlow(request.flow.clientConfigId, "oauth1a");
     const consumerKey = config.fields["consumerKey"]?.value ?? config.fields["clientId"]?.value;
-    const consumerSecret = config.fields["consumerSecret"]?.value ?? config.fields["clientSecret"]?.value;
+    const consumerSecret =
+      config.fields["consumerSecret"]?.value ?? config.fields["clientSecret"]?.value;
     if (!consumerKey || !consumerSecret) {
       throw new OAuthConnectionError("client_config_unavailable");
     }
     const redirect = request.redirect ?? {};
     const redirectStrategy = resolveDefaultRedirectStrategy(redirect.type);
     if (redirectStrategy === "client-loopback") {
-      throw new OAuthConnectionError("unsupported_flow", "client-loopback redirects are only supported for OAuth2 flows");
+      throw new OAuthConnectionError(
+        "unsupported_flow",
+        "client-loopback redirects are only supported for OAuth2 flows"
+      );
     }
     let callback: HostOAuthCallback | null = null;
     let tx: OAuthConnectionTransaction | null = null;
@@ -2184,11 +2503,14 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         throw new OAuthConnectionError("browser_unavailable");
       }
       const browserTarget = resolveBrowserHandoffTarget(ctx, handoffTarget);
-      if (!browserTarget || !emitToBrowserTarget(browserTarget, "external-open:open", {
-        url: authorizeUrl.toString(),
-        callerId: ctx.callerId,
-        callerKind: ctx.callerKind,
-      })) {
+      if (
+        !browserTarget ||
+        !emitToBrowserTarget(browserTarget, "external-open:open", {
+          url: authorizeUrl.toString(),
+          callerId: ctx.callerId,
+          callerKind: ctx.callerKind,
+        })
+      ) {
         throw new OAuthConnectionError("browser_unavailable");
       }
       await transitionOAuthTransaction(tx, "handoff_requested");
@@ -2206,26 +2528,30 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         requestTokenSecret: requestToken.secret,
         verifier: result.code,
       });
-      const stored = await storeCredential(ctx, {
-        label: request.credential.label,
-        audience,
-        injection,
-        bindings: request.credential.bindings,
-        material: { type: "bearer-token", token: access.token },
-        accountIdentity: request.credential.accountIdentity,
-        scopes: request.credential.scopes ?? [],
-        metadata: {
-          ...(request.credential.metadata ?? {}),
-          flowType: request.flow.type,
-          clientConfigId: request.flow.clientConfigId,
-          clientConfigVersion: config.currentVersion ?? String(config.updatedAt),
-          oauth1ConsumerKey: consumerKey,
-          oauthAuthorizeOrigin: new URL(request.flow.authorizeUrl).origin,
+      const stored = await storeCredential(
+        ctx,
+        {
+          label: request.credential.label,
+          audience,
+          injection,
+          bindings: request.credential.bindings,
+          material: { type: "bearer-token", token: access.token },
+          accountIdentity: request.credential.accountIdentity,
+          scopes: request.credential.scopes ?? [],
+          metadata: {
+            ...(request.credential.metadata ?? {}),
+            flowType: request.flow.type,
+            clientConfigId: request.flow.clientConfigId,
+            clientConfigVersion: config.currentVersion ?? String(config.updatedAt),
+            oauth1ConsumerKey: consumerKey,
+            oauthAuthorizeOrigin: new URL(request.flow.authorizeUrl).origin,
+          },
         },
-      }, {
-        approvalDecision,
-        preapprovedUseDecision: approvalDecision,
-      });
+        {
+          approvalDecision,
+          preapprovedUseDecision: approvalDecision,
+        }
+      );
       const persisted = await credentialStore.loadUrlBound(stored.id);
       if (persisted?.id) {
         await credentialStore.saveUrlBound({
@@ -2251,7 +2577,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   async function connectOAuth2AuthCode(
     ctx: ServiceContext,
     request: AuthCodeConnectRequest,
-    explicitHandoffTarget?: { callerId: string; callerKind: "panel" | "shell" },
+    explicitHandoffTarget?: { callerId: string; callerKind: "panel" | "shell" }
   ): Promise<StoredCredentialSummary> {
     const redirect = request.redirect ?? {};
     const redirectStrategy = resolveDefaultRedirectStrategy(redirect.type);
@@ -2297,7 +2623,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         oauthAuthorizeOrigin: new URL(oauthRequest.flow.authorizeUrl).origin,
         oauthTokenOrigin: new URL(oauthRequest.flow.tokenUrl).origin,
         ...(oauthRequest.flow.accountValidation?.userinfo?.url
-          ? { oauthUserinfoOrigin: new URL(oauthRequest.flow.accountValidation.userinfo.url).origin }
+          ? {
+              oauthUserinfoOrigin: new URL(oauthRequest.flow.accountValidation.userinfo.url).origin,
+            }
           : {}),
       };
       const approvalDecision = await requestCredentialApproval(ctx, {
@@ -2305,7 +2633,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         credentialLabel: oauthRequest.credential.label,
         audience,
         injection,
-        accountIdentity: normalizeAccountIdentity(oauthRequest.credential.accountIdentity, ctx.callerId),
+        accountIdentity: normalizeAccountIdentity(
+          oauthRequest.credential.accountIdentity,
+          ctx.callerId
+        ),
         scopes: oauthRequest.credential.scopes ?? oauthRequest.flow.scopes ?? [],
         identity,
         metadata,
@@ -2318,11 +2649,17 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       }
       const openMode = request.browser ?? "external";
       if (redirectStrategy === "client-loopback" && openMode !== "external") {
-        throw new OAuthConnectionError("unsupported_browser_mode", "client-loopback OAuth requires an external browser");
+        throw new OAuthConnectionError(
+          "unsupported_browser_mode",
+          "client-loopback OAuth requires an external browser"
+        );
       }
       const browserTarget = resolveBrowserHandoffTarget(ctx, explicitHandoffTarget);
       if (!browserTarget) {
-        throw new OAuthConnectionError("browser_unavailable", "OAuth browser handoff target is not connected");
+        throw new OAuthConnectionError(
+          "browser_unavailable",
+          "OAuth browser handoff target is not connected"
+        );
       }
       if (redirectStrategy === "client-loopback") {
         tx.deliveryCallerId = browserTarget.deliveryCallerId;
@@ -2339,7 +2676,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       let browserDelivered = false;
       if (openMode === "internal") {
         if (!browserTarget.parentPanelId) {
-          throw new OAuthConnectionError("browser_unavailable", "Internal OAuth handoff requires a panel target");
+          throw new OAuthConnectionError(
+            "browser_unavailable",
+            "Internal OAuth handoff requires a panel target"
+          );
         }
         browserDelivered = emitToBrowserTarget(browserTarget, "browser-panel:open", {
           url: started.authorizeUrl,
@@ -2351,7 +2691,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         browserDelivered = emitToBrowserTarget(browserTarget, "external-open:open", openPayload);
       }
       if (!browserDelivered) {
-        throw new OAuthConnectionError("browser_unavailable", "OAuth browser handoff target is not connected");
+        throw new OAuthConnectionError(
+          "browser_unavailable",
+          "OAuth browser handoff target is not connected"
+        );
       }
       await transitionOAuthTransaction(tx, "browser_open_requested");
       if (callback) {
@@ -2362,7 +2705,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       await transitionOAuthTransaction(tx, "exchanging");
       const token = await exchangeOAuthCode(oauthRequest, result.code, started.codeVerifier);
       await transitionOAuthTransaction(tx, "validating_account");
-      const validatedAccountIdentity = await validateOAuthAccountIdentity(oauthRequest, token.accessToken);
+      const validatedAccountIdentity = await validateOAuthAccountIdentity(
+        oauthRequest,
+        token.accessToken
+      );
       const accountIdentity = {
         ...deriveAccountIdentityFromJwt(token.accessToken, oauthRequest.credential.metadata),
         ...validatedAccountIdentity,
@@ -2374,37 +2720,49 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         metadata: oauthRequest.credential.metadata,
         accountIdentity,
       });
-      const stored = await storeCredential(ctx, {
-        label: oauthRequest.credential.label,
-        audience: oauthRequest.credential.audience,
-        injection: oauthRequest.credential.injection,
-        bindings: oauthRequest.credential.bindings,
-        material: { type: "bearer-token", token: token.accessToken },
-        accountIdentity,
-        scopes: oauthRequest.credential.scopes ?? oauthRequest.flow.scopes ?? token.scopes ?? [],
-        expiresAt: token.expiresAt,
-        metadata: {
-          ...(oauthRequest.credential.metadata ?? {}),
-          ...(token.refreshToken ? { oauthRefreshTokenStored: "true" } : {}),
-          oauthTokenAuth: oauthRequest.tokenAuth,
-          oauthAuthorizeOrigin: new URL(oauthRequest.flow.authorizeUrl).origin,
-          oauthTokenOrigin: new URL(oauthRequest.flow.tokenUrl).origin,
-          ...(oauthRequest.flow.revocationUrl ? { oauthRevocationUrl: oauthRequest.flow.revocationUrl } : {}),
-          ...(oauthRequest.flow.accountValidation?.userinfo?.url
-            ? { oauthUserinfoOrigin: new URL(oauthRequest.flow.accountValidation.userinfo.url).origin }
-            : {}),
-          oauthScopes: (oauthRequest.flow.scopes ?? []).join(" "),
+      const stored = await storeCredential(
+        ctx,
+        {
+          label: oauthRequest.credential.label,
+          audience: oauthRequest.credential.audience,
+          injection: oauthRequest.credential.injection,
+          bindings: oauthRequest.credential.bindings,
+          material: { type: "bearer-token", token: token.accessToken },
+          accountIdentity,
+          scopes: oauthRequest.credential.scopes ?? oauthRequest.flow.scopes ?? token.scopes ?? [],
+          expiresAt: token.expiresAt,
+          metadata: {
+            ...(oauthRequest.credential.metadata ?? {}),
+            ...(token.refreshToken ? { oauthRefreshTokenStored: "true" } : {}),
+            oauthTokenAuth: oauthRequest.tokenAuth,
+            oauthAuthorizeOrigin: new URL(oauthRequest.flow.authorizeUrl).origin,
+            oauthTokenOrigin: new URL(oauthRequest.flow.tokenUrl).origin,
+            ...(oauthRequest.flow.revocationUrl
+              ? { oauthRevocationUrl: oauthRequest.flow.revocationUrl }
+              : {}),
+            ...(oauthRequest.flow.accountValidation?.userinfo?.url
+              ? {
+                  oauthUserinfoOrigin: new URL(oauthRequest.flow.accountValidation.userinfo.url)
+                    .origin,
+                }
+              : {}),
+            oauthScopes: (oauthRequest.flow.scopes ?? []).join(" "),
+          },
         },
-      }, {
-        approvalDecision: duplicate ? undefined : approvalDecision,
-        preapprovedUseDecision: approvalDecision,
-        replaceCredentialId: duplicate?.id,
-        replacementCredentialLabel: duplicate?.label ?? duplicate?.connectionLabel,
-      });
+        {
+          approvalDecision: duplicate ? undefined : approvalDecision,
+          preapprovedUseDecision: approvalDecision,
+          replaceCredentialId: duplicate?.id,
+          replacementCredentialLabel: duplicate?.label ?? duplicate?.connectionLabel,
+        }
+      );
       if (token.refreshToken) {
         const persisted = await credentialStore.loadUrlBound(stored.id);
         if (persisted?.id) {
-          await credentialStore.saveUrlBound({ ...persisted, refreshToken: token.refreshToken } as Credential & { id: string });
+          await credentialStore.saveUrlBound({
+            ...persisted,
+            refreshToken: token.refreshToken,
+          } as Credential & { id: string });
         }
       }
       await transitionOAuthTransaction(tx, "stored");
@@ -2423,16 +2781,20 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function resolveAuthCodeConnectionRequest(
     request: AuthCodeConnectRequest,
-    redirectUri: string,
+    redirectUri: string
   ): Promise<InternalOAuthConnectionRequest> {
     if (request.flow.clientConfigId) {
-      const config = await loadClientConfigForFlow(request.flow.clientConfigId, request.pkce ? "oauth2-auth-code-pkce" : "oauth2-auth-code");
+      const config = await loadClientConfigForFlow(
+        request.flow.clientConfigId,
+        request.pkce ? "oauth2-auth-code-pkce" : "oauth2-auth-code"
+      );
       const clientId = config.fields["clientId"]?.value;
       const clientSecret = config.fields["clientSecret"]?.value;
       const privateKeyPem = config.fields["privateKeyPem"]?.value;
       const keyId = config.fields["keyId"]?.value;
       const keyAlgorithm = config.fields["algorithm"]?.value;
-      const tokenAuth = request.tokenAuth ?? (request.pkce && !clientSecret ? "none" : "client_secret_post");
+      const tokenAuth =
+        request.tokenAuth ?? (request.pkce && !clientSecret ? "none" : "client_secret_post");
       if (!clientId) {
         throw new OAuthConnectionError("client_config_unavailable");
       }
@@ -2518,7 +2880,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function loadClientConfigForFlow(
     configId: string,
-    flowType: CredentialFlowType,
+    flowType: CredentialFlowType
   ): Promise<ClientConfigRecord> {
     const config = await clientConfigStore.load(configId);
     if (!config || config.status === "deleted" || config.status === "disabled") {
@@ -2533,8 +2895,13 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   async function exchangeOAuthCode(
     request: InternalOAuthConnectionRequest,
     code: string,
-    codeVerifier: string | undefined,
-  ): Promise<{ accessToken: string; refreshToken?: string; expiresAt?: number; scopes?: string[] }> {
+    codeVerifier: string | undefined
+  ): Promise<{
+    accessToken: string;
+    refreshToken?: string;
+    expiresAt?: number;
+    scopes?: string[];
+  }> {
     const body = new URLSearchParams();
     body.set("grant_type", "authorization_code");
     body.set("code", code);
@@ -2567,10 +2934,16 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     const tokenText = await tokenResponse.text();
     const tokenData = parseJsonObject(tokenText, { strict: tokenResponse.ok });
     if (!tokenResponse.ok) {
-      throw oauthConnectionError("token_exchange_failed", formatOAuthTokenExchangeError(tokenResponse.status, tokenData, tokenText));
+      throw oauthConnectionError(
+        "token_exchange_failed",
+        formatOAuthTokenExchangeError(tokenResponse.status, tokenData, tokenText)
+      );
     }
     if (typeof tokenData?.["error"] === "string") {
-      throw oauthConnectionError("token_exchange_failed", `OAuth token exchange failed: ${tokenData["error"]}`);
+      throw oauthConnectionError(
+        "token_exchange_failed",
+        `OAuth token exchange failed: ${tokenData["error"]}`
+      );
     }
 
     return parseBearerTokenResponse(tokenData, {
@@ -2615,7 +2988,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     const text = await response.text();
     const data = parseJsonObject(text, { strict: response.ok });
     if (!response.ok || typeof data?.["error"] === "string") {
-      throw oauthConnectionError("token_exchange_failed", formatOAuthTokenExchangeError(response.status, data, text));
+      throw oauthConnectionError(
+        "token_exchange_failed",
+        formatOAuthTokenExchangeError(response.status, data, text)
+      );
     }
     const parsed = parseBearerTokenResponse(data, { allowMissingExpiry: false });
     return {
@@ -2636,7 +3012,12 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     audience: string;
     scopes?: string[];
     persistRefreshToken?: boolean;
-  }): Promise<{ accessToken: string; refreshToken?: string; expiresAt?: number; scopes?: string[] }> {
+  }): Promise<{
+    accessToken: string;
+    refreshToken?: string;
+    expiresAt?: number;
+    scopes?: string[];
+  }> {
     const assertion = signJwtAssertion({
       issuer: params.issuer,
       subject: params.subject,
@@ -2660,9 +3041,15 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     const text = await response.text();
     const data = parseJsonObject(text, { strict: response.ok });
     if (!response.ok || typeof data?.["error"] === "string") {
-      throw oauthConnectionError("token_exchange_failed", formatOAuthTokenExchangeError(response.status, data, text));
+      throw oauthConnectionError(
+        "token_exchange_failed",
+        formatOAuthTokenExchangeError(response.status, data, text)
+      );
     }
-    return parseBearerTokenResponse(data, { allowMissingExpiry: false, persistRefreshToken: params.persistRefreshToken });
+    return parseBearerTokenResponse(data, {
+      allowMissingExpiry: false,
+      persistRefreshToken: params.persistRefreshToken,
+    });
   }
 
   async function exchangeOAuthToken(params: {
@@ -2680,7 +3067,12 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     audience?: string;
     resource?: string;
     persistRefreshToken?: boolean;
-  }): Promise<{ accessToken: string; refreshToken?: string; expiresAt?: number; scopes?: string[] }> {
+  }): Promise<{
+    accessToken: string;
+    refreshToken?: string;
+    expiresAt?: number;
+    scopes?: string[];
+  }> {
     const body = new URLSearchParams();
     body.set("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange");
     body.set("subject_token", params.subjectToken);
@@ -2688,7 +3080,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       "subject_token_type",
       params.subjectTokenType === "jwt"
         ? "urn:ietf:params:oauth:token-type:jwt"
-        : "urn:ietf:params:oauth:token-type:access_token",
+        : "urn:ietf:params:oauth:token-type:access_token"
     );
     body.set("client_id", params.clientId);
     if (params.requestedTokenType) body.set("requested_token_type", params.requestedTokenType);
@@ -2707,9 +3099,15 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     const text = await response.text();
     const data = parseJsonObject(text, { strict: response.ok });
     if (!response.ok || typeof data?.["error"] === "string") {
-      throw oauthConnectionError("token_exchange_failed", formatOAuthTokenExchangeError(response.status, data, text));
+      throw oauthConnectionError(
+        "token_exchange_failed",
+        formatOAuthTokenExchangeError(response.status, data, text)
+      );
     }
-    return parseBearerTokenResponse(data, { allowMissingExpiry: false, persistRefreshToken: params.persistRefreshToken });
+    return parseBearerTokenResponse(data, {
+      allowMissingExpiry: false,
+      persistRefreshToken: params.persistRefreshToken,
+    });
   }
 
   async function requestDeviceAuthorization(params: {
@@ -2753,7 +3151,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     const text = await response.text();
     const data = parseJsonObject(text, { strict: response.ok });
     if (!response.ok || typeof data?.["error"] === "string") {
-      throw oauthConnectionError("device_authorization_failed", formatOAuthTokenExchangeError(response.status, data, text));
+      throw oauthConnectionError(
+        "device_authorization_failed",
+        formatOAuthTokenExchangeError(response.status, data, text)
+      );
     }
     const deviceCode = data?.["device_code"];
     const verificationUri = data?.["verification_uri"] ?? data?.["verification_url"];
@@ -2785,7 +3186,12 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     expiresInSeconds: number;
     persistRefreshToken?: boolean;
     cancelSignal?: AbortSignal;
-  }): Promise<{ accessToken: string; refreshToken?: string; expiresAt?: number; scopes?: string[] }> {
+  }): Promise<{
+    accessToken: string;
+    refreshToken?: string;
+    expiresAt?: number;
+    scopes?: string[];
+  }> {
     let intervalMs = Math.max(1, params.intervalSeconds) * 1000;
     const deadline = Date.now() + Math.max(1, params.expiresInSeconds) * 1000;
     while (Date.now() < deadline) {
@@ -2804,7 +3210,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       if (params.clientSecret && params.tokenAuth === "client_secret_post") {
         body.set("client_secret", params.clientSecret);
       }
-      const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded" };
+      const headers: Record<string, string> = {
+        "content-type": "application/x-www-form-urlencoded",
+      };
       if (params.clientSecret && params.tokenAuth === "client_secret_basic") {
         headers["authorization"] = basicAuthHeader(params.clientId, params.clientSecret);
       }
@@ -2831,7 +3239,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       if (error === "expired_token") {
         throw new OAuthConnectionError("device_code_expired");
       }
-      throw oauthConnectionError("token_exchange_failed", formatOAuthTokenExchangeError(response.status, data, text));
+      throw oauthConnectionError(
+        "token_exchange_failed",
+        formatOAuthTokenExchangeError(response.status, data, text)
+      );
     }
     throw new OAuthConnectionError("device_code_expired");
   }
@@ -2963,7 +3374,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     }
   }
 
-  async function grantCredential(ctx: ServiceContext, params: GrantCredentialParams): Promise<StoredCredentialSummary> {
+  async function grantCredential(
+    ctx: ServiceContext,
+    params: GrantCredentialParams
+  ): Promise<StoredCredentialSummary> {
     requireShellOrServer(ctx, "grantCredential");
     const request = params as GrantUrlBoundCredentialRequest;
     void request.callerId;
@@ -2973,7 +3387,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function resolveCredential(
     ctx: ServiceContext,
-    params: ResolveCredentialParams,
+    params: ResolveCredentialParams
   ): Promise<StoredCredentialSummary | null> {
     const request = params as ResolveUrlBoundCredentialRequest;
     const use = request.use ?? "fetch";
@@ -2993,8 +3407,13 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function proxyFetch(
     ctx: ServiceContext,
-    params: ProxyFetchParams,
-  ): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: string }> {
+    params: ProxyFetchParams
+  ): Promise<{
+    status: number;
+    statusText: string;
+    headers: Record<string, string>;
+    body: string;
+  }> {
     if (!egressProxy) {
       throw new Error("Egress proxy is unavailable");
     }
@@ -3010,7 +3429,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function proxyGitHttp(
     ctx: ServiceContext,
-    params: ProxyGitHttpParams,
+    params: ProxyGitHttpParams
   ): Promise<ProxyGitHttpResponse> {
     if (!egressProxy) {
       throw new Error("Egress proxy is unavailable");
@@ -3031,7 +3450,12 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   }
 
   async function audit(params: AuditParams): Promise<AuditEntry[]> {
-    const entries = await auditLog?.query({ filter: params.filter, limit: params.limit, after: params.after }) ?? [];
+    const entries =
+      (await auditLog?.query({
+        filter: params.filter,
+        limit: params.limit,
+        after: params.after,
+      })) ?? [];
     return entries.filter((entry): entry is AuditEntry => "workerId" in entry);
   }
 
@@ -3048,7 +3472,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       stateParam: string;
       deliveryCallerId?: string;
       deliveryCallerKind?: "shell";
-    },
+    }
   ): Promise<OAuthConnectionTransaction> {
     const identity = resolveApprovalIdentity(ctx);
     const id = params.id ?? randomUUID();
@@ -3092,7 +3516,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   async function transitionOAuthTransaction(
     tx: OAuthConnectionTransaction,
     to: OAuthConnectionTransactionState,
-    errorCode?: OAuthConnectionErrorCode,
+    errorCode?: OAuthConnectionErrorCode
   ): Promise<void> {
     const from = tx.state;
     if (from === to && to !== "created") {
@@ -3112,16 +3536,16 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
 
   async function receiveOAuthCallback(
     tx: OAuthConnectionTransaction,
-    callback: { code?: string | null; state?: string | null; error?: string | null; url: string },
+    callback: { code?: string | null; state?: string | null; error?: string | null; url: string }
   ): Promise<void> {
     if (
-      tx.callbackUsed
-      || tx.state === "callback_received"
-      || tx.state === "exchanging"
-      || tx.state === "completed"
-      || tx.state === "failed"
-      || tx.state === "cancelled"
-      || tx.state === "expired"
+      tx.callbackUsed ||
+      tx.state === "callback_received" ||
+      tx.state === "exchanging" ||
+      tx.state === "completed" ||
+      tx.state === "failed" ||
+      tx.state === "cancelled" ||
+      tx.state === "expired"
     ) {
       await transitionOAuthTransaction(tx, "failed", "transaction_replayed");
       tx.reject(new OAuthConnectionError("transaction_replayed"));
@@ -3158,7 +3582,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     tx.resolve({ code: callback.code, state: callback.state, url: callback.url });
   }
 
-  function findOAuthTransactionByState(state: string | undefined): OAuthConnectionTransaction | undefined {
+  function findOAuthTransactionByState(
+    state: string | undefined
+  ): OAuthConnectionTransaction | undefined {
     if (!state) return undefined;
     for (const tx of oauthTransactions.values()) {
       if (tx.stateParam === state) return tx;
@@ -3171,13 +3597,22 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     if (!credential?.id || credential.revokedAt) {
       throw new Error("Credential is unavailable");
     }
-    if (credential.expiresAt && credential.expiresAt <= Date.now() + 30_000 && credential.refreshToken) {
-      credential = await credentialLifecycle.refreshCredential(credential as Credential & { id: string });
+    if (
+      credential.expiresAt &&
+      credential.expiresAt <= Date.now() + 30_000 &&
+      credential.refreshToken
+    ) {
+      credential = await credentialLifecycle.refreshCredential(
+        credential as Credential & { id: string }
+      );
     }
     return credential as Credential & { id: string };
   }
 
-  function resolveApprovalIdentity(ctx: ServiceContext): { repoPath: string; effectiveVersion: string } {
+  function resolveApprovalIdentity(ctx: ServiceContext): {
+    repoPath: string;
+    effectiveVersion: string;
+  } {
     const identity = codeIdentityResolver?.resolveByCallerId(ctx.callerId);
     return {
       repoPath: identity?.repoPath ?? ctx.callerId,
@@ -3197,7 +3632,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       identity: { repoPath: string; effectiveVersion: string };
       metadata?: Record<string, string>;
       replacementCredentialLabel?: string;
-    },
+    }
   ): Promise<Exclude<GrantedDecision, "deny">> {
     if (!approvalQueue || (ctx.callerKind !== "panel" && ctx.callerKind !== "worker")) {
       return "session";
@@ -3234,11 +3669,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   async function resolveCredentialForUrl(
     ctx: ServiceContext,
     targetUrl: URL,
-    use: CredentialBindingUse = "fetch",
+    use: CredentialBindingUse = "fetch"
   ): Promise<Credential | null> {
-    const credentials = (await credentialStore.listUrlBound()).filter((credential) =>
-      !credential.revokedAt
-      && !!findCredentialBinding(credential, targetUrl, use)
+    const credentials = (await credentialStore.listUrlBound()).filter(
+      (credential) => !credential.revokedAt && !!findCredentialBinding(credential, targetUrl, use)
     );
     if (credentials.length === 1) {
       const credential = credentials[0] ?? null;
@@ -3266,7 +3700,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       audience: UrlAudience[];
       metadata?: Record<string, string>;
       accountIdentity: Partial<AccountIdentity>;
-    },
+    }
   ): Promise<(Credential & { id: string }) | null> {
     const account = normalizeAccountIdentity(candidate.accountIdentity, ctx.callerId);
     if (!account.providerUserId || account.providerUserId === ctx.callerId) {
@@ -3274,19 +3708,25 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     }
     const identity = codeIdentityResolver?.resolveByCallerId(ctx.callerId) ?? null;
     const ownerSourceId = identity?.repoPath ?? ctx.callerId;
-    const providerKey = candidate.metadata?.["providerId"]
-      ?? candidate.metadata?.["modelProviderId"]
-      ?? candidate.label;
+    const providerKey =
+      candidate.metadata?.["providerId"] ??
+      candidate.metadata?.["modelProviderId"] ??
+      candidate.label;
     const audienceKey = normalizedAudienceKey(candidate.audience);
     const existing = await credentialStore.listUrlBound();
-    return existing.find((credential): credential is Credential & { id: string } =>
-      !!credential.id
-      && !credential.revokedAt
-      && credential.owner?.sourceId === ownerSourceId
-      && credential.accountIdentity?.providerUserId === account.providerUserId
-      && (credential.metadata?.["providerId"] ?? credential.metadata?.["modelProviderId"] ?? credential.label) === providerKey
-      && normalizedAudienceKey(summarizeUrlBoundCredential(credential).audience) === audienceKey
-    ) ?? null;
+    return (
+      existing.find(
+        (credential): credential is Credential & { id: string } =>
+          !!credential.id &&
+          !credential.revokedAt &&
+          credential.owner?.sourceId === ownerSourceId &&
+          credential.accountIdentity?.providerUserId === account.providerUserId &&
+          (credential.metadata?.["providerId"] ??
+            credential.metadata?.["modelProviderId"] ??
+            credential.label) === providerKey &&
+          normalizedAudienceKey(summarizeUrlBoundCredential(credential).audience) === audienceKey
+      ) ?? null
+    );
   }
 
   async function pruneClientConfigVersions(record: ClientConfigRecord): Promise<void> {
@@ -3301,14 +3741,14 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       }
     }
     record.versions = Object.fromEntries(
-      Object.entries(record.versions).filter(([version]) => keep.has(version)),
+      Object.entries(record.versions).filter(([version]) => keep.has(version))
     );
   }
 
   async function authorizeCredentialUse(
     ctx: ServiceContext,
     credential: Credential,
-    usage: CredentialUseContext,
+    usage: CredentialUseContext
   ): Promise<void> {
     if (canCallerUseStoredCredential(ctx, credential, usage)) {
       return;
@@ -3356,7 +3796,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       ...credential,
       grants: upsertCredentialUseGrant(
         credential.grants ?? [],
-        grantForDecision(ctx.callerId, identity, decision, now, usage),
+        grantForDecision(ctx.callerId, identity, decision, now, usage)
       ),
       metadata: {
         ...(credential.metadata ?? {}),
@@ -3382,16 +3822,21 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   function canCallerUseStoredCredential(
     ctx: ServiceContext,
     credential: Credential,
-    usage: CredentialUseContext,
+    usage: CredentialUseContext
   ): boolean {
     if (ctx.callerKind === "shell" || ctx.callerKind === "server") {
       return true;
     }
-    return hasPersistentCredentialUse(ctx, credential, usage)
-      || hasSessionCredentialUse(ctx, credential, usage);
+    return (
+      hasPersistentCredentialUse(ctx, credential, usage) ||
+      hasSessionCredentialUse(ctx, credential, usage)
+    );
   }
 
-  function canCallerAdministerStoredCredential(ctx: ServiceContext, credential: Credential): boolean {
+  function canCallerAdministerStoredCredential(
+    ctx: ServiceContext,
+    credential: Credential
+  ): boolean {
     if (ctx.callerKind === "shell" || ctx.callerKind === "server") {
       return true;
     }
@@ -3401,7 +3846,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   function grantSessionCredentialUse(
     credentialId: string,
     identity: CredentialSessionGrantScope,
-    resource: CredentialSessionGrantResource,
+    resource: CredentialSessionGrantResource
   ): void {
     sessionGrantStore.grant(credentialId, identity, resource);
   }
@@ -3411,7 +3856,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     credential: Credential & { id: string },
     bindings: CredentialBinding[],
     decision: Exclude<GrantedDecision, "deny">,
-    now: number,
+    now: number
   ): void {
     const identity = resolveApprovalIdentity(ctx);
     const usageContexts = bindings.flatMap(preapprovedUseContextsForBinding);
@@ -3422,18 +3867,19 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       return;
     }
     credential.grants = usageContexts.reduce(
-      (grants, usage) => upsertCredentialUseGrant(
-        grants,
-        grantForDecision(ctx.callerId, identity, decision, now, usage),
-      ),
-      credential.grants ?? [],
+      (grants, usage) =>
+        upsertCredentialUseGrant(
+          grants,
+          grantForDecision(ctx.callerId, identity, decision, now, usage)
+        ),
+      credential.grants ?? []
     );
   }
 
   function hasSessionCredentialUse(
     ctx: ServiceContext,
     credential: Credential,
-    usage: CredentialUseContext,
+    usage: CredentialUseContext
   ): boolean {
     const credentialId = credential.id ?? credential.connectionId;
     if (!credentialId) {
@@ -3445,15 +3891,16 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   function hasPersistentCredentialUse(
     ctx: ServiceContext,
     credential: Credential,
-    usage: CredentialUseContext,
+    usage: CredentialUseContext
   ): boolean {
     const identity = resolveApprovalIdentity(ctx);
-    return !!credential.grants?.some((grant) =>
-      grant.bindingId === usage.binding.id
-      && grant.use === usage.binding.use
-      && grant.resource === usage.resource
-      && grant.action === usage.action
-      && grantAppliesToIdentity(grant, identity)
+    return !!credential.grants?.some(
+      (grant) =>
+        grant.bindingId === usage.binding.id &&
+        grant.use === usage.binding.use &&
+        grant.resource === usage.resource &&
+        grant.action === usage.action &&
+        grantAppliesToIdentity(grant, identity)
     );
   }
 
@@ -3530,9 +3977,13 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       url: callbackUrl.toString(),
     });
     if (tx.state === "failed" || tx.state === "expired" || tx.state === "cancelled") {
-      respondOAuthCallback(res, 400, providerError
-        ? "The provider denied the connection."
-        : "OAuth callback could not be validated.");
+      respondOAuthCallback(
+        res,
+        400,
+        providerError
+          ? "The provider denied the connection."
+          : "OAuth callback could not be validated."
+      );
     } else if (providerError) {
       respondOAuthCallback(res, 400, "The provider denied the connection.");
     } else if (!callbackUrl.searchParams.get("code")) {
@@ -3555,7 +4006,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   return Object.assign(definition, { routes });
 }
 
-function normalizeAccountIdentity(input: Partial<AccountIdentity> | undefined, callerId: string): AccountIdentity {
+function normalizeAccountIdentity(
+  input: Partial<AccountIdentity> | undefined,
+  callerId: string
+): AccountIdentity {
   return {
     providerUserId: input?.providerUserId ?? input?.email ?? input?.username ?? callerId,
     ...(input?.email ? { email: input.email } : {}),
@@ -3568,14 +4022,17 @@ function validateApiKeyMaterialTemplate(template: string, fieldNames: readonly s
   const declared = new Set(fieldNames);
   const placeholders = template.match(/\{[a-zA-Z0-9._@+=:-]+\}/g) ?? [];
   if (placeholders.length === 0) {
-    throw new OAuthConnectionError("invalid_connection_spec", "api-key materialTemplate must reference at least one field");
+    throw new OAuthConnectionError(
+      "invalid_connection_spec",
+      "api-key materialTemplate must reference at least one field"
+    );
   }
   for (const placeholder of placeholders) {
     const name = placeholder.slice(1, -1);
     if (!declared.has(name)) {
       throw new OAuthConnectionError(
         "invalid_connection_spec",
-        `api-key materialTemplate references undeclared field: ${name}`,
+        `api-key materialTemplate references undeclared field: ${name}`
       );
     }
   }
@@ -3589,25 +4046,36 @@ function renderApiKeyMaterialTemplate(template: string, values: Record<string, s
 
 function parseBearerTokenResponse(
   tokenData: Record<string, unknown> | null,
-  options: { allowMissingExpiry?: boolean; persistRefreshToken?: boolean },
+  options: { allowMissingExpiry?: boolean; persistRefreshToken?: boolean }
 ): { accessToken: string; refreshToken?: string; expiresAt?: number; scopes?: string[] } {
   const accessToken = tokenData?.["access_token"];
   const tokenType = tokenData?.["token_type"];
   if (typeof accessToken !== "string") {
-    throw oauthConnectionError("invalid_token_response", "OAuth token exchange did not return an access_token");
+    throw oauthConnectionError(
+      "invalid_token_response",
+      "OAuth token exchange did not return an access_token"
+    );
   }
   if (typeof tokenType === "string" && tokenType.toLowerCase() !== "bearer") {
-    throw oauthConnectionError("invalid_token_response", "OAuth token exchange did not return bearer token_type");
+    throw oauthConnectionError(
+      "invalid_token_response",
+      "OAuth token exchange did not return bearer token_type"
+    );
   }
   const expiresIn = readNumericField(tokenData?.["expires_in"]);
   if (expiresIn === undefined && !options.allowMissingExpiry) {
-    throw oauthConnectionError("invalid_token_response", "OAuth token exchange did not return expires_in");
+    throw oauthConnectionError(
+      "invalid_token_response",
+      "OAuth token exchange did not return expires_in"
+    );
   }
   const refreshToken = tokenData?.["refresh_token"];
   const scope = tokenData?.["scope"];
   return {
     accessToken,
-    ...(options.persistRefreshToken && typeof refreshToken === "string" && refreshToken.length > 0 ? { refreshToken } : {}),
+    ...(options.persistRefreshToken && typeof refreshToken === "string" && refreshToken.length > 0
+      ? { refreshToken }
+      : {}),
     ...(typeof expiresIn === "number" ? { expiresAt: Date.now() + expiresIn * 1000 } : {}),
     ...(typeof scope === "string" && scope.trim() ? { scopes: scope.trim().split(/\s+/) } : {}),
   };
@@ -3626,23 +4094,29 @@ function applyOAuthClientAssertion(
     keyId?: string;
     keyAlgorithm?: string;
     tokenAuth: "none" | "client_secret_post" | "client_secret_basic" | "private_key_jwt";
-  },
+  }
 ): void {
   if (params.tokenAuth !== "private_key_jwt") {
     return;
   }
   if (!params.privateKeyPem) {
-    throw new OAuthConnectionError("client_config_unavailable", "private_key_jwt requires a configured private key");
+    throw new OAuthConnectionError(
+      "client_config_unavailable",
+      "private_key_jwt requires a configured private key"
+    );
   }
   body.set("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
-  body.set("client_assertion", signJwtAssertion({
-    issuer: params.clientId,
-    subject: params.clientId,
-    audience: params.tokenUrl,
-    privateKeyPem: params.privateKeyPem,
-    keyId: params.keyId,
-    keyAlgorithm: params.keyAlgorithm,
-  }));
+  body.set(
+    "client_assertion",
+    signJwtAssertion({
+      issuer: params.clientId,
+      subject: params.clientId,
+      audience: params.tokenUrl,
+      privateKeyPem: params.privateKeyPem,
+      keyId: params.keyId,
+      keyAlgorithm: params.keyAlgorithm,
+    })
+  );
 }
 
 function signJwtAssertion(params: {
@@ -3655,7 +4129,10 @@ function signJwtAssertion(params: {
 }): string {
   const algorithm = params.keyAlgorithm || "RS256";
   if (algorithm !== "RS256") {
-    throw new OAuthConnectionError("unsupported_token_auth_method", "Only RS256 JWT client assertions are supported");
+    throw new OAuthConnectionError(
+      "unsupported_token_auth_method",
+      "Only RS256 JWT client assertions are supported"
+    );
   }
   const nowSeconds = Math.floor(Date.now() / 1000);
   const header = {
@@ -3689,15 +4166,13 @@ function sshPublicKeyFingerprint(publicKey: string): string {
 function openSshEd25519PublicKey(spkiDer: Buffer): string {
   const keyBytes = spkiDer.subarray(-32);
   if (keyBytes.length !== 32) {
-    throw new OAuthConnectionError("invalid_connection_spec", "Unable to derive Ed25519 public key");
+    throw new OAuthConnectionError(
+      "invalid_connection_spec",
+      "Unable to derive Ed25519 public key"
+    );
   }
   const type = Buffer.from("ssh-ed25519");
-  const wire = Buffer.concat([
-    uint32(type.length),
-    type,
-    uint32(keyBytes.length),
-    keyBytes,
-  ]);
+  const wire = Buffer.concat([uint32(type.length), type, uint32(keyBytes.length), keyBytes]);
   return `ssh-ed25519 ${wire.toString("base64")}`;
 }
 
@@ -3744,10 +4219,13 @@ function oauth1AuthorizationHeader(params: {
   ].join("&");
   const signingKey = `${oauthPercentEncode(params.consumerSecret)}&${oauthPercentEncode(params.tokenSecret ?? "")}`;
   oauthParams["oauth_signature"] = createHmacSha1(signingKey, signatureBase);
-  return "OAuth " + Object.entries(oauthParams)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => `${oauthPercentEncode(key)}="${oauthPercentEncode(value)}"`)
-    .join(", ");
+  return (
+    "OAuth " +
+    Object.entries(oauthParams)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => `${oauthPercentEncode(key)}="${oauthPercentEncode(value)}"`)
+      .join(", ")
+  );
 }
 
 function createHmacSha1(key: string, value: string): string {
@@ -3755,8 +4233,10 @@ function createHmacSha1(key: string, value: string): string {
 }
 
 function oauthPercentEncode(value: string): string {
-  return encodeURIComponent(value)
-    .replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+  return encodeURIComponent(value).replace(
+    /[!'()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`
+  );
 }
 
 function delay(ms: number): Promise<void> {
@@ -3765,15 +4245,17 @@ function delay(ms: number): Promise<void> {
 
 function isSameConfigTrustScope(
   identity: { repoPath: string; effectiveVersion: string; callerId: string },
-  owner: { repoPath: string; effectiveVersion: string; callerId: string },
+  owner: { repoPath: string; effectiveVersion: string; callerId: string }
 ): boolean {
-  return identity.repoPath === owner.repoPath
-    && (identity.effectiveVersion === owner.effectiveVersion || identity.callerId === owner.callerId);
+  return (
+    identity.repoPath === owner.repoPath &&
+    (identity.effectiveVersion === owner.effectiveVersion || identity.callerId === owner.callerId)
+  );
 }
 
 function deriveAccountIdentityFromJwt(
   accessToken: string,
-  metadata: Record<string, string> | undefined,
+  metadata: Record<string, string> | undefined
 ): Partial<AccountIdentity> {
   const root = metadata?.["accountIdentityJwtClaimRoot"];
   const field = metadata?.["accountIdentityJwtClaimField"];
@@ -3789,14 +4271,12 @@ function deriveAccountIdentityFromJwt(
     return {};
   }
   const providerUserId = (container as Record<string, unknown>)[field];
-  return typeof providerUserId === "string" && providerUserId.length > 0
-    ? { providerUserId }
-    : {};
+  return typeof providerUserId === "string" && providerUserId.length > 0 ? { providerUserId } : {};
 }
 
 async function validateOAuthAccountIdentity(
   request: InternalOAuthConnectionRequest,
-  accessToken: string,
+  accessToken: string
 ): Promise<Partial<AccountIdentity>> {
   const spec = request.flow.accountValidation?.userinfo;
   if (!spec) {
@@ -3814,7 +4294,10 @@ async function validateOAuthAccountIdentity(
     });
   } catch (error) {
     if (controller.signal.aborted) {
-      throw new OAuthConnectionError("account_validation_failed", "OAuth account validation timed out");
+      throw new OAuthConnectionError(
+        "account_validation_failed",
+        "OAuth account validation timed out"
+      );
     }
     throw error;
   } finally {
@@ -3829,7 +4312,9 @@ async function validateOAuthAccountIdentity(
   const idValue = readStringClaim(data, spec.idField ?? "sub");
   const email = readStringClaim(data, spec.emailField ?? "email");
   const username = readStringClaim(data, spec.usernameField ?? "preferred_username");
-  const workspaceName = spec.workspaceField ? readStringClaim(data, spec.workspaceField) : undefined;
+  const workspaceName = spec.workspaceField
+    ? readStringClaim(data, spec.workspaceField)
+    : undefined;
   if (idValue) identity.providerUserId = idValue;
   if (email) identity.email = email;
   if (username) identity.username = username;
@@ -3838,12 +4323,18 @@ async function validateOAuthAccountIdentity(
     identity.providerUserId = identity.email ?? identity.username;
   }
   if (!identity.providerUserId) {
-    throw new OAuthConnectionError("account_validation_failed", "OAuth account validation did not return an account identity");
+    throw new OAuthConnectionError(
+      "account_validation_failed",
+      "OAuth account validation did not return an account identity"
+    );
   }
   return identity;
 }
 
-function readStringClaim(data: Record<string, unknown>, path: string | undefined): string | undefined {
+function readStringClaim(
+  data: Record<string, unknown>,
+  path: string | undefined
+): string | undefined {
   if (!path) return undefined;
   let current: unknown = data;
   for (const part of path.split(".")) {
@@ -3863,7 +4354,7 @@ function decodeJwtPayload(token: string): Record<string, unknown> | null {
     const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
     const decoded = Buffer.from(padded, "base64").toString("utf8");
     const payload = JSON.parse(decoded);
-    return payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
+    return payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null;
   } catch {
     return null;
   }
@@ -3892,14 +4383,21 @@ function summarizeUrlBoundCredential(credential: Credential): StoredCredentialSu
 
 function normalizeCredentialBindings(
   bindings: readonly CredentialBinding[] | undefined,
-  fallback: { audience: UrlAudience[]; injection: CredentialBinding["injection"] },
+  fallback: { audience: UrlAudience[]; injection: CredentialBinding["injection"] }
 ): CredentialBinding[] {
   if (!fallback.audience || !fallback.injection) {
     throw new Error("Credential fallback binding is missing URL-bound metadata");
   }
   const rawBindings = bindings?.length
     ? bindings
-    : [{ id: "fetch", use: "fetch" as const, audience: fallback.audience, injection: fallback.injection }];
+    : [
+        {
+          id: "fetch",
+          use: "fetch" as const,
+          audience: fallback.audience,
+          injection: fallback.injection,
+        },
+      ];
   return rawBindings.map((binding) => ({
     id: binding.id,
     use: binding.use,
@@ -3918,26 +4416,32 @@ function credentialBindings(credential: Credential): CredentialBinding[] {
 function findCredentialBinding(
   credential: Credential,
   targetUrl: URL,
-  use: CredentialBindingUse,
+  use: CredentialBindingUse
 ): CredentialBinding | null {
-  return credentialBindings(credential).find((binding) =>
-    binding.use === use && !!findMatchingUrlAudience(targetUrl, binding.audience)
-  ) ?? null;
+  return (
+    credentialBindings(credential).find(
+      (binding) => binding.use === use && !!findMatchingUrlAudience(targetUrl, binding.audience)
+    ) ?? null
+  );
 }
 
 function credentialUseContext(
   credential: Credential,
   targetUrl: URL,
-  use: CredentialBindingUse,
+  use: CredentialBindingUse
 ): CredentialUseContext | null {
   const binding = findCredentialBinding(credential, targetUrl, use);
   if (!binding) {
     return null;
   }
-  const resource = binding.use === "git-http" || binding.use === "git-ssh"
-    ? gitRemoteFromUrl(targetUrl)
-    : findMatchingUrlAudience(targetUrl, binding.audience)?.url ?? targetUrl.origin;
-  const gitOperation = binding.use === "git-http" || binding.use === "git-ssh" ? describeGitHttpOperation(targetUrl, "GET") : undefined;
+  const resource =
+    binding.use === "git-http" || binding.use === "git-ssh"
+      ? gitRemoteFromUrl(targetUrl)
+      : (findMatchingUrlAudience(targetUrl, binding.audience)?.url ?? targetUrl.origin);
+  const gitOperation =
+    binding.use === "git-http" || binding.use === "git-ssh"
+      ? describeGitHttpOperation(targetUrl, "GET")
+      : undefined;
   const action: CredentialGrantAction = gitOperation?.action ?? "use";
   return {
     binding,
@@ -3954,7 +4458,8 @@ function credentialUseContext(
 
 function preapprovedUseContextsForBinding(binding: CredentialBinding): CredentialUseContext[] {
   return binding.audience.map((audience) => {
-    const action: CredentialGrantAction = binding.use === "git-http" || binding.use === "git-ssh" ? "read" : "use";
+    const action: CredentialGrantAction =
+      binding.use === "git-http" || binding.use === "git-ssh" ? "read" : "use";
     return {
       binding,
       resource: audience.url,
@@ -3969,7 +4474,10 @@ function preapprovedUseContextsForBinding(binding: CredentialBinding): Credentia
   });
 }
 
-function describeGitHttpOperation(targetUrl: URL, method: string): CredentialUseContext["gitOperation"] {
+function describeGitHttpOperation(
+  targetUrl: URL,
+  method: string
+): CredentialUseContext["gitOperation"] {
   const service = targetUrl.searchParams.get("service") ?? gitServiceFromPath(targetUrl.pathname);
   const action = service === "git-receive-pack" ? "write" : "read";
   return {
@@ -4012,7 +4520,7 @@ function grantForDecision(
   identity: { repoPath: string; effectiveVersion: string },
   decision: Exclude<GrantedDecision, "deny" | "once" | "session">,
   grantedAt: number,
-  usage: CredentialUseContext,
+  usage: CredentialUseContext
 ): CredentialUseGrant {
   const base = {
     bindingId: usage.binding.id,
@@ -4036,7 +4544,10 @@ function grantForDecision(
   return { ...base, scope: "caller", callerId };
 }
 
-function upsertCredentialUseGrant(grants: CredentialUseGrant[], grant: CredentialUseGrant): CredentialUseGrant[] {
+function upsertCredentialUseGrant(
+  grants: CredentialUseGrant[],
+  grant: CredentialUseGrant
+): CredentialUseGrant[] {
   return [
     ...grants.filter((entry) => credentialUseGrantKey(entry) !== credentialUseGrantKey(grant)),
     grant,
@@ -4058,7 +4569,7 @@ function credentialUseGrantKey(grant: CredentialUseGrant): string {
 
 function grantAppliesToIdentity(
   grant: CredentialUseGrant,
-  identity: { callerId?: string; repoPath: string; effectiveVersion: string },
+  identity: { callerId?: string; repoPath: string; effectiveVersion: string }
 ): boolean {
   if (grant.scope === "caller") {
     return !!identity.callerId && grant.callerId === identity.callerId;
@@ -4066,12 +4577,14 @@ function grantAppliesToIdentity(
   if (grant.scope === "repo") {
     return grant.repoPath === identity.repoPath;
   }
-  return grant.repoPath === identity.repoPath && grant.effectiveVersion === identity.effectiveVersion;
+  return (
+    grant.repoPath === identity.repoPath && grant.effectiveVersion === identity.effectiveVersion
+  );
 }
 
 function hasOAuthAudienceDomainMismatch(
   audiences: readonly { url: string }[],
-  oauthOrigins: readonly (string | undefined)[],
+  oauthOrigins: readonly (string | undefined)[]
 ): boolean | undefined {
   const oauthDomains = oauthOrigins
     .filter((origin): origin is string => typeof origin === "string" && origin.length > 0)
@@ -4123,13 +4636,17 @@ async function createLoopbackOAuthCallback(opts: {
   allowDynamicPortFallback: boolean;
 }): Promise<HostOAuthCallback> {
   try {
-    return await bindLoopbackOAuthCallback(opts.host, opts.port, normalizeCallbackPath(opts.callbackPath));
+    return await bindLoopbackOAuthCallback(
+      opts.host,
+      opts.port,
+      normalizeCallbackPath(opts.callbackPath)
+    );
   } catch (error) {
     if (
-      opts.port > 0
-      && opts.allowDynamicPortFallback
-      && error instanceof Error
-      && /address in use|EADDRINUSE|already in use/i.test(error.message)
+      opts.port > 0 &&
+      opts.allowDynamicPortFallback &&
+      error instanceof Error &&
+      /address in use|EADDRINUSE|already in use/i.test(error.message)
     ) {
       return bindLoopbackOAuthCallback(opts.host, 0, normalizeCallbackPath(opts.callbackPath));
     }
@@ -4140,16 +4657,22 @@ async function createLoopbackOAuthCallback(opts: {
   }
 }
 
-async function bindLoopbackOAuthCallback(host: string, port: number, callbackPath: string): Promise<HostOAuthCallback> {
+async function bindLoopbackOAuthCallback(
+  host: string,
+  port: number,
+  callbackPath: string
+): Promise<HostOAuthCallback> {
   let expectedState: string | undefined;
   let settled = false;
   let redirectUri = "";
   let resolve!: (value: { code?: string; state: string; url: string; error?: string }) => void;
   let reject!: (error: Error) => void;
-  const wait = new Promise<{ code?: string; state: string; url: string; error?: string }>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
+  const wait = new Promise<{ code?: string; state: string; url: string; error?: string }>(
+    (res, rej) => {
+      resolve = res;
+      reject = rej;
+    }
+  );
   void wait.catch(() => undefined);
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", redirectUri);
@@ -4208,10 +4731,12 @@ async function bindLoopbackOAuthCallback(host: string, port: number, callbackPat
     }
     server.close();
   }, PENDING_OAUTH_TTL_MS);
-  wait.finally(() => {
-    clearTimeout(timer);
-    server.close();
-  }).catch(() => undefined);
+  wait
+    .finally(() => {
+      clearTimeout(timer);
+      server.close();
+    })
+    .catch(() => undefined);
   return {
     redirectUri,
     wait,
@@ -4234,16 +4759,15 @@ function respondOAuthCallback(res: http.ServerResponse, status: number, body: st
   res.end(body);
 }
 
-function isExpectedRedirectCallback(
-  tx: { redirectUri: string },
-  callbackUrl: string,
-): boolean {
+function isExpectedRedirectCallback(tx: { redirectUri: string }, callbackUrl: string): boolean {
   try {
     const expected = new URL(tx.redirectUri);
     const actual = new URL(callbackUrl);
-    return actual.protocol === expected.protocol
-      && actual.host === expected.host
-      && actual.pathname === expected.pathname;
+    return (
+      actual.protocol === expected.protocol &&
+      actual.host === expected.host &&
+      actual.pathname === expected.pathname
+    );
   } catch {
     return false;
   }
@@ -4263,7 +4787,10 @@ function errorCodeForOAuthError(error: unknown): OAuthConnectionErrorCode {
   return "token_exchange_failed";
 }
 
-function oauthConnectionError(code: OAuthConnectionErrorCode, message: string): Error & { code: OAuthConnectionErrorCode } {
+function oauthConnectionError(
+  code: OAuthConnectionErrorCode,
+  message: string
+): Error & { code: OAuthConnectionErrorCode } {
   return Object.assign(new Error(message), { code });
 }
 
@@ -4303,7 +4830,10 @@ function fail(message: string): never {
   throw new Error(message);
 }
 
-function parseJsonObject(text: string, opts: { strict?: boolean } = {}): Record<string, unknown> | null {
+function parseJsonObject(
+  text: string,
+  opts: { strict?: boolean } = {}
+): Record<string, unknown> | null {
   if (!text.trim()) {
     return null;
   }
@@ -4328,7 +4858,7 @@ function parseJsonObject(text: string, opts: { strict?: boolean } = {}): Record<
 function formatOAuthTokenExchangeError(
   status: number,
   data: Record<string, unknown> | null,
-  text: string,
+  text: string
 ): string {
   const details: string[] = [];
   const providerError = data?.["error"];
@@ -4350,7 +4880,10 @@ function formatOAuthTokenExchangeError(
 
 function sanitizeOAuthErrorText(text: string): string {
   return text
-    .replace(/("(?:access_token|refresh_token|id_token|client_secret)"\s*:\s*")[^"]*(")/gi, "$1[redacted]$2")
+    .replace(
+      /("(?:access_token|refresh_token|id_token|client_secret)"\s*:\s*")[^"]*(")/gi,
+      "$1[redacted]$2"
+    )
     .replace(/((?:access_token|refresh_token|id_token|client_secret)=)[^&\s]+/gi, "$1[redacted]")
     .replace(/\s+/g, " ")
     .trim()

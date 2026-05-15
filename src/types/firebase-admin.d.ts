@@ -1,5 +1,5 @@
 declare module "firebase-admin/app" {
-  export interface App {}
+  export type App = object;
   export interface ServiceAccount {
     projectId?: string;
     clientEmail?: string;
@@ -7,7 +7,10 @@ declare module "firebase-admin/app" {
   }
 
   export function cert(serviceAccount: ServiceAccount): unknown;
-  export function initializeApp(options?: { credential?: unknown; projectId?: string }, name?: string): App;
+  export function initializeApp(
+    options?: { credential?: unknown; projectId?: string },
+    name?: string
+  ): App;
   export function getApps(): App[];
   export function getApp(name?: string): App;
 }

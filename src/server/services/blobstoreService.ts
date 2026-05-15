@@ -22,15 +22,20 @@ const ADMIN_POLICY: ServicePolicy = { allowed: ["shell", "server"] };
 const DigestSchema = z.string().regex(DIGEST_RE);
 const Base64Schema = z.string().refine((value) => {
   try {
-    return Buffer.from(value, "base64").toString("base64").replace(/=+$/u, "") === value.replace(/=+$/u, "");
+    return (
+      Buffer.from(value, "base64").toString("base64").replace(/=+$/u, "") ===
+      value.replace(/=+$/u, "")
+    );
   } catch {
     return false;
   }
 }, "Invalid base64 payload");
-const ListOptsSchema = z.object({
-  prefix: z.string().regex(PREFIX_RE).optional(),
-  limit: z.number().int().positive().max(100_000).optional(),
-}).optional();
+const ListOptsSchema = z
+  .object({
+    prefix: z.string().regex(PREFIX_RE).optional(),
+    limit: z.number().int().positive().max(100_000).optional(),
+  })
+  .optional();
 const PruneOptsSchema = z.object({
   referenced: z.array(DigestSchema),
   dryRun: z.boolean().optional(),
@@ -68,13 +73,7 @@ function validateDigest(digest: string): void {
 
 function blobPath(blobsDir: string, digest: string): string {
   validateDigest(digest);
-  return path.join(
-    blobsDir,
-    "sha256",
-    digest.slice(0, 2),
-    digest.slice(2, 4),
-    digest.slice(4),
-  );
+  return path.join(blobsDir, "sha256", digest.slice(0, 2), digest.slice(2, 4), digest.slice(4));
 }
 
 function sendJson(res: ServerResponse, status: number, payload: unknown): void {
@@ -108,7 +107,10 @@ async function statBlob(blobsDir: string, digest: string): Promise<BlobStat | nu
   }
 }
 
-async function putBlob(blobsDir: string, req: IncomingMessage): Promise<{ digest: string; size: number }> {
+async function putBlob(
+  blobsDir: string,
+  req: IncomingMessage
+): Promise<{ digest: string; size: number }> {
   const tmpPath = path.join(blobsDir, "tmp", `${process.pid}-${randomUUID()}.tmp`);
   const hash = createHash("sha256");
   let size = 0;
@@ -143,7 +145,7 @@ async function putBlob(blobsDir: string, req: IncomingMessage): Promise<{ digest
 
 async function putBytes(
   blobsDir: string,
-  bytes: Buffer,
+  bytes: Buffer
 ): Promise<{ digest: string; size: number }> {
   const digest = createHash("sha256").update(bytes).digest("hex");
   const finalPath = blobPath(blobsDir, digest);
@@ -182,7 +184,7 @@ async function getBytes(blobsDir: string, digest: string): Promise<Buffer | null
 
 async function listBlobs(
   blobsDir: string,
-  opts?: { prefix?: string; limit?: number },
+  opts?: { prefix?: string; limit?: number }
 ): Promise<string[]> {
   const prefix = opts?.prefix ?? "";
   const limit = opts?.limit;
@@ -228,7 +230,7 @@ async function listBlobs(
 
 async function pruneUnreferencedBlobs(
   blobsDir: string,
-  opts: { referenced: string[]; dryRun?: boolean; olderThanMs?: number; limit?: number },
+  opts: { referenced: string[]; dryRun?: boolean; olderThanMs?: number; limit?: number }
 ): Promise<{ deleted: string[]; kept: number; dryRun: boolean }> {
   const referenced = new Set(opts.referenced);
   const all = await listBlobs(blobsDir, { limit: opts.limit });
@@ -325,9 +327,20 @@ export function createBlobstoreService(deps: BlobstoreServiceDeps): ServiceWithR
           }
         }
         case "list":
-          return listBlobs(deps.blobsDir, args[0] as { prefix?: string; limit?: number } | undefined);
+          return listBlobs(
+            deps.blobsDir,
+            args[0] as { prefix?: string; limit?: number } | undefined
+          );
         case "pruneUnreferenced":
-          return pruneUnreferencedBlobs(deps.blobsDir, args[0] as { referenced: string[]; dryRun?: boolean; olderThanMs?: number; limit?: number });
+          return pruneUnreferencedBlobs(
+            deps.blobsDir,
+            args[0] as {
+              referenced: string[];
+              dryRun?: boolean;
+              olderThanMs?: number;
+              limit?: number;
+            }
+          );
         default:
           throw new Error(`Unknown blobstore method '${method}'`);
       }
@@ -378,7 +391,7 @@ export function createBlobstoreService(deps: BlobstoreServiceDeps): ServiceWithR
         res.writeHead(200, {
           "Content-Type": "application/octet-stream",
           "Content-Length": String(stat.size),
-          "ETag": `"${digest}"`,
+          ETag: `"${digest}"`,
           "Cache-Control": "max-age=31536000, immutable",
         });
         const stream = fs.createReadStream(filePath);

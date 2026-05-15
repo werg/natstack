@@ -63,42 +63,43 @@ describe("workerService userland service resolution", () => {
     dispatcher.registerService(createWorkerService(deps as never));
     dispatcher.markInitialized();
 
-    await expect(dispatcher.dispatch(panelCtx, "workers", "listServices", []))
-      .resolves.toEqual([
-        expect.objectContaining({
-          name: "channel",
-          kind: "durable-object",
-          protocols: ["natstack.channel.v1"],
-          source: "workers/pubsub-channel",
-          className: "PubSubChannel",
-        }),
-        expect.objectContaining({
-          name: "stateless-api",
-          kind: "worker",
-          protocols: ["example.stateless.v1"],
-          source: "workers/stateless-api",
-          routePath: "/api",
-        }),
-      ]);
-
-    await expect(dispatcher.dispatch(panelCtx, "workers", "resolveService", ["natstack.channel.v1", "chat-1"]))
-      .resolves.toMatchObject({
-        kind: "durable-object",
+    await expect(dispatcher.dispatch(panelCtx, "workers", "listServices", [])).resolves.toEqual([
+      expect.objectContaining({
         name: "channel",
+        kind: "durable-object",
+        protocols: ["natstack.channel.v1"],
         source: "workers/pubsub-channel",
         className: "PubSubChannel",
-        objectKey: "chat-1",
-        targetId: "do:workers/pubsub-channel:PubSubChannel:chat-1",
-      });
-
-    await expect(dispatcher.dispatch(panelCtx, "workers", "resolveService", ["example.stateless.v1"]))
-      .resolves.toMatchObject({
-        kind: "worker",
+      }),
+      expect.objectContaining({
         name: "stateless-api",
+        kind: "worker",
+        protocols: ["example.stateless.v1"],
         source: "workers/stateless-api",
         routePath: "/api",
-        routeBasePath: "/_r/w/workers/stateless-api/api",
-      });
+      }),
+    ]);
+
+    await expect(
+      dispatcher.dispatch(panelCtx, "workers", "resolveService", ["natstack.channel.v1", "chat-1"])
+    ).resolves.toMatchObject({
+      kind: "durable-object",
+      name: "channel",
+      source: "workers/pubsub-channel",
+      className: "PubSubChannel",
+      objectKey: "chat-1",
+      targetId: "do:workers/pubsub-channel:PubSubChannel:chat-1",
+    });
+
+    await expect(
+      dispatcher.dispatch(panelCtx, "workers", "resolveService", ["example.stateless.v1"])
+    ).resolves.toMatchObject({
+      kind: "worker",
+      name: "stateless-api",
+      source: "workers/stateless-api",
+      routePath: "/api",
+      routeBasePath: "/_r/w/workers/stateless-api/api",
+    });
   });
 
   it("uses the channel service resolver for channel workers", async () => {
@@ -107,20 +108,21 @@ describe("workerService userland service resolution", () => {
     dispatcher.registerService(createWorkerService(deps as never));
     dispatcher.markInitialized();
 
-    await expect(dispatcher.dispatch(panelCtx, "workers", "getChannelWorkers", ["chat-1"]))
-      .resolves.toEqual([
-        {
-          participantId: "do:workers/agent-worker:AiChatWorker:agent-1",
-          source: "workers/agent-worker",
-          className: "AiChatWorker",
-          objectKey: "agent-1",
-          channelId: "chat-1",
-        },
-      ]);
+    await expect(
+      dispatcher.dispatch(panelCtx, "workers", "getChannelWorkers", ["chat-1"])
+    ).resolves.toEqual([
+      {
+        participantId: "do:workers/agent-worker:AiChatWorker:agent-1",
+        source: "workers/agent-worker",
+        className: "AiChatWorker",
+        objectKey: "agent-1",
+        channelId: "chat-1",
+      },
+    ]);
 
     expect(deps.doDispatch.dispatch).toHaveBeenCalledWith(
       { source: "workers/pubsub-channel", className: "PubSubChannel", objectKey: "chat-1" },
-      "getParticipants",
+      "getParticipants"
     );
   });
 });

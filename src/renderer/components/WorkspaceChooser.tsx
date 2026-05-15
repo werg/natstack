@@ -1,6 +1,17 @@
 import { useState, useEffect } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
-import { AlertDialog, Box, Button, Callout, Card, Flex, Heading, IconButton, Spinner, Text } from "@radix-ui/themes";
+import {
+  AlertDialog,
+  Box,
+  Button,
+  Callout,
+  Card,
+  Flex,
+  Heading,
+  IconButton,
+  Spinner,
+  Text,
+} from "@radix-ui/themes";
 import { Cross2Icon, ExclamationTriangleIcon, PlusIcon } from "@radix-ui/react-icons";
 
 import {
@@ -118,8 +129,15 @@ export function WorkspaceChooser() {
 
           {/* Error display */}
           {workspaceError && (
-            <Callout.Root color="red" mb="2" style={{ cursor: "pointer" }} onClick={() => setWorkspaceError(null)}>
-              <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
+            <Callout.Root
+              color="red"
+              mb="2"
+              style={{ cursor: "pointer" }}
+              onClick={() => setWorkspaceError(null)}
+            >
+              <Callout.Icon>
+                <ExclamationTriangleIcon />
+              </Callout.Icon>
               <Callout.Text>{workspaceError}</Callout.Text>
             </Callout.Root>
           )}
@@ -137,7 +155,9 @@ export function WorkspaceChooser() {
                 {isLoading ? (
                   <Spinner size="2" />
                 ) : (
-                  <Text size="2" color="gray">Could not load workspaces</Text>
+                  <Text size="2" color="gray">
+                    Could not load workspaces
+                  </Text>
                 )}
               </Flex>
             ) : (
@@ -166,18 +186,26 @@ export function WorkspaceChooser() {
       </Flex>
 
       {/* Delete confirmation dialog */}
-      <AlertDialog.Root open={!!pendingDelete} onOpenChange={(open) => !open && setPendingDelete(null)}>
+      <AlertDialog.Root
+        open={!!pendingDelete}
+        onOpenChange={(open) => !open && setPendingDelete(null)}
+      >
         <AlertDialog.Content maxWidth="400px">
           <AlertDialog.Title>Delete workspace</AlertDialog.Title>
           <AlertDialog.Description>
-            Permanently delete &ldquo;{pendingDelete}&rdquo;? All panels, packages, agents, and data will be removed. This cannot be undone.
+            Permanently delete &ldquo;{pendingDelete}&rdquo;? All panels, packages, agents, and data
+            will be removed. This cannot be undone.
           </AlertDialog.Description>
           <Flex gap="3" mt="4" justify="end">
             <AlertDialog.Cancel>
-              <Button variant="soft" color="gray">Cancel</Button>
+              <Button variant="soft" color="gray">
+                Cancel
+              </Button>
             </AlertDialog.Cancel>
             <AlertDialog.Action>
-              <Button color="red" onClick={handleConfirmDelete}>Delete</Button>
+              <Button color="red" onClick={handleConfirmDelete}>
+                Delete
+              </Button>
             </AlertDialog.Action>
           </Flex>
         </AlertDialog.Content>
@@ -211,7 +239,9 @@ function WorkspaceItem({ workspace, isActive, onSelect, onRemove }: WorkspaceIte
             <Text size="2" weight="medium" truncate>
               {workspace.name}
               {isActive && (
-                <Text size="1" color="gray" ml="2">(current)</Text>
+                <Text size="1" color="gray" ml="2">
+                  (current)
+                </Text>
               )}
             </Text>
             <Text size="1" color="gray">

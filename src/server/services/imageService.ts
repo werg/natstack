@@ -45,7 +45,7 @@ function toUint8Array(value: unknown): Uint8Array {
       return new Uint8Array(obj["data"] as number[]);
     }
     // ArrayBuffer view (e.g., DataView or typed array passed by reference)
-    if ("buffer" in obj && (obj as any).buffer instanceof ArrayBuffer) {
+    if ("buffer" in obj && obj["buffer"] instanceof ArrayBuffer) {
       const v = obj as { buffer: ArrayBuffer; byteOffset?: number; byteLength?: number };
       return new Uint8Array(v.buffer, v.byteOffset ?? 0, v.byteLength ?? v.buffer.byteLength);
     }
@@ -100,10 +100,7 @@ export function createImageService(): ServiceDefinition {
           ];
           const data = toUint8Array(rawData);
           const base64 = Buffer.from(data).toString("base64");
-          const result = await resizeImage(
-            { type: "image", mimeType, data: base64 },
-            options,
-          );
+          const result = await resizeImage({ type: "image", mimeType, data: base64 }, options);
           const out: ImageResizeResult = {
             data: new Uint8Array(Buffer.from(result.data, "base64")),
             mimeType: result.mimeType,
@@ -118,16 +115,12 @@ export function createImageService(): ServiceDefinition {
           return out;
         }
         case "convert": {
-          const [rawData, sourceMimeType, targetMimeType] = args as [
-            unknown,
-            string,
-            string,
-          ];
+          const [rawData, sourceMimeType, targetMimeType] = args as [unknown, string, string];
           const data = toUint8Array(rawData);
           const result = await convertImage(data, sourceMimeType, targetMimeType);
           if (!result) {
             throw new Error(
-              `imageService.convert: failed to convert ${sourceMimeType} → ${targetMimeType}`,
+              `imageService.convert: failed to convert ${sourceMimeType} → ${targetMimeType}`
             );
           }
           const out: ImageConvertResult = {

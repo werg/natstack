@@ -24,11 +24,7 @@ import { spawnGitSync } from "@natstack/shared/gitRuntime";
  * Extract the full git tree at a specific commit into a target directory.
  * Uses `git archive --format=tar <commit>` piped to `tar -x -C <dir>`.
  */
-function extractGitTree(
-  repoPath: string,
-  commitSha: string,
-  targetDir: string,
-): void {
+function extractGitTree(repoPath: string, commitSha: string, targetDir: string): void {
   // git archive outputs tar to stdout
   const archive = spawnGitSync(["archive", "--format=tar", commitSha], {
     cwd: repoPath,
@@ -38,9 +34,7 @@ function extractGitTree(
 
   if (archive.status !== 0) {
     const stderr = archive.stderr?.toString() ?? "";
-    throw new Error(
-      `git archive failed for ${repoPath} at ${commitSha}: ${stderr}`,
-    );
+    throw new Error(`git archive failed for ${repoPath} at ${commitSha}: ${stderr}`);
   }
 
   // Pipe archive output into tar to extract
@@ -52,9 +46,7 @@ function extractGitTree(
 
   if (extract.status !== 0) {
     const stderr = extract.stderr?.toString() ?? "";
-    throw new Error(
-      `tar extract failed for ${repoPath} at ${commitSha}: ${stderr}`,
-    );
+    throw new Error(`tar extract failed for ${repoPath} at ${commitSha}: ${stderr}`);
   }
 }
 
@@ -66,10 +58,7 @@ function extractGitTree(
  * Walk internalDeps recursively to collect all nodes needed for a build.
  * Returns the target node plus all its transitive internal dependencies.
  */
-export function collectTransitiveInternalDeps(
-  node: GraphNode,
-  graph: PackageGraph,
-): GraphNode[] {
+export function collectTransitiveInternalDeps(node: GraphNode, graph: PackageGraph): GraphNode[] {
   const visited = new Set<string>();
   const result: GraphNode[] = [];
 
@@ -117,11 +106,9 @@ export function extractSourceForBuild(
   unit: GraphNode,
   graph: PackageGraph,
   workspaceRoot: string,
-  commitMap?: Map<string, string>,
+  commitMap?: Map<string, string>
 ): ExtractedSource {
-  const sourceRoot = fs.mkdtempSync(
-    path.join(os.tmpdir(), "natstack-source-"),
-  );
+  const sourceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-source-"));
 
   // Collect all nodes needed for this build
   const nodes = collectTransitiveInternalDeps(unit, graph);
@@ -137,9 +124,7 @@ export function extractSourceForBuild(
       const ref = resolveMainRef(node.path);
       const sha = getCommitAt(node.path, ref);
       if (!sha) {
-        throw new Error(
-          `Cannot resolve commit for ${node.name} at ${node.path}`,
-        );
+        throw new Error(`Cannot resolve commit for ${node.name} at ${node.path}`);
       }
       resolvedMap.set(node.name, sha);
     }
@@ -153,7 +138,7 @@ export function extractSourceForBuild(
       if (sha && !sha.match(/^[0-9a-f]{7,40}$/i) && !sha.startsWith("refs/")) {
         throw new Error(
           `Invalid commit SHA for ${node.name}: "${sha}" (expected hex SHA or ref). ` +
-          `This likely means a dependency version like "workspace:*" leaked through as a git ref.`,
+            `This likely means a dependency version like "workspace:*" leaked through as a git ref.`
         );
       }
       const relPath = path.relative(workspaceRoot, node.path);

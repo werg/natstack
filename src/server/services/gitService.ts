@@ -119,31 +119,34 @@ export function createGitService(deps: GitServiceDeps): ServiceDefinition {
       removeSharedRemote: { args: z.tuple([z.string(), z.string()]) },
       importProject: { args: z.tuple([importProjectSchema]) },
       completeWorkspaceDependencies: {
-        args: z.union([
-          z.tuple([]),
-          z.tuple([completeWorkspaceDependenciesSchema.optional()]),
-        ]),
+        args: z.union([z.tuple([]), z.tuple([completeWorkspaceDependenciesSchema.optional()])]),
       },
     },
     handler: async (ctx, method, args) => {
       const g = deps.gitServer;
 
       switch (method) {
-        case "getWorkspaceTree": return g.getWorkspaceTree();
+        case "getWorkspaceTree":
+          return g.getWorkspaceTree();
         case "findRepoForPath": {
           const inputPath = normalizeWorkspaceRepoPath(args[0] as string);
           const tree = await g.getWorkspaceTree();
-          const repos = [...collectWorkspaceRepoPaths(tree.children as WorkspaceTreeNode[])]
-            .sort((a, b) => b.length - a.length);
-          const repoPath = repos.find((repo) => inputPath === repo || inputPath.startsWith(`${repo}/`));
+          const repos = [...collectWorkspaceRepoPaths(tree.children as WorkspaceTreeNode[])].sort(
+            (a, b) => b.length - a.length
+          );
+          const repoPath = repos.find(
+            (repo) => inputPath === repo || inputPath.startsWith(`${repo}/`)
+          );
           if (!repoPath) return null;
           return {
             repoPath,
             relativePath: inputPath === repoPath ? "" : inputPath.slice(repoPath.length + 1),
           };
         }
-        case "status": return g.status(args[0] as string);
-        case "listBranches": return g.listBranches(args[0] as string);
+        case "status":
+          return g.status(args[0] as string);
+        case "listBranches":
+          return g.listBranches(args[0] as string);
         case "listCommits": {
           const repoPath = args[0] as string;
           const ref = args[1] as string;
@@ -161,7 +164,10 @@ export function createGitService(deps: GitServiceDeps): ServiceDefinition {
           const [repoPath] = args as [string];
           if (!repoPath?.trim()) throw new Error("Repo path is required");
           if (!deps.workspacePath) throw new Error("No workspace path configured");
-          const { absolutePath, normalizedRepoPath } = resolveWorkspaceRepoPath(deps.workspacePath, repoPath);
+          const { absolutePath, normalizedRepoPath } = resolveWorkspaceRepoPath(
+            deps.workspacePath,
+            repoPath
+          );
 
           if (fs.existsSync(absolutePath)) throw new Error(`Path already exists: ${repoPath}`);
 
@@ -208,7 +214,11 @@ export function createGitService(deps: GitServiceDeps): ServiceDefinition {
           // interpolation regressions from becoming RCE.
           execGitFileSync(["init"], { cwd: absolutePath, stdio: "pipe" });
           const repoName = repoPath.split("/").pop() ?? "project";
-          await writeFile(join(absolutePath, "README.md"), `# ${repoName}\n\nA new NatStack project.\n`, "utf-8");
+          await writeFile(
+            join(absolutePath, "README.md"),
+            `# ${repoName}\n\nA new NatStack project.\n`,
+            "utf-8"
+          );
           execGitFileSync(["add", "--", "README.md"], { cwd: absolutePath, stdio: "pipe" });
           execGitFileSync(["commit", "-m", "Initial commit"], { cwd: absolutePath, stdio: "pipe" });
           if (deps.workspaceConfig) {
@@ -230,7 +240,11 @@ export function createGitService(deps: GitServiceDeps): ServiceDefinition {
           const normalizedRemote = validateWorkspaceGitRemote(remoteInput);
 
           await ensureSharedRemotePermission(ctx, deps, validRepoPath, "set", normalizedRemote);
-          const nextConfig = setDeclaredRemoteInConfig(deps.workspaceConfig, validRepoPath, normalizedRemote);
+          const nextConfig = setDeclaredRemoteInConfig(
+            deps.workspaceConfig,
+            validRepoPath,
+            normalizedRemote
+          );
           await persistWorkspaceConfigChange(deps.workspacePath, deps.workspaceConfig, nextConfig, {
             message: `Configure shared remote for ${validRepoPath}`,
           });
@@ -247,7 +261,11 @@ export function createGitService(deps: GitServiceDeps): ServiceDefinition {
           const existing = getRemoteForApproval(deps.workspaceConfig, validRepoPath, remoteName);
 
           await ensureSharedRemotePermission(ctx, deps, validRepoPath, "remove", existing);
-          const nextConfig = removeDeclaredRemoteFromConfig(deps.workspaceConfig, validRepoPath, remoteName);
+          const nextConfig = removeDeclaredRemoteFromConfig(
+            deps.workspaceConfig,
+            validRepoPath,
+            remoteName
+          );
           await persistWorkspaceConfigChange(deps.workspacePath, deps.workspaceConfig, nextConfig, {
             message: `Remove shared remote ${remoteName} for ${validRepoPath}`,
           });
@@ -265,7 +283,8 @@ export function createGitService(deps: GitServiceDeps): ServiceDefinition {
           return completeWorkspaceDependencies(ctx, deps, options);
         }
 
-        default: throw new Error(`Unknown git method: ${method}`);
+        default:
+          throw new Error(`Unknown git method: ${method}`);
       }
     },
   };
@@ -274,7 +293,7 @@ export function createGitService(deps: GitServiceDeps): ServiceDefinition {
 async function completeWorkspaceDependencies(
   ctx: ServiceContext,
   deps: GitServiceDeps,
-  options: { credentialId?: string } | undefined,
+  options: { credentialId?: string } | undefined
 ): Promise<CompleteWorkspaceDependenciesResult> {
   if (!deps.workspacePath) throw new Error("No workspace path configured");
   if (!deps.workspaceConfig) throw new Error("Workspace config is unavailable");
@@ -361,13 +380,16 @@ function collectWorkspaceRepoPaths(nodes: WorkspaceTreeNode[]): Set<string> {
 async function importWorkspaceRepo(
   ctx: ServiceContext,
   deps: GitServiceDeps,
-  request: ImportWorkspaceRepoRequest,
+  request: ImportWorkspaceRepoRequest
 ): Promise<ImportedWorkspaceRepo> {
   if (!deps.workspacePath) throw new Error("No workspace path configured");
   if (!deps.workspaceConfig) throw new Error("Workspace config is unavailable");
   if (!deps.egressProxy) throw new Error("Project import is unavailable");
 
-  const { absolutePath, normalizedRepoPath } = resolveWorkspaceRepoPath(deps.workspacePath, request.path);
+  const { absolutePath, normalizedRepoPath } = resolveWorkspaceRepoPath(
+    deps.workspacePath,
+    request.path
+  );
   const validRepoPath = normalizeWorkspaceRepoPath(normalizedRepoPath);
   if (!isSupportedImportRepoPath(validRepoPath)) {
     throw new Error(`Imports must target one of: ${WORKSPACE_IMPORT_PARENT_DIRS.join(", ")}`);
@@ -383,7 +405,11 @@ async function importWorkspaceRepo(
       http: createEgressGitHttpClient(deps.egressProxy, ctx.callerId, request.credentialId),
     });
     await client.clone({ url: normalizedRemote.url, dir: absolutePath });
-    const nextConfig = setDeclaredRemoteInConfig(deps.workspaceConfig, validRepoPath, normalizedRemote);
+    const nextConfig = setDeclaredRemoteInConfig(
+      deps.workspaceConfig,
+      validRepoPath,
+      normalizedRemote
+    );
     await persistWorkspaceConfigChange(deps.workspacePath, deps.workspaceConfig, nextConfig, {
       message: `Import project ${validRepoPath}`,
     });
@@ -405,7 +431,7 @@ async function ensureImportProjectPermission(
     codeIdentityResolver?: Pick<CodeIdentityResolver, "resolveByCallerId">;
   },
   repoPath: string,
-  remote: WorkspaceGitRemoteConfig,
+  remote: WorkspaceGitRemoteConfig
 ): Promise<void> {
   if (ctx.callerKind === "shell" || ctx.callerKind === "server") {
     return;
@@ -416,29 +442,32 @@ async function ensureImportProjectPermission(
   if (!deps.approvalQueue || !deps.grantStore || !deps.codeIdentityResolver) {
     throw new Error("Project import is unavailable");
   }
-  const authorization = await requestCapabilityPermission({
-    approvalQueue: deps.approvalQueue,
-    grantStore: deps.grantStore,
-    codeIdentityResolver: deps.codeIdentityResolver,
-  }, {
-    callerId: ctx.callerId,
-    callerKind: ctx.callerKind,
-    capability: PROJECT_IMPORT_CAPABILITY,
-    dedupKey: null,
-    resource: {
-      type: "workspace-project",
-      label: "Project path",
-      value: repoPath,
+  const authorization = await requestCapabilityPermission(
+    {
+      approvalQueue: deps.approvalQueue,
+      grantStore: deps.grantStore,
+      codeIdentityResolver: deps.codeIdentityResolver,
     },
-    title: "Add project repo",
-    description: "Allow this code version to import a remote repository into workspace source.",
-    details: [
-      { label: "Project path", value: repoPath },
-      { label: "Remote name", value: remote.name },
-      { label: "Remote URL", value: displayRemoteUrl(remote.url) },
-    ],
-    deniedReason: "Project import denied",
-  });
+    {
+      callerId: ctx.callerId,
+      callerKind: ctx.callerKind,
+      capability: PROJECT_IMPORT_CAPABILITY,
+      dedupKey: null,
+      resource: {
+        type: "workspace-project",
+        label: "Project path",
+        value: repoPath,
+      },
+      title: "Add project repo",
+      description: "Allow this code version to import a remote repository into workspace source.",
+      details: [
+        { label: "Project path", value: repoPath },
+        { label: "Remote name", value: remote.name },
+        { label: "Remote URL", value: displayRemoteUrl(remote.url) },
+      ],
+      deniedReason: "Project import denied",
+    }
+  );
   if (!authorization.allowed) {
     throw new Error(authorization.reason ?? "Project import denied");
   }
@@ -458,7 +487,7 @@ async function ensureSharedRemotePermission(
   },
   repoPath: string,
   operation: "set" | "remove",
-  remote: WorkspaceGitRemoteConfig | null,
+  remote: WorkspaceGitRemoteConfig | null
 ): Promise<void> {
   if (ctx.callerKind === "shell" || ctx.callerKind === "server") {
     return;
@@ -470,7 +499,10 @@ async function ensureSharedRemotePermission(
     throw new Error("Shared remote configuration is unavailable");
   }
   const details = [
-    { label: "Operation", value: operation === "set" ? "Add or update shared remote" : "Remove shared remote" },
+    {
+      label: "Operation",
+      value: operation === "set" ? "Add or update shared remote" : "Remove shared remote",
+    },
     { label: "Repository path", value: repoPath },
   ];
   if (remote) {
@@ -479,25 +511,28 @@ async function ensureSharedRemotePermission(
       details.push({ label: "Remote URL", value: displayRemoteUrl(remote.url) });
     }
   }
-  const authorization = await requestCapabilityPermission({
-    approvalQueue: deps.approvalQueue,
-    grantStore: deps.grantStore,
-    codeIdentityResolver: deps.codeIdentityResolver,
-  }, {
-    callerId: ctx.callerId,
-    callerKind: ctx.callerKind,
-    capability: SHARED_GIT_REMOTE_CAPABILITY,
-    dedupKey: null,
-    resource: {
-      type: "git-remote",
-      label: "Workspace repo",
-      value: repoPath,
+  const authorization = await requestCapabilityPermission(
+    {
+      approvalQueue: deps.approvalQueue,
+      grantStore: deps.grantStore,
+      codeIdentityResolver: deps.codeIdentityResolver,
     },
-    title: operation === "set" ? "Configure shared remote" : "Remove shared remote",
-    description: "Allow this code version to change the remote URL shared by workspace contexts.",
-    details,
-    deniedReason: "Shared remote configuration denied",
-  });
+    {
+      callerId: ctx.callerId,
+      callerKind: ctx.callerKind,
+      capability: SHARED_GIT_REMOTE_CAPABILITY,
+      dedupKey: null,
+      resource: {
+        type: "git-remote",
+        label: "Workspace repo",
+        value: repoPath,
+      },
+      title: operation === "set" ? "Configure shared remote" : "Remove shared remote",
+      description: "Allow this code version to change the remote URL shared by workspace contexts.",
+      details,
+      deniedReason: "Shared remote configuration denied",
+    }
+  );
   if (!authorization.allowed) {
     throw new Error(authorization.reason ?? "Shared remote configuration denied");
   }
@@ -507,7 +542,7 @@ async function persistWorkspaceConfigChange(
   workspacePath: string,
   currentConfig: WorkspaceConfig,
   nextConfig: WorkspaceConfig,
-  opts: { message: string },
+  opts: { message: string }
 ): Promise<void> {
   const metaDir = join(workspacePath, "meta");
   const configPath = join(metaDir, "natstack.yml");
@@ -530,7 +565,7 @@ async function persistWorkspaceConfigChange(
   if (!status.trim()) return;
   execGitFileSync(
     ["-c", "user.email=natstack@local", "-c", "user.name=natstack", "commit", "-m", opts.message],
-    { cwd: metaDir, stdio: "pipe" },
+    { cwd: metaDir, stdio: "pipe" }
   );
 }
 
@@ -540,7 +575,7 @@ async function propagateSharedRemote(
     workspaceConfig?: WorkspaceConfig;
     contextFolderManager?: Pick<ContextFolderManager, "syncDeclaredRemotes">;
   },
-  repoPath: string,
+  repoPath: string
 ): Promise<void> {
   if (!deps.workspacePath || !deps.workspaceConfig) return;
   await syncDeclaredRemoteForRepo({
@@ -554,7 +589,7 @@ async function propagateSharedRemote(
 function createEgressGitHttpClient(
   egressProxy: Pick<EgressProxy, "forwardGitHttp">,
   callerId: string,
-  credentialId?: string,
+  credentialId?: string
 ) {
   return {
     async request(request: {
@@ -609,7 +644,11 @@ function mutateWorkspaceConfig(target: WorkspaceConfig, next: WorkspaceConfig): 
   Object.assign(target, next);
 }
 
-function getRemoteForApproval(config: WorkspaceConfig, repoPath: string, remoteName: string): WorkspaceGitRemoteConfig {
+function getRemoteForApproval(
+  config: WorkspaceConfig,
+  repoPath: string,
+  remoteName: string
+): WorkspaceGitRemoteConfig {
   const normalizedRemoteName = validateWorkspaceGitRemoteName(remoteName);
   const remote = getDeclaredRemoteForRepo(config, repoPath, remoteName);
   return remote ? { name: remote.name, url: remote.url } : { name: normalizedRemoteName, url: "" };
@@ -627,7 +666,7 @@ async function ensureGitWritePermission(
     codeIdentityResolver?: Pick<CodeIdentityResolver, "resolveByCallerId">;
   },
   repoPath: string,
-  operation: string,
+  operation: string
 ): Promise<void> {
   if (ctx.callerKind === "shell" || ctx.callerKind === "server") {
     return;
@@ -638,33 +677,37 @@ async function ensureGitWritePermission(
   if (!deps.approvalQueue || !deps.grantStore || !deps.codeIdentityResolver) {
     throw new Error("Git write permission is unavailable");
   }
-  const authorization = await requestCapabilityPermission({
-    approvalQueue: deps.approvalQueue,
-    grantStore: deps.grantStore,
-    codeIdentityResolver: deps.codeIdentityResolver,
-  }, {
-    callerId: ctx.callerId,
-    callerKind: ctx.callerKind,
-    capability: INTERNAL_GIT_WRITE_CAPABILITY,
-    dedupKey: null,
-    resource: {
-      type: "git-repo",
-      label: "Repository",
-      value: repoPath,
+  const authorization = await requestCapabilityPermission(
+    {
+      approvalQueue: deps.approvalQueue,
+      grantStore: deps.grantStore,
+      codeIdentityResolver: deps.codeIdentityResolver,
     },
-    title: "Write project files",
-    description: "Allow this code version to write to an internal git repository.",
-    details: [
-      { label: "Operation", value: operation },
-    ],
-    deniedReason: "Git write permission denied",
-  });
+    {
+      callerId: ctx.callerId,
+      callerKind: ctx.callerKind,
+      capability: INTERNAL_GIT_WRITE_CAPABILITY,
+      dedupKey: null,
+      resource: {
+        type: "git-repo",
+        label: "Repository",
+        value: repoPath,
+      },
+      title: "Write project files",
+      description: "Allow this code version to write to an internal git repository.",
+      details: [{ label: "Operation", value: operation }],
+      deniedReason: "Git write permission denied",
+    }
+  );
   if (!authorization.allowed) {
     throw new Error(authorization.reason ?? "Git write permission denied");
   }
 }
 
-function resolveWorkspaceRepoPath(workspacePath: string, repoPath: string): {
+function resolveWorkspaceRepoPath(
+  workspacePath: string,
+  repoPath: string
+): {
   absolutePath: string;
   normalizedRepoPath: string;
 } {
@@ -684,7 +727,11 @@ function resolveWorkspaceRepoPath(workspacePath: string, repoPath: string): {
   };
 }
 
-function assertWorkspaceCreateTargetSafe(workspacePath: string, absolutePath: string, operation: string): void {
+function assertWorkspaceCreateTargetSafe(
+  workspacePath: string,
+  absolutePath: string,
+  operation: string
+): void {
   let current = dirname(absolutePath);
   const workspaceAbs = resolve(workspacePath);
   while (current.length >= workspaceAbs.length) {

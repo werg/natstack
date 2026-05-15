@@ -10,7 +10,9 @@ function tempStatePath(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "natstack-capability-"));
 }
 
-function createApprovalQueueMock(decision: Awaited<ReturnType<ApprovalQueue["request"]>> = "session"): ApprovalQueue {
+function createApprovalQueueMock(
+  decision: Awaited<ReturnType<ApprovalQueue["request"]>> = "session"
+): ApprovalQueue {
   return {
     request: vi.fn(async () => decision),
     requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
@@ -58,17 +60,23 @@ describe("capabilityPermission", () => {
       deniedReason: "Denied",
     };
 
-    await expect(requestCapabilityPermission(deps, request)).resolves.toMatchObject({ allowed: true });
-    await expect(requestCapabilityPermission(deps, request)).resolves.toMatchObject({ allowed: true });
+    await expect(requestCapabilityPermission(deps, request)).resolves.toMatchObject({
+      allowed: true,
+    });
+    await expect(requestCapabilityPermission(deps, request)).resolves.toMatchObject({
+      allowed: true,
+    });
 
     expect(approvalQueue.request).toHaveBeenCalledTimes(1);
-    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      resource: {
-        type: "example",
-        label: "Example",
-        value: "Display value",
-      },
-    }));
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resource: {
+          type: "example",
+          label: "Example",
+          value: "Display value",
+        },
+      })
+    );
   });
 
   it.each(["version", "repo"] as const)("reuses %s-scoped capability grants", async (decision) => {

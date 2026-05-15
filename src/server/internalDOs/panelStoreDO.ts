@@ -1,6 +1,15 @@
-import { DurableObjectBase, type DurableObjectContext } from "../../../workspace/packages/runtime/src/worker/durable-base.js";
+import {
+  DurableObjectBase,
+  type DurableObjectContext,
+} from "../../../workspace/packages/runtime/src/worker/durable-base.js";
 import type { Panel, PanelSnapshot, PanelSummary } from "../../../packages/shared/src/types.js";
-import type { CreatePanelInput, IndexablePanel, PanelContext, PanelSearchResult, UpdatePanelInput } from "../../../packages/shared/src/panelPersistenceTypes.js";
+import type {
+  CreatePanelInput,
+  IndexablePanel,
+  PanelContext,
+  PanelSearchResult,
+  UpdatePanelInput,
+} from "../../../packages/shared/src/panelPersistenceTypes.js";
 
 interface DbPanelRow {
   id: string;
@@ -119,12 +128,14 @@ export class PanelStoreDO extends DurableObjectBase {
       now,
       now,
       JSON.stringify([input.snapshot]),
-      0,
+      0
     );
   }
 
   getPanel(panelId: string): Panel | null {
-    const row = this.sql.exec(`SELECT * FROM panels WHERE id = ?`, panelId).toArray()[0] as unknown as DbPanelRow | undefined;
+    const row = this.sql
+      .exec(`SELECT * FROM panels WHERE id = ?`, panelId)
+      .toArray()[0] as unknown as DbPanelRow | undefined;
     return row ? this.rowToPanel(row) : null;
   }
 
@@ -135,7 +146,7 @@ export class PanelStoreDO extends DurableObjectBase {
        FROM panels p
        WHERE p.parent_id IS NULL AND p.workspace_id = ? AND p.archived_at IS NULL
        ORDER BY p.position`,
-      this.getWorkspaceId(),
+      this.getWorkspaceId()
     );
   }
 
@@ -145,7 +156,7 @@ export class PanelStoreDO extends DurableObjectBase {
         (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
        FROM panels p WHERE p.parent_id = ? AND p.archived_at IS NULL
        ORDER BY p.position`,
-      parentId,
+      parentId
     );
   }
 
@@ -156,13 +167,14 @@ export class PanelStoreDO extends DurableObjectBase {
        FROM panels p
        WHERE p.parent_id = (SELECT parent_id FROM panels WHERE id = ?) AND p.archived_at IS NULL
        ORDER BY p.position`,
-      panelId,
+      panelId
     );
   }
 
   getAncestors(panelId: string): PanelSummary[] {
-    const rows = this.sql.exec(
-      `WITH RECURSIVE ancestors AS (
+    const rows = this.sql
+      .exec(
+        `WITH RECURSIVE ancestors AS (
         SELECT id, parent_id, title, 0 as depth FROM panels WHERE id = ? AND archived_at IS NULL
         UNION ALL
         SELECT p.id, p.parent_id, p.title, a.depth + 1
@@ -170,8 +182,9 @@ export class PanelStoreDO extends DurableObjectBase {
         WHERE a.depth < 20 AND p.archived_at IS NULL
        )
        SELECT id, title, depth FROM ancestors WHERE depth > 0 ORDER BY depth DESC`,
-      panelId,
-    ).toArray() as Array<{ id: string; title: string }>;
+        panelId
+      )
+      .toArray() as Array<{ id: string; title: string }>;
     return rows.map((row) => ({ id: row.id, title: row.title, childCount: 0, position: 0 }));
   }
 
@@ -191,10 +204,12 @@ export class PanelStoreDO extends DurableObjectBase {
   }
 
   getPanelCount(): number {
-    const row = this.sql.exec(
-      `SELECT COUNT(*) as count FROM panels WHERE workspace_id = ? AND archived_at IS NULL`,
-      this.getWorkspaceId(),
-    ).one() as { count: number };
+    const row = this.sql
+      .exec(
+        `SELECT COUNT(*) as count FROM panels WHERE workspace_id = ? AND archived_at IS NULL`,
+        this.getWorkspaceId()
+      )
+      .one() as { count: number };
     return row.count;
   }
 
@@ -232,7 +247,7 @@ export class PanelStoreDO extends DurableObjectBase {
       JSON.stringify(nextHistory),
       nextHistory.length - 1,
       Date.now(),
-      panelId,
+      panelId
     );
   }
 
@@ -246,7 +261,7 @@ export class PanelStoreDO extends DurableObjectBase {
         `UPDATE panels SET history_index = ?, updated_at = ? WHERE id = ?`,
         nextIndex,
         Date.now(),
-        panelId,
+        panelId
       );
     }
     const nextRow = { ...row, history_index: nextIndex };
@@ -254,7 +269,12 @@ export class PanelStoreDO extends DurableObjectBase {
   }
 
   setSelectedChild(panelId: string, childId: string | null): void {
-    this.sql.exec(`UPDATE panels SET selected_child_id = ?, updated_at = ? WHERE id = ?`, childId, Date.now(), panelId);
+    this.sql.exec(
+      `UPDATE panels SET selected_child_id = ?, updated_at = ? WHERE id = ?`,
+      childId,
+      Date.now(),
+      panelId
+    );
   }
 
   updateSelectedPath(focusedPanelId: string): void {
@@ -264,32 +284,63 @@ export class PanelStoreDO extends DurableObjectBase {
     for (let depth = 0; currentId && depth < 100; depth++) {
       if (visited.has(currentId)) break;
       visited.add(currentId);
-      const row = this.sql.exec(`SELECT parent_id FROM panels WHERE id = ?`, currentId).toArray()[0] as { parent_id: string | null } | undefined;
+      const row = this.sql
+        .exec(`SELECT parent_id FROM panels WHERE id = ?`, currentId)
+        .toArray()[0] as { parent_id: string | null } | undefined;
       if (!row) break;
       if (row.parent_id) {
-        this.sql.exec(`UPDATE panels SET selected_child_id = ?, updated_at = ? WHERE id = ?`, currentId, now, row.parent_id);
+        this.sql.exec(
+          `UPDATE panels SET selected_child_id = ?, updated_at = ? WHERE id = ?`,
+          currentId,
+          now,
+          row.parent_id
+        );
       }
       currentId = row.parent_id;
     }
   }
 
   setTitle(panelId: string, title: string): void {
-    this.sql.exec(`UPDATE panels SET title = ?, updated_at = ? WHERE id = ?`, title, Date.now(), panelId);
+    this.sql.exec(
+      `UPDATE panels SET title = ?, updated_at = ? WHERE id = ?`,
+      title,
+      Date.now(),
+      panelId
+    );
   }
 
   movePanel(panelId: string, newParentId: string | null, targetPosition: number): void {
-    const currentRow = this.sql.exec(`SELECT parent_id FROM panels WHERE id = ?`, panelId).toArray()[0] as { parent_id: string | null } | undefined;
+    const currentRow = this.sql
+      .exec(`SELECT parent_id FROM panels WHERE id = ?`, panelId)
+      .toArray()[0] as { parent_id: string | null } | undefined;
     if (!currentRow) throw new Error(`Panel ${panelId} not found`);
     const oldParentId = currentRow.parent_id;
     const now = Date.now();
     this.shiftSiblingPositions(newParentId, targetPosition, now);
-    this.sql.exec(`UPDATE panels SET parent_id = ?, position = ?, updated_at = ? WHERE id = ?`, newParentId, targetPosition, now, panelId);
+    this.sql.exec(
+      `UPDATE panels SET parent_id = ?, position = ?, updated_at = ? WHERE id = ?`,
+      newParentId,
+      targetPosition,
+      now,
+      panelId
+    );
     if (oldParentId !== newParentId) this.normalizePositions(oldParentId);
     this.normalizePositions(newParentId);
   }
 
-  getChildrenPaginated(parentId: string, offset: number, limit: number): { children: PanelSummary[]; total: number; hasMore: boolean } {
-    const total = (this.sql.exec(`SELECT COUNT(*) as count FROM panels WHERE parent_id = ? AND archived_at IS NULL`, parentId).one() as { count: number }).count;
+  getChildrenPaginated(
+    parentId: string,
+    offset: number,
+    limit: number
+  ): { children: PanelSummary[]; total: number; hasMore: boolean } {
+    const total = (
+      this.sql
+        .exec(
+          `SELECT COUNT(*) as count FROM panels WHERE parent_id = ? AND archived_at IS NULL`,
+          parentId
+        )
+        .one() as { count: number }
+    ).count;
     const children = this.summaryRows(
       `SELECT p.id, p.title, p.position,
         (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
@@ -297,16 +348,23 @@ export class PanelStoreDO extends DurableObjectBase {
        ORDER BY p.position ASC LIMIT ? OFFSET ?`,
       parentId,
       limit,
-      offset,
+      offset
     );
     return { children, total, hasMore: offset + children.length < total };
   }
 
-  getRootPanelsPaginated(offset: number, limit: number): { panels: PanelSummary[]; total: number; hasMore: boolean } {
-    const total = (this.sql.exec(
-      `SELECT COUNT(*) as count FROM panels WHERE parent_id IS NULL AND workspace_id = ? AND archived_at IS NULL`,
-      this.getWorkspaceId(),
-    ).one() as { count: number }).count;
+  getRootPanelsPaginated(
+    offset: number,
+    limit: number
+  ): { panels: PanelSummary[]; total: number; hasMore: boolean } {
+    const total = (
+      this.sql
+        .exec(
+          `SELECT COUNT(*) as count FROM panels WHERE parent_id IS NULL AND workspace_id = ? AND archived_at IS NULL`,
+          this.getWorkspaceId()
+        )
+        .one() as { count: number }
+    ).count;
     const panels = this.summaryRows(
       `SELECT p.id, p.title, p.position,
         (SELECT COUNT(*) FROM panels c WHERE c.parent_id = p.id AND c.archived_at IS NULL) as child_count
@@ -314,16 +372,18 @@ export class PanelStoreDO extends DurableObjectBase {
        ORDER BY p.position ASC LIMIT ? OFFSET ?`,
       this.getWorkspaceId(),
       limit,
-      offset,
+      offset
     );
     return { panels, total, hasMore: offset + panels.length < total };
   }
 
   getFullTree(): Panel[] {
-    const rows = this.sql.exec(
-      `SELECT * FROM panels WHERE workspace_id = ? AND archived_at IS NULL ORDER BY position`,
-      this.getWorkspaceId(),
-    ).toArray() as unknown as DbPanelRow[];
+    const rows = this.sql
+      .exec(
+        `SELECT * FROM panels WHERE workspace_id = ? AND archived_at IS NULL ORDER BY position`,
+        this.getWorkspaceId()
+      )
+      .toArray() as unknown as DbPanelRow[];
     const panelMap = new Map<string, Panel>();
     for (const row of rows) panelMap.set(row.id, this.rowToPanel(row));
     const roots: Panel[] = [];
@@ -339,20 +399,29 @@ export class PanelStoreDO extends DurableObjectBase {
   }
 
   getParentId(panelId: string): string | null {
-    const row = this.sql.exec(`SELECT parent_id FROM panels WHERE id = ?`, panelId).toArray()[0] as { parent_id: string | null } | undefined;
+    const row = this.sql.exec(`SELECT parent_id FROM panels WHERE id = ?`, panelId).toArray()[0] as
+      | { parent_id: string | null }
+      | undefined;
     return row?.parent_id ?? null;
   }
 
   getCollapsedIds(): string[] {
-    const rows = this.sql.exec(
-      `SELECT id FROM panels WHERE workspace_id = ? AND collapsed = 1 AND archived_at IS NULL`,
-      this.getWorkspaceId(),
-    ).toArray() as Array<{ id: string }>;
+    const rows = this.sql
+      .exec(
+        `SELECT id FROM panels WHERE workspace_id = ? AND collapsed = 1 AND archived_at IS NULL`,
+        this.getWorkspaceId()
+      )
+      .toArray() as Array<{ id: string }>;
     return rows.map((row) => row.id);
   }
 
   setCollapsed(panelId: string, collapsed: boolean): void {
-    this.sql.exec(`UPDATE panels SET collapsed = ?, updated_at = ? WHERE id = ?`, collapsed ? 1 : 0, Date.now(), panelId);
+    this.sql.exec(
+      `UPDATE panels SET collapsed = ?, updated_at = ? WHERE id = ?`,
+      collapsed ? 1 : 0,
+      Date.now(),
+      panelId
+    );
   }
 
   setCollapsedBatch(panelIds: string[], collapsed: boolean): void {
@@ -365,21 +434,34 @@ export class PanelStoreDO extends DurableObjectBase {
 
   archivePanel(panelId: string): void {
     const now = Date.now();
-    this.sql.exec(`UPDATE panels SET archived_at = ?, updated_at = ? WHERE id = ?`, now, now, panelId);
+    this.sql.exec(
+      `UPDATE panels SET archived_at = ?, updated_at = ? WHERE id = ?`,
+      now,
+      now,
+      panelId
+    );
   }
 
   unarchivePanel(panelId: string): void {
-    this.sql.exec(`UPDATE panels SET archived_at = NULL, updated_at = ? WHERE id = ?`, Date.now(), panelId);
+    this.sql.exec(
+      `UPDATE panels SET archived_at = NULL, updated_at = ? WHERE id = ?`,
+      Date.now(),
+      panelId
+    );
   }
 
   isArchived(panelId: string): boolean {
-    const row = this.sql.exec(`SELECT archived_at FROM panels WHERE id = ?`, panelId).toArray()[0] as { archived_at: number | null } | undefined;
+    const row = this.sql
+      .exec(`SELECT archived_at FROM panels WHERE id = ?`, panelId)
+      .toArray()[0] as { archived_at: number | null } | undefined;
     return row?.archived_at != null;
   }
 
   indexPanel(panel: IndexablePanel): void {
     const now = Date.now();
-    const existing = this.sql.exec(`SELECT rowid FROM panel_search_metadata WHERE panel_id = ?`, panel.id).toArray()[0];
+    const existing = this.sql
+      .exec(`SELECT rowid FROM panel_search_metadata WHERE panel_id = ?`, panel.id)
+      .toArray()[0];
     if (existing) {
       this.sql.exec(
         `UPDATE panel_search_metadata SET
@@ -393,7 +475,7 @@ export class PanelStoreDO extends DurableObjectBase {
         panel.tags ? JSON.stringify(panel.tags) : null,
         panel.keywords ? JSON.stringify(panel.keywords) : null,
         now,
-        panel.id,
+        panel.id
       );
       return;
     }
@@ -409,25 +491,27 @@ export class PanelStoreDO extends DurableObjectBase {
       panel.manifestDependencies ? JSON.stringify(panel.manifestDependencies) : null,
       panel.tags ? JSON.stringify(panel.tags) : null,
       panel.keywords ? JSON.stringify(panel.keywords) : null,
-      now,
+      now
     );
   }
 
   search(query: string, limit = 50): PanelSearchResult[] {
     const safeQuery = this.sanitizeQuery(query);
     if (!safeQuery) return [];
-    const rows = this.sql.exec(
-      `SELECT p.id, p.title, m.access_count, bm25(panel_fts) as relevance
+    const rows = this.sql
+      .exec(
+        `SELECT p.id, p.title, m.access_count, bm25(panel_fts) as relevance
        FROM panel_fts
        JOIN panel_search_metadata m ON panel_fts.rowid = m.rowid
        JOIN panels p ON m.panel_id = p.id
        WHERE panel_fts MATCH ? AND p.workspace_id = ? AND p.archived_at IS NULL
        ORDER BY relevance, m.access_count DESC
        LIMIT ?`,
-      safeQuery,
-      this.getWorkspaceId(),
-      limit,
-    ).toArray() as Array<{ id: string; title: string; access_count: number; relevance: number }>;
+        safeQuery,
+        this.getWorkspaceId(),
+        limit
+      )
+      .toArray() as Array<{ id: string; title: string; access_count: number; relevance: number }>;
     return rows.map((row) => ({
       id: row.id,
       title: row.title,
@@ -437,21 +521,31 @@ export class PanelStoreDO extends DurableObjectBase {
   }
 
   incrementAccessCount(panelId: string): void {
-    this.sql.exec(`UPDATE panel_search_metadata SET access_count = access_count + 1 WHERE panel_id = ?`, panelId);
+    this.sql.exec(
+      `UPDATE panel_search_metadata SET access_count = access_count + 1 WHERE panel_id = ?`,
+      panelId
+    );
   }
 
   updateSearchTitle(panelId: string, title: string): void {
-    this.sql.exec(`UPDATE panel_search_metadata SET searchable_title = ?, last_indexed_at = ? WHERE panel_id = ?`, title, Date.now(), panelId);
+    this.sql.exec(
+      `UPDATE panel_search_metadata SET searchable_title = ?, last_indexed_at = ? WHERE panel_id = ?`,
+      title,
+      Date.now(),
+      panelId
+    );
   }
 
   rebuildIndex(): void {
-    const rows = this.sql.exec(
-      `SELECT * FROM panels WHERE workspace_id = ? AND archived_at IS NULL`,
-      this.getWorkspaceId(),
-    ).toArray() as unknown as DbPanelRow[];
+    const rows = this.sql
+      .exec(
+        `SELECT * FROM panels WHERE workspace_id = ? AND archived_at IS NULL`,
+        this.getWorkspaceId()
+      )
+      .toArray() as unknown as DbPanelRow[];
     this.sql.exec(
       `DELETE FROM panel_search_metadata WHERE panel_id IN (SELECT id FROM panels WHERE workspace_id = ?)`,
-      this.getWorkspaceId(),
+      this.getWorkspaceId()
     );
     for (const row of rows) {
       const history = JSON.parse(row.history) as Array<{ source?: string }>;
@@ -460,7 +554,11 @@ export class PanelStoreDO extends DurableObjectBase {
     }
   }
 
-  private shiftSiblingPositions(parentId: string | null, targetPosition: number, now: number): void {
+  private shiftSiblingPositions(
+    parentId: string | null,
+    targetPosition: number,
+    now: number
+  ): void {
     this.sql.exec(
       `UPDATE panels
        SET position = position + 1, updated_at = ?
@@ -472,24 +570,34 @@ export class PanelStoreDO extends DurableObjectBase {
       parentId,
       parentId,
       this.getWorkspaceId(),
-      targetPosition,
+      targetPosition
     );
   }
 
   private normalizePositions(parentId: string | null): void {
-    const rows = parentId === null
-      ? this.sql.exec(
-        `SELECT id, position FROM panels WHERE parent_id IS NULL AND workspace_id = ? ORDER BY position ASC`,
-        this.getWorkspaceId(),
-      ).toArray()
-      : this.sql.exec(
-        `SELECT id, position FROM panels WHERE parent_id = ? ORDER BY position ASC`,
-        parentId,
-      ).toArray();
+    const rows =
+      parentId === null
+        ? this.sql
+            .exec(
+              `SELECT id, position FROM panels WHERE parent_id IS NULL AND workspace_id = ? ORDER BY position ASC`,
+              this.getWorkspaceId()
+            )
+            .toArray()
+        : this.sql
+            .exec(
+              `SELECT id, position FROM panels WHERE parent_id = ? ORDER BY position ASC`,
+              parentId
+            )
+            .toArray();
     const now = Date.now();
     (rows as Array<{ id: string; position: number }>).forEach((row, index) => {
       if (row.position !== index) {
-        this.sql.exec(`UPDATE panels SET position = ?, updated_at = ? WHERE id = ?`, index, now, row.id);
+        this.sql.exec(
+          `UPDATE panels SET position = ?, updated_at = ? WHERE id = ?`,
+          index,
+          now,
+          row.id
+        );
       }
     });
   }
@@ -523,7 +631,9 @@ export class PanelStoreDO extends DurableObjectBase {
   }
 
   private requireRow(panelId: string): DbPanelRow {
-    const row = this.sql.exec(`SELECT * FROM panels WHERE id = ?`, panelId).toArray()[0] as unknown as DbPanelRow | undefined;
+    const row = this.sql
+      .exec(`SELECT * FROM panels WHERE id = ?`, panelId)
+      .toArray()[0] as unknown as DbPanelRow | undefined;
     if (!row) throw new Error(`Panel ${panelId} not found`);
     return row;
   }

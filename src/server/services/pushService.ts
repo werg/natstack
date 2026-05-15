@@ -94,7 +94,10 @@ function loadRegistrations(filePath = getRegistrationsPath()): Map<string, PushR
 }
 
 /** Save registrations to disk. Logs a warning on failure. */
-function saveRegistrations(registrations: Map<string, PushRegistration>, filePath = getRegistrationsPath()): void {
+function saveRegistrations(
+  registrations: Map<string, PushRegistration>,
+  filePath = getRegistrationsPath()
+): void {
   try {
     const dir = path.dirname(filePath);
     fs.mkdirSync(dir, { recursive: true });
@@ -110,7 +113,8 @@ function errorMessage(error: unknown): string {
 }
 
 function readServiceAccount(env: NodeJS.ProcessEnv): Record<string, unknown> | null {
-  const inlineJson = env["NATSTACK_FIREBASE_SERVICE_ACCOUNT_JSON"] ?? env["FIREBASE_SERVICE_ACCOUNT_JSON"];
+  const inlineJson =
+    env["NATSTACK_FIREBASE_SERVICE_ACCOUNT_JSON"] ?? env["FIREBASE_SERVICE_ACCOUNT_JSON"];
   if (inlineJson) {
     return JSON.parse(inlineJson) as Record<string, unknown>;
   }
@@ -136,7 +140,9 @@ function createDefaultFirebaseLoader(env: NodeJS.ProcessEnv): FirebaseAdminLoade
     initialized ??= (async () => {
       const serviceAccount = readServiceAccount(env);
       if (!serviceAccount) {
-        console.warn("[PushService] Firebase service account missing; using log-only push delivery");
+        console.warn(
+          "[PushService] Firebase service account missing; using log-only push delivery"
+        );
         return null;
       }
 
@@ -151,7 +157,10 @@ function createDefaultFirebaseLoader(env: NodeJS.ProcessEnv): FirebaseAdminLoade
         const messaging = messagingModule.getMessaging(app);
         return { send: (message) => messaging.send(message as never) };
       } catch (error) {
-        console.warn("[PushService] Failed to initialize firebase-admin; using log-only push delivery:", error);
+        console.warn(
+          "[PushService] Failed to initialize firebase-admin; using log-only push delivery:",
+          error
+        );
         return null;
       }
     })();
@@ -170,7 +179,7 @@ function stringifyData(data: Record<string, unknown> | undefined): Record<string
 
 function buildFirebaseMessage(
   registration: PushRegistration,
-  opts: PushBroadcastOptions,
+  opts: PushBroadcastOptions
 ): Record<string, unknown> {
   const category = opts.category ?? String(opts.data?.["category"] ?? "");
   const kind = String(opts.data?.["kind"] ?? "");
@@ -242,7 +251,7 @@ function isInvalidTokenError(error: unknown): boolean {
       ? String(
           (error as { code?: unknown; errorInfo?: { code?: unknown } }).code ??
             (error as { errorInfo?: { code?: unknown } }).errorInfo?.code ??
-            "",
+            ""
         )
       : "";
   return (
@@ -256,7 +265,8 @@ export function createPushService(deps: PushServiceDeps = {}): PushServiceResult
   const registrations = loadRegistrations(registrationsPath);
   const now = deps.now ?? (() => Date.now());
   const metrics = deps.metrics ?? pushMetrics;
-  const loadFirebase = deps.firebaseAdminLoader ?? createDefaultFirebaseLoader(deps.env ?? process.env);
+  const loadFirebase =
+    deps.firebaseAdminLoader ?? createDefaultFirebaseLoader(deps.env ?? process.env);
 
   if (registrations.size > 0) {
     console.log(`[PushService] Loaded ${registrations.size} persisted registration(s)`);
@@ -264,7 +274,7 @@ export function createPushService(deps: PushServiceDeps = {}): PushServiceResult
 
   async function sendToRegistration(
     registration: PushRegistration,
-    opts: PushBroadcastOptions,
+    opts: PushBroadcastOptions
   ): Promise<PushSendResult> {
     const category = opts.category ?? String(opts.data?.["category"] ?? "unknown");
     try {
@@ -394,7 +404,9 @@ export function createPushService(deps: PushServiceDeps = {}): PushServiceResult
     handler: async (_ctx, method, args) => {
       switch (method) {
         case "register": {
-          const [opts] = args as [{ token: string; platform: "ios" | "android" | "web"; clientId: string }];
+          const [opts] = args as [
+            { token: string; platform: "ios" | "android" | "web"; clientId: string },
+          ];
           const registration: PushRegistration = {
             token: opts.token,
             platform: opts.platform,
@@ -403,7 +415,9 @@ export function createPushService(deps: PushServiceDeps = {}): PushServiceResult
           };
           registrations.set(opts.clientId, registration);
           saveRegistrations(registrations, registrationsPath);
-          console.log(`[PushService] Registered device for client ${opts.clientId} (${opts.platform})`);
+          console.log(
+            `[PushService] Registered device for client ${opts.clientId} (${opts.platform})`
+          );
           return { registered: true };
         }
 

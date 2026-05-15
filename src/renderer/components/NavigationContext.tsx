@@ -1,4 +1,12 @@
-import { createContext, useContext, useState, useCallback, useMemo, useRef, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useState,
+  useCallback,
+  useMemo,
+  useRef,
+  type ReactNode,
+} from "react";
 import type {
   NavigationMode,
   LazyTitleNavigationData,
@@ -44,8 +52,12 @@ export function NavigationProvider({ children }: NavigationProviderProps) {
   });
 
   // ID-based lazy navigation state
-  const [lazyTitleNavigation, setLazyTitleNavigation] = useState<LazyTitleNavigationData | null>(null);
-  const [lazyStatusNavigation, setLazyStatusNavigation] = useState<LazyStatusNavigationData | null>(null);
+  const [lazyTitleNavigation, setLazyTitleNavigation] = useState<LazyTitleNavigationData | null>(
+    null
+  );
+  const [lazyStatusNavigation, setLazyStatusNavigation] = useState<LazyStatusNavigationData | null>(
+    null
+  );
 
   // Use ref for stable navigateToId callback (prevents listener cycling)
   const navigateToIdFnRef = useRef<(panelId: string) => void>(() => {});

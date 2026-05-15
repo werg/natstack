@@ -8,7 +8,10 @@ function serializeMethod(method: MethodDef) {
   return {
     ...(method.description ? { description: method.description } : {}),
     ...(method.policy ? { policy: method.policy } : {}),
-    argsSchema: convertZodToJsonSchema(method.args, { target: "openApi3" }) as Record<string, unknown>,
+    argsSchema: convertZodToJsonSchema(method.args, { target: "openApi3" }) as Record<
+      string,
+      unknown
+    >,
     ...(method.returns
       ? {
           returnsSchema: convertZodToJsonSchema(method.returns, {
@@ -25,7 +28,7 @@ function serializeDef(def: ServiceDefinition) {
     ...(def.description ? { description: def.description } : {}),
     policy: def.policy,
     methods: Object.fromEntries(
-      Object.entries(def.methods).map(([name, method]) => [name, serializeMethod(method)]),
+      Object.entries(def.methods).map(([name, method]) => [name, serializeMethod(method)])
     ),
   };
 }

@@ -42,30 +42,44 @@ describe("shellApprovalService", () => {
         resolveUserland,
         submitClientConfig: vi.fn(),
         submitCredentialInput: vi.fn(),
-        listPending: vi.fn(() => [{
-          approvalId: "approval-1",
-          callerId: "worker:alpha",
-          callerKind: "worker" as const,
-          repoPath: "workers/alpha",
-          effectiveVersion: "hash-1",
-          requestedAt: 10,
-          kind: "userland" as const,
-          subject: { id: "team-x:foo" },
-          title: "Allow foo?",
-          options: [{ value: "allow", label: "Allow" }],
-        }]),
+        listPending: vi.fn(() => [
+          {
+            approvalId: "approval-1",
+            callerId: "worker:alpha",
+            callerKind: "worker" as const,
+            repoPath: "workers/alpha",
+            effectiveVersion: "hash-1",
+            requestedAt: 10,
+            kind: "userland" as const,
+            subject: { id: "team-x:foo" },
+            title: "Allow foo?",
+            options: [{ value: "allow", label: "Allow" }],
+          },
+        ]),
       },
     });
 
-    await expect(service.handler({ callerId: "shell", callerKind: "shell" }, "resolveUserland", ["approval-1", "allow"]))
-      .resolves.toBeUndefined();
+    await expect(
+      service.handler({ callerId: "shell", callerKind: "shell" }, "resolveUserland", [
+        "approval-1",
+        "allow",
+      ])
+    ).resolves.toBeUndefined();
     expect(resolveUserland).toHaveBeenCalledWith("approval-1", "allow");
 
-    await expect(service.handler({ callerId: "shell", callerKind: "shell" }, "resolveUserland", ["approval-1", "synthetic"]))
-      .rejects.toMatchObject({ name: "ServiceError", code: "EINVAL" });
+    await expect(
+      service.handler({ callerId: "shell", callerKind: "shell" }, "resolveUserland", [
+        "approval-1",
+        "synthetic",
+      ])
+    ).rejects.toMatchObject({ name: "ServiceError", code: "EINVAL" });
 
-    await expect(service.handler({ callerId: "shell", callerKind: "shell" }, "resolveUserland", ["approval-1", "dismiss"]))
-      .resolves.toBeUndefined();
+    await expect(
+      service.handler({ callerId: "shell", callerKind: "shell" }, "resolveUserland", [
+        "approval-1",
+        "dismiss",
+      ])
+    ).resolves.toBeUndefined();
     expect(resolve).toHaveBeenCalledWith("approval-1", "dismiss");
   });
 
@@ -86,10 +100,15 @@ describe("shellApprovalService", () => {
       },
     });
 
-    await expect(service.handler({ callerId: "shell", callerKind: "shell" }, "resolveUserland", ["approval-1", "allow"]))
-      .rejects.toMatchObject({ name: "ServiceError", code: "ENOENT" });
-    await expect(service.handler({ callerId: "shell", callerKind: "shell" }, "missing", []))
-      .rejects.toBeInstanceOf(ServiceError);
+    await expect(
+      service.handler({ callerId: "shell", callerKind: "shell" }, "resolveUserland", [
+        "approval-1",
+        "allow",
+      ])
+    ).rejects.toMatchObject({ name: "ServiceError", code: "ENOENT" });
+    await expect(
+      service.handler({ callerId: "shell", callerKind: "shell" }, "missing", [])
+    ).rejects.toBeInstanceOf(ServiceError);
   });
 
   it("leaves double resolves idempotent and records resolution metrics", async () => {
@@ -107,14 +126,22 @@ describe("shellApprovalService", () => {
     });
     const approvalId = approvalQueue.listPending()[0]!.approvalId;
 
-    await service.handler({ callerId: "shell", callerKind: "shell" }, "resolve", [approvalId, "once"]);
-    await service.handler({ callerId: "shell", callerKind: "shell" }, "resolve", [approvalId, "deny"]);
+    await service.handler({ callerId: "shell", callerKind: "shell" }, "resolve", [
+      approvalId,
+      "once",
+    ]);
+    await service.handler({ callerId: "shell", callerKind: "shell" }, "resolve", [
+      approvalId,
+      "deny",
+    ]);
 
     await expect(pendingPromise).resolves.toBe("once");
     expect(approvalQueue.listPending()).toEqual([]);
     expect(metrics.snapshot().approval_resolved_total).toMatchObject({
       "decision=once,source=shell": 1,
     });
-    expect(metrics.snapshot().approval_resolved_total).not.toHaveProperty("decision=deny,source=shell");
+    expect(metrics.snapshot().approval_resolved_total).not.toHaveProperty(
+      "decision=deny,source=shell"
+    );
   });
 });

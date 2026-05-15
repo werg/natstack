@@ -23,7 +23,7 @@ export function createTestService(deps: {
           panelTestSetupPath: deps.panelTestSetupPath,
         },
         method,
-        args as unknown[],
+        args as unknown[]
       );
     },
   };

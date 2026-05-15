@@ -1,9 +1,6 @@
 import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
-import type {
-  SettingsData,
-  ModelRoleConfig,
-} from "@natstack/shared/types";
+import type { SettingsData, ModelRoleConfig } from "@natstack/shared/types";
 import type { ServerClient } from "../serverClient.js";
 import { loadCentralConfig } from "@natstack/shared/workspace/loader";
 
@@ -27,7 +24,12 @@ export function createSettingsService(_deps: {
             for (const [role, value] of Object.entries(centralConfig.models)) {
               if (typeof value === "string") {
                 modelRoles[role] = value;
-              } else if (value && typeof value === "object" && "provider" in value && "model" in value) {
+              } else if (
+                value &&
+                typeof value === "object" &&
+                "provider" in value &&
+                "model" in value
+              ) {
                 modelRoles[role] = `${value.provider}:${value.model}`;
               }
             }

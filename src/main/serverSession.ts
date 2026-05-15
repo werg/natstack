@@ -140,9 +140,11 @@ async function issueElectronDevice(
     "/_r/s/auth/issue-device",
     { label: "Electron remote", platform: "electron" },
     adminToken,
-    tls,
+    tls
   );
-  const json = JSON.parse(responseBody.body || "{}") as Partial<ShellCredentialResponse> & { error?: unknown };
+  const json = JSON.parse(responseBody.body || "{}") as Partial<ShellCredentialResponse> & {
+    error?: unknown;
+  };
   if (
     responseBody.statusCode < 200 ||
     responseBody.statusCode >= 300 ||
@@ -169,9 +171,11 @@ async function refreshShellCredential(
     "/_r/s/auth/refresh-shell",
     { deviceId, refreshToken },
     null,
-    tls,
+    tls
   );
-  const json = JSON.parse(responseBody.body || "{}") as Partial<ShellCredentialResponse> & { error?: unknown };
+  const json = JSON.parse(responseBody.body || "{}") as Partial<ShellCredentialResponse> & {
+    error?: unknown;
+  };
   if (
     responseBody.statusCode < 200 ||
     responseBody.statusCode >= 300 ||
@@ -195,7 +199,7 @@ async function acquireShellCredential(
         mode.remoteUrl,
         mode.deviceId,
         mode.refreshToken,
-        mode.tls,
+        mode.tls
       );
     } catch (err) {
       log.warn(`Stored device credential could not refresh shell token: ${(err as Error).message}`);
@@ -270,7 +274,7 @@ export async function establishServerSession(args: {
             remoteUrl,
             shellCredential.deviceId,
             shellCredential.refreshToken,
-            tls,
+            tls
           ).catch(() => acquireShellCredential(mode));
         }
         shellToken = shellCredential.shellToken;

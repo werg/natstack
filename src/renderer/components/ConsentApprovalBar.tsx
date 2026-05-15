@@ -526,7 +526,9 @@ function DeviceCodeBody({ approval }: { approval: PendingDeviceCodeApproval }) {
       }}
     >
       <Flex direction="column" gap="2">
-        <Text size="1" color="gray">Enter this code:</Text>
+        <Text size="1" color="gray">
+          Enter this code:
+        </Text>
         <Code
           size="6"
           weight="bold"
@@ -544,8 +546,8 @@ function DeviceCodeBody({ approval }: { approval: PendingDeviceCodeApproval }) {
           at <InlineCode>{originForUrl(approval.verificationUri)}</InlineCode>
         </Text>
         <Text size="1" color="gray" style={{ lineHeight: 1.35 }}>
-          The browser was opened to the verification page. The connection completes
-          automatically once you approve there.
+          The browser was opened to the verification page. The connection completes automatically
+          once you approve there.
         </Text>
       </Flex>
     </Box>
@@ -563,9 +565,21 @@ function DeviceCodeActions({ onCancel }: { onCancel: () => void }) {
 function DeviceCodeDetails({ approval }: { approval: PendingDeviceCodeApproval }) {
   return (
     <>
-      <Detail icon={<LockClosedIcon />} label="Service" value={<InlineCode>{approval.credentialLabel}</InlineCode>} />
-      <Detail icon={<GlobeIcon />} label="Verify at" value={<InlineCode>{approval.verificationUri}</InlineCode>} />
-      <Detail icon={<LockClosedIcon />} label="Provider" value={<InlineCode>{originForUrl(approval.oauthTokenOrigin)}</InlineCode>} />
+      <Detail
+        icon={<LockClosedIcon />}
+        label="Service"
+        value={<InlineCode>{approval.credentialLabel}</InlineCode>}
+      />
+      <Detail
+        icon={<GlobeIcon />}
+        label="Verify at"
+        value={<InlineCode>{approval.verificationUri}</InlineCode>}
+      />
+      <Detail
+        icon={<LockClosedIcon />}
+        label="Provider"
+        value={<InlineCode>{originForUrl(approval.oauthTokenOrigin)}</InlineCode>}
+      />
     </>
   );
 }

@@ -11,9 +11,11 @@ import { requestCapabilityPermission } from "./capabilityPermission.js";
 
 const CAPABILITY = "external-browser-open";
 const OPEN_EXTERNAL_ALLOWED_SCHEMES = new Set(["http:", "https:", "mailto:"]);
-const OPEN_EXTERNAL_OPTIONS_SCHEMA = z.object({
-  expectedRedirectUri: z.string().optional(),
-}).strict();
+const OPEN_EXTERNAL_OPTIONS_SCHEMA = z
+  .object({
+    expectedRedirectUri: z.string().optional(),
+  })
+  .strict();
 
 export interface ExternalOpenServiceDeps {
   eventService: EventService;
@@ -23,7 +25,11 @@ export interface ExternalOpenServiceDeps {
 }
 
 export function createExternalOpenService(deps: ExternalOpenServiceDeps): ServiceDefinition {
-  async function requestOpen(ctx: ServiceContext, rawUrl: string, options?: OpenExternalOptions): Promise<OpenExternalResult> {
+  async function requestOpen(
+    ctx: ServiceContext,
+    rawUrl: string,
+    options?: OpenExternalOptions
+  ): Promise<OpenExternalResult> {
     const url = normalizeExternalUrl(rawUrl);
     if (options?.expectedRedirectUri) {
       assertAllowedOAuthExternalUrl(url.toString(), options.expectedRedirectUri);
@@ -35,20 +41,23 @@ export function createExternalOpenService(deps: ExternalOpenServiceDeps): Servic
       if (!deps.grantStore || !deps.approvalQueue || !deps.codeIdentityResolver) {
         throw new Error("External browser open approval is unavailable");
       }
-      const authorization = await requestCapabilityPermission({
-        approvalQueue: deps.approvalQueue,
-        grantStore: deps.grantStore,
-        codeIdentityResolver: deps.codeIdentityResolver,
-      }, {
-        callerId: ctx.callerId,
-        callerKind: ctx.callerKind,
-        capability: CAPABILITY,
-        resource,
-        title: "Open external browser",
-        description: "Allow this code to open URLs in the system browser.",
-        details: externalOpenDetails(url, options),
-        deniedReason: "External browser open denied",
-      });
+      const authorization = await requestCapabilityPermission(
+        {
+          approvalQueue: deps.approvalQueue,
+          grantStore: deps.grantStore,
+          codeIdentityResolver: deps.codeIdentityResolver,
+        },
+        {
+          callerId: ctx.callerId,
+          callerKind: ctx.callerKind,
+          capability: CAPABILITY,
+          resource,
+          title: "Open external browser",
+          description: "Allow this code to open URLs in the system browser.",
+          details: externalOpenDetails(url, options),
+          deniedReason: "External browser open denied",
+        }
+      );
       if (!authorization.allowed) {
         throw new Error(authorization.reason ?? "External browser open denied");
       }
@@ -71,12 +80,14 @@ export function createExternalOpenService(deps: ExternalOpenServiceDeps): Servic
       openExternal: { args: z.tuple([z.string(), OPEN_EXTERNAL_OPTIONS_SCHEMA.optional()]) },
       openExternalForCaller: {
         args: z.tuple([
-          z.object({
-            callerId: z.string(),
-            callerKind: z.enum(["panel", "worker"]),
-            url: z.string(),
-            options: OPEN_EXTERNAL_OPTIONS_SCHEMA.optional(),
-          }).strict(),
+          z
+            .object({
+              callerId: z.string(),
+              callerKind: z.enum(["panel", "worker"]),
+              url: z.string(),
+              options: OPEN_EXTERNAL_OPTIONS_SCHEMA.optional(),
+            })
+            .strict(),
         ]),
       },
     },
@@ -88,16 +99,22 @@ export function createExternalOpenService(deps: ExternalOpenServiceDeps): Servic
           if (ctx.callerKind !== "shell" && ctx.callerKind !== "server") {
             throw new Error("openExternalForCaller is shell/server-only");
           }
-          const [request] = args as [{
-            callerId: string;
-            callerKind: "panel" | "worker";
-            url: string;
-            options?: OpenExternalOptions;
-          }];
-          return requestOpen({
-            callerId: request.callerId,
-            callerKind: request.callerKind,
-          }, request.url, request.options);
+          const [request] = args as [
+            {
+              callerId: string;
+              callerKind: "panel" | "worker";
+              url: string;
+              options?: OpenExternalOptions;
+            },
+          ];
+          return requestOpen(
+            {
+              callerId: request.callerId,
+              callerKind: request.callerKind,
+            },
+            request.url,
+            request.options
+          );
         }
         default:
           throw new Error(`Unknown externalOpen method: ${method}`);
@@ -122,17 +139,23 @@ function normalizeExternalUrl(rawUrl: string): URL {
   return url;
 }
 
-function resourceForExternalUrl(url: URL): { key: string; type: string; label: string; value: string } {
+function resourceForExternalUrl(url: URL): {
+  key: string;
+  type: string;
+  label: string;
+  value: string;
+} {
   if (url.protocol === "mailto:") {
     return { key: "mailto:", type: "url-origin", label: "Scheme", value: "mailto:" };
   }
   return { key: url.origin, type: "url-origin", label: "Origin", value: url.origin };
 }
 
-function externalOpenDetails(url: URL, options: OpenExternalOptions | undefined): Array<{ label: string; value: string }> {
-  const details = [
-    { label: "URL", value: url.toString() },
-  ];
+function externalOpenDetails(
+  url: URL,
+  options: OpenExternalOptions | undefined
+): Array<{ label: string; value: string }> {
+  const details = [{ label: "URL", value: url.toString() }];
   if (options?.expectedRedirectUri) {
     details.push({ label: "OAuth callback", value: options.expectedRedirectUri });
   }

@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { TokenManager } from "@natstack/shared/tokenManager";
-import { installPanelTokenPersistence, recoverPersistedPanelTokens } from "./persistedPanelTokens.js";
+import {
+  installPanelTokenPersistence,
+  recoverPersistedPanelTokens,
+} from "./persistedPanelTokens.js";
 
 describe("persisted panel tokens", () => {
   it("recovers panel tokens and handoff metadata after restart", () => {

@@ -192,10 +192,7 @@ function writeBrowserManifests(configDir: string): void {
     try {
       const dir = path.dirname(target.manifestPath);
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(
-        target.manifestPath,
-        JSON.stringify(target.manifest, null, 2) + "\n",
-      );
+      fs.writeFileSync(target.manifestPath, JSON.stringify(target.manifest, null, 2) + "\n");
     } catch {
       // Browser not installed or directory not writable — skip silently
     }
@@ -226,33 +223,72 @@ function getBrowserManifestTargets(hostScriptPath: string): ManifestTarget[] {
   if (platform === "linux") {
     // Chrome
     targets.push({
-      manifestPath: path.join(home, ".config", "google-chrome", "NativeMessagingHosts", `${NATIVE_HOST_NAME}.json`),
+      manifestPath: path.join(
+        home,
+        ".config",
+        "google-chrome",
+        "NativeMessagingHosts",
+        `${NATIVE_HOST_NAME}.json`
+      ),
       manifest: chromeManifest,
     });
     // Chromium
     targets.push({
-      manifestPath: path.join(home, ".config", "chromium", "NativeMessagingHosts", `${NATIVE_HOST_NAME}.json`),
+      manifestPath: path.join(
+        home,
+        ".config",
+        "chromium",
+        "NativeMessagingHosts",
+        `${NATIVE_HOST_NAME}.json`
+      ),
       manifest: chromeManifest,
     });
     // Firefox
     targets.push({
-      manifestPath: path.join(home, ".mozilla", "native-messaging-hosts", `${NATIVE_HOST_NAME}.json`),
+      manifestPath: path.join(
+        home,
+        ".mozilla",
+        "native-messaging-hosts",
+        `${NATIVE_HOST_NAME}.json`
+      ),
       manifest: firefoxManifest,
     });
   } else if (platform === "darwin") {
     // Chrome
     targets.push({
-      manifestPath: path.join(home, "Library", "Application Support", "Google", "Chrome", "NativeMessagingHosts", `${NATIVE_HOST_NAME}.json`),
+      manifestPath: path.join(
+        home,
+        "Library",
+        "Application Support",
+        "Google",
+        "Chrome",
+        "NativeMessagingHosts",
+        `${NATIVE_HOST_NAME}.json`
+      ),
       manifest: chromeManifest,
     });
     // Chromium
     targets.push({
-      manifestPath: path.join(home, "Library", "Application Support", "Chromium", "NativeMessagingHosts", `${NATIVE_HOST_NAME}.json`),
+      manifestPath: path.join(
+        home,
+        "Library",
+        "Application Support",
+        "Chromium",
+        "NativeMessagingHosts",
+        `${NATIVE_HOST_NAME}.json`
+      ),
       manifest: chromeManifest,
     });
     // Firefox
     targets.push({
-      manifestPath: path.join(home, "Library", "Application Support", "Mozilla", "NativeMessagingHosts", `${NATIVE_HOST_NAME}.json`),
+      manifestPath: path.join(
+        home,
+        "Library",
+        "Application Support",
+        "Mozilla",
+        "NativeMessagingHosts",
+        `${NATIVE_HOST_NAME}.json`
+      ),
       manifest: firefoxManifest,
     });
   }

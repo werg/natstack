@@ -13,7 +13,9 @@ import * as os from "node:os";
 const mockSafeStorage = {
   _available: true,
   _passthrough: true, // encryptString → base64(input); decryptString → reverses
-  isEncryptionAvailable(): boolean { return this._available; },
+  isEncryptionAvailable(): boolean {
+    return this._available;
+  },
   encryptString(s: string): Buffer {
     if (!this._available) throw new Error("unavailable");
     if (this._passthrough) return Buffer.from(s, "utf-8");

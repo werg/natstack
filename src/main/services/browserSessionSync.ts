@@ -48,15 +48,21 @@ export function createBrowserSessionSyncService(deps: {
     name: "browser-session-sync",
     async start() {
       deps.eventService.subscribe("browser-import-complete", SUBSCRIBER_ID, subscriber);
-      await deps.serverClient.call("events", "subscribe", ["browser-import-complete"]).catch((err: unknown) => {
-        log.warn(`Server event subscribe failed: ${err instanceof Error ? err.message : String(err)}`);
-      });
+      await deps.serverClient
+        .call("events", "subscribe", ["browser-import-complete"])
+        .catch((err: unknown) => {
+          log.warn(
+            `Server event subscribe failed: ${err instanceof Error ? err.message : String(err)}`
+          );
+        });
       return { syncCookies };
     },
     async stop() {
       destroyed = true;
       deps.eventService.unsubscribe("browser-import-complete", SUBSCRIBER_ID);
-      await deps.serverClient.call("events", "unsubscribe", ["browser-import-complete"]).catch(() => {});
+      await deps.serverClient
+        .call("events", "unsubscribe", ["browser-import-complete"])
+        .catch(() => {});
     },
   };
 }

@@ -7,10 +7,7 @@
 
 import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
-import type {
-  SettingsData,
-  ModelRoleConfig,
-} from "@natstack/shared/types";
+import type { SettingsData, ModelRoleConfig } from "@natstack/shared/types";
 import type { ServiceDispatcher } from "@natstack/shared/serviceDispatcher";
 import { loadCentralConfig } from "@natstack/shared/workspace/loader";
 
@@ -34,8 +31,14 @@ export function createSettingsServiceStandalone(_deps: {
             for (const [role, value] of Object.entries(centralConfig.models)) {
               if (typeof value === "string") {
                 modelRoles[role] = value;
-              } else if (value && typeof value === "object" && "provider" in value && "model" in value) {
-                modelRoles[role] = `${(value as { provider: string }).provider}:${(value as { model: string }).model}`;
+              } else if (
+                value &&
+                typeof value === "object" &&
+                "provider" in value &&
+                "model" in value
+              ) {
+                modelRoles[role] =
+                  `${(value as { provider: string }).provider}:${(value as { model: string }).model}`;
               }
             }
           }

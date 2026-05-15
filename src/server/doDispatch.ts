@@ -70,7 +70,7 @@ export async function postToDOWithToken(
   method: string,
   args: unknown[],
   deps: PostToDOWithTokenDeps,
-  callerId?: string,
+  callerId?: string
 ): Promise<unknown> {
   // 1. Build the instance ID for this DO: "do:{source}:{className}:{objectKey}"
   const instanceId = `do:${ref.source}:${ref.className}:${ref.objectKey}`;
@@ -92,7 +92,7 @@ export async function postToDOWithToken(
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    "Authorization": `Bearer ${deps.workerdGatewayToken}`,
+    Authorization: `Bearer ${deps.workerdGatewayToken}`,
   };
   if (deps.dispatchSecret) {
     headers["X-NatStack-Dispatch-Secret"] = deps.dispatchSecret;
@@ -165,7 +165,7 @@ export interface VerifyInstanceTokenResult {
  */
 export function verifyInstanceTokenEnvelope(
   envelope: InstanceTokenEnvelope,
-  tokenManager: TokenManager,
+  tokenManager: TokenManager
 ): VerifyInstanceTokenResult {
   const { __instanceToken, __instanceId, __parentId } = envelope;
   if (typeof __instanceToken !== "string" || __instanceToken.length === 0) {
@@ -186,10 +186,7 @@ export function verifyInstanceTokenEnvelope(
   if (!constantTimeStringEqual(entry.callerId, __instanceId)) {
     return { ok: false, reason: "instanceId/token mismatch" };
   }
-  const parentId =
-    typeof __parentId === "string" && __parentId.length > 0
-      ? __parentId
-      : undefined;
+  const parentId = typeof __parentId === "string" && __parentId.length > 0 ? __parentId : undefined;
   return { ok: true, parentId };
 }
 
@@ -201,14 +198,13 @@ export function verifyInstanceTokenEnvelope(
  * A dispatcher function that makes HTTP POST to a /_w/ URL and returns
  * the parsed JSON response. Injected by the server wiring.
  */
-export type HttpDispatcher = (
-  urlPath: string,
-  args: unknown[],
-) => Promise<unknown>;
+export type HttpDispatcher = (urlPath: string, args: unknown[]) => Promise<unknown>;
 
 export class DODispatch {
   private dispatcher: HttpDispatcher | null = null;
-  private ensureDOFn: ((source: string, className: string, objectKey: string) => Promise<void>) | null = null;
+  private ensureDOFn:
+    | ((source: string, className: string, objectKey: string) => Promise<void>)
+    | null = null;
   private beforeDispatchFn: ((ref: DORef) => Promise<void> | void) | null = null;
   private tokenManager: TokenManager | null = null;
   private getWorkerdUrl: (() => string) | null = null;
@@ -295,7 +291,9 @@ export class DODispatch {
         return await postToDOWithToken(ref, method, args, buildDeps());
       } catch (err) {
         if (this.ensureDOFn && this.isRetryable(err)) {
-          console.warn(`[DODispatch] ${doRefKey(ref)}.${method} failed (${err instanceof Error ? err.message : String(err)}), calling ensureDO and retrying`);
+          console.warn(
+            `[DODispatch] ${doRefKey(ref)}.${method} failed (${err instanceof Error ? err.message : String(err)}), calling ensureDO and retrying`
+          );
           await this.ensureDOFn(ref.source, ref.className, ref.objectKey);
           await Promise.resolve(this.beforeDispatchFn?.(ref));
           return await postToDOWithToken(ref, method, args, buildDeps());
@@ -313,7 +311,9 @@ export class DODispatch {
       return await this.dispatcher(urlPath, args);
     } catch (err) {
       if (this.ensureDOFn && this.isRetryable(err)) {
-        console.warn(`[DODispatch] ${doRefKey(ref)}.${method} failed (${err instanceof Error ? err.message : String(err)}), calling ensureDO and retrying`);
+        console.warn(
+          `[DODispatch] ${doRefKey(ref)}.${method} failed (${err instanceof Error ? err.message : String(err)}), calling ensureDO and retrying`
+        );
         await this.ensureDOFn(ref.source, ref.className, ref.objectKey);
         await Promise.resolve(this.beforeDispatchFn?.(ref));
         return await this.dispatcher(urlPath, args);
@@ -325,10 +325,12 @@ export class DODispatch {
   private isRetryable(err: unknown): boolean {
     const msg = String(err);
     const cause = err instanceof Error && "cause" in err ? String(err.cause) : "";
-    return msg.includes("DO class not found")
-      || msg.includes("ECONNREFUSED")
-      || msg.includes("fetch failed")
-      || msg.includes("workerd not running")
-      || cause.includes("ECONNREFUSED");
+    return (
+      msg.includes("DO class not found") ||
+      msg.includes("ECONNREFUSED") ||
+      msg.includes("fetch failed") ||
+      msg.includes("workerd not running") ||
+      cause.includes("ECONNREFUSED")
+    );
   }
 }

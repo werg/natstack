@@ -6,7 +6,11 @@ import { describe, expect, it } from "vitest";
 import { DeviceAuthStore } from "./deviceAuthStore.js";
 
 function tempFile(): string {
-  return path.join(fs.mkdtempSync(path.join(os.tmpdir(), "natstack-device-auth-")), "auth", "devices.json");
+  return path.join(
+    fs.mkdtempSync(path.join(os.tmpdir(), "natstack-device-auth-")),
+    "auth",
+    "devices.json"
+  );
 }
 
 describe("DeviceAuthStore", () => {
@@ -49,10 +53,14 @@ describe("DeviceAuthStore", () => {
     expect(() => store.completePairing({ code: expiredCode })).toThrow(/invalid or expired/i);
 
     const credential = store.issueDevice({ label: "Desktop", platform: "electron" });
-    expect(() => store.validateRefresh(credential.deviceId, "wrong-refresh-token")).toThrow(/invalid/i);
+    expect(() => store.validateRefresh(credential.deviceId, "wrong-refresh-token")).toThrow(
+      /invalid/i
+    );
 
     expect(store.revokeDevice(credential.deviceId)).toBe(true);
     expect(store.revokeDevice(credential.deviceId)).toBe(false);
-    expect(() => store.validateRefresh(credential.deviceId, credential.refreshToken)).toThrow(/not paired/i);
+    expect(() => store.validateRefresh(credential.deviceId, credential.refreshToken)).toThrow(
+      /not paired/i
+    );
   });
 });

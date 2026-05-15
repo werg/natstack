@@ -11,7 +11,7 @@ function createServiceHarness(panelExists: boolean) {
   const focusPanel = vi.fn();
   const rebuildUnloadedPanel = vi.fn(async () => {});
   const refreshVisiblePanel = vi.fn();
-  const getPanel = vi.fn(() => panelExists ? { id: "panel-1" } : undefined);
+  const getPanel = vi.fn(() => (panelExists ? { id: "panel-1" } : undefined));
 
   const service = createPanelShellService({
     panelOrchestrator: {
@@ -24,9 +24,10 @@ function createServiceHarness(panelExists: boolean) {
       getSerializablePanelTree: vi.fn(() => []),
     } as never,
     panelView: {} as never,
-    getViewManager: () => ({
-      refreshVisiblePanel,
-    } as never),
+    getViewManager: () =>
+      ({
+        refreshVisiblePanel,
+      }) as never,
   });
 
   return { service, focusPanel, rebuildUnloadedPanel, refreshVisiblePanel, getPanel };
@@ -34,7 +35,8 @@ function createServiceHarness(panelExists: boolean) {
 
 describe("PanelShellService", () => {
   it("ignores focus notifications for missing panels", async () => {
-    const { service, focusPanel, rebuildUnloadedPanel, refreshVisiblePanel } = createServiceHarness(false);
+    const { service, focusPanel, rebuildUnloadedPanel, refreshVisiblePanel } =
+      createServiceHarness(false);
 
     await service.handler(shellCtx, "notifyFocused", ["missing-panel"]);
 
@@ -44,7 +46,8 @@ describe("PanelShellService", () => {
   });
 
   it("focuses and rebuilds existing panels", async () => {
-    const { service, focusPanel, rebuildUnloadedPanel, refreshVisiblePanel } = createServiceHarness(true);
+    const { service, focusPanel, rebuildUnloadedPanel, refreshVisiblePanel } =
+      createServiceHarness(true);
 
     await service.handler(shellCtx, "notifyFocused", ["panel-1"]);
 

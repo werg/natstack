@@ -24,73 +24,106 @@ const DEFAULT_PUBLIC_BASE_URL = "https://hooks.snugenv.com";
 const DEFAULT_REPLAY_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_RELAY_TOLERANCE_MS = 5 * 60 * 1000;
 
-const identifierSchema = z
-  .string()
-  .regex(/^[A-Za-z0-9][A-Za-z0-9._@+=:-]{0,127}$/);
+const identifierSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._@+=:-]{0,127}$/);
 
-const targetSchema = z.object({
-  source: z.string().regex(/^[A-Za-z0-9._@+=:-]+\/[A-Za-z0-9._@+=:-]+$/),
-  className: identifierSchema,
-  objectKey: z.string().min(1).max(256),
-  method: identifierSchema,
-}).strict();
+const targetSchema = z
+  .object({
+    source: z.string().regex(/^[A-Za-z0-9._@+=:-]+\/[A-Za-z0-9._@+=:-]+$/),
+    className: identifierSchema,
+    objectKey: z.string().min(1).max(256),
+    method: identifierSchema,
+  })
+  .strict();
 
 const verifierSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("hmac-sha256"),
-    headerName: z.string().min(1).max(128),
-    secret: z.string().min(1).max(4096),
-    prefix: z.string().max(64).optional(),
-    encoding: z.enum(["hex", "base64"]).optional(),
-  }).strict(),
-  z.object({
-    type: z.literal("timestamped-hmac-sha256"),
-    signatureHeaderName: z.string().min(1).max(128),
-    timestampHeaderName: z.string().min(1).max(128),
-    secret: z.string().min(1).max(4096),
-    prefix: z.string().max(64).optional(),
-    encoding: z.enum(["hex", "base64"]).optional(),
-    toleranceMs: z.number().int().positive().max(24 * 60 * 60 * 1000).optional(),
-    signedPayload: z.enum(["slack-v0", "timestamp-dot-body"]),
-  }).strict(),
-  z.object({
-    type: z.literal("bearer"),
-    headerName: z.string().min(1).max(128),
-    token: z.string().min(1).max(4096),
-    scheme: z.string().min(1).max(64).optional(),
-  }).strict(),
+  z
+    .object({
+      type: z.literal("hmac-sha256"),
+      headerName: z.string().min(1).max(128),
+      secret: z.string().min(1).max(4096),
+      prefix: z.string().max(64).optional(),
+      encoding: z.enum(["hex", "base64"]).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("timestamped-hmac-sha256"),
+      signatureHeaderName: z.string().min(1).max(128),
+      timestampHeaderName: z.string().min(1).max(128),
+      secret: z.string().min(1).max(4096),
+      prefix: z.string().max(64).optional(),
+      encoding: z.enum(["hex", "base64"]).optional(),
+      toleranceMs: z
+        .number()
+        .int()
+        .positive()
+        .max(24 * 60 * 60 * 1000)
+        .optional(),
+      signedPayload: z.enum(["slack-v0", "timestamp-dot-body"]),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("bearer"),
+      headerName: z.string().min(1).max(128),
+      token: z.string().min(1).max(4096),
+      scheme: z.string().min(1).max(64).optional(),
+    })
+    .strict(),
 ]);
 
-const createSubscriptionSchema = z.object({
-  label: z.string().min(1).max(256).optional(),
-  target: targetSchema,
-  verifier: verifierSchema,
-  replay: z.object({
-    deliveryIdHeader: z.string().min(1).max(128).optional(),
-    ttlMs: z.number().int().positive().max(7 * 24 * 60 * 60 * 1000).optional(),
-  }).strict().optional(),
-}).strict();
+const createSubscriptionSchema = z
+  .object({
+    label: z.string().min(1).max(256).optional(),
+    target: targetSchema,
+    verifier: verifierSchema,
+    replay: z
+      .object({
+        deliveryIdHeader: z.string().min(1).max(128).optional(),
+        ttlMs: z
+          .number()
+          .int()
+          .positive()
+          .max(7 * 24 * 60 * 60 * 1000)
+          .optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
 
-const subscriptionIdSchema = z.object({
-  subscriptionId: identifierSchema,
-}).strict();
+const subscriptionIdSchema = z
+  .object({
+    subscriptionId: identifierSchema,
+  })
+  .strict();
 
-const rotateSecretSchema = z.object({
-  subscriptionId: identifierSchema,
-  secret: z.string().min(1).max(4096).optional(),
-}).strict();
+const rotateSecretSchema = z
+  .object({
+    subscriptionId: identifierSchema,
+    secret: z.string().min(1).max(4096).optional(),
+  })
+  .strict();
 
 export interface WebhookIngressStore {
-  create(input: Omit<WebhookIngressSubscription, "subscriptionId" | "createdAt" | "updatedAt">): WebhookIngressSubscription | Promise<WebhookIngressSubscription>;
-  get(subscriptionId: string): WebhookIngressSubscription | null | Promise<WebhookIngressSubscription | null>;
-  list(ownerCallerId?: string): WebhookIngressSubscription[] | Promise<WebhookIngressSubscription[]>;
+  create(
+    input: Omit<WebhookIngressSubscription, "subscriptionId" | "createdAt" | "updatedAt">
+  ): WebhookIngressSubscription | Promise<WebhookIngressSubscription>;
+  get(
+    subscriptionId: string
+  ): WebhookIngressSubscription | null | Promise<WebhookIngressSubscription | null>;
+  list(
+    ownerCallerId?: string
+  ): WebhookIngressSubscription[] | Promise<WebhookIngressSubscription[]>;
   replace(subscription: WebhookIngressSubscription): void | Promise<void>;
 }
 
 export class InMemoryWebhookIngressStore implements WebhookIngressStore {
   private readonly subscriptions = new Map<string, WebhookIngressSubscription>();
 
-  create(input: Omit<WebhookIngressSubscription, "subscriptionId" | "createdAt" | "updatedAt">): WebhookIngressSubscription {
+  create(
+    input: Omit<WebhookIngressSubscription, "subscriptionId" | "createdAt" | "updatedAt">
+  ): WebhookIngressSubscription {
     const now = Date.now();
     const subscription: WebhookIngressSubscription = {
       ...input,
@@ -108,7 +141,7 @@ export class InMemoryWebhookIngressStore implements WebhookIngressStore {
 
   list(ownerCallerId?: string): WebhookIngressSubscription[] {
     return [...this.subscriptions.values()].filter((subscription) =>
-      ownerCallerId ? subscription.ownerCallerId === ownerCallerId : true,
+      ownerCallerId ? subscription.ownerCallerId === ownerCallerId : true
     );
   }
 
@@ -118,20 +151,36 @@ export class InMemoryWebhookIngressStore implements WebhookIngressStore {
 }
 
 export class DOWebhookIngressStore implements WebhookIngressStore {
-  private readonly ref = { source: INTERNAL_DO_SOURCE, className: "WebhookStoreDO", objectKey: "global" };
+  private readonly ref = {
+    source: INTERNAL_DO_SOURCE,
+    className: "WebhookStoreDO",
+    objectKey: "global",
+  };
 
   constructor(private readonly doDispatch: DODispatch) {}
 
-  create(input: Omit<WebhookIngressSubscription, "subscriptionId" | "createdAt" | "updatedAt">): Promise<WebhookIngressSubscription> {
-    return this.doDispatch.dispatch(this.ref, "create", input) as Promise<WebhookIngressSubscription>;
+  create(
+    input: Omit<WebhookIngressSubscription, "subscriptionId" | "createdAt" | "updatedAt">
+  ): Promise<WebhookIngressSubscription> {
+    return this.doDispatch.dispatch(
+      this.ref,
+      "create",
+      input
+    ) as Promise<WebhookIngressSubscription>;
   }
 
   get(subscriptionId: string): Promise<WebhookIngressSubscription | null> {
-    return this.doDispatch.dispatch(this.ref, "get", subscriptionId) as Promise<WebhookIngressSubscription | null>;
+    return this.doDispatch.dispatch(
+      this.ref,
+      "get",
+      subscriptionId
+    ) as Promise<WebhookIngressSubscription | null>;
   }
 
   list(ownerCallerId?: string): Promise<WebhookIngressSubscription[]> {
-    return this.doDispatch.dispatch(this.ref, "list", ownerCallerId) as Promise<WebhookIngressSubscription[]>;
+    return this.doDispatch.dispatch(this.ref, "list", ownerCallerId) as Promise<
+      WebhookIngressSubscription[]
+    >;
   }
 
   async replace(subscription: WebhookIngressSubscription): Promise<void> {
@@ -166,11 +215,11 @@ export function createWebhookIngressService(deps: WebhookIngressServiceDeps = {}
     verifyRelayEnvelope(req: IncomingMessage, rawBody: Buffer): boolean;
   };
 } {
-  const store = deps.store ?? (
-    deps.doDispatch
+  const store =
+    deps.store ??
+    (deps.doDispatch
       ? new DOWebhookIngressStore(deps.doDispatch)
-      : new InMemoryWebhookIngressStore()
-  );
+      : new InMemoryWebhookIngressStore());
   const publicBaseUrl = normalizeBaseUrl(deps.publicBaseUrl ?? DEFAULT_PUBLIC_BASE_URL);
   const now = deps.now ?? Date.now;
   const seenReplayKeys = new Map<string, number>();
@@ -199,7 +248,7 @@ export function createWebhookIngressService(deps: WebhookIngressServiceDeps = {}
 
   async function createSubscription(
     ctx: ServiceContext,
-    input: CreateWebhookIngressSubscriptionRequest,
+    input: CreateWebhookIngressSubscriptionRequest
   ): Promise<WebhookIngressSubscriptionSummary> {
     const parsed = createSubscriptionSchema.parse(input) as CreateWebhookIngressSubscriptionRequest;
     ensureTargetIsCallerSource(ctx, parsed.target);
@@ -221,10 +270,11 @@ export function createWebhookIngressService(deps: WebhookIngressServiceDeps = {}
     return toSummary(withUrl);
   }
 
-  async function listSubscriptions(ctx: ServiceContext): Promise<WebhookIngressSubscriptionSummary[]> {
-    const owner = ctx.callerKind === "shell" || ctx.callerKind === "server"
-      ? undefined
-      : ctx.callerId;
+  async function listSubscriptions(
+    ctx: ServiceContext
+  ): Promise<WebhookIngressSubscriptionSummary[]> {
+    const owner =
+      ctx.callerKind === "shell" || ctx.callerKind === "server" ? undefined : ctx.callerId;
     return (await store.list(owner)).map(toSummary);
   }
 
@@ -237,7 +287,7 @@ export function createWebhookIngressService(deps: WebhookIngressServiceDeps = {}
 
   async function rotateSecret(
     ctx: ServiceContext,
-    input: RotateWebhookIngressSecretRequest,
+    input: RotateWebhookIngressSecretRequest
   ): Promise<RotateWebhookIngressSecretResult> {
     const parsed = rotateSecretSchema.parse(input) as RotateWebhookIngressSecretRequest;
     const subscription = await store.get(parsed.subscriptionId);
@@ -246,9 +296,10 @@ export function createWebhookIngressService(deps: WebhookIngressServiceDeps = {}
     }
     ensureOwner(ctx, subscription);
     const secret = parsed.secret ?? crypto.randomBytes(32).toString("base64url");
-    const verifier = subscription.verifier.type === "bearer"
-      ? { ...subscription.verifier, token: secret }
-      : { ...subscription.verifier, secret };
+    const verifier =
+      subscription.verifier.type === "bearer"
+        ? { ...subscription.verifier, token: secret }
+        : { ...subscription.verifier, secret };
     const updated = {
       ...subscription,
       verifier,
@@ -280,13 +331,7 @@ export function createWebhookIngressService(deps: WebhookIngressServiceDeps = {}
     if (!timingSafeStringEqual(bodySha256, actualBodySha)) {
       return false;
     }
-    const canonical = [
-      method.toUpperCase(),
-      path,
-      query,
-      timestamp,
-      bodySha256,
-    ].join("\n");
+    const canonical = [method.toUpperCase(), path, query, timestamp, bodySha256].join("\n");
     const expected = `v1=${crypto
       .createHmac("sha256", deps.relaySigningSecret)
       .update(canonical)
@@ -297,7 +342,7 @@ export function createWebhookIngressService(deps: WebhookIngressServiceDeps = {}
   async function handleIngressRoute(
     req: IncomingMessage,
     res: ServerResponse,
-    params: Record<string, string>,
+    params: Record<string, string>
   ): Promise<void> {
     const subscriptionId = params["subscriptionId"];
     if (!subscriptionId) {
@@ -368,13 +413,15 @@ export function createWebhookIngressService(deps: WebhookIngressServiceDeps = {}
 
   return {
     definition,
-    routes: [{
-      serviceName: "webhookIngress",
-      path: "/:subscriptionId",
-      methods: ["POST"],
-      auth: "public",
-      handler: handleIngressRoute,
-    }],
+    routes: [
+      {
+        serviceName: "webhookIngress",
+        path: "/:subscriptionId",
+        methods: ["POST"],
+        auth: "public",
+        handler: handleIngressRoute,
+      },
+    ],
     internal: { store, verifyRelayEnvelope },
   };
 }
@@ -384,7 +431,7 @@ function isReplay(
   headers: IncomingMessage["headers"],
   rawBody: Buffer,
   seen: Map<string, number>,
-  now: number,
+  now: number
 ): boolean {
   const ttlMs = subscription.replay?.ttlMs ?? DEFAULT_REPLAY_TTL_MS;
   for (const [key, expiresAt] of seen) {

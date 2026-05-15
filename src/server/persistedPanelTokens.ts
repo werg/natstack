@@ -1,6 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { PanelTokenRecord, PersistedPanelTokenRecord, TokenManager } from "@natstack/shared/tokenManager";
+import type {
+  PanelTokenRecord,
+  PersistedPanelTokenRecord,
+  TokenManager,
+} from "@natstack/shared/tokenManager";
 
 const PANEL_TOKEN_REGISTRY_FILE = "panel-tokens.json";
 
@@ -42,7 +46,7 @@ function persistableRecord(record: Partial<PanelTokenRecord>): PersistedPanelTok
 
 export function recoverPersistedPanelTokens(
   tokenManager: TokenManager,
-  statePath: string,
+  statePath: string
 ): PanelTokenRecoveryResult {
   const result: PanelTokenRecoveryResult = { recovered: 0, skipped: 0, errors: 0 };
   const filePath = registryPath(statePath);
@@ -54,7 +58,7 @@ export function recoverPersistedPanelTokens(
     console.warn(
       `[Server] Panel token recovery: failed to read ${filePath}: ${
         error instanceof Error ? error.message : String(error)
-      }`,
+      }`
     );
     return result;
   }
@@ -86,10 +90,7 @@ export function recoverPersistedPanelTokens(
   return result;
 }
 
-export function installPanelTokenPersistence(
-  tokenManager: TokenManager,
-  statePath: string,
-): void {
+export function installPanelTokenPersistence(tokenManager: TokenManager, statePath: string): void {
   const filePath = registryPath(statePath);
   const records = new Map<string, PersistedPanelTokenRecord>();
 
@@ -103,7 +104,7 @@ export function installPanelTokenPersistence(
     console.warn(
       `[Server] Panel token persistence: failed to read existing registry: ${
         error instanceof Error ? error.message : String(error)
-      }`,
+      }`
     );
   }
 
@@ -121,7 +122,7 @@ export function installPanelTokenPersistence(
       console.warn(
         `[Server] Panel token persistence: failed to write registry: ${
           error instanceof Error ? error.message : String(error)
-        }`,
+        }`
       );
     }
   });

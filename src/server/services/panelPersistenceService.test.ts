@@ -10,6 +10,8 @@ describe("panelPersistenceService", () => {
     });
 
     expect(service.policy.allowed).toEqual(["shell", "server"]);
-    expect((ELECTRON_LOCAL_SERVICE_NAMES as readonly string[]).includes("panel-persistence")).toBe(false);
+    expect((ELECTRON_LOCAL_SERVICE_NAMES as readonly string[]).includes("panel-persistence")).toBe(
+      false
+    );
   });
 });

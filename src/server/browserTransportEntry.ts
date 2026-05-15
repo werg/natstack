@@ -17,15 +17,38 @@
  * - globalThis.__natstackTransport — the TransportBridge instance (single server WS)
  */
 
-import { createWsTransport } from "../preload/wsTransport.js";
+import { createWsTransport, type TransportBridge } from "../preload/wsTransport.js";
 
-declare const globalThis: any;
+type BrowserTransportGlobals = typeof globalThis & {
+  __natstackId: string;
+  __natstackGatewayToken: string;
+  __natstackGatewayRpcWsUrl: string;
+  __natstackTransport?: TransportBridge;
+  __natstackStateArgs?: unknown;
+};
 
-const viewId: string = globalThis.__natstackId;
-const authToken: string = globalThis.__natstackGatewayToken;
-const wsUrl: string = globalThis.__natstackGatewayRpcWsUrl;
+type RuntimeEventMessage = {
+  type: "event";
+  event: string;
+  payload: unknown;
+};
 
-globalThis.__natstackTransport = createWsTransport({
+function isRuntimeEventMessage(message: unknown): message is RuntimeEventMessage {
+  return (
+    typeof message === "object" &&
+    message !== null &&
+    (message as { type?: unknown }).type === "event" &&
+    typeof (message as { event?: unknown }).event === "string"
+  );
+}
+
+const globals = globalThis as BrowserTransportGlobals;
+
+const viewId: string = globals.__natstackId;
+const authToken: string = globals.__natstackGatewayToken;
+const wsUrl: string = globals.__natstackGatewayRpcWsUrl;
+
+globals.__natstackTransport = createWsTransport({
   viewId,
   wsPort: 0,
   authToken,
@@ -39,11 +62,9 @@ globalThis.__natstackTransport = createWsTransport({
 // The server emits stateArgs:updated back to the panel over the server WS
 // after persisting. This listener works in both Electron and standalone.
 
-globalThis.__natstackTransport.onMessage((_fromId: string, message: any) => {
-  if (message?.type === "event" && message.event === "stateArgs:updated") {
-    globalThis.__natstackStateArgs = message.payload;
-    window.dispatchEvent(
-      new CustomEvent("natstack:stateArgsChanged", { detail: message.payload }),
-    );
+globals.__natstackTransport.onMessage((_fromId: string, message: unknown) => {
+  if (isRuntimeEventMessage(message) && message.event === "stateArgs:updated") {
+    globals.__natstackStateArgs = message.payload;
+    window.dispatchEvent(new CustomEvent("natstack:stateArgsChanged", { detail: message.payload }));
   }
 });

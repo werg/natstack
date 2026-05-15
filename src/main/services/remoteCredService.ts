@@ -27,12 +27,7 @@ export interface RemoteCredCurrent {
 export interface TestConnectionResult {
   ok: boolean;
   /** Error category for UI rendering. Undefined on success. */
-  error?:
-    | "invalid-url"
-    | "unreachable"
-    | "tls-mismatch"
-    | "unauthorized"
-    | "unknown";
+  error?: "invalid-url" | "unreachable" | "tls-mismatch" | "unauthorized" | "unknown";
   /** Human-readable error detail. */
   message?: string;
   /** Peer cert SHA-256 captured from the TLS handshake during the `/healthz`
@@ -66,7 +61,13 @@ async function probePeerFingerprint(host: string, port: number): Promise<string>
       checkServerIdentity: () => undefined,
       timeout: TEST_CONNECT_TIMEOUT_MS,
     });
-    const cleanup = () => { try { sock.destroy(); } catch { /* ignore */ } };
+    const cleanup = () => {
+      try {
+        sock.destroy();
+      } catch {
+        /* ignore */
+      }
+    };
     sock.once("secureConnect", () => {
       const cert = sock.getPeerCertificate(false);
       if (!cert || !cert.raw) {
@@ -78,8 +79,14 @@ async function probePeerFingerprint(host: string, port: number): Promise<string>
       cleanup();
       resolve(fp);
     });
-    sock.once("error", (err) => { cleanup(); reject(err); });
-    sock.once("timeout", () => { cleanup(); reject(new Error("TLS probe timed out")); });
+    sock.once("error", (err) => {
+      cleanup();
+      reject(err);
+    });
+    sock.once("timeout", () => {
+      cleanup();
+      reject(new Error("TLS probe timed out"));
+    });
   });
 }
 
@@ -87,7 +94,7 @@ async function probePeerFingerprint(host: string, port: number): Promise<string>
  *  body (when available), and the peer fingerprint (when TLS). */
 async function healthProbe(
   parsed: URL,
-  tlsOpts: { caPath?: string; fingerprint?: string; allowUnpinned: boolean },
+  tlsOpts: { caPath?: string; fingerprint?: string; allowUnpinned: boolean }
 ): Promise<{ status: number; body: string; fingerprint?: string }> {
   const isTls = parsed.protocol === "https:";
   const port = parseInt(parsed.port, 10) || (isTls ? 443 : 80);
@@ -133,7 +140,9 @@ async function healthProbe(
       });
     });
     req.once("error", reject);
-    req.once("timeout", () => { req.destroy(new Error("health probe timed out")); });
+    req.once("timeout", () => {
+      req.destroy(new Error("health probe timed out"));
+    });
     req.end();
   });
 }
@@ -216,20 +225,25 @@ export function createRemoteCredService(deps: { startupMode: StartupMode }): Ser
         }
         case "testConnection": {
           const payload = args[0] as {
-            url: string; token: string;
-            caPath?: string; fingerprint?: string;
+            url: string;
+            token: string;
+            caPath?: string;
+            fingerprint?: string;
           };
           let parsed: URL;
-          try { parsed = new URL(payload.url); }
-          catch (err) {
+          try {
+            parsed = new URL(payload.url);
+          } catch (err) {
             return {
-              ok: false, error: "invalid-url",
+              ok: false,
+              error: "invalid-url",
               message: (err as Error).message,
             } satisfies TestConnectionResult;
           }
           if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
             return {
-              ok: false, error: "invalid-url",
+              ok: false,
+              error: "invalid-url",
               message: "URL must be http(s)",
             } satisfies TestConnectionResult;
           }
@@ -259,9 +273,15 @@ export function createRemoteCredService(deps: { startupMode: StartupMode }): Ser
           // If a fingerprint was provided, enforce it against the observed
           // one — even if /healthz returned 200 (no pinning was done on the
           // probe because we didn't pass the user's pin through).
-          if (isTls && payload.fingerprint && probe.fingerprint && probe.fingerprint !== payload.fingerprint) {
+          if (
+            isTls &&
+            payload.fingerprint &&
+            probe.fingerprint &&
+            probe.fingerprint !== payload.fingerprint
+          ) {
             return {
-              ok: false, error: "tls-mismatch",
+              ok: false,
+              error: "tls-mismatch",
               message: `Fingerprint mismatch: expected ${payload.fingerprint}, got ${probe.fingerprint}`,
               observedFingerprint: probe.fingerprint,
             } satisfies TestConnectionResult;
@@ -271,15 +291,18 @@ export function createRemoteCredService(deps: { startupMode: StartupMode }): Ser
           // surface the observed one so the UI can ask the user to trust it.
           if (isTls && !payload.fingerprint && probe.fingerprint) {
             return {
-              ok: false, error: "tls-mismatch",
-              message: "No fingerprint configured — confirm the one returned in observedFingerprint before saving.",
+              ok: false,
+              error: "tls-mismatch",
+              message:
+                "No fingerprint configured — confirm the one returned in observedFingerprint before saving.",
               observedFingerprint: probe.fingerprint,
             } satisfies TestConnectionResult;
           }
 
           if (probe.status !== 200) {
             return {
-              ok: false, error: "unreachable",
+              ok: false,
+              error: "unreachable",
               message: `/healthz returned ${probe.status}`,
             } satisfies TestConnectionResult;
           }
@@ -310,7 +333,11 @@ export function createRemoteCredService(deps: { startupMode: StartupMode }): Ser
               observedFingerprint: probe.fingerprint,
             } satisfies TestConnectionResult;
           } finally {
-            try { await client?.close(); } catch { /* ignore */ }
+            try {
+              await client?.close();
+            } catch {
+              /* ignore */
+            }
           }
 
           // Extract server version from /healthz body when present.
@@ -318,7 +345,9 @@ export function createRemoteCredService(deps: { startupMode: StartupMode }): Ser
           try {
             const parsedBody = JSON.parse(probe.body) as { version?: unknown };
             if (typeof parsedBody.version === "string") serverVersion = parsedBody.version;
-          } catch { /* body not JSON — fine */ }
+          } catch {
+            /* body not JSON — fine */
+          }
 
           return {
             ok: true,
@@ -329,8 +358,11 @@ export function createRemoteCredService(deps: { startupMode: StartupMode }): Ser
         case "fetchPeerFingerprint": {
           const urlStr = args[0] as string;
           let parsed: URL;
-          try { parsed = new URL(urlStr); }
-          catch (err) { throw new Error(`Invalid URL: ${(err as Error).message}`); }
+          try {
+            parsed = new URL(urlStr);
+          } catch (err) {
+            throw new Error(`Invalid URL: ${(err as Error).message}`);
+          }
           if (parsed.protocol !== "https:") {
             throw new Error("fetchPeerFingerprint requires an https:// URL");
           }
@@ -346,7 +378,7 @@ export function createRemoteCredService(deps: { startupMode: StartupMode }): Ser
               { name: "All files", extensions: ["*"] },
             ],
           });
-          return result.canceled ? null : result.filePaths[0] ?? null;
+          return result.canceled ? null : (result.filePaths[0] ?? null);
         }
         case "clear":
           clearRemoteCredentials();

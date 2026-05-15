@@ -1,5 +1,11 @@
-import { DurableObjectBase, type DurableObjectContext } from "../../../workspace/packages/runtime/src/worker/durable-base.js";
-import type { ScopeEntry, ScopeListEntry } from "../../../workspace/packages/eval/src/scopePersistence.js";
+import {
+  DurableObjectBase,
+  type DurableObjectContext,
+} from "../../../workspace/packages/runtime/src/worker/durable-base.js";
+import type {
+  ScopeEntry,
+  ScopeListEntry,
+} from "../../../workspace/packages/eval/src/scopePersistence.js";
 
 interface ScopeRow {
   id: string;
@@ -55,34 +61,39 @@ export class ScopeStoreDO extends DurableObjectBase {
       JSON.stringify(entry.serializedKeys),
       JSON.stringify(entry.droppedPaths),
       JSON.stringify(entry.partialKeys),
-      entry.createdAt,
+      entry.createdAt
     );
   }
 
   loadCurrent(channelId: string, panelId: string): ScopeEntry | null {
-    const row = this.sql.exec(
-      `SELECT * FROM repl_scopes
+    const row = this.sql
+      .exec(
+        `SELECT * FROM repl_scopes
        WHERE channel_id = ? AND panel_id = ?
        ORDER BY created_at DESC LIMIT 1`,
-      channelId,
-      panelId,
-    ).toArray()[0] as unknown as ScopeRow | undefined;
+        channelId,
+        panelId
+      )
+      .toArray()[0] as unknown as ScopeRow | undefined;
     return row ? this.fromRow(row) : null;
   }
 
   get(id: string): ScopeEntry | null {
-    const row = this.sql.exec(`SELECT * FROM repl_scopes WHERE id = ?`, id)
+    const row = this.sql
+      .exec(`SELECT * FROM repl_scopes WHERE id = ?`, id)
       .toArray()[0] as unknown as ScopeRow | undefined;
     return row ? this.fromRow(row) : null;
   }
 
   list(channelId: string): ScopeListEntry[] {
-    const rows = this.sql.exec(
-      `SELECT id, serialized_keys, partial_keys, created_at
+    const rows = this.sql
+      .exec(
+        `SELECT id, serialized_keys, partial_keys, created_at
        FROM repl_scopes WHERE channel_id = ?
        ORDER BY created_at ASC`,
-      channelId,
-    ).toArray() as Array<{
+        channelId
+      )
+      .toArray() as Array<{
       id: string;
       serialized_keys: string;
       partial_keys: string;
@@ -109,4 +120,3 @@ export class ScopeStoreDO extends DurableObjectBase {
     };
   }
 }
-

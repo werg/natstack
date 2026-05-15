@@ -125,13 +125,7 @@ export function usePanelDndDrag(): PanelDndDragContextValue {
 // Dragged Panel Preview (shown in DragOverlay)
 // ============================================================================
 
-function DraggedPanelPreview({
-  title,
-  childCount,
-}: {
-  title: string;
-  childCount: number;
-}) {
+function DraggedPanelPreview({ title, childCount }: { title: string; childCount: number }) {
   return (
     <Box
       style={{
@@ -180,16 +174,16 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
 
   // Load initial collapsed state from DB
   useEffect(() => {
-    panelService.getCollapsedIds().then((ids) => {
-      setCollapsedIds(new Set(ids));
-    }).catch((err) => console.error("[PanelDndContext] Failed to load collapsed IDs:", err));
+    panelService
+      .getCollapsedIds()
+      .then((ids) => {
+        setCollapsedIds(new Set(ids));
+      })
+      .catch((err) => console.error("[PanelDndContext] Failed to load collapsed IDs:", err));
   }, []);
 
   // Flatten tree for sortable context
-  const flattenedItems = useMemo(
-    () => flattenTree(tree, collapsedIds),
-    [tree, collapsedIds]
-  );
+  const flattenedItems = useMemo(() => flattenTree(tree, collapsedIds), [tree, collapsedIds]);
 
   // Refs for stable callbacks (avoids re-creating indentPanel/unindentPanel on every tree update)
   const flattenedItemsRef = useRef(flattenedItems);
@@ -244,13 +238,7 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
     if (overId === END_DROP_ZONE_ID) {
       return endZoneProjection;
     }
-    return getProjection(
-      flattenedItems,
-      activeId,
-      overId,
-      offsetLeft,
-      INDENTATION_WIDTH
-    );
+    return getProjection(flattenedItems, activeId, overId, offsetLeft, INDENTATION_WIDTH);
   }, [flattenedItems, activeId, overId, offsetLeft, endZoneProjection]);
 
   // Calculate which item shows the indicator and whether it's at top or bottom
@@ -322,7 +310,9 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
         next.delete(panelId);
       }
       // Fire-and-forget persist
-      void panelService.setCollapsed(panelId, nowCollapsed).catch((err: unknown) => console.warn("[PanelDndContext] setCollapsed failed:", err));
+      void panelService
+        .setCollapsed(panelId, nowCollapsed)
+        .catch((err: unknown) => console.warn("[PanelDndContext] setCollapsed failed:", err));
       return next;
     });
   }, []);
@@ -334,7 +324,9 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
         next.delete(id);
       }
       // Fire-and-forget persist
-      void panelService.expandIds(ids).catch((err: unknown) => console.warn("[PanelDndContext] expandIds failed:", err));
+      void panelService
+        .expandIds(ids)
+        .catch((err: unknown) => console.warn("[PanelDndContext] expandIds failed:", err));
       return next;
     });
   }, []);
@@ -381,9 +373,7 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
     const currentParentId = item.parentId;
 
     // Find parent's position among its siblings to place after it
-    const siblings = items.filter(
-      (i) => i.parentId === grandparentId && i.id !== panelId
-    );
+    const siblings = items.filter((i) => i.parentId === grandparentId && i.id !== panelId);
     const parentIndex = siblings.findIndex((s) => s.id === currentParentId);
     const targetPosition = parentIndex >= 0 ? parentIndex + 1 : siblings.length;
 
@@ -633,10 +623,7 @@ export function PanelDndProvider({ children }: PanelDndProviderProps) {
             {children}
             <DragOverlay dropAnimation={null}>
               {activeId && (
-                <DraggedPanelPreview
-                  title={activeTitle}
-                  childCount={activeChildCount + 1}
-                />
+                <DraggedPanelPreview title={activeTitle} childCount={activeChildCount + 1} />
               )}
             </DragOverlay>
           </PanelDndDragCtx.Provider>

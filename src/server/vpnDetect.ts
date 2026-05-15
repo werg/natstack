@@ -71,7 +71,7 @@ const TAILSCALE_CANDIDATES = [
  * stall server startup.
  */
 export async function detectTailscale(
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number } = {}
 ): Promise<DetectedVpnPublicUrl | null> {
   const timeoutMs = options.timeoutMs ?? 1500;
   const deadline = Date.now() + timeoutMs;
@@ -97,26 +97,24 @@ export function interpretTailscaleStatus(status: TailscaleStatus): DetectedVpnPu
   if (self.Online === false) return null;
   const dnsName = self.DNSName?.replace(/\.$/, "");
   const magicSuffix = (
-    status.MagicDNSSuffix
-    ?? status.CurrentTailnet?.MagicDNSSuffix
-    ?? status.MagicDNS?.Suffix
-    ?? ""
+    status.MagicDNSSuffix ??
+    status.CurrentTailnet?.MagicDNSSuffix ??
+    status.MagicDNS?.Suffix ??
+    ""
   ).replace(/^\.+|\.+$/g, "");
   const magicEnabled =
-    status.CurrentTailnet?.MagicDNSEnabled !== false
-    && status.MagicDNS?.Enabled !== false;
-  const hostname = magicEnabled && dnsName && (!magicSuffix || dnsName.endsWith(magicSuffix))
-    ? dnsName
-    : null;
+    status.CurrentTailnet?.MagicDNSEnabled !== false && status.MagicDNS?.Enabled !== false;
+  const hostname =
+    magicEnabled && dnsName && (!magicSuffix || dnsName.endsWith(magicSuffix)) ? dnsName : null;
   if (!hostname) return null;
   return {
     vendor: "tailscale",
     hostname,
     url: `https://${hostname}`,
     setupHint:
-      "Make this hostname serve HTTPS — easiest is `sudo tailscale serve --bg https / "
-      + "http://127.0.0.1:<gateway-port>` (run once, persists across reboots). "
-      + "Requires the HTTPS feature in your tailnet admin console.",
+      "Make this hostname serve HTTPS — easiest is `sudo tailscale serve --bg https / " +
+      "http://127.0.0.1:<gateway-port>` (run once, persists across reboots). " +
+      "Requires the HTTPS feature in your tailnet admin console.",
     raw: {
       tailscaleIPs: self.TailscaleIPs,
       tailnet: status.CurrentTailnet?.Name,
@@ -172,7 +170,7 @@ function runTailscaleStatus(cmd: string, timeoutMs: number): Promise<TailscaleSt
  * Headscale, etc.) as further branches.
  */
 export async function detectVpnPublicUrl(
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number } = {}
 ): Promise<DetectedVpnPublicUrl | null> {
   return detectTailscale(options);
 }

@@ -36,7 +36,10 @@ export class DeviceAuthStore {
   private state: StoredDeviceAuthState;
   private readonly pairingCodes = new Map<string, PairingCodeRecord>();
 
-  constructor(private readonly filePath: string, private readonly now = () => Date.now()) {
+  constructor(
+    private readonly filePath: string,
+    private readonly now = () => Date.now()
+  ) {
     this.state = this.load();
   }
 
@@ -118,9 +121,14 @@ export class DeviceAuthStore {
     if (!fs.existsSync(this.filePath)) {
       return { serverId: `srv_${randomBase64Url(18)}`, devices: [] };
     }
-    const raw = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Partial<StoredDeviceAuthState>;
+    const raw = JSON.parse(
+      fs.readFileSync(this.filePath, "utf8")
+    ) as Partial<StoredDeviceAuthState>;
     return {
-      serverId: typeof raw.serverId === "string" && raw.serverId ? raw.serverId : `srv_${randomBase64Url(18)}`,
+      serverId:
+        typeof raw.serverId === "string" && raw.serverId
+          ? raw.serverId
+          : `srv_${randomBase64Url(18)}`,
       devices: Array.isArray(raw.devices) ? raw.devices.filter(isDeviceRecord) : [],
     };
   }

@@ -32,10 +32,7 @@ export const workspaceErrorAtom = atom<string | null>(null);
 export const loadRecentWorkspacesAtom = atom(null, async (_get, set) => {
   set(workspacesLoadingAtom, true);
   try {
-    const [workspaces, activeName] = await Promise.all([
-      workspace.list(),
-      workspace.getActive(),
-    ]);
+    const [workspaces, activeName] = await Promise.all([workspace.list(), workspace.getActive()]);
     set(recentWorkspacesAtom, workspaces);
     set(activeWorkspaceNameAtom, activeName);
   } catch (error) {
@@ -53,14 +50,14 @@ export const removeRecentWorkspaceAtom = atom(null, async (_get, set, name: stri
     await workspace.delete(name);
     set(workspaceErrorAtom, null);
     // Reload full list to ensure consistency with disk state
-    const [workspaces, activeName] = await Promise.all([
-      workspace.list(),
-      workspace.getActive(),
-    ]);
+    const [workspaces, activeName] = await Promise.all([workspace.list(), workspace.getActive()]);
     set(recentWorkspacesAtom, workspaces);
     set(activeWorkspaceNameAtom, activeName);
   } catch (error) {
-    set(workspaceErrorAtom, `Failed to delete "${name}": ${error instanceof Error ? error.message : String(error)}`);
+    set(
+      workspaceErrorAtom,
+      `Failed to delete "${name}": ${error instanceof Error ? error.message : String(error)}`
+    );
     // Reload list anyway to sync with disk
     try {
       const workspaces = await workspace.list();
@@ -176,10 +173,7 @@ export const createWorkspaceAtom = atom(null, async (get, set) => {
   try {
     const opts: { forkFrom?: string } = {};
     if (formData.forkFrom) opts.forkFrom = formData.forkFrom;
-    await workspace.create(
-      formData.workspaceName,
-      Object.keys(opts).length > 0 ? opts : undefined,
-    );
+    await workspace.create(formData.workspaceName, Object.keys(opts).length > 0 ? opts : undefined);
 
     // Select the newly created workspace (triggers app relaunch)
     await workspace.select(formData.workspaceName);

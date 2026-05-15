@@ -1,28 +1,41 @@
 import { describe, expect, it, vi } from "vitest";
 import { ELECTRON_LOCAL_SERVICE_NAMES } from "@natstack/rpc";
-import { ServiceAccessError, ServiceDispatcher, ServiceError } from "@natstack/shared/serviceDispatcher";
+import {
+  ServiceAccessError,
+  ServiceDispatcher,
+  ServiceError,
+} from "@natstack/shared/serviceDispatcher";
 import type { ServiceContext } from "@natstack/shared/serviceDispatcher";
 import { createUserlandApprovalService } from "./userlandApprovalService.js";
 import type { ApprovalQueue } from "./approvalQueue.js";
 import type { UserlandApprovalGrant } from "@natstack/shared/approvals";
 
 function createDeps() {
-  const queued = vi.fn<ApprovalQueue["requestUserland"]>(async () => ({ kind: "choice", choice: "allow" }));
-  const lookup = vi.fn<(callerId: string, subjectId: string) => UserlandApprovalGrant | null>(() => null);
+  const queued = vi.fn<ApprovalQueue["requestUserland"]>(async () => ({
+    kind: "choice",
+    choice: "allow",
+  }));
+  const lookup = vi.fn<(callerId: string, subjectId: string) => UserlandApprovalGrant | null>(
+    () => null
+  );
   const record = vi.fn(async () => {});
   const revoke = vi.fn(async () => true);
   const list = vi.fn<(callerId: string) => UserlandApprovalGrant[]>(() => []);
-  const resolveByCallerId = vi.fn((callerId: string): {
-    callerId: string;
-    callerKind: "panel" | "worker";
-    repoPath: string;
-    effectiveVersion: string;
-  } | null => ({
-    callerId,
-    callerKind: callerId.startsWith("panel:") ? "panel" as const : "worker" as const,
-    repoPath: "workers/alpha",
-    effectiveVersion: "hash-1",
-  }));
+  const resolveByCallerId = vi.fn(
+    (
+      callerId: string
+    ): {
+      callerId: string;
+      callerKind: "panel" | "worker";
+      repoPath: string;
+      effectiveVersion: string;
+    } | null => ({
+      callerId,
+      callerKind: callerId.startsWith("panel:") ? ("panel" as const) : ("worker" as const),
+      repoPath: "workers/alpha",
+      effectiveVersion: "hash-1",
+    })
+  );
   const service = createUserlandApprovalService({
     approvalQueue: { requestUserland: queued } as Partial<ApprovalQueue> as ApprovalQueue,
     grantStore: { lookup, record, revoke, list },
@@ -53,9 +66,17 @@ describe("userlandApprovalService", () => {
     dispatcher.registerService(service);
     dispatcher.markInitialized();
 
-    await expect(dispatcher.dispatch(workerCtx, "userlandApproval", "list", [])).resolves.toEqual([]);
-    await expect(dispatcher.dispatch({ callerId: "shell", callerKind: "shell" }, "userlandApproval", "list", []))
-      .rejects.toBeInstanceOf(ServiceAccessError);
+    await expect(dispatcher.dispatch(workerCtx, "userlandApproval", "list", [])).resolves.toEqual(
+      []
+    );
+    await expect(
+      dispatcher.dispatch(
+        { callerId: "shell", callerKind: "shell" },
+        "userlandApproval",
+        "list",
+        []
+      )
+    ).rejects.toBeInstanceOf(ServiceAccessError);
   });
 
   it("rejects unknown caller identities", async () => {
@@ -87,16 +108,24 @@ describe("userlandApprovalService", () => {
     const { service } = createDeps();
     const schema = service.methods["request"]!.args;
 
-    expect(() => schema.parse([{ ...validRequest, subject: { id: "shell:foo" } }])).toThrow(/reserved/);
-    expect(() => schema.parse([{ ...validRequest, subject: { id: "shell\u200B:foo" } }])).toThrow(/reserved/);
+    expect(() => schema.parse([{ ...validRequest, subject: { id: "shell:foo" } }])).toThrow(
+      /reserved/
+    );
+    expect(() => schema.parse([{ ...validRequest, subject: { id: "shell\u200B:foo" } }])).toThrow(
+      /reserved/
+    );
     expect(() => schema.parse([{ ...validRequest, title: "bad\u0001title" }])).toThrow(/control/);
-    expect(() => schema.parse([{
-      ...validRequest,
-      options: [
-        { value: "allow", label: "Allow" },
-        { value: "al\u200Blow", label: "Allow again" },
-      ],
-    }])).toThrow(/unique/);
+    expect(() =>
+      schema.parse([
+        {
+          ...validRequest,
+          options: [
+            { value: "allow", label: "Allow" },
+            { value: "al\u200Blow", label: "Allow again" },
+          ],
+        },
+      ])
+    ).toThrow(/unique/);
   });
 
   it("short-circuits queue prompts on cache hit", async () => {
@@ -108,7 +137,10 @@ describe("userlandApprovalService", () => {
       grantedAt: 10,
     });
 
-    await expect(service.handler(workerCtx, "request", [validRequest])).resolves.toEqual({ kind: "choice", choice: "allow" });
+    await expect(service.handler(workerCtx, "request", [validRequest])).resolves.toEqual({
+      kind: "choice",
+      choice: "allow",
+    });
     expect(queued).not.toHaveBeenCalled();
   });
 
@@ -122,7 +154,10 @@ describe("userlandApprovalService", () => {
     });
     queued.mockResolvedValueOnce({ kind: "choice", choice: "allow" });
 
-    await expect(service.handler(workerCtx, "request", [validRequest])).resolves.toEqual({ kind: "choice", choice: "allow" });
+    await expect(service.handler(workerCtx, "request", [validRequest])).resolves.toEqual({
+      kind: "choice",
+      choice: "allow",
+    });
     expect(revoke).toHaveBeenCalledWith("worker:alpha", "team-x:foo");
     expect(queued).toHaveBeenCalledTimes(1);
   });
@@ -139,7 +174,10 @@ describe("userlandApprovalService", () => {
     queued.mockResolvedValueOnce({ kind: "choice", choice: "allow" });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    await expect(service.handler(workerCtx, "request", [validRequest])).resolves.toEqual({ kind: "choice", choice: "allow" });
+    await expect(service.handler(workerCtx, "request", [validRequest])).resolves.toEqual({
+      kind: "choice",
+      choice: "allow",
+    });
     expect(queued).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
@@ -148,16 +186,21 @@ describe("userlandApprovalService", () => {
   it("persists choices, skips dismissals, and logs persistence failures without changing the result", async () => {
     const { service, queued, record } = createDeps();
 
-    await expect(service.handler(workerCtx, "request", [validRequest])).resolves.toEqual({ kind: "choice", choice: "allow" });
+    await expect(service.handler(workerCtx, "request", [validRequest])).resolves.toEqual({
+      kind: "choice",
+      choice: "allow",
+    });
     expect(record).toHaveBeenCalledWith(
       { callerId: "worker:alpha", callerKind: "worker" },
       validRequest.subject,
-      "allow",
+      "allow"
     );
 
     record.mockClear();
     queued.mockResolvedValueOnce({ kind: "dismissed" });
-    await expect(service.handler(workerCtx, "request", [validRequest])).resolves.toEqual({ kind: "dismissed" });
+    await expect(service.handler(workerCtx, "request", [validRequest])).resolves.toEqual({
+      kind: "dismissed",
+    });
     expect(record).not.toHaveBeenCalled();
 
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -165,7 +208,10 @@ describe("userlandApprovalService", () => {
     record.mockImplementationOnce(async () => {
       throw new Error("disk full");
     });
-    await expect(service.handler(workerCtx, "request", [validRequest])).resolves.toEqual({ kind: "choice", choice: "allow" });
+    await expect(service.handler(workerCtx, "request", [validRequest])).resolves.toEqual({
+      kind: "choice",
+      choice: "allow",
+    });
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
@@ -191,6 +237,8 @@ describe("userlandApprovalService", () => {
     const { service } = createDeps();
 
     await expect(service.handler(workerCtx, "missing", [])).rejects.toBeInstanceOf(ServiceError);
-    await expect(service.handler(workerCtx, "missing", [])).rejects.toMatchObject({ code: "ENOSYS" });
+    await expect(service.handler(workerCtx, "missing", [])).rejects.toMatchObject({
+      code: "ENOSYS",
+    });
   });
 });

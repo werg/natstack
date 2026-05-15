@@ -11,19 +11,8 @@
 import { useState, useCallback, useEffect, useMemo, useRef, memo, type CSSProperties } from "react";
 import { useTouchDevice } from "@workspace/react/responsive";
 import { useAtomValue, useSetAtom } from "jotai";
-import {
-  CaretRightIcon,
-  Cross2Icon,
-  PlusIcon,
-  UpdateIcon,
-} from "@radix-ui/react-icons";
-import {
-  Badge,
-  Box,
-  Flex,
-  IconButton,
-  Text,
-} from "@radix-ui/themes";
+import { CaretRightIcon, Cross2Icon, PlusIcon, UpdateIcon } from "@radix-ui/react-icons";
+import { Badge, Box, Flex, IconButton, Text } from "@radix-ui/themes";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -74,10 +63,7 @@ function getDropIndicatorStyle(depth: number, top: number | string): CSSProperti
   };
 }
 
-function getRowBackground(
-  isSelected: boolean,
-  isHovered: boolean
-): string | undefined {
+function getRowBackground(isSelected: boolean, isHovered: boolean): string | undefined {
   if (isSelected) return isHovered ? COLORS.selectedHover : COLORS.selected;
   if (isHovered) return COLORS.hover;
   return undefined;
@@ -103,296 +89,297 @@ interface SortableTreeItemProps {
   onUnindent: (panelId: string) => void;
 }
 
-const SortableTreeItem = memo(function SortableTreeItem({
-  item,
-  isSelected,
-  showIndicator,
-  projectedDepth,
-  isDraggingAny,
-  showIndicatorBelow,
-  isTouch,
-  onSelect,
-  onToggleCollapse,
-  onPanelAction,
-  onArchive,
-  onIndent,
-  onUnindent,
-}: SortableTreeItemProps) {
-  const { panel, depth, collapsed } = item;
-  const [isHovered, setIsHovered] = useState(false);
-  const expandTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+const SortableTreeItem = memo(
+  function SortableTreeItem({
+    item,
+    isSelected,
+    showIndicator,
+    projectedDepth,
+    isDraggingAny,
+    showIndicatorBelow,
+    isTouch,
+    onSelect,
+    onToggleCollapse,
+    onPanelAction,
+    onArchive,
+    onIndent,
+    onUnindent,
+  }: SortableTreeItemProps) {
+    const { panel, depth, collapsed } = item;
+    const [isHovered, setIsHovered] = useState(false);
+    const expandTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Clear expand timeout on unmount
-  useEffect(() => {
-    return () => {
-      if (expandTimeoutRef.current) {
-        clearTimeout(expandTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: panel.id });
-
-  const style: CSSProperties = {
-    transform: CSS.Translate.toString(transform),
-    transition,
-    opacity: isDragging ? 0.2 : 1,
-  };
-
-  const hasChildren = panel.childCount > 0;
-
-  // Build state indicator color
-  const buildStateColor = useMemo(() => {
-    switch (panel.buildState) {
-      case "building":
-      case "cloning":
-        return "var(--amber-9)";
-      case "error":
-        return "var(--red-9)";
-      case "pending":
-        return "var(--gray-8)";
-      default:
-        return undefined;
-    }
-  }, [panel.buildState]);
-
-  const handleContextMenu = useCallback(
-    async (e: React.MouseEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const { screenX, screenY } = e;
-      const action = await menu.showPanelContext(panel.id, {
-        x: Math.round(screenX),
-        y: Math.round(screenY),
-      });
-      if (action) {
-        onPanelAction?.(panel.id, action);
-      }
-    },
-    [panel.id, onPanelAction]
-  );
-
-  const handleToggleExpand = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      onToggleCollapse(panel.id);
-    },
-    [panel.id, onToggleCollapse]
-  );
-
-  const handleSelect = useCallback(() => {
-    onSelect(panel.id);
-  }, [onSelect, panel.id]);
-
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Tab") {
-        e.preventDefault();
-        if (e.shiftKey) {
-          onUnindent(panel.id);
-        } else {
-          onIndent(panel.id);
+    // Clear expand timeout on unmount
+    useEffect(() => {
+      return () => {
+        if (expandTimeoutRef.current) {
+          clearTimeout(expandTimeoutRef.current);
         }
+      };
+    }, []);
+
+    const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+      id: panel.id,
+    });
+
+    const style: CSSProperties = {
+      transform: CSS.Translate.toString(transform),
+      transition,
+      opacity: isDragging ? 0.2 : 1,
+    };
+
+    const hasChildren = panel.childCount > 0;
+
+    // Build state indicator color
+    const buildStateColor = useMemo(() => {
+      switch (panel.buildState) {
+        case "building":
+        case "cloning":
+          return "var(--amber-9)";
+        case "error":
+          return "var(--red-9)";
+        case "pending":
+          return "var(--gray-8)";
+        default:
+          return undefined;
       }
-    },
-    [panel.id, onIndent, onUnindent]
-  );
+    }, [panel.buildState]);
 
-  const handleArchive = useCallback(
-    (e: React.MouseEvent) => {
-      e.stopPropagation();
-      onArchive?.(panel.id);
-    },
-    [panel.id, onArchive]
-  );
+    const handleContextMenu = useCallback(
+      async (e: React.MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const { screenX, screenY } = e;
+        const action = await menu.showPanelContext(panel.id, {
+          x: Math.round(screenX),
+          y: Math.round(screenY),
+        });
+        if (action) {
+          onPanelAction?.(panel.id, action);
+        }
+      },
+      [panel.id, onPanelAction]
+    );
 
-  // Connector line for visual hierarchy (only for non-root nodes)
-  const connectorStyle: CSSProperties = depth > 0 ? {
-    borderLeft: `1px solid ${COLORS.connector}`,
-    marginLeft: depth * INDENTATION_WIDTH - 1,
-    paddingLeft: 4,
-  } : {
-    marginLeft: depth * INDENTATION_WIDTH,
-  };
+    const handleToggleExpand = useCallback(
+      (e: React.MouseEvent) => {
+        e.stopPropagation();
+        onToggleCollapse(panel.id);
+      },
+      [panel.id, onToggleCollapse]
+    );
 
-  const rowStyle: CSSProperties = {
-    cursor: "pointer",
-    backgroundColor: getRowBackground(isSelected, isHovered),
-    borderRadius: "var(--radius-2)",
-    transition: "background-color 100ms ease-out",
-  };
+    const handleSelect = useCallback(() => {
+      onSelect(panel.id);
+    }, [onSelect, panel.id]);
 
-  // Show drop indicator when this item is designated to show it
-  const showDropIndicator = showIndicator && projectedDepth !== null;
-
-  return (
-    <Box
-      ref={setNodeRef}
-      style={{
-        position: "relative",
-        ...style,
-        ...connectorStyle,
-      }}
-    >
-      {showDropIndicator && (
-        <Box style={getDropIndicatorStyle(projectedDepth, showIndicatorBelow ? "100%" : -1)} />
-      )}
-
-      <Flex
-        {...attributes}
-        {...listeners}
-        tabIndex={isSelected ? 0 : -1}
-        onKeyDown={handleKeyDown}
-        align="center"
-        gap="1"
-        px="1"
-        py="1"
-        style={rowStyle}
-        data-active={isSelected ? "true" : "false"}
-        onClick={handleSelect}
-        onContextMenu={handleContextMenu}
-        onMouseEnter={() => {
-          if (!isDraggingAny) {
-            setIsHovered(true);
-          } else if (collapsed && hasChildren) {
-            // Auto-expand after delay during drag hover
-            expandTimeoutRef.current = setTimeout(() => {
-              onToggleCollapse(panel.id);
-            }, AUTO_EXPAND_DELAY_MS);
+    const handleKeyDown = useCallback(
+      (e: React.KeyboardEvent) => {
+        if (e.key === "Tab") {
+          e.preventDefault();
+          if (e.shiftKey) {
+            onUnindent(panel.id);
+          } else {
+            onIndent(panel.id);
           }
-        }}
-        onMouseLeave={() => {
-          setIsHovered(false);
-          if (expandTimeoutRef.current) {
-            clearTimeout(expandTimeoutRef.current);
-            expandTimeoutRef.current = null;
+        }
+      },
+      [panel.id, onIndent, onUnindent]
+    );
+
+    const handleArchive = useCallback(
+      (e: React.MouseEvent) => {
+        e.stopPropagation();
+        onArchive?.(panel.id);
+      },
+      [panel.id, onArchive]
+    );
+
+    // Connector line for visual hierarchy (only for non-root nodes)
+    const connectorStyle: CSSProperties =
+      depth > 0
+        ? {
+            borderLeft: `1px solid ${COLORS.connector}`,
+            marginLeft: depth * INDENTATION_WIDTH - 1,
+            paddingLeft: 4,
           }
+        : {
+            marginLeft: depth * INDENTATION_WIDTH,
+          };
+
+    const rowStyle: CSSProperties = {
+      cursor: "pointer",
+      backgroundColor: getRowBackground(isSelected, isHovered),
+      borderRadius: "var(--radius-2)",
+      transition: "background-color 100ms ease-out",
+    };
+
+    // Show drop indicator when this item is designated to show it
+    const showDropIndicator = showIndicator && projectedDepth !== null;
+
+    return (
+      <Box
+        ref={setNodeRef}
+        style={{
+          position: "relative",
+          ...style,
+          ...connectorStyle,
         }}
       >
-        {/* Expand/collapse button */}
-        {hasChildren ? (
-          <IconButton
-            size="1"
-            variant="ghost"
-            color="gray"
-            aria-label={collapsed ? "Expand" : "Collapse"}
-            onClick={handleToggleExpand}
-            style={{
-              width: EXPAND_BUTTON_SIZE,
-              height: EXPAND_BUTTON_SIZE,
-              transition: "transform 150ms ease",
-              transform: collapsed ? "rotate(0deg)" : "rotate(90deg)",
-            }}
-          >
-            <CaretRightIcon />
-          </IconButton>
-        ) : (
-          <Box style={{ width: EXPAND_BUTTON_SIZE, height: EXPAND_BUTTON_SIZE, flexShrink: 0 }} />
+        {showDropIndicator && (
+          <Box style={getDropIndicatorStyle(projectedDepth, showIndicatorBelow ? "100%" : -1)} />
         )}
 
-        {/* Title */}
-        <Text
-          size="2"
-          weight={isSelected ? "medium" : "regular"}
-          style={{
-            flex: 1,
-            minWidth: 0,
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            color: isSelected ? "var(--gray-12)" : "var(--gray-11)",
+        <Flex
+          {...attributes}
+          {...listeners}
+          tabIndex={isSelected ? 0 : -1}
+          onKeyDown={handleKeyDown}
+          align="center"
+          gap="1"
+          px="1"
+          py="1"
+          style={rowStyle}
+          data-active={isSelected ? "true" : "false"}
+          onClick={handleSelect}
+          onContextMenu={handleContextMenu}
+          onMouseEnter={() => {
+            if (!isDraggingAny) {
+              setIsHovered(true);
+            } else if (collapsed && hasChildren) {
+              // Auto-expand after delay during drag hover
+              expandTimeoutRef.current = setTimeout(() => {
+                onToggleCollapse(panel.id);
+              }, AUTO_EXPAND_DELAY_MS);
+            }
+          }}
+          onMouseLeave={() => {
+            setIsHovered(false);
+            if (expandTimeoutRef.current) {
+              clearTimeout(expandTimeoutRef.current);
+              expandTimeoutRef.current = null;
+            }
           }}
         >
-          {panel.title}
-        </Text>
+          {/* Expand/collapse button */}
+          {hasChildren ? (
+            <IconButton
+              size="1"
+              variant="ghost"
+              color="gray"
+              aria-label={collapsed ? "Expand" : "Collapse"}
+              onClick={handleToggleExpand}
+              style={{
+                width: EXPAND_BUTTON_SIZE,
+                height: EXPAND_BUTTON_SIZE,
+                transition: "transform 150ms ease",
+                transform: collapsed ? "rotate(0deg)" : "rotate(90deg)",
+              }}
+            >
+              <CaretRightIcon />
+            </IconButton>
+          ) : (
+            <Box style={{ width: EXPAND_BUTTON_SIZE, height: EXPAND_BUTTON_SIZE, flexShrink: 0 }} />
+          )}
 
-        {/* Child count badge */}
-        {hasChildren && (
-          <Badge
-            size="1"
-            variant="soft"
-            color="gray"
-            radius="full"
-            style={{ fontSize: "10px", flexShrink: 0 }}
-          >
-            {panel.childCount}
-          </Badge>
-        )}
-
-        {/* Build state indicator */}
-        {buildStateColor && (
-          <Box
+          {/* Title */}
+          <Text
+            size="2"
+            weight={isSelected ? "medium" : "regular"}
             style={{
-              width: BUILD_INDICATOR_SIZE,
-              height: BUILD_INDICATOR_SIZE,
-              borderRadius: "50%",
-              backgroundColor: buildStateColor,
-              flexShrink: 0,
-            }}
-          />
-        )}
-
-        {/* Archive (X) button - shown on hover (or always on touch), hidden during drag */}
-        {(isHovered || isTouch) && !isDraggingAny && (
-          <IconButton
-            size="1"
-            variant="ghost"
-            color="gray"
-            aria-label="Archive panel"
-            onClick={handleArchive}
-            style={{
-              width: 16,
-              height: 16,
-              flexShrink: 0,
-              opacity: 0.7,
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.opacity = "1";
-              e.currentTarget.style.backgroundColor = "var(--red-a4)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.opacity = "0.7";
-              e.currentTarget.style.backgroundColor = "transparent";
+              flex: 1,
+              minWidth: 0,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              color: isSelected ? "var(--gray-12)" : "var(--gray-11)",
             }}
           >
-            <Cross2Icon width={10} height={10} />
-          </IconButton>
-        )}
-      </Flex>
-    </Box>
-  );
-}, (prev, next) => {
-  // Custom comparator: compare specific fields that affect rendering,
-  // since flattenTree() creates fresh FlattenedPanel objects every call.
-  return (
-    prev.item.id === next.item.id &&
-    prev.item.depth === next.item.depth &&
-    prev.item.collapsed === next.item.collapsed &&
-    prev.item.parentId === next.item.parentId &&
-    prev.item.panel.title === next.item.panel.title &&
-    prev.item.panel.childCount === next.item.panel.childCount &&
-    prev.item.panel.buildState === next.item.panel.buildState &&
-    prev.isSelected === next.isSelected &&
-    prev.showIndicator === next.showIndicator &&
-    prev.projectedDepth === next.projectedDepth &&
-    prev.isDraggingAny === next.isDraggingAny &&
-    prev.showIndicatorBelow === next.showIndicatorBelow &&
-    prev.isTouch === next.isTouch &&
-    prev.onSelect === next.onSelect &&
-    prev.onToggleCollapse === next.onToggleCollapse &&
-    prev.onPanelAction === next.onPanelAction &&
-    prev.onArchive === next.onArchive &&
-    prev.onIndent === next.onIndent &&
-    prev.onUnindent === next.onUnindent
-  );
-});
+            {panel.title}
+          </Text>
+
+          {/* Child count badge */}
+          {hasChildren && (
+            <Badge
+              size="1"
+              variant="soft"
+              color="gray"
+              radius="full"
+              style={{ fontSize: "10px", flexShrink: 0 }}
+            >
+              {panel.childCount}
+            </Badge>
+          )}
+
+          {/* Build state indicator */}
+          {buildStateColor && (
+            <Box
+              style={{
+                width: BUILD_INDICATOR_SIZE,
+                height: BUILD_INDICATOR_SIZE,
+                borderRadius: "50%",
+                backgroundColor: buildStateColor,
+                flexShrink: 0,
+              }}
+            />
+          )}
+
+          {/* Archive (X) button - shown on hover (or always on touch), hidden during drag */}
+          {(isHovered || isTouch) && !isDraggingAny && (
+            <IconButton
+              size="1"
+              variant="ghost"
+              color="gray"
+              aria-label="Archive panel"
+              onClick={handleArchive}
+              style={{
+                width: 16,
+                height: 16,
+                flexShrink: 0,
+                opacity: 0.7,
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.opacity = "1";
+                e.currentTarget.style.backgroundColor = "var(--red-a4)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.opacity = "0.7";
+                e.currentTarget.style.backgroundColor = "transparent";
+              }}
+            >
+              <Cross2Icon width={10} height={10} />
+            </IconButton>
+          )}
+        </Flex>
+      </Box>
+    );
+  },
+  (prev, next) => {
+    // Custom comparator: compare specific fields that affect rendering,
+    // since flattenTree() creates fresh FlattenedPanel objects every call.
+    return (
+      prev.item.id === next.item.id &&
+      prev.item.depth === next.item.depth &&
+      prev.item.collapsed === next.item.collapsed &&
+      prev.item.parentId === next.item.parentId &&
+      prev.item.panel.title === next.item.panel.title &&
+      prev.item.panel.childCount === next.item.panel.childCount &&
+      prev.item.panel.buildState === next.item.panel.buildState &&
+      prev.isSelected === next.isSelected &&
+      prev.showIndicator === next.showIndicator &&
+      prev.projectedDepth === next.projectedDepth &&
+      prev.isDraggingAny === next.isDraggingAny &&
+      prev.showIndicatorBelow === next.showIndicatorBelow &&
+      prev.isTouch === next.isTouch &&
+      prev.onSelect === next.onSelect &&
+      prev.onToggleCollapse === next.onToggleCollapse &&
+      prev.onPanelAction === next.onPanelAction &&
+      prev.onArchive === next.onArchive &&
+      prev.onIndent === next.onIndent &&
+      prev.onUnindent === next.onUnindent
+    );
+  }
+);
 
 // ============================================================================
 // End Drop Zone Component
@@ -405,11 +392,7 @@ interface EndDropZoneProps {
 }
 
 function EndDropZone({ isOver, projectedDepth, isDragging }: EndDropZoneProps) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-  } = useSortable({ id: END_DROP_ZONE_ID });
+  const { attributes, listeners, setNodeRef } = useSortable({ id: END_DROP_ZONE_ID });
 
   const showIndicator = isOver && projectedDepth !== null;
 
@@ -454,22 +437,11 @@ export function LazyPanelTreeSidebar({
   const setWorkspaceChooserOpen = useSetAtom(workspaceChooserDialogOpenAtom);
   const isTouch = useTouchDevice();
 
-  const {
-    flattenedItems,
-    collapsedIds,
-    toggleCollapse,
-    expandIds,
-    indentPanel,
-    unindentPanel,
-  } = usePanelDndTree();
+  const { flattenedItems, collapsedIds, toggleCollapse, expandIds, indentPanel, unindentPanel } =
+    usePanelDndTree();
 
-  const {
-    activeId,
-    overId,
-    projectedDepth,
-    indicatorItemId,
-    showIndicatorBelow,
-  } = usePanelDndDrag();
+  const { activeId, overId, projectedDepth, indicatorItemId, showIndicatorBelow } =
+    usePanelDndDrag();
 
   // Auto-expand ancestors of selected panel (batched for performance)
   useEffect(() => {
@@ -483,9 +455,11 @@ export function LazyPanelTreeSidebar({
 
   const handleNewPanel = useCallback(async () => {
     const result = await panel.createAboutPanel("new");
-    window.dispatchEvent(new CustomEvent("shell-panel-created", {
-      detail: { panelId: result.id }
-    }));
+    window.dispatchEvent(
+      new CustomEvent("shell-panel-created", {
+        detail: { panelId: result.id },
+      })
+    );
   }, []);
 
   // Scroll container ref for the virtualizer.
@@ -525,7 +499,12 @@ export function LazyPanelTreeSidebar({
               <Text size="1" color="gray" truncate style={{ flex: 1 }}>
                 {activeWorkspaceName}
               </Text>
-              <IconButton variant="ghost" size="1" onClick={() => setWorkspaceChooserOpen(true)} aria-label="Switch workspace">
+              <IconButton
+                variant="ghost"
+                size="1"
+                onClick={() => setWorkspaceChooserOpen(true)}
+                aria-label="Switch workspace"
+              >
                 <UpdateIcon />
               </IconButton>
             </Flex>
@@ -538,7 +517,9 @@ export function LazyPanelTreeSidebar({
             style={{ width: "100%" }}
           >
             <PlusIcon />
-            <Text size="1" ml="1">New Panel</Text>
+            <Text size="1" ml="1">
+              New Panel
+            </Text>
           </IconButton>
         </Box>
       </Flex>
@@ -549,10 +530,7 @@ export function LazyPanelTreeSidebar({
 
   return (
     <Flex direction="column" style={{ flex: 1, minHeight: 0 }}>
-      <div
-        ref={scrollRef}
-        style={{ flex: 1, minHeight: 0, overflowY: "auto" }}
-      >
+      <div ref={scrollRef} style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
         <Box
           p="1"
           style={{
@@ -621,7 +599,12 @@ export function LazyPanelTreeSidebar({
             <Text size="1" color="gray" truncate style={{ flex: 1 }}>
               {activeWorkspaceName}
             </Text>
-            <IconButton variant="ghost" size="1" onClick={() => setWorkspaceChooserOpen(true)} aria-label="Switch workspace">
+            <IconButton
+              variant="ghost"
+              size="1"
+              onClick={() => setWorkspaceChooserOpen(true)}
+              aria-label="Switch workspace"
+            >
               <UpdateIcon />
             </IconButton>
           </Flex>
@@ -634,7 +617,9 @@ export function LazyPanelTreeSidebar({
           style={{ width: "100%" }}
         >
           <PlusIcon />
-          <Text size="1" ml="1">New Panel</Text>
+          <Text size="1" ml="1">
+            New Panel
+          </Text>
         </IconButton>
       </Box>
     </Flex>

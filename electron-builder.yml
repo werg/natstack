@@ -13,9 +13,8 @@ files:
 
 asar: true
 asarUnpack:
-  # utilityProcess.fork() needs a physical entry point; this bootstrap loads
-  # the real server bundle from app.asar.
-  - "dist/server-bootstrap.cjs"
+  # utilityProcess.fork() needs a physical server entry point.
+  - "dist/server-electron.cjs"
   # Runtime panel/worker builds use esbuild against installed packages. Keep
   # node_modules on the real filesystem so package resolution and native
   # executables do not cross ASAR virtual paths.

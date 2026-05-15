@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
-import { Box, Button, Callout, Dialog, Flex, Select, Spinner, Text, TextField } from "@radix-ui/themes";
+import { Button, Callout, Dialog, Flex, Select, Spinner, Text, TextField } from "@radix-ui/themes";
 import { ExclamationTriangleIcon } from "@radix-ui/react-icons";
 
 import {
@@ -52,7 +52,8 @@ export function WorkspaceWizard() {
       <Dialog.Content maxWidth="450px">
         <Dialog.Title>Create New Workspace</Dialog.Title>
         <Dialog.Description size="2" color="gray" mb="4">
-          Create a new workspace. Fork from an existing workspace to copy its panels and packages, or start with an empty workspace.
+          Create a new workspace. Fork from an existing workspace to copy its panels and packages,
+          or start with an empty workspace.
         </Dialog.Description>
 
         <Flex direction="column" gap="4">
@@ -75,7 +76,10 @@ export function WorkspaceWizard() {
           {workspaces.length > 0 && (
             <Flex direction="column" gap="3">
               <Text size="2" weight="medium">
-                Fork From <Text size="1" color="gray">(optional)</Text>
+                Fork From{" "}
+                <Text size="1" color="gray">
+                  (optional)
+                </Text>
               </Text>
               <Select.Root
                 value={formData.forkFrom || "__none__"}
@@ -88,7 +92,8 @@ export function WorkspaceWizard() {
                   <Select.Item value="__none__">Empty workspace (no panels)</Select.Item>
                   {workspaces.map((ws) => (
                     <Select.Item key={ws.name} value={ws.name}>
-                      {ws.name}{ws.name === activeWorkspaceName ? " (current)" : ""}
+                      {ws.name}
+                      {ws.name === activeWorkspaceName ? " (current)" : ""}
                     </Select.Item>
                   ))}
                 </Select.Content>

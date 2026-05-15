@@ -55,7 +55,7 @@ export interface EnsureHttpsServeOptions {
  * `tailscale serve`. Idempotent on success.
  */
 export async function ensureHttpsServe(
-  opts: EnsureHttpsServeOptions,
+  opts: EnsureHttpsServeOptions
 ): Promise<ServeProvisionResult> {
   // Tailscale CLI calls can be slow when LocalAPI rountrips through the
   // daemon to query account state. The "Serve is not enabled" response in
@@ -81,9 +81,9 @@ export async function ensureHttpsServe(
     return {
       kind: "skipped-conflict",
       reason:
-        "tailscale serve already has a configuration that points somewhere "
-        + "else; refusing to overwrite. Run `tailscale serve reset` if you "
-        + "want natstack to manage it.",
+        "tailscale serve already has a configuration that points somewhere " +
+        "else; refusing to overwrite. Run `tailscale serve reset` if you " +
+        "want natstack to manage it.",
     };
   }
 
@@ -109,7 +109,10 @@ export interface HttpsReachabilityResult {
   reason?: string;
 }
 
-export function probeHttpsReachable(baseUrl: string, timeoutMs = 2500): Promise<HttpsReachabilityResult> {
+export function probeHttpsReachable(
+  baseUrl: string,
+  timeoutMs = 2500
+): Promise<HttpsReachabilityResult> {
   let healthUrl: string;
   try {
     const u = new URL(baseUrl);
@@ -150,9 +153,11 @@ export function probeHttpsReachable(baseUrl: string, timeoutMs = 2500): Promise<
           }
           try {
             const parsed = JSON.parse(body) as { ok?: unknown };
-            finish(parsed.ok === true
-              ? { ok: true }
-              : { ok: false, reason: '/healthz did not return {"ok":true}' });
+            finish(
+              parsed.ok === true
+                ? { ok: true }
+                : { ok: false, reason: '/healthz did not return {"ok":true}' }
+            );
           } catch {
             finish({ ok: false, reason: "/healthz body was not JSON" });
           }
@@ -164,7 +169,10 @@ export function probeHttpsReachable(baseUrl: string, timeoutMs = 2500): Promise<
         finish({ ok: false, reason: `health check timed out after ${timeoutMs}ms` });
       });
       req.on("error", (error: NodeJS.ErrnoException) => {
-        finish({ ok: false, reason: error.code ? `${error.code}: ${error.message}` : error.message });
+        finish({
+          ok: false,
+          reason: error.code ? `${error.code}: ${error.message}` : error.message,
+        });
       });
       req.end();
     } catch {
@@ -180,18 +188,24 @@ export function verifyHttpsReachable(baseUrl: string, timeoutMs = 2500): Promise
 // ── helpers ────────────────────────────────────────────────────────────
 
 interface TailscaleServeStatus {
-  Web?: Record<string, {
-    Handlers?: Record<string, { Proxy?: string; Path?: string; Text?: string }>;
-  }>;
+  Web?: Record<
+    string,
+    {
+      Handlers?: Record<string, { Proxy?: string; Path?: string; Text?: string }>;
+    }
+  >;
   // Older versions used `Services` instead of `Web`; accept either.
-  Services?: Record<string, {
-    Handlers?: Record<string, { Proxy?: string }>;
-  }>;
+  Services?: Record<
+    string,
+    {
+      Handlers?: Record<string, { Proxy?: string }>;
+    }
+  >;
 }
 
 export function classifyServeStatus(
   status: TailscaleServeStatus,
-  opts: { port: number; hostname: string },
+  opts: { port: number; hostname: string }
 ): "empty" | "matches" | "conflict" {
   const handlers: { proxy: string | undefined }[] = [];
   for (const section of [status.Web, status.Services]) {
@@ -205,9 +219,11 @@ export function classifyServeStatus(
   if (handlers.length === 0) return "empty";
   const matchesPort = (proxy: string | undefined): boolean => {
     if (!proxy) return false;
-    return proxy.includes(`127.0.0.1:${opts.port}`)
-      || proxy.includes(`localhost:${opts.port}`)
-      || proxy.includes(`[::1]:${opts.port}`);
+    return (
+      proxy.includes(`127.0.0.1:${opts.port}`) ||
+      proxy.includes(`localhost:${opts.port}`) ||
+      proxy.includes(`[::1]:${opts.port}`)
+    );
   };
   if (handlers.some((h) => matchesPort(h.proxy))) return "matches";
   return "conflict";
@@ -224,7 +240,7 @@ async function locateTailscale(deadline: number): Promise<string | null> {
 
 async function runServeStatusJson(
   cli: string,
-  deadline: number,
+  deadline: number
 ): Promise<TailscaleServeStatus | null> {
   const result = await runOnce(cli, ["serve", "status", "--json"], deadline);
   if (!result || result.exitCode !== 0) return null;
@@ -238,7 +254,7 @@ async function runServeStatusJson(
 async function runServeAdd(
   cli: string,
   port: number,
-  deadline: number,
+  deadline: number
 ): Promise<{ kind: "ok" } | { kind: "fail"; stderr: string; exitCode: number | null }> {
   const result = await runOnce(cli, ["serve", "--bg", String(port)], deadline);
   if (!result) return { kind: "fail", stderr: "(timed out)", exitCode: null };
@@ -256,14 +272,17 @@ async function runServeAdd(
 
 export function classifyServeError(stderr: string, _exit: number | null): ServeProvisionResult {
   const lower = stderr.toLowerCase();
-  if (lower.includes("must run as root") || lower.includes("operation not permitted")
-    || lower.includes("permission denied")) {
+  if (
+    lower.includes("must run as root") ||
+    lower.includes("operation not permitted") ||
+    lower.includes("permission denied")
+  ) {
     return {
       kind: "permission-denied",
       hint:
-        "Run `sudo tailscale set --operator=$USER` once (lets you run "
-        + "`tailscale serve` without sudo), then restart natstack. "
-        + "Or run `sudo tailscale serve --bg <port>` once manually.",
+        "Run `sudo tailscale set --operator=$USER` once (lets you run " +
+        "`tailscale serve` without sudo), then restart natstack. " +
+        "Or run `sudo tailscale serve --bg <port>` once manually.",
     };
   }
   // "Serve is not enabled on your tailnet. To enable, visit: <url>" — the
@@ -281,8 +300,8 @@ export function classifyServeError(stderr: string, _exit: number | null): ServeP
     return {
       kind: "https-feature-disabled",
       hint:
-        "Enable the HTTPS Certificates feature for your tailnet at "
-        + "https://login.tailscale.com/admin/dns and try again.",
+        "Enable the HTTPS Certificates feature for your tailnet at " +
+        "https://login.tailscale.com/admin/dns and try again.",
     };
   }
   return { kind: "error", message: stderr.trim() || "tailscale serve failed" };

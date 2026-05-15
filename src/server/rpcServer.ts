@@ -16,19 +16,19 @@ import {
   type RpcResponse,
 } from "@natstack/rpc";
 import { createWsServerTransport, type WsServerTransportInternal } from "./wsServerTransport.js";
-import type { WsClientMessage, WsServerMessage } from "../../packages/shared/src/ws/protocol.js";
-import type { ToolExecutionResult } from "../../packages/shared/src/types.js";
-import type { WsClientInfo } from "../../packages/shared/src/serviceDispatcher.js";
+import type { WsClientMessage, WsServerMessage } from "@natstack/shared/ws/protocol";
+import type { ToolExecutionResult } from "@natstack/shared/types";
 import { createDevLogger } from "@natstack/dev-log";
 import {
   parseServiceMethod,
   ServiceDispatcher,
   type CallerKind,
   type ServiceContext,
-} from "../../packages/shared/src/serviceDispatcher.js";
-import { checkServiceAccess } from "../../packages/shared/src/servicePolicy.js";
-import type { TokenManager } from "../../packages/shared/src/tokenManager.js";
-import { WsEventSession, type EventService } from "../../packages/shared/src/eventsService.js";
+  type WsClientInfo,
+} from "@natstack/shared/serviceDispatcher";
+import { checkServiceAccess } from "@natstack/shared/servicePolicy";
+import type { TokenManager } from "@natstack/shared/tokenManager";
+import { WsEventSession, type EventService } from "@natstack/shared/eventsService";
 
 const log = createDevLogger("RpcServer");
 

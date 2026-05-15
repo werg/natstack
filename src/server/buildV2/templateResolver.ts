@@ -34,7 +34,7 @@ export function resolveTemplate(
   manifest: { template?: string },
   dependencies: Record<string, string>,
   panelSourcePath: string,
-  sourceRoot: string,
+  sourceRoot: string
 ): ResolvedTemplate {
   // Panel has its own index.html — self-contained
   const panelHtml = path.join(panelSourcePath, "index.html");
@@ -54,7 +54,9 @@ export function resolveTemplate(
     const templateDir = path.join(sourceRoot, "templates", manifest.template);
     return {
       htmlPath: findHtml(templateDir),
-      framework: readTemplateFramework(sourceRoot, manifest.template) ?? detectFrameworkFromDeps(dependencies),
+      framework:
+        readTemplateFramework(sourceRoot, manifest.template) ??
+        detectFrameworkFromDeps(dependencies),
     };
   }
 
@@ -64,7 +66,8 @@ export function resolveTemplate(
   if (defaultHtml) {
     return {
       htmlPath: defaultHtml,
-      framework: readTemplateFramework(sourceRoot, "default") ?? detectFrameworkFromDeps(dependencies),
+      framework:
+        readTemplateFramework(sourceRoot, "default") ?? detectFrameworkFromDeps(dependencies),
     };
   }
 

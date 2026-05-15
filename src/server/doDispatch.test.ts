@@ -31,7 +31,7 @@ describe("doRefUrl", () => {
   it("produces correct /_w/ URL path", () => {
     const ref = makeRef();
     expect(doRefUrl(ref, "onChannelEvent")).toBe(
-      "/_w/workers/agent-worker/AiChatWorker/ch-123/onChannelEvent",
+      "/_w/workers/agent-worker/AiChatWorker/ch-123/onChannelEvent"
     );
   });
 
@@ -46,7 +46,7 @@ describe("doRefUrl", () => {
     const ref = makeRef({ objectKey: "key/with:special chars" });
     const url = doRefUrl(ref, "method");
     expect(url).toBe(
-      `/_w/workers/agent-worker/AiChatWorker/${encodeURIComponent("key/with:special chars")}/method`,
+      `/_w/workers/agent-worker/AiChatWorker/${encodeURIComponent("key/with:special chars")}/method`
     );
   });
 
@@ -76,7 +76,7 @@ describe("DODispatch", () => {
     it("throws when no dispatcher has been configured", async () => {
       const ref = makeRef();
       await expect(dispatch.dispatch(ref, "ping")).rejects.toThrow(
-        "DODispatch: no dispatcher configured",
+        "DODispatch: no dispatcher configured"
       );
     });
   });
@@ -92,7 +92,7 @@ describe("DODispatch", () => {
       expect(dispatcher).toHaveBeenCalledTimes(1);
       expect(dispatcher).toHaveBeenCalledWith(
         "/_w/workers/agent-worker/AiChatWorker/ch-123/onChannelEvent",
-        ["arg1", 42],
+        ["arg1", 42]
       );
     });
 
@@ -122,10 +122,7 @@ describe("DODispatch", () => {
       const ref = makeRef();
       await dispatch.dispatch(ref, "noArgs");
 
-      expect(dispatcher).toHaveBeenCalledWith(
-        expect.any(String),
-        [],
-      );
+      expect(dispatcher).toHaveBeenCalledWith(expect.any(String), []);
     });
 
     it("replaces the dispatcher when setDispatcher is called again", async () => {
@@ -147,15 +144,19 @@ describe("DODispatch", () => {
     it("retries fetch failures after ensuring the DO and refreshes the workerd URL", async () => {
       const tokenManager = new TokenManager();
       const ensureDO = vi.fn().mockResolvedValue(undefined);
-      const getWorkerdUrl = vi.fn()
+      const getWorkerdUrl = vi
+        .fn()
         .mockReturnValueOnce("http://127.0.0.1:10001")
         .mockReturnValueOnce("http://127.0.0.1:10002");
-      const fetchMock = vi.fn()
+      const fetchMock = vi
+        .fn()
         .mockRejectedValueOnce(new TypeError("fetch failed"))
-        .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }));
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        );
 
       vi.stubGlobal("fetch", fetchMock);
       dispatch.setTokenManager(tokenManager);
@@ -171,16 +172,16 @@ describe("DODispatch", () => {
       expect(fetchMock).toHaveBeenNthCalledWith(
         1,
         "http://127.0.0.1:10001/_w/workers/agent-worker/AiChatWorker/ch-123/ping",
-        expect.any(Object),
+        expect.any(Object)
       );
       expect(fetchMock).toHaveBeenNthCalledWith(
         2,
         "http://127.0.0.1:10002/_w/workers/agent-worker/AiChatWorker/ch-123/ping",
         expect.objectContaining({
           headers: expect.objectContaining({
-            "Authorization": "Bearer workerd-gateway-token",
+            Authorization: "Bearer workerd-gateway-token",
           }),
-        }),
+        })
       );
     });
   });

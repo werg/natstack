@@ -35,7 +35,12 @@ export function createShellApprovalService(deps: {
     policy: { allowed: ["shell", "server"] },
     methods: {
       resolve: { args: z.tuple([z.string(), z.enum(APPROVAL_DECISIONS)]) },
-      resolveUserland: { args: z.tuple([z.string(), z.union([z.string().min(1).max(40), z.enum(USERLAND_RESOLVE_VALUES)])]) },
+      resolveUserland: {
+        args: z.tuple([
+          z.string(),
+          z.union([z.string().min(1).max(40), z.enum(USERLAND_RESOLVE_VALUES)]),
+        ]),
+      },
       submitClientConfig: { args: z.tuple([z.string(), clientConfigValuesSchema]) },
       submitCredentialInput: { args: z.tuple([z.string(), credentialInputValuesSchema]) },
       listPending: { args: z.tuple([]) },
@@ -44,7 +49,9 @@ export function createShellApprovalService(deps: {
       switch (method) {
         case "resolve": {
           const [approvalId, decision] = args as [string, ApprovalDecision];
-          const existed = approvalQueue.listPending().some((approval) => approval.approvalId === approvalId);
+          const existed = approvalQueue
+            .listPending()
+            .some((approval) => approval.approvalId === approvalId);
           approvalQueue.resolve(approvalId, decision);
           if (existed) {
             metrics.recordApprovalResolved({ decision, source: ctx.callerKind });
@@ -53,9 +60,16 @@ export function createShellApprovalService(deps: {
         }
         case "resolveUserland": {
           const [approvalId, choice] = args as [string, string | "dismiss"];
-          const pending = approvalQueue.listPending().find((approval) => approval.approvalId === approvalId);
+          const pending = approvalQueue
+            .listPending()
+            .find((approval) => approval.approvalId === approvalId);
           if (!pending || pending.kind !== "userland") {
-            throw new ServiceError(serviceName, method, "No pending userland approval found", "ENOENT");
+            throw new ServiceError(
+              serviceName,
+              method,
+              "No pending userland approval found",
+              "ENOENT"
+            );
           }
           if (choice === "dismiss") {
             approvalQueue.resolve(approvalId, "dismiss");
@@ -67,7 +81,7 @@ export function createShellApprovalService(deps: {
               serviceName,
               method,
               "Userland approval choice was not presented to the user",
-              "EINVAL",
+              "EINVAL"
             );
           }
           approvalQueue.resolveUserland(approvalId, choice);
@@ -76,7 +90,9 @@ export function createShellApprovalService(deps: {
         }
         case "submitClientConfig": {
           const [approvalId, values] = args as [string, Record<string, string>];
-          const existed = approvalQueue.listPending().some((approval) => approval.approvalId === approvalId);
+          const existed = approvalQueue
+            .listPending()
+            .some((approval) => approval.approvalId === approvalId);
           approvalQueue.submitClientConfig(approvalId, values);
           if (existed) {
             metrics.recordApprovalResolved({ decision: "submit", source: ctx.callerKind });
@@ -85,7 +101,9 @@ export function createShellApprovalService(deps: {
         }
         case "submitCredentialInput": {
           const [approvalId, values] = args as [string, Record<string, string>];
-          const existed = approvalQueue.listPending().some((approval) => approval.approvalId === approvalId);
+          const existed = approvalQueue
+            .listPending()
+            .some((approval) => approval.approvalId === approvalId);
           approvalQueue.submitCredentialInput(approvalId, values);
           if (existed) {
             metrics.recordApprovalResolved({ decision: "submit", source: ctx.callerKind });
@@ -96,7 +114,12 @@ export function createShellApprovalService(deps: {
           return approvalQueue.listPending();
         }
         default:
-          throw new ServiceError(serviceName, method, `Unknown shellApproval method: ${method}`, "ENOSYS");
+          throw new ServiceError(
+            serviceName,
+            method,
+            `Unknown shellApproval method: ${method}`,
+            "ENOSYS"
+          );
       }
     },
   };

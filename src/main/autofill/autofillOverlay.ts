@@ -34,7 +34,7 @@ export class AutofillOverlay {
     ipcMain.on("natstack:autofill-overlay:select", (event, id: number) => {
       if (this.overlayWcId === null || event.sender.id !== this.overlayWcId) {
         overlayLog.warn(
-          `Rejected autofill-overlay:select from non-overlay sender id=${event.sender.id} (expected ${this.overlayWcId ?? "<none>"})`,
+          `Rejected autofill-overlay:select from non-overlay sender id=${event.sender.id} (expected ${this.overlayWcId ?? "<none>"})`
         );
         return;
       }
@@ -44,7 +44,7 @@ export class AutofillOverlay {
     ipcMain.on("natstack:autofill-overlay:dismiss", (event) => {
       if (this.overlayWcId === null || event.sender.id !== this.overlayWcId) {
         overlayLog.warn(
-          `Rejected autofill-overlay:dismiss from non-overlay sender id=${event.sender.id} (expected ${this.overlayWcId ?? "<none>"})`,
+          `Rejected autofill-overlay:dismiss from non-overlay sender id=${event.sender.id} (expected ${this.overlayWcId ?? "<none>"})`
         );
         return;
       }
@@ -90,7 +90,7 @@ export class AutofillOverlay {
 
   show(
     credentials: Array<{ id: number; username: string; origin: string }>,
-    bounds: { x: number; y: number; width: number; height: number },
+    bounds: { x: number; y: number; width: number; height: number }
   ): void {
     if (!this.window) return;
     const view = this.ensureView();
@@ -98,7 +98,7 @@ export class AutofillOverlay {
     const itemsHtml = credentials
       .map(
         (c) =>
-          `<div class="item" data-id="${c.id}" tabindex="0">${escapeHtml(c.username || "(no username)")}<div class="origin">${escapeHtml(c.origin)}</div></div>`,
+          `<div class="item" data-id="${c.id}" tabindex="0">${escapeHtml(c.username || "(no username)")}<div class="origin">${escapeHtml(c.origin)}</div></div>`
       )
       .join("");
 
@@ -179,9 +179,7 @@ ${itemsHtml}
       height: dropdownHeight,
     });
 
-    void view.webContents.loadURL(
-      `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
-    );
+    void view.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
     view.setVisible(true);
     this.visible = true;
 

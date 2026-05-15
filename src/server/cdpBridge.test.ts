@@ -119,7 +119,9 @@ describe("CdpBridge authentication", () => {
     const client = new WebSocket(`${endpoint!.wsEndpoint}?token=${endpoint!.token}`);
     harness.sockets.push(client);
     await waitForOpen(client);
-    client.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: "1 + 1" } }));
+    client.send(
+      JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: "1 + 1" } })
+    );
 
     await expect(waitForClose(client)).resolves.toMatchObject({
       code: 4001,

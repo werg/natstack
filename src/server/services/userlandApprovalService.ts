@@ -29,15 +29,25 @@ export function createUserlandApprovalService(deps: {
         SERVICE_NAME,
         method,
         "userlandApproval is only available to panels and workers",
-        "EACCES",
+        "EACCES"
       );
     }
     const identity = deps.codeIdentityResolver.resolveByCallerId(ctx.callerId);
     if (!identity) {
-      throw new ServiceError(SERVICE_NAME, method, `Unknown caller identity: ${ctx.callerId}`, "ENOENT");
+      throw new ServiceError(
+        SERVICE_NAME,
+        method,
+        `Unknown caller identity: ${ctx.callerId}`,
+        "ENOENT"
+      );
     }
     if (identity.callerKind !== ctx.callerKind) {
-      throw new ServiceError(SERVICE_NAME, method, `Caller identity kind mismatch for ${ctx.callerId}`, "EACCES");
+      throw new ServiceError(
+        SERVICE_NAME,
+        method,
+        `Caller identity kind mismatch for ${ctx.callerId}`,
+        "EACCES"
+      );
     }
     return {
       callerId: identity.callerId,
@@ -47,7 +57,10 @@ export function createUserlandApprovalService(deps: {
     };
   }
 
-  async function request(ctx: ServiceContext, rawReq: UserlandApprovalRequest): Promise<UserlandApprovalChoice> {
+  async function request(
+    ctx: ServiceContext,
+    rawReq: UserlandApprovalRequest
+  ): Promise<UserlandApprovalChoice> {
     // Re-parse to apply the schema's transforms (zero-width strip). The
     // dispatcher validates against this schema but discards parsed.data and
     // forwards the un-transformed input — see serviceDispatcher.ts at the
@@ -73,7 +86,7 @@ export function createUserlandApprovalService(deps: {
         await deps.grantStore.record(
           { callerId: principal.callerId, callerKind: principal.callerKind },
           req.subject,
-          result.choice,
+          result.choice
         );
       } catch (err) {
         console.warn("[UserlandApprovalService] Failed to persist approval grant:", err);
@@ -106,7 +119,12 @@ export function createUserlandApprovalService(deps: {
           return deps.grantStore.list(principal.callerId) as UserlandApprovalGrant[];
         }
         default:
-          throw new ServiceError(SERVICE_NAME, method, `Unknown userlandApproval method: ${method}`, "ENOSYS");
+          throw new ServiceError(
+            SERVICE_NAME,
+            method,
+            `Unknown userlandApproval method: ${method}`,
+            "ENOSYS"
+          );
       }
     },
   };

@@ -7,10 +7,13 @@ describe("handleExternalOpenPayload", () => {
     const openExternal = vi.fn(async () => undefined);
     const forwardOAuthCallback = vi.fn(async () => undefined);
 
-    await handleExternalOpenPayload({ url: "https://example.test/path" }, {
-      openExternal,
-      forwardOAuthCallback,
-    });
+    await handleExternalOpenPayload(
+      { url: "https://example.test/path" },
+      {
+        openExternal,
+        forwardOAuthCallback,
+      }
+    );
 
     expect(openExternal).toHaveBeenCalledWith("https://example.test/path");
     expect(forwardOAuthCallback).not.toHaveBeenCalled();
@@ -25,21 +28,24 @@ describe("handleExternalOpenPayload", () => {
     });
     const forwardOAuthCallback = vi.fn(async () => undefined);
 
-    await handleExternalOpenPayload({
-      url: "https://auth.example.test/oauth/authorize",
-      oauthLoopback: {
-        transactionId: "tx-1",
-        redirectUri: `http://127.0.0.1:${port}/auth/callback`,
-        host: "127.0.0.1",
-        port,
-        callbackPath: "/auth/callback",
-        state: "state-1",
-        timeoutMs: 5_000,
+    await handleExternalOpenPayload(
+      {
+        url: "https://auth.example.test/oauth/authorize",
+        oauthLoopback: {
+          transactionId: "tx-1",
+          redirectUri: `http://127.0.0.1:${port}/auth/callback`,
+          host: "127.0.0.1",
+          port,
+          callbackPath: "/auth/callback",
+          state: "state-1",
+          timeoutMs: 5_000,
+        },
       },
-    }, {
-      openExternal,
-      forwardOAuthCallback,
-    });
+      {
+        openExternal,
+        forwardOAuthCallback,
+      }
+    );
 
     expect(openExternal).toHaveBeenCalledWith("https://auth.example.test/oauth/authorize");
     expect(forwardOAuthCallback).toHaveBeenCalledWith({
@@ -61,9 +67,11 @@ async function getFreePort(): Promise<number> {
 
 function httpGet(url: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    http.get(url, (res) => {
-      res.resume();
-      res.on("end", resolve);
-    }).on("error", reject);
+    http
+      .get(url, (res) => {
+        res.resume();
+        res.on("end", resolve);
+      })
+      .on("error", reject);
   });
 }

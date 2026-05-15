@@ -82,10 +82,9 @@ vi.mock("electron", () => {
 
 // Import after mocks are set up
 import { ViewManager } from "./viewManager.js";
-import { BaseWindow, WebContentsView, session } from "electron";
+import { BaseWindow, WebContentsView } from "electron";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type MockBaseWindow = any;
+type MockBaseWindow = InstanceType<typeof BaseWindow>;
 
 describe("ViewManager", () => {
   let mockWindow: MockBaseWindow;
@@ -93,8 +92,7 @@ describe("ViewManager", () => {
   beforeEach(() => {
     vi.clearAllMocks();
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    mockWindow = new (BaseWindow as any)();
+    mockWindow = new BaseWindow();
   });
 
   describe("initialization", () => {

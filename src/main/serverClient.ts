@@ -75,7 +75,7 @@ async function connectAndAuth(
   wsUrl: string,
   authToken: string,
   tlsOpts: TlsPinningOptions | undefined,
-  connectionId: string,
+  connectionId: string
 ): Promise<{ ws: WebSocket; serverBootId?: string }> {
   const isTls = wsUrl.startsWith("wss://");
   const wsOptions: Record<string, unknown> = {};
@@ -160,7 +160,8 @@ export async function createServerClient(
   options?: ServerClientOptions
 ): Promise<ServerClient> {
   const pendingCalls = new Map<string, PendingCall>();
-  const getWsUrl = options?.getWsUrl ?? (() => options?.wsUrl ?? `ws://127.0.0.1:${serverRpcPort}/rpc`);
+  const getWsUrl =
+    options?.getWsUrl ?? (() => options?.wsUrl ?? `ws://127.0.0.1:${serverRpcPort}/rpc`);
   const shouldReconnect = options?.reconnect ?? !!(options?.wsUrl || options?.getWsUrl);
   const maxAttempts = options?.maxReconnectAttempts ?? 10;
   const tls = options?.tls;
@@ -249,7 +250,7 @@ export async function createServerClient(
       getWsUrl(),
       activeAuthToken,
       tls,
-      connectionId,
+      connectionId
     );
     return { socket, serverBootId };
   }

@@ -92,7 +92,7 @@ export class IpcDispatcher {
       if (!isShell) {
         console.warn(
           `[IpcDispatcher] Rejecting natstack:rpc:send from non-shell sender ` +
-          `(webContentsId=${event.sender.id})`,
+            `(webContentsId=${event.sender.id})`
         );
         return;
       }
@@ -127,7 +127,7 @@ export class IpcDispatcher {
     callerId: string,
     callerKind: CallerKind,
     targetId: string,
-    message: RpcMessage,
+    message: RpcMessage
   ): Promise<void> {
     if (message.type === "request" && targetId === "main") {
       const req = message as RpcRequest;
@@ -173,11 +173,7 @@ export class IpcDispatcher {
     }
   }
 
-  private sendResponse(
-    sender: WebContents,
-    _requestId: string,
-    response: RpcResponse,
-  ): void {
+  private sendResponse(sender: WebContents, _requestId: string, response: RpcResponse): void {
     if (!sender.isDestroyed()) {
       sender.send("natstack:rpc:message", "main", response);
     }

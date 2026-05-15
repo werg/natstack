@@ -33,13 +33,20 @@ function PanelAppContent() {
   const [chromeState, setChromeState] = useState<PanelChromeState | null>(null);
 
   // Convert panel initialization errors into notifications
-  useShellEvent("panel-initialization-error", useCallback((payload: { path: string; error: string }) => {
-    notification.show({
-      type: "error",
-      title: "Failed to initialize panels",
-      message: payload.error,
-    }).catch((err: unknown) => console.error("Failed to show panel-initialization-error notification", err));
-  }, []));
+  useShellEvent(
+    "panel-initialization-error",
+    useCallback((payload: { path: string; error: string }) => {
+      notification
+        .show({
+          type: "error",
+          title: "Failed to initialize panels",
+          message: payload.error,
+        })
+        .catch((err: unknown) =>
+          console.error("Failed to show panel-initialization-error notification", err)
+        );
+    }, [])
+  );
 
   // Use refs for callback handlers to avoid complex state patterns
   const openPanelDevToolsRef = useRef<() => void>(() => {});
@@ -48,7 +55,8 @@ function PanelAppContent() {
   );
   const handleChromeCommandRef = useRef<(command: ChromeCommand) => void>(() => {});
 
-  const { navigateToId, registerNavigateToId, addressBarVisible, setAddressBarVisible } = useNavigation();
+  const { navigateToId, registerNavigateToId, addressBarVisible, setAddressBarVisible } =
+    useNavigation();
 
   // Stable callbacks that delegate to refs
   const openPanelDevTools = useCallback(() => openPanelDevToolsRef.current(), []);
@@ -72,7 +80,9 @@ function PanelAppContent() {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "l") {
         event.preventDefault();
         setAddressBarVisible(true);
-        window.requestAnimationFrame(() => window.dispatchEvent(new CustomEvent("shell-focus-address")));
+        window.requestAnimationFrame(() =>
+          window.dispatchEvent(new CustomEvent("shell-focus-address"))
+        );
       }
       if (event.key === "Escape") {
         handleChromeCommand({ type: "stop" });
@@ -83,18 +93,32 @@ function PanelAppContent() {
     return () => window.removeEventListener("keydown", handler);
   }, [handleChromeCommand, openPanelDevTools, setAddressBarVisible]);
 
-  useShellEvent("toggle-address-bar", useCallback(() => {
-    setAddressBarVisible(!addressBarVisible);
-  }, [addressBarVisible, setAddressBarVisible]));
+  useShellEvent(
+    "toggle-address-bar",
+    useCallback(() => {
+      setAddressBarVisible(!addressBarVisible);
+    }, [addressBarVisible, setAddressBarVisible])
+  );
 
-  useShellEvent("focus-address-bar", useCallback(() => {
-    setAddressBarVisible(true);
-    window.requestAnimationFrame(() => window.dispatchEvent(new CustomEvent("shell-focus-address")));
-  }, [setAddressBarVisible]));
+  useShellEvent(
+    "focus-address-bar",
+    useCallback(() => {
+      setAddressBarVisible(true);
+      window.requestAnimationFrame(() =>
+        window.dispatchEvent(new CustomEvent("shell-focus-address"))
+      );
+    }, [setAddressBarVisible])
+  );
 
-  useShellEvent("panel-chrome-command", useCallback(({ command }) => {
-    handleChromeCommand({ type: command });
-  }, [handleChromeCommand]));
+  useShellEvent(
+    "panel-chrome-command",
+    useCallback(
+      ({ command }) => {
+        handleChromeCommand({ type: command });
+      },
+      [handleChromeCommand]
+    )
+  );
 
   // Listen for panel devtools toggle from native menu via shell event
   const handleTogglePanelDevTools = useCallback(() => {

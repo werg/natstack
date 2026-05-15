@@ -2,10 +2,7 @@ import { useEffect, useCallback, useState, lazy, Suspense } from "react";
 import { useSetAtom } from "jotai";
 import { Theme, Flex, Spinner } from "@radix-ui/themes";
 
-import {
-  workspaceChooserDialogOpenAtom,
-  activeWorkspaceNameAtom,
-} from "../state/appModeAtoms";
+import { workspaceChooserDialogOpenAtom, activeWorkspaceNameAtom } from "../state/appModeAtoms";
 import { effectiveThemeAtom, loadThemePreferenceAtom } from "../state/themeAtoms";
 import { useAtomValue } from "jotai";
 import { useShellEvent } from "../shell/useShellEvent";
@@ -43,9 +40,12 @@ export function App() {
 
   // Eagerly load active workspace name on mount (independent of chooser dialog)
   useEffect(() => {
-    workspace.getActive().then((name) => {
-      setActiveWorkspaceName(name);
-    }).catch(err => console.error("[App] Failed to get active workspace:", err));
+    workspace
+      .getActive()
+      .then((name) => {
+        setActiveWorkspaceName(name);
+      })
+      .catch((err) => console.error("[App] Failed to get active workspace:", err));
   }, [setActiveWorkspaceName]);
 
   // Listen for system theme changes via shell event
@@ -64,7 +64,9 @@ export function App() {
   const handleNavigateAbout = useCallback(async (payload: { page: string }) => {
     try {
       const result = await panel.createAboutPanel(payload.page);
-      window.dispatchEvent(new CustomEvent("shell-panel-created", { detail: { panelId: result.id } }));
+      window.dispatchEvent(
+        new CustomEvent("shell-panel-created", { detail: { panelId: result.id } })
+      );
     } catch (error) {
       console.error(`[App] Failed to create shell panel for ${payload.page}:`, error);
     }
@@ -73,11 +75,13 @@ export function App() {
 
   return (
     <Theme appearance={effectiveTheme} radius="none">
-      <ChunkErrorBoundary onRetry={() => {
-        // Reassign to create a fresh lazy() with a new import() promise
-        LazyMainMode = lazy(() => import("./MainMode"));
-        setLazyRetryKey((k) => k + 1);
-      }}>
+      <ChunkErrorBoundary
+        onRetry={() => {
+          // Reassign to create a fresh lazy() with a new import() promise
+          LazyMainMode = lazy(() => import("./MainMode"));
+          setLazyRetryKey((k) => k + 1);
+        }}
+      >
         <Suspense key={lazyRetryKey} fallback={<LoadingSpinner />}>
           <LazyMainMode />
         </Suspense>

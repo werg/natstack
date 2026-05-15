@@ -8,6 +8,19 @@ import { RouteRegistry } from "../routeRegistry.js";
 import { createAuthService } from "./authService.js";
 import { DeviceAuthStore } from "./deviceAuthStore.js";
 
+type PairingCodeResponse = { code: string };
+type PairingCompleteResponse = {
+  deviceId: string;
+  refreshToken: string;
+  callerId: string;
+  shellToken: string;
+};
+type RefreshShellResponse = { callerId: string };
+type DevicesResponse = {
+  devices: Array<{ deviceId: string; label: string; platform: string }>;
+};
+type RevokeDeviceResponse = { revoked: boolean };
+
 describe("auth service device credentials", () => {
   let gateway: Gateway;
   let gatewayPort = 0;
@@ -17,8 +30,12 @@ describe("auth service device credentials", () => {
     const routeRegistry = new RouteRegistry();
     tokenManager = new TokenManager();
     const authStore = new DeviceAuthStore(
-      path.join(fs.mkdtempSync(path.join(os.tmpdir(), "natstack-auth-service-")), "auth", "devices.json"),
-      () => 1234,
+      path.join(
+        fs.mkdtempSync(path.join(os.tmpdir(), "natstack-auth-service-")),
+        "auth",
+        "devices.json"
+      ),
+      () => 1234
     );
     const authService = createAuthService({
       tokenManager,
@@ -43,11 +60,15 @@ describe("auth service device credentials", () => {
   });
 
   it("creates pairing codes, completes pairing, refreshes shell tokens, and revokes devices", async () => {
-    const pairing = await postJson("/_r/s/auth/create-pairing-code", {}, "admin-secret");
+    const pairing = await postJson<PairingCodeResponse>(
+      "/_r/s/auth/create-pairing-code",
+      {},
+      "admin-secret"
+    );
     expect(pairing.status).toBe(200);
     expect(pairing.body.code).toMatch(/^[A-Za-z0-9_-]{16,}$/);
 
-    const completed = await postJson("/_r/s/auth/complete-pairing", {
+    const completed = await postJson<PairingCompleteResponse>("/_r/s/auth/complete-pairing", {
       code: pairing.body.code,
       label: "Phone",
       platform: "mobile",
@@ -58,33 +79,41 @@ describe("auth service device credentials", () => {
     expect(completed.body.callerId).toBe(`shell:${completed.body.deviceId}`);
     expect(tokenManager.validateToken(completed.body.shellToken)?.callerKind).toBe("shell");
 
-    const refreshed = await postJson("/_r/s/auth/refresh-shell", {
+    const refreshed = await postJson<RefreshShellResponse>("/_r/s/auth/refresh-shell", {
       deviceId: completed.body.deviceId,
       refreshToken: completed.body.refreshToken,
     });
     expect(refreshed.status).toBe(200);
     expect(refreshed.body.callerId).toBe(completed.body.callerId);
 
-    const devices = await getJson("/_r/s/auth/devices", "admin-secret");
+    const devices = await getJson<DevicesResponse>("/_r/s/auth/devices", "admin-secret");
     expect(devices.status).toBe(200);
     expect(JSON.stringify(devices.body)).not.toContain("refreshTokenHash");
     expect(devices.body.devices).toMatchObject([
       { deviceId: completed.body.deviceId, label: "Phone", platform: "mobile" },
     ]);
 
-    const revoked = await postJson("/_r/s/auth/revoke-device", { deviceId: completed.body.deviceId }, "admin-secret");
+    const revoked = await postJson<RevokeDeviceResponse>(
+      "/_r/s/auth/revoke-device",
+      { deviceId: completed.body.deviceId },
+      "admin-secret"
+    );
     expect(revoked.status).toBe(200);
     expect(revoked.body.revoked).toBe(true);
 
-    const denied = await postJson("/_r/s/auth/refresh-shell", {
+    const denied = await postJson<unknown>("/_r/s/auth/refresh-shell", {
       deviceId: completed.body.deviceId,
       refreshToken: completed.body.refreshToken,
     });
     expect(denied.status).toBe(401);
   });
 
-  async function postJson(pathname: string, body: unknown, bearer?: string): Promise<{ status: number; body: any }> {
-    return requestJson(pathname, {
+  async function postJson<T>(
+    pathname: string,
+    body: unknown,
+    bearer?: string
+  ): Promise<{ status: number; body: T }> {
+    return requestJson<T>(pathname, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -94,17 +123,23 @@ describe("auth service device credentials", () => {
     });
   }
 
-  async function getJson(pathname: string, bearer?: string): Promise<{ status: number; body: any }> {
-    return requestJson(pathname, {
+  async function getJson<T>(
+    pathname: string,
+    bearer?: string
+  ): Promise<{ status: number; body: T }> {
+    return requestJson<T>(pathname, {
       headers: bearer ? { Authorization: `Bearer ${bearer}` } : undefined,
     });
   }
 
-  async function requestJson(pathname: string, init?: RequestInit): Promise<{ status: number; body: any }> {
+  async function requestJson<T>(
+    pathname: string,
+    init?: RequestInit
+  ): Promise<{ status: number; body: T }> {
     const response = await fetch(`http://127.0.0.1:${gatewayPort}${pathname}`, init);
     return {
       status: response.status,
-      body: await response.json(),
+      body: (await response.json()) as T,
     };
   }
 });

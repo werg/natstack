@@ -39,7 +39,7 @@ export interface ServiceWithRoutes {
 export function rpcServiceWithRoutes(
   pair: ServiceWithRoutes,
   routeRegistry: RouteRegistry,
-  deps?: string[],
+  deps?: string[]
 ): ManagedService {
   const serviceName = pair.definition.name;
   return {

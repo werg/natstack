@@ -45,7 +45,11 @@ import type {
   PaginatedChildren,
   PaginatedRootPanels,
 } from "@natstack/shared/types";
-import type { BrowserAddressOptions, PanelAddressOptions, PanelChromeState } from "@natstack/shared/panelChrome";
+import type {
+  BrowserAddressOptions,
+  PanelAddressOptions,
+  PanelChromeState,
+} from "@natstack/shared/panelChrome";
 
 // =============================================================================
 // App Service
@@ -54,10 +58,10 @@ import type { BrowserAddressOptions, PanelAddressOptions, PanelChromeState } fro
 export const app = {
   getInfo: () => rpc.call<AppInfo>("main", "app.getInfo"),
   getSystemTheme: () => rpc.call<ThemeAppearance>("main", "app.getSystemTheme"),
-  setThemeMode: (mode: ThemeMode) => rpc.call<void>("main", "app.setThemeMode", mode),
-  openDevTools: () => rpc.call<void>("main", "app.openDevTools"),
-  openExternal: (url: string) => rpc.call<void>("main", "app.openExternal", url),
-  clearBuildCache: () => rpc.call<void>("main", "app.clearBuildCache"),
+  setThemeMode: (mode: ThemeMode) => rpc.call<undefined>("main", "app.setThemeMode", mode),
+  openDevTools: () => rpc.call<undefined>("main", "app.openDevTools"),
+  openExternal: (url: string) => rpc.call<undefined>("main", "app.openExternal", url),
+  clearBuildCache: () => rpc.call<undefined>("main", "app.clearBuildCache"),
 };
 
 // =============================================================================
@@ -66,53 +70,80 @@ export const app = {
 
 export const panel = {
   getTree: () => rpc.call<Panel[]>("main", "panel.getTree"),
-  notifyFocused: (panelId: string) => rpc.call<void>("main", "panel.notifyFocused", panelId),
-  updateTheme: (theme: ThemeAppearance) => rpc.call<void>("main", "panel.updateTheme", theme),
-  openDevTools: (panelId: string) => rpc.call<void>("main", "panel.openDevTools", panelId),
-  getChromeState: (panelId: string) => rpc.call<PanelChromeState>("main", "panel.getChromeState", panelId),
+  notifyFocused: (panelId: string) => rpc.call<undefined>("main", "panel.notifyFocused", panelId),
+  updateTheme: (theme: ThemeAppearance) => rpc.call<undefined>("main", "panel.updateTheme", theme),
+  openDevTools: (panelId: string) => rpc.call<undefined>("main", "panel.openDevTools", panelId),
+  getChromeState: (panelId: string) =>
+    rpc.call<PanelChromeState>("main", "panel.getChromeState", panelId),
   getAddressOptions: (source: string, ref?: string) =>
     rpc.call<PanelAddressOptions>("main", "panel.getAddressOptions", source, ref),
   getBrowserAddressOptions: (query: string) =>
     rpc.call<BrowserAddressOptions>("main", "panel.getBrowserAddressOptions", query),
-  markBrowserNavigationIntent: (panelId: string, intent: { transition?: string; typed?: boolean }) =>
-    rpc.call<void>("main", "panel.markBrowserNavigationIntent", panelId, intent),
-  reload: (panelId: string) => rpc.call<void>("main", "panel.reload", panelId),
-  reloadView: (panelId: string) => rpc.call<void>("main", "panel.reloadView", panelId),
-  forceReloadView: (panelId: string) => rpc.call<void>("main", "panel.forceReloadView", panelId),
-  rebuildPanel: (panelId: string) => rpc.call<void>("main", "panel.rebuildPanel", panelId),
-  goBack: (panelId: string) => rpc.call<void>("main", "panel.goBack", panelId),
-  goForward: (panelId: string) => rpc.call<void>("main", "panel.goForward", panelId),
-  unload: (panelId: string) => rpc.call<void>("main", "panel.unload", panelId),
-  archive: (panelId: string) => rpc.call<void>("main", "panel.archive", panelId),
-  retryDirtyBuild: (panelId: string) => rpc.call<void>("main", "panel.retryDirtyBuild", panelId),
-  initGitRepo: (panelId: string) => rpc.call<void>("main", "panel.initGitRepo", panelId),
-  updatePanelState: (panelId: string, state: { url?: string; pageTitle?: string; isLoading?: boolean; canGoBack?: boolean; canGoForward?: boolean }) =>
-    rpc.call<void>("main", "panel.updatePanelState", panelId, state),
+  markBrowserNavigationIntent: (
+    panelId: string,
+    intent: { transition?: string; typed?: boolean }
+  ) => rpc.call<undefined>("main", "panel.markBrowserNavigationIntent", panelId, intent),
+  reload: (panelId: string) => rpc.call<undefined>("main", "panel.reload", panelId),
+  reloadView: (panelId: string) => rpc.call<undefined>("main", "panel.reloadView", panelId),
+  forceReloadView: (panelId: string) =>
+    rpc.call<undefined>("main", "panel.forceReloadView", panelId),
+  rebuildPanel: (panelId: string) => rpc.call<undefined>("main", "panel.rebuildPanel", panelId),
+  goBack: (panelId: string) => rpc.call<undefined>("main", "panel.goBack", panelId),
+  goForward: (panelId: string) => rpc.call<undefined>("main", "panel.goForward", panelId),
+  unload: (panelId: string) => rpc.call<undefined>("main", "panel.unload", panelId),
+  archive: (panelId: string) => rpc.call<undefined>("main", "panel.archive", panelId),
+  retryDirtyBuild: (panelId: string) =>
+    rpc.call<undefined>("main", "panel.retryDirtyBuild", panelId),
+  initGitRepo: (panelId: string) => rpc.call<undefined>("main", "panel.initGitRepo", panelId),
+  updatePanelState: (
+    panelId: string,
+    state: {
+      url?: string;
+      pageTitle?: string;
+      isLoading?: boolean;
+      canGoBack?: boolean;
+      canGoForward?: boolean;
+    }
+  ) => rpc.call<undefined>("main", "panel.updatePanelState", panelId, state),
   createAboutPanel: (page: string) =>
     rpc.call<{ id: string; title: string }>("main", "panel.createAboutPanel", page),
   /** Create a panel from any source path (not prefixed with "about/"). */
-  navigate: (panelId: string, source: string, options?: { ref?: string; contextId?: string; stateArgs?: Record<string, unknown> }) =>
-    rpc.call<{ id: string; title: string }>("main", "panel.navigate", panelId, source, options),
+  navigate: (
+    panelId: string,
+    source: string,
+    options?: { ref?: string; contextId?: string; stateArgs?: Record<string, unknown> }
+  ) => rpc.call<{ id: string; title: string }>("main", "panel.navigate", panelId, source, options),
   createPanel: (source: string, options?: { name?: string; isRoot?: boolean; ref?: string }) =>
     rpc.call<{ id: string; title: string }>("main", "panel.create", source, options),
-  createChild: (parentId: string, source: string, options?: { name?: string; focus?: boolean; ref?: string }) =>
+  createChild: (
+    parentId: string,
+    source: string,
+    options?: { name?: string; focus?: boolean; ref?: string }
+  ) =>
     rpc.call<{ id: string; title: string }>("main", "panel.createChild", parentId, source, options),
   createBrowser: (url: string, options?: { name?: string; focus?: boolean }) =>
     rpc.call<{ id: string; title: string }>("main", "panel.createBrowser", url, options),
-  createBrowserChild: (parentId: string, url: string, options?: { name?: string; focus?: boolean }) =>
-    rpc.call<{ id: string; title: string }>("main", "panel.createBrowserChild", parentId, url, options),
-  movePanel: (request: MovePanelRequest) =>
-    rpc.call<void>("main", "panel.movePanel", request),
+  createBrowserChild: (
+    parentId: string,
+    url: string,
+    options?: { name?: string; focus?: boolean }
+  ) =>
+    rpc.call<{ id: string; title: string }>(
+      "main",
+      "panel.createBrowserChild",
+      parentId,
+      url,
+      options
+    ),
+  movePanel: (request: MovePanelRequest) => rpc.call<undefined>("main", "panel.movePanel", request),
   getChildrenPaginated: (request: GetChildrenPaginatedRequest) =>
     rpc.call<PaginatedChildren>("main", "panel.getChildrenPaginated", request),
   getRootPanelsPaginated: (offset: number, limit: number) =>
     rpc.call<PaginatedRootPanels>("main", "panel.getRootPanelsPaginated", { offset, limit }),
-  getCollapsedIds: () =>
-    rpc.call<string[]>("main", "panel.getCollapsedIds"),
+  getCollapsedIds: () => rpc.call<string[]>("main", "panel.getCollapsedIds"),
   setCollapsed: (panelId: string, collapsed: boolean) =>
-    rpc.call<void>("main", "panel.setCollapsed", panelId, collapsed),
-  expandIds: (panelIds: string[]) =>
-    rpc.call<void>("main", "panel.expandIds", panelIds),
+    rpc.call<undefined>("main", "panel.setCollapsed", panelId, collapsed),
+  expandIds: (panelIds: string[]) => rpc.call<undefined>("main", "panel.expandIds", panelIds),
 };
 
 // =============================================================================
@@ -145,32 +176,40 @@ type NativeShellOverlayBridge = {
 
 export const view = {
   setVisible: (viewId: string, visible: boolean) =>
-    rpc.call<void>("main", "view.setVisible", viewId, visible),
-  setThemeCss: (css: string) => rpc.call<void>("main", "view.setThemeCss", css),
-  updateLayout: (layout: { titleBarHeight?: number; sidebarVisible?: boolean; sidebarWidth?: number; saveBarHeight?: number; notificationBarHeight?: number; consentBarHeight?: number }) =>
-    rpc.call<void>("main", "view.updateLayout", layout),
-  setShellOverlay: (active: boolean) =>
-    rpc.call<void>("main", "view.setShellOverlay", active),
+    rpc.call<undefined>("main", "view.setVisible", viewId, visible),
+  setThemeCss: (css: string) => rpc.call<undefined>("main", "view.setThemeCss", css),
+  updateLayout: (layout: {
+    titleBarHeight?: number;
+    sidebarVisible?: boolean;
+    sidebarWidth?: number;
+    saveBarHeight?: number;
+    notificationBarHeight?: number;
+    consentBarHeight?: number;
+  }) => rpc.call<undefined>("main", "view.updateLayout", layout),
+  setShellOverlay: (active: boolean) => rpc.call<undefined>("main", "view.setShellOverlay", active),
   showNativeShellOverlay: (options: NativeShellOverlayOptions) =>
-    rpc.call<void>("main", "view.showNativeShellOverlay", options),
+    rpc.call<undefined>("main", "view.showNativeShellOverlay", options),
   updateNativeShellOverlay: (options: Partial<NativeShellOverlayOptions> & { id?: string }) =>
-    rpc.call<void>("main", "view.updateNativeShellOverlay", options),
+    rpc.call<undefined>("main", "view.updateNativeShellOverlay", options),
   hideNativeShellOverlay: (id?: string) =>
-    rpc.call<void>("main", "view.hideNativeShellOverlay", id),
+    rpc.call<undefined>("main", "view.hideNativeShellOverlay", id),
   browserNavigate: (browserId: string, url: string) =>
-    rpc.call<void>("main", "view.browserNavigate", browserId, url),
-  browserGoBack: (browserId: string) => rpc.call<void>("main", "view.browserGoBack", browserId),
+    rpc.call<undefined>("main", "view.browserNavigate", browserId, url),
+  browserGoBack: (browserId: string) =>
+    rpc.call<undefined>("main", "view.browserGoBack", browserId),
   browserGoForward: (browserId: string) =>
-    rpc.call<void>("main", "view.browserGoForward", browserId),
-  browserReload: (browserId: string) => rpc.call<void>("main", "view.browserReload", browserId),
+    rpc.call<undefined>("main", "view.browserGoForward", browserId),
+  browserReload: (browserId: string) =>
+    rpc.call<undefined>("main", "view.browserReload", browserId),
   browserForceReload: (browserId: string) =>
-    rpc.call<void>("main", "view.browserForceReload", browserId),
-  browserStop: (browserId: string) => rpc.call<void>("main", "view.browserStop", browserId),
+    rpc.call<undefined>("main", "view.browserForceReload", browserId),
+  browserStop: (browserId: string) => rpc.call<undefined>("main", "view.browserStop", browserId),
 };
 
 export const nativeShellOverlay = {
   onEvent: (handler: (event: NativeShellOverlayEvent) => void) => {
-    const bridge = (globalThis as unknown as { __natstackShellOverlay?: NativeShellOverlayBridge }).__natstackShellOverlay;
+    const bridge = (globalThis as unknown as { __natstackShellOverlay?: NativeShellOverlayBridge })
+      .__natstackShellOverlay;
     if (!bridge) return () => {};
     return bridge.onEvent(handler);
   },
@@ -192,7 +231,7 @@ interface MenuItem {
 
 export const menu = {
   showHamburger: (position: Position) =>
-    rpc.call<void>("main", "menu.showHamburger", position),
+    rpc.call<undefined>("main", "menu.showHamburger", position),
   showContext: (items: MenuItem[], position: Position) =>
     rpc.call<string | null>("main", "menu.showContext", items, position),
   showPanelContext: (panelId: string, position: Position) =>
@@ -207,8 +246,8 @@ export const workspace = {
   list: () => rpc.call<WorkspaceEntry[]>("main", "workspace.list"),
   create: (name: string, opts?: { forkFrom?: string }) =>
     rpc.call<WorkspaceEntry>("main", "workspace.create", name, opts),
-  select: (name: string) => rpc.call<void>("main", "workspace.select", name),
-  delete: (name: string) => rpc.call<void>("main", "workspace.delete", name),
+  select: (name: string) => rpc.call<undefined>("main", "workspace.select", name),
+  delete: (name: string) => rpc.call<undefined>("main", "workspace.delete", name),
   getActive: () => rpc.call<string>("main", "workspace.getActive"),
 };
 
@@ -250,14 +289,12 @@ export interface TestConnectionResult {
 
 export const remoteCred = {
   getCurrent: () => rpc.call<RemoteCredCurrent>("main", "remoteCred.getCurrent"),
-  save: (args: RemoteCredSaveArgs) =>
-    rpc.call<{ ok: boolean }>("main", "remoteCred.save", args),
+  save: (args: RemoteCredSaveArgs) => rpc.call<{ ok: boolean }>("main", "remoteCred.save", args),
   testConnection: (args: RemoteCredSaveArgs) =>
     rpc.call<TestConnectionResult>("main", "remoteCred.testConnection", args),
   fetchPeerFingerprint: (url: string) =>
     rpc.call<string>("main", "remoteCred.fetchPeerFingerprint", url),
-  pickCaFile: () =>
-    rpc.call<string | null>("main", "remoteCred.pickCaFile"),
+  pickCaFile: () => rpc.call<string | null>("main", "remoteCred.pickCaFile"),
   clear: () => rpc.call<{ ok: boolean }>("main", "remoteCred.clear"),
   relaunch: () => rpc.call<{ ok: boolean }>("main", "remoteCred.relaunch"),
 };
@@ -276,7 +313,7 @@ export const tokens = {
 
 export const autofill = {
   confirmSave: (panelId: string, action: "save" | "never" | "dismiss") =>
-    rpc.call<void>("main", "autofill.confirmSave", panelId, action),
+    rpc.call<undefined>("main", "autofill.confirmSave", panelId, action),
 };
 
 // =============================================================================
@@ -288,9 +325,9 @@ export type { EventName, EventPayloads } from "@natstack/shared/events";
 import type { EventName } from "@natstack/shared/events";
 
 export const events = {
-  subscribe: (event: EventName) => rpc.call<void>("main", "events.subscribe", event),
-  unsubscribe: (event: EventName) => rpc.call<void>("main", "events.unsubscribe", event),
-  unsubscribeAll: () => rpc.call<void>("main", "events.unsubscribeAll"),
+  subscribe: (event: EventName) => rpc.call<undefined>("main", "events.subscribe", event),
+  unsubscribe: (event: EventName) => rpc.call<undefined>("main", "events.unsubscribe", event),
+  unsubscribeAll: () => rpc.call<undefined>("main", "events.unsubscribeAll"),
 };
 
 // =============================================================================
@@ -303,9 +340,8 @@ export const notification = {
   show: (opts: Omit<NotificationPayload, "id"> & { id?: string }) =>
     rpc.call<string>("main", "notification.show", opts),
   reportAction: (id: string, actionId: string) =>
-    rpc.call<void>("main", "notification.reportAction", id, actionId),
-  dismiss: (id: string) =>
-    rpc.call<void>("main", "notification.dismiss", id),
+    rpc.call<undefined>("main", "notification.reportAction", id, actionId),
+  dismiss: (id: string) => rpc.call<undefined>("main", "notification.dismiss", id),
 };
 
 // =============================================================================
@@ -316,9 +352,9 @@ import type { ApprovalDecision, PendingApproval } from "@natstack/shared/approva
 
 export const shellApproval = {
   resolve: (approvalId: string, decision: ApprovalDecision) =>
-    rpc.call<void>("main", "shellApproval.resolve", approvalId, decision),
+    rpc.call<undefined>("main", "shellApproval.resolve", approvalId, decision),
   resolveUserland: (approvalId: string, choice: string | "dismiss") =>
-    rpc.call<void>("main", "shellApproval.resolveUserland", approvalId, choice),
+    rpc.call<undefined>("main", "shellApproval.resolveUserland", approvalId, choice),
   submitClientConfig: (approvalId: string, values: Record<string, string>) =>
     rpc.call("main", "shellApproval.submitClientConfig", approvalId, values) as Promise<void>,
   submitCredentialInput: (approvalId: string, values: Record<string, string>) =>
@@ -331,7 +367,7 @@ export const shellApproval = {
 // =============================================================================
 
 export const shellPresence = {
-  heartbeat: () => rpc.call<void>("main", RPC_METHODS.shellPresence.heartbeat),
+  heartbeat: () => rpc.call<undefined>("main", RPC_METHODS.shellPresence.heartbeat),
 };
 
 // =============================================================================

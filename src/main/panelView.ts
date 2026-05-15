@@ -11,7 +11,12 @@ import type { ViewManager } from "./viewManager.js";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { PanelViewLike, ServerInfoLike } from "@natstack/shared/panelInterfaces";
 import { BROWSER_SESSION_PARTITION } from "@natstack/shared/panelInterfaces";
-import { getCurrentSnapshot, getPanelSource, getPanelContextId, getPanelRef } from "@natstack/shared/panelTypes";
+import {
+  getCurrentSnapshot,
+  getPanelSource,
+  getPanelContextId,
+  getPanelRef,
+} from "@natstack/shared/panelTypes";
 import { contextIdToPartition } from "@natstack/shared/contextIdToPartition.js";
 import { isManagedHost, parsePanelUrl } from "@natstack/shared/shell/urlParsing.js";
 import { isBrowserPanelSource, panelSourceFromBrowserUrl } from "@natstack/shared/panelChrome";
@@ -33,20 +38,27 @@ interface CdpServerLike {
 
 interface PanelOrchestratorLike {
   createPanel(
-    callerId: string, source: string,
+    callerId: string,
+    source: string,
     options?: { name?: string; contextId?: string; focus?: boolean; env?: Record<string, string> },
-    stateArgs?: Record<string, unknown>,
+    stateArgs?: Record<string, unknown>
   ): Promise<{ id: string; title: string }>;
   createBrowserPanel(
-    callerId: string, url: string,
-    options?: { name?: string; focus?: boolean },
+    callerId: string,
+    url: string,
+    options?: { name?: string; focus?: boolean }
   ): Promise<{ id: string; title: string }>;
   navigatePanel(
     panelId: string,
     source: string,
-    options?: { ref?: string; contextId?: string; stateArgs?: Record<string, unknown> },
+    options?: { ref?: string; contextId?: string; stateArgs?: Record<string, unknown> }
   ): Promise<{ id: string; title: string }>;
-  replaceCurrentSnapshot(panelId: string, contextId: string, source?: string, stateArgs?: Record<string, unknown>): Promise<void>;
+  replaceCurrentSnapshot(
+    panelId: string,
+    contextId: string,
+    source?: string,
+    stateArgs?: Record<string, unknown>
+  ): Promise<void>;
   updatePanelTitle(panelId: string, title: string): Promise<void>;
 }
 
@@ -69,14 +81,25 @@ export class PanelView implements PanelViewLike {
   private browserPreloadPath?: string;
   private browserHistoryRecorder?: BrowserHistoryRecorder;
 
-  private browserStateCleanup = new Map<string, { cleanup: () => void; destroyedHandler: () => void }>();
-  private linkInterceptionHandlers = new Map<string, (event: Electron.Event, url: string) => void>();
-  private contentLoadHandlers = new Map<string, { domReady?: () => void; didFinishLoad?: () => void }>();
+  private browserStateCleanup = new Map<
+    string,
+    { cleanup: () => void; destroyedHandler: () => void }
+  >();
+  private linkInterceptionHandlers = new Map<
+    string,
+    (event: Electron.Event, url: string) => void
+  >();
+  private contentLoadHandlers = new Map<
+    string,
+    { domReady?: () => void; didFinishLoad?: () => void }
+  >();
   private crashHistory = new Map<string, number[]>();
   private readonly MAX_CRASHES = 3;
   private readonly CRASH_WINDOW_MS = 60000;
 
-  private get gatewayPort() { return this.serverInfo.gatewayPort; }
+  private get gatewayPort() {
+    return this.serverInfo.gatewayPort;
+  }
 
   constructor(deps: {
     viewManager: ViewManager;
@@ -117,8 +140,11 @@ export class PanelView implements PanelViewLike {
     const parentId = this.panelRegistry.findParentId(panelId);
 
     const view = this.viewManager.createView({
-      id: panelId, type: "panel", preload: this.panelPreloadPath ?? null,
-      url, parentId: parentId ?? undefined,
+      id: panelId,
+      type: "panel",
+      preload: this.panelPreloadPath ?? null,
+      url,
+      parentId: parentId ?? undefined,
       partition: contextId ? contextIdToPartition(contextId) : undefined,
       injectHostThemeVariables: true,
     });
@@ -138,7 +164,9 @@ export class PanelView implements PanelViewLike {
     this.setupLinkInterception(panelId, view.webContents);
   }
 
-  hasView(panelId: string): boolean { return this.viewManager.hasView(panelId); }
+  hasView(panelId: string): boolean {
+    return this.viewManager.hasView(panelId);
+  }
 
   destroyView(panelId: string): void {
     const contents = this.viewManager.getWebContents(panelId);
@@ -153,7 +181,9 @@ export class PanelView implements PanelViewLike {
     this.viewManager.destroyView(panelId);
   }
 
-  reloadView(panelId: string): boolean { return this.viewManager.reloadView(panelId); }
+  reloadView(panelId: string): boolean {
+    return this.viewManager.reloadView(panelId);
+  }
 
   async navigateView(panelId: string, url: string): Promise<void> {
     await this.viewManager.navigateView(panelId, url);
@@ -175,7 +205,7 @@ export class PanelView implements PanelViewLike {
    * Create a view for a browser panel (external URL).
    * No auth cookies, no link interception — browser panels navigate freely.
    */
-  async createViewForBrowser(panelId: string, url: string, contextId: string): Promise<void> {
+  async createViewForBrowser(panelId: string, url: string, _contextId: string): Promise<void> {
     if (this.viewManager.hasView(panelId)) {
       const currentUrl = this.viewManager.getViewUrl(panelId);
       if (currentUrl !== url) void this.viewManager.navigateView(panelId, url);
@@ -185,9 +215,11 @@ export class PanelView implements PanelViewLike {
     const parentId = this.panelRegistry.findParentId(panelId);
 
     const view = this.viewManager.createView({
-      id: panelId, type: "panel",
+      id: panelId,
+      type: "panel",
       preload: this.browserPreloadPath ?? this.autofillPreloadPath ?? null,
-      url, parentId: parentId ?? undefined,
+      url,
+      parentId: parentId ?? undefined,
       partition: BROWSER_SESSION_PARTITION,
       injectHostThemeVariables: false,
     });
@@ -214,8 +246,12 @@ export class PanelView implements PanelViewLike {
 
   // ==== Additional public methods ===========================================
 
-  openDevTools(panelId: string): void { this.viewManager.openDevTools(panelId); }
-  getViewManager(): ViewManager { return this.viewManager; }
+  openDevTools(panelId: string): void {
+    this.viewManager.openDevTools(panelId);
+  }
+  getViewManager(): ViewManager {
+    return this.viewManager;
+  }
   markBrowserNavigationIntent(panelId: string, intent: BrowserNavigationIntent): void {
     this.browserHistoryRecorder?.markNext(panelId, intent);
   }
@@ -269,29 +305,45 @@ export class PanelView implements PanelViewLike {
           this.browserHistoryRecorder?.recordNavigation(panelId, url, panel.navigation?.pageTitle);
           const nextSource = panelSourceFromBrowserUrl(url);
           if (nextSource !== currentSource) {
-            void this.panelOrchestrator.replaceCurrentSnapshot(panelId, getPanelContextId(panel), nextSource).catch(() => {});
+            void this.panelOrchestrator
+              .replaceCurrentSnapshot(panelId, getPanelContextId(panel), nextSource)
+              .catch(() => {});
           }
           return;
         }
 
         const parsed = parsePanelUrl(url, this.externalHost);
         if (parsed && parsed.source !== currentSource) {
-          void this.panelOrchestrator.replaceCurrentSnapshot(panelId, getPanelContextId(panel), parsed.source).catch(() => {});
+          void this.panelOrchestrator
+            .replaceCurrentSnapshot(panelId, getPanelContextId(panel), parsed.source)
+            .catch(() => {});
         }
       },
-      didNavigateInPage: (_event: Electron.Event, url: string) => { queueStateUpdate({ url }); },
+      didNavigateInPage: (_event: Electron.Event, url: string) => {
+        queueStateUpdate({ url });
+      },
       didFailLoad: (_e: Electron.Event, code: number, desc: string, url: string) => {
         console.warn(`[PanelView] Panel ${panelId} failed to load: ${desc} (${code}) - ${url}`);
       },
       renderProcessGone: (_e: Electron.Event, details: Electron.RenderProcessGoneDetails) => {
         console.warn(`[PanelView] Panel ${panelId} render process gone: ${details.reason}`);
       },
-      unresponsive: () => { console.warn(`[PanelView] Panel ${panelId} became unresponsive`); },
-      responsive: () => { log.verbose(` Panel ${panelId} became responsive again`); },
-      didStartLoading: () => { queueStateUpdate({ isLoading: true }); },
+      unresponsive: () => {
+        console.warn(`[PanelView] Panel ${panelId} became unresponsive`);
+      },
+      responsive: () => {
+        log.verbose(` Panel ${panelId} became responsive again`);
+      },
+      didStartLoading: () => {
+        queueStateUpdate({ isLoading: true });
+      },
       didStopLoading: () => {
         if (contents.isDestroyed()) return;
-        queueStateUpdate({ isLoading: false, canGoBack: contents.canGoBack(), canGoForward: contents.canGoForward() });
+        queueStateUpdate({
+          isLoading: false,
+          canGoBack: contents.canGoBack(),
+          canGoForward: contents.canGoForward(),
+        });
       },
       pageTitleUpdated: (_event: Electron.Event, title: string) => {
         queueStateUpdate({ pageTitle: title });
@@ -351,10 +403,7 @@ export class PanelView implements PanelViewLike {
   }
 
   /** Update panel metadata from webview navigation events. */
-  private updatePanelState(
-    panelId: string,
-    state: PanelNavigationState,
-  ): void {
+  private updatePanelState(panelId: string, state: PanelNavigationState): void {
     const panel = this.panelRegistry.getPanel(panelId);
     if (!panel) return;
 
@@ -380,12 +429,14 @@ export class PanelView implements PanelViewLike {
       const url = details.url;
       const parsed = parsePanelUrl(url, this.externalHost);
       if (parsed) {
-        void this.panelOrchestrator.createPanel(panelId, parsed.source, parsed.options, parsed.stateArgs)
+        void this.panelOrchestrator
+          .createPanel(panelId, parsed.source, parsed.options, parsed.stateArgs)
           .catch((err: unknown) => this.handleChildCreationError(panelId, err, url));
         return { action: "deny" as const };
       }
       if (/^https?:\/\//i.test(url)) {
-        void this.panelOrchestrator.createBrowserPanel(panelId, url, { focus: true })
+        void this.panelOrchestrator
+          .createBrowserPanel(panelId, url, { focus: true })
           .then(({ id }) => {
             this.sendPanelEvent?.(panelId, "runtime:child-created", { childId: id, url });
           })
@@ -399,7 +450,8 @@ export class PanelView implements PanelViewLike {
       if (!isManagedHost(url, this.externalHost)) {
         if (/^https?:\/\//i.test(url)) {
           event.preventDefault();
-          void this.panelOrchestrator.createBrowserPanel(panelId, url, { focus: true })
+          void this.panelOrchestrator
+            .createBrowserPanel(panelId, url, { focus: true })
             .then(({ id }) => {
               this.sendPanelEvent?.(panelId, "runtime:child-created", { childId: id, url });
             })
@@ -422,8 +474,14 @@ export class PanelView implements PanelViewLike {
       if (!sourceChanged && !contextChanged && !refChanged) return;
 
       event.preventDefault();
-      void this.handleManagedNavigation(panelId, panel, parsed.source, targetContextId, parsed.ref, parsed.stateArgs)
-        .catch((err) => log.warn(`[PanelNav] Navigation failed for ${panelId}:`, err));
+      void this.handleManagedNavigation(
+        panelId,
+        panel,
+        parsed.source,
+        targetContextId,
+        parsed.ref,
+        parsed.stateArgs
+      ).catch((err) => log.warn(`[PanelNav] Navigation failed for ${panelId}:`, err));
     };
 
     this.linkInterceptionHandlers.set(panelId, willNavigateHandler);
@@ -457,10 +515,16 @@ export class PanelView implements PanelViewLike {
     source: string,
     newContextId: string,
     ref?: string,
-    stateArgs?: Record<string, unknown>,
+    stateArgs?: Record<string, unknown>
   ): Promise<void> {
-    log.info(`[PanelNav] Panel ${panelId}: ${getPanelSource(panel)} -> ${source} (context ${getPanelContextId(panel)} -> ${newContextId})`);
-    await this.panelOrchestrator.navigatePanel(panelId, source, { contextId: newContextId, ref, stateArgs });
+    log.info(
+      `[PanelNav] Panel ${panelId}: ${getPanelSource(panel)} -> ${source} (context ${getPanelContextId(panel)} -> ${newContextId})`
+    );
+    await this.panelOrchestrator.navigatePanel(panelId, source, {
+      contextId: newContextId,
+      ref,
+      stateArgs,
+    });
   }
 
   // ==== Crash recovery ======================================================
@@ -477,7 +541,10 @@ export class PanelView implements PanelViewLike {
 
   private async recreatePanelView(panelId: string): Promise<void> {
     const panel = this.panelRegistry.getPanel(panelId);
-    if (!panel) { console.error(`[PanelView] Cannot recreate view: panel ${panelId} not found`); return; }
+    if (!panel) {
+      console.error(`[PanelView] Cannot recreate view: panel ${panelId} not found`);
+      return;
+    }
 
     if (this.viewManager.hasView(panelId)) {
       log.verbose(` Destroying zombie view for ${panelId}`);
@@ -495,7 +562,10 @@ export class PanelView implements PanelViewLike {
         this.panelRegistry.notifyPanelTreeUpdate();
       }
     } catch (error) {
-      console.error(`[PanelView] Failed to recreate view for ${panelId}:`, error instanceof Error ? error.message : error);
+      console.error(
+        `[PanelView] Failed to recreate view for ${panelId}:`,
+        error instanceof Error ? error.message : error
+      );
       panel.artifacts = { buildState: "pending" };
       this.panelRegistry.notifyPanelTreeUpdate();
     }

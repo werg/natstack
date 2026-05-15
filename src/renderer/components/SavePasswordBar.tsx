@@ -21,21 +21,18 @@ export function SavePasswordBar({ visiblePanelId }: SavePasswordBarProps) {
 
   useShellEvent(
     "autofill:save-prompt",
-    useCallback(
-      (data: SavePromptData) => {
-        setConfirmed(false);
-        setPrompts((prev) => {
-          const next = new Map(prev);
-          next.set(data.panelId, data);
-          return next;
-        });
-      },
-      [],
-    ),
+    useCallback((data: SavePromptData) => {
+      setConfirmed(false);
+      setPrompts((prev) => {
+        const next = new Map(prev);
+        next.set(data.panelId, data);
+        return next;
+      });
+    }, [])
   );
 
   // The prompt for the currently visible panel (if any)
-  const prompt = visiblePanelId ? prompts.get(visiblePanelId) ?? null : null;
+  const prompt = visiblePanelId ? (prompts.get(visiblePanelId) ?? null) : null;
 
   // Auto-dismiss each prompt after 60 seconds from when it was created
   // We track active timers per panelId
@@ -45,7 +42,9 @@ export function SavePasswordBar({ visiblePanelId }: SavePasswordBarProps) {
     for (const [panelId, _data] of prompts) {
       if (timerCleanups.current.has(panelId)) continue; // already has a timer
       const timer = setTimeout(() => {
-        void autofill.confirmSave(panelId, "dismiss").catch((err: unknown) => console.warn("[SavePasswordBar] Dismiss failed:", err));
+        void autofill
+          .confirmSave(panelId, "dismiss")
+          .catch((err: unknown) => console.warn("[SavePasswordBar] Dismiss failed:", err));
         setPrompts((prev) => {
           const next = new Map(prev);
           next.delete(panelId);
@@ -53,7 +52,10 @@ export function SavePasswordBar({ visiblePanelId }: SavePasswordBarProps) {
         });
         timerCleanups.current.delete(panelId);
       }, 60000);
-      const cleanup = () => { clearTimeout(timer); timerCleanups.current.delete(panelId); };
+      const cleanup = () => {
+        clearTimeout(timer);
+        timerCleanups.current.delete(panelId);
+      };
       timerCleanups.current.set(panelId, cleanup);
     }
 
@@ -77,7 +79,7 @@ export function SavePasswordBar({ visiblePanelId }: SavePasswordBarProps) {
   const barRef = useRef<HTMLDivElement>(null);
 
   // Report bar height to layout system so browser view shrinks to make room
-  const isBarVisible = (prompt !== null) || confirmed;
+  const isBarVisible = prompt !== null || confirmed;
   useEffect(() => {
     if (!isBarVisible) {
       void view.updateLayout({ saveBarHeight: 0 });
@@ -87,7 +89,9 @@ export function SavePasswordBar({ visiblePanelId }: SavePasswordBarProps) {
     if (el) {
       void view.updateLayout({ saveBarHeight: el.offsetHeight });
     }
-    return () => { void view.updateLayout({ saveBarHeight: 0 }); };
+    return () => {
+      void view.updateLayout({ saveBarHeight: 0 });
+    };
   }, [isBarVisible]);
 
   // Show confirmation briefly then hide
@@ -112,7 +116,9 @@ export function SavePasswordBar({ visiblePanelId }: SavePasswordBarProps) {
           flexShrink: 0,
         }}
       >
-        <Text size="2" color="green">Password saved</Text>
+        <Text size="2" color="green">
+          Password saved
+        </Text>
       </Flex>
     );
   }
@@ -128,18 +134,24 @@ export function SavePasswordBar({ visiblePanelId }: SavePasswordBarProps) {
   };
 
   const handleSave = () => {
-    void autofill.confirmSave(prompt.panelId, "save").catch((err: unknown) => console.error("[SavePasswordBar] Save failed:", err));
+    void autofill
+      .confirmSave(prompt.panelId, "save")
+      .catch((err: unknown) => console.error("[SavePasswordBar] Save failed:", err));
     removePrompt(prompt.panelId);
     setConfirmed(true);
   };
 
   const handleNever = () => {
-    void autofill.confirmSave(prompt.panelId, "never").catch((err: unknown) => console.warn("[SavePasswordBar] Never-save failed:", err));
+    void autofill
+      .confirmSave(prompt.panelId, "never")
+      .catch((err: unknown) => console.warn("[SavePasswordBar] Never-save failed:", err));
     removePrompt(prompt.panelId);
   };
 
   const handleDismiss = () => {
-    void autofill.confirmSave(prompt.panelId, "dismiss").catch((err: unknown) => console.warn("[SavePasswordBar] Dismiss failed:", err));
+    void autofill
+      .confirmSave(prompt.panelId, "dismiss")
+      .catch((err: unknown) => console.warn("[SavePasswordBar] Dismiss failed:", err));
     removePrompt(prompt.panelId);
   };
 

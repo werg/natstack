@@ -2,9 +2,7 @@ import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { ViewManager } from "../viewManager.js";
 
-export function createViewService(deps: {
-  getViewManager: () => ViewManager;
-}): ServiceDefinition {
+export function createViewService(deps: { getViewManager: () => ViewManager }): ServiceDefinition {
   /**
    * Ownership invariant for cross-view methods (audit finding #9).
    *
@@ -22,9 +20,7 @@ export function createViewService(deps: {
   const assertOwnsOrShell = (callerId: string, targetId: string, method: string): void => {
     if (callerId === "shell") return;
     if (callerId === targetId) return;
-    throw new Error(
-      `view.${method}: caller '${callerId}' does not own target view '${targetId}'`,
-    );
+    throw new Error(`view.${method}: caller '${callerId}' does not own target view '${targetId}'`);
   };
 
   return {
@@ -32,17 +28,38 @@ export function createViewService(deps: {
     description: "View bounds, visibility, theme CSS",
     policy: { allowed: ["shell"] },
     methods: {
-      setBounds: { args: z.tuple([z.string(), z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() })]) },
+      setBounds: {
+        args: z.tuple([
+          z.string(),
+          z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }),
+        ]),
+      },
       setVisible: { args: z.tuple([z.string(), z.boolean()]) },
       setThemeCss: { args: z.tuple([z.string()]) },
-      updateLayout: { args: z.tuple([z.object({ titleBarHeight: z.number().optional(), sidebarVisible: z.boolean().optional(), sidebarWidth: z.number().optional(), saveBarHeight: z.number().optional(), notificationBarHeight: z.number().optional(), consentBarHeight: z.number().optional() })]) },
+      updateLayout: {
+        args: z.tuple([
+          z.object({
+            titleBarHeight: z.number().optional(),
+            sidebarVisible: z.boolean().optional(),
+            sidebarWidth: z.number().optional(),
+            saveBarHeight: z.number().optional(),
+            notificationBarHeight: z.number().optional(),
+            consentBarHeight: z.number().optional(),
+          }),
+        ]),
+      },
       setShellOverlay: { args: z.tuple([z.boolean()]) },
       showNativeShellOverlay: {
         args: z.tuple([
           z.object({
             id: z.string(),
             html: z.string(),
-            bounds: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }),
+            bounds: z.object({
+              x: z.number(),
+              y: z.number(),
+              width: z.number(),
+              height: z.number(),
+            }),
             focus: z.boolean().optional(),
           }),
         ]),
@@ -52,7 +69,9 @@ export function createViewService(deps: {
           z.object({
             id: z.string().optional(),
             html: z.string().optional(),
-            bounds: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }).optional(),
+            bounds: z
+              .object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() })
+              .optional(),
             focus: z.boolean().optional(),
           }),
         ]),
@@ -70,7 +89,10 @@ export function createViewService(deps: {
 
       switch (method) {
         case "setBounds": {
-          const [viewId, bounds] = args as [string, { x: number; y: number; width: number; height: number }];
+          const [viewId, bounds] = args as [
+            string,
+            { x: number; y: number; width: number; height: number },
+          ];
           assertOwnsOrShell(ctx.callerId, viewId, "setBounds");
           vm.setViewBounds(viewId, bounds);
           return;
@@ -95,7 +117,14 @@ export function createViewService(deps: {
           if (ctx.callerId !== "shell") {
             throw new Error("view.updateLayout: shell-only");
           }
-          const layoutUpdate = args[0] as { titleBarHeight?: number; sidebarVisible?: boolean; sidebarWidth?: number; saveBarHeight?: number; notificationBarHeight?: number; consentBarHeight?: number };
+          const layoutUpdate = args[0] as {
+            titleBarHeight?: number;
+            sidebarVisible?: boolean;
+            sidebarWidth?: number;
+            saveBarHeight?: number;
+            notificationBarHeight?: number;
+            consentBarHeight?: number;
+          };
           vm.updateLayout(layoutUpdate);
           return;
         }
@@ -111,12 +140,14 @@ export function createViewService(deps: {
           if (ctx.callerId !== "shell") {
             throw new Error("view.showNativeShellOverlay: shell-only");
           }
-          const [options] = args as [{
-            id: string;
-            html: string;
-            bounds: { x: number; y: number; width: number; height: number };
-            focus?: boolean;
-          }];
+          const [options] = args as [
+            {
+              id: string;
+              html: string;
+              bounds: { x: number; y: number; width: number; height: number };
+              focus?: boolean;
+            },
+          ];
           vm.showNativeShellOverlay(options);
           return;
         }
@@ -124,12 +155,14 @@ export function createViewService(deps: {
           if (ctx.callerId !== "shell") {
             throw new Error("view.updateNativeShellOverlay: shell-only");
           }
-          const [options] = args as [{
-            id?: string;
-            html?: string;
-            bounds?: { x: number; y: number; width: number; height: number };
-            focus?: boolean;
-          }];
+          const [options] = args as [
+            {
+              id?: string;
+              html?: string;
+              bounds?: { x: number; y: number; width: number; height: number };
+              focus?: boolean;
+            },
+          ];
           vm.updateNativeShellOverlay(options);
           return;
         }

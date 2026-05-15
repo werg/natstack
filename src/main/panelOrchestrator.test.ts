@@ -36,10 +36,11 @@ function createOrchestrator(registry: PanelRegistry, emit = vi.fn()) {
     protocol: "http",
     gatewayPort: 1234,
     sendPanelEvent: vi.fn(),
-    getPanelView: () => ({
-      hasView: vi.fn(() => false),
-      destroyView: vi.fn(),
-    } as never),
+    getPanelView: () =>
+      ({
+        hasView: vi.fn(() => false),
+        destroyView: vi.fn(),
+      }) as never,
   });
 
   return { orchestrator, emit, shellCore, closedIds };

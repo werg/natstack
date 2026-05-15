@@ -36,17 +36,14 @@ export class CapabilityGrantStore {
     if (this.sessionGrants.has(grantKey("session", capability, resourceKey, identity))) {
       return true;
     }
-    return this.persistent.grants.some((grant) =>
-      grant.capability === capability
-      && grant.resourceKey === resourceKey
-      && (
-        (grant.scope === "repo" && grant.repoPath === identity.repoPath)
-        || (
-          grant.scope === "version"
-          && grant.repoPath === identity.repoPath
-          && grant.effectiveVersion === identity.effectiveVersion
-        )
-      ),
+    return this.persistent.grants.some(
+      (grant) =>
+        grant.capability === capability &&
+        grant.resourceKey === resourceKey &&
+        ((grant.scope === "repo" && grant.repoPath === identity.repoPath) ||
+          (grant.scope === "version" &&
+            grant.repoPath === identity.repoPath &&
+            grant.effectiveVersion === identity.effectiveVersion))
     );
   }
 
@@ -55,7 +52,7 @@ export class CapabilityGrantStore {
     resourceKey: string,
     identity: CapabilityGrantIdentity,
     scope: CapabilityGrantDecision,
-    now = Date.now(),
+    now = Date.now()
   ): void {
     if (scope === "session") {
       this.sessionGrants.add(grantKey(scope, capability, resourceKey, identity));
@@ -70,14 +67,15 @@ export class CapabilityGrantStore {
       grantedAt: now,
     };
     this.persistent.grants = [
-      ...this.persistent.grants.filter((grant) =>
-        !(
-          grant.capability === next.capability
-          && grant.resourceKey === next.resourceKey
-          && grant.scope === next.scope
-          && grant.repoPath === next.repoPath
-          && grant.effectiveVersion === next.effectiveVersion
-        ),
+      ...this.persistent.grants.filter(
+        (grant) =>
+          !(
+            grant.capability === next.capability &&
+            grant.resourceKey === next.resourceKey &&
+            grant.scope === next.scope &&
+            grant.repoPath === next.repoPath &&
+            grant.effectiveVersion === next.effectiveVersion
+          )
       ),
       next,
     ];
@@ -106,7 +104,7 @@ function grantKey(
   scope: CapabilityGrantDecision,
   capability: string,
   resourceKey: string,
-  identity: CapabilityGrantIdentity,
+  identity: CapabilityGrantIdentity
 ): string {
   // TODO(canonicalKey): migrate this legacy grant key to shared canonicalKey.
   return [

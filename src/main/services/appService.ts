@@ -55,7 +55,8 @@ export function createAppService(deps: {
 
         case "openExternal": {
           const url = args[0] as string;
-          if (!/^https?:\/\//i.test(url)) throw new Error("Only http(s) URLs can be opened externally");
+          if (!/^https?:\/\//i.test(url))
+            throw new Error("Only http(s) URLs can be opened externally");
           await shell.openExternal(url);
           return;
         }
@@ -65,7 +66,11 @@ export function createAppService(deps: {
 
         case "clearBuildCache": {
           if (deps.serverClient) {
-            try { await deps.serverClient.call("build", "recompute", []); } catch (e) { console.warn("[App] Build recompute failed:", e); }
+            try {
+              await deps.serverClient.call("build", "recompute", []);
+            } catch (e) {
+              console.warn("[App] Build recompute failed:", e);
+            }
           }
           try {
             deps.panelOrchestrator.invalidateReadyPanels();
@@ -77,7 +82,11 @@ export function createAppService(deps: {
 
         case "getShellPages":
           if (deps.serverClient) {
-            try { return await deps.serverClient.call("build", "getAboutPages", []); } catch (e) { console.warn("[App] Failed to fetch shell pages:", e); }
+            try {
+              return await deps.serverClient.call("build", "getAboutPages", []);
+            } catch (e) {
+              console.warn("[App] Failed to fetch shell pages:", e);
+            }
           }
           return [];
 

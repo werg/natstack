@@ -61,11 +61,15 @@ export function resolveMainRef(repoPath: string): string {
       // parsed as an option. Do not use plain "--" here: `git rev-parse -- X`
       // echoes the rev tokens instead of resolving them.
       execGitFileSync(["rev-parse", "--verify", "--end-of-options", ref], {
-        cwd: repoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+        cwd: repoPath,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
       });
       mainRefCache.set(repoPath, ref);
       return ref;
-    } catch { /* try next */ }
+    } catch {
+      /* try next */
+    }
   }
   throw new Error(`No main/master branch found in ${repoPath}`);
 }
@@ -77,8 +81,12 @@ export function resolveMainRef(repoPath: string): string {
 export function computeGitTreeHash(repoPath: string, ref?: string): string {
   const resolvedRef = ref ?? resolveMainRef(repoPath);
   return execGitFileSync(["rev-parse", "--verify", "--end-of-options", `${resolvedRef}^{tree}`], {
-    cwd: repoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
-  }).toString().trim();
+    cwd: repoPath,
+    encoding: "utf-8",
+    stdio: ["pipe", "pipe", "pipe"],
+  })
+    .toString()
+    .trim();
 }
 
 /**
@@ -88,12 +96,17 @@ export function computeGitTreeHash(repoPath: string, ref?: string): string {
 export function computeGitTreeHashAsync(repoPath: string, ref?: string): Promise<string> {
   const resolvedRef = ref ?? resolveMainRef(repoPath);
   return new Promise((resolve, reject) => {
-    execGitFile(["rev-parse", "--verify", "--end-of-options", `${resolvedRef}^{tree}`], {
-      cwd: repoPath, encoding: "utf-8",
-    }, (err, stdout) => {
-      if (err) reject(err);
-      else resolve(stdout.toString().trim());
-    });
+    execGitFile(
+      ["rev-parse", "--verify", "--end-of-options", `${resolvedRef}^{tree}`],
+      {
+        cwd: repoPath,
+        encoding: "utf-8",
+      },
+      (err, stdout) => {
+        if (err) reject(err);
+        else resolve(stdout.toString().trim());
+      }
+    );
   });
 }
 
@@ -105,9 +118,15 @@ export function getCommitAt(repoPath: string, ref?: string): string | null {
   // come from PackageGraph dep specs which are already validated.
   try {
     return execGitFileSync(["rev-parse", "--verify", "--end-of-options", resolvedRef], {
-      cwd: repoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
-    }).toString().trim();
-  } catch { return null; }
+      cwd: repoPath,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    })
+      .toString()
+      .trim();
+  } catch {
+    return null;
+  }
 }
 
 export function resolveDepRefToGitRef(repoPath: string, depRef?: InternalDepRef): string {
@@ -121,7 +140,7 @@ function buildDepSignatures(
   graph: PackageGraph,
   nodeName: string,
   evMap: EffectiveVersionMap,
-  commitCache: Map<string, string | null>,
+  commitCache: Map<string, string | null>
 ): string[] {
   const node = graph.get(nodeName);
   const deps: string[] = [];
@@ -133,17 +152,16 @@ function buildDepSignatures(
     const depRef = node.internalDepRefs[depName];
     const ref = resolveDepRefToGitRef(depNode.path, depRef);
     const commitKey = `${depNode.path}\0${ref}`;
-    const depCommit =
-      commitCache.has(commitKey)
-        ? commitCache.get(commitKey)!
-        : (() => {
-            const commit = getCommitAt(depNode.path, ref);
-            commitCache.set(commitKey, commit);
-            return commit;
-          })();
+    const depCommit = commitCache.has(commitKey)
+      ? commitCache.get(commitKey)!
+      : (() => {
+          const commit = getCommitAt(depNode.path, ref);
+          commitCache.set(commitKey, commit);
+          return commit;
+        })();
 
     deps.push(
-      `${depName}\0ref:${depRef?.raw ?? "workspace:*"}\0commit:${depCommit ?? "missing"}\0ev:${evMap[depName] ?? ""}`,
+      `${depName}\0ref:${depRef?.raw ?? "workspace:*"}\0commit:${depCommit ?? "missing"}\0ev:${evMap[depName] ?? ""}`
     );
   }
 
@@ -177,7 +195,7 @@ function hashStrings(parts: string[]): string {
  */
 export function computeEffectiveVersions(
   graph: PackageGraph,
-  hashes?: ContentHashMap,
+  hashes?: ContentHashMap
 ): { evMap: EffectiveVersionMap; contentHashes: ContentHashMap } {
   const evMap: EffectiveVersionMap = {};
   const contentHashes: ContentHashMap = { ...hashes };
@@ -216,7 +234,7 @@ export function recomputeFromNode(
   nodeName: string,
   currentEvMap: EffectiveVersionMap,
   contentHashes: ContentHashMap,
-  commitSha?: string,
+  commitSha?: string
 ): { evMap: EffectiveVersionMap; contentHashes: ContentHashMap } {
   const commitCache = new Map<string, string | null>();
   const node = graph.get(nodeName);
@@ -240,7 +258,9 @@ export function recomputeFromNode(
       try {
         hash = computeGitTreeHash(n.path);
         newHashes[n.name] = hash;
-      } catch { continue; }
+      } catch {
+        continue;
+      }
     }
 
     const depSigs = buildDepSignatures(graph, n.name, newEvMap, commitCache);
@@ -253,10 +273,7 @@ export function recomputeFromNode(
 /**
  * Diff two EV maps to produce a changeset.
  */
-export function diffEvMaps(
-  previous: EffectiveVersionMap,
-  current: EffectiveVersionMap,
-): ChangeSet {
+export function diffEvMaps(previous: EffectiveVersionMap, current: EffectiveVersionMap): ChangeSet {
   const changed: string[] = [];
   const added: string[] = [];
   const removed: string[] = [];
@@ -358,7 +375,7 @@ export function computeEffectiveVersionsWithCache(
   graph: PackageGraph,
   currentRefs: RefState,
   prevRefs: RefState,
-  prevEvMap: EffectiveVersionMap,
+  prevEvMap: EffectiveVersionMap
 ): { evMap: EffectiveVersionMap; contentHashes: ContentHashMap } {
   const evMap: EffectiveVersionMap = {};
   const contentHashes: ContentHashMap = {};
@@ -376,15 +393,10 @@ export function computeEffectiveVersionsWithCache(
     const depChanged = node.internalDeps.some((dep) => recomputed.has(dep));
 
     const hasNonDefaultDepRefs = node.internalDeps.some(
-      (dep) => (node.internalDepRefs[dep]?.mode ?? "default") !== "default",
+      (dep) => (node.internalDepRefs[dep]?.mode ?? "default") !== "default"
     );
 
-    if (
-      prevCommit === curCommit &&
-      !depChanged &&
-      !hasNonDefaultDepRefs &&
-      prevEvMap[node.name]
-    ) {
+    if (prevCommit === curCommit && !depChanged && !hasNonDefaultDepRefs && prevEvMap[node.name]) {
       // No change — reuse cached EV
       evMap[node.name] = prevEvMap[node.name]!;
     } else {

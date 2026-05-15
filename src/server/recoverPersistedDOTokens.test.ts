@@ -4,10 +4,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { TokenManager } from "@natstack/shared/tokenManager";
-import {
-  recoverPersistedDOTokens,
-  DO_STORAGE_SUBPATH,
-} from "./recoverPersistedDOTokens.js";
+import { recoverPersistedDOTokens, DO_STORAGE_SUBPATH } from "./recoverPersistedDOTokens.js";
 
 // ─── Fixture helpers ──────────────────────────────────────────────────────────
 

@@ -5,7 +5,7 @@
  * Uses mocked Electron APIs and injected dependencies.
  */
 
-import { describe, it, expect, vi, beforeEach, type Mock } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
 // Mock Electron before importing AutofillManager
 vi.mock("electron", () => ({
@@ -49,6 +49,52 @@ vi.mock("@natstack/dev-log", () => ({
 
 import { AutofillManager } from "./autofillManager.js";
 import type { StoredPassword } from "@natstack/browser-data";
+import type { EventService } from "@natstack/shared/eventsService";
+import type { ViewManager } from "../viewManager.js";
+import type { WebContents } from "electron";
+
+type MockWebContents = WebContents & {
+  on: ReturnType<typeof vi.fn>;
+  off: ReturnType<typeof vi.fn>;
+  getURL: ReturnType<typeof vi.fn>;
+  isDestroyed: ReturnType<typeof vi.fn>;
+  executeJavaScriptInIsolatedWorld: ReturnType<typeof vi.fn>;
+};
+
+type TestPanelState = {
+  origin: string;
+  credentials: StoredPassword[];
+  hasPendingSnapshot: boolean;
+  dismissedAt?: number;
+  signalCounts: { strong: number; medium: number; weak: number };
+  pendingSnapshot?: {
+    username: string;
+    password: string;
+    timestamp: number;
+    pageUrl: string;
+    actionUrl: string | null;
+  };
+};
+
+type TestManager = {
+  panelState: Map<number, TestPanelState>;
+  pendingCredentials: Map<
+    string,
+    { username: string; password: string; origin: string; isUpdate: boolean; existingId?: number }
+  >;
+  addSignal(wcId: number, signal: "strong" | "medium" | "weak"): Promise<void>;
+  triggerSave(wcId: number, onlyIfChanged: boolean): Promise<void>;
+};
+
+function testManager(manager: AutofillManager): TestManager {
+  return manager as unknown as TestManager;
+}
+
+function getPanelState(manager: AutofillManager, wcId: number): TestPanelState {
+  const state = testManager(manager).panelState.get(wcId);
+  if (!state) throw new Error(`Missing panel state for ${wcId}`);
+  return state;
+}
 
 function createMockPasswordStore() {
   return {
@@ -69,7 +115,7 @@ function createMockEventService() {
   };
 }
 
-function createMockWebContents(id: number, url = "https://example.com/login") {
+function createMockWebContents(id: number, url = "https://example.com/login"): MockWebContents {
   return {
     id,
     getURL: vi.fn().mockReturnValue(url),
@@ -78,7 +124,7 @@ function createMockWebContents(id: number, url = "https://example.com/login") {
     off: vi.fn(),
     session: { webRequest: { onCompleted: vi.fn() } },
     executeJavaScriptInIsolatedWorld: vi.fn().mockResolvedValue(null),
-  } as any;
+  } as unknown as MockWebContents;
 }
 
 function createMockViewManager() {
@@ -89,26 +135,33 @@ function createMockViewManager() {
   };
 }
 
-function createManager(overrides: {
-  passwordStore?: ReturnType<typeof createMockPasswordStore>;
-  eventService?: ReturnType<typeof createMockEventService>;
-  viewManager?: ReturnType<typeof createMockViewManager>;
-} = {}) {
+function createManager(
+  overrides: {
+    passwordStore?: ReturnType<typeof createMockPasswordStore>;
+    eventService?: ReturnType<typeof createMockEventService>;
+    viewManager?: ReturnType<typeof createMockViewManager>;
+  } = {}
+) {
   const passwordStore = overrides.passwordStore ?? createMockPasswordStore();
   const eventService = overrides.eventService ?? createMockEventService();
   const viewManager = overrides.viewManager ?? createMockViewManager();
 
   const manager = new AutofillManager({
     passwordStore,
-    eventService: eventService as any,
-    getViewManager: () => viewManager as any,
+    eventService: eventService as unknown as EventService,
+    getViewManager: () => viewManager as unknown as ViewManager,
     autofillOverlayPreloadPath: "/fake/preload.js",
   });
 
   return { manager, passwordStore, eventService, viewManager };
 }
 
-function makeCredential(id: number, username: string, password: string, origin = "https://example.com"): StoredPassword {
+function makeCredential(
+  id: number,
+  username: string,
+  password: string,
+  origin = "https://example.com"
+): StoredPassword {
   return {
     id,
     origin_url: origin,
@@ -131,7 +184,7 @@ describe("AutofillManager", () => {
 
       manager.attachToWebContents(1, wc);
 
-      const onCalls = wc.on.mock.calls.map((c: any) => c[0]);
+      const onCalls = wc.on.mock.calls.map((c: unknown[]) => c[0]);
       expect(onCalls).toContain("dom-ready");
       expect(onCalls).toContain("did-navigate");
       expect(onCalls).toContain("did-navigate-in-page");
@@ -145,7 +198,7 @@ describe("AutofillManager", () => {
       // Should not throw — origin resolution is deferred to dom-ready
       manager.attachToWebContents(1, wc);
 
-      const onCalls = wc.on.mock.calls.map((c: any) => c[0]);
+      const onCalls = wc.on.mock.calls.map((c: unknown[]) => c[0]);
       expect(onCalls).toContain("dom-ready");
     });
   });
@@ -182,14 +235,18 @@ describe("AutofillManager", () => {
       const serviceDef = manager.getServiceDefinition();
 
       // Manually inject a pending credential via private access
-      (manager as any).pendingCredentials.set("panel-1", {
+      testManager(manager).pendingCredentials.set("panel-1", {
         username: "alice",
         password: "secret",
         origin: "https://example.com",
         isUpdate: false,
       });
 
-      await serviceDef.handler!({ callerId: "shell", callerKind: "shell" as const }, "confirmSave", ["panel-1", "save"]);
+      await serviceDef.handler!(
+        { callerId: "shell", callerKind: "shell" as const },
+        "confirmSave",
+        ["panel-1", "save"]
+      );
 
       expect(passwordStore.add).toHaveBeenCalledWith({
         url: "https://example.com",
@@ -202,7 +259,7 @@ describe("AutofillManager", () => {
       const { manager, passwordStore } = createManager();
       const serviceDef = manager.getServiceDefinition();
 
-      (manager as any).pendingCredentials.set("panel-1", {
+      testManager(manager).pendingCredentials.set("panel-1", {
         username: "alice",
         password: "newpass",
         origin: "https://example.com",
@@ -210,7 +267,11 @@ describe("AutofillManager", () => {
         existingId: 42,
       });
 
-      await serviceDef.handler!({ callerId: "shell", callerKind: "shell" as const }, "confirmSave", ["panel-1", "save"]);
+      await serviceDef.handler!(
+        { callerId: "shell", callerKind: "shell" as const },
+        "confirmSave",
+        ["panel-1", "save"]
+      );
 
       expect(passwordStore.update).toHaveBeenCalledWith(42, { password: "newpass" });
     });
@@ -219,14 +280,18 @@ describe("AutofillManager", () => {
       const { manager, passwordStore } = createManager();
       const serviceDef = manager.getServiceDefinition();
 
-      (manager as any).pendingCredentials.set("panel-1", {
+      testManager(manager).pendingCredentials.set("panel-1", {
         username: "alice",
         password: "secret",
         origin: "https://example.com",
         isUpdate: false,
       });
 
-      await serviceDef.handler!({ callerId: "shell", callerKind: "shell" as const }, "confirmSave", ["panel-1", "never"]);
+      await serviceDef.handler!(
+        { callerId: "shell", callerKind: "shell" as const },
+        "confirmSave",
+        ["panel-1", "never"]
+      );
 
       expect(passwordStore.addNeverSave).toHaveBeenCalledWith("https://example.com");
       expect(passwordStore.add).not.toHaveBeenCalled();
@@ -242,17 +307,21 @@ describe("AutofillManager", () => {
       manager.attachToWebContents(1, wc);
 
       // Set origin on the state
-      const state = (manager as any).panelState.get(1);
+      const state = getPanelState(manager, 1);
       state.origin = "https://example.com";
 
-      (manager as any).pendingCredentials.set("panel-1", {
+      testManager(manager).pendingCredentials.set("panel-1", {
         username: "alice",
         password: "secret",
         origin: "https://example.com",
         isUpdate: false,
       });
 
-      await serviceDef.handler!({ callerId: "shell", callerKind: "shell" as const }, "confirmSave", ["panel-1", "dismiss"]);
+      await serviceDef.handler!(
+        { callerId: "shell", callerKind: "shell" as const },
+        "confirmSave",
+        ["panel-1", "dismiss"]
+      );
 
       expect(passwordStore.addNeverSave).not.toHaveBeenCalled();
       expect(state.dismissedAt).toBeGreaterThan(0);
@@ -262,22 +331,26 @@ describe("AutofillManager", () => {
       const { manager } = createManager();
       const serviceDef = manager.getServiceDefinition();
 
-      (manager as any).pendingCredentials.set("panel-1", {
+      testManager(manager).pendingCredentials.set("panel-1", {
         username: "alice",
         password: "secret",
         origin: "https://example.com",
         isUpdate: false,
       });
 
-      await serviceDef.handler!({ callerId: "shell", callerKind: "shell" as const }, "confirmSave", ["panel-1", "dismiss"]);
+      await serviceDef.handler!(
+        { callerId: "shell", callerKind: "shell" as const },
+        "confirmSave",
+        ["panel-1", "dismiss"]
+      );
 
-      expect((manager as any).pendingCredentials.has("panel-1")).toBe(false);
+      expect(testManager(manager).pendingCredentials.has("panel-1")).toBe(false);
     });
   });
 
   describe("signal tier logic", () => {
     function setupWithSnapshot(manager: AutofillManager, wcId: number) {
-      const state = (manager as any).panelState.get(wcId);
+      const state = getPanelState(manager, wcId);
       state.hasPendingSnapshot = true;
       state.origin = "https://example.com";
       return state;
@@ -288,10 +361,10 @@ describe("AutofillManager", () => {
       const wc = createMockWebContents(1);
       manager.attachToWebContents(1, wc);
 
-      const state = setupWithSnapshot(manager, 1);
-      const triggerSpy = vi.spyOn(manager as any, "triggerSave").mockResolvedValue(undefined);
+      setupWithSnapshot(manager, 1);
+      const triggerSpy = vi.spyOn(testManager(manager), "triggerSave").mockResolvedValue(undefined);
 
-      await (manager as any).addSignal(1, "strong");
+      await testManager(manager).addSignal(1, "strong");
 
       expect(triggerSpy).toHaveBeenCalledWith(1, false);
     });
@@ -301,10 +374,10 @@ describe("AutofillManager", () => {
       const wc = createMockWebContents(1);
       manager.attachToWebContents(1, wc);
 
-      const state = setupWithSnapshot(manager, 1);
-      const triggerSpy = vi.spyOn(manager as any, "triggerSave").mockResolvedValue(undefined);
+      setupWithSnapshot(manager, 1);
+      const triggerSpy = vi.spyOn(testManager(manager), "triggerSave").mockResolvedValue(undefined);
 
-      await (manager as any).addSignal(1, "medium");
+      await testManager(manager).addSignal(1, "medium");
 
       expect(triggerSpy).toHaveBeenCalledWith(1, true); // onlyIfChanged = true
     });
@@ -314,14 +387,14 @@ describe("AutofillManager", () => {
       const wc = createMockWebContents(1);
       manager.attachToWebContents(1, wc);
 
-      const state = setupWithSnapshot(manager, 1);
-      const triggerSpy = vi.spyOn(manager as any, "triggerSave").mockResolvedValue(undefined);
+      setupWithSnapshot(manager, 1);
+      const triggerSpy = vi.spyOn(testManager(manager), "triggerSave").mockResolvedValue(undefined);
 
-      await (manager as any).addSignal(1, "medium");
+      await testManager(manager).addSignal(1, "medium");
       expect(triggerSpy).toHaveBeenCalledWith(1, true); // first medium = check-only
 
       triggerSpy.mockClear();
-      await (manager as any).addSignal(1, "medium");
+      await testManager(manager).addSignal(1, "medium");
       expect(triggerSpy).toHaveBeenCalledWith(1, false); // second medium = full save
     });
 
@@ -330,13 +403,13 @@ describe("AutofillManager", () => {
       const wc = createMockWebContents(1);
       manager.attachToWebContents(1, wc);
 
-      const state = setupWithSnapshot(manager, 1);
-      const triggerSpy = vi.spyOn(manager as any, "triggerSave").mockResolvedValue(undefined);
+      setupWithSnapshot(manager, 1);
+      const triggerSpy = vi.spyOn(testManager(manager), "triggerSave").mockResolvedValue(undefined);
 
-      await (manager as any).addSignal(1, "weak");
+      await testManager(manager).addSignal(1, "weak");
       expect(triggerSpy).not.toHaveBeenCalled(); // weak alone = nothing
 
-      await (manager as any).addSignal(1, "medium");
+      await testManager(manager).addSignal(1, "medium");
       expect(triggerSpy).toHaveBeenCalledWith(1, false); // medium + weak = full save
     });
 
@@ -345,11 +418,11 @@ describe("AutofillManager", () => {
       const wc = createMockWebContents(1);
       manager.attachToWebContents(1, wc);
 
-      const state = setupWithSnapshot(manager, 1);
+      setupWithSnapshot(manager, 1);
       passwordStore.isNeverSave.mockReturnValue(true);
 
-      const triggerSpy = vi.spyOn(manager as any, "triggerSave").mockResolvedValue(undefined);
-      await (manager as any).addSignal(1, "strong");
+      const triggerSpy = vi.spyOn(testManager(manager), "triggerSave").mockResolvedValue(undefined);
+      await testManager(manager).addSignal(1, "strong");
 
       expect(triggerSpy).not.toHaveBeenCalled();
     });
@@ -362,8 +435,8 @@ describe("AutofillManager", () => {
       const state = setupWithSnapshot(manager, 1);
       state.dismissedAt = Date.now(); // just dismissed
 
-      const triggerSpy = vi.spyOn(manager as any, "triggerSave").mockResolvedValue(undefined);
-      await (manager as any).addSignal(1, "strong");
+      const triggerSpy = vi.spyOn(testManager(manager), "triggerSave").mockResolvedValue(undefined);
+      await testManager(manager).addSignal(1, "strong");
 
       expect(triggerSpy).not.toHaveBeenCalled();
     });
@@ -376,8 +449,8 @@ describe("AutofillManager", () => {
       const state = setupWithSnapshot(manager, 1);
       state.dismissedAt = Date.now() - 11 * 60 * 1000; // 11 minutes ago
 
-      const triggerSpy = vi.spyOn(manager as any, "triggerSave").mockResolvedValue(undefined);
-      await (manager as any).addSignal(1, "strong");
+      const triggerSpy = vi.spyOn(testManager(manager), "triggerSave").mockResolvedValue(undefined);
+      await testManager(manager).addSignal(1, "strong");
 
       expect(triggerSpy).toHaveBeenCalled();
     });
@@ -388,8 +461,8 @@ describe("AutofillManager", () => {
       manager.attachToWebContents(1, wc);
 
       // hasPendingSnapshot defaults to false
-      const triggerSpy = vi.spyOn(manager as any, "triggerSave").mockResolvedValue(undefined);
-      await (manager as any).addSignal(1, "strong");
+      const triggerSpy = vi.spyOn(testManager(manager), "triggerSave").mockResolvedValue(undefined);
+      await testManager(manager).addSignal(1, "strong");
 
       expect(triggerSpy).not.toHaveBeenCalled();
     });
@@ -405,7 +478,7 @@ describe("AutofillManager", () => {
       viewManager.getWebContents.mockReturnValue(wc);
 
       manager.attachToWebContents(1, wc);
-      const state = (manager as any).panelState.get(1);
+      const state = getPanelState(manager, 1);
       state.origin = "https://example.com";
       state.credentials = [existingCred];
       state.hasPendingSnapshot = true;
@@ -419,21 +492,21 @@ describe("AutofillManager", () => {
         actionUrl: null,
       });
 
-      await (manager as any).triggerSave(1, false);
+      await testManager(manager).triggerSave(1, false);
 
       expect(passwordStore.updateLastUsed).toHaveBeenCalledWith(1);
       expect(eventService.emit).not.toHaveBeenCalled();
     });
 
     it("prompts for update when password changed", async () => {
-      const { manager, passwordStore, eventService, viewManager } = createManager();
+      const { manager, eventService, viewManager } = createManager();
       const wc = createMockWebContents(1);
       const existingCred = makeCredential(1, "alice", "old-pass");
 
       viewManager.getWebContents.mockReturnValue(wc);
 
       manager.attachToWebContents(1, wc);
-      const state = (manager as any).panelState.get(1);
+      const state = getPanelState(manager, 1);
       state.origin = "https://example.com";
       state.credentials = [existingCred];
       state.hasPendingSnapshot = true;
@@ -446,12 +519,15 @@ describe("AutofillManager", () => {
         actionUrl: null,
       });
 
-      await (manager as any).triggerSave(1, false);
+      await testManager(manager).triggerSave(1, false);
 
-      expect(eventService.emit).toHaveBeenCalledWith("autofill:save-prompt", expect.objectContaining({
-        username: "alice",
-        isUpdate: true,
-      }));
+      expect(eventService.emit).toHaveBeenCalledWith(
+        "autofill:save-prompt",
+        expect.objectContaining({
+          username: "alice",
+          isUpdate: true,
+        })
+      );
     });
 
     it("skips new credentials when onlyIfChanged is true", async () => {
@@ -462,7 +538,7 @@ describe("AutofillManager", () => {
       viewManager.getWebContents.mockReturnValue(wc);
 
       manager.attachToWebContents(1, wc);
-      const state = (manager as any).panelState.get(1);
+      const state = getPanelState(manager, 1);
       state.origin = "https://example.com";
       state.credentials = [];
       state.hasPendingSnapshot = true;
@@ -475,7 +551,7 @@ describe("AutofillManager", () => {
         actionUrl: null,
       });
 
-      await (manager as any).triggerSave(1, true); // onlyIfChanged
+      await testManager(manager).triggerSave(1, true); // onlyIfChanged
 
       expect(eventService.emit).not.toHaveBeenCalled();
     });
@@ -488,7 +564,7 @@ describe("AutofillManager", () => {
       viewManager.getWebContents.mockReturnValue(wc);
 
       manager.attachToWebContents(1, wc);
-      const state = (manager as any).panelState.get(1);
+      const state = getPanelState(manager, 1);
       state.origin = "https://example.com";
       state.credentials = [];
       state.hasPendingSnapshot = true;
@@ -501,19 +577,23 @@ describe("AutofillManager", () => {
         actionUrl: null,
       });
 
-      await (manager as any).triggerSave(1, false);
+      await testManager(manager).triggerSave(1, false);
 
-      expect(eventService.emit).toHaveBeenCalledWith("autofill:save-prompt", expect.objectContaining({
-        username: "bob",
-        isUpdate: false,
-      }));
+      expect(eventService.emit).toHaveBeenCalledWith(
+        "autofill:save-prompt",
+        expect.objectContaining({
+          username: "bob",
+          isUpdate: false,
+        })
+      );
     });
   });
 
   describe("content script generation", () => {
     it("getFillScript passes values through JSON.stringify", async () => {
       // Un-mock for this test
-      const { getFillScript } = await vi.importActual<typeof import("./contentScript.js")>("./contentScript.js");
+      const { getFillScript } =
+        await vi.importActual<typeof import("./contentScript.js")>("./contentScript.js");
 
       const script = getFillScript("#user", "#pass", 'alice"</script>', "p'ass");
 

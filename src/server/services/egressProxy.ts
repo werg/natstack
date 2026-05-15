@@ -29,7 +29,10 @@ import {
 } from "../../../packages/shared/src/credentials/urlAudience.js";
 import type { CodeIdentityResolver, ResolvedCodeIdentity } from "./codeIdentityResolver.js";
 import type { ApprovalQueue, GrantedDecision } from "./approvalQueue.js";
-import { CredentialSessionGrantStore, type CredentialSessionGrantResource } from "./credentialSessionGrants.js";
+import {
+  CredentialSessionGrantStore,
+  type CredentialSessionGrantResource,
+} from "./credentialSessionGrants.js";
 import { CredentialLifecycleError, type CredentialLifecycle } from "./credentialLifecycle.js";
 
 const HOP_BY_HOP_REQUEST_HEADERS = new Set([
@@ -93,7 +96,7 @@ class ForwardRejection extends Error {
   constructor(
     public readonly statusCode: number,
     message: string,
-    public readonly capabilityViolation?: string,
+    public readonly capabilityViolation?: string
   ) {
     super(message);
   }
@@ -164,7 +167,12 @@ export class EgressProxy {
     headers?: Record<string, string>;
     body?: string;
     credentialId?: string;
-  }): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: string }> {
+  }): Promise<{
+    status: number;
+    statusText: string;
+    headers: Record<string, string>;
+    body: string;
+  }> {
     const body = params.body;
     const bytesOut = body ? Buffer.byteLength(body) : 0;
     return this.executeAuthorizedRequest({
@@ -253,7 +261,7 @@ export class EgressProxy {
     inputHeaders: IncomingHttpHeaders | Headers | Record<string, string | string[] | undefined>,
     credential?: Credential,
     binding?: CredentialBinding | null,
-    method = "GET",
+    method = "GET"
   ): { headers: OutgoingHttpHeaders; targetUrl: URL } {
     const headers: OutgoingHttpHeaders = {};
 
@@ -279,7 +287,7 @@ export class EgressProxy {
       } else if (injection.type === "header") {
         headers[injection.name] = renderCredentialHeaderValue(
           injection.valueTemplate,
-          credential.accessToken,
+          credential.accessToken
         );
       } else if (injection.type === "cookie") {
         headers.cookie = renderCookieSessionHeader(credential, targetUrl);
@@ -415,7 +423,7 @@ export class EgressProxy {
           params.inputHeaders,
           authorization.credential ?? undefined,
           authorization.binding,
-          params.method,
+          params.method
         );
         targetUrl = prepared.targetUrl;
         try {
@@ -484,21 +492,32 @@ export class EgressProxy {
     credentialId?: string;
     credentialUse: CredentialBindingUse;
   }): Promise<Authorization> {
-    const attribution = params.callerId ? this.resolveAttribution(params.callerId, params.credentialId) : null;
+    const attribution = params.callerId
+      ? this.resolveAttribution(params.callerId, params.credentialId)
+      : null;
     if (!params.credentialId) {
       const credential = attribution
-        ? await this.resolveCredentialForRequest(params.targetUrl, attribution, params.credentialUse, params.method)
+        ? await this.resolveCredentialForRequest(
+            params.targetUrl,
+            attribution,
+            params.credentialUse,
+            params.method
+          )
         : null;
       return {
         attribution,
         credential,
-        binding: credential ? this.findCredentialBinding(credential, params.targetUrl, params.credentialUse) : null,
+        binding: credential
+          ? this.findCredentialBinding(credential, params.targetUrl, params.credentialUse)
+          : null,
         connectionId: credential?.id ?? null,
         scopes: credential?.scopes ?? [],
       };
     }
 
-    let credential = await Promise.resolve(this.deps.credentialStore.loadUrlBound(params.credentialId));
+    let credential = await Promise.resolve(
+      this.deps.credentialStore.loadUrlBound(params.credentialId)
+    );
     if (!credential || !credential.bindings?.length || credential.revokedAt) {
       throw new ForwardRejection(403, "credential-unavailable", "credential-unavailable");
     }
@@ -508,10 +527,17 @@ export class EgressProxy {
     }
     const binding = this.findCredentialBinding(credential, params.targetUrl, params.credentialUse);
     if (!binding) {
-      throw new ForwardRejection(403, "credential-audience-mismatch", "credential-audience-mismatch");
+      throw new ForwardRejection(
+        403,
+        "credential-audience-mismatch",
+        "credential-audience-mismatch"
+      );
     }
     const usage = credentialUseResource(binding, params.targetUrl, params.method);
-    if (params.callerId && !this.isCallerAllowed(credential, params.callerId, attribution, usage.sessionResource)) {
+    if (
+      params.callerId &&
+      !this.isCallerAllowed(credential, params.callerId, attribution, usage.sessionResource)
+    ) {
       await this.requestCredentialUseGrant(credential, binding, params.callerId, attribution, {
         targetUrl: params.targetUrl,
         method: params.method,
@@ -531,36 +557,58 @@ export class EgressProxy {
     targetUrl: URL,
     attribution: RequestAttribution,
     use: CredentialBindingUse = "fetch",
-    method = "GET",
+    method = "GET"
   ): Promise<Credential | null> {
     const listUrlBound = this.deps.credentialStore.listUrlBound;
     if (!listUrlBound) {
       return null;
     }
-    const credentials = (await Promise.resolve(listUrlBound.call(this.deps.credentialStore)))
-      .filter((credential) =>
-        !credential.revokedAt
-        && !!this.findCredentialBinding(credential, targetUrl, use)
-      );
+    const credentials = (
+      await Promise.resolve(listUrlBound.call(this.deps.credentialStore))
+    ).filter(
+      (credential) =>
+        !credential.revokedAt && !!this.findCredentialBinding(credential, targetUrl, use)
+    );
     if (credentials.length === 1) {
       const credential = credentials[0] ?? null;
       if (credential) {
         const binding = this.findCredentialBinding(credential, targetUrl, use);
         if (!binding) {
-          throw new ForwardRejection(403, "credential-audience-mismatch", "credential-audience-mismatch");
+          throw new ForwardRejection(
+            403,
+            "credential-audience-mismatch",
+            "credential-audience-mismatch"
+          );
         }
         const usage = credentialUseResource(binding, targetUrl, method);
-        if (!this.isCallerAllowed(credential, attribution.callerId, attribution, usage.sessionResource)) {
-          await this.requestCredentialUseGrant(credential, binding, attribution.callerId, attribution, {
-            targetUrl,
-            method,
-          });
+        if (
+          !this.isCallerAllowed(
+            credential,
+            attribution.callerId,
+            attribution,
+            usage.sessionResource
+          )
+        ) {
+          await this.requestCredentialUseGrant(
+            credential,
+            binding,
+            attribution.callerId,
+            attribution,
+            {
+              targetUrl,
+              method,
+            }
+          );
         }
       }
       return credential ? this.refreshCredentialForUse(credential) : null;
     }
     if (credentials.length > 1) {
-      throw new ForwardRejection(409, "credential-selection-required", "credential-selection-required");
+      throw new ForwardRejection(
+        409,
+        "credential-selection-required",
+        "credential-selection-required"
+      );
     }
     return null;
   }
@@ -573,7 +621,9 @@ export class EgressProxy {
       return credential;
     }
     try {
-      return await this.deps.credentialLifecycle.refreshIfNeeded(credential as Credential & { id: string });
+      return await this.deps.credentialLifecycle.refreshIfNeeded(
+        credential as Credential & { id: string }
+      );
     } catch (error) {
       if (error instanceof CredentialLifecycleError) {
         throw new ForwardRejection(403, error.code, error.code);
@@ -587,10 +637,14 @@ export class EgressProxy {
     binding: CredentialBinding,
     callerId: string,
     attribution: RequestAttribution | null,
-    operation: { targetUrl: URL; method: string },
+    operation: { targetUrl: URL; method: string }
   ): Promise<void> {
     if (!this.deps.approvalQueue || !attribution || !credential.id) {
-      throw new ForwardRejection(403, "credential-caller-not-granted", "credential-caller-not-granted");
+      throw new ForwardRejection(
+        403,
+        "credential-caller-not-granted",
+        "credential-caller-not-granted"
+      );
     }
     const decision = await this.deps.approvalQueue.request({
       callerId,
@@ -604,9 +658,10 @@ export class EgressProxy {
       accountIdentity: credential.accountIdentity,
       scopes: credential.scopes,
       credentialUse: binding.use,
-      gitOperation: binding.use === "git-http" || binding.use === "git-ssh"
-        ? describeGitHttpOperation(operation.targetUrl, operation.method)
-        : undefined,
+      gitOperation:
+        binding.use === "git-http" || binding.use === "git-ssh"
+          ? describeGitHttpOperation(operation.targetUrl, operation.method)
+          : undefined,
       oauthAuthorizeOrigin: credential.metadata?.["oauthAuthorizeOrigin"],
       oauthTokenOrigin: credential.metadata?.["oauthTokenOrigin"],
       oauthAudienceDomainMismatch: hasOAuthAudienceDomainMismatch(binding.audience, [
@@ -615,7 +670,11 @@ export class EgressProxy {
       ]),
     });
     if (decision === "deny") {
-      throw new ForwardRejection(403, "credential-caller-not-granted", "credential-caller-not-granted");
+      throw new ForwardRejection(
+        403,
+        "credential-caller-not-granted",
+        "credential-caller-not-granted"
+      );
     }
     if (decision === "once") {
       return;
@@ -628,17 +687,19 @@ export class EgressProxy {
     const saveUrlBound = this.deps.credentialStore.saveUrlBound;
     if (saveUrlBound) {
       const now = Date.now();
-      await Promise.resolve(saveUrlBound.call(this.deps.credentialStore, {
-        ...credential,
-        grants: upsertCredentialUseGrant(
-          credential.grants ?? [],
-          grantForDecision(callerId, attribution, decision, now, binding, usage),
-        ),
-        metadata: {
-          ...(credential.metadata ?? {}),
-          updatedAt: String(now),
-        },
-      } as Credential & { id: string }));
+      await Promise.resolve(
+        saveUrlBound.call(this.deps.credentialStore, {
+          ...credential,
+          grants: upsertCredentialUseGrant(
+            credential.grants ?? [],
+            grantForDecision(callerId, attribution, decision, now, binding, usage)
+          ),
+          metadata: {
+            ...(credential.metadata ?? {}),
+            updatedAt: String(now),
+          },
+        } as Credential & { id: string })
+      );
     }
   }
 
@@ -660,10 +721,14 @@ export class EgressProxy {
     credential: Credential,
     callerId: string,
     attribution: RequestAttribution | null,
-    resource: CredentialSessionGrantResource,
+    resource: CredentialSessionGrantResource
   ): boolean {
     const credentialId = credential.id ?? credential.connectionId;
-    if (credentialId && attribution && this.sessionGrantStore.has(credentialId, attribution, resource)) {
+    if (
+      credentialId &&
+      attribution &&
+      this.sessionGrantStore.has(credentialId, attribution, resource)
+    ) {
       return true;
     }
     return isCallerAllowed(credential, callerId, attribution, resource);
@@ -679,11 +744,13 @@ export class EgressProxy {
   private findCredentialBinding(
     credential: Credential,
     targetUrl: URL,
-    use: CredentialBindingUse,
+    use: CredentialBindingUse
   ): CredentialBinding | null {
-    return this.credentialBindings(credential).find((binding) =>
-      binding.use === use && !!findMatchingUrlAudience(targetUrl, binding.audience)
-    ) ?? null;
+    return (
+      this.credentialBindings(credential).find(
+        (binding) => binding.use === use && !!findMatchingUrlAudience(targetUrl, binding.audience)
+      ) ?? null
+    );
   }
 
   private async handleConnect(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
@@ -745,7 +812,7 @@ export class EgressProxy {
     req: IncomingMessage,
     res: ServerResponse,
     targetUrl: URL,
-    headers: OutgoingHttpHeaders,
+    headers: OutgoingHttpHeaders
   ): Promise<ForwardResult> {
     return new Promise<ForwardResult>((resolve, reject) => {
       const requestFn = targetUrl.protocol === "https:" ? httpsRequest : httpRequest;
@@ -784,7 +851,7 @@ export class EgressProxy {
             }
           });
           upstreamResponse.pipe(res);
-        },
+        }
       );
 
       upstreamRequest.on("error", reject);
@@ -797,7 +864,7 @@ export class EgressProxy {
   }
 
   private iterateHeaders(
-    inputHeaders: IncomingHttpHeaders | Headers | Record<string, string | string[] | undefined>,
+    inputHeaders: IncomingHttpHeaders | Headers | Record<string, string | string[] | undefined>
   ): Array<[string, string | string[]]> {
     if (inputHeaders instanceof Headers) {
       return Array.from(inputHeaders.entries()).map(([name, value]) => [name, value]);
@@ -877,16 +944,23 @@ function renderOAuth1AuthorizationHeader(params: {
     oauthPercentEncode(normalizedParams),
   ].join("&");
   const signingKey = `${oauthPercentEncode(params.consumerSecret)}&${oauthPercentEncode(params.tokenSecret)}`;
-  oauthParams["oauth_signature"] = createHmac("sha1", signingKey).update(signatureBase).digest("base64");
-  return "OAuth " + Object.entries(oauthParams)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => `${oauthPercentEncode(key)}="${oauthPercentEncode(value)}"`)
-    .join(", ");
+  oauthParams["oauth_signature"] = createHmac("sha1", signingKey)
+    .update(signatureBase)
+    .digest("base64");
+  return (
+    "OAuth " +
+    Object.entries(oauthParams)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => `${oauthPercentEncode(key)}="${oauthPercentEncode(value)}"`)
+      .join(", ")
+  );
 }
 
 function oauthPercentEncode(value: string): string {
-  return encodeURIComponent(value)
-    .replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+  return encodeURIComponent(value).replace(
+    /[!'()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`
+  );
 }
 
 export function createEgressProxy(deps: EgressProxyDeps): EgressProxy {
@@ -897,26 +971,19 @@ function isCallerAllowed(
   credential: Credential,
   callerId: string,
   attribution: RequestAttribution | null,
-  resource: CredentialSessionGrantResource,
+  resource: CredentialSessionGrantResource
 ): boolean {
-  return !!credential.grants?.some((grant) =>
-    grant.bindingId === resource.bindingId
-    && grant.resource === resource.resource
-    && grant.action === resource.action
-    && (
-      (grant.scope === "caller" && grant.callerId === callerId)
-      || (
-        !!attribution
-        && (
-          (grant.scope === "repo" && grant.repoPath === attribution.repoPath)
-          || (
-            grant.scope === "version"
-            && grant.repoPath === attribution.repoPath
-            && grant.effectiveVersion === attribution.effectiveVersion
-          )
-        )
-      )
-    )
+  return !!credential.grants?.some(
+    (grant) =>
+      grant.bindingId === resource.bindingId &&
+      grant.resource === resource.resource &&
+      grant.action === resource.action &&
+      ((grant.scope === "caller" && grant.callerId === callerId) ||
+        (!!attribution &&
+          ((grant.scope === "repo" && grant.repoPath === attribution.repoPath) ||
+            (grant.scope === "version" &&
+              grant.repoPath === attribution.repoPath &&
+              grant.effectiveVersion === attribution.effectiveVersion))))
   );
 }
 
@@ -931,7 +998,10 @@ function auditUrlFor(originalTargetUrl: URL, binding: CredentialBinding | null):
   return redacted.toString();
 }
 
-function describeGitHttpOperation(targetUrl: URL, method: string): {
+function describeGitHttpOperation(
+  targetUrl: URL,
+  method: string
+): {
   action: "read" | "write";
   label: string;
   remote: string;
@@ -971,18 +1041,20 @@ function gitRemoteFromUrl(targetUrl: URL): string {
 function credentialUseResource(
   binding: CredentialBinding,
   targetUrl: URL,
-  method: string,
+  method: string
 ): {
   resource: string;
   action: CredentialGrantAction;
   sessionResource: CredentialSessionGrantResource;
 } {
-  const resource = binding.use === "git-http" || binding.use === "git-ssh"
-    ? gitRemoteFromUrl(targetUrl)
-    : findMatchingUrlAudience(targetUrl, binding.audience)?.url ?? targetUrl.origin;
-  const action: CredentialGrantAction = binding.use === "git-http" || binding.use === "git-ssh"
-    ? describeGitHttpOperation(targetUrl, method).action
-    : "use";
+  const resource =
+    binding.use === "git-http" || binding.use === "git-ssh"
+      ? gitRemoteFromUrl(targetUrl)
+      : (findMatchingUrlAudience(targetUrl, binding.audience)?.url ?? targetUrl.origin);
+  const action: CredentialGrantAction =
+    binding.use === "git-http" || binding.use === "git-ssh"
+      ? describeGitHttpOperation(targetUrl, method).action
+      : "use";
   return {
     resource,
     action,
@@ -996,7 +1068,7 @@ function credentialUseResource(
 
 function hasOAuthAudienceDomainMismatch(
   audiences: readonly { url: string }[],
-  oauthOrigins: readonly (string | undefined)[],
+  oauthOrigins: readonly (string | undefined)[]
 ): boolean | undefined {
   const oauthDomains = oauthOrigins
     .filter((origin): origin is string => typeof origin === "string" && origin.length > 0)
@@ -1043,14 +1115,20 @@ function isRetryableStatus(statusCode: number): boolean {
 
 function backoffDelayMs(attempt: number): number {
   const jitter = Math.floor(Math.random() * 25);
-  return Math.min(DEFAULT_RETRY_MAX_DELAY_MS, DEFAULT_RETRY_INITIAL_DELAY_MS * 2 ** (attempt - 1)) + jitter;
+  return (
+    Math.min(DEFAULT_RETRY_MAX_DELAY_MS, DEFAULT_RETRY_INITIAL_DELAY_MS * 2 ** (attempt - 1)) +
+    jitter
+  );
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function getCircuitState(circuits: Map<string, CircuitState>, key: string): AuditEntry["breakerState"] {
+function getCircuitState(
+  circuits: Map<string, CircuitState>,
+  key: string
+): AuditEntry["breakerState"] {
   const state = circuits.get(key);
   if (!state) {
     return "closed";
@@ -1068,9 +1146,16 @@ function recordCircuitSuccess(circuits: Map<string, CircuitState>, key: string):
 function recordCircuitFailure(circuits: Map<string, CircuitState>, key: string): void {
   const current = circuits.get(key) ?? { failures: 0, state: "closed" as const };
   const failures = current.failures + 1;
-  circuits.set(key, failures >= CIRCUIT_FAILURE_THRESHOLD
-    ? { failures, state: "open", openedAt: Date.now() }
-    : { failures, state: current.state === "half-open" ? "open" : "closed", openedAt: current.openedAt });
+  circuits.set(
+    key,
+    failures >= CIRCUIT_FAILURE_THRESHOLD
+      ? { failures, state: "open", openedAt: Date.now() }
+      : {
+          failures,
+          state: current.state === "half-open" ? "open" : "closed",
+          openedAt: current.openedAt,
+        }
+  );
 }
 
 function renderCookieSessionHeader(credential: Credential, targetUrl: URL): string {
@@ -1082,10 +1167,17 @@ function renderCookieSessionHeader(credential: Credential, targetUrl: URL): stri
     .filter((cookie) => {
       if (!cookie.name || !cookie.value) return false;
       if (cookie.secure && targetUrl.protocol !== "https:") return false;
-      if (typeof cookie.expirationDate === "number" && cookie.expirationDate > 0 && cookie.expirationDate <= nowSeconds) {
+      if (
+        typeof cookie.expirationDate === "number" &&
+        cookie.expirationDate > 0 &&
+        cookie.expirationDate <= nowSeconds
+      ) {
         return false;
       }
-      return cookieDomainMatches(cookie.domain, targetUrl.hostname) && cookiePathMatches(cookie.path, targetUrl.pathname);
+      return (
+        cookieDomainMatches(cookie.domain, targetUrl.hostname) &&
+        cookiePathMatches(cookie.path, targetUrl.pathname)
+      );
     })
     .map((cookie) => `${cookie.name}=${cookie.value}`);
   return pairs.join("; ");
@@ -1101,8 +1193,11 @@ function cookieDomainMatches(domain: string | undefined, hostname: string): bool
 function cookiePathMatches(cookiePath: string | undefined, requestPath: string): boolean {
   const normalizedCookiePath = cookiePath && cookiePath.startsWith("/") ? cookiePath : "/";
   if (normalizedCookiePath === "/") return true;
-  return requestPath === normalizedCookiePath || requestPath.startsWith(
-    normalizedCookiePath.endsWith("/") ? normalizedCookiePath : `${normalizedCookiePath}/`,
+  return (
+    requestPath === normalizedCookiePath ||
+    requestPath.startsWith(
+      normalizedCookiePath.endsWith("/") ? normalizedCookiePath : `${normalizedCookiePath}/`
+    )
   );
 }
 
@@ -1147,7 +1242,12 @@ function applyAwsSigV4Authorization(params: {
     credentialScope,
     createHash("sha256").update(canonicalRequest).digest("hex"),
   ].join("\n");
-  const signingKey = awsSigningKey(params.secretAccessKey, dateStamp, params.region, params.service);
+  const signingKey = awsSigningKey(
+    params.secretAccessKey,
+    dateStamp,
+    params.region,
+    params.service
+  );
   const signature = createHmac("sha256", signingKey).update(stringToSign).digest("hex");
   params.headers.authorization = [
     `AWS4-HMAC-SHA256 Credential=${params.accessKeyId}/${credentialScope}`,
@@ -1156,7 +1256,10 @@ function applyAwsSigV4Authorization(params: {
   ].join(", ");
 }
 
-function canonicalAwsHeaders(headers: OutgoingHttpHeaders): { headerBlock: string; signedHeaders: string } {
+function canonicalAwsHeaders(headers: OutgoingHttpHeaders): {
+  headerBlock: string;
+  signedHeaders: string;
+} {
   const entries = Object.entries(headers)
     .flatMap(([name, value]) => {
       if (value === undefined) return [];
@@ -1170,7 +1273,12 @@ function canonicalAwsHeaders(headers: OutgoingHttpHeaders): { headerBlock: strin
   };
 }
 
-function awsSigningKey(secretAccessKey: string, dateStamp: string, region: string, service: string): Buffer {
+function awsSigningKey(
+  secretAccessKey: string,
+  dateStamp: string,
+  region: string,
+  service: string
+): Buffer {
   const dateKey = createHmac("sha256", `AWS4${secretAccessKey}`).update(dateStamp).digest();
   const regionKey = createHmac("sha256", dateKey).update(region).digest();
   const serviceKey = createHmac("sha256", regionKey).update(service).digest();
@@ -1178,8 +1286,9 @@ function awsSigningKey(secretAccessKey: string, dateStamp: string, region: strin
 }
 
 function awsPercentEncode(value: string): string {
-  return encodeURIComponent(value).replace(/[!'()*]/g, (char) =>
-    `%${char.charCodeAt(0).toString(16).toUpperCase()}`
+  return encodeURIComponent(value).replace(
+    /[!'()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`
   );
 }
 
@@ -1189,7 +1298,7 @@ function grantForDecision(
   decision: Exclude<GrantedDecision, "deny" | "once" | "session">,
   grantedAt: number,
   binding: CredentialBinding,
-  usage: ReturnType<typeof credentialUseResource>,
+  usage: ReturnType<typeof credentialUseResource>
 ): CredentialUseGrant {
   const base = {
     bindingId: binding.id,
@@ -1213,7 +1322,10 @@ function grantForDecision(
   return { ...base, scope: "caller", callerId };
 }
 
-function upsertCredentialUseGrant(grants: CredentialUseGrant[], grant: CredentialUseGrant): CredentialUseGrant[] {
+function upsertCredentialUseGrant(
+  grants: CredentialUseGrant[],
+  grant: CredentialUseGrant
+): CredentialUseGrant[] {
   return [
     ...grants.filter((entry) => credentialUseGrantKey(entry) !== credentialUseGrantKey(grant)),
     grant,

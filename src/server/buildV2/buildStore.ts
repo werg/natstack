@@ -73,6 +73,18 @@ function getBuildDir(key: string): string {
   return path.join(getBuildsDir(), key);
 }
 
+function isFileSystemErrorCode(error: unknown, codes: readonly string[]): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  return typeof code === "string" && codes.includes(code);
+}
+
+function warnCleanupFailure(pathName: string, error: unknown): void {
+  console.warn(
+    `[buildStore] Failed to remove ${pathName}: ${error instanceof Error ? error.message : String(error)}`
+  );
+}
+
 function walkFilesRecursive(dir: string): string[] {
   const out: string[] = [];
   if (!fs.existsSync(dir)) return out;
@@ -91,10 +103,28 @@ function walkFilesRecursive(dir: string): string[] {
 function isBinaryAsset(file: string): boolean {
   const ext = path.extname(file).toLowerCase();
   return [
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico", ".bmp", ".tif", ".tiff",
-    ".woff", ".woff2", ".ttf", ".otf", ".eot",
-    ".mp3", ".mp4", ".ogg", ".wav", ".webm",
-    ".wasm", ".pdf",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".avif",
+    ".ico",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".otf",
+    ".eot",
+    ".mp3",
+    ".mp4",
+    ".ogg",
+    ".wav",
+    ".webm",
+    ".wasm",
+    ".pdf",
   ].includes(ext);
 }
 
@@ -110,23 +140,15 @@ export function get(key: string): BuildResult | null {
   if (!fs.existsSync(metadataPath)) return null;
 
   try {
-    const metadata = JSON.parse(
-      fs.readFileSync(metadataPath, "utf-8"),
-    ) as BuildMetadata;
+    const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf-8")) as BuildMetadata;
 
     const bundlePath = path.join(dir, "bundle.js");
     const cssPath = path.join(dir, "bundle.css");
     const htmlPath = path.join(dir, "index.html");
 
-    const bundle = fs.existsSync(bundlePath)
-      ? fs.readFileSync(bundlePath, "utf-8")
-      : "";
-    const css = fs.existsSync(cssPath)
-      ? fs.readFileSync(cssPath, "utf-8")
-      : undefined;
-    const html = fs.existsSync(htmlPath)
-      ? fs.readFileSync(htmlPath, "utf-8")
-      : undefined;
+    const bundle = fs.existsSync(bundlePath) ? fs.readFileSync(bundlePath, "utf-8") : "";
+    const css = fs.existsSync(cssPath) ? fs.readFileSync(cssPath, "utf-8") : undefined;
+    const html = fs.existsSync(htmlPath) ? fs.readFileSync(htmlPath, "utf-8") : undefined;
 
     // Load assets
     let assets: Record<string, { content: string; encoding?: string }> | undefined;
@@ -164,11 +186,7 @@ export function get(key: string): BuildResult | null {
   }
 }
 
-export function put(
-  key: string,
-  artifacts: BuildArtifacts,
-  metadata: BuildMetadata,
-): BuildResult {
+export function put(key: string, artifacts: BuildArtifacts, metadata: BuildMetadata): BuildResult {
   const dir = getBuildDir(key);
   const metadataPath = path.join(dir, "metadata.json");
 
@@ -211,19 +229,20 @@ export function put(
   }
 
   // Write metadata (sentinel) inside tmpDir BEFORE rename so winner is always complete
-  fs.writeFileSync(
-    path.join(tmpDir, "metadata.json"),
-    JSON.stringify(metadata, null, 2),
-  );
+  fs.writeFileSync(path.join(tmpDir, "metadata.json"), JSON.stringify(metadata, null, 2));
 
   // Race-safe promotion: try rename, handle concurrent winner
   try {
     fs.renameSync(tmpDir, dir);
-  } catch (err: any) {
-    if (err.code === "ENOTEMPTY" || err.code === "EEXIST" || err.code === "ENOTDIR") {
+  } catch (err: unknown) {
+    if (isFileSystemErrorCode(err, ["ENOTEMPTY", "EEXIST", "ENOTDIR"])) {
       // Another build won the race — verify their sentinel, use their result
       if (fs.existsSync(metadataPath)) {
-        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+        try {
+          fs.rmSync(tmpDir, { recursive: true, force: true });
+        } catch (cleanupError) {
+          warnCleanupFailure(tmpDir, cleanupError);
+        }
         return get(key)!;
       }
       // Winner incomplete — remove stale dir, retry rename
@@ -231,13 +250,25 @@ export function put(
         fs.rmSync(dir, { recursive: true, force: true });
         fs.renameSync(tmpDir, dir);
       } catch {
-        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
-        try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+        try {
+          fs.rmSync(tmpDir, { recursive: true, force: true });
+        } catch (cleanupError) {
+          warnCleanupFailure(tmpDir, cleanupError);
+        }
+        try {
+          fs.rmSync(dir, { recursive: true, force: true });
+        } catch (cleanupError) {
+          warnCleanupFailure(dir, cleanupError);
+        }
         throw new Error(`Build store race: failed to store build for key ${key}`);
       }
     } else {
       // Clean up tmpDir on unexpected errors
-      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch (cleanupError) {
+        warnCleanupFailure(tmpDir, cleanupError);
+      }
       throw err;
     }
   }

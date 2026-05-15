@@ -10,7 +10,9 @@ import type { ApprovalQueue } from "./approvalQueue.js";
 
 describe("externalOpenService", () => {
   it("is routed to the server by default from panel RPC", () => {
-    expect((ELECTRON_LOCAL_SERVICE_NAMES as readonly string[]).includes("externalOpen")).toBe(false);
+    expect((ELECTRON_LOCAL_SERVICE_NAMES as readonly string[]).includes("externalOpen")).toBe(
+      false
+    );
   });
 
   function tempStatePath(): string {
@@ -58,18 +60,20 @@ describe("externalOpenService", () => {
     const result = await service.handler(
       { callerId: "panel-1", callerKind: "panel" },
       "openExternal",
-      ["https://example.com/path?q=1#fragment"],
+      ["https://example.com/path?q=1#fragment"]
     );
 
-    expect(approvalQueue.request).toHaveBeenCalledWith(expect.objectContaining({
-      kind: "capability",
-      capability: "external-browser-open",
-      resource: {
-        type: "url-origin",
-        label: "Origin",
-        value: "https://example.com",
-      },
-    }));
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "capability",
+        capability: "external-browser-open",
+        resource: {
+          type: "url-origin",
+          label: "Origin",
+          value: "https://example.com",
+        },
+      })
+    );
     expect(emit).toHaveBeenCalledWith("external-open:open", {
       url: "https://example.com/path?q=1",
       callerId: "panel-1",
@@ -95,8 +99,12 @@ describe("externalOpenService", () => {
       },
     });
 
-    await service.handler({ callerId: "worker-1", callerKind: "worker" }, "openExternal", ["https://example.com/a"]);
-    await service.handler({ callerId: "worker-1", callerKind: "worker" }, "openExternal", ["https://example.com/b"]);
+    await service.handler({ callerId: "worker-1", callerKind: "worker" }, "openExternal", [
+      "https://example.com/a",
+    ]);
+    await service.handler({ callerId: "worker-1", callerKind: "worker" }, "openExternal", [
+      "https://example.com/b",
+    ]);
 
     expect(approvalQueue.request).toHaveBeenCalledTimes(1);
   });
@@ -119,8 +127,12 @@ describe("externalOpenService", () => {
       },
     });
 
-    await service.handler({ callerId: "worker-1", callerKind: "worker" }, "openExternal", ["https://example.com/a"]);
-    await service.handler({ callerId: "worker-1", callerKind: "worker" }, "openExternal", ["https://example.com/b"]);
+    await service.handler({ callerId: "worker-1", callerKind: "worker" }, "openExternal", [
+      "https://example.com/a",
+    ]);
+    await service.handler({ callerId: "worker-1", callerKind: "worker" }, "openExternal", [
+      "https://example.com/b",
+    ]);
 
     expect(approvalQueue.request).toHaveBeenCalledTimes(2);
   });
@@ -128,11 +140,11 @@ describe("externalOpenService", () => {
   it("rejects non-browser schemes", async () => {
     const service = createExternalOpenService({ eventService: new EventService() });
 
-    await expect(service.handler(
-      { callerId: "panel-1", callerKind: "panel" },
-      "openExternal",
-      ["file:///etc/passwd"],
-    )).rejects.toThrow("openExternal only supports http(s) and mailto URLs");
+    await expect(
+      service.handler({ callerId: "panel-1", callerKind: "panel" }, "openExternal", [
+        "file:///etc/passwd",
+      ])
+    ).rejects.toThrow("openExternal only supports http(s) and mailto URLs");
   });
 
   it("validates OAuth authorize URLs when an expected redirect URI is supplied", async () => {
@@ -159,17 +171,17 @@ describe("externalOpenService", () => {
     authorizeUrl.searchParams.set("code_challenge", "challenge-1");
     authorizeUrl.searchParams.set("code_challenge_method", "S256");
 
-    await expect(service.handler(
-      { callerId: "panel-1", callerKind: "panel" },
-      "openExternal",
-      [authorizeUrl.toString(), { expectedRedirectUri: "http://localhost:1456/auth/callback" }],
-    )).rejects.toThrow("redirect_uri does not match");
+    await expect(
+      service.handler({ callerId: "panel-1", callerKind: "panel" }, "openExternal", [
+        authorizeUrl.toString(),
+        { expectedRedirectUri: "http://localhost:1456/auth/callback" },
+      ])
+    ).rejects.toThrow("redirect_uri does not match");
 
-    await service.handler(
-      { callerId: "panel-1", callerKind: "panel" },
-      "openExternal",
-      [authorizeUrl.toString(), { expectedRedirectUri: "http://localhost:1455/auth/callback" }],
-    );
+    await service.handler({ callerId: "panel-1", callerKind: "panel" }, "openExternal", [
+      authorizeUrl.toString(),
+      { expectedRedirectUri: "http://localhost:1455/auth/callback" },
+    ]);
 
     expect(approvalQueue.request).toHaveBeenCalledTimes(1);
   });

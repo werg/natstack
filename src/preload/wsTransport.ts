@@ -11,6 +11,22 @@ import type { RecoveryKind } from "@natstack/shared/shell/recoveryCoordinator";
 
 type AnyMessageHandler = (fromId: string, message: unknown) => void;
 
+type PanelInitPayload = {
+  gatewayConfig?: {
+    token?: unknown;
+  };
+};
+
+type PanelInitProvider = {
+  getPanelInit: () => Promise<PanelInitPayload>;
+};
+
+type NatstackTransportGlobals = typeof globalThis & {
+  __natstackShell?: PanelInitProvider;
+  __natstackElectron?: PanelInitProvider;
+  __natstackGatewayToken?: string;
+};
+
 export type TransportBridge = {
   send: (targetId: string, message: unknown) => Promise<void>;
   onMessage: (handler: AnyMessageHandler) => () => void;
@@ -93,7 +109,12 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
     if (payload["type"] === "focus") {
       deliver("main", { type: "event", fromId: "main", event: "runtime:focus", payload: null });
     } else if (payload["type"] === "theme") {
-      deliver("main", { type: "event", fromId: "main", event: "runtime:theme", payload: payload["theme"] });
+      deliver("main", {
+        type: "event",
+        fromId: "main",
+        event: "runtime:theme",
+        payload: payload["theme"],
+      });
     } else if (payload["type"] === "child-created") {
       deliver("main", {
         type: "event",
@@ -195,13 +216,15 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
     if (refreshingAuth) return;
     refreshingAuth = true;
     try {
-      const shell = (globalThis as any).__natstackShell ?? (globalThis as any).__natstackElectron;
+      const globals = globalThis as NatstackTransportGlobals;
+      const shell = globals.__natstackShell ?? globals.__natstackElectron;
       if (!shell || typeof shell.getPanelInit !== "function") return;
       const panelInit = await shell.getPanelInit();
       const nextToken = panelInit?.gatewayConfig?.token;
-      if (typeof nextToken !== "string" || nextToken.length === 0 || nextToken === authToken) return;
+      if (typeof nextToken !== "string" || nextToken.length === 0 || nextToken === authToken)
+        return;
       authToken = nextToken;
-      (globalThis as any).__natstackGatewayToken = nextToken;
+      globals.__natstackGatewayToken = nextToken;
       try {
         sessionStorage.setItem("__natstackPanelInit", JSON.stringify(panelInit));
       } catch {
@@ -297,7 +320,11 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
 
   const send: TransportBridge["send"] = async (targetId, message) => {
     const rpcMessage = message as RpcMessage;
-    if (!rpcMessage || typeof rpcMessage !== "object" || typeof (rpcMessage as { type?: unknown }).type !== "string") {
+    if (
+      !rpcMessage ||
+      typeof rpcMessage !== "object" ||
+      typeof (rpcMessage as { type?: unknown }).type !== "string"
+    ) {
       throw new Error("Invalid RPC message");
     }
     const normalized = normalizeEndpointId(targetId);

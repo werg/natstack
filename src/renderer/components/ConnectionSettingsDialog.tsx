@@ -18,18 +18,14 @@
  */
 
 import { useEffect, useState } from "react";
-import {
-  Button,
-  Dialog,
-  Flex,
-  Text,
-  TextField,
-  Callout,
-  Box,
-  Code,
-} from "@radix-ui/themes";
+import { Button, Dialog, Flex, Text, TextField, Callout, Box, Code } from "@radix-ui/themes";
 import { ExclamationTriangleIcon, CheckCircledIcon } from "@radix-ui/react-icons";
-import { remoteCred, tokens, type RemoteCredCurrent, type TestConnectionResult } from "../shell/client";
+import {
+  remoteCred,
+  tokens,
+  type RemoteCredCurrent,
+  type TestConnectionResult,
+} from "../shell/client";
 
 interface Props {
   open: boolean;
@@ -54,22 +50,30 @@ export function ConnectionSettingsDialog({ open, onOpenChange }: Props) {
     setInfo(null);
     setPendingTrustPrompt(null);
     setConfirmingDisconnect(false);
-    remoteCred.getCurrent().then((c) => {
-      setCurrent(c);
-      setUrl(c.url ?? "");
-      setCaPath(c.caPath ?? "");
-      setFingerprint(c.fingerprint ?? "");
-      setToken("");
-    }).catch((err) => setError(String(err)));
+    remoteCred
+      .getCurrent()
+      .then((c) => {
+        setCurrent(c);
+        setUrl(c.url ?? "");
+        setCaPath(c.caPath ?? "");
+        setFingerprint(c.fingerprint ?? "");
+        setToken("");
+      })
+      .catch((err) => setError(String(err)));
   }, [open]);
 
   function describeTestError(result: TestConnectionResult): string {
     switch (result.error) {
-      case "invalid-url": return `Invalid URL: ${result.message ?? ""}`;
-      case "unreachable": return `Server unreachable: ${result.message ?? ""}`;
-      case "tls-mismatch": return result.message ?? "TLS fingerprint mismatch";
-      case "unauthorized": return "Authentication failed — check the admin token.";
-      default: return result.message ?? "Unknown error";
+      case "invalid-url":
+        return `Invalid URL: ${result.message ?? ""}`;
+      case "unreachable":
+        return `Server unreachable: ${result.message ?? ""}`;
+      case "tls-mismatch":
+        return result.message ?? "TLS fingerprint mismatch";
+      case "unauthorized":
+        return "Authentication failed — check the admin token.";
+      default:
+        return result.message ?? "Unknown error";
     }
   }
 
@@ -80,7 +84,8 @@ export function ConnectionSettingsDialog({ open, onOpenChange }: Props) {
     }
     try {
       return await remoteCred.testConnection({
-        url, token,
+        url,
+        token,
         caPath: caPath || undefined,
         fingerprint: fingerprint || undefined,
       });
@@ -111,7 +116,10 @@ export function ConnectionSettingsDialog({ open, onOpenChange }: Props) {
   };
 
   const onFetchFingerprint = async () => {
-    if (!url) { setError("Enter an https URL first."); return; }
+    if (!url) {
+      setError("Enter an https URL first.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -144,7 +152,10 @@ export function ConnectionSettingsDialog({ open, onOpenChange }: Props) {
       // servers, and TLS mismatches before the app relaunches into a
       // broken state.
       const res = await runTest();
-      if (!res) { setBusy(false); return; }
+      if (!res) {
+        setBusy(false);
+        return;
+      }
       if (!res.ok) {
         if (res.error === "tls-mismatch" && res.observedFingerprint && !fingerprint) {
           setPendingTrustPrompt(res.observedFingerprint);
@@ -155,7 +166,8 @@ export function ConnectionSettingsDialog({ open, onOpenChange }: Props) {
         return;
       }
       await remoteCred.save({
-        url, token,
+        url,
+        token,
         caPath: caPath || undefined,
         fingerprint: fingerprint || undefined,
       });
@@ -210,7 +222,8 @@ export function ConnectionSettingsDialog({ open, onOpenChange }: Props) {
       <Dialog.Content maxWidth="520px">
         <Dialog.Title>Remote server</Dialog.Title>
         <Dialog.Description size="2" mb="3" color="gray">
-          Point this app at a NatStack server running elsewhere. "Save & relaunch" tests the connection first.
+          Point this app at a NatStack server running elsewhere. "Save & relaunch" tests the
+          connection first.
         </Dialog.Description>
 
         {current?.isActive ? (
@@ -219,16 +232,21 @@ export function ConnectionSettingsDialog({ open, onOpenChange }: Props) {
           </Callout.Root>
         ) : current?.configured ? (
           <Callout.Root size="1" color="amber" mb="3">
-            <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
+            <Callout.Icon>
+              <ExclamationTriangleIcon />
+            </Callout.Icon>
             <Callout.Text>
-              Credentials are saved ({current.url}) but app is running in local mode. Relaunch to apply.
+              Credentials are saved ({current.url}) but app is running in local mode. Relaunch to
+              apply.
             </Callout.Text>
           </Callout.Root>
         ) : null}
 
         <Flex direction="column" gap="3">
           <Box>
-            <Text as="label" size="2" weight="medium">Server URL</Text>
+            <Text as="label" size="2" weight="medium">
+              Server URL
+            </Text>
             <TextField.Root
               placeholder="https://my-home-server:3000"
               value={url}
@@ -237,18 +255,30 @@ export function ConnectionSettingsDialog({ open, onOpenChange }: Props) {
           </Box>
           <Box>
             <Text as="label" size="2" weight="medium">
-              Admin token {current?.tokenPreview ? <Text color="gray" size="1">(currently: {current.tokenPreview})</Text> : null}
+              Admin token{" "}
+              {current?.tokenPreview ? (
+                <Text color="gray" size="1">
+                  (currently: {current.tokenPreview})
+                </Text>
+              ) : null}
             </Text>
             <TextField.Root
               type="password"
-              placeholder={current?.configured ? "••••••••  (re-enter to change)" : "64-char hex token"}
+              placeholder={
+                current?.configured ? "••••••••  (re-enter to change)" : "64-char hex token"
+              }
               value={token}
               onChange={(e) => setToken(e.target.value)}
             />
           </Box>
           <Box>
             <Flex justify="between" align="end" gap="2">
-              <Text as="label" size="2" weight="medium">CA certificate path <Text color="gray" size="1">(optional, for self-signed TLS)</Text></Text>
+              <Text as="label" size="2" weight="medium">
+                CA certificate path{" "}
+                <Text color="gray" size="1">
+                  (optional, for self-signed TLS)
+                </Text>
+              </Text>
               <Button
                 size="1"
                 variant="soft"
@@ -257,7 +287,9 @@ export function ConnectionSettingsDialog({ open, onOpenChange }: Props) {
                   try {
                     const picked = await remoteCred.pickCaFile();
                     if (picked) setCaPath(picked);
-                  } catch (err) { setError((err as Error).message); }
+                  } catch (err) {
+                    setError((err as Error).message);
+                  }
                 }}
               >
                 Browse…
@@ -271,7 +303,12 @@ export function ConnectionSettingsDialog({ open, onOpenChange }: Props) {
           </Box>
           <Box>
             <Flex justify="between" align="end" gap="2">
-              <Text as="label" size="2" weight="medium">TLS fingerprint <Text color="gray" size="1">(optional, SHA-256 colon-hex)</Text></Text>
+              <Text as="label" size="2" weight="medium">
+                TLS fingerprint{" "}
+                <Text color="gray" size="1">
+                  (optional, SHA-256 colon-hex)
+                </Text>
+              </Text>
               <Button size="1" variant="soft" disabled={busy || !url} onClick={onFetchFingerprint}>
                 Fetch from server
               </Button>
@@ -285,26 +322,41 @@ export function ConnectionSettingsDialog({ open, onOpenChange }: Props) {
 
           {pendingTrustPrompt ? (
             <Callout.Root size="1" color="amber">
-              <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
+              <Callout.Icon>
+                <ExclamationTriangleIcon />
+              </Callout.Icon>
               <Callout.Text>
                 The server presented this fingerprint: <Code>{pendingTrustPrompt}</Code>. Trust it?
               </Callout.Text>
               <Flex gap="2" mt="2">
-                <Button size="1" onClick={acceptTrustPrompt} disabled={busy}>Trust</Button>
-                <Button size="1" variant="soft" onClick={() => setPendingTrustPrompt(null)} disabled={busy}>Cancel</Button>
+                <Button size="1" onClick={acceptTrustPrompt} disabled={busy}>
+                  Trust
+                </Button>
+                <Button
+                  size="1"
+                  variant="soft"
+                  onClick={() => setPendingTrustPrompt(null)}
+                  disabled={busy}
+                >
+                  Cancel
+                </Button>
               </Flex>
             </Callout.Root>
           ) : null}
 
           {info ? (
             <Callout.Root size="1" color="green">
-              <Callout.Icon><CheckCircledIcon /></Callout.Icon>
+              <Callout.Icon>
+                <CheckCircledIcon />
+              </Callout.Icon>
               <Callout.Text>{info}</Callout.Text>
             </Callout.Root>
           ) : null}
           {error ? (
             <Callout.Root size="1" color="red">
-              <Callout.Icon><ExclamationTriangleIcon /></Callout.Icon>
+              <Callout.Icon>
+                <ExclamationTriangleIcon />
+              </Callout.Icon>
               <Callout.Text>{error}</Callout.Text>
             </Callout.Root>
           ) : null}
@@ -314,12 +366,26 @@ export function ConnectionSettingsDialog({ open, onOpenChange }: Props) {
           <Flex gap="2">
             {confirmingDisconnect ? (
               <>
-                <Button color="red" disabled={busy} onClick={clearAndRelaunch}>Confirm disconnect</Button>
-                <Button variant="soft" color="gray" disabled={busy} onClick={() => setConfirmingDisconnect(false)}>Cancel</Button>
+                <Button color="red" disabled={busy} onClick={clearAndRelaunch}>
+                  Confirm disconnect
+                </Button>
+                <Button
+                  variant="soft"
+                  color="gray"
+                  disabled={busy}
+                  onClick={() => setConfirmingDisconnect(false)}
+                >
+                  Cancel
+                </Button>
               </>
             ) : (
               <>
-                <Button color="red" variant="soft" disabled={busy || !current?.configured} onClick={() => setConfirmingDisconnect(true)}>
+                <Button
+                  color="red"
+                  variant="soft"
+                  disabled={busy || !current?.configured}
+                  onClick={() => setConfirmingDisconnect(true)}
+                >
                   Disconnect…
                 </Button>
                 <Button variant="soft" disabled={busy || !current?.isActive} onClick={rotateToken}>
@@ -332,7 +398,11 @@ export function ConnectionSettingsDialog({ open, onOpenChange }: Props) {
             <Button variant="soft" color="gray" disabled={busy} onClick={onTestClick}>
               {busy ? "Testing…" : "Test"}
             </Button>
-            <Dialog.Close><Button variant="soft" color="gray" disabled={busy}>Cancel</Button></Dialog.Close>
+            <Dialog.Close>
+              <Button variant="soft" color="gray" disabled={busy}>
+                Cancel
+              </Button>
+            </Dialog.Close>
             <Button onClick={save} disabled={busy}>
               {busy ? "Saving…" : "Save & relaunch"}
             </Button>

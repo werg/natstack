@@ -109,7 +109,7 @@ describe("approvalPushBridge", () => {
           approvalKind: "capability",
           category: APPROVAL_CATEGORY_DECIDE,
         }),
-      }),
+      })
     );
 
     queue.resolve(queue.listPending()[0]!.approvalId, "deny");
@@ -180,7 +180,7 @@ describe("approvalPushBridge", () => {
       shellPresence: {
         isAnyShellActive: () => active,
         markActive: vi.fn(),
-        getActiveShellCount: () => active ? 1 : 0,
+        getActiveShellCount: () => (active ? 1 : 0),
       },
       delayMs: 10_000,
       presenceMaxAgeMs: 6_000,
@@ -261,7 +261,7 @@ describe("approvalPushBridge", () => {
         data: expect.objectContaining({
           actionsJson: JSON.stringify([{ id: "open", title: "Open" }]),
         }),
-      }),
+      })
     );
 
     queue.resolve(queue.listPending()[0]!.approvalId, "deny");
@@ -301,7 +301,13 @@ describe("approvalPushBridge", () => {
     const queue = createQueue();
     const push = createPushMock();
     vi.mocked(push.sendBatch).mockResolvedValue([
-      { clientId: "mobile-1", platform: "android", sent: false, logOnly: false, error: "dead token" },
+      {
+        clientId: "mobile-1",
+        platform: "android",
+        sent: false,
+        logOnly: false,
+        error: "dead token",
+      },
     ]);
     createApprovalPushBridge({
       approvalQueue: queue,

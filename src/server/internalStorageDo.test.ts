@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createTestDO } from "@workspace/runtime/worker/test-utils";
-import { DurableObjectBase, type DurableObjectContext } from "../../workspace/packages/runtime/src/worker/durable-base.js";
+import { DurableObjectBase } from "../../workspace/packages/runtime/src/worker/durable-base.js";
 import { ScopeStoreDO } from "./internalDOs/scopeStoreDO.js";
 
 describe("internal storage Durable Objects", () => {
@@ -38,26 +38,28 @@ describe("internal storage Durable Objects", () => {
       { id: "scope-2", createdAt: 200, keys: ["answer"], partial: [] },
     ]);
   });
-
 });
 
 class MigrationProbeDO extends DurableObjectBase {
   static override schemaVersion = 2;
 
-  constructor(ctx: DurableObjectContext, env: unknown) {
-    super(ctx, env);
-  }
-
   protected createTables(): void {
-    this.sql.exec(`CREATE TABLE IF NOT EXISTS migration_log (from_version INTEGER, to_version INTEGER)`);
+    this.sql.exec(
+      `CREATE TABLE IF NOT EXISTS migration_log (from_version INTEGER, to_version INTEGER)`
+    );
   }
 
   protected override migrate(fromVersion: number, toVersion: number): void {
-    this.sql.exec(`INSERT INTO migration_log (from_version, to_version) VALUES (?, ?)`, fromVersion, toVersion);
+    this.sql.exec(
+      `INSERT INTO migration_log (from_version, to_version) VALUES (?, ?)`,
+      fromVersion,
+      toVersion
+    );
   }
 
   countMigrations(): number {
-    return (this.sql.exec(`SELECT COUNT(*) as count FROM migration_log`).one() as { count: number }).count;
+    return (this.sql.exec(`SELECT COUNT(*) as count FROM migration_log`).one() as { count: number })
+      .count;
   }
 }
 
@@ -67,6 +69,8 @@ describe("DurableObjectBase migration hook", () => {
 
     expect(await call("countMigrations")).toBe(1);
     expect(await call("countMigrations")).toBe(1);
-    expect(sql.exec(`SELECT value FROM state WHERE key = 'schema_version'`).one()).toEqual({ value: "2" });
+    expect(sql.exec(`SELECT value FROM state WHERE key = 'schema_version'`).one()).toEqual({
+      value: "2",
+    });
   });
 });

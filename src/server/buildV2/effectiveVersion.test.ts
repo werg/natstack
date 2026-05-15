@@ -12,12 +12,7 @@ vi.mock("@natstack/shared/envPaths", () => ({
 }));
 
 import { execGitFileSync } from "@natstack/shared/gitRuntime";
-import {
-  resolveMainRef,
-  computeGitTreeHash,
-  getCommitAt,
-  diffEvMaps,
-} from "./effectiveVersion.js";
+import { resolveMainRef, computeGitTreeHash, getCommitAt, diffEvMaps } from "./effectiveVersion.js";
 
 const execGitFileSyncMock = execGitFileSync as unknown as ReturnType<typeof vi.fn>;
 
@@ -38,7 +33,7 @@ describe("effectiveVersion", () => {
       expect(ref).toBe("refs/heads/main");
       expect(execGitFileSync).toHaveBeenCalledWith(
         ["rev-parse", "--verify", "--end-of-options", "refs/heads/main"],
-        expect.objectContaining({ cwd: "/repo/resolve-main-success" }),
+        expect.objectContaining({ cwd: "/repo/resolve-main-success" })
       );
     });
 
@@ -59,7 +54,7 @@ describe("effectiveVersion", () => {
       });
 
       expect(() => resolveMainRef("/repo/resolve-both-fail")).toThrowError(
-        /No main\/master branch found/,
+        /No main\/master branch found/
       );
     });
   });
@@ -84,7 +79,7 @@ describe("effectiveVersion", () => {
       const hash = computeGitTreeHash("/repo/tree-explicit-ref", "refs/heads/feature");
       expect(execGitFileSync).toHaveBeenCalledWith(
         ["rev-parse", "--verify", "--end-of-options", "refs/heads/feature^{tree}"],
-        expect.anything(),
+        expect.anything()
       );
       expect(hash).toBe("abc123def456");
     });
@@ -136,5 +131,4 @@ describe("effectiveVersion", () => {
       expect(result.removed).toEqual([]);
     });
   });
-
 });

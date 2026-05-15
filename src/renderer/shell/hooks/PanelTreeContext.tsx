@@ -30,12 +30,7 @@ import type {
   PanelNavigationState,
   PanelArtifacts,
 } from "@natstack/shared/types";
-import {
-  getCurrentSnapshot,
-  getPanelContextId,
-  getPanelSource,
-  getPanelOptions,
-} from "@natstack/shared/panel/accessors";
+import { getPanelContextId, getPanelSource } from "@natstack/shared/panel/accessors";
 
 // Re-export types for consumers
 export type { PanelSummary, PanelAncestor, DescendantSiblingGroup };
@@ -251,10 +246,7 @@ export function getProjection(
  * Remove children of specified items from the flattened list.
  * Used to exclude descendants of dragged items.
  */
-export function removeChildrenOf(
-  items: FlattenedPanel[],
-  ids: string[]
-): FlattenedPanel[] {
+export function removeChildrenOf(items: FlattenedPanel[], ids: string[]): FlattenedPanel[] {
   const excludeParentIds = new Set(ids);
 
   return items.filter((item) => {
@@ -333,7 +325,6 @@ function panelToSummary(panel: Panel, position: number): PanelSummary {
  * Convert Panel to FullPanel with resolved parent ID.
  */
 function panelToFull(panel: Panel, parentId: string | null, position: number): FullPanel {
-  const options = getPanelOptions(panel);
   const source = getPanelSource(panel);
 
   return {
@@ -385,7 +376,6 @@ export function usePanelTree(): PanelTreeContextValue {
   return usePanelTreeContext();
 }
 
-
 // ============================================================================
 // Provider
 // ============================================================================
@@ -421,18 +411,21 @@ export function PanelTreeProvider({ children }: PanelTreeProviderProps) {
   useEffect(() => {
     let mounted = true;
 
-    panelService.getTree().then((initialTree) => {
-      if (mounted && !receivedEventRef.current) {
-        setTree(initialTree);
-        setInitialized(true);
-      }
-    }).catch((error) => {
-      console.error("[PanelTreeProvider] Failed to fetch initial tree:", error);
-      // Still mark as initialized so we don't show infinite spinner
-      if (mounted && !receivedEventRef.current) {
-        setInitialized(true);
-      }
-    });
+    panelService
+      .getTree()
+      .then((initialTree) => {
+        if (mounted && !receivedEventRef.current) {
+          setTree(initialTree);
+          setInitialized(true);
+        }
+      })
+      .catch((error) => {
+        console.error("[PanelTreeProvider] Failed to fetch initial tree:", error);
+        // Still mark as initialized so we don't show infinite spinner
+        if (mounted && !receivedEventRef.current) {
+          setInitialized(true);
+        }
+      });
 
     return () => {
       mounted = false;
@@ -447,11 +440,7 @@ export function PanelTreeProvider({ children }: PanelTreeProviderProps) {
     [tree, panelMap, parentMap, initialized]
   );
 
-  return (
-    <PanelTreeContext.Provider value={value}>
-      {children}
-    </PanelTreeContext.Provider>
-  );
+  return <PanelTreeContext.Provider value={value}>{children}</PanelTreeContext.Provider>;
 }
 
 // ============================================================================
@@ -467,10 +456,7 @@ export function useRootPanels(): {
 } {
   const { tree, initialized } = usePanelTreeContext();
 
-  const panels = useMemo(
-    () => tree.map((panel, index) => panelToSummary(panel, index)),
-    [tree]
-  );
+  const panels = useMemo(() => tree.map((panel, index) => panelToSummary(panel, index)), [tree]);
 
   return { panels, loading: !initialized };
 }
@@ -619,9 +605,7 @@ export function useDescendantSiblingGroups(
       depth++;
 
       // Get all siblings (children of current panel)
-      const siblings = currentPanel.children.map((child, index) =>
-        panelToSummary(child, index)
-      );
+      const siblings = currentPanel.children.map((child, index) => panelToSummary(child, index));
 
       result.push({
         depth,

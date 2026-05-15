@@ -35,18 +35,26 @@ export function createTypecheckService(deps: {
     methods: {
       checkPanel: {
         description:
-          "Type-check a panel. Pass the panel source path (e.g. \"panels/chat\"), " +
+          'Type-check a panel. Pass the panel source path (e.g. "panels/chat"), ' +
           "or omit it to auto-detect from the caller's context.",
-        args: z.tuple([]).or(z.tuple([z.string().describe("Panel source path, e.g. \"panels/my-app\"")])),
+        args: z
+          .tuple([])
+          .or(z.tuple([z.string().describe('Panel source path, e.g. "panels/my-app"')])),
       },
       check: {
         description:
           "Type-check a panel or a single file. Pass the panel source path " +
-          "(e.g. \"panels/chat\") as the first argument, or call with no args " +
+          '(e.g. "panels/chat") as the first argument, or call with no args ' +
           "to auto-detect from the caller's context.",
         args: z.tuple([
-          z.string().optional().describe("Panel source path (auto-detected from caller if omitted)"),
-          z.string().optional().describe("File path (relative to panel) to check, or omit for whole panel"),
+          z
+            .string()
+            .optional()
+            .describe("Panel source path (auto-detected from caller if omitted)"),
+          z
+            .string()
+            .optional()
+            .describe("File path (relative to panel) to check, or omit for whole panel"),
           z.string().optional().describe("File content override (skip disk read)"),
           z.string().optional().describe("Context ID for path resolution"),
         ]),
@@ -75,7 +83,7 @@ export function createTypecheckService(deps: {
     handler: async (ctx, method, args) => {
       const resolvePanelPath = async (
         panelPath: string,
-        ctxId: string | undefined,
+        ctxId: string | undefined
       ): Promise<string> => {
         if (ctxId) {
           const scope = await resolveContextScope(deps.contextFolderManager, ctxId);
@@ -87,7 +95,7 @@ export function createTypecheckService(deps: {
       const validateFilePath = async (
         _resolvedPanelPath: string,
         filePath: string | undefined,
-        ctxId: string | undefined,
+        ctxId: string | undefined
       ): Promise<void> => {
         if (!filePath) return;
         if (ctxId) {
@@ -104,13 +112,17 @@ export function createTypecheckService(deps: {
             if (!panelPath) {
               throw new Error(
                 "Could not auto-detect panel path from caller ID. " +
-                "Please pass the panel source path explicitly, e.g. typecheck.checkPanel(\"panels/my-app\")",
+                  'Please pass the panel source path explicitly, e.g. typecheck.checkPanel("panels/my-app")'
               );
             }
           }
 
           const resolvedPath = await resolvePanelPath(panelPath, undefined);
-          const result = await typeCheckRpcMethods["typecheck.check"](resolvedPath, undefined, undefined);
+          const result = await typeCheckRpcMethods["typecheck.check"](
+            resolvedPath,
+            undefined,
+            undefined
+          );
 
           const errorCount = result.diagnostics.filter((d) => d.severity === "error").length;
           const warningCount = result.diagnostics.filter((d) => d.severity === "warning").length;
@@ -129,23 +141,57 @@ export function createTypecheckService(deps: {
             if (!rawPanelPath) {
               throw new Error(
                 "typecheck.check: panel path is required and could not be auto-detected from caller. " +
-                "Pass the panel source path explicitly, e.g. typecheck.check(\"panels/my-app\")",
+                  'Pass the panel source path explicitly, e.g. typecheck.check("panels/my-app")'
               );
             }
           }
           const panelPath = await resolvePanelPath(rawPanelPath, args[3] as string | undefined);
-          await validateFilePath(panelPath, args[1] as string | undefined, args[3] as string | undefined);
-          return typeCheckRpcMethods["typecheck.check"](panelPath, args[1] as string | undefined, args[2] as string | undefined);
+          await validateFilePath(
+            panelPath,
+            args[1] as string | undefined,
+            args[3] as string | undefined
+          );
+          return typeCheckRpcMethods["typecheck.check"](
+            panelPath,
+            args[1] as string | undefined,
+            args[2] as string | undefined
+          );
         }
         case "getTypeInfo": {
-          const panelPath = await resolvePanelPath(args[0] as string, args[5] as string | undefined);
-          await validateFilePath(panelPath, args[1] as string | undefined, args[5] as string | undefined);
-          return typeCheckRpcMethods["typecheck.getTypeInfo"](panelPath, args[1] as string, args[2] as number, args[3] as number, args[4] as string | undefined);
+          const panelPath = await resolvePanelPath(
+            args[0] as string,
+            args[5] as string | undefined
+          );
+          await validateFilePath(
+            panelPath,
+            args[1] as string | undefined,
+            args[5] as string | undefined
+          );
+          return typeCheckRpcMethods["typecheck.getTypeInfo"](
+            panelPath,
+            args[1] as string,
+            args[2] as number,
+            args[3] as number,
+            args[4] as string | undefined
+          );
         }
         case "getCompletions": {
-          const panelPath = await resolvePanelPath(args[0] as string, args[5] as string | undefined);
-          await validateFilePath(panelPath, args[1] as string | undefined, args[5] as string | undefined);
-          return typeCheckRpcMethods["typecheck.getCompletions"](panelPath, args[1] as string, args[2] as number, args[3] as number, args[4] as string | undefined);
+          const panelPath = await resolvePanelPath(
+            args[0] as string,
+            args[5] as string | undefined
+          );
+          await validateFilePath(
+            panelPath,
+            args[1] as string | undefined,
+            args[5] as string | undefined
+          );
+          return typeCheckRpcMethods["typecheck.getCompletions"](
+            panelPath,
+            args[1] as string,
+            args[2] as number,
+            args[3] as number,
+            args[4] as string | undefined
+          );
         }
         default:
           throw new Error(`Unknown typecheck method: ${method}`);

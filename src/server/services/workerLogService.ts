@@ -30,10 +30,7 @@ export function createWorkerLogService(): ServiceDefinition {
     policy: { allowed: ["shell", "panel", "server", "worker"] },
     methods: {
       write: {
-        args: z.tuple([
-          z.enum(["log", "info", "warn", "error"]),
-          z.string(),
-        ]),
+        args: z.tuple([z.enum(["log", "info", "warn", "error"]), z.string()]),
       },
     },
     handler: async (ctx, method, args) => {
@@ -41,11 +38,19 @@ export function createWorkerLogService(): ServiceDefinition {
       const [level, message] = args as [Level, string];
       const prefix = `[${ctx.callerId}]`;
       switch (level) {
-        case "error": log.error(`${prefix} ${message}`); break;
-        case "warn": log.warn(`${prefix} ${message}`); break;
-        case "info": log.info(`${prefix} ${message}`); break;
+        case "error":
+          log.error(`${prefix} ${message}`);
+          break;
+        case "warn":
+          log.warn(`${prefix} ${message}`);
+          break;
+        case "info":
+          log.info(`${prefix} ${message}`);
+          break;
         case "log":
-        default: log.info(`${prefix} ${message}`); break;
+        default:
+          log.info(`${prefix} ${message}`);
+          break;
       }
       return undefined;
     },

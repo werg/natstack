@@ -19,8 +19,12 @@ export async function handleExternalOpenPayload(
   payload: ExternalOpenPayload,
   deps: {
     openExternal(url: string): Promise<unknown>;
-    forwardOAuthCallback(request: { transactionId: string; url: string; state?: string }): Promise<unknown>;
-  },
+    forwardOAuthCallback(request: {
+      transactionId: string;
+      url: string;
+      state?: string;
+    }): Promise<unknown>;
+  }
 ): Promise<void> {
   if (!payload.url) return;
   if (!payload.oauthLoopback) {
@@ -78,7 +82,9 @@ async function startOAuthLoopbackCallback(loopback: OAuthLoopbackHandoff): Promi
     }
 
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    res.end("<!doctype html><title>Connection complete</title><p>Connection complete. You can close this window.</p>");
+    res.end(
+      "<!doctype html><title>Connection complete</title><p>Connection complete. You can close this window.</p>"
+    );
     if (!settled) {
       settled = true;
       resolveCallback({ url: url.toString(), state });
@@ -100,20 +106,25 @@ async function startOAuthLoopbackCallback(loopback: OAuthLoopbackHandoff): Promi
     server.listen(loopback.port, loopback.host);
   });
 
-  timer = setTimeout(() => {
-    if (!settled) {
-      settled = true;
-      rejectCallback(new Error("OAuth callback timed out"));
-    }
-    closeServer();
-  }, Math.max(1_000, loopback.timeoutMs));
+  timer = setTimeout(
+    () => {
+      if (!settled) {
+        settled = true;
+        rejectCallback(new Error("OAuth callback timed out"));
+      }
+      closeServer();
+    },
+    Math.max(1_000, loopback.timeoutMs)
+  );
 
-  wait.finally(() => {
-    if (timer) {
-      clearTimeout(timer);
-      timer = null;
-    }
-  }).catch(() => undefined);
+  wait
+    .finally(() => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    })
+    .catch(() => undefined);
 
   return {
     wait,
