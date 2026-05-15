@@ -835,7 +835,29 @@ async function main() {
     const { createWorkerLogService } = await import("./services/workerLogService.js");
     container.register(rpcService(createWorkerLogService()));
   }
-  container.register(rpcService(createTypecheckService({ contextFolderManager })));
+  {
+    // Bound to fsService so the typecheck service can verify caller↔context
+    // ownership: panels and workers would otherwise be able to mount any
+    // contextId via the contextId arg and trigger ensureContextFolder for it,
+    // enabling cross-context reconnaissance and disk-fill DoS.
+    let typecheckDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition | null =
+      null;
+    container.register({
+      name: "typecheck",
+      dependencies: ["fsService"],
+      async start(resolve) {
+        const fsService = resolve<import("@natstack/shared/fsService").FsService>("fsService")!;
+        typecheckDefinition = createTypecheckService({
+          contextFolderManager,
+          getCallerContext: (callerId: string) => fsService.getCallerContext(callerId),
+        });
+      },
+      getServiceDefinition() {
+        if (!typecheckDefinition) throw new Error("typecheck service not initialized");
+        return typecheckDefinition;
+      },
+    });
+  }
   container.register(rpcService(createEventsServiceDefinition(eventService)));
 
   // ── Approval-gated host capabilities ──
