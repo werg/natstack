@@ -12,7 +12,7 @@ import * as path from "path";
 // Silence Electron security warnings in dev; panels run in isolated webviews.
 process.env["ELECTRON_DISABLE_SECURITY_WARNINGS"] = "true";
 
-import { isDev } from "./utils.js";
+import { isDev, assertHttpUrl } from "./utils.js";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("App");
@@ -1457,6 +1457,7 @@ app.on("ready", async () => {
     ipcMain.handle("natstack:navigate", async (event, browserId: string, url: string) => {
       // Audit #9: caller must own the target view OR be the shell.
       requireOwnsViewOrShell(event, browserId, "natstack:navigate");
+      assertHttpUrl(url);
       const wc = viewManager!.getWebContents(browserId);
       if (!wc) throw new Error(`Browser webContents not found for ${browserId}`);
       try {
