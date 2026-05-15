@@ -140,8 +140,38 @@ export class ViewManager {
     devTools?: boolean;
   }) {
     this.window = options.window;
-    // Create shell view (React UI) - fills entire window
-    // nodeIntegration enabled for direct fs/git access (shell is trusted app UI)
+    // Create shell view (React UI) - fills entire window.
+    //
+    // nodeIntegration enabled for direct fs/git access (shell is trusted app UI).
+    //
+    // SECURITY INVARIANT (issue #33). Because nodeIntegration is on and
+    // contextIsolation is off, any XSS in this renderer escalates to full
+    // Node.js access. The configuration is currently safe only because *no
+    // attacker-influenced data reaches an HTML-interpreting sink in the shell
+    // renderer*. Concretely, all of the following must remain true:
+    //
+    //   1. No `dangerouslySetInnerHTML` anywhere in src/renderer/. All
+    //      panel-supplied strings (titles, errors, file paths, commit
+    //      messages, etc.) render through React JSX text nodes only.
+    //   2. No markdown-to-HTML renderer with `rehype-raw` or equivalent in
+    //      the shell renderer. If markdown rendering is needed, sanitise
+    //      first or render in a sandboxed overlay view (see shellOverlayView.ts).
+    //   3. `options.shellAdditionalArguments` stays empty (or contains only
+    //      values that are never used as HTML). Today it's hardcoded to `[]`
+    //      at src/main/index.ts. Workspace-sourced or CLI-sourced strings
+    //      must not flow into this parameter.
+    //   4. The renderer makes no direct `fetch` / `WebSocket` / `EventSource`
+    //      calls. All I/O routes through Electron IPC, which is enforced
+    //      page-side by `connect-src 'none'` in the CSP at
+    //      src/renderer/index.html. Adding a renderer-side network call
+    //      requires conscious CSP relaxation, not a silent change.
+    //   5. The shell HTML keeps its strict Content-Security-Policy meta tag
+    //      (default-src 'none', script-src 'self', etc.). The lock-in test
+    //      at src/renderer/index.html.test.ts guards the key directives.
+    //
+    // If any of these invariants is broken, this configuration becomes a
+    // real XSS-to-RCE bug. Either preserve the invariant or migrate this
+    // view to `contextIsolation: true` with a preload bridge before relaxing.
     this.shellView = new WebContentsView({
       webPreferences: {
         preload: options.shellPreload,
