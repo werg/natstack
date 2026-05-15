@@ -55,7 +55,7 @@ jobs:
           restore-keys: ${{ runner.os }}-gradle-
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Link node_modules for Gradle
         run: |
