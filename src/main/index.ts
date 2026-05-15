@@ -471,17 +471,20 @@ async function handleCredentialSessionCaptureRequest(
       name: "Credential sign-in",
       focus: true,
     });
-    const webContents = viewManager.getWebContents(panel.id);
-    const browserSession = session.fromPartition(BROWSER_SESSION_PARTITION);
-    const completionPattern =
-      typeof msg.completionUrlPattern === "string" ? msg.completionUrlPattern : undefined;
-    const deadline = Date.now() + 300_000;
 
-    while (Date.now() < deadline) {
-      const currentUrl = webContents && !webContents.isDestroyed() ? webContents.getURL() : "";
-      const completionSatisfied =
-        !completionPattern || (currentUrl && globMatches(completionPattern, currentUrl));
-      if (completionSatisfied) {
+    try {
+      const webContents = viewManager.getWebContents(panel.id);
+      if (!webContents || webContents.isDestroyed()) {
+        return { error: "failed to create browser panel" };
+      }
+
+      const browserSession = session.fromPartition(BROWSER_SESSION_PARTITION);
+      const completionPattern =
+        typeof msg.completionUrlPattern === "string" ? msg.completionUrlPattern : undefined;
+      const timeout = 300_000;
+
+      // Helper to check if cookies are captured
+      const tryCaptureCredentials = async (): Promise<Record<string, unknown> | null> => {
         const captured: Electron.Cookie[] = [];
         for (const origin of origins) {
           const originCookies = await browserSession.cookies.get({ url: origin });
@@ -510,10 +513,77 @@ async function handleCredentialSessionCaptureRequest(
                 : (material.expiresAt ?? maxExpiresAt),
           };
         }
+        return null;
+      };
+
+      // If no completion pattern, try immediate capture then poll briefly
+      if (!completionPattern) {
+        const immediate = await tryCaptureCredentials();
+        if (immediate) return immediate;
+
+        // Poll with longer intervals since we don't have a completion signal
+        const deadline = Date.now() + timeout;
+        while (Date.now() < deadline) {
+          if (webContents.isDestroyed()) {
+            return { error: "user closed sign-in window" };
+          }
+          await wait(2_000);
+          const result = await tryCaptureCredentials();
+          if (result) return result;
+        }
+        return { error: "session capture timed out" };
       }
-      await wait(1_000);
+
+      // Use event-based navigation detection when completion pattern is provided
+      const navigationPromise = new Promise<string>((resolve) => {
+        const checkUrl = (url: string) => {
+          if (globMatches(completionPattern, url)) {
+            resolve(url);
+          }
+        };
+
+        // Check current URL first
+        const currentUrl = webContents.getURL();
+        if (currentUrl && globMatches(completionPattern, currentUrl)) {
+          resolve(currentUrl);
+          return;
+        }
+
+        // Listen for navigation events
+        const onNavigate = (_event: Electron.Event, url: string) => checkUrl(url);
+        const onRedirect = (
+          details: Electron.Event<Electron.WebContentsDidRedirectNavigationEventParams>
+        ) => checkUrl(details.url);
+
+        webContents.on("did-navigate", onNavigate);
+        webContents.on("did-navigate-in-page", onNavigate);
+        webContents.on("did-redirect-navigation", onRedirect);
+      });
+
+      const destroyedPromise = new Promise<"destroyed">((resolve) => {
+        webContents.once("destroyed", () => resolve("destroyed"));
+      });
+
+      const timeoutPromise = wait(timeout).then(() => "timeout" as const);
+
+      const result = await Promise.race([navigationPromise, destroyedPromise, timeoutPromise]);
+
+      if (result === "destroyed") {
+        return { error: "user closed sign-in window" };
+      }
+      if (result === "timeout") {
+        return { error: "session capture timed out" };
+      }
+
+      // Navigation matched completion pattern, capture credentials
+      const credentials = await tryCaptureCredentials();
+      if (credentials) return credentials;
+
+      return { error: "completion URL reached but cookies not found" };
+    } finally {
+      // Always close the panel on exit (success, timeout, or user close)
+      await panelOrchestrator.closePanel(panel.id).catch(() => {});
     }
-    return { error: "session capture timed out" };
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
   }
