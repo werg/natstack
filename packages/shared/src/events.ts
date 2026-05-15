@@ -27,7 +27,6 @@ export type EventName =
   | "external-open:open"
   | "browser-panel:open"
   | "browser-import-progress"
-  | "browser-import-complete"
   | "browser-data-changed"
   | "autofill:save-prompt"
   | "notification:show"
@@ -111,14 +110,9 @@ export interface EventPayloads {
     totalItems?: number;
     error?: string;
   };
-  "browser-import-complete": {
-    dataType: string;
-    success: boolean;
-    itemCount: number;
-    skippedCount: number;
-    error?: string;
-    warnings: string[];
-  }[];
+  // browser-import-complete is now emitted by the
+  // `@workspace-extensions/browser-data` extension as
+  // `extensions:@workspace-extensions/browser-data::import-complete`.
   "browser-data-changed": { dataType: string };
   "autofill:save-prompt": { panelId: string; origin: string; username: string; isUpdate: boolean };
   "notification:show": NotificationPayload;
@@ -175,7 +169,6 @@ export const VALID_EVENT_NAMES: EventName[] = [
   "external-open:open",
   "browser-panel:open",
   "browser-import-progress",
-  "browser-import-complete",
   "browser-data-changed",
   "autofill:save-prompt",
   "notification:show",

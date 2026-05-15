@@ -75,7 +75,6 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
-    "@natstack/ai": "workspace:*",
     "@playwright/test": "^1.57.0",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^24.10.1",

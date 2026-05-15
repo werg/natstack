@@ -75,7 +75,13 @@ const rows = await chat.rpc.call("main", "db.query", handle, "SELECT * FROM item
 const build = await chat.rpc.call("main", "build.getBuild", "panels/my-app");
 
 // Browser data
-const browsers = await chat.rpc.call("main", "browser-data.detectBrowsers");
+const browsers = await chat.rpc.call(
+  "main",
+  "extensions.invoke",
+  "@workspace-extensions/browser-data",
+  "detectBrowsers",
+  [],
+);
 
 // Workers
 const instances = await chat.rpc.call("main", "workerd.listInstances");

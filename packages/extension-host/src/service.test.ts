@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 
 import { ExtensionHost } from "./service.js";
@@ -18,6 +18,10 @@ function makeHost(overrides: {
   activeExternalDeps?: Record<string, string>;
   candidateExternalDeps?: Record<string, string>;
   extensionTransport?: { call: ReturnType<typeof vi.fn> };
+  installed?: boolean;
+  enabled?: boolean;
+  status?: "running" | "stopped" | "building" | "error";
+  activeBundleKey?: string | null;
 } = {}) {
   const statePath = tempDir();
   const extensionNode = {
@@ -32,6 +36,11 @@ function makeHost(overrides: {
       extension: { activationEvents: ["*"] },
     },
   };
+  fs.mkdirSync(extensionNode.path, { recursive: true });
+  fs.writeFileSync(
+    path.join(extensionNode.path, "package.json"),
+    JSON.stringify({ name: extensionNode.name, version: "1.0.0" }),
+  );
   const approvalQueue = {
     request: vi.fn(async () => overrides.approvalDecision ?? "once"),
     requestUserland: vi.fn(async () => ({ kind: "choice" as const, choice: "allow" })),
@@ -89,21 +98,23 @@ function makeHost(overrides: {
       }),
     },
   });
-  host.registry.upsert({
-    name: extensionNode.name,
-    version: "1.0.0",
-    source: { kind: "internal-git", repo: extensionNode.relativePath, ref: "main" },
-    installedAt: Date.now(),
-    activeEv: overrides.activeEv ?? "ev-current",
-    activeSha: "abc123",
-    activeBundleKey: "bundle-key",
-    activeDependencyEvs: { "@workspace/runtime": overrides.activeDepEv ?? overrides.depEv ?? "ev-runtime" },
-    activeExternalDeps: overrides.activeExternalDeps ?? {},
-    activeRuntimeDepsKey: "runtime-key",
-    enabled: true,
-    status: "running",
-    lastError: null,
-  });
+  if (overrides.installed !== false) {
+    host.registry.upsert({
+      name: extensionNode.name,
+      version: "1.0.0",
+      source: { kind: "internal-git", repo: extensionNode.relativePath, ref: "main" },
+      installedAt: Date.now(),
+      activeEv: overrides.activeEv ?? "ev-current",
+      activeSha: "abc123",
+      activeBundleKey: overrides.activeBundleKey === undefined ? "bundle-key" : overrides.activeBundleKey,
+      activeDependencyEvs: { "@workspace/runtime": overrides.activeDepEv ?? overrides.depEv ?? "ev-runtime" },
+      activeExternalDeps: overrides.activeExternalDeps ?? {},
+      activeRuntimeDepsKey: "runtime-key",
+      enabled: overrides.enabled ?? true,
+      status: overrides.status ?? "running",
+      lastError: overrides.status === "error" ? "previous failure" : null,
+    });
+  }
   return { host, approvalQueue, buildSystem, extensionNode, eventService, userlandApprovalGrantStore };
 }
 
@@ -146,6 +157,60 @@ describe("ExtensionHost source push authorization", () => {
     })).resolves.toEqual({ allowed: true });
 
     expect(approvalQueue.request).not.toHaveBeenCalled();
+  });
+});
+
+describe("ExtensionHost built-in extension bootstrap", () => {
+  it("records missing built-in extensions as pending approval without building", async () => {
+    const { host, approvalQueue, buildSystem, extensionNode } = makeHost({ installed: false });
+    const start = vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
+
+    await host.ensureBuiltInExtensions([extensionNode.name]);
+
+    const entry = host.registry.get(extensionNode.name);
+    expect(entry).toMatchObject({
+      name: extensionNode.name,
+      enabled: false,
+      activeBundleKey: null,
+      activeEv: null,
+      status: "pending-approval",
+    });
+    expect(buildSystem.getBuild).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+  });
+
+  it("preserves a user-disabled built-in extension", async () => {
+    const { host, buildSystem, extensionNode } = makeHost({
+      enabled: false,
+      status: "error",
+    });
+
+    await host.ensureBuiltInExtensions([extensionNode.name]);
+
+    expect(host.registry.get(extensionNode.name)).toMatchObject({
+      enabled: false,
+      status: "error",
+      lastError: "previous failure",
+      activeBundleKey: "bundle-key",
+    });
+    expect(buildSystem.getBuild).not.toHaveBeenCalled();
+  });
+
+  it("builds enabled built-ins that do not yet have an active bundle", async () => {
+    const { host, buildSystem, extensionNode } = makeHost({
+      activeBundleKey: null,
+      status: "building",
+    });
+    const start = vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
+
+    await host.ensureBuiltInExtensions([extensionNode.name]);
+
+    expect(buildSystem.getBuild).toHaveBeenCalledWith(extensionNode.name, undefined);
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({
+      name: extensionNode.name,
+      bundlePath: expect.stringContaining("candidate-key"),
+    }));
   });
 });
 
@@ -249,17 +314,36 @@ describe("ExtensionHost activation", () => {
     );
   });
 
-  it("proxies extension fetch request and response bodies as bytes", async () => {
+  it("streams extension fetch request bodies through chunk RPC", async () => {
     const requestBody = Buffer.from([0, 1, 2, 255]);
     const responseBody = Buffer.from([255, 2, 1, 0]);
+    const capturedChunks: Buffer[] = [];
+    let service: ReturnType<ExtensionHost["createServiceDefinition"]>;
     const extensionTransport = {
-      call: vi.fn(async () => ({
-        status: 201,
-        headers: { "content-type": "application/octet-stream" },
-        body: { __bin: true, data: responseBody.toString("base64") },
-      })),
+      call: vi.fn(async (_name: string, method: string, request: unknown) => {
+        expect(method).toBe("extension.fetch");
+        const body = (request as { body?: { __stream?: true; id?: string } }).body;
+        expect(body).toMatchObject({ __stream: true });
+        expect(typeof body?.id).toBe("string");
+        while (true) {
+          const next = await service.handler(
+            { callerId: extensionNode.name, callerKind: "extension" } as any,
+            "fetchRequestBodyChunk",
+            [body!.id!],
+          ) as { done: boolean; chunk?: { __bin: true; data: string } };
+          if (next.done) break;
+          expect(next.chunk).toMatchObject({ __bin: true });
+          capturedChunks.push(Buffer.from(next.chunk!.data, "base64"));
+        }
+        return {
+          status: 201,
+          headers: { "content-type": "application/octet-stream" },
+          body: { __bin: true, data: responseBody.toString("base64") },
+        };
+      }),
     };
     const { host, extensionNode } = makeHost({ extensionTransport });
+    service = host.createServiceDefinition();
     const req = Readable.from([requestBody]) as any;
     req.method = "POST";
     req.url = "/_r/ext/%40workspace-extensions%2Fgit-tools/upload?x=1";
@@ -289,12 +373,87 @@ describe("ExtensionHost activation", () => {
       extensionNode.name,
       "extension.fetch",
       expect.objectContaining({
-        body: { __bin: true, data: requestBody.toString("base64") },
+        body: expect.objectContaining({ __stream: true }),
       }),
       expect.objectContaining({ method: "fetch" }),
     );
+    expect(Buffer.concat(capturedChunks)).toEqual(requestBody);
     expect(res.statusCode).toBe(201);
     expect(res.body).toEqual(responseBody);
+  });
+
+  it("streams extension fetch responses through chunk RPC", async () => {
+    const responseChunks = [
+      Buffer.from("hello "),
+      Buffer.alloc(70 * 1024, 7),
+      Buffer.from(" done"),
+    ];
+    const expectedBody = Buffer.concat(responseChunks);
+    let closeCalled = false;
+    const extensionTransport = {
+      call: vi.fn(async (_name: string, method: string) => {
+        if (method === "extension.fetch") {
+          return {
+            status: 200,
+            headers: { "content-type": "application/octet-stream" },
+            body: { __stream: true, id: "response-stream-1" },
+          };
+        }
+        if (method === "extension.fetchResponseBodyChunk") {
+          const chunk = responseChunks.shift();
+          if (!chunk) return { done: true };
+          return {
+            done: false,
+            chunk: { __bin: true, data: chunk.toString("base64") },
+          };
+        }
+        if (method === "extension.fetchResponseBodyClose") {
+          closeCalled = true;
+          return null;
+        }
+        throw new Error(`Unexpected extension method: ${method}`);
+      }),
+    };
+    const { host, extensionNode } = makeHost({ extensionTransport });
+    const req = Readable.from([]) as any;
+    req.method = "GET";
+    req.url = "/_r/ext/%40workspace-extensions%2Fgit-tools/download";
+    req.headers = {};
+    class TestResponse extends Writable {
+      statusCode = 0;
+      headers: Record<string, string> | undefined;
+      chunks: Buffer[] = [];
+      writeHead(status: number, headers: Record<string, string>) {
+        this.statusCode = status;
+        this.headers = headers;
+      }
+      _write(chunk: Buffer | string, _encoding: BufferEncoding, callback: (error?: Error | null) => void) {
+        this.chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        callback();
+      }
+      body() {
+        return Buffer.concat(this.chunks);
+      }
+    }
+    const res = new TestResponse();
+
+    await host.handleExtensionHttpRequest(
+      req,
+      res as any,
+      extensionNode.name,
+      "/download",
+      { callerId: "panel-1", callerKind: "panel" },
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers).toEqual({ "content-type": "application/octet-stream" });
+    expect(res.body()).toEqual(expectedBody);
+    expect(closeCalled).toBe(true);
+    expect(extensionTransport.call).toHaveBeenCalledWith(
+      extensionNode.name,
+      "extension.fetchResponseBodyChunk",
+      "response-stream-1",
+    );
   });
 
   it("accepts extension event, health, log, and caller approval requests over RPC", async () => {

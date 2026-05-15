@@ -29,13 +29,18 @@ export function createBrowserSessionSyncService(deps: {
     }
   };
 
+  // Browser-data import-complete is now emitted by the
+  // `@workspace-extensions/browser-data` extension. Extension events are
+  // namespaced as `extensions:<name>::<event>` on the wire.
+  const importEventName = "extensions:@workspace-extensions/browser-data::import-complete";
+
   const subscriber: Subscriber = {
     callerKind: "server",
     get isAlive() {
       return !destroyed;
     },
     send(channel, payload) {
-      if (channel !== "event:browser-import-complete") return;
+      if (channel !== `event:${importEventName}`) return;
       const results = Array.isArray(payload) ? payload : [];
       if (!results.some((r) => isCookieImportSuccess(r))) return;
       void syncCookies();
@@ -47,16 +52,16 @@ export function createBrowserSessionSyncService(deps: {
   return {
     name: "browser-session-sync",
     async start() {
-      deps.eventService.subscribe("browser-import-complete", SUBSCRIBER_ID, subscriber);
-      await deps.serverClient.call("events", "subscribe", ["browser-import-complete"]).catch((err: unknown) => {
+      deps.eventService.subscribe(importEventName as never, SUBSCRIBER_ID, subscriber);
+      await deps.serverClient.call("events", "subscribe", [importEventName]).catch((err: unknown) => {
         log.warn(`Server event subscribe failed: ${err instanceof Error ? err.message : String(err)}`);
       });
       return { syncCookies };
     },
     async stop() {
       destroyed = true;
-      deps.eventService.unsubscribe("browser-import-complete", SUBSCRIBER_ID);
-      await deps.serverClient.call("events", "unsubscribe", ["browser-import-complete"]).catch(() => {});
+      deps.eventService.unsubscribe(importEventName as never, SUBSCRIBER_ID);
+      await deps.serverClient.call("events", "unsubscribe", [importEventName]).catch(() => {});
     },
   };
 }

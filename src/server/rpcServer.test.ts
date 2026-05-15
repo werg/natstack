@@ -391,14 +391,14 @@ describe("RpcServer caller identity", () => {
     return JSON.parse(raw) as { message: { result?: unknown; error?: string } };
   }
 
-  it("denies worker callers for shell-only browser-data methods", async () => {
+  it("denies worker callers for shell-only methods", async () => {
     const { server } = createServer();
     const client = createClient("worker-1");
     client.callerKind = "worker";
     (server as any).dispatcher.getPolicy.mockReturnValue({ allowed: ["server"] });
     (server as any).dispatcher.getMethodPolicy.mockReturnValue({ allowed: ["shell"] });
 
-    await (server as any).handleRpc(client, rpcRequest("req-3", "browser-data.getPasswords"));
+    await (server as any).handleRpc(client, rpcRequest("req-3", "internal.shellOnly"));
 
     expect((server as any).dispatcher.dispatch).not.toHaveBeenCalled();
     expect(sentResponse(client).message.error).toContain("not accessible to worker callers");

@@ -147,6 +147,7 @@ export class ExtensionHost {
   private health = new Map<string, unknown>();
   private inspectorUrls = new Map<string, string | null>();
   private unitLogs = new Map<string, UnitLogRecord[]>();
+  private fetchRequestBodies = new Map<string, FetchRequestBodyStream>();
   private readonly sourcePushGrants: SourcePushGrantStore;
 
   constructor(private readonly deps: ExtensionHostDeps) {
@@ -209,6 +210,43 @@ export class ExtensionHost {
     }
   }
 
+  async ensureBuiltInExtensions(names: string[]): Promise<void> {
+    for (const name of names) {
+      const node = this.findExtensionNode(name);
+      const current = this.registry.get(node.name);
+      if (!current) {
+        this.registry.upsert({
+          name: node.name,
+          version: this.readNodeVersion(node.path),
+          source: { kind: "internal-git", repo: node.relativePath, ref: "main" },
+          installedAt: Date.now(),
+          activeEv: null,
+          activeSha: null,
+          activeBundleKey: null,
+          activeDependencyEvs: {},
+          activeExternalDeps: {},
+          activeRuntimeDepsKey: null,
+          enabled: false,
+          status: "pending-approval",
+          lastError: null,
+        });
+        continue;
+      }
+
+      const patch: Partial<RegistryEntry> = {};
+      if (current.enabled && current.status === "error" && !current.activeBundleKey) {
+        patch.status = "building";
+        patch.lastError = null;
+      }
+      if (Object.keys(patch).length > 0) {
+        this.registry.patch(node.name, patch);
+      }
+      if (current.enabled && !current.activeBundleKey) {
+        await this.buildAndActivate(node.name);
+      }
+    }
+  }
+
   async shutdown(): Promise<void> {
     await this.processes.shutdown();
   }
@@ -224,6 +262,8 @@ export class ExtensionHost {
         on: { args: z.tuple([z.string(), z.string()]) },
         ready: { args: z.tuple([z.object({ methods: z.array(z.string()), hasFetch: z.boolean() })]) },
         emit: { args: z.tuple([z.string(), z.unknown()]) },
+        fetchRequestBodyChunk: { args: z.tuple([z.string()]) },
+        fetchRequestBodyClose: { args: z.tuple([z.string()]) },
         health: { args: z.tuple([z.enum(["healthy", "degraded", "unhealthy"]), z.unknown().optional()]) },
         log: { args: z.tuple([z.enum(["debug", "info", "warn", "error"]), z.string(), z.record(z.unknown()).optional()]) },
         approvalForCaller: { args: z.tuple([z.unknown(), z.unknown()]) },
@@ -252,6 +292,10 @@ export class ExtensionHost {
         );
       case "emit":
         return this.emitFromExtension(ctx, args[0] as string, args[1]);
+      case "fetchRequestBodyChunk":
+        return this.fetchRequestBodyChunk(ctx, args[0] as string);
+      case "fetchRequestBodyClose":
+        return this.fetchRequestBodyClose(ctx, args[0] as string);
       case "health":
         return this.healthFromExtension(ctx, args[0] as ExtensionHealth["state"], args[1]);
       case "log":
@@ -310,9 +354,9 @@ export class ExtensionHost {
       return;
     }
 
-    let body: BinaryEnvelope | undefined;
+    let body: BodyEnvelope | undefined;
     try {
-      body = await readRequestBody(req, 10 * 1024 * 1024);
+      body = this.registerRequestBody(name, req);
     } catch (err) {
       res.writeHead(413, { "Content-Type": "text/plain" });
       res.end(err instanceof Error ? err.message : "Request body too large");
@@ -356,17 +400,75 @@ export class ExtensionHost {
       const typedResponse = response as {
         status: number;
         headers: Record<string, string>;
-        body: BinaryEnvelope | string;
+        body: BodyEnvelope | string;
       };
       res.writeHead(typedResponse.status, typedResponse.headers);
-      res.end(isBinaryEnvelope(typedResponse.body)
-        ? Buffer.from(typedResponse.body.data, "base64")
-        : typedResponse.body);
+      await this.writeExtensionResponseBody(name, res, typedResponse.body);
     } catch (err) {
       const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
       const status = code === "ENOFETCH" ? 404 : code === "ENOEXT" ? 503 : 500;
       res.writeHead(status, { "Content-Type": "text/plain" });
       res.end(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (isStreamEnvelope(body)) {
+        await this.closeFetchRequestBody(body.id);
+      }
+    }
+  }
+
+  private registerRequestBody(extensionName: string, req: IncomingMessage): StreamEnvelope | undefined {
+    if (req.method === "GET" || req.method === "HEAD") return undefined;
+    const id = randomUUID();
+    this.fetchRequestBodies.set(id, {
+      extensionName,
+      iterator: req[Symbol.asyncIterator](),
+      pending: null,
+      offset: 0,
+    });
+    return { __stream: true, id };
+  }
+
+  private async closeFetchRequestBody(id: string): Promise<void> {
+    const stream = this.fetchRequestBodies.get(id);
+    if (!stream) return;
+    this.fetchRequestBodies.delete(id);
+    try {
+      await stream.iterator.return?.();
+    } catch {
+      // Ignore cancellation failures while cleaning up a proxied HTTP stream.
+    }
+  }
+
+  private async writeExtensionResponseBody(
+    extensionName: string,
+    res: ServerResponse,
+    body: BodyEnvelope | string,
+  ): Promise<void> {
+    if (!isStreamEnvelope(body)) {
+      await writeInlineResponseBody(res, body);
+      return;
+    }
+    try {
+      while (true) {
+        const next = await this.deps.extensionTransport.call(
+          extensionName,
+          "extension.fetchResponseBodyChunk",
+          body.id,
+        ) as StreamChunkEnvelope;
+        if (next.done) break;
+        if (next.chunk) {
+          await writeResponseChunk(res, Buffer.from(next.chunk.data, "base64"));
+        }
+      }
+      const finished = waitForResponseFinish(res);
+      res.end();
+      await finished;
+    } finally {
+      await this.deps.extensionTransport.call(
+        extensionName,
+        "extension.fetchResponseBodyClose",
+        body.id,
+      ).catch(() => {});
     }
   }
 
@@ -382,6 +484,27 @@ export class ExtensionHost {
       throw new ServiceError("extensions", "emit", "Only extensions can emit extension events", "EACCES");
     }
     this.deps.eventService.emit(`extensions:${ctx.callerId}::${event}` as EventName, payload);
+    return null;
+  }
+
+  private async fetchRequestBodyChunk(ctx: ServiceContext, streamId: string): Promise<StreamChunkEnvelope> {
+    if (ctx.callerKind !== "extension") {
+      throw new ServiceError("extensions", "fetchRequestBodyChunk", "Only extensions can read extension fetch request bodies", "EACCES");
+    }
+    const stream = this.fetchRequestBodies.get(streamId);
+    if (!stream || stream.extensionName !== ctx.callerId) {
+      throw new ServiceError("extensions", "fetchRequestBodyChunk", `Unknown extension fetch request body stream: ${streamId}`, "ENOENT");
+    }
+    return readNextBodyChunk(stream);
+  }
+
+  private async fetchRequestBodyClose(ctx: ServiceContext, streamId: string): Promise<null> {
+    if (ctx.callerKind !== "extension") {
+      throw new ServiceError("extensions", "fetchRequestBodyClose", "Only extensions can close extension fetch request bodies", "EACCES");
+    }
+    const stream = this.fetchRequestBodies.get(streamId);
+    if (!stream || stream.extensionName !== ctx.callerId) return null;
+    await this.closeFetchRequestBody(streamId);
     return null;
   }
 
@@ -989,6 +1112,27 @@ interface BinaryEnvelope {
   data: string;
 }
 
+interface StreamEnvelope {
+  __stream: true;
+  id: string;
+}
+
+type BodyEnvelope = BinaryEnvelope | StreamEnvelope;
+
+interface StreamChunkEnvelope {
+  done: boolean;
+  chunk?: BinaryEnvelope;
+}
+
+interface FetchRequestBodyStream {
+  extensionName: string;
+  iterator: AsyncIterator<unknown>;
+  pending: Buffer | null;
+  offset: number;
+}
+
+const STREAM_CHUNK_BYTES = 64 * 1024;
+
 function isBinaryEnvelope(value: unknown): value is BinaryEnvelope {
   return typeof value === "object"
     && value !== null
@@ -996,20 +1140,63 @@ function isBinaryEnvelope(value: unknown): value is BinaryEnvelope {
     && typeof (value as { data?: unknown }).data === "string";
 }
 
-async function readRequestBody(req: IncomingMessage, maxBytes: number): Promise<BinaryEnvelope | undefined> {
-  if (req.method === "GET" || req.method === "HEAD") return undefined;
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of req) {
-    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buf.length;
-    if (total > maxBytes) {
-      throw new Error(`Extension fetch request body exceeds ${maxBytes} bytes`);
+function isStreamEnvelope(value: unknown): value is StreamEnvelope {
+  return typeof value === "object"
+    && value !== null
+    && (value as { __stream?: unknown }).__stream === true
+    && typeof (value as { id?: unknown }).id === "string";
+}
+
+function bufferToChunk(buf: Buffer): StreamChunkEnvelope {
+  return { done: false, chunk: { __bin: true, data: buf.toString("base64") } };
+}
+
+async function readNextBodyChunk(stream: FetchRequestBodyStream): Promise<StreamChunkEnvelope> {
+  if (stream.pending && stream.offset < stream.pending.length) {
+    const nextOffset = Math.min(stream.offset + STREAM_CHUNK_BYTES, stream.pending.length);
+    const chunk = stream.pending.subarray(stream.offset, nextOffset);
+    stream.offset = nextOffset;
+    if (stream.offset >= stream.pending.length) {
+      stream.pending = null;
+      stream.offset = 0;
     }
-    chunks.push(buf);
+    return bufferToChunk(chunk);
   }
-  if (chunks.length === 0) return undefined;
-  return { __bin: true, data: Buffer.concat(chunks).toString("base64") };
+
+  const next = await stream.iterator.next();
+  if (next.done) return { done: true };
+  const buf = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value as ArrayBufferLike);
+  if (buf.length <= STREAM_CHUNK_BYTES) return bufferToChunk(buf);
+  stream.pending = buf;
+  stream.offset = 0;
+  return readNextBodyChunk(stream);
+}
+
+function waitForResponseFinish(res: ServerResponse): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    res.once("finish", resolve);
+    res.once("error", reject);
+  });
+}
+
+async function writeResponseChunk(res: ServerResponse, chunk: Buffer): Promise<void> {
+  if (res.write(chunk)) return;
+  await new Promise<void>((resolve, reject) => {
+    res.once("drain", resolve);
+    res.once("error", reject);
+  });
+}
+
+async function writeInlineResponseBody(res: ServerResponse, body: BinaryEnvelope | string): Promise<void> {
+  if (typeof body === "string") {
+    res.end(body);
+    return;
+  }
+  if (isBinaryEnvelope(body)) {
+    res.end(Buffer.from(body.data, "base64"));
+    return;
+  }
+  res.end();
 }
 
 function normalizeRepoPath(repoPath: string): string {

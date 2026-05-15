@@ -24,13 +24,13 @@ See the sandbox skill's [INTERACTION_PATTERNS.md](../sandbox/INTERACTION_PATTERN
 
 ## Architecture
 
-All browser data operations go through `@workspace/panel-browser`, which wraps RPC calls to the `browser-data` service. The service reads browser profile databases directly (SQLite for Chrome/Firefox, plist for Safari).
+All browser data operations go through `@workspace/panel-browser`, which wraps RPC calls to `@workspace-extensions/browser-data` through `extensions.invoke`. The extension reads browser profile databases directly (SQLite for Chrome/Firefox, plist for Safari) and stores imported data in `BrowserDataDO`.
 
 ```
 Sandbox code (eval / inline_ui / feedback_custom)
   → import { browserData } from "@workspace/panel-browser"
-    → rpc.call("main", "browser-data.*")
-      → BrowserDataService (Electron main process)
+    → rpc.call("main", "extensions.invoke", "@workspace-extensions/browser-data", ...)
+      → browser-data extension
         → reads Chrome/Firefox/Safari profile databases
 ```
 
@@ -165,7 +165,7 @@ for (const r of results) {
 Imported cookies are **automatically synced** to the shared browser session (`persist:browser`) after `startImport` completes. Browser panels use this session, so they get imported cookies immediately — no manual sync needed.
 
 Manual cookie session sync is host-owned and is not exposed through the server
-`browser-data` service. In Electron, imported cookies are synced automatically by
+`@workspace-extensions/browser-data`. In Electron, imported cookies are synced automatically by
 the main-process host adapter after a successful cookie import.
 
 ## Typical Agent Workflow

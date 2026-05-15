@@ -594,6 +594,11 @@ async function main() {
     | "https";
   const configuredExternalHost = process.env["NATSTACK_HOST"] ?? args.host ?? "localhost";
   let extensionHostForGateway: import("@natstack/extension-host").ExtensionHost | null = null;
+  const requiredBuiltInExtensions = [
+    "@workspace-extensions/image-service",
+    "@workspace-extensions/typecheck-service",
+    "@workspace-extensions/browser-data",
+  ];
 
   const { createGitWriteAuthorizer } = await import("./services/gitWritePermission.js");
   const { WORKSPACE_GIT_INIT_PATTERNS } = await import("@natstack/shared/workspace/sourceDirs");
@@ -1130,24 +1135,10 @@ async function main() {
     });
   }
 
-  {
-    const { createBrowserDataService } = await import("./services/browserDataService.js");
-    let browserDataDefinition:
-      | import("@natstack/shared/serviceDefinition").ServiceDefinition
-      | null = null;
-    container.register({
-      name: "browser-data",
-      dependencies: ["doDispatch"],
-      async start(resolve) {
-        const doDispatch = resolve<import("./doDispatch.js").DODispatch>("doDispatch")!;
-        browserDataDefinition = createBrowserDataService({ doDispatch, eventService });
-      },
-      getServiceDefinition() {
-        if (!browserDataDefinition) throw new Error("browser-data service not initialized");
-        return browserDataDefinition;
-      },
-    });
-  }
+  // browser-data is now an extension at
+  // workspace/extensions/@workspace-extensions/browser-data — callers reach it
+  // through `extensions.invoke`. The extension proxies to the BrowserDataDO
+  // via workers.callDO, so storage stays in workerd unchanged.
 
   // ── Generic public webhook ingress ──
   {
@@ -1781,6 +1772,7 @@ async function main() {
   dispatcher.markInitialized();
 
   const extensionHost = container.get<import("@natstack/extension-host").ExtensionHost>("extensionHost");
+  await extensionHost.ensureBuiltInExtensions(requiredBuiltInExtensions);
   await extensionHost.startEnabled();
 
   // ===========================================================================

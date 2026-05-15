@@ -37,6 +37,24 @@ interface BinaryEnvelope {
   data: string;
 }
 
+interface StreamEnvelope {
+  __stream: true;
+  id: string;
+}
+
+type BodyEnvelope = BinaryEnvelope | StreamEnvelope;
+
+interface StreamChunkEnvelope {
+  done: boolean;
+  chunk?: BinaryEnvelope;
+}
+
+interface FetchResponseBodyStream {
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  pending: Uint8Array | null;
+  offset: number;
+}
+
 interface SerializedFileStats {
   isFile: boolean;
   isDirectory: boolean;
@@ -49,6 +67,8 @@ interface SerializedFileStats {
 
 const invocationStore = new AsyncLocalStorage<ExtensionInvocation>();
 const extensionEventCallbacks = new Map<string, Set<(payload: unknown) => void>>();
+const fetchResponseBodies = new Map<string, FetchResponseBodyStream>();
+const STREAM_CHUNK_BYTES = 64 * 1024;
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
@@ -135,6 +155,32 @@ function isBinaryEnvelope(value: unknown): value is BinaryEnvelope {
     && value !== null
     && (value as { __bin?: unknown }).__bin === true
     && typeof (value as { data?: unknown }).data === "string";
+}
+
+function isStreamEnvelope(value: unknown): value is StreamEnvelope {
+  return typeof value === "object"
+    && value !== null
+    && (value as { __stream?: unknown }).__stream === true
+    && typeof (value as { id?: unknown }).id === "string";
+}
+
+async function requestBodyFromEnvelope(body: BodyEnvelope | undefined): Promise<BodyInit | undefined> {
+  if (!body) return undefined;
+  if (isBinaryEnvelope(body)) return Buffer.from(body.data, "base64");
+  if (!isStreamEnvelope(body)) return undefined;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const next = await rpcCall<StreamChunkEnvelope>("extensions.fetchRequestBodyChunk", [body.id]);
+      if (next.done) {
+        controller.close();
+        return;
+      }
+      if (next.chunk) controller.enqueue(Buffer.from(next.chunk.data, "base64"));
+    },
+    async cancel() {
+      await rpcCall("extensions.fetchRequestBodyClose", [body.id]).catch(() => {});
+    },
+  });
 }
 
 function toStats(value: SerializedFileStats) {
@@ -278,10 +324,18 @@ function createContext() {
       readdir: (p = ".") => nodeFs.readdir(storagePath(p)),
     },
     fs: createFsClient(),
-    ai: serviceProxy("ai"),
     git: serviceProxy("git"),
     panel: serviceProxy("panel"),
     workspace: serviceProxy("workspace"),
+    workers: {
+      callDO: <T>(
+        source: string,
+        className: string,
+        objectKey: string,
+        method: string,
+        ...args: unknown[]
+      ) => rpcCall<T>("workers.callDO", [source, className, objectKey, method, ...args]),
+    },
     credentials: serviceProxy("credentials"),
     db: serviceProxy("db"),
     webhooks: serviceProxy("webhookIngress"),
@@ -452,6 +506,65 @@ async function connectRuntimeBridge(): Promise<RpcBridge> {
   return bridge;
 }
 
+function responseBodyToEnvelope(response: Response): BodyEnvelope {
+  if (!response.body) return { __bin: true, data: "" };
+  const id = randomUUID();
+  fetchResponseBodies.set(id, {
+    reader: response.body.getReader(),
+    pending: null,
+    offset: 0,
+  });
+  return { __stream: true, id };
+}
+
+function streamChunkFromBytes(bytes: Uint8Array): StreamChunkEnvelope {
+  return {
+    done: false,
+    chunk: { __bin: true, data: Buffer.from(bytes).toString("base64") },
+  };
+}
+
+async function readNextResponseBodyChunk(id: string): Promise<StreamChunkEnvelope> {
+  const stream = fetchResponseBodies.get(id);
+  if (!stream) {
+    const err = new Error(`Unknown extension fetch response body stream: ${id}`) as NodeJS.ErrnoException;
+    err.code = "ENOENT";
+    throw err;
+  }
+  if (stream.pending && stream.offset < stream.pending.length) {
+    const nextOffset = Math.min(stream.offset + STREAM_CHUNK_BYTES, stream.pending.length);
+    const chunk = stream.pending.subarray(stream.offset, nextOffset);
+    stream.offset = nextOffset;
+    if (stream.offset >= stream.pending.length) {
+      stream.pending = null;
+      stream.offset = 0;
+    }
+    return streamChunkFromBytes(chunk);
+  }
+  const next = await stream.reader.read();
+  if (next.done) {
+    await closeResponseBodyStream(id);
+    return { done: true };
+  }
+  if (next.value.length <= STREAM_CHUNK_BYTES) return streamChunkFromBytes(next.value);
+  stream.pending = next.value;
+  stream.offset = 0;
+  return readNextResponseBodyChunk(id);
+}
+
+async function closeResponseBodyStream(id: string): Promise<void> {
+  const stream = fetchResponseBodies.get(id);
+  if (!stream) return;
+  fetchResponseBodies.delete(id);
+  try {
+    await stream.reader.cancel();
+  } catch {
+    // The stream may already be closed; cleanup should stay best-effort.
+  } finally {
+    stream.reader.releaseLock();
+  }
+}
+
 async function main(): Promise<void> {
   runtimeBridge = await connectRuntimeBridge();
   const bundlePath = requiredEnv("NATSTACK_EXTENSION_BUNDLE_PATH");
@@ -476,10 +589,19 @@ async function main(): Promise<void> {
     });
   });
 
+  runtimeBridge.exposeMethod("extension.fetchResponseBodyChunk", async (streamId: string) => {
+    return readNextResponseBodyChunk(streamId);
+  });
+
+  runtimeBridge.exposeMethod("extension.fetchResponseBodyClose", async (streamId: string) => {
+    await closeResponseBodyStream(streamId);
+    return null;
+  });
+
   runtimeBridge.exposeMethod(
     "extension.fetch",
     async (
-      requestEnvelope: { url: string; method: string; headers: Record<string, string>; body?: BinaryEnvelope },
+      requestEnvelope: { url: string; method: string; headers: Record<string, string>; body?: BodyEnvelope },
       invocation: ExtensionInvocation,
     ) => {
       if (!fetchHandler) {
@@ -488,13 +610,12 @@ async function main(): Promise<void> {
         throw err;
       }
       return invocationStore.run(invocation, async () => {
+        const body = await requestBodyFromEnvelope(requestEnvelope.body);
         const request = new Request(requestEnvelope.url, {
           method: requestEnvelope.method,
           headers: requestEnvelope.headers,
-          body: requestEnvelope.body
-            ? Buffer.from(requestEnvelope.body.data, "base64")
-            : undefined,
-        });
+          ...(body ? { body, duplex: "half" } : {}),
+        } as RequestInit & { duplex?: "half" });
         const waitUntil: Promise<unknown>[] = [];
         const fetchCtx = {
           ...ctx,
@@ -507,10 +628,7 @@ async function main(): Promise<void> {
         return {
           status: response.status,
           headers: Object.fromEntries(response.headers.entries()),
-          body: {
-            __bin: true,
-            data: Buffer.from(await response.arrayBuffer()).toString("base64"),
-          } satisfies BinaryEnvelope,
+          body: responseBodyToEnvelope(response),
         };
       });
     },

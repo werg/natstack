@@ -147,6 +147,21 @@ export interface ExtensionNotificationsLike {
   dismiss(id: string): Promise<void>;
 }
 
+export interface ExtensionWorkersLike {
+  /**
+   * Dispatch a method to a Durable Object. Mirrors the shell `worker.callDO`
+   * RPC. Useful for extensions that wrap an internal DO-backed store
+   * (e.g. browser-data).
+   */
+  callDO<T = unknown>(
+    source: string,
+    className: string,
+    objectKey: string,
+    method: string,
+    ...args: unknown[]
+  ): Promise<T>;
+}
+
 export interface ExtensionContext {
   readonly name: string;
   readonly version: string;
@@ -158,10 +173,10 @@ export interface ExtensionContext {
     readdir(path?: string): Promise<string[]>;
   };
   readonly fs: ExtensionFsClient;
-  readonly ai: ExtensionRpcSurface;
   readonly git: ExtensionRpcSurface;
   readonly panel: ExtensionRpcSurface;
   readonly workspace: ExtensionWorkspaceLike;
+  readonly workers: ExtensionWorkersLike;
   readonly credentials: ExtensionRpcSurface;
   readonly db: ExtensionRpcSurface;
   readonly webhooks: ExtensionRpcSurface;

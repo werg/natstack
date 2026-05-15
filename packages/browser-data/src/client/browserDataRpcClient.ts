@@ -6,6 +6,8 @@ interface RpcLike {
   call(service: string, method: string, args: unknown[]): Promise<unknown>;
 }
 
+const BROWSER_DATA_EXTENSION = "@workspace-extensions/browser-data";
+
 export interface BrowserDataClient {
   cookies: {
     getByDomain(domain?: string): Promise<StoredCookie[]>;
@@ -35,8 +37,15 @@ export interface BrowserDataClient {
 export function createBrowserDataRpcClient(
   rpc: RpcLike,
 ): BrowserDataClient {
+  // Browser data lives in the @workspace-extensions/browser-data extension —
+  // calls go through the dispatcher's `extensions.invoke` relay rather than a
+  // dedicated host service.
   const call = <T>(method: string, ...args: unknown[]) => {
-    return rpc.call("browser-data", method, args) as Promise<T>;
+    return rpc.call("extensions", "invoke", [
+      BROWSER_DATA_EXTENSION,
+      method,
+      args,
+    ]) as Promise<T>;
   };
 
   return {
