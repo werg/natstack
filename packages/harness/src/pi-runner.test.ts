@@ -16,7 +16,7 @@ const agentInstances: any[] = [];
 const subscribeCallbacks = new Map<any, (event: any) => void>();
 const unsubscribeFns = new Map<any, ReturnType<typeof vi.fn>>();
 
-vi.mock("@mariozechner/pi-agent-core", () => {
+vi.mock("@earendil-works/pi-agent-core", () => {
   class MockAgent {
     public state: any;
     public getApiKey: ((provider: string) => any) | undefined;
@@ -73,7 +73,7 @@ vi.mock("@mariozechner/pi-agent-core", () => {
   return { Agent: MockAgent };
 });
 
-vi.mock("@mariozechner/pi-ai", () => {
+vi.mock("@earendil-works/pi-ai", () => {
   return {
     getModel: vi.fn((provider: string, modelId: string) => ({
       id: `${provider}:${modelId}`,

@@ -1,4 +1,4 @@
-import "@testing-library/jest-native/extend-expect";
+import "@testing-library/react-native/build/matchers/extend-expect";
 
 jest.mock(
   "@react-native-firebase/messaging",

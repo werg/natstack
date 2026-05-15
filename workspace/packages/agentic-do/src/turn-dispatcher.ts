@@ -54,7 +54,7 @@
  * has to happen during the synchronous body of `handleEvent`.
  */
 
-import type { AgentEvent, AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 
 export interface TurnDispatcherRunner {
   /** Subscribe to agent events. Returns an unsubscribe function. */

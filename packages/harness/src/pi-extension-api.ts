@@ -13,7 +13,7 @@
  * runtime if needed.
  */
 
-import type { AgentTool as PiAgentTool } from "@mariozechner/pi-agent-core";
+import type { AgentTool as PiAgentTool } from "@earendil-works/pi-agent-core";
 
 /** Re-export `AgentTool` from pi-agent-core for convenience. */
 export type AgentTool<TParameters = any, TDetails = any> = PiAgentTool<any, TDetails>;
