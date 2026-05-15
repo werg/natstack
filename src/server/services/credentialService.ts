@@ -3460,7 +3460,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   const definition: ServiceDefinition = {
     name: "credentials",
     description: "URL-bound userland credential storage and egress",
-    policy: { allowed: ["shell", "panel", "server", "worker"] },
+    policy: { allowed: ["shell", "panel", "server", "worker", "extension"] },
     methods: {
       storeCredential: { args: z.tuple([storeUrlBoundCredentialParamsSchema]) },
       connect: { args: z.tuple([connectCredentialParamsSchema]) },

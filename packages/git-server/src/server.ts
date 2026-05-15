@@ -15,6 +15,8 @@ import type {
   CommitInfo,
   RepoStatus,
   GitWatcherLike,
+  GitPushAuthorizationResult,
+  GitPushAuthorizer,
   GitWriteAuthorizer,
 } from "./types.js";
 import { GitAuthManager } from "./auth.js";
@@ -66,6 +68,11 @@ export interface GitServerConfig {
    * fail closed when no authorizer is configured.
    */
   writeAuthorizer?: GitWriteAuthorizer;
+  /**
+   * Optional branch-aware gate for a concrete pushed ref. This runs after
+   * authentication/write permission but before receive-pack accepts the update.
+   */
+  pushAuthorizer?: GitPushAuthorizer;
   /** Resolve source repo path for a caller id (workers/DOs). */
   getSourceForCaller?: (callerId: string) => string | null;
   /** Dynamic CORS allowlist for browser git clients. */
@@ -89,12 +96,14 @@ export class GitServer {
   // Dev target directory for mirroring pushes
   private devTargetDir: string | null;
   private writeAuthorizer: GitWriteAuthorizer | null;
+  private pushAuthorizer: GitPushAuthorizer | null;
 
   constructor(config?: GitServerConfig) {
     this.configuredReposPath = config?.reposPath ?? null;
     this.initPatterns = config?.initPatterns ?? ["panels/*", "packages/*", "projects/*"];
     this.devTargetDir = config?.devTargetDir ?? null;
     this.writeAuthorizer = config?.writeAuthorizer ?? null;
+    this.pushAuthorizer = config?.pushAuthorizer ?? null;
     this.authManager = new GitAuthManager(config?.getSourceForCaller);
     this.getAllowedOrigins = config?.getAllowedOrigins ?? (() => []);
   }
@@ -190,6 +199,8 @@ export class GitServer {
     // Handle push events
     this.git.on("push", (push) => {
       const pushRepo = push.repo.replace(/^\/+/, "").replace(/\.git(\/.*)?$/, "").replace(/\/+$/, "");
+      const branch = push.branch.replace(/^refs\/heads\//, "");
+      const identity = this.identityStore.getStore();
 
       // Ensure repo allows pushes to checked-out branches (may be auto-created
       // by node-git-server, which doesn't set this config)
@@ -199,7 +210,50 @@ export class GitServer {
         stdio: "ignore",
       });
 
-      push.accept();
+      let decided = false;
+      const acceptPush = () => {
+        if (decided) return;
+        decided = true;
+        push.accept();
+      };
+      const rejectPush = (reason: string) => {
+        if (decided) return;
+        decided = true;
+        log.verbose(` Push rejected for ${pushRepo}/${branch}: ${reason}`);
+        push.reject(403, reason);
+      };
+
+      if (!identity) {
+        rejectPush("Authenticated caller identity missing");
+        return;
+      }
+
+      // Authorization may be async (e.g., extension source-push approvals
+      // route through a user prompt). node-git-server defers receive-pack
+      // until accept/reject is called, so awaiting here back-pressures the
+      // client without losing the request.
+      const runPushAuthorization = this.pushAuthorizer
+        ? Promise.resolve().then(() => this.pushAuthorizer!({
+            callerId: identity.callerId,
+            callerKind: identity.callerKind,
+            repoPath: this.normalizePath(pushRepo),
+            branch,
+            commit: push.commit,
+          }))
+        : Promise.resolve({ allowed: true } satisfies GitPushAuthorizationResult);
+
+      runPushAuthorization
+        .then((authorization) => {
+          if (authorization.allowed) {
+            acceptPush();
+            return;
+          }
+          rejectPush(authorization.reason || "Git push denied");
+        })
+        .catch((error: unknown) => {
+          const reason = error instanceof Error ? error.message : String(error);
+          rejectPush(reason || "Git push authorization failed");
+        });
 
       // Wait for git-receive-pack to finish writing refs before post-push
       // operations. The push event fires when the HTTP request arrives, but
@@ -207,7 +261,6 @@ export class GitServer {
       // the process completes and refs are on disk.
       push.on("exit", () => {
         const repo = push.repo.replace(/^\/+/, "").replace(/\.git(\/.*)?$/, "").replace(/\/+$/, "");
-        const branch = push.branch.replace(/^refs\/heads\//, "");
         log.verbose(` Push to ${repo}/${branch} (${push.commit})`);
 
         // Update working tree: node-git-server creates repos with `git init`

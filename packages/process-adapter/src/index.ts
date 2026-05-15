@@ -22,6 +22,10 @@ export interface ProcessAdapter {
   pid: number | undefined;
 }
 
+export interface ProcessAdapterOptions {
+  execArgv?: string[];
+}
+
 /** Detect whether we're running inside Electron with a functional utilityProcess. */
 let _useElectron: boolean | null = null;
 export function hasElectronUtilityProcess(): boolean {
@@ -47,12 +51,14 @@ export function hasElectronUtilityProcess(): boolean {
  */
 export function createNodeProcessAdapter(
   bundlePath: string,
-  env: Record<string, string | undefined>
+  env: Record<string, string | undefined>,
+  options: ProcessAdapterOptions = {},
 ): ProcessAdapter {
   const { fork } = require("child_process") as typeof import("child_process");
   const proc = fork(bundlePath, [], {
     stdio: ["pipe", "pipe", "pipe", "ipc"],
     env: env as NodeJS.ProcessEnv,
+    execArgv: options.execArgv,
   });
   const adapter: ProcessAdapter = {
     postMessage: (msg) => proc.send!(msg as import("child_process").Serializable),
@@ -71,6 +77,60 @@ export function createNodeProcessAdapter(
     kill: () => proc.kill(),
     stdout: proc.stdout,
     stderr: proc.stderr,
+    get pid() {
+      return proc.pid;
+    },
+  };
+  return adapter;
+}
+
+/**
+ * Create a process adapter using Electron utilityProcess when available, and
+ * child_process.fork in standalone Node.
+ */
+export function createProcessAdapter(
+  bundlePath: string,
+  env: Record<string, string | undefined>,
+  options: ProcessAdapterOptions = {},
+): ProcessAdapter {
+  if (!hasElectronUtilityProcess()) {
+    return createNodeProcessAdapter(bundlePath, env, options);
+  }
+  const { utilityProcess } = require("electron") as {
+    utilityProcess: {
+      fork(
+        modulePath: string,
+        args?: string[],
+        options?: {
+          env?: NodeJS.ProcessEnv;
+          execArgv?: string[];
+          stdio?: "pipe" | "inherit" | "ignore";
+        },
+      ): any;
+    };
+  };
+  const proc = utilityProcess.fork(bundlePath, [], {
+    env: env as NodeJS.ProcessEnv,
+    execArgv: options.execArgv,
+    stdio: "pipe",
+  });
+  const adapter: ProcessAdapter = {
+    postMessage: (msg) => proc.postMessage(msg),
+    on: (event: string, handler: (...args: any[]) => void) => {
+      proc.on(event, handler);
+      return adapter;
+    },
+    off: (event: string, handler: (...args: any[]) => void) => {
+      proc.off(event, handler);
+      return adapter;
+    },
+    removeListener: (event: string, handler: (...args: any[]) => void) => {
+      proc.removeListener(event, handler);
+      return adapter;
+    },
+    kill: () => proc.kill(),
+    stdout: proc.stdout ?? null,
+    stderr: proc.stderr ?? null,
     get pid() {
       return proc.pid;
     },

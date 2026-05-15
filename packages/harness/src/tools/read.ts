@@ -3,9 +3,9 @@
  *
  * Differences from upstream:
  * - File I/O goes through `RuntimeFs` (no `fs/promises`).
- * - Image handling is delegated to the `image.*` RPC service (W1k); detection
- *   uses magic-byte sniffing in `image.detectMimeType` rather than the
- *   filename-extension table that pi-coding-agent ships.
+ * - Image handling is delegated to the image service extension; detection
+ *   uses magic-byte sniffing rather than the filename-extension table that
+ *   pi-coding-agent ships.
  */
 
 import { Type, type Static } from "@sinclair/typebox";
@@ -52,6 +52,8 @@ interface ImageResizeResult {
   wasResized: boolean;
   dimensionNote?: string;
 }
+
+const IMAGE_SERVICE_EXTENSION = "@workspace-extensions/image-service";
 
 export interface ReadToolDeps {
   /** RPC caller — needed for image resize. */
@@ -110,16 +112,18 @@ export function createReadTool(
       if (raw instanceof Uint8Array && deps?.rpc) {
         const mimeType = await deps.rpc.call<string | null>(
           "main",
-          "image.detectMimeType",
-          raw,
+          "extensions.invoke",
+          IMAGE_SERVICE_EXTENSION,
+          "detectMimeType",
+          [raw],
         );
         if (mimeType?.startsWith("image/")) {
           const resized = await deps.rpc.call<ImageResizeResult>(
             "main",
-            "image.resize",
-            raw,
-            mimeType,
-            { maxWidth: 2000, maxHeight: 2000 },
+            "extensions.invoke",
+            IMAGE_SERVICE_EXTENSION,
+            "resize",
+            [raw, mimeType, { maxWidth: 2000, maxHeight: 2000 }],
           );
           const base64 = Buffer.from(resized.data).toString("base64");
           const content: (TextContent | ImageContent)[] = [

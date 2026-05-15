@@ -49,7 +49,7 @@ function normalizeArgs(args: unknown[], schema: z.ZodType): unknown[] {
   });
 }
 
-export type CallerKind = "panel" | "shell" | "server" | "worker" | "harness";
+export type CallerKind = "panel" | "shell" | "server" | "worker" | "extension" | "harness";
 
 /**
  * WebSocket client state exposed to service handlers.

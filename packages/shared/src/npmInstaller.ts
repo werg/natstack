@@ -28,26 +28,32 @@ export function resolveBundledNpmCliPath(appRoot = process.env["NATSTACK_APP_ROO
   );
 }
 
-export function runNpmInstall(cwd: string, timeout = 120_000): void {
+export function runNpmInstall(
+  cwd: string,
+  options: number | { timeout?: number; ignoreScripts?: boolean } = 120_000,
+): void {
+  const timeout = typeof options === "number" ? options : options.timeout ?? 120_000;
+  const ignoreScripts = typeof options === "number" ? true : options.ignoreScripts ?? true;
   const npmCli = resolveBundledNpmCliPath();
+  const args = [
+    npmCli,
+    "install",
+    "--prefer-offline",
+    "--no-audit",
+    "--no-fund",
+    "--legacy-peer-deps",
+  ];
+  if (ignoreScripts) args.push("--ignore-scripts");
   execFileSync(
     process.execPath,
-    [
-      npmCli,
-      "install",
-      "--prefer-offline",
-      "--no-audit",
-      "--no-fund",
-      "--ignore-scripts",
-      "--legacy-peer-deps",
-    ],
+    args,
     {
       cwd,
       stdio: ["pipe", "pipe", "pipe"],
       timeout,
       env: {
         ...process.env,
-        ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
+        ...(process.versions["electron"] ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
       },
     },
   );

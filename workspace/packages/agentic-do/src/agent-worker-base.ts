@@ -70,6 +70,7 @@ import { TurnDispatcher } from "./turn-dispatcher.js";
 const SAFE_TOOL_NAMES_DEFAULT: ReadonlySet<string> = new Set(["read", "ls", "grep", "find"]);
 const URL_BOUND_MODEL_CREDENTIAL_SENTINEL = "natstack-url-bound-model-credential";
 const URL_BOUND_MODEL_CREDENTIAL_SENTINEL_CLAIM = "https://natstack.local/url-bound-model-credential";
+const IMAGE_SERVICE_EXTENSION = "@workspace-extensions/image-service";
 
 export interface ModelCredentialSummary {
   id: string;
@@ -1883,7 +1884,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     dispatcher.submit(agentMsg, opts);
   }
 
-  /** Resize user-pasted image attachments via the server-side image service.
+  /** Resize user-pasted image attachments via the image service extension.
    *  Best-effort: on failure, fall through to the original bytes. */
   private async resizeAttachments(
     channelId: string,
@@ -1901,10 +1902,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           wasResized: boolean;
         }>(
           "main",
-          "image.resize",
-          bytes,
-          att.mimeType,
-          { maxWidth: 2000, maxHeight: 2000 },
+          "extensions.invoke",
+          IMAGE_SERVICE_EXTENSION,
+          "resize",
+          [bytes, att.mimeType, { maxWidth: 2000, maxHeight: 2000 }],
         );
         images.push({
           type: "image",
@@ -1913,7 +1914,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         });
       } catch (err) {
         console.warn(
-          `[AgentWorkerBase] image.resize failed for channel=${channelId}; passing original:`,
+          `[AgentWorkerBase] image-service.resize failed for channel=${channelId}; passing original:`,
           err,
         );
         images.push({ type: "image", mimeType: att.mimeType, data: att.data });

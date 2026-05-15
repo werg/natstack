@@ -32,11 +32,12 @@ export interface BuildArtifacts {
 }
 
 export interface BuildMetadata {
-  kind: "panel" | "package" | "worker" | "template";
+  kind: "panel" | "package" | "worker" | "extension" | "template";
   name: string;
   ev: string;
   sourcemap: boolean;
   framework?: string;
+  runtimeDepsKey?: string | null;
   builtAt: string;
 }
 
@@ -183,8 +184,8 @@ export function put(
   // Write bundle
   fs.writeFileSync(path.join(tmpDir, "bundle.js"), artifacts.bundle);
 
-  // Ensure Node.js treats bundle.js as ESM (workers are format: "esm")
-  if (metadata.kind === "worker") {
+  // Ensure Node.js treats bundle.js as ESM.
+  if (metadata.kind === "worker" || metadata.kind === "extension") {
     fs.writeFileSync(path.join(tmpDir, "package.json"), '{"type":"module"}');
   }
 

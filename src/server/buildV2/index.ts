@@ -53,8 +53,11 @@ export interface AboutPageMeta {
 export type { BuildUnitOptions } from "./builder.js";
 
 export interface BuildSystemV2 {
-  /** Get build result for a panel/agent/worker/library. Optional ref builds at a specific git ref. */
+  /** Get build result for a panel/worker/extension/library. Optional ref builds at a specific git ref. */
   getBuild(unitPath: string, ref?: string, options?: BuildUnitOptions): Promise<BuildResult>;
+
+  /** Get an immutable build-store artifact by build key. */
+  getBuildByKey(key: string): BuildResult | null;
 
   /** Build an npm package as a CJS library bundle for sandbox use. */
   getBuildNpm(specifier: string, version: string, externals?: string[]): Promise<{ bundle: string }>;
@@ -130,14 +133,16 @@ export async function initBuildSystemV2(
   // Step 5: Build anything that's missing from the store
   const buildableNodes = graph
     .allNodes()
-    .filter((n) => n.kind !== "package" && n.kind !== "template"); // Panels, agents, and workers
+    // Extensions are native-code units. They are built only after an explicit
+    // extension approval path, or after an approved extension source push.
+    .filter((n) => n.kind !== "package" && n.kind !== "template" && n.kind !== "extension");
 
   let buildCount = 0;
   for (const node of buildableNodes) {
     const ev = initResult.evMap[node.name];
     if (!ev) continue;
 
-    const sourcemap = node.manifest.sourcemap !== false;
+    const sourcemap = sourcemapForNode(node);
     const buildKey = computeBuildKey(node.name, ev, sourcemap);
 
     if (!buildStore.has(buildKey)) {
@@ -151,7 +156,7 @@ export async function initBuildSystemV2(
       .filter((node) => {
         const ev = initResult.evMap[node.name];
         if (!ev) return false;
-        const sourcemap = node.manifest.sourcemap !== false;
+        const sourcemap = sourcemapForNode(node);
         return !buildStore.has(computeBuildKey(node.name, ev, sourcemap));
       })
       .map(async (node) => {
@@ -297,6 +302,10 @@ export async function initBuildSystemV2(
       return { bundle };
     },
 
+    getBuildByKey(key: string): BuildResult | null {
+      return buildStore.get(key);
+    },
+
     getEffectiveVersion(unitName: string): string | null {
       return currentEvMap[unitName] ?? null;
     },
@@ -320,14 +329,14 @@ export async function initBuildSystemV2(
       const buildableChanged = [...changes.changed, ...changes.added].filter(
         (name) => {
           const n = newGraph.tryGet(name);
-          return n && n.kind !== "package" && n.kind !== "template";
+          return n && n.kind !== "package" && n.kind !== "template" && n.kind !== "extension";
         },
       );
 
       for (const name of buildableChanged) {
         const n = newGraph.get(name);
         const ev = result.evMap[name]!;
-        const sourcemap = n.manifest.sourcemap !== false;
+        const sourcemap = sourcemapForNode(n);
         const bk = computeBuildKey(name, ev, sourcemap);
 
         if (!buildStore.has(bk)) {
@@ -352,7 +361,7 @@ export async function initBuildSystemV2(
         if (!ev) continue;
         const n = currentGraph.tryGet(name);
         if (!n) continue;
-        const sourcemap = n.manifest.sourcemap !== false;
+        const sourcemap = sourcemapForNode(n);
         activeKeys.add(computeBuildKey(name, ev, sourcemap));
       }
       return buildStore.gc(activeKeys);
@@ -423,4 +432,8 @@ function resolveUnit(
   }
 
   return null;
+}
+
+function sourcemapForNode(node: GraphNode): boolean {
+  return node.kind === "extension" ? true : node.manifest.sourcemap !== false;
 }

@@ -31,6 +31,7 @@ const serverElectronConfig = {
   format: "cjs",
   outfile: "dist/server-electron.cjs",
   external: ["electron", "esbuild", "@npmcli/arborist",
+             "@natstack/extension-host",
              "node-git-server", "vitest", "vitest/node", "vite",
              // Agent SDKs: must stay external — they use import.meta.url at module scope
              // to locate config files, which breaks when bundled into CJS.
@@ -107,6 +108,7 @@ const serverConfig = {
   format: "esm",
   outfile: "dist/server.mjs",
   external: ["esbuild", "@npmcli/arborist",
+             "@natstack/extension-host",
              "node-git-server", "vitest", "vitest/node", "vite",
              // Agent SDKs: must stay external — they use import.meta.url at module scope
              // to locate config files relative to their install path.

@@ -226,7 +226,13 @@ if (!scope.checkoutDir.startsWith("projects/")) {
 }
 
 // Check types
-const typecheck = await chat.rpc.call("main", "typecheck.check");
+const typecheck = await chat.rpc.call(
+  "main",
+  "extensions.invoke",
+  "@workspace-extensions/typecheck-service",
+  "check",
+  [],
+);
 console.log("Type errors:", typecheck);
 
 // Re-run the specific failed test
@@ -252,7 +258,7 @@ if (retest.result.passed) {
 - **Start with smoke tests.** They're fast and catch the most common issues.
 - **One fix per branch.** Don't bundle unrelated fixes.
 - **Always create a branch** before making changes.
-- **Check type errors before committing.** Use `chat.rpc.call("main", "typecheck.check")`.
+- **Check type errors before committing.** Use the `@workspace-extensions/typecheck-service` extension.
 - **Re-run the full smoke suite after fixing.** Your fix might break something else.
 - **Use `projects/` for plain external repos.** They are editable and can have
   shared remotes, but they are not live runtime units.

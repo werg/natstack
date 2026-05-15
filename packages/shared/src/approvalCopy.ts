@@ -4,6 +4,7 @@ import type {
   PendingCredentialApproval,
   PendingCredentialInputApproval,
   PendingDeviceCodeApproval,
+  PendingExtensionApproval,
 } from "./approvals.js";
 
 function truncateId(id: string, head = 8, tail = 4): string {
@@ -33,6 +34,9 @@ export function getApprovalCategoryLabel(approval: PendingApproval): string {
   if (approval.kind === "device-code") {
     return "Device sign-in";
   }
+  if (approval.kind === "extension") {
+    return approval.action === "source-push" ? "Extension source" : "Extension management";
+  }
   if (approval.capability === "internal-git-write") {
     return approval.resource?.value === "meta" ? "Config edit" : "Write request";
   }
@@ -42,11 +46,17 @@ export function getApprovalCategoryLabel(approval: PendingApproval): string {
   if (approval.capability === "workspace-project-import") {
     return "Project import";
   }
+  if (approval.capability === "extension-source-push") {
+    return "Extension source";
+  }
+  if (approval.capability === "extension-management") {
+    return "Extension management";
+  }
   return isOAuthExternalApproval(approval) ? "Sign-in action" : "Browser action";
 }
 
 export function getStandardActionCopy(
-  approval: PendingCredentialApproval | PendingCapabilityApproval
+  approval: PendingCredentialApproval | PendingCapabilityApproval | PendingExtensionApproval
 ): {
   once: { label: string; description: string };
   session: { label: string; description: string };
@@ -117,6 +127,79 @@ export function getStandardActionCopy(
       },
       repo: { label: "Trust repo", description: "Reuse this service for this workspace." },
       denyDescription: "Do not use this service.",
+    };
+  }
+  if (approval.kind === "extension") {
+    if (approval.action === "source-push") {
+      return {
+        once: { label: "Allow push", description: "Allow this extension source push once." },
+        session: {
+          label: "Allow dev session",
+          description: `Allow pushes to ${approval.extensionName} without asking for the next 4 hours.`,
+        },
+        version: {
+          label: "Trust version",
+          description: "Allow this code version to push this extension source.",
+        },
+        repo: {
+          label: "Trust repo",
+          description: "Allow this workspace project to push this extension source.",
+        },
+        denyDescription: "Reject this extension source push.",
+      };
+    }
+    if (approval.action === "install") {
+      return {
+        once: { label: "Install and run", description: "Install and run this extension once." },
+        session: {
+          label: "Allow this session",
+          description: "Allow extension installs until NatStack restarts.",
+        },
+        version: {
+          label: "Trust version",
+          description: "Allow this code version to install extensions.",
+        },
+        repo: {
+          label: "Trust repo",
+          description: "Allow this workspace project to install extensions.",
+        },
+        denyDescription: "Don't install this extension.",
+      };
+    }
+    if (approval.action === "update") {
+      return {
+        once: { label: "Update and run", description: "Update and run this extension once." },
+        session: {
+          label: "Allow this session",
+          description: "Allow extension updates until NatStack restarts.",
+        },
+        version: {
+          label: "Trust version",
+          description: "Allow this code version to update extensions.",
+        },
+        repo: {
+          label: "Trust repo",
+          description: "Allow this workspace project to update extensions.",
+        },
+        denyDescription: "Cancel this extension update.",
+      };
+    }
+    const action = approval.action === "toggle" ? "change" : approval.action;
+    return {
+      once: { label: "Allow once", description: `Allow this extension ${action} once.` },
+      session: {
+        label: "Allow this session",
+        description: "Allow extension management until NatStack restarts.",
+      },
+      version: {
+        label: "Trust version",
+        description: "Allow this code version to manage extensions.",
+      },
+      repo: {
+        label: "Trust repo",
+        description: "Allow this workspace project to manage extensions.",
+      },
+      denyDescription: "Do not manage this extension.",
     };
   }
   if (isOAuthExternalApproval(approval)) {
@@ -198,6 +281,43 @@ export function getStandardActionCopy(
       denyDescription: "Do not import this project.",
     };
   }
+  if (approval.capability === "extension-source-push") {
+    const name = approval.resource?.value ?? "this extension";
+    return {
+      once: { label: "Allow push", description: "Allow this extension source push once." },
+      session: {
+        label: "Allow dev session",
+        description: `Allow extension pushes to ${name} without asking for the next 4 hours.`,
+      },
+      version: {
+        label: "Trust version",
+        description: "Allow this code version to push this extension source.",
+      },
+      repo: {
+        label: "Trust repo",
+        description: "Allow this workspace project to push this extension source.",
+      },
+      denyDescription: "Reject this extension source push.",
+    };
+  }
+  if (approval.capability === "extension-management") {
+    return {
+      once: { label: "Allow once", description: "Allow this extension management action once." },
+      session: {
+        label: "Allow this session",
+        description: "Allow extension management until NatStack restarts.",
+      },
+      version: {
+        label: "Trust version",
+        description: "Allow this code version to manage extensions.",
+      },
+      repo: {
+        label: "Trust repo",
+        description: "Allow this workspace project to manage extensions.",
+      },
+      denyDescription: "Do not manage this extension.",
+    };
+  }
   return {
     once: { label: "Open once", description: "Open this browser action once." },
     session: {
@@ -218,6 +338,20 @@ export function getApprovalCopy(
   callerLabel: string
 ): { title: string; summary: string; warning?: string } {
   const requester = `${callerLabel} ${truncateId(approval.callerId)}`;
+  if (approval.kind === "extension") {
+    const action =
+      approval.action === "source-push"
+        ? "update trusted source for"
+        : approval.action === "toggle"
+          ? "change the enabled state of"
+          : `${approval.action}`;
+    return {
+      title: approval.title || "Manage extension",
+      summary: `${requester} wants to ${action} ${approval.extensionName}.`,
+      warning:
+        "Approving this can run Node extension code with filesystem, network, and process access.",
+    };
+  }
   if (approval.kind === "capability") {
     if (approval.capability === "internal-git-write") {
       const destination = approval.resource?.value ?? "this repository";
@@ -247,6 +381,22 @@ export function getApprovalCopy(
       return {
         title: approval.title || "Add project repo",
         summary: `${requester} wants to import ${destination} from a remote git repository.`,
+      };
+    }
+    if (approval.capability === "extension-source-push") {
+      const destination = approval.resource?.value ?? "this extension";
+      return {
+        title: approval.title || `${destination} source push`,
+        summary: `${requester} wants to update trusted native extension code for ${destination}.`,
+        warning:
+          "Accepting this push runs updated Node code with filesystem, network, and process access.",
+      };
+    }
+    if (approval.capability === "extension-management") {
+      const destination = approval.resource?.value ?? "this extension";
+      return {
+        title: approval.title || "Manage extension",
+        summary: `${requester} wants to manage ${destination}, which can run native Node code.`,
       };
     }
     const isOAuth = isOAuthExternalApproval(approval);
@@ -281,6 +431,15 @@ export function getApprovalCopy(
     // and warning render inside the "From <issuer>" framed body so they
     // cannot impersonate the verified-issuer chrome.
     const callerKindLabel = approval.callerKind === "worker" ? "Worker" : "Panel";
+    const issuer = approval.issuer;
+    const issuerDiffers = issuer && (issuer.kind !== approval.callerKind || issuer.id !== approval.callerId);
+    if (issuerDiffers && issuer) {
+      const issuerLabel = `${issuer.kind} ${truncateId(issuer.id)}`;
+      return {
+        title: `${callerKindLabel} requests your decision`,
+        summary: `${requester} is being asked by ${issuerLabel} about ${approval.subject.id}. Your choice will be remembered until revoked.`,
+      };
+    }
     return {
       title: `${callerKindLabel} requests your decision`,
       summary: `${requester} is asking about ${approval.subject.id}. Your choice will be remembered until revoked.`,
@@ -335,8 +494,7 @@ export function getCapabilityPrimaryDestination(approval: PendingCapabilityAppro
 }
 
 export function shouldOpenApprovalDetails(approval: PendingApproval): boolean {
-  void approval;
-  return false;
+  return approval.kind === "extension";
 }
 
 export function originForUrl(raw: string): string {

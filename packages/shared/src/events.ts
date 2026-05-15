@@ -12,6 +12,8 @@ import type { PanelCommandId } from "./panelCommands.js";
  * Known event names that can be subscribed to.
  */
 export type EventName =
+  | `extensions:${string}`
+  | "workspace:unit-log"
   | "system-theme-changed"
   | "panel-tree-updated"
   | "open-workspace-switcher"
@@ -93,13 +95,13 @@ export interface EventPayloads {
   "external-open:open": {
     url: string;
     callerId: string;
-    callerKind: "panel" | "worker" | "shell" | "server" | "harness";
+    callerKind: "panel" | "worker" | "extension" | "shell" | "server" | "harness";
   };
   "browser-panel:open": {
     url: string;
     parentPanelId: string;
     callerId: string;
-    callerKind: "panel" | "worker" | "shell" | "server" | "harness";
+    callerKind: "panel" | "worker" | "extension" | "shell" | "server" | "harness";
   };
   "browser-import-progress": {
     requestId: string;
@@ -143,6 +145,17 @@ export interface EventPayloads {
     sampledAt: number;
   };
   "shell-approval:pending-changed": { pending: PendingApproval[] };
+  [key: `extensions:${string}`]: unknown;
+  "workspace:unit-log": {
+    workspaceId: string;
+    unitName: string;
+    kind: "extension" | "worker" | "panel";
+    timestamp: number;
+    level: "debug" | "info" | "warn" | "error";
+    message: string;
+    fields?: Record<string, unknown>;
+    source?: "stdout" | "stderr" | "ctx.log" | "console";
+  };
 }
 
 /**
@@ -177,5 +190,7 @@ export const VALID_EVENT_NAMES: EventName[] = [
  * Check if a string is a valid event name.
  */
 export function isValidEventName(name: string): name is EventName {
+  if (name.startsWith("extensions:")) return true;
+  if (name === "workspace:unit-log") return true;
   return VALID_EVENT_NAMES.includes(name as EventName);
 }

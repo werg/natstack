@@ -31,7 +31,7 @@ export function createWorkerService(deps: {
     description: "Worker DO operations (call, list)",
     // Service-level policy admits the read/list surface to all kinds.
     // Mutating callDO is tightened per-method below.
-    policy: { allowed: ["shell", "server", "panel", "worker"] },
+    policy: { allowed: ["shell", "server", "panel", "worker", "extension"] },
     methods: {
       listSources: {
         description: "List available worker sources with durable object classes",

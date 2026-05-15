@@ -26,7 +26,7 @@ export const APPROVAL_CATEGORY_INPUT_REQUIRED = "natstack-approval-input-require
 export type PushApprovalDataPayload = {
   kind: "approval-prompt" | "approval-cancel";
   approvalId: string;
-  approvalKind?: "credential" | "capability" | "client-config" | "credential-input" | "userland" | "device-code";
+  approvalKind?: "credential" | "capability" | "extension" | "client-config" | "credential-input" | "userland" | "device-code";
   title?: string;
   body?: string;
   category?: string;

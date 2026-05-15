@@ -66,7 +66,7 @@ export function createExternalOpenService(deps: ExternalOpenServiceDeps): Servic
   return {
     name: "externalOpen",
     description: "Approval-gated system browser opens",
-    policy: { allowed: ["shell", "server", "panel", "worker"] },
+    policy: { allowed: ["shell", "server", "panel", "worker", "extension"] },
     methods: {
       openExternal: { args: z.tuple([z.string(), OPEN_EXTERNAL_OPTIONS_SCHEMA.optional()]) },
       openExternalForCaller: {

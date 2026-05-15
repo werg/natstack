@@ -95,12 +95,47 @@ function getExternalDepsBaseDir(): string {
   return path.join(getUserDataPath(), "external-deps");
 }
 
+function getExtensionRuntimeDepsBaseDir(): string {
+  return path.join(getUserDataPath(), "extension-runtime-deps");
+}
+
 /**
  * Get or install external dependencies. Returns the path to the
  * node_modules directory.
  */
 export async function ensureExternalDeps(
   deps: Record<string, string>,
+): Promise<string> {
+  return ensureDepsInstalled(deps, {
+    baseDir: getExternalDepsBaseDir(),
+    key: hashDeps(deps),
+    ignoreScripts: true,
+  });
+}
+
+export async function ensureExtensionRuntimeDeps(
+  deps: Record<string, string>,
+): Promise<{ key: string | null; nodeModulesDir: string }> {
+  if (Object.keys(deps).length === 0) {
+    return { key: null, nodeModulesDir: "" };
+  }
+  const key = [
+    hashDeps(deps),
+    process.platform,
+    process.arch,
+    `abi${process.versions.modules ?? "unknown"}`,
+  ].join("-");
+  const nodeModulesDir = await ensureDepsInstalled(deps, {
+    baseDir: getExtensionRuntimeDepsBaseDir(),
+    key,
+    ignoreScripts: false,
+  });
+  return { key, nodeModulesDir };
+}
+
+async function ensureDepsInstalled(
+  deps: Record<string, string>,
+  options: { baseDir: string; key: string; ignoreScripts: boolean },
 ): Promise<string> {
   if (Object.keys(deps).length === 0) {
     // No external deps — return a dummy path
@@ -131,8 +166,7 @@ export async function ensureExternalDeps(
     }
   }
 
-  const key = hashDeps(deps);
-  const cacheDir = path.join(getExternalDepsBaseDir(), key);
+  const cacheDir = path.join(options.baseDir, options.key);
   const sentinelPath = path.join(cacheDir, ".ready");
   const nodeModulesDir = path.join(cacheDir, "node_modules");
 
@@ -161,7 +195,7 @@ export async function ensureExternalDeps(
   );
 
   try {
-    runNpmInstall(tmpDir);
+    runNpmInstall(tmpDir, { ignoreScripts: options.ignoreScripts });
 
     // Write sentinel inside tmpDir BEFORE rename so winner is always complete
     fs.writeFileSync(path.join(tmpDir, ".ready"), new Date().toISOString());
@@ -184,7 +218,7 @@ export async function ensureExternalDeps(
           // Clean up both dirs to avoid stale state, let build fail transiently
           try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
           try { fs.rmSync(cacheDir, { recursive: true, force: true }); } catch {}
-          throw new Error(`External deps cache race: failed to install for key ${key}`);
+          throw new Error(`External deps cache race: failed to install for key ${options.key}`);
         }
       } else {
         throw err;

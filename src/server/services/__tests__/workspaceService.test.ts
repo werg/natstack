@@ -142,11 +142,16 @@ describe("workspace service ↔ client contract", () => {
     await client.create("new-ws", { forkFrom: "test-ws" });
     await client.setInitPanels([{ source: "panels/chat" }]);
     await client.switchTo("other");
+    await client.units.list();
+    await client.units.inspector("extensions/foo");
+    await client.units.restart("extensions/foo");
+    await client.units.logs("extensions/foo");
 
     const service = makeService();
     for (const { method } of captured) {
       // Wire format is "workspace.<methodName>"
-      const [serviceName, methodName] = method.split(".") as [string, string];
+      const [serviceName, ...methodParts] = method.split(".") as [string, ...string[]];
+      const methodName = methodParts.join(".");
       expect(serviceName).toBe(service.name);
       expect(methodName in service.methods).toBe(true);
     }
@@ -166,11 +171,15 @@ describe("workspace service ↔ client contract", () => {
     void client.create("x");
     void client.setInitPanels([]);
     void client.switchTo("x");
+    void client.units.list();
+    void client.units.inspector("extensions/foo");
+    void client.units.restart("extensions/foo");
+    void client.units.logs("extensions/foo");
 
     // The server should have a method handler for each captured wire name.
     const service = makeService();
     for (const { method } of captured) {
-      const wireName = method.split(".")[1]!;
+      const wireName = method.split(".").slice(1).join(".");
       expect(service.methods[wireName]).toBeDefined();
     }
   });
@@ -233,6 +242,31 @@ describe("workspace service handler", () => {
     const service = makeService();
     const result = await service.handler(panelCtx, "getConfig", []);
     expect(result).toEqual(makeConfig());
+  });
+
+  it("units.inspector returns the inspector URL for a matching unit", async () => {
+    const service = createWorkspaceService({
+      workspace: makeWorkspace(),
+      getConfig: () => makeConfig(),
+      setConfigField: vi.fn(),
+      centralData: makeCentralData(),
+      createWorkspace: vi.fn(),
+      deleteWorkspaceDir: vi.fn(),
+      listUnits: vi.fn(() => [{
+        name: "@workspace-extensions/git-tools",
+        kind: "extension" as const,
+        source: "extensions/git-tools",
+        status: "running" as const,
+        inspectorUrl: "ws://127.0.0.1:9229/abcdef",
+      }]),
+    });
+
+    await expect(
+      service.handler(panelCtx, "units.inspector", ["@workspace-extensions/git-tools"])
+    ).resolves.toEqual({ url: "ws://127.0.0.1:9229/abcdef" });
+    await expect(
+      service.handler(panelCtx, "units.inspector", ["missing"])
+    ).resolves.toBeNull();
   });
 
   it("create delegates to the createWorkspace dep", async () => {

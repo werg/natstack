@@ -27,7 +27,7 @@ export function createWorkerLogService(): ServiceDefinition {
   return {
     name: "workerLog",
     description: "Forward DO console output to the server terminal",
-    policy: { allowed: ["shell", "panel", "server", "worker"] },
+    policy: { allowed: ["shell", "panel", "server", "worker", "extension"] },
     methods: {
       write: {
         args: z.tuple([

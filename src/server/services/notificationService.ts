@@ -68,7 +68,7 @@ export function createNotificationService(deps: {
   const definition: ServiceDefinition = {
     name: "notification",
     description: "Push notifications to the shell chrome area",
-    policy: { allowed: ["shell", "panel", "worker", "server"] },
+    policy: { allowed: ["shell", "panel", "worker", "extension", "server"] },
     methods: {
       show: {
         args: z.tuple([z.object({

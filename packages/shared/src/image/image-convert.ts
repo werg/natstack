@@ -6,7 +6,7 @@
  * The pi-coding-agent original only exposes `convertToPng(base64Data, mimeType)`
  * (used by the kitty graphics protocol). We add a binary-friendly
  * `convertImage(data, sourceMimeType, targetMimeType)` wrapper used by the
- * server image service so the RPC boundary stays in `Uint8Array`.
+ * image service extension so the RPC boundary stays in `Uint8Array`.
  *
  * Server-side only — depends on photon.ts which uses Node fs.
  */

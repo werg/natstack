@@ -335,7 +335,7 @@ export function createWebhookIngressService(deps: WebhookIngressServiceDeps = {}
   const definition: ServiceDefinition = {
     name: "webhookIngress",
     description: "Generic public webhook ingress subscriptions",
-    policy: { allowed: ["shell", "server", "panel", "worker"] },
+    policy: { allowed: ["shell", "server", "panel", "worker", "extension"] },
     methods: {
       createSubscription: {
         args: z.tuple([createSubscriptionSchema]),

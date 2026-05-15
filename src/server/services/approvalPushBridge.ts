@@ -32,13 +32,13 @@ interface TrackedApproval {
 }
 
 function categoryFor(approval: PendingApproval): string {
-  return approval.kind === "credential" || approval.kind === "capability"
+  return approval.kind === "credential" || approval.kind === "capability" || approval.kind === "extension"
     ? APPROVAL_CATEGORY_DECIDE
     : APPROVAL_CATEGORY_INPUT_REQUIRED;
 }
 
 function actionsFor(approval: PendingApproval): readonly string[] {
-  return approval.kind === "credential" || approval.kind === "capability"
+  return approval.kind === "credential" || approval.kind === "capability" || approval.kind === "extension"
     ? NOTIFICATION_ACTION_IDS_STANDARD
     : NOTIFICATION_ACTION_IDS_INPUT_REQUIRED;
 }

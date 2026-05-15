@@ -13,6 +13,7 @@ export const PORT_RANGES = {
   rpc: { start: 49352, end: 49452 },
   pubsub: { start: 49452, end: 49552 },
   workerd: { start: 49552, end: 49652 },
+  workerdInspector: { start: 49652, end: 49752 },
 } as const;
 
 const leases = new Map<string, number>();

@@ -92,9 +92,21 @@ export interface UserlandApprovalSubject {
   label?: string;
 }
 
+/**
+ * Who is asking the user. For direct panel/worker calls this equals the
+ * principal; for extension-issued approvals (via `ctx.approvals.requestForCaller`),
+ * this identifies the extension acting on behalf of the principal.
+ */
+export interface UserlandApprovalIssuer {
+  kind: "panel" | "worker" | "extension";
+  id: string;
+  label?: string;
+}
+
 /** A persisted decision for one flat (principal, subject) pair. */
 export interface UserlandApprovalGrant {
   principal: { callerId: string; callerKind: "panel" | "worker" };
+  issuer?: UserlandApprovalIssuer;
   subject: UserlandApprovalSubject;
   choice: string;
   grantedAt: number;
@@ -148,6 +160,90 @@ export interface PendingCapabilityApproval extends PendingApprovalBase {
   }>;
 }
 
+export type PendingExtensionApprovalAction =
+  | "install"
+  | "update"
+  | "source-push"
+  | "uninstall"
+  | "toggle"
+  | "reload";
+
+export interface ExtensionApprovalDiffStat {
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+}
+
+export interface ExtensionApprovalGitIdentity {
+  name: string;
+  email: string;
+}
+
+export interface ExtensionApprovalCommit {
+  author: ExtensionApprovalGitIdentity;
+  committer: ExtensionApprovalGitIdentity;
+  message: string;
+  timestamp: number;
+}
+
+export interface ExtensionApprovalPush {
+  pushedAt: number;
+  pushedBy?: string | null;
+  ref: string;
+}
+
+export interface ExtensionApprovalDiff {
+  sha?: string | null;
+  previousSha?: string | null;
+  stat?: ExtensionApprovalDiffStat | null;
+  commit?: ExtensionApprovalCommit | null;
+  push?: ExtensionApprovalPush | null;
+}
+
+export interface ExtensionWorkspaceDependencyChange {
+  name: string;
+  fromEv?: string | null;
+  toEv?: string | null;
+  sha?: string | null;
+  previousSha?: string | null;
+  stat?: ExtensionApprovalDiffStat | null;
+  commit?: ExtensionApprovalCommit | null;
+  push?: ExtensionApprovalPush | null;
+}
+
+export interface ExtensionExternalDependencyChange {
+  name: string;
+  fromVersion?: string | null;
+  toVersion?: string | null;
+}
+
+export interface PendingExtensionApproval extends PendingApprovalBase {
+  kind: "extension";
+  action: PendingExtensionApprovalAction;
+  extensionName: string;
+  version?: string | null;
+  source: { kind: "internal-git"; repo: string; ref: string };
+  title: string;
+  description: string;
+  ev?: string | null;
+  previousEv?: string | null;
+  sha?: string | null;
+  previousSha?: string | null;
+  activeDependencyEvs?: Record<string, string>;
+  candidateDependencyEvs?: Record<string, string>;
+  activeRuntimeDepsKey?: string | null;
+  candidateRuntimeDepsKey?: string | null;
+  extensionDiff?: ExtensionApprovalDiff | null;
+  workspaceDepChanges?: ExtensionWorkspaceDependencyChange[];
+  externalDepChanges?: ExtensionExternalDependencyChange[];
+  integrity?: string | null;
+  capabilities: string[];
+  details?: Array<{
+    label: string;
+    value: string;
+  }>;
+}
+
 export interface PendingClientConfigField {
   name: string;
   label: string;
@@ -187,6 +283,8 @@ export interface UserlandApprovalOption {
 
 export interface PendingUserlandApproval extends PendingApprovalBase {
   kind: "userland";
+  /** Issuer of the request — the panel/worker/extension that asked. */
+  issuer?: UserlandApprovalIssuer;
   subject: UserlandApprovalSubject;
   title: string;
   summary?: string;
@@ -227,6 +325,8 @@ export interface PendingDeviceCodeApproval extends PendingApprovalBase {
 }
 
 export interface UserlandApprovalRequest {
+  /** Optional issuer override. Direct panel/worker callers can omit (issuer = principal). */
+  issuer?: UserlandApprovalIssuer;
   subject: UserlandApprovalSubject;
   title: string;
   summary?: string;
@@ -245,6 +345,7 @@ export type UserlandApprovalChoice =
 export type PendingApproval =
   | PendingCredentialApproval
   | PendingCapabilityApproval
+  | PendingExtensionApproval
   | PendingClientConfigApproval
   | PendingCredentialInputApproval
   | PendingUserlandApproval

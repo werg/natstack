@@ -60,3 +60,20 @@ export interface GitWriteAuthorizationResult {
 export type GitWriteAuthorizer = (
   request: GitWriteAuthorizationRequest,
 ) => Promise<GitWriteAuthorizationResult> | GitWriteAuthorizationResult;
+
+export interface GitPushAuthorizationRequest {
+  callerId: string;
+  callerKind: string;
+  repoPath: string;
+  branch: string;
+  commit: string;
+}
+
+export interface GitPushAuthorizationResult {
+  allowed: boolean;
+  reason?: string;
+}
+
+export type GitPushAuthorizer = (
+  request: GitPushAuthorizationRequest,
+) => Promise<GitPushAuthorizationResult> | GitPushAuthorizationResult;

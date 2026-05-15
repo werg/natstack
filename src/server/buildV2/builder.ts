@@ -1,9 +1,10 @@
 /**
- * Builder — esbuild orchestration for panels, about pages, and workers.
+ * Builder — esbuild orchestration for panels, about pages, workers, and extensions.
  *
  * Two build strategies:
  *   - Panel/About (browser target): ESM, code splitting, fs/path shims
  *   - Worker (workerd target): ESM, no splitting
+ *   - Extension (Node target): ESM, no splitting
  *
  * Build options are manifest-derived, not caller-supplied.
  * Concurrency: semaphore with MAX_CONCURRENT_BUILDS = 4.
@@ -21,7 +22,11 @@ import type { GraphNode, PackageGraph } from "./packageGraph.js";
 import * as buildStore from "./buildStore.js";
 import type { BuildArtifacts, BuildMetadata, BuildResult } from "./buildStore.js";
 import { computeBuildKey } from "./effectiveVersion.js";
-import { collectTransitiveExternalDeps, ensureExternalDeps } from "./externalDeps.js";
+import {
+  collectTransitiveExternalDeps,
+  ensureExternalDeps,
+  ensureExtensionRuntimeDeps,
+} from "./externalDeps.js";
 import { extractSourceForBuild } from "./sourceExtractor.js";
 import { PANEL_CSP_META } from "@natstack/shared/constants";
 import { getAdapter } from "./adapters/index.js";
@@ -868,7 +873,7 @@ export async function buildUnit(
   commitMap?: Map<string, string>,
   options?: BuildUnitOptions,
 ): Promise<BuildResult> {
-  const sourcemap = options?.library ? false : (node.manifest.sourcemap !== false);
+  const sourcemap = options?.library ? false : (node.kind === "extension" ? true : node.manifest.sourcemap !== false);
   const effectiveEv = options?.library
     ? `${ev}:lib:${createHash("sha256").update(JSON.stringify(options.externals ?? [])).digest("hex").slice(0, 12)}`
     : ev;
@@ -912,6 +917,8 @@ async function doBuild(
       return await buildLibraryBundle(node, ev, buildKey, graph, workspaceRoot, extracted.sourceRoot, options.externals ?? []);
     } else if (node.kind === "worker") {
       return await buildWorker(node, ev, buildKey, graph, workspaceRoot, sourcemap, extracted.sourceRoot);
+    } else if (node.kind === "extension") {
+      return await buildExtension(node, ev, buildKey, graph, workspaceRoot, extracted.sourceRoot);
     } else if (node.kind === "template") {
       throw new Error(`Templates are not buildable: ${node.name}`);
     } else {
@@ -999,6 +1006,7 @@ function storeSimpleBuild(
   node: GraphNode,
   ev: string,
   sourcemap: boolean,
+  extraMetadata: Partial<BuildMetadata> = {},
 ): BuildResult {
   const artifacts: BuildArtifacts = { bundle };
   const metadata: BuildMetadata = {
@@ -1006,6 +1014,7 @@ function storeSimpleBuild(
     name: node.name,
     ev,
     sourcemap,
+    ...extraMetadata,
     builtAt: new Date().toISOString(),
   };
   return buildStore.put(buildKey, artifacts, metadata);
@@ -1208,6 +1217,7 @@ async function buildPanel(
 // ---------------------------------------------------------------------------
 
 const WORKER_CONDITIONS = ["worker", "workerd", "import", "default"] as const;
+const EXTENSION_CONDITIONS = ["import", "default"] as const;
 
 /**
  * Node built-ins that workerd does NOT provide via `nodejs_compat` and must
@@ -1532,6 +1542,111 @@ async function buildWorker(
     const bundle = fs.readFileSync(bundlePath, "utf-8");
 
     return storeSimpleBuild(buildKey, bundle, node, ev, sourcemap);
+  } finally {
+    env.cleanup();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Extension Build
+// ---------------------------------------------------------------------------
+
+function validateExtensionManifest(node: GraphNode, manifest: Record<string, unknown>): void {
+  const kindBlocks = ["extension", "worker", "panel"].filter((key) => {
+    const value = manifest[key];
+    return value !== undefined && value !== null;
+  });
+  if (kindBlocks.length !== 1 || kindBlocks[0] !== "extension") {
+    throw new Error(
+      `Extension ${node.name} must declare exactly one kind block: natstack.extension`,
+    );
+  }
+  if (manifest["sourcemap"] === false) {
+    throw new Error(`Extension ${node.name} must use inline sourcemaps in v1`);
+  }
+
+  const extension = manifest["extension"] as { activationEvents?: unknown } | undefined;
+  const events = extension?.activationEvents;
+  if (events !== undefined) {
+    if (!Array.isArray(events) || events.some((event) => event !== "*")) {
+      throw new Error(`Extension ${node.name} only supports activationEvents: ["*"] in v1`);
+    }
+  }
+}
+
+async function buildExtension(
+  node: GraphNode,
+  ev: string,
+  buildKey: string,
+  graph: PackageGraph,
+  workspaceRoot: string,
+  sourceRoot: string,
+): Promise<BuildResult> {
+  const env = await prepareBuildEnv(node, buildKey, graph, workspaceRoot, sourceRoot);
+  const { outdir, entryFile, nodePaths, resolveDir } = env;
+
+  const extensionSourcePath = path.join(sourceRoot, node.relativePath);
+  const extractedPkgPath = path.join(extensionSourcePath, "package.json");
+  const extractedPkg = JSON.parse(fs.readFileSync(extractedPkgPath, "utf-8")) as {
+    natstack?: Record<string, unknown>;
+  };
+  const extractedManifest = extractedPkg.natstack ?? {};
+  validateExtensionManifest(node, extractedManifest);
+  const dedupePackages = normalizeManifestSpecList(
+    extractedManifest["dedupeModules"] as string[] | undefined,
+  );
+
+  const plugins: esbuild.Plugin[] = [
+    createWorkspaceResolvePlugin(graph, workspaceRoot, sourceRoot, EXTENSION_CONDITIONS),
+    createTsExtensionPlugin(sourceRoot),
+  ];
+  const dedupePlugin = createDedupePlugin(resolveDir, dedupePackages);
+  if (dedupePlugin) {
+    plugins.push(dedupePlugin);
+  }
+
+  try {
+    await esbuild.build({
+      entryPoints: [entryFile],
+      bundle: true,
+      platform: "node",
+      target: "node20",
+      format: "esm",
+      splitting: false,
+      outfile: path.join(outdir, "bundle.js"),
+      sourcemap: "inline",
+      metafile: true,
+      logLevel: "warning",
+      conditions: [...EXTENSION_CONDITIONS],
+      mainFields: ["module", "main"],
+      external: [...KNOWN_NATIVE_EXTERNALS],
+      plugins,
+      nodePaths,
+      tsconfigRaw: { compilerOptions: {} },
+    });
+
+    const bundle = fs.readFileSync(path.join(outdir, "bundle.js"), "utf-8");
+    const runtimeDeps = await ensureExtensionRuntimeDeps(env.externalDeps);
+    const result = storeSimpleBuild(buildKey, bundle, node, ev, true, {
+      runtimeDepsKey: runtimeDeps.key,
+    });
+
+    if (runtimeDeps.nodeModulesDir) {
+      const link = path.join(result.dir, "node_modules");
+      try {
+        if (!fs.existsSync(link)) {
+          fs.symlinkSync(runtimeDeps.nodeModulesDir, link, "junction");
+        }
+      } catch (err) {
+        throw new Error(
+          `Failed to link extension runtime dependencies for ${node.name}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
+    return result;
   } finally {
     env.cleanup();
   }

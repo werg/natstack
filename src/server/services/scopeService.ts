@@ -24,7 +24,7 @@ export function createScopeService(deps: { doDispatch: DODispatch }): ServiceDef
   return {
     name: "scope",
     description: "REPL scope persistence backed by an internal Durable Object",
-    policy: { allowed: ["panel", "worker", "shell", "server"] },
+    policy: { allowed: ["panel", "worker", "extension", "shell", "server"] },
     methods: {
       upsert: { args: z.tuple([scopeEntrySchema]) },
       loadCurrent: { args: z.tuple([z.string(), z.string()]) },
@@ -34,4 +34,3 @@ export function createScopeService(deps: { doDispatch: DODispatch }): ServiceDef
     handler: (_ctx, method, args) => deps.doDispatch.dispatch(ref, method, ...args),
   };
 }
-

@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@natstack/ai": "workspace:*",
+    "@natstack/extension": "workspace:*",
     "@natstack/git": "workspace:*",
     "@natstack/harness": "workspace:*",
     "@natstack/rpc": "workspace:*",

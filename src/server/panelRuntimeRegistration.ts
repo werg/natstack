@@ -28,6 +28,15 @@ export interface CommonDeps {
   requestRelaunch?: (name: string) => void;
   /** IPC proxy: fetch workspace list from Electron main when centralData is null. */
   requestWorkspaceList?: () => Promise<unknown[]>;
+  listWorkspaceUnits?: () => Promise<import("./services/workspaceService.js").WorkspaceUnitStatus[]> | import("./services/workspaceService.js").WorkspaceUnitStatus[];
+  restartWorkspaceUnit?: (
+    ctx: import("@natstack/shared/serviceDispatcher").ServiceContext,
+    name: string,
+  ) => Promise<void>;
+  listWorkspaceUnitLogs?: (
+    name: string,
+    opts?: { since?: number; level?: import("./services/workspaceService.js").WorkspaceUnitLogRecord["level"]; limit?: number },
+  ) => Promise<import("./services/workspaceService.js").WorkspaceUnitLogRecord[]> | import("./services/workspaceService.js").WorkspaceUnitLogRecord[];
   codeIdentityResolver?: Pick<CodeIdentityResolver, "upsertCallerIdentity" | "unregisterCaller">;
   getEffectiveVersion?: (source: string) => Promise<string | undefined>;
 }
@@ -120,6 +129,9 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
           deleteWorkspaceDir,
           requestRelaunch: deps.requestRelaunch,
           requestWorkspaceList: deps.requestWorkspaceList,
+          listUnits: deps.listWorkspaceUnits,
+          restartUnit: deps.restartWorkspaceUnit,
+          listUnitLogs: deps.listWorkspaceUnitLogs,
         })
       )
     );
@@ -209,12 +221,13 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
         // implementation in `fsService.ts` was hardened (sandbox-target
         // resolution, lstat parent walk), exposing them to `panel` /
         // `worker` callers gives attackers a TOCTOU primitive. Restrict
-        // both to `shell` only — internal server callers needing these
-        // ops can bypass the dispatcher.
+        // both to trusted native-code callers only — internal server callers
+        // needing these ops can bypass the dispatcher, and extensions already
+        // have equivalent raw Node access after install approval.
         return {
           name: "fs",
           description: "Per-context filesystem operations (sandboxed to context folder)",
-          policy: { allowed: ["panel", "server", "worker"] },
+          policy: { allowed: ["panel", "server", "worker", "extension"] },
           methods: {
             readFile: fsMethodSchema,
             writeFile: fsMethodSchema,
@@ -227,8 +240,8 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
             write: fsMethodSchema,
             bindContext: bindContextSchema,
             mktemp: mktempSchema,
-            symlink: { ...fsMethodSchema, policy: { allowed: ["shell"] } },
-            chown: { ...fsMethodSchema, policy: { allowed: ["shell"] } },
+            symlink: { ...fsMethodSchema, policy: { allowed: ["shell", "extension"] } },
+            chown: { ...fsMethodSchema, policy: { allowed: ["shell", "extension"] } },
           },
           handler: async (ctx, method, serviceArgs) => {
             return handleFsCall(fsServiceInstance, ctx, method, serviceArgs as unknown[]);

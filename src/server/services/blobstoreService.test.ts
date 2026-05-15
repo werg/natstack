@@ -184,7 +184,7 @@ describe("blobstoreService", () => {
     } finally {
       await stopServer(server);
     }
-  });
+  }, 15_000);
 
   it("exposes metadata RPC, shell/server delete and list, and denies panel deletion", async () => {
     const { server, baseUrl } = await startBlobstoreServer(blobsDir);

@@ -138,7 +138,7 @@ export interface RpcBridgeInternal extends RpcBridge {
   _handleMessage(sourceId: string, message: RpcMessage): void;
 }
 
-export type CallerKind = "shell" | "panel" | "worker" | "server" | "harness";
+export type CallerKind = "shell" | "panel" | "worker" | "extension" | "server" | "harness";
 
 export interface RpcCaller {
   call<T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T>;

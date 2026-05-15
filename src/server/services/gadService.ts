@@ -339,7 +339,7 @@ export function createGadService(deps: GadServiceDeps): ServiceDefinition {
   return {
     name: "gad",
     description: "Workspace gad provenance and context graph service",
-    policy: { allowed: ["panel", "worker", "shell", "server"] },
+    policy: { allowed: ["panel", "worker", "extension", "shell", "server"] },
     methods: {
       rawSql: { args: z.tuple([z.string(), JsonBindingsSchema]) },
       query: { args: z.tuple([z.string(), JsonBindingsSchema]) },

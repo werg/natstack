@@ -72,7 +72,13 @@ export function startRemoteHealthPoll(
     timer.unref?.();
   }
 
-  function emit(payload: Parameters<EventService["emit"]>[1] & { sampledAt: number }) {
+  function emit(payload: {
+    sampledAt: number;
+    version?: string;
+    uptimeMs?: number;
+    workerd?: string;
+    error?: string;
+  }) {
     try {
       opts.eventService.emit("server-health", payload as never);
     } catch (err) {

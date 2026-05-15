@@ -1,6 +1,6 @@
 # Extension Services
 
-> **Status:** Planning document — design resolved, not yet implemented.
+> **Status:** v1 implemented. The `@natstack/extension`, `@natstack/extension-host` packages and the canary `image-service` and `typecheck-service` extensions are live; a few items in "Future work" remain deferred.
 
 NatStack extensions are **long-lived Node processes** that run alongside the server and expose RPC APIs to userland panels and workers. They extend the application itself — adding new RPC services, reacting to system events, and exposing callable surfaces to userland — in the spirit of VSCode extensions, not browser extensions.
 
@@ -58,6 +58,7 @@ interface RegistryEntry {
   activeSha: string | null;
   activeBundleKey: string | null;
   activeDependencyEvs: Record<string, string>; // workspace deps pinned into active bundle
+  activeExternalDeps: Record<string, string>;  // npm deps + versions captured at approval time
   activeRuntimeDepsKey: string | null; // persisted external dependency lock/materialization
 
   enabled: boolean;

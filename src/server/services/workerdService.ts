@@ -41,7 +41,7 @@ export function createWorkerdService(deps: {
   return {
     name: "workerd",
     description: "Worker instance management (workerd runtime)",
-    policy: { allowed: ["server", "panel", "worker"] },
+    policy: { allowed: ["server", "panel", "worker", "extension"] },
     methods: {
       createInstance: { args: z.tuple([createOptionsSchema]) },
       destroyInstance: { args: z.tuple([z.string()]) },

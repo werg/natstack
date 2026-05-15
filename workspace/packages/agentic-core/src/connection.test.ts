@@ -4,6 +4,12 @@ import type { ChatParticipantMetadata, ConnectionConfig } from "./types.js";
 
 function createConfig(): ConnectionConfig {
   const call = vi.fn((_target: string, method: string) => {
+    if (method === "workers.resolveService") {
+      return Promise.resolve({
+        kind: "durable-object",
+        targetId: "do:workers/pubsub-channel:PubSubChannel:chat-1",
+      });
+    }
     if (method === "subscribe") return new Promise(() => {});
     return Promise.resolve(undefined);
   }) as NonNullable<ConnectionConfig["rpc"]>["call"];

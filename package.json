@@ -121,6 +121,8 @@
     "@natstack/browser-data": "workspace:*",
     "@natstack/dev-log": "workspace:*",
     "@natstack/env-paths": "workspace:*",
+    "@natstack/extension": "workspace:*",
+    "@natstack/extension-host": "workspace:*",
     "@natstack/git": "workspace:*",
     "@natstack/git-server": "workspace:*",
     "@natstack/harness": "workspace:*",
