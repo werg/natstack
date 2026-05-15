@@ -50,12 +50,9 @@ eval({ code: `
 `
 })
 
-eval({ code: `
-  import { rpc } from "@workspace/runtime";
-  const result = await rpc.call("main", "test.run", contextId, "panels/my-app");
-  console.log(result);
-`
-})
+// Note: test.run is restricted to server-only callers; panel-side invocation
+// returns EACCES. Use typecheck.check (above) to verify types from a panel.
+// To run tests, ask a server-side agent or trigger from the NatStack shell.
 ```
 
 ### 4. Launch

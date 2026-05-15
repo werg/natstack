@@ -67,7 +67,7 @@ eval({ code: `
 | Read a file | `Read({ file_path: "panels/my-app/index.tsx" })` |
 | Edit a file | `Edit({ file_path: "panels/my-app/index.tsx", old_string: "...", new_string: "..." })` |
 | Check types | `eval` — `rpc.call("main", "typecheck.check", "panels/my-app")` |
-| Run tests | `eval` — `rpc.call("main", "test.run", contextId, "panels/my-app")` |
+| Run tests | Not available from panel context — `test.run` is server-only (see TOOLS.md) |
 | Git status | `eval` with `imports` — `import { GitClient } from "@natstack/git"` (see TOOLS.md) |
 | List workspaces | `eval` — `workspace.list()` |
 | Get workspace config | `eval` — `workspace.getConfig()` |

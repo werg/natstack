@@ -208,16 +208,12 @@ eval({ code: `
 
 #### test.run
 
-Run vitest tests on a workspace panel or package.
-
-```
-eval({ code: `
-  import { rpc } from "@workspace/runtime";
-  const result = await rpc.call("main", "test.run", contextId, "panels/my-app");
-  console.log(result);
-`
-})
-```
+> **Note:** `test.run` is restricted to server-origin callers only. Panel and
+> worker agents cannot call it directly (access is denied with EACCES). This
+> restriction prevents arbitrary `*.test.ts` files in a panel's context folder
+> from being executed in the server process. If you need to trigger tests from
+> a panel, route the request through a dedicated server-side API that applies
+> proper sandboxing and approval gating.
 
 ### Browser Data
 
