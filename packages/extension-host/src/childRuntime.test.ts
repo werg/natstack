@@ -26,4 +26,14 @@ describe("extension child runtime", () => {
     expect(source).toContain("extension.fetchResponseBodyChunk");
     expect(source).toContain("extensions.fetchRequestBodyChunk");
   });
+
+  it("does not block fetch responses on waitUntil work", () => {
+    const source = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "childRuntime.ts"),
+      "utf8",
+    );
+
+    expect(source).toContain("settleWaitUntil(waitUntil)");
+    expect(source).not.toContain("await Promise.allSettled(waitUntil)");
+  });
 });

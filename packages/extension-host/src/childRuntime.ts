@@ -565,6 +565,17 @@ async function closeResponseBodyStream(id: string): Promise<void> {
   }
 }
 
+function settleWaitUntil(waitUntil: Promise<unknown>[]): void {
+  if (waitUntil.length === 0) return;
+  void Promise.allSettled(waitUntil).then((results) => {
+    for (const result of results) {
+      if (result.status === "rejected") {
+        console.error("[ExtensionRuntime] fetch waitUntil rejected:", result.reason);
+      }
+    }
+  });
+}
+
 async function main(): Promise<void> {
   runtimeBridge = await connectRuntimeBridge();
   const bundlePath = requiredEnv("NATSTACK_EXTENSION_BUNDLE_PATH");
@@ -623,13 +634,16 @@ async function main(): Promise<void> {
             waitUntil.push(promise);
           },
         };
-        const response = await fetchHandler(request, fetchCtx);
-        await Promise.allSettled(waitUntil);
-        return {
-          status: response.status,
-          headers: Object.fromEntries(response.headers.entries()),
-          body: responseBodyToEnvelope(response),
-        };
+        try {
+          const response = await fetchHandler(request, fetchCtx);
+          return {
+            status: response.status,
+            headers: Object.fromEntries(response.headers.entries()),
+            body: responseBodyToEnvelope(response),
+          };
+        } finally {
+          settleWaitUntil(waitUntil);
+        }
       });
     },
   );
