@@ -1232,7 +1232,7 @@ const WORKER_CONDITIONS = ["worker", "workerd", "import", "default"] as const;
 /**
  * Node built-ins that workerd does NOT provide via `nodejs_compat` and must
  * be stubbed out of worker bundles. The SDK dependencies of
- * `@mariozechner/pi-ai` (aws-sdk credential providers, undici, proxy-agent,
+ * `@earendil-works/pi-ai` (aws-sdk credential providers, undici, proxy-agent,
  * etc.) import these modules at module scope but only call them inside
  * code paths (e.g. file-based SSO credential loaders) that the NatStack
  * agent worker never reaches. Stubbing to an empty / throwing module keeps
@@ -1396,8 +1396,8 @@ export const createInterface = stubFn;
 /**
  * Node built-in modules that must stay external in the worker bundle so that
  * workerd's `nodejs_compat` compat flag satisfies them at runtime. These are
- * pulled in transitively by `@mariozechner/pi-agent-core` /
- * `@mariozechner/pi-ai` (and their SDK dependencies: openai, anthropic,
+ * pulled in transitively by `@earendil-works/pi-agent-core` /
+ * `@earendil-works/pi-ai` (and their SDK dependencies: openai, anthropic,
  * google/genai, undici, proxy-agent, aws-sdk credential providers, etc.).
  *
  * Filesystem modules are included in this list too — the code paths that
@@ -1529,8 +1529,8 @@ async function buildWorker(
       logLevel: "warning",
       conditions: [...WORKER_CONDITIONS],
       // Fall back to the `main` field for packages that ship without
-      // `exports` or `module` (e.g. `@mariozechner/pi-agent-core`,
-      // `@mariozechner/pi-ai`). Without this, esbuild refuses to resolve
+      // `exports` or `module` (e.g. `@earendil-works/pi-agent-core`,
+      // `@earendil-works/pi-ai`). Without this, esbuild refuses to resolve
       // a `main`-only package in "neutral" platform mode.
       mainFields: ["module", "main"],
       // Node built-ins that workerd's nodejs_compat flag provides at

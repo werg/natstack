@@ -571,7 +571,7 @@ export class WorkerdManager {
         compatibilityDate: "2025-12-01",
         // `nodejs_compat` gives worker DOs access to the Node-compatible
         // subset workerd ships (buffer, util, events, etc.). Required by
-        // `@mariozechner/pi-agent-core` and the harness image / pi-ai code
+        // `@earendil-works/pi-agent-core` and the harness image / pi-ai code
         // paths that assume a Node-ish runtime.
         compatibilityFlags: ["nodejs_compat"],
         globalOutbound: networkServiceName,

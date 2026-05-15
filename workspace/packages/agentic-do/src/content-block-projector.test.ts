@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import type { AgentEvent } from "@mariozechner/pi-agent-core";
+import type { AgentEvent } from "@earendil-works/pi-agent-core";
 import {
   ContentBlockProjector,
   type ChannelOp,

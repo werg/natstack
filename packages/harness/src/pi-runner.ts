@@ -6,7 +6,7 @@
  * messages (state snapshots + text deltas).
  *
  * Wave-2 rewrite: this no longer depends on `pi-coding-agent`. It composes
- * `Agent` from `@mariozechner/pi-agent-core` directly with:
+ * `Agent` from `@earendil-works/pi-agent-core` directly with:
  *   - NatStack's local extension runtime (`PiExtensionRuntime`) hosting the
  *     three closure-bound factories: approval-gate, channel-tools, ask-user.
  *   - The six workerd-clean built-in file tools from `./tools/`, each wrapped
@@ -25,8 +25,8 @@ import {
   type AgentMessage,
   type AgentTool,
   type AgentToolResult,
-} from "@mariozechner/pi-agent-core";
-import { getModel as piGetModel, type ImageContent } from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-agent-core";
+import { getModel as piGetModel, type ImageContent } from "@earendil-works/pi-ai";
 import { Buffer } from "node:buffer";
 
 import type { RuntimeFs } from "./tools/runtime-fs.js";
