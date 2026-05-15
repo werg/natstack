@@ -144,13 +144,12 @@ export default function ModelCredentialRequiredCard({ props, chat }) {
         browserHandoffPlatform: resolveBrowserHandoffPlatform(),
       });
       if (props.agentParticipantId) {
-        const result = await chat.callMethod(props.agentParticipantId, "credentialConnected", {
+        // Notify agent credential is available; if no interrupted turn to resume
+        // (stale card, worker restart), that's fine — user can send a new message.
+        await chat.callMethod(props.agentParticipantId, "credentialConnected", {
           providerId,
           modelBaseUrl,
         });
-        if (!result?.resumed) {
-          throw new Error("Credential connected, but there was no interrupted turn to continue.");
-        }
       }
       setStatus("done");
     } catch (err) {
@@ -1145,7 +1144,13 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       if (last.stopReason !== "error") return;
       const msg = last.errorMessage ?? "Turn failed.";
       if (credentialRequiredMessage(msg)) {
-        this.emitModelCredentialRequiredCard(channelId, this.getModelProviderId(), this.getModelBaseUrl());
+        const providerId = this.getModelProviderId();
+        const modelBaseUrl = this.getModelBaseUrl();
+        // Record interruption on re-emit (e.g., after worker restart) for Path B resume.
+        if (!this.getModelCredentialInterruption(channelId, providerId, modelBaseUrl)) {
+          this.recordModelCredentialInterruption(channelId, providerId, modelBaseUrl);
+        }
+        this.emitModelCredentialRequiredCard(channelId, providerId, modelBaseUrl);
         return;
       }
       console.error(`[AgentWorkerBase] Agent turn ended with error on channel=${channelId}: ${msg}`);
