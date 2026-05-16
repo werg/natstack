@@ -2,6 +2,9 @@ export type {
   RpcRequest,
   RpcResponse,
   RpcEvent,
+  RpcStreamRequest,
+  RpcStreamFrameMessage,
+  RpcStreamCancel,
   RpcMessage,
   RpcTransport,
   RpcBridge,
@@ -11,6 +14,8 @@ export type {
   RpcEventListener,
   RpcCaller,
   CallerKind,
+  StreamingMethodHandler,
+  StreamingMethodFrame,
   ParentPortEnvelope,
   ElectronLocalServiceName,
 } from "./types.js";

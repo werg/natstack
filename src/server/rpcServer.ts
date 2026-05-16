@@ -562,7 +562,28 @@ export class RpcServer {
     }
   }
 
+  /**
+   * In-flight streaming WS RPC handlers, keyed by requestId, so an
+   * incoming `stream-cancel` can abort the upstream fetch and stop
+   * pulling bytes from a corpse.
+   */
+  private wsStreamAborts = new Map<string, AbortController>();
+
   private async handleRpc(client: WsClientState, message: RpcMessage): Promise<void> {
+    if (message.type === "stream-request") {
+      await this.handleWsStreamRequest(client, message);
+      return;
+    }
+    if (message.type === "stream-cancel") {
+      const controller = this.wsStreamAborts.get(message.requestId);
+      if (controller) controller.abort();
+      return;
+    }
+    if (message.type === "stream-frame") {
+      // Stream frames flow server→client during a streaming response.
+      // A client sending one is malformed; ignore.
+      return;
+    }
     if (message.type !== "request") return;
 
     const request = message as RpcRequest;
@@ -1352,6 +1373,124 @@ export class RpcServer {
       }
     } finally {
       res.end();
+    }
+  }
+
+  /**
+   * Handle a WS-delivered `stream-request`. Mirrors the HTTP
+   * `/rpc/stream` route's policy (method allow-list,
+   * `credentials.proxyFetch` only) but pipes frames back as
+   * `stream-frame` messages wrapped in the `ws:rpc` envelope. WS is
+   * the panel/shell transport, so this is the path that gives panel
+   * `credentials.fetch` real streaming — no more synthetic-buffered
+   * fallback.
+   */
+  private async handleWsStreamRequest(
+    client: WsClientState,
+    request: import("@natstack/rpc").RpcStreamRequest,
+  ): Promise<void> {
+    const sendFrame = (frameType: number, payload: string): void => {
+      this.sendToWs(client.ws, {
+        type: "ws:rpc",
+        message: {
+          type: "stream-frame",
+          requestId: request.requestId,
+          fromId: "main",
+          frameType,
+          payload,
+        },
+      });
+    };
+    const emitError = (status: number, message: string): void => {
+      sendFrame(0x04, JSON.stringify({ status, message }));
+    };
+
+    if (request.method !== "credentials.proxyFetch") {
+      emitError(
+        400,
+        `Method '${request.method}' is not exposed on the streaming endpoint. Only 'credentials.proxyFetch' is allowed.`,
+      );
+      return;
+    }
+
+    const egress = this.deps.egressProxy;
+    if (!egress) {
+      emitError(503, "Streaming proxy fetch is unavailable");
+      return;
+    }
+
+    const params = (request.args?.[0] ?? {}) as {
+      url?: string;
+      method?: string;
+      headers?: Record<string, string>;
+      body?: string;
+      bodyBase64?: string;
+      credentialId?: string;
+    };
+    if (!params.url || !params.method) {
+      emitError(400, "Missing required params: url and method");
+      return;
+    }
+
+    const upstreamBody: string | Uint8Array | undefined =
+      params.bodyBase64 !== undefined
+        ? new Uint8Array(Buffer.from(params.bodyBase64, "base64"))
+        : params.body;
+
+    const abortController = new AbortController();
+    this.wsStreamAborts.set(request.requestId, abortController);
+
+    try {
+      await egress.forwardProxyFetchStream(
+        {
+          callerId: client.callerId,
+          url: params.url,
+          method: params.method,
+          headers: params.headers,
+          body: upstreamBody,
+          credentialId: params.credentialId,
+        },
+        async (frame) => {
+          if (frame.kind === "head") {
+            sendFrame(
+              0x01,
+              JSON.stringify({
+                status: frame.status,
+                statusText: frame.statusText,
+                headerPairs: frame.headerPairs,
+                finalUrl: frame.finalUrl,
+              }),
+            );
+          } else if (frame.kind === "chunk") {
+            // Encode binary chunk as base64 for the WS JSON envelope.
+            // The HTTP endpoint avoids this overhead by writing raw
+            // bytes to the chunked response — see streamFraming.ts.
+            let binary = "";
+            for (const byte of frame.bytes) binary += String.fromCharCode(byte);
+            sendFrame(0x02, btoa(binary));
+          } else if (frame.kind === "end") {
+            sendFrame(0x03, JSON.stringify({ bytesIn: frame.bytesIn }));
+          } else if (frame.kind === "error") {
+            sendFrame(
+              0x04,
+              JSON.stringify({
+                status: frame.status,
+                message: frame.message,
+                code: frame.code,
+              }),
+            );
+          }
+        },
+        abortController.signal,
+      );
+    } catch (err) {
+      try {
+        emitError(502, err instanceof Error ? err.message : String(err));
+      } catch {
+        // Best-effort — client may already be gone.
+      }
+    } finally {
+      this.wsStreamAborts.delete(request.requestId);
     }
   }
 

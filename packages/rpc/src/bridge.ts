@@ -7,14 +7,43 @@ import type {
   RpcResponse,
   RpcEvent,
   RpcEventListener,
+  RpcStreamRequest,
+  RpcStreamFrameMessage,
+  RpcStreamCancel,
+  StreamingMethodHandler,
 } from "./types.js";
 
 function generateRequestId(): string {
   return crypto.randomUUID();
 }
 
+/**
+ * Frame type codes mirror `@natstack/shared/credentials/streamFraming`.
+ * Duplicated here as plain constants to keep the rpc package
+ * dependency-light — adding `@natstack/shared` as a dep would create
+ * a cycle since shared transitively depends on rpc.
+ */
+const FRAME_HEAD = 0x01;
+const FRAME_DATA = 0x02;
+const FRAME_END = 0x03;
+const FRAME_ERROR = 0x04;
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
 export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
   let exposedMethods: ExposedMethods = {};
+  const streamingHandlers = new Map<string, StreamingMethodHandler>();
 
   const pendingRequests = new Map<
     string,
@@ -23,6 +52,36 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
       reject: (error: Error) => void;
     }
   >();
+
+  /**
+   * Active inbound streams — calls we initiated where frames are
+   * still arriving from the peer. Keyed by the requestId we generated
+   * when calling `streamCall`. The bridge routes incoming
+   * `stream-frame` messages to the matching entry.
+   */
+  const pendingStreams = new Map<
+    string,
+    {
+      controller: ReadableStreamDefaultController<Uint8Array>;
+      resolveHead: (head: {
+        status: number;
+        statusText: string;
+        headerPairs: Array<[string, string]>;
+        finalUrl: string;
+      }) => void;
+      rejectHead: (err: unknown) => void;
+      headEmitted: boolean;
+      bodyClosed: boolean;
+    }
+  >();
+
+  /**
+   * Active outbound streams — calls our peer is making to us that
+   * we're currently fulfilling. Keyed by the requestId from the
+   * incoming `stream-request`. Stored so an incoming `stream-cancel`
+   * can abort the handler.
+   */
+  const activeStreamingHandlers = new Map<string, AbortController>();
 
   const eventListeners = new Map<string, Set<RpcEventListener>>();
 
@@ -89,6 +148,150 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
     }
   };
 
+  /**
+   * Handle an incoming `stream-frame` — route to whichever in-flight
+   * stream initiated by this bridge has the matching `requestId`.
+   * Unknown requestIds (e.g. after a cancel race) are silently dropped.
+   */
+  const handleStreamFrame = (frame: RpcStreamFrameMessage): void => {
+    const entry = pendingStreams.get(frame.requestId);
+    if (!entry) return;
+    if (entry.bodyClosed) return;
+
+    if (frame.frameType === FRAME_HEAD) {
+      try {
+        const head = JSON.parse(frame.payload) as {
+          status: number;
+          statusText: string;
+          headerPairs: Array<[string, string]>;
+          finalUrl: string;
+        };
+        entry.headEmitted = true;
+        entry.resolveHead(head);
+      } catch (err) {
+        entry.rejectHead(err);
+        pendingStreams.delete(frame.requestId);
+      }
+      return;
+    }
+
+    if (frame.frameType === FRAME_DATA) {
+      const bytes = base64ToBytes(frame.payload);
+      entry.controller.enqueue(bytes);
+      return;
+    }
+
+    if (frame.frameType === FRAME_END) {
+      entry.bodyClosed = true;
+      entry.controller.close();
+      pendingStreams.delete(frame.requestId);
+      return;
+    }
+
+    if (frame.frameType === FRAME_ERROR) {
+      let parsed: { status: number; message: string; code?: string };
+      try {
+        parsed = JSON.parse(frame.payload);
+      } catch {
+        parsed = { status: 502, message: "Streaming RPC error" };
+      }
+      const err = new Error(parsed.message) as Error & { code?: string };
+      err.code = parsed.code;
+      if (entry.headEmitted) {
+        entry.bodyClosed = true;
+        entry.controller.error(err);
+      } else {
+        entry.rejectHead(err);
+      }
+      pendingStreams.delete(frame.requestId);
+      return;
+    }
+    // Unknown frame type — drop (forward-compatible).
+  };
+
+  /**
+   * Handle an incoming `stream-request` — look up the streaming
+   * handler registered via `exposeStreamingMethod` and run it, piping
+   * each emitted frame back to the caller as a `stream-frame` message.
+   * No handler → emit an ERROR frame so the caller's `streamCall`
+   * promise rejects with a clear message.
+   */
+  const handleStreamRequest = (sourceId: string, request: RpcStreamRequest): void => {
+    const handler = streamingHandlers.get(request.method);
+
+    const sendFrame = async (frameType: number, payload: string): Promise<void> => {
+      const message: RpcStreamFrameMessage = {
+        type: "stream-frame",
+        requestId: request.requestId,
+        fromId: config.selfId,
+        frameType,
+        payload,
+      };
+      await config.transport.send(sourceId, message);
+    };
+
+    if (!handler) {
+      void sendFrame(
+        FRAME_ERROR,
+        JSON.stringify({
+          status: 404,
+          message: `No streaming handler for method "${request.method}"`,
+        }),
+      ).catch(() => {});
+      return;
+    }
+
+    const abortController = new AbortController();
+    activeStreamingHandlers.set(request.requestId, abortController);
+
+    const sink = async (frame: import("./types.js").StreamingMethodFrame): Promise<void> => {
+      if (frame.kind === "head") {
+        await sendFrame(
+          FRAME_HEAD,
+          JSON.stringify({
+            status: frame.status,
+            statusText: frame.statusText,
+            headerPairs: frame.headerPairs,
+            finalUrl: frame.finalUrl,
+          }),
+        );
+      } else if (frame.kind === "chunk") {
+        await sendFrame(FRAME_DATA, bytesToBase64(frame.bytes));
+      } else if (frame.kind === "end") {
+        await sendFrame(FRAME_END, JSON.stringify({ bytesIn: frame.bytesIn }));
+      } else if (frame.kind === "error") {
+        await sendFrame(
+          FRAME_ERROR,
+          JSON.stringify({
+            status: frame.status,
+            message: frame.message,
+            code: frame.code,
+          }),
+        );
+      }
+    };
+
+    void Promise.resolve()
+      .then(() => handler(request.args, sink, abortController.signal))
+      .catch((err) =>
+        sendFrame(
+          FRAME_ERROR,
+          JSON.stringify({
+            status: 502,
+            message: err instanceof Error ? err.message : String(err),
+          }),
+        ).catch(() => {}),
+      )
+      .finally(() => {
+        activeStreamingHandlers.delete(request.requestId);
+      });
+  };
+
+  const handleStreamCancel = (cancel: RpcStreamCancel): void => {
+    const controller = activeStreamingHandlers.get(cancel.requestId);
+    if (controller) controller.abort();
+  };
+
   const bridge: RpcBridgeInternal = {
     selfId: config.selfId,
 
@@ -130,69 +333,132 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
     },
 
     /**
-     * Streaming call over a transport-based bridge.
+     * Streaming call: sends a `stream-request` message and reassembles
+     * incoming `stream-frame` messages into a `Response` whose body
+     * is a real `ReadableStream<Uint8Array>`. The Promise resolves as
+     * soon as the HEAD frame arrives, so the caller has status /
+     * headers immediately while the body keeps draining.
      *
-     * Today this is a uniform API wrapper, not a protocol-level
-     * streaming implementation: the underlying `call` round-trip
-     * returns the buffered wire shape produced by `credentials.proxyFetch`
-     * (status / headerPairs / finalUrl / bodyBase64), and the result is
-     * wrapped in a `Response` whose body is a synthetic ReadableStream.
-     *
-     * This is intentional. The transport-based bridge runs over
-     * Electron IPC or WebSocket, and adding protocol-level streaming
-     * (new stream-request / stream-frame messages, server-side
-     * streaming dispatch, frame routing on the bridge) is a separate
-     * piece of infrastructure work. The API surface is what callers
-     * actually depend on; making `streamCall` available uniformly on
-     * every bridge lets the shared credentials client drop its
-     * "supportsStreaming" duck-typing and call `streamCall`
-     * unconditionally. When real IPC streaming lands, this method
-     * will switch to it transparently.
+     * Cancellation (via `options.signal` or `response.body.cancel()`)
+     * propagates as a `stream-cancel` message to the peer, who
+     * aborts the in-flight handler.
      */
     async streamCall(
       targetId: string,
       method: string,
       args: unknown[],
-      _options?: { signal?: AbortSignal },
+      options?: { signal?: AbortSignal },
     ): Promise<Response> {
-      const result = await (this as { call<T>(targetId: string, method: string, ...args: unknown[]): Promise<T> }).call<{
+      const requestId = generateRequestId();
+
+      let resolveHead!: (head: {
         status: number;
         statusText: string;
-        headerPairs?: Array<[string, string]>;
-        finalUrl?: string;
-        bodyBase64?: string;
-      }>(targetId, method, ...args);
-      const bytes = result.bodyBase64
-        ? (() => {
-            const binary = atob(result.bodyBase64!);
-            const buf = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
-            return buf;
-          })()
-        : new Uint8Array(0);
-      const body = new ReadableStream<Uint8Array>({
+        headerPairs: Array<[string, string]>;
+        finalUrl: string;
+      }) => void;
+      let rejectHead!: (err: unknown) => void;
+      const headPromise = new Promise<{
+        status: number;
+        statusText: string;
+        headerPairs: Array<[string, string]>;
+        finalUrl: string;
+      }>((resolve, reject) => {
+        resolveHead = resolve;
+        rejectHead = reject;
+      });
+
+      let bodyController: ReadableStreamDefaultController<Uint8Array> | null = null;
+      const sendCancel = (): void => {
+        const cancel: RpcStreamCancel = {
+          type: "stream-cancel",
+          requestId,
+          fromId: config.selfId,
+        };
+        void Promise.resolve(config.transport.send(targetId, cancel)).catch(() => {});
+      };
+      const stream = new ReadableStream<Uint8Array>({
         start(controller) {
-          if (bytes.byteLength > 0) controller.enqueue(bytes);
-          controller.close();
+          bodyController = controller;
+        },
+        cancel() {
+          const entry = pendingStreams.get(requestId);
+          if (entry) {
+            entry.bodyClosed = true;
+            pendingStreams.delete(requestId);
+          }
+          sendCancel();
         },
       });
-      const response = new Response(body as BodyInit, {
-        status: result.status,
-        statusText: result.statusText,
-        headers: new Headers(result.headerPairs ?? []),
+
+      // Register the entry BEFORE sending the request — otherwise an
+      // unusually fast peer could send the HEAD frame back before the
+      // Map has the lookup key.
+      pendingStreams.set(requestId, {
+        controller: bodyController!,
+        resolveHead,
+        rejectHead,
+        headEmitted: false,
+        bodyClosed: false,
       });
-      if (result.finalUrl) {
-        try {
-          Object.defineProperty(response, "url", {
-            value: result.finalUrl,
-            writable: false,
-            configurable: true,
-          });
-        } catch {
-          // ignore — runtime locked the descriptor
+
+      const onAbort = (): void => {
+        const entry = pendingStreams.get(requestId);
+        if (!entry) return;
+        const err = new Error("Streaming RPC aborted by caller");
+        if (entry.headEmitted) {
+          entry.bodyClosed = true;
+          entry.controller.error(err);
+        } else {
+          entry.rejectHead(err);
         }
+        pendingStreams.delete(requestId);
+        sendCancel();
+      };
+      options?.signal?.addEventListener("abort", onAbort);
+
+      const request: RpcStreamRequest = {
+        type: "stream-request",
+        requestId,
+        fromId: config.selfId,
+        method,
+        args,
+      };
+      try {
+        await config.transport.send(targetId, request);
+      } catch (err) {
+        pendingStreams.delete(requestId);
+        options?.signal?.removeEventListener("abort", onAbort);
+        throw err;
       }
-      return response;
+
+      try {
+        const head = await headPromise;
+        const response = new Response(stream as BodyInit, {
+          status: head.status,
+          statusText: head.statusText,
+          headers: new Headers(head.headerPairs),
+        });
+        if (head.finalUrl) {
+          try {
+            Object.defineProperty(response, "url", {
+              value: head.finalUrl,
+              writable: false,
+              configurable: true,
+            });
+          } catch {
+            // ignore — runtime locked the descriptor
+          }
+        }
+        return response;
+      } finally {
+        // Abort listener stays registered while the body is draining;
+        // it'll fire on a late abort to propagate cancel to the peer.
+      }
+    },
+
+    exposeStreamingMethod(method: string, handler: StreamingMethodHandler): void {
+      streamingHandlers.set(method, handler);
     },
 
     async emit(targetId: string, event: string, payload: unknown): Promise<void> {
@@ -230,6 +496,15 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
           return;
         case "event":
           handleEvent(sourceId, message);
+          return;
+        case "stream-request":
+          handleStreamRequest(sourceId, message);
+          return;
+        case "stream-frame":
+          handleStreamFrame(message);
+          return;
+        case "stream-cancel":
+          handleStreamCancel(message);
           return;
       }
     },
