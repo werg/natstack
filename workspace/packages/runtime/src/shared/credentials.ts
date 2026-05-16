@@ -243,9 +243,14 @@ async function proxyFetch(
   init?: RequestInit,
   opts?: { credentialId?: string },
 ): Promise<Response> {
-  const headers = Object.fromEntries(new Headers(init?.headers).entries());
-  const encoded = await encodeRequestBody(init?.body);
+  // Build a real Request so the platform synthesizes Content-Type for
+  // string / URLSearchParams / Blob bodies the same way native fetch
+  // does. Otherwise credentialed POSTs of those bodies would arrive
+  // upstream with no Content-Type and servers would reject them.
   const requestedUrl = url.toString();
+  const probe = new Request(requestedUrl, init);
+  const headers = Object.fromEntries(probe.headers.entries());
+  const encoded = await encodeRequestBody(init?.body);
   const args = {
     url: requestedUrl,
     method: init?.method ?? "GET",

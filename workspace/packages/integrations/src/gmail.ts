@@ -193,6 +193,32 @@ function toQueryParams(params?: Record<string, string | number | string[] | unde
   return query ? `?${query}` : ""
 }
 
+/**
+ * Reject any RFC 822 header value containing CR or LF. Without this
+ * a caller-controlled value could inject additional headers (e.g.
+ * a Subject line with `\r\nBcc: attacker@x.com`).
+ */
+function sanitizeHeaderValue(field: string, value: string): string {
+  if (/[\r\n]/.test(value)) {
+    throw new Error(
+      `Gmail sendMessage: ${field} value contains CR/LF — header injection rejected`,
+    )
+  }
+  return value
+}
+
+/**
+ * Allow only RFC 7230 token characters in custom header names; reject
+ * anything outside the safe ASCII set. Prevents injection via the
+ * `params.headers` map keys.
+ */
+function sanitizeHeaderName(name: string): string {
+  if (!/^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/.test(name)) {
+    throw new Error(`Gmail sendMessage: invalid header name "${name}"`)
+  }
+  return name
+}
+
 function joinAddressList(value?: string | string[]): string | undefined {
   if (!value) {
     return undefined
@@ -373,19 +399,31 @@ export function createGmailClient(credentials: CredentialClient): GmailClient {
   }
 
   const sendMessage = async (params: SendMessageParams): Promise<GmailMessage> => {
+    // Sanitize every value that goes into an RFC 822 header. Without
+    // this, a caller-controlled string containing CR or LF could
+    // inject additional headers (e.g. `Bcc: attacker@x.com`) or
+    // disrupt the MIME structure. Body is excluded — it intentionally
+    // contains line breaks.
+    const f = (field: string, value: string): string =>
+      sanitizeHeaderValue(field, value)
     const rawLines = [
-      params.from ? `From: ${params.from}` : undefined,
-      `To: ${joinAddressList(params.to)}`,
-      params.cc ? `Cc: ${joinAddressList(params.cc)}` : undefined,
-      params.bcc ? `Bcc: ${joinAddressList(params.bcc)}` : undefined,
-      params.replyTo ? `Reply-To: ${params.replyTo}` : undefined,
-      params.inReplyTo ? `In-Reply-To: ${params.inReplyTo}` : undefined,
-      params.references ? `References: ${joinAddressList(params.references)}` : undefined,
-      `Subject: ${params.subject}`,
+      params.from ? `From: ${f("From", params.from)}` : undefined,
+      `To: ${f("To", joinAddressList(params.to) ?? "")}`,
+      params.cc ? `Cc: ${f("Cc", joinAddressList(params.cc) ?? "")}` : undefined,
+      params.bcc ? `Bcc: ${f("Bcc", joinAddressList(params.bcc) ?? "")}` : undefined,
+      params.replyTo ? `Reply-To: ${f("Reply-To", params.replyTo)}` : undefined,
+      params.inReplyTo ? `In-Reply-To: ${f("In-Reply-To", params.inReplyTo)}` : undefined,
+      params.references
+        ? `References: ${f("References", joinAddressList(params.references) ?? "")}`
+        : undefined,
+      `Subject: ${f("Subject", params.subject)}`,
       "MIME-Version: 1.0",
       "Content-Type: text/plain; charset=UTF-8",
       "Content-Transfer-Encoding: 8bit",
-      ...Object.entries(params.headers ?? {}).map(([key, value]) => `${key}: ${value}`),
+      ...Object.entries(params.headers ?? {}).map(([key, value]) => {
+        const safeKey = sanitizeHeaderName(key)
+        return `${safeKey}: ${f(safeKey, value)}`
+      }),
       "",
       params.body,
     ].filter((line): line is string => typeof line === "string")

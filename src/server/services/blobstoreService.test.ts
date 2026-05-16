@@ -329,6 +329,42 @@ describe("blobstoreService", () => {
       const unknown = "0".repeat(64);
       await expect(dispatchGetRange(unknown, 0, 10)).resolves.toBeNull();
     });
+
+    it("rejects oversized reads to bound memory", async () => {
+      const body = "x";
+      const digest = createHash("sha256").update(body, "utf8").digest("hex");
+      await putViaRpc(digest, body);
+      // 1 MiB > the 256 KiB hard cap.
+      await expect(dispatchGetRange(digest, 0, 1024 * 1024)).rejects.toThrow(/too large/);
+    });
+
+    it("getRangeBytes returns base64-encoded raw bytes", async () => {
+      // PNG magic header — non-text bytes that would mangle through
+      // the UTF-8 getRange path.
+      const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      const digest = createHash("sha256").update(bytes).digest("hex");
+      // Stage the binary blob via putBase64 (putText would re-encode
+      // as UTF-8 and corrupt the bytes).
+      const service = createBlobstoreService({ blobsDir });
+      await service.start?.();
+      const dispatcher = new ServiceDispatcher();
+      dispatcher.registerService(service.definition);
+      dispatcher.markInitialized();
+      await dispatcher.dispatch(
+        { callerId: "w1", callerKind: "worker" },
+        "blobstore",
+        "putBase64",
+        [bytes.toString("base64")],
+      );
+      const result = (await dispatcher.dispatch(
+        { callerId: "w1", callerKind: "worker" },
+        "blobstore",
+        "getRangeBytes",
+        [digest, 0, 8],
+      )) as { bytesBase64: string };
+      const decoded = Buffer.from(result.bytesBase64, "base64");
+      expect(Array.from(decoded)).toEqual(Array.from(bytes));
+    });
   });
 
   describe("grep", () => {
@@ -403,6 +439,24 @@ describe("blobstoreService", () => {
     it("rejects malformed regex patterns", async () => {
       const digest = await putViaRpc("anything");
       await expect(dispatchGrep(digest, "([")).rejects.toThrow(/Invalid regex/);
+    });
+
+    it("rejects nested-quantifier patterns (ReDoS guard)", async () => {
+      // `(a+)+b` against `aaaa…c` is the classic exponential
+      // backtrack — without the guard, this freezes the server.
+      const digest = await putViaRpc("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa c");
+      await expect(dispatchGrep(digest, "(a+)+b")).rejects.toThrow(/nested quantifiers/);
+    });
+
+    it("rejects quantified-alternation patterns (ReDoS guard)", async () => {
+      const digest = await putViaRpc("aaaa");
+      await expect(dispatchGrep(digest, "(a|a)*")).rejects.toThrow(/quantified alternation/);
+    });
+
+    it("rejects oversized patterns", async () => {
+      const digest = await putViaRpc("hello");
+      const huge = "a".repeat(2000);
+      await expect(dispatchGrep(digest, huge)).rejects.toThrow(/pattern too long/);
     });
   });
 });

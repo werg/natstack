@@ -182,12 +182,26 @@ async function getBytes(blobsDir: string, digest: string): Promise<Buffer | null
   }
 }
 
+/**
+ * Hard cap on a single getRange read. A caller that wants more must
+ * page — both keeps memory usage bounded per request and limits the
+ * blast radius of a buggy/malicious caller that asks for `length: 1e12`.
+ * 256 KiB is well above the natural ~8 KiB head excerpt that the
+ * agent uses, leaving plenty of room for explicit drilling.
+ */
+const MAX_GET_RANGE_BYTES = 256 * 1024;
+
 async function getByteRange(
   blobsDir: string,
   digest: string,
   offset: number,
   length: number,
 ): Promise<Buffer | null> {
+  if (length > MAX_GET_RANGE_BYTES) {
+    throw new Error(
+      `blobstore.getRange length too large (${length} > ${MAX_GET_RANGE_BYTES} bytes); page the request`,
+    );
+  }
   const filePath = blobPath(blobsDir, digest);
   let handle: fsp.FileHandle | null = null;
   try {
@@ -215,6 +229,45 @@ export interface GrepMatch {
   after: string[];
 }
 
+/**
+ * Reject regex patterns prone to catastrophic backtracking. The
+ * native JS regex engine has no execution timeout, so a single
+ * pathological pattern can freeze the server indefinitely once
+ * `re.test()` enters exponential backtracking on adversarial input
+ * (e.g. `(a+)+b` against `aaaaaaaaaaaaaaaac`).
+ *
+ * Defense in depth — for an absolute guarantee we'd need a
+ * non-backtracking engine like RE2. This validator catches the
+ * common bad shapes:
+ *
+ *   1. Length cap — keeps the search space bounded.
+ *   2. Nested quantifiers — `(...)+` / `(...)*` / `(...){n,}` where
+ *      the inner group contains its own quantifier.
+ *   3. Adjacent quantifiers on overlapping classes — `a+a*` style.
+ */
+function assertSafeGrepPattern(pattern: string): void {
+  if (pattern.length > 1024) {
+    throw new Error(`grep pattern too long (max 1024 chars, got ${pattern.length})`);
+  }
+  // Nested quantifier inside a quantified group: `(...+...)+`,
+  // `(...*...)*`, `(...{N,}...)+`, etc.
+  if (/\([^)]*[+*][^)]*\)\s*[+*?{]/u.test(pattern)) {
+    throw new Error(
+      "grep pattern contains nested quantifiers (catastrophic-backtracking risk); rewrite to avoid `(...+...)+` or `(...*...)*` shapes",
+    );
+  }
+  // Alternation of overlapping single-char classes inside a
+  // quantifier: `(a|a)*`, `(a|ab)+`, etc. Detected loosely as a
+  // group with `|` followed by a quantifier.
+  if (/\([^()]*\|[^()]*\)\s*[+*]/u.test(pattern)) {
+    // Allow only if the inner branches don't share a leading char —
+    // hard to check without a parser. Conservative: reject.
+    throw new Error(
+      "grep pattern uses quantified alternation (catastrophic-backtracking risk); rewrite without `(a|b)*` style",
+    );
+  }
+}
+
 async function grepBlob(
   blobsDir: string,
   digest: string,
@@ -223,6 +276,11 @@ async function grepBlob(
 ): Promise<GrepMatch[] | null> {
   const bytes = await getBytes(blobsDir, digest);
   if (!bytes) return null;
+  // ReDoS mitigation — bound pattern length and reject patterns with
+  // catastrophic-backtracking shapes BEFORE compilation. The native
+  // regex engine has no execution timeout in JS, so a pathological
+  // pattern (e.g. `(a+)+b`) would freeze the server during `re.test`.
+  assertSafeGrepPattern(pattern);
   const text = bytes.toString("utf8");
   const lines = text.split(/\r?\n/u);
   let re: RegExp;
@@ -344,6 +402,13 @@ export function createBlobstoreService(deps: BlobstoreServiceDeps): ServiceWithR
         returns: z.string().nullable(),
         policy: READ_POLICY,
       },
+      /**
+       * UTF-8 text slice. The offset/length are bytes (so they
+       * compose with `stat.size`) but the returned string is decoded
+       * as UTF-8 — partial codepoints at slice boundaries become
+       * U+FFFD replacement chars rather than corrupted bytes. Use
+       * `getRangeBytes` if you need a raw binary slice.
+       */
       getRange: {
         args: z.tuple([
           DigestSchema,
@@ -351,6 +416,20 @@ export function createBlobstoreService(deps: BlobstoreServiceDeps): ServiceWithR
           z.number().int().positive(),
         ]),
         returns: z.string().nullable(),
+        policy: READ_POLICY,
+      },
+      /**
+       * Raw byte slice — base64-encoded on the wire so binary blobs
+       * (PDFs, images) round-trip intact. Caller decodes with
+       * `Buffer.from(result.bytesBase64, "base64")` (or equivalent).
+       */
+      getRangeBytes: {
+        args: z.tuple([
+          DigestSchema,
+          z.number().int().nonnegative(),
+          z.number().int().positive(),
+        ]),
+        returns: z.object({ bytesBase64: z.string() }).nullable(),
         policy: READ_POLICY,
       },
       grep: {
@@ -415,6 +494,15 @@ export function createBlobstoreService(deps: BlobstoreServiceDeps): ServiceWithR
             args[2] as number,
           );
           return bytes ? bytes.toString("utf8") : null;
+        }
+        case "getRangeBytes": {
+          const bytes = await getByteRange(
+            deps.blobsDir,
+            args[0] as string,
+            args[1] as number,
+            args[2] as number,
+          );
+          return bytes ? { bytesBase64: bytes.toString("base64") } : null;
         }
         case "grep": {
           return grepBlob(

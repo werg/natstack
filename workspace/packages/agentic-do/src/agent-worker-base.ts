@@ -720,13 +720,20 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       // ReadableStream (HTTP transport) — without this the model SDK
       // would either block until the completion finishes or buffer
       // the entire event stream before yielding the first token.
+      //
+      // Body forwarded as bytes (not text) so binary model payloads
+      // round-trip intact. `request.signal` forwarded so aborting
+      // the model SDK's fetch reaches the upstream — without that,
+      // a canceled turn keeps the remote completion running.
+      const upstreamBody =
+        request.method === "GET" || request.method === "HEAD"
+          ? undefined
+          : new Uint8Array(await request.arrayBuffer());
       const upstream = await this.credentials.fetch(targetUrl.toString(), {
         method: request.method,
         headers,
-        body:
-          request.method === "GET" || request.method === "HEAD"
-            ? undefined
-            : await request.text(),
+        body: upstreamBody,
+        signal: request.signal,
       });
       return upstream;
     };

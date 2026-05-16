@@ -170,7 +170,12 @@ export async function decodeFramedResponseToStreaming(
 
   let bodyController: ReadableStreamDefaultController<Uint8Array> | null = null;
   let bodyClosed = false;
-  let firstFrameSeen = false;
+  // Track HEAD specifically (not "any first frame") — an ERROR
+  // arriving as the first frame must reject the head promise so the
+  // caller sees the real upstream error, not "no HEAD frame
+  // received". A generic "first frame seen" flag misroutes that case
+  // because `bodyController` exists from `stream`'s `start`.
+  let headSeen = false;
   const closeBody = (): void => {
     if (bodyClosed) return;
     bodyClosed = true;
@@ -183,10 +188,10 @@ export async function decodeFramedResponseToStreaming(
   };
 
   const decoder = new FrameDecoder((type, payload) => {
-    firstFrameSeen = true;
     if (type === FRAME_HEAD) {
       try {
         resolveHead(parseHeadFrame(payload));
+        headSeen = true;
       } catch (err) {
         rejectHead(err);
       }
@@ -214,7 +219,7 @@ export async function decodeFramedResponseToStreaming(
       }
       const error = new Error(parsed.message);
       (error as Error & { code?: string }).code = parsed.code;
-      if (firstFrameSeen && bodyController) {
+      if (headSeen) {
         errorBody(error);
       } else {
         rejectHead(error);
@@ -249,7 +254,7 @@ export async function decodeFramedResponseToStreaming(
       if (!bodyClosed) closeBody();
       resolveHead(null);
     } catch (err) {
-      if (firstFrameSeen) {
+      if (headSeen) {
         errorBody(err);
       } else {
         rejectHead(err);

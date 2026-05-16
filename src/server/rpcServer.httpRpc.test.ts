@@ -393,6 +393,55 @@ describe("RpcServer HTTP POST /rpc", () => {
     });
   });
 
+  describe("/rpc/stream service-policy enforcement", () => {
+    it("denies a caller-kind not in the credentials service policy", async () => {
+      // Set up an RpcServer whose dispatcher only allows `shell` on
+      // `credentials`. A worker token should be rejected by
+      // `validateStreamingProxyFetch` BEFORE any frames are emitted.
+      const tokenManager = new TokenManager();
+      const workerToken = tokenManager.ensureToken("do:test:Worker:obj1", "worker");
+      const stubEgress = { forwardProxyFetchStream: vi.fn() };
+      const dispatcher = {
+        dispatch: vi.fn(),
+        getPolicy: vi.fn((service: string) => {
+          if (service === "credentials") {
+            return { allowed: ["shell"] as CallerKind[] };
+          }
+          return undefined;
+        }),
+        getMethodPolicy: vi.fn(() => undefined),
+        initialized: true,
+      } as unknown as ServiceDispatcher;
+      const server = new RpcServer({ tokenManager, dispatcher, egressProxy: stubEgress });
+      server.initHandlers();
+      const gw = new Gateway({
+        tokenManager,
+        externalHost: "localhost",
+        getRpcHandler: () => server,
+      });
+      const p = await gw.start(0);
+      try {
+        const res = await fetch(`http://127.0.0.1:${p}/rpc/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${workerToken}`,
+          },
+          body: JSON.stringify({
+            targetId: "main",
+            method: "credentials.proxyFetch",
+            args: [{ url: "https://example.com/", method: "GET" }],
+          }),
+        });
+        expect(res.status).toBe(403);
+        expect(stubEgress.forwardProxyFetchStream).not.toHaveBeenCalled();
+      } finally {
+        await gw.stop();
+        await server.stop();
+      }
+    });
+  });
+
   describe("/rpc/stream streaming proxy fetch", () => {
     it("returns 503 when no egressProxy is wired in", async () => {
       const res = await fetch(`http://127.0.0.1:${port}/rpc/stream`, {
@@ -492,7 +541,12 @@ describe("RpcServer HTTP POST /rpc", () => {
       };
       const dispatcher = {
         dispatch: vi.fn(),
-        getPolicy: vi.fn(),
+        getPolicy: vi.fn((service: string) => {
+          if (service === "credentials") {
+            return { allowed: ["shell", "panel", "worker"] as CallerKind[] };
+          }
+          return undefined;
+        }),
         getMethodPolicy: vi.fn(() => undefined),
         initialized: true,
       } as unknown as ServiceDispatcher;

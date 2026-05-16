@@ -312,54 +312,57 @@ export class EgressProxy {
         });
         headEmitted = true;
 
-        if (upstream.body) {
-          const reader = upstream.body.getReader();
-          try {
-            while (true) {
-              if (abortSignal?.aborted) {
-                await reader.cancel().catch(() => {});
-                throw new Error("Streaming proxy fetch aborted by caller");
+        // Post-HEAD errors are caught INSIDE the execute callback so
+        // `executeAuthorizedRequest` records the correct audit entry
+        // (real status + accumulated bytesIn). If we let them throw,
+        // the audit log would record `status: 500, bytesIn: 0` even
+        // for a multi-MB partial response.
+        let finalStatus = upstream.status;
+        try {
+          if (upstream.body) {
+            const reader = upstream.body.getReader();
+            try {
+              while (true) {
+                if (abortSignal?.aborted) {
+                  await reader.cancel().catch(() => {});
+                  throw new Error("Streaming proxy fetch aborted by caller");
+                }
+                const { value, done } = await reader.read();
+                if (done) break;
+                if (value && value.byteLength > 0) {
+                  bytesInTotal += value.byteLength;
+                  await sink({ kind: "chunk", bytes: value });
+                }
               }
-              const { value, done } = await reader.read();
-              if (done) break;
-              if (value && value.byteLength > 0) {
-                bytesInTotal += value.byteLength;
-                await sink({ kind: "chunk", bytes: value });
-              }
+            } finally {
+              reader.releaseLock();
             }
-          } finally {
-            reader.releaseLock();
           }
+          await sink({ kind: "end", bytesIn: bytesInTotal });
+        } catch (err) {
+          // Mid-stream upstream failure. Surface as an error frame so
+          // the consumer's ReadableStream gets an error rather than a
+          // truncated body, and return 502 to the audit log along
+          // with the bytes we did manage to forward.
+          try {
+            await sink({
+              kind: "error",
+              status: 502,
+              message: err instanceof Error ? err.message : String(err),
+            });
+          } catch {
+            // Best-effort — connection may already be torn down.
+          }
+          finalStatus = 502;
         }
-
-        await sink({ kind: "end", bytesIn: bytesInTotal });
 
         return {
-          statusCode: upstream.status,
+          statusCode: finalStatus,
           bytesIn: bytesInTotal,
           bytesOut,
-          payload: { status: upstream.status, bytesIn: bytesInTotal },
+          payload: { status: finalStatus, bytesIn: bytesInTotal },
         };
       },
-    }).catch(async (err) => {
-      // If we've already committed to the response by emitting the head,
-      // surface the error as a frame instead of throwing — the HTTP
-      // response is already streaming and can't go back to an error
-      // status code. Otherwise let the caller observe a thrown error so
-      // it can return a proper error status before any bytes go out.
-      if (headEmitted) {
-        try {
-          await sink({
-            kind: "error",
-            status: 502,
-            message: err instanceof Error ? err.message : String(err),
-          });
-        } catch {
-          // Best-effort — connection may already be torn down.
-        }
-        return { status: 502, bytesIn: bytesInTotal };
-      }
-      throw err;
     });
 
     return result;

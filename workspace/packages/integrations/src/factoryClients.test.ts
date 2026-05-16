@@ -186,6 +186,45 @@ describe("factory client retry semantics", () => {
   });
 });
 
+describe("createGmailClient header injection", () => {
+  it("rejects CR/LF in Subject", async () => {
+    const { credentials } = makeMockEnv(() => jsonResponse({}));
+    const gmail = createGmailClient(credentials);
+    await expect(
+      gmail.sendMessage({
+        to: "a@b.com",
+        subject: "Hello\r\nBcc: attacker@evil.com",
+        body: "x",
+      }),
+    ).rejects.toThrow(/header injection rejected/);
+  });
+
+  it("rejects newlines in To", async () => {
+    const { credentials } = makeMockEnv(() => jsonResponse({}));
+    const gmail = createGmailClient(credentials);
+    await expect(
+      gmail.sendMessage({
+        to: "a@b.com\nBcc: attacker@evil.com",
+        subject: "ok",
+        body: "x",
+      }),
+    ).rejects.toThrow(/header injection rejected/);
+  });
+
+  it("rejects invalid header names in params.headers", async () => {
+    const { credentials } = makeMockEnv(() => jsonResponse({}));
+    const gmail = createGmailClient(credentials);
+    await expect(
+      gmail.sendMessage({
+        to: "a@b.com",
+        subject: "ok",
+        body: "x",
+        headers: { "X-Bad\r\nInject": "y" },
+      }),
+    ).rejects.toThrow(/invalid header name/);
+  });
+});
+
 describe("createCalendarClient", () => {
   it("memoizes the credential handle across method calls", async () => {
     const { credentials, stats } = makeMockEnv(() =>

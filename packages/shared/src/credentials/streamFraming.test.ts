@@ -117,6 +117,25 @@ describe("streamFraming", () => {
     expect(parseErrorFrame(seen!)).toEqual(err);
   });
 
+  it("routes a pre-HEAD ERROR frame to the head promise, not the body stream", async () => {
+    // Regression: the decoder previously set a generic "first frame
+    // seen" flag and treated ERROR-as-first-frame as a body error.
+    // The caller then saw "no HEAD frame received" instead of the
+    // real upstream message. Now ERROR before HEAD rejects the head
+    // promise with the upstream's message.
+    const { decodeFramedResponseToStreaming } = await import("./streamFraming.js");
+    const frame = encodeErrorFrame({ status: 502, message: "upstream connection refused" });
+    const wireBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(frame);
+        controller.close();
+      },
+    });
+    await expect(
+      decodeFramedResponseToStreaming(wireBody, "https://example.com/"),
+    ).rejects.toThrow(/upstream connection refused/);
+  });
+
   it("parses an empty END frame as bytesIn=0", () => {
     const frame = encodeEndFrame({ bytesIn: 0 });
     // The wire payload is `{"bytesIn":0}` — non-empty JSON. We also want

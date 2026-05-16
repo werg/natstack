@@ -405,6 +405,13 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
       args: unknown[],
       options?: { signal?: AbortSignal },
     ): Promise<Response> {
+      // Fast-path: if the caller's signal is already aborted, fail
+      // immediately instead of opening a stream the caller has
+      // already canceled. Without this, an already-aborted signal's
+      // listener never fires, so the peer starts work in vain.
+      if (options?.signal?.aborted) {
+        throw new Error("Streaming RPC aborted by caller");
+      }
       const requestId = generateRequestId();
 
       let resolveHead!: (head: {
@@ -459,7 +466,7 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
         sendCancel();
       };
       const signal = options?.signal;
-      signal?.addEventListener("abort", onAbort);
+      signal?.addEventListener("abort", onAbort, { once: true });
       const cleanup = (): void => {
         signal?.removeEventListener("abort", onAbort);
       };

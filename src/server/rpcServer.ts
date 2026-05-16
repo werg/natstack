@@ -563,11 +563,18 @@ export class RpcServer {
   }
 
   /**
-   * In-flight streaming WS RPC handlers, keyed by requestId, so an
-   * incoming `stream-cancel` can abort the upstream fetch and stop
-   * pulling bytes from a corpse.
+   * In-flight streaming WS RPC handlers. Keyed by
+   * `${callerId}\0${connectionId}\0${requestId}` — NOT by
+   * `requestId` alone — because two clients can reuse the same
+   * `requestId` and we'd otherwise let one cancel the other's
+   * stream. The triple uniquely identifies a stream within the
+   * server.
    */
   private wsStreamAborts = new Map<string, AbortController>();
+
+  private wsStreamKey(callerId: string, connectionId: string, requestId: string): string {
+    return `${callerId}\x00${connectionId}\x00${requestId}`;
+  }
 
   private async handleRpc(client: WsClientState, message: RpcMessage): Promise<void> {
     if (message.type === "stream-request") {
@@ -575,7 +582,11 @@ export class RpcServer {
       return;
     }
     if (message.type === "stream-cancel") {
-      const controller = this.wsStreamAborts.get(message.requestId);
+      // Look up by the full {callerId, connectionId, requestId}
+      // triple — a peer can only cancel streams it owns.
+      const controller = this.wsStreamAborts.get(
+        this.wsStreamKey(client.callerId, client.connectionId, message.requestId),
+      );
       if (controller) controller.abort();
       return;
     }
@@ -895,6 +906,17 @@ export class RpcServer {
     const wasReplaced =
       this.connections.getConnection(client.callerId, client.connectionId) !== client;
     this.connections.removeClient(client);
+
+    // Abort any in-flight streaming RPCs owned by this connection.
+    // Without this, the upstream fetch keeps draining bytes that
+    // nobody can read — `sendToWs` would silently drop the frames.
+    const streamKeyPrefix = this.wsStreamKey(client.callerId, client.connectionId, "");
+    for (const [key, controller] of this.wsStreamAborts) {
+      if (key.startsWith(streamKeyPrefix)) {
+        controller.abort();
+        this.wsStreamAborts.delete(key);
+      }
+    }
 
     if (client.callerKind === "panel") {
       this.lastDisconnectAt.set(client.callerId, Date.now());
@@ -1231,6 +1253,7 @@ export class RpcServer {
    */
   private validateStreamingProxyFetch(request: {
     method: string;
+    callerKind: CallerKind;
     args: unknown[];
   }):
     | {
@@ -1258,6 +1281,21 @@ export class RpcServer {
     const egress = this.deps.egressProxy;
     if (!egress) {
       return { ok: false, status: 503, error: "Streaming proxy fetch is unavailable" };
+    }
+    // Run the same service-policy check as `POST /rpc` /
+    // non-streaming WS RPC. Without this the streaming endpoints
+    // would silently allow caller-kinds that the regular path
+    // denies. Service+method parse never fails here since the
+    // method allow-list above already rejected anything other than
+    // `credentials.proxyFetch`.
+    try {
+      checkServiceAccess("credentials", request.callerKind, this.dispatcher, "proxyFetch");
+    } catch (err) {
+      return {
+        ok: false,
+        status: 403,
+        error: err instanceof Error ? err.message : String(err),
+      };
     }
     const params = (request.args?.[0] ?? {}) as {
       url?: string;
@@ -1313,6 +1351,7 @@ export class RpcServer {
       return;
     }
     const callerId = entry.callerId;
+    const callerKind = entry.callerKind;
 
     // Read request body (capped).
     const chunks: Buffer[] = [];
@@ -1341,9 +1380,13 @@ export class RpcServer {
     const args = (body["args"] as unknown[]) ?? [];
 
     // Run validation BEFORE committing to a 200 response, so policy
-    // failures (wrong method, no egress proxy, missing params) come
-    // back as proper HTTP error statuses.
-    const check = this.validateStreamingProxyFetch({ method: method ?? "", args });
+    // failures (wrong method, no egress proxy, missing params,
+    // policy violation) come back as proper HTTP error statuses.
+    const check = this.validateStreamingProxyFetch({
+      method: method ?? "",
+      callerKind,
+      args,
+    });
     if (!check.ok) {
       res.writeHead(check.status, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: check.error }));
@@ -1487,6 +1530,7 @@ export class RpcServer {
     // `streamCall` promise rejects with the error message either way.
     const check = this.validateStreamingProxyFetch({
       method: request.method,
+      callerKind: client.callerKind,
       args: request.args,
     });
     if (!check.ok) {
@@ -1495,7 +1539,12 @@ export class RpcServer {
     }
 
     const abortController = new AbortController();
-    this.wsStreamAborts.set(request.requestId, abortController);
+    const streamKey = this.wsStreamKey(
+      client.callerId,
+      client.connectionId,
+      request.requestId,
+    );
+    this.wsStreamAborts.set(streamKey, abortController);
 
     try {
       await check.egress.forwardProxyFetchStream(
@@ -1514,7 +1563,7 @@ export class RpcServer {
         // Best-effort — client may already be gone.
       }
     } finally {
-      this.wsStreamAborts.delete(request.requestId);
+      this.wsStreamAborts.delete(streamKey);
     }
   }
 

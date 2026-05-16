@@ -143,6 +143,15 @@ describe("createRpcBridge streaming", () => {
     await expect(response.text()).rejects.toThrow(/connection reset mid-stream/);
   });
 
+  it("rejects pre-HEAD when an already-aborted signal is passed", async () => {
+    const { bridgeA } = createLoopbackPair();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      bridgeA.streamCall("b", "credentials.proxyFetch", [], { signal: controller.signal }),
+    ).rejects.toThrow(/aborted by caller/);
+  });
+
   it("rejects when no streaming handler is registered for the method", async () => {
     const { bridgeA } = createLoopbackPair();
     // bridgeB doesn't expose any streaming methods.
