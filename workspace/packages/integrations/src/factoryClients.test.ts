@@ -144,6 +144,48 @@ describe("createGmailClient", () => {
   });
 });
 
+describe("factory client retry semantics", () => {
+  it("retries credential resolution after a failed first call", async () => {
+    // Mid-session credential registration: first call fails (no
+    // credential), user registers one, next call should succeed.
+    let credentialRegistered = false;
+    const credential: StoredCredentialSummary = {
+      id: "later",
+      label: "Later",
+      providerId: "test",
+      accountIdentity: { providerUserId: "x" },
+      audience: [],
+      injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
+      bindings: [],
+      scopes: [],
+      metadata: {},
+      createdAt: Date.now(),
+    } as unknown as StoredCredentialSummary;
+
+    const rpc: RpcCaller = {
+      call: (async <T = unknown>(_t: string, method: string): Promise<T> => {
+        if (method === "credentials.resolveCredential") {
+          return (credentialRegistered ? credential : null) as unknown as T;
+        }
+        throw new Error(`unexpected method: ${method}`);
+      }) as RpcCaller["call"],
+      streamCall: async () => jsonResponse({ login: "u", id: 1 }),
+    };
+    const github = createGitHubClient(createCredentialClient(rpc));
+
+    // First call rejects.
+    await expect(github.getUser()).rejects.toThrow(/No URL-bound credential found/);
+
+    // Register credential mid-session.
+    credentialRegistered = true;
+
+    // Second call must succeed — the factory must NOT cache the
+    // rejected promise from the first attempt.
+    const user = await github.getUser();
+    expect(user.login).toBe("u");
+  });
+});
+
 describe("createCalendarClient", () => {
   it("memoizes the credential handle across method calls", async () => {
     const { credentials, stats } = makeMockEnv(() =>

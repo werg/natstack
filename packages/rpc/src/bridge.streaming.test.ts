@@ -196,6 +196,94 @@ describe("createRpcBridge streaming", () => {
     expect(observedAbortReason).toBeDefined();
   });
 
+  it("times out a stalled stream that never sends HEAD", async () => {
+    const transport: RpcTransport = {
+      send: vi.fn().mockResolvedValue(undefined),
+      onMessage: vi.fn().mockReturnValue(vi.fn()),
+      onAnyMessage: vi.fn().mockReturnValue(vi.fn()),
+    };
+    const bridge = createRpcBridge({
+      selfId: "client",
+      transport,
+      // Very short idle timeout so the test runs quickly. Real
+      // deployments use the 90s default.
+      streamIdleTimeoutMs: 30,
+    });
+
+    // Peer never responds with a frame. The streamCall promise
+    // should reject after the idle window.
+    await expect(
+      bridge.streamCall("server", "credentials.proxyFetch", [
+        { url: "https://example.com/", method: "GET" },
+      ]),
+    ).rejects.toThrow(/timed out — no frames received/);
+  });
+
+  it("re-arms the idle timer on each incoming frame", async () => {
+    const transport: RpcTransport = {
+      send: vi.fn().mockResolvedValue(undefined),
+      onMessage: vi.fn().mockReturnValue(vi.fn()),
+      onAnyMessage: vi.fn().mockReturnValue(vi.fn()),
+    };
+    const bridge = createRpcBridge({
+      selfId: "client",
+      transport,
+      streamIdleTimeoutMs: 30,
+    });
+    const handler = captureOnAnyMessageHandler(transport);
+
+    const callPromise = bridge.streamCall("server", "credentials.proxyFetch", [
+      { url: "https://example.com/", method: "GET" },
+    ]);
+
+    // Extract the requestId of the outbound stream-request so we can
+    // tag returning frames with the same id.
+    const sentRequest = vi.mocked(transport.send).mock.calls[0]![1] as RpcStreamRequest;
+    expect(sentRequest.type).toBe("stream-request");
+
+    // Send a HEAD frame within the idle window — that should both
+    // resolve the streamCall promise AND re-arm the timer.
+    await new Promise((r) => setTimeout(r, 15));
+    handler("server", {
+      type: "stream-frame",
+      requestId: sentRequest.requestId,
+      fromId: "server",
+      frameType: 0x01,
+      payload: JSON.stringify({
+        status: 200,
+        statusText: "OK",
+        headerPairs: [],
+        finalUrl: "",
+      }),
+    });
+
+    const response = await callPromise;
+    expect(response.status).toBe(200);
+
+    // Now wait past the original idle window — the timer should
+    // have been re-armed when HEAD arrived, so the stream is still
+    // alive at this point. Send another frame to confirm.
+    await new Promise((r) => setTimeout(r, 20));
+    handler("server", {
+      type: "stream-frame",
+      requestId: sentRequest.requestId,
+      fromId: "server",
+      frameType: 0x02,
+      payload: bytesToBase64(new Uint8Array([0x68, 0x69])),
+    });
+    // Close the stream cleanly so we don't leave it pending.
+    handler("server", {
+      type: "stream-frame",
+      requestId: sentRequest.requestId,
+      fromId: "server",
+      frameType: 0x03,
+      payload: JSON.stringify({ bytesIn: 2 }),
+    });
+
+    const text = await response.text();
+    expect(text).toBe("hi");
+  });
+
   it("encodes DATA chunks as base64 in the wire frames", async () => {
     const transport: RpcTransport = {
       send: vi.fn().mockResolvedValue(undefined),

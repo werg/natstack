@@ -84,6 +84,14 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
       bodyClosed: boolean;
       /** Cleared and rearmed on every incoming frame. */
       idleTimer: ReturnType<typeof setTimeout> | null;
+      /**
+       * Caller-supplied cleanup. Called once when the stream
+       * terminates (END/ERROR/idle timeout/cancel). Typically
+       * removes the AbortSignal listener registered when the call
+       * was initiated, so a long-lived AbortSignal doesn't
+       * accumulate one listener per streamCall.
+       */
+      cleanup: () => void;
     }
   >();
 
@@ -91,6 +99,11 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
     const entry = pendingStreams.get(requestId);
     if (!entry) return;
     if (entry.idleTimer) clearTimeout(entry.idleTimer);
+    try {
+      entry.cleanup();
+    } catch {
+      // ignore — cleanup should be best-effort
+    }
     pendingStreams.delete(requestId);
   }
 
@@ -432,21 +445,6 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
         },
       });
 
-      // Register the entry BEFORE sending the request — otherwise an
-      // unusually fast peer could send the HEAD frame back before the
-      // Map has the lookup key.
-      pendingStreams.set(requestId, {
-        controller: bodyController!,
-        resolveHead,
-        rejectHead,
-        headEmitted: false,
-        bodyClosed: false,
-        idleTimer: null,
-      });
-      // Arm the idle timer immediately — if the peer never sends a
-      // HEAD frame, we'll bail out instead of hanging forever.
-      rearmStreamIdleTimer(requestId);
-
       const onAbort = (): void => {
         const entry = pendingStreams.get(requestId);
         if (!entry) return;
@@ -460,7 +458,27 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
         clearPendingStream(requestId);
         sendCancel();
       };
-      options?.signal?.addEventListener("abort", onAbort);
+      const signal = options?.signal;
+      signal?.addEventListener("abort", onAbort);
+      const cleanup = (): void => {
+        signal?.removeEventListener("abort", onAbort);
+      };
+
+      // Register the entry BEFORE sending the request — otherwise an
+      // unusually fast peer could send the HEAD frame back before the
+      // Map has the lookup key.
+      pendingStreams.set(requestId, {
+        controller: bodyController!,
+        resolveHead,
+        rejectHead,
+        headEmitted: false,
+        bodyClosed: false,
+        idleTimer: null,
+        cleanup,
+      });
+      // Arm the idle timer immediately — if the peer never sends a
+      // HEAD frame, we'll bail out instead of hanging forever.
+      rearmStreamIdleTimer(requestId);
 
       const request: RpcStreamRequest = {
         type: "stream-request",
@@ -477,29 +495,29 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
         throw err;
       }
 
-      try {
-        const head = await headPromise;
-        const response = new Response(stream as BodyInit, {
-          status: head.status,
-          statusText: head.statusText,
-          headers: new Headers(head.headerPairs),
-        });
-        if (head.finalUrl) {
-          try {
-            Object.defineProperty(response, "url", {
-              value: head.finalUrl,
-              writable: false,
-              configurable: true,
-            });
-          } catch {
-            // ignore — runtime locked the descriptor
-          }
+      // No try/finally for abort-listener cleanup: the listener has
+      // to stay registered while the body keeps draining (so a
+      // mid-stream abort can still propagate). It's removed via the
+      // `cleanup` hook in `clearPendingStream` when the stream
+      // terminates (END/ERROR/idle timeout/cancel).
+      const head = await headPromise;
+      const response = new Response(stream as BodyInit, {
+        status: head.status,
+        statusText: head.statusText,
+        headers: new Headers(head.headerPairs),
+      });
+      if (head.finalUrl) {
+        try {
+          Object.defineProperty(response, "url", {
+            value: head.finalUrl,
+            writable: false,
+            configurable: true,
+          });
+        } catch {
+          // ignore — runtime locked the descriptor
         }
-        return response;
-      } finally {
-        // Abort listener stays registered while the body is draining;
-        // it'll fire on a late abort to propagate cancel to the peer.
       }
+      return response;
     },
 
     exposeStreamingMethod(method: string, handler: StreamingMethodHandler): void {

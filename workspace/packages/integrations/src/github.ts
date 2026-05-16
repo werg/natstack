@@ -192,10 +192,17 @@ export function createGitHubClient(credentials: CredentialClient): GitHubClient 
   let handlePromise: Promise<UrlCredentialHandle> | null = null;
   const handle = (): Promise<UrlCredentialHandle> => {
     if (!handlePromise) {
-      handlePromise = credentials.forAudience({
+      const p = credentials.forAudience({
         ...githubCredential,
         label: githubCredential.displayName,
       });
+      // Cache resolved success; clear the cache on rejection so a
+      // later call can retry after the user (e.g.) registers a
+      // credential mid-session.
+      p.catch(() => {
+        if (handlePromise === p) handlePromise = null;
+      });
+      handlePromise = p;
     }
     return handlePromise;
   };

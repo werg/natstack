@@ -179,10 +179,16 @@ export function createCalendarClient(credentials: CredentialClient): CalendarCli
   let handlePromise: Promise<UrlCredentialHandle> | null = null;
   const handle = (): Promise<UrlCredentialHandle> => {
     if (!handlePromise) {
-      handlePromise = credentials.forAudience({
+      const p = credentials.forAudience({
         ...googleWorkspaceCredential,
         label: googleWorkspaceCredential.displayName,
       });
+      // Cache success only; let the user retry after registering
+      // a credential mid-session.
+      p.catch(() => {
+        if (handlePromise === p) handlePromise = null;
+      });
+      handlePromise = p;
     }
     return handlePromise;
   };
