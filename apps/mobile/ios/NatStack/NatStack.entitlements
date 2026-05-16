@@ -17,8 +17,8 @@
 		`mode=developer` cuts Apple's CDN out of the loop on debug builds so
 		you can iterate on AASA without waiting hours for re-fetch; release
 		builds MUST drop that suffix.
-		TODO(security-audit-wave3-agent-c): keep `?mode=developer` on dev,
-		strip on release. Switch via xcconfig if needed.
+		TODO(release): keep `?mode=developer` on dev, strip on release.
+		Switch via xcconfig if needed.
 	-->
 	<key>com.apple.developer.associated-domains</key>
 	<array>

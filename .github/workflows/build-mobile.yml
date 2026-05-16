@@ -100,12 +100,12 @@ jobs:
         # Passwords are injected via ORG_GRADLE_PROJECT_* so Gradle picks
         # them up as project properties (`RELEASE_STORE_PASSWORD`,
         # `RELEASE_KEY_PASSWORD`) without touching gradle.properties.
-        # TODO(security-audit-agent-5): apps/mobile/android/app/build.gradle
-        # currently reads `RELEASE_STORE_PASSWORD` / `RELEASE_KEY_PASSWORD`
-        # via `project.hasProperty(...)`. ORG_GRADLE_PROJECT_<name> env
-        # vars surface as project properties in Gradle, so the existing
-        # build script keeps working unchanged. If the script is ever
-        # refactored to read from `gradle.properties` directly via
+        # NOTE: apps/mobile/android/app/build.gradle currently reads
+        # `RELEASE_STORE_PASSWORD` / `RELEASE_KEY_PASSWORD` via
+        # `project.hasProperty(...)`. ORG_GRADLE_PROJECT_<name> env vars
+        # surface as project properties in Gradle, so the existing build
+        # script keeps working unchanged. If the script is ever refactored
+        # to read from `gradle.properties` directly via
         # `Properties().load(file(...))`, this env-passing approach will
         # break — keep the two paths in sync.
         env:
