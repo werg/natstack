@@ -16,34 +16,9 @@ export interface HttpRpcBridgeConfig {
   authToken: string;
 }
 
-/**
- * Extension to `RpcBridge` for transports that can stream a response
- * body. Currently HTTP-only; WebSocket / IPC transports return false
- * from `supportsStreaming()` and `streamCall` throws.
- */
-export interface StreamingRpcBridge {
-  supportsStreaming(): boolean;
-  /**
-   * Streaming variant of `call`. Returns a `Response` whose body is a
-   * `ReadableStream<Uint8Array>` of the upstream's response body, with
-   * `status`, `statusText`, `headers`, and `url` reflecting the
-   * upstream response (post-redirect URL via `Response.url`).
-   *
-   * Only `credentials.proxyFetch` is currently allowed on the server
-   * side; other methods will get a 400 back.
-   */
-  streamCall(
-    targetId: string,
-    method: string,
-    args: unknown,
-    options?: { signal?: AbortSignal },
-  ): Promise<Response>;
-}
-
-export function createHttpRpcBridge(config: HttpRpcBridgeConfig): RpcBridge &
-  StreamingRpcBridge & {
-    handleIncomingPost(body: unknown): Promise<unknown>;
-  } {
+export function createHttpRpcBridge(config: HttpRpcBridgeConfig): RpcBridge & {
+  handleIncomingPost(body: unknown): Promise<unknown>;
+} {
   const { selfId, serverUrl, authToken } = config;
   const methodHandlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
   const eventListeners = new Map<string, Set<(fromId: string, payload: unknown) => void>>();
@@ -115,46 +90,62 @@ export function createHttpRpcBridge(config: HttpRpcBridgeConfig): RpcBridge &
       return postToServer({ type: "call", targetId, method, args }) as Promise<T>;
     },
 
-    supportsStreaming() {
-      return true;
-    },
-
+    /**
+     * Streaming call over HTTP. Posts to `/rpc/stream` and returns the
+     * raw binary-framed response — `decodeFramedResponseToStreaming`
+     * (in `@natstack/shared/credentials/streamFraming`) decodes it
+     * into a `Response` with a real ReadableStream body. This is the
+     * only bridge that physically streams today; transport-based
+     * bridges (createRpcBridge) provide an API-compatible buffered
+     * wrapper.
+     */
     async streamCall(
       targetId: string,
       method: string,
-      args: unknown,
+      args: unknown[],
       options?: { signal?: AbortSignal },
     ): Promise<Response> {
       if (targetId === selfId) {
         throw new Error("streamCall is not supported for local dispatch");
       }
-      const response = await rpcFetch(`${serverUrl}/rpc/stream`, {
+      const wireResponse = await rpcFetch(`${serverUrl}/rpc/stream`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${authToken}`,
         },
-        body: JSON.stringify({ targetId, method, args: Array.isArray(args) ? args : [args] }),
+        body: JSON.stringify({ targetId, method, args }),
         signal: options?.signal,
       });
-      if (response.status === 401) {
-        // Drain so we don't leak the connection.
-        await response.text().catch(() => "");
+      if (wireResponse.status === 401) {
+        await wireResponse.text().catch(() => "");
         throw new Error("RPC streaming authentication failed");
       }
-      if (!response.ok) {
+      if (!wireResponse.ok) {
         let detail = "";
         try {
-          const text = await response.text();
-          detail = text;
+          detail = await wireResponse.text();
         } catch {
           // ignore
         }
         throw new Error(
-          `RPC streaming endpoint returned HTTP ${response.status}${detail ? `: ${detail}` : ""}`,
+          `RPC streaming endpoint returned HTTP ${wireResponse.status}${detail ? `: ${detail}` : ""}`,
         );
       }
-      return response;
+      // Decode the binary-framed body into a Response with a real
+      // ReadableStream. The caller sees the same Response API
+      // regardless of which bridge they went through.
+      const wireBody = wireResponse.body;
+      if (!wireBody) {
+        throw new Error("RPC streaming response has no body");
+      }
+      const { decodeFramedResponseToStreaming } = await import(
+        "@natstack/shared/credentials/streamFraming"
+      );
+      // The HTTP bridge doesn't have the requested URL handy here —
+      // pass the empty string and let the HEAD frame's finalUrl be
+      // the source of truth.
+      return decodeFramedResponseToStreaming(wireBody, "", options?.signal ?? null);
     },
 
     async emit(targetId: string, event: string, payload: unknown): Promise<void> {

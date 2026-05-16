@@ -129,6 +129,72 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
       });
     },
 
+    /**
+     * Streaming call over a transport-based bridge.
+     *
+     * Today this is a uniform API wrapper, not a protocol-level
+     * streaming implementation: the underlying `call` round-trip
+     * returns the buffered wire shape produced by `credentials.proxyFetch`
+     * (status / headerPairs / finalUrl / bodyBase64), and the result is
+     * wrapped in a `Response` whose body is a synthetic ReadableStream.
+     *
+     * This is intentional. The transport-based bridge runs over
+     * Electron IPC or WebSocket, and adding protocol-level streaming
+     * (new stream-request / stream-frame messages, server-side
+     * streaming dispatch, frame routing on the bridge) is a separate
+     * piece of infrastructure work. The API surface is what callers
+     * actually depend on; making `streamCall` available uniformly on
+     * every bridge lets the shared credentials client drop its
+     * "supportsStreaming" duck-typing and call `streamCall`
+     * unconditionally. When real IPC streaming lands, this method
+     * will switch to it transparently.
+     */
+    async streamCall(
+      targetId: string,
+      method: string,
+      args: unknown[],
+      _options?: { signal?: AbortSignal },
+    ): Promise<Response> {
+      const result = await (this as { call<T>(targetId: string, method: string, ...args: unknown[]): Promise<T> }).call<{
+        status: number;
+        statusText: string;
+        headerPairs?: Array<[string, string]>;
+        finalUrl?: string;
+        bodyBase64?: string;
+      }>(targetId, method, ...args);
+      const bytes = result.bodyBase64
+        ? (() => {
+            const binary = atob(result.bodyBase64!);
+            const buf = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
+            return buf;
+          })()
+        : new Uint8Array(0);
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          if (bytes.byteLength > 0) controller.enqueue(bytes);
+          controller.close();
+        },
+      });
+      const response = new Response(body as BodyInit, {
+        status: result.status,
+        statusText: result.statusText,
+        headers: new Headers(result.headerPairs ?? []),
+      });
+      if (result.finalUrl) {
+        try {
+          Object.defineProperty(response, "url", {
+            value: result.finalUrl,
+            writable: false,
+            configurable: true,
+          });
+        } catch {
+          // ignore — runtime locked the descriptor
+        }
+      }
+      return response;
+    },
+
     async emit(targetId: string, event: string, payload: unknown): Promise<void> {
       const message: RpcEvent = {
         type: "event",

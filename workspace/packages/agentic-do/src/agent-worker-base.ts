@@ -393,6 +393,14 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       call: <T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T> => {
         return this.rpc.call<T>(targetId, method, ...args);
       },
+      streamCall: (
+        targetId: string,
+        method: string,
+        args: unknown[],
+        options?: { signal?: AbortSignal },
+      ): Promise<Response> => {
+        return this.rpc.streamCall(targetId, method, args, options);
+      },
     };
 
     this.identity = new DOIdentity(this.sql);
@@ -707,321 +715,23 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       }
       headers.delete("authorization");
 
-      const proxyArgs = {
-        url: targetUrl.toString(),
+      // Route through the credentialed client. The shared client uses
+      // `rpc.streamCall` so model SSE responses arrive as a real
+      // ReadableStream (HTTP transport) — without this the model SDK
+      // would either block until the completion finishes or buffer
+      // the entire event stream before yielding the first token.
+      const upstream = await this.credentials.fetch(targetUrl.toString(), {
         method: request.method,
-        headers: Object.fromEntries(headers.entries()),
-        body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.text(),
-      };
-
-      // Streaming path so model SSE responses round-trip as a real
-      // ReadableStream rather than a fully-buffered string. Without
-      // this, `await response.body.getReader()` in the model SDK would
-      // either block until the completion finishes or read the entire
-      // event stream into memory before yielding the first token.
-      const streamingRpc = this.rpc as unknown as {
-        supportsStreaming?(): boolean;
-        streamCall?(
-          targetId: string,
-          method: string,
-          args: unknown,
-          options?: { signal?: AbortSignal },
-        ): Promise<Response>;
-      };
-      if (
-        typeof streamingRpc.supportsStreaming === "function" &&
-        streamingRpc.supportsStreaming() &&
-        typeof streamingRpc.streamCall === "function"
-      ) {
-        const wireResponse = await streamingRpc.streamCall(
-          "main",
-          "credentials.proxyFetch",
-          [proxyArgs],
-        );
-        return await this.decodeStreamingResponse(wireResponse, targetUrl.toString());
-      }
-
-      // Buffered fallback for transports without streaming.
-      const result = await this.rpc.call<{
-        status: number;
-        statusText: string;
-        headerPairs: Array<[string, string]>;
-        finalUrl: string;
-        bodyBase64: string;
-      }>("main", "credentials.proxyFetch", proxyArgs);
-      const responseBytes = result.bodyBase64
-        ? Buffer.from(result.bodyBase64, "base64")
-        : new Uint8Array(0);
-      return new Response(responseBytes, {
-        status: result.status,
-        statusText: result.statusText,
-        headers: new Headers(result.headerPairs),
+        headers,
+        body:
+          request.method === "GET" || request.method === "HEAD"
+            ? undefined
+            : await request.text(),
       });
+      return upstream;
     };
 
     globals.__natstackModelFetchProxyInstalled = true;
-  }
-
-  /**
-   * Builds a streaming-capable credentialed fetcher. Routes through
-   * `main:credentials.proxyFetch` so the host (a) attaches auth by
-   * URL-audience matching against stored credentials, (b) audits the
-   * egress, and (c) — when the underlying RPC transport supports
-   * streaming — pipes the upstream response body straight through as
-   * a ReadableStream rather than buffering it.
-   *
-   * Streaming matters because this fetcher carries:
-   *   - search provider JSON (Tavily / Brave / Exa) — small, fine
-   *     either way
-   *   - arbitrary `web_fetch` HTML/PDF — can hit tens of MB
-   *   - the model SDK's SSE responses, when the user has registered a
-   *     model credential audience-matched to the model URL. Without
-   *     streaming the agent would block until the full completion
-   *     arrived before any tokens were observable.
-   *
-   * The harness never sees credential values — auth injection happens
-   * host-side based on the target URL.
-   */
-  private buildCredentialedFetcher(): typeof fetch {
-    const rpc = this.rpc as unknown as {
-      call<T>(targetId: string, method: string, ...args: unknown[]): Promise<T>;
-      supportsStreaming?(): boolean;
-      streamCall?(
-        targetId: string,
-        method: string,
-        args: unknown,
-        options?: { signal?: AbortSignal },
-      ): Promise<Response>;
-    };
-
-    return (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const request = new Request(input as RequestInfo, init);
-      const headerEntries: Record<string, string> = {};
-      request.headers.forEach((value, key) => {
-        headerEntries[key] = value;
-      });
-      let body: string | undefined;
-      let bodyBase64: string | undefined;
-      if (request.method !== "GET" && request.method !== "HEAD") {
-        const bytes = new Uint8Array(await request.arrayBuffer());
-        if (bytes.byteLength > 0) {
-          const ct = request.headers.get("content-type") ?? "";
-          if (ct.startsWith("text/") || ct.includes("json") || ct.includes("xml") || ct.includes("urlencoded")) {
-            body = new TextDecoder().decode(bytes);
-          } else {
-            bodyBase64 = Buffer.from(bytes).toString("base64");
-          }
-        }
-      }
-      const args = {
-        url: request.url,
-        method: request.method,
-        headers: headerEntries,
-        body,
-        bodyBase64,
-      };
-
-      // Streaming path — propagates the upstream body as a real
-      // ReadableStream. Available whenever the RPC bridge has the
-      // streaming extension (HTTP transport currently).
-      if (
-        typeof rpc.supportsStreaming === "function" &&
-        rpc.supportsStreaming() &&
-        typeof rpc.streamCall === "function"
-      ) {
-        const wireResponse = await rpc.streamCall(
-          "main",
-          "credentials.proxyFetch",
-          [args],
-          { signal: init?.signal ?? undefined },
-        );
-        return await this.decodeStreamingResponse(wireResponse, request.url, init?.signal);
-      }
-
-      // Buffered fallback (only reached if a transport without streaming
-      // is wired up — we don't ship one currently, but keep the path
-      // for symmetry with the shared client).
-      const result = await rpc.call<{
-        status: number;
-        statusText: string;
-        headerPairs: Array<[string, string]>;
-        finalUrl: string;
-        bodyBase64: string;
-      }>("main", "credentials.proxyFetch", args);
-      const responseBytes = result.bodyBase64
-        ? Buffer.from(result.bodyBase64, "base64")
-        : new Uint8Array(0);
-      const response = new Response(responseBytes, {
-        status: result.status,
-        statusText: result.statusText,
-        headers: new Headers(result.headerPairs),
-      });
-      if (result.finalUrl) {
-        try {
-          Object.defineProperty(response, "url", {
-            value: result.finalUrl,
-            writable: false,
-            configurable: true,
-          });
-        } catch {
-          // Best-effort; some runtimes lock the descriptor.
-        }
-      }
-      return response;
-    }) as typeof fetch;
-  }
-
-  /**
-   * Decode the binary-framed streaming response from `POST /rpc/stream`
-   * into a Response whose body is a real ReadableStream. Resolves as
-   * soon as the HEAD frame arrives so the caller has status + headers
-   * immediately; the body keeps draining in the background.
-   *
-   * This mirrors `decodeStreamingResponse` in the shared credentials
-   * client. Duplicated here because the DO's worker bundle can't
-   * easily import the shared client's internal helper (it would pull
-   * the buffered `proxyFetch` along too).
-   */
-  private async decodeStreamingResponse(
-    wireResponse: Response,
-    requestedUrl: string,
-    callerSignal?: AbortSignal | null,
-  ): Promise<Response> {
-    const wireBody = wireResponse.body;
-    if (!wireBody) {
-      throw new Error("Streaming RPC response has no body");
-    }
-    const {
-      FRAME_HEAD,
-      FRAME_DATA,
-      FRAME_END,
-      FRAME_ERROR,
-      FrameDecoder,
-      parseHeadFrame,
-      parseErrorFrame,
-    } = await import("@natstack/shared/credentials/streamFraming");
-
-    type Head = ReturnType<typeof parseHeadFrame>;
-    let resolveHead!: (h: Head | null) => void;
-    let rejectHead!: (e: unknown) => void;
-    const headPromise = new Promise<Head | null>((resolve, reject) => {
-      resolveHead = resolve;
-      rejectHead = reject;
-    });
-
-    let bodyController: ReadableStreamDefaultController<Uint8Array> | null = null;
-    let bodyClosed = false;
-    let firstFrameSeen = false;
-    const closeBody = () => {
-      if (bodyClosed) return;
-      bodyClosed = true;
-      bodyController?.close();
-    };
-    const errorBody = (err: unknown) => {
-      if (bodyClosed) return;
-      bodyClosed = true;
-      bodyController?.error(err);
-    };
-
-    const decoder = new FrameDecoder((type, payload) => {
-      firstFrameSeen = true;
-      if (type === FRAME_HEAD) {
-        try {
-          resolveHead(parseHeadFrame(payload));
-        } catch (err) {
-          rejectHead(err);
-        }
-        return;
-      }
-      if (type === FRAME_DATA) {
-        const copy = new Uint8Array(payload.byteLength);
-        copy.set(payload);
-        bodyController?.enqueue(copy);
-        return;
-      }
-      if (type === FRAME_END) {
-        closeBody();
-        return;
-      }
-      if (type === FRAME_ERROR) {
-        let parsed: { status: number; message: string; code?: string };
-        try {
-          parsed = parseErrorFrame(payload);
-        } catch {
-          parsed = { status: 502, message: "Streaming proxy fetch error" };
-        }
-        const error = new Error(parsed.message);
-        (error as Error & { code?: string }).code = parsed.code;
-        if (firstFrameSeen && bodyController) {
-          errorBody(error);
-        } else {
-          rejectHead(error);
-        }
-      }
-    });
-
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        bodyController = controller;
-      },
-      cancel() {
-        closeBody();
-        wireBody.cancel().catch(() => {});
-      },
-    });
-
-    void (async () => {
-      const reader = wireBody.getReader();
-      const onAbort = () => {
-        reader.cancel().catch(() => {});
-      };
-      callerSignal?.addEventListener("abort", onAbort);
-      try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          if (value && value.byteLength > 0) {
-            await decoder.push(value);
-          }
-        }
-        if (!bodyClosed) closeBody();
-        resolveHead(null);
-      } catch (err) {
-        if (firstFrameSeen) {
-          errorBody(err);
-        } else {
-          rejectHead(err);
-        }
-      } finally {
-        callerSignal?.removeEventListener("abort", onAbort);
-        try {
-          reader.releaseLock();
-        } catch {
-          // ignore
-        }
-      }
-    })();
-
-    const head = await headPromise;
-    if (!head) {
-      throw new Error("Streaming proxy fetch returned no HEAD frame");
-    }
-    const response = new Response(stream as BodyInit, {
-      status: head.status,
-      statusText: head.statusText,
-      headers: new Headers(head.headerPairs),
-    });
-    const finalUrl = head.finalUrl || requestedUrl;
-    try {
-      Object.defineProperty(response, "url", {
-        value: finalUrl,
-        writable: false,
-        configurable: true,
-      });
-    } catch {
-      // ignore — runtime locked the descriptor
-    }
-    return response;
   }
 
   protected getApprovalLevel(channelId: string): ApprovalLevel {
@@ -1368,6 +1078,8 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       rpc: {
         call: <T = unknown>(target: string, method: string, ...args: unknown[]): Promise<T> =>
           this.rpc.call<T>(target, method, ...args),
+        streamCall: (target, method, args, options) =>
+          this.rpc.streamCall(target, method, args, options),
       },
       fs: this.fs,
       uiCallbacks: this.buildUICallbacks(channelId),
@@ -1398,7 +1110,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           return false;
         }
       },
-      fetcher: this.buildCredentialedFetcher(),
+      // Credentialed fetcher — `this.credentials.fetch` is bound to
+      // this DO's RPC bridge (`this.rpc`) via createCredentialClient
+      // and routes through `rpc.streamCall` so HTTP transport gives
+      // real streaming and other transports synthesize a Response
+      // uniformly. The harness never sees credential values.
+      fetcher: this.credentials.fetch.bind(this.credentials) as typeof fetch,
       thinkingLevel: this.getThinkingLevel(),
       ...this.getRunnerPromptConfig(channelId),
       approvalLevel: this.getApprovalLevel(channelId),

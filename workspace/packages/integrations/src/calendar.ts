@@ -94,13 +94,16 @@ export interface StartPollingOptions {
   onError?: (error: Error) => void | Promise<void>;
 }
 
-let googleWorkspace: UrlCredentialClient | undefined;
-
-async function ensureAuth(): Promise<UrlCredentialClient> {
-  if (!googleWorkspace) {
-    googleWorkspace = await getUrlCredentialClient(googleWorkspaceCredential);
-  }
-  return googleWorkspace;
+/**
+ * Resolve a Google-Workspace-bound credential handle from a per-context
+ * `CredentialClient` (a DO's `this.credentials` or a workerd worker's
+ * `runtime.credentials`). The previous module-singleton path was
+ * removed — see the note in `worker/credentials.ts` for the rationale.
+ */
+export function getGoogleWorkspaceCredentialClient(
+  credentials: import("../../runtime/src/shared/credentials.js").CredentialClient,
+): Promise<UrlCredentialClient> {
+  return getUrlCredentialClient(credentials, googleWorkspaceCredential);
 }
 
 class GoogleCalendarApiError extends Error {
@@ -167,10 +170,11 @@ function buildEventsQuery(options: ListEventsOptions = {}): string {
 }
 
 async function calendarFetch<T>(
+  auth: UrlCredentialClient,
   path: string,
   init: RequestInit = {},
 ): Promise<T> {
-  const handle = await ensureAuth();
+  const handle = auth;
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
 
@@ -194,13 +198,14 @@ async function calendarFetch<T>(
   return (await response.json()) as T;
 }
 
-export async function listCalendars(): Promise<CalendarListEntry[]> {
+export async function listCalendars(auth: UrlCredentialClient): Promise<CalendarListEntry[]> {
   const calendars: CalendarListEntry[] = [];
   let pageToken: string | undefined;
 
   do {
     const query = pageToken ? `?${new URLSearchParams({ pageToken }).toString()}` : "";
     const page = await calendarFetch<CalendarListResponse>(
+      auth,
       `/users/me/calendarList${query}`,
     );
 
@@ -212,6 +217,7 @@ export async function listCalendars(): Promise<CalendarListEntry[]> {
 }
 
 export async function listEvents(
+  auth: UrlCredentialClient,
   calendarId: string,
   options: ListEventsOptions = {},
 ): Promise<ListEventsResult> {
@@ -227,6 +233,7 @@ export async function listEvents(
 
     const query = params.toString();
     const page = await calendarFetch<EventsListResponse>(
+      auth,
       `/calendars/${encodePathSegment(calendarId)}/events${query ? `?${query}` : ""}`,
     );
 
@@ -241,19 +248,23 @@ export async function listEvents(
 }
 
 export async function getEvent(
+  auth: UrlCredentialClient,
   calendarId: string,
   eventId: string,
 ): Promise<CalendarEvent> {
   return calendarFetch<CalendarEvent>(
+    auth,
     `/calendars/${encodePathSegment(calendarId)}/events/${encodePathSegment(eventId)}`,
   );
 }
 
 export async function createEvent(
+  auth: UrlCredentialClient,
   calendarId: string,
   event: CalendarEvent,
 ): Promise<CalendarEvent> {
   return calendarFetch<CalendarEvent>(
+    auth,
     `/calendars/${encodePathSegment(calendarId)}/events`,
     {
       method: "POST",
@@ -263,11 +274,13 @@ export async function createEvent(
 }
 
 export async function updateEvent(
+  auth: UrlCredentialClient,
   calendarId: string,
   eventId: string,
   event: CalendarEvent,
 ): Promise<CalendarEvent> {
   return calendarFetch<CalendarEvent>(
+    auth,
     `/calendars/${encodePathSegment(calendarId)}/events/${encodePathSegment(eventId)}`,
     {
       method: "PUT",
@@ -277,10 +290,12 @@ export async function updateEvent(
 }
 
 export async function deleteEvent(
+  auth: UrlCredentialClient,
   calendarId: string,
   eventId: string,
 ): Promise<void> {
   await calendarFetch<void>(
+    auth,
     `/calendars/${encodePathSegment(calendarId)}/events/${encodePathSegment(eventId)}`,
     {
       method: "DELETE",
@@ -288,7 +303,7 @@ export async function deleteEvent(
   );
 }
 
-export function startPolling(options: StartPollingOptions): () => void {
+export function startPolling(auth: UrlCredentialClient, options: StartPollingOptions): () => void {
   const intervalMs = options.intervalMs ?? 60_000;
   let active = true;
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -306,21 +321,20 @@ export function startPolling(options: StartPollingOptions): () => void {
 
   const poll = async () => {
     try {
-      const handle = await ensureAuth();
       if (
         options.standDownWhenPushActive !== false &&
         syncToken &&
         await hasRecentPushDelivery(
           "google-workspace",
           "events.changed",
-          handle.credentialId,
+          auth.credentialId,
           options.pushQuietWindowMs ?? DEFAULT_PUSH_QUIET_WINDOW_MS,
         )
       ) {
         return;
       }
 
-      const result = await listEvents(options.calendarId, syncToken
+      const result = await listEvents(auth, options.calendarId, syncToken
         ? {
             syncToken,
             maxResults: options.maxResults,

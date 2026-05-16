@@ -52,6 +52,11 @@ type SourceIssueEvent = {
 };
 
 type MirrorIssueParams = {
+  /**
+   * Caller-supplied credential client. Pass `this.credentials` from a
+   * DurableObject or `runtime.credentials` from a workerd worker.
+   */
+  credentials: import("../../runtime/src/shared/credentials.js").CredentialClient;
   sourceOwner: string;
   sourceRepo: string;
   issueNumber: number;
@@ -89,7 +94,10 @@ type CreateOrUpdateIssuePayload = {
 
 const GITHUB_API_FALLBACK = "https://api.github.com";
 
-export async function onSourceIssue(event: SourceIssueEvent): Promise<MirrorIssueResult | { skipped: true; reason: string }> {
+export async function onSourceIssue(
+  event: SourceIssueEvent,
+  credentials: import("../../runtime/src/shared/credentials.js").CredentialClient,
+): Promise<MirrorIssueResult | { skipped: true; reason: string }> {
   if (!shouldMirrorAction(event.action)) {
     return {
       skipped: true,
@@ -110,6 +118,7 @@ export async function onSourceIssue(event: SourceIssueEvent): Promise<MirrorIssu
   }
 
   return mirrorIssue({
+    credentials,
     sourceOwner,
     sourceRepo: event.repository.name,
     issueNumber: event.issue.number,
@@ -119,8 +128,8 @@ export async function onSourceIssue(event: SourceIssueEvent): Promise<MirrorIssu
 }
 
 export async function mirrorIssue(params: MirrorIssueParams): Promise<MirrorIssueResult> {
-  const sourceAuth = await getUrlCredentialClient(githubCredential);
-  const targetAuth = await getUrlCredentialClient(githubCredential);
+  const sourceAuth = await getUrlCredentialClient(params.credentials, githubCredential);
+  const targetAuth = await getUrlCredentialClient(params.credentials, githubCredential);
 
   const sourceIssue = await getIssue(
     sourceAuth,

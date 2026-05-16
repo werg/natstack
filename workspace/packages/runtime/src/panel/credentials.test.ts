@@ -30,7 +30,10 @@ describe("panel credential OAuth API", () => {
       }
       throw new Error(`unexpected method: ${method}`);
     });
-    initPanelCredentials({ call: callMock as RpcCaller["call"] });
+    initPanelCredentials({
+      call: callMock as RpcCaller["call"],
+      streamCall: vi.fn(async () => new Response()) as unknown as RpcCaller["streamCall"],
+    });
 
     await expect(connect({
       flow: {

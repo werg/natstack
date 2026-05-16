@@ -138,3 +138,150 @@ export function parseEndFrame(payload: Uint8Array): EndFramePayload {
 export function parseErrorFrame(payload: Uint8Array): ErrorFramePayload {
   return JSON.parse(textDecoder.decode(payload)) as ErrorFramePayload;
 }
+
+/**
+ * Decode a binary-framed streaming response (whatever transport
+ * delivered it — `POST /rpc/stream` over HTTP, a series of WS
+ * stream-frame messages, etc.) into a `Response` whose body is a
+ * real `ReadableStream<Uint8Array>`.
+ *
+ * The returned promise resolves as soon as the HEAD frame arrives —
+ * the caller has `status` / `statusText` / `headers` / `url`
+ * immediately, while the body keeps draining in the background. The
+ * Response's `url` is set via `Object.defineProperty` since the
+ * `Response` constructor has no `url` option.
+ *
+ * `wireBody` must be the streaming source of frame bytes from
+ * whichever transport the bridge used. The function takes ownership:
+ * the reader is locked, drained to EOF (or until cancelled), and
+ * released.
+ */
+export async function decodeFramedResponseToStreaming(
+  wireBody: ReadableStream<Uint8Array>,
+  requestedUrl: string,
+  callerSignal?: AbortSignal | null,
+): Promise<Response> {
+  let resolveHead!: (h: HeadFramePayload | null) => void;
+  let rejectHead!: (e: unknown) => void;
+  const headPromise = new Promise<HeadFramePayload | null>((resolve, reject) => {
+    resolveHead = resolve;
+    rejectHead = reject;
+  });
+
+  let bodyController: ReadableStreamDefaultController<Uint8Array> | null = null;
+  let bodyClosed = false;
+  let firstFrameSeen = false;
+  const closeBody = (): void => {
+    if (bodyClosed) return;
+    bodyClosed = true;
+    bodyController?.close();
+  };
+  const errorBody = (err: unknown): void => {
+    if (bodyClosed) return;
+    bodyClosed = true;
+    bodyController?.error(err);
+  };
+
+  const decoder = new FrameDecoder((type, payload) => {
+    firstFrameSeen = true;
+    if (type === FRAME_HEAD) {
+      try {
+        resolveHead(parseHeadFrame(payload));
+      } catch (err) {
+        rejectHead(err);
+      }
+      return;
+    }
+    if (type === FRAME_DATA) {
+      // Defensive copy: FrameDecoder slices from an internal buffer
+      // that it'll later discard. Copy so the consumer can hold the
+      // reference safely.
+      const copy = new Uint8Array(payload.byteLength);
+      copy.set(payload);
+      bodyController?.enqueue(copy);
+      return;
+    }
+    if (type === FRAME_END) {
+      closeBody();
+      return;
+    }
+    if (type === FRAME_ERROR) {
+      let parsed: ErrorFramePayload;
+      try {
+        parsed = parseErrorFrame(payload);
+      } catch {
+        parsed = { status: 502, message: "Streaming proxy fetch error" };
+      }
+      const error = new Error(parsed.message);
+      (error as Error & { code?: string }).code = parsed.code;
+      if (firstFrameSeen && bodyController) {
+        errorBody(error);
+      } else {
+        rejectHead(error);
+      }
+    }
+  });
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      bodyController = controller;
+    },
+    cancel() {
+      closeBody();
+      wireBody.cancel().catch(() => {});
+    },
+  });
+
+  void (async () => {
+    const reader = wireBody.getReader();
+    const onAbort = () => {
+      reader.cancel().catch(() => {});
+    };
+    callerSignal?.addEventListener("abort", onAbort);
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value && value.byteLength > 0) {
+          await decoder.push(value);
+        }
+      }
+      if (!bodyClosed) closeBody();
+      resolveHead(null);
+    } catch (err) {
+      if (firstFrameSeen) {
+        errorBody(err);
+      } else {
+        rejectHead(err);
+      }
+    } finally {
+      callerSignal?.removeEventListener("abort", onAbort);
+      try {
+        reader.releaseLock();
+      } catch {
+        // ignore
+      }
+    }
+  })();
+
+  const head = await headPromise;
+  if (!head) {
+    throw new Error("Streaming proxy fetch returned no HEAD frame");
+  }
+  const response = new Response(stream as BodyInit, {
+    status: head.status,
+    statusText: head.statusText,
+    headers: new Headers(head.headerPairs),
+  });
+  const finalUrl = head.finalUrl || requestedUrl;
+  try {
+    Object.defineProperty(response, "url", {
+      value: finalUrl,
+      writable: false,
+      configurable: true,
+    });
+  } catch {
+    // ignore — runtime locked the descriptor
+  }
+  return response;
+}

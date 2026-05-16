@@ -15,12 +15,7 @@
 
 import { DurableObjectBase } from "@workspace/runtime/worker";
 import type { DurableObjectContext } from "@workspace/runtime/worker";
-import {
-  fetch as credentialFetch,
-  listStoredCredentials,
-  resolveCredential,
-  type StoredCredentialSummary,
-} from "@workspace/runtime/worker/credentials";
+import type { StoredCredentialSummary } from "@workspace/runtime/worker/credentials";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -136,9 +131,9 @@ export class EmailSyncWorker extends DurableObjectBase {
     if (existing) {
       return existing;
     }
-    const credentials = await listStoredCredentials();
-    const credential = credentials.find((entry) => entry.id === config.connectionId)
-      ?? await resolveCredential({ url: "https://gmail.googleapis.com/" });
+    const stored = await this.credentials.listStoredCredentials();
+    const credential = stored.find((entry) => entry.id === config.connectionId)
+      ?? await this.credentials.resolveCredential({ url: "https://gmail.googleapis.com/" });
     if (!credential) {
       throw new Error("No URL-bound Gmail credential found for email sync");
     }
@@ -149,7 +144,7 @@ export class EmailSyncWorker extends DurableObjectBase {
   // --- Gmail API (native fetch — DOs have outbound network) ---
 
   private async gmailFetch<T>(path: string, handle: StoredCredentialSummary): Promise<T> {
-    const res = await credentialFetch(`${GMAIL_BASE}${path}`, undefined, { credentialId: handle.id });
+    const res = await this.credentials.fetch(`${GMAIL_BASE}${path}`, undefined, { credentialId: handle.id });
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`Gmail API ${res.status}: ${body}`);

@@ -127,6 +127,20 @@ export interface RpcBridge {
   expose(methods: Record<string, (...args: any[]) => any>): void;
 
   call<T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T>;
+  /**
+   * Streaming call. Returns a `Response` whose body is a real
+   * `ReadableStream<Uint8Array>`. See `RpcCaller.streamCall` for the
+   * contract — `RpcBridge` extends `RpcCaller` so this is required
+   * on every bridge implementation. Transports without protocol-
+   * level streaming wrap their buffered response in a synthetic
+   * stream; the caller's API surface is identical either way.
+   */
+  streamCall(
+    targetId: string,
+    method: string,
+    args: unknown[],
+    options?: { signal?: AbortSignal },
+  ): Promise<Response>;
   emit(targetId: string, event: string, payload: unknown): Promise<void>;
   onEvent(event: string, listener: RpcEventListener): () => void;
 }
@@ -142,6 +156,24 @@ export type CallerKind = "shell" | "panel" | "worker" | "server" | "harness";
 
 export interface RpcCaller {
   call<T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T>;
+  /**
+   * Streaming call. Returns a `Response` whose body is a real
+   * `ReadableStream<Uint8Array>` — the upstream's response bytes,
+   * delivered chunk-by-chunk over whichever transport this caller
+   * uses. Transports that can't physically stream wrap a buffered
+   * response in a synthetic stream so the API surface is uniform
+   * across all bridges (no callers need to duck-type capability).
+   *
+   * Only `credentials.proxyFetch` is currently routed through this
+   * path; other methods continue to use `call` for their JSON
+   * request/response shape.
+   */
+  streamCall(
+    targetId: string,
+    method: string,
+    args: unknown[],
+    options?: { signal?: AbortSignal },
+  ): Promise<Response>;
 }
 
 // =============================================================================
