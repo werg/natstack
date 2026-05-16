@@ -208,6 +208,44 @@ async function getByteRange(
   }
 }
 
+export interface GrepMatch {
+  lineNumber: number;
+  line: string;
+  before: string[];
+  after: string[];
+}
+
+async function grepBlob(
+  blobsDir: string,
+  digest: string,
+  pattern: string,
+  opts: { caseInsensitive?: boolean; contextLines?: number; maxMatches?: number },
+): Promise<GrepMatch[] | null> {
+  const bytes = await getBytes(blobsDir, digest);
+  if (!bytes) return null;
+  const text = bytes.toString("utf8");
+  const lines = text.split(/\r?\n/u);
+  let re: RegExp;
+  try {
+    re = new RegExp(pattern, opts.caseInsensitive ? "iu" : "u");
+  } catch (err) {
+    throw new Error(`Invalid regex: ${(err as Error).message}`);
+  }
+  const context = Math.max(0, Math.min(opts.contextLines ?? 0, 10));
+  const maxMatches = Math.max(1, Math.min(opts.maxMatches ?? 50, 500));
+  const matches: GrepMatch[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (matches.length >= maxMatches) break;
+    if (!re.test(lines[i]!)) continue;
+    const before: string[] = [];
+    for (let j = Math.max(0, i - context); j < i; j++) before.push(lines[j]!);
+    const after: string[] = [];
+    for (let j = i + 1; j < Math.min(lines.length, i + 1 + context); j++) after.push(lines[j]!);
+    matches.push({ lineNumber: i + 1, line: lines[i]!, before, after });
+  }
+  return matches;
+}
+
 async function listBlobs(
   blobsDir: string,
   opts?: { prefix?: string; limit?: number }
@@ -315,6 +353,30 @@ export function createBlobstoreService(deps: BlobstoreServiceDeps): ServiceWithR
         returns: z.string().nullable(),
         policy: READ_POLICY,
       },
+      grep: {
+        args: z.tuple([
+          DigestSchema,
+          z.string(),
+          z
+            .object({
+              caseInsensitive: z.boolean().optional(),
+              contextLines: z.number().int().nonnegative().max(10).optional(),
+              maxMatches: z.number().int().positive().max(500).optional(),
+            })
+            .optional(),
+        ]),
+        returns: z
+          .array(
+            z.object({
+              lineNumber: z.number(),
+              line: z.string(),
+              before: z.array(z.string()),
+              after: z.array(z.string()),
+            }),
+          )
+          .nullable(),
+        policy: READ_POLICY,
+      },
       putBase64: {
         args: z.tuple([Base64Schema]),
         returns: z.object({ digest: z.string(), size: z.number() }),
@@ -353,6 +415,18 @@ export function createBlobstoreService(deps: BlobstoreServiceDeps): ServiceWithR
             args[2] as number,
           );
           return bytes ? bytes.toString("utf8") : null;
+        }
+        case "grep": {
+          return grepBlob(
+            deps.blobsDir,
+            args[0] as string,
+            args[1] as string,
+            (args[2] as {
+              caseInsensitive?: boolean;
+              contextLines?: number;
+              maxMatches?: number;
+            }) ?? {},
+          );
         }
         case "putBase64":
           return putBytes(deps.blobsDir, Buffer.from(args[0] as string, "base64"));

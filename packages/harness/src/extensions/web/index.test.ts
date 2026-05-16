@@ -1,9 +1,17 @@
 import { describe, it, expect, vi } from "vitest";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { createWebToolsExtension } from "./index.js";
-import { parseLiteResults } from "./duckduckgo.js";
+import { parseLiteResults, searchDuckDuckGo, DuckDuckGoBlockedError } from "./duckduckgo.js";
 import { htmlToReadableMarkdown } from "./extract.js";
 import { selectSearchProvider } from "./provider.js";
+
+const FIXTURES_DIR = join(dirname(fileURLToPath(import.meta.url)), "__fixtures__");
+function fixture(name: string): string {
+  return readFileSync(join(FIXTURES_DIR, name), "utf8");
+}
 
 interface MockTool {
   name: string;
@@ -79,6 +87,37 @@ function makeBlobstore() {
           buf.subarray(offset, Math.min(buf.length, offset + limit)).toString("utf8") as T,
         );
       }
+      if (method === "blobstore.grep") {
+        const digest = args[0] as string;
+        const pattern = args[1] as string;
+        const opts = (args[2] as {
+          caseInsensitive?: boolean;
+          contextLines?: number;
+          maxMatches?: number;
+        }) ?? {};
+        const text = store.get(digest);
+        if (text === undefined) return Promise.resolve(null as T);
+        const re = new RegExp(pattern, opts.caseInsensitive ? "iu" : "u");
+        const lines = text.split(/\r?\n/u);
+        const ctx = opts.contextLines ?? 0;
+        const max = opts.maxMatches ?? 50;
+        const matches: Array<{
+          lineNumber: number;
+          line: string;
+          before: string[];
+          after: string[];
+        }> = [];
+        for (let i = 0; i < lines.length && matches.length < max; i++) {
+          if (!re.test(lines[i]!)) continue;
+          matches.push({
+            lineNumber: i + 1,
+            line: lines[i]!,
+            before: lines.slice(Math.max(0, i - ctx), i),
+            after: lines.slice(i + 1, Math.min(lines.length, i + 1 + ctx)),
+          });
+        }
+        return Promise.resolve(matches as T);
+      }
       return Promise.reject(new Error(`unexpected rpc method ${method}`));
     },
   );
@@ -100,7 +139,7 @@ describe("createWebToolsExtension", () => {
   it("uses DuckDuckGo when no API key is available", async () => {
     const { rpc } = makeBlobstore();
     const fetcher = vi.fn(async () =>
-      mockResponse(DDG_LITE_FIXTURE, { contentType: "text/html" }),
+      mockResponse(fixture("ddg-lite-sample.html"), { contentType: "text/html" }),
     ) as unknown as typeof fetch;
     const factory = createWebToolsExtension({ rpc: rpc as never, fetcher });
     const api = createMockApi();
@@ -112,6 +151,73 @@ describe("createWebToolsExtension", () => {
     expect(details.provider).toBe("duckduckgo");
     expect(details.results.length).toBeGreaterThan(0);
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("selects Brave when only BRAVE_API_KEY is set", async () => {
+    const { rpc } = makeBlobstore();
+    const fetcher = vi.fn(async (input: string | URL) => {
+      expect(typeof input === "string" ? input : input.toString()).toContain(
+        "search.brave.com",
+      );
+      return mockResponse(
+        JSON.stringify({
+          web: {
+            results: [
+              {
+                title: "Brave Result",
+                url: "https://brave-example.com",
+                description: "from <em>brave</em>",
+              },
+            ],
+          },
+        }),
+        { contentType: "application/json" },
+      );
+    }) as unknown as typeof fetch;
+    const factory = createWebToolsExtension({
+      rpc: rpc as never,
+      fetcher,
+      getProviderApiKey: (n) => (n === "BRAVE_API_KEY" ? "k" : undefined),
+    });
+    const api = createMockApi();
+    factory(api as never);
+
+    const tool = api.getRegistered().get("web_search")!;
+    const result = await tool.execute("c", { query: "x" }, undefined);
+    const details = result.details as { provider: string; results: Array<{ snippet: string }> };
+    expect(details.provider).toBe("brave");
+    expect(details.results[0]!.snippet).toBe("from brave");
+  });
+
+  it("selects Exa when only EXA_API_KEY is set", async () => {
+    const { rpc } = makeBlobstore();
+    const fetcher = vi.fn(async (input: string | URL) => {
+      expect(typeof input === "string" ? input : input.toString()).toContain("exa.ai");
+      return mockResponse(
+        JSON.stringify({
+          results: [
+            {
+              title: "Exa Result",
+              url: "https://exa-example.com",
+              highlights: ["semantic snippet"],
+            },
+          ],
+        }),
+        { contentType: "application/json" },
+      );
+    }) as unknown as typeof fetch;
+    const factory = createWebToolsExtension({
+      rpc: rpc as never,
+      fetcher,
+      getProviderApiKey: (n) => (n === "EXA_API_KEY" ? "k" : undefined),
+    });
+    const api = createMockApi();
+    factory(api as never);
+    const tool = api.getRegistered().get("web_search")!;
+    const result = await tool.execute("c", { query: "x" }, undefined);
+    const details = result.details as { provider: string; results: Array<{ snippet: string }> };
+    expect(details.provider).toBe("exa");
+    expect(details.results[0]!.snippet).toBe("semantic snippet");
   });
 
   it("auto-upgrades to Tavily when TAVILY_API_KEY is set", async () => {
@@ -231,23 +337,162 @@ describe("createWebToolsExtension", () => {
       tool.execute("call-1", { url: "ftp://example.com/x" }, undefined),
     ).rejects.toThrow(/must start with http/);
   });
+
+  it("web_fetch serves the same URL from the session cache on the second call", async () => {
+    const { rpc, store } = makeBlobstore();
+    const fetcher = vi.fn(async () =>
+      mockResponse(SAMPLE_PAGE_HTML, {
+        contentType: "text/html",
+        url: "https://example.com/spec",
+      }),
+    ) as unknown as typeof fetch;
+    const factory = createWebToolsExtension({ rpc: rpc as never, fetcher });
+    const api = createMockApi();
+    factory(api as never);
+
+    const tool = api.getRegistered().get("web_fetch")!;
+    const first = await tool.execute("call-1", { url: "https://example.com/spec" }, undefined);
+    const second = await tool.execute("call-2", { url: "https://example.com/spec" }, undefined);
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    const f = first.details as { digest: string; served_from_cache?: boolean };
+    const s = second.details as { digest: string; served_from_cache?: boolean };
+    expect(s.digest).toBe(f.digest);
+    expect(f.served_from_cache).toBe(false);
+    expect(s.served_from_cache).toBe(true);
+    expect(store.size).toBe(1);
+  });
+
+  it("paces successive requests to the same host", async () => {
+    const { rpc } = makeBlobstore();
+    let nowMs = 0;
+    const sleeps: number[] = [];
+    const fetcher = vi.fn(async () =>
+      mockResponse(SAMPLE_PAGE_HTML, {
+        contentType: "text/html",
+        url: "https://example.com/a",
+      }),
+    ) as unknown as typeof fetch;
+    const factory = createWebToolsExtension({
+      rpc: rpc as never,
+      fetcher,
+      perHostGapMs: 200,
+      urlCacheTtlMs: 0, // disable URL cache to force a real second fetch
+      now: () => nowMs,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        nowMs += ms;
+      },
+    });
+    const api = createMockApi();
+    factory(api as never);
+
+    const tool = api.getRegistered().get("web_fetch")!;
+    await tool.execute("c1", { url: "https://example.com/a" }, undefined);
+    nowMs += 50; // less than 200ms gap
+    await tool.execute("c2", { url: "https://example.com/a" }, undefined);
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(sleeps[0]).toBeGreaterThan(0);
+    expect(sleeps[0]).toBeLessThanOrEqual(200);
+  });
+
+  it("web_fetch URL cache respects the TTL", async () => {
+    const { rpc } = makeBlobstore();
+    let nowMs = 1000;
+    const fetcher = vi.fn(async () =>
+      mockResponse(SAMPLE_PAGE_HTML, {
+        contentType: "text/html",
+        url: "https://example.com/spec",
+      }),
+    ) as unknown as typeof fetch;
+    const factory = createWebToolsExtension({
+      rpc: rpc as never,
+      fetcher,
+      urlCacheTtlMs: 100,
+      now: () => nowMs,
+    });
+    const api = createMockApi();
+    factory(api as never);
+
+    const tool = api.getRegistered().get("web_fetch")!;
+    await tool.execute("call-1", { url: "https://example.com/spec" }, undefined);
+    nowMs += 200; // past TTL
+    await tool.execute("call-2", { url: "https://example.com/spec" }, undefined);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
 });
 
 describe("parseLiteResults", () => {
-  it("parses DuckDuckGo lite result tables", () => {
-    const results = parseLiteResults(DDG_LITE_FIXTURE, 10);
-    expect(results.length).toBeGreaterThanOrEqual(2);
+  it("parses DuckDuckGo lite (table) result pages", () => {
+    const results = parseLiteResults(fixture("ddg-lite-sample.html"), 10);
+    expect(results.length).toBeGreaterThanOrEqual(3);
     expect(results[0]).toMatchObject({
       title: "Example Domain",
       url: "https://example.com/",
     });
     expect(results[0]!.snippet).toContain("illustrative");
     expect(results[1]!.url).toBe("https://nodejs.org/");
+    expect(results[2]!.url).toBe("https://tc39.es/proposals/");
+  });
+
+  it("parses DuckDuckGo html (div) result pages", () => {
+    const results = parseLiteResults(fixture("ddg-html-sample.html"), 10);
+    expect(results.length).toBe(2);
+    expect(results[0]!.url).toBe("https://example.com/");
+    expect(results[1]!.url).toBe("https://deno.land/");
+    expect(results[1]!.snippet).toContain("Deno");
   });
 
   it("respects the limit", () => {
-    const results = parseLiteResults(DDG_LITE_FIXTURE, 1);
+    const results = parseLiteResults(fixture("ddg-lite-sample.html"), 1);
     expect(results.length).toBe(1);
+  });
+
+  it("returns empty on an anomaly page", () => {
+    const results = parseLiteResults(fixture("ddg-anomaly.html"), 10);
+    expect(results).toEqual([]);
+  });
+});
+
+describe("searchDuckDuckGo", () => {
+  it("throws DuckDuckGoBlockedError on a 429 response", async () => {
+    const fetcher = vi.fn(async () => ({
+      ok: false,
+      status: 429,
+      text: async () => "",
+    }));
+    await expect(
+      searchDuckDuckGo("anything", 5, fetcher as never),
+    ).rejects.toBeInstanceOf(DuckDuckGoBlockedError);
+  });
+
+  it("throws DuckDuckGoBlockedError on an anomaly page", async () => {
+    const fetcher = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => fixture("ddg-anomaly.html"),
+    }));
+    await expect(
+      searchDuckDuckGo("anything", 5, fetcher as never),
+    ).rejects.toBeInstanceOf(DuckDuckGoBlockedError);
+  });
+
+  it("falls back to the html endpoint when lite returns empty", async () => {
+    const calls: string[] = [];
+    const fetcher = vi.fn(async (url: string) => {
+      calls.push(url);
+      if (url.includes("lite.duckduckgo.com")) {
+        return { ok: true, status: 200, text: async () => "<html><body>no hits</body></html>" };
+      }
+      return { ok: true, status: 200, text: async () => fixture("ddg-html-sample.html") };
+    });
+    const results = await searchDuckDuckGo("deno", 5, fetcher as never);
+    expect(results.length).toBe(2);
+    expect(calls.length).toBe(2);
+    expect(calls[0]).toContain("lite.duckduckgo.com");
+    expect(calls[1]).toContain("html.duckduckgo.com");
   });
 });
 
@@ -273,28 +518,6 @@ describe("selectSearchProvider", () => {
     await expect(selectSearchProvider(() => "  ")).resolves.toBe("duckduckgo");
   });
 });
-
-const DDG_LITE_FIXTURE = `
-<html><body>
-<table>
-  <tr>
-    <td>1.&nbsp;</td>
-    <td><a class="result-link" href="https://example.com/">Example Domain</a></td>
-  </tr>
-  <tr>
-    <td colspan="2" class="result-snippet">Example Domain. This domain is for use in illustrative examples in documents.</td>
-  </tr>
-  <tr><td>&nbsp;</td></tr>
-  <tr>
-    <td>2.&nbsp;</td>
-    <td><a class="result-link" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fnodejs.org%2F&rut=abc">Node.js</a></td>
-  </tr>
-  <tr>
-    <td colspan="2" class="result-snippet">Node.js is a JavaScript runtime.</td>
-  </tr>
-</table>
-</body></html>
-`;
 
 const SAMPLE_PAGE_HTML = `
 <!doctype html>

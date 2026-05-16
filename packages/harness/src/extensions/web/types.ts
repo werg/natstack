@@ -4,7 +4,7 @@ export interface SearchResult {
   snippet: string;
 }
 
-export type ProviderName = "duckduckgo" | "tavily";
+export type ProviderName = "duckduckgo" | "tavily" | "brave" | "exa";
 
 export interface SearchProviderInvocation {
   provider: ProviderName;

@@ -40,11 +40,13 @@ Before using eval, read the **sandbox** skill — it has the complete API refere
 
 You have three tools for reaching the open web:
 
-- `web_search({ query, max_results })` — discovery. Returns ranked `{ title, url, snippet }`. Uses DuckDuckGo by default; auto-upgrades to Tavily if `TAVILY_API_KEY` is set.
-- `web_fetch({ url })` — fetches a URL, extracts the main content as markdown, caches the full result in the blobstore, and returns `{ url, title, digest, size, head }`. The `head` is the first few thousand characters; the full markdown is at `digest`.
+- `web_search({ query, max_results })` — discovery. Returns ranked `{ title, url, snippet }`. DuckDuckGo by default; auto-upgrades to Tavily, Brave, or Exa when the matching API key is set in the worker env.
+- `web_fetch({ url })` — fetches a URL, extracts the main content as markdown, caches the full result in the blobstore (URL-deduped within a session), and returns `{ url, title, digest, size, head }`.
 - `web_read({ digest, offset, limit })` — reads a byte range from a previously-fetched page. Use this to drill into a large page without re-fetching it.
 
-Typical flow: `web_search` to find URLs → `web_fetch` on the most promising one → if the head doesn't answer the question, `web_read` further into the cached content. Always cite source URLs in your reply.
+Typical flow: `web_search` to find URLs → `web_fetch` on the most promising one → if the head doesn't answer the question, `web_read` further into the cached content. Always cite source URLs.
+
+For grepping a cached page, targeted searches (GitHub / npm / Stack Overflow), PDF handling, or aux-model summarization, **read the `web-research` skill** — those live as eval recipes, not top-level tools.
 
 ## Style
 

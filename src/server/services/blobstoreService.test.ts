@@ -330,4 +330,79 @@ describe("blobstoreService", () => {
       await expect(dispatchGetRange(unknown, 0, 10)).resolves.toBeNull();
     });
   });
+
+  describe("grep", () => {
+    async function putViaRpc(body: string): Promise<string> {
+      const service = createBlobstoreService({ blobsDir });
+      await service.start?.();
+      const dispatcher = new ServiceDispatcher();
+      dispatcher.registerService(service.definition);
+      dispatcher.markInitialized();
+      const result = (await dispatcher.dispatch(
+        { callerId: "w1", callerKind: "worker" },
+        "blobstore",
+        "putText",
+        [body],
+      )) as { digest: string };
+      return result.digest;
+    }
+
+    function dispatchGrep(
+      digest: string,
+      pattern: string,
+      opts?: { caseInsensitive?: boolean; contextLines?: number; maxMatches?: number },
+    ): Promise<unknown> {
+      const service = createBlobstoreService({ blobsDir });
+      const dispatcher = new ServiceDispatcher();
+      dispatcher.registerService(service.definition);
+      dispatcher.markInitialized();
+      return dispatcher.dispatch(
+        { callerId: "w1", callerKind: "worker" },
+        "blobstore",
+        "grep",
+        opts === undefined ? [digest, pattern] : [digest, pattern, opts],
+      );
+    }
+
+    it("returns matching lines with line numbers", async () => {
+      const body = ["alpha one", "beta two", "gamma three", "alpha four"].join("\n");
+      const digest = await putViaRpc(body);
+      const matches = (await dispatchGrep(digest, "alpha")) as Array<{
+        lineNumber: number;
+        line: string;
+      }>;
+      expect(matches.map((m) => m.lineNumber)).toEqual([1, 4]);
+      expect(matches[0]!.line).toBe("alpha one");
+    });
+
+    it("honours caseInsensitive and contextLines", async () => {
+      const body = ["one", "two ALPHA two", "three", "four"].join("\n");
+      const digest = await putViaRpc(body);
+      const matches = (await dispatchGrep(digest, "alpha", {
+        caseInsensitive: true,
+        contextLines: 1,
+      })) as Array<{ lineNumber: number; before: string[]; after: string[] }>;
+      expect(matches).toHaveLength(1);
+      expect(matches[0]!.lineNumber).toBe(2);
+      expect(matches[0]!.before).toEqual(["one"]);
+      expect(matches[0]!.after).toEqual(["three"]);
+    });
+
+    it("caps results with maxMatches", async () => {
+      const body = Array.from({ length: 20 }, (_, i) => `match line ${i}`).join("\n");
+      const digest = await putViaRpc(body);
+      const matches = (await dispatchGrep(digest, "match", { maxMatches: 5 })) as unknown[];
+      expect(matches).toHaveLength(5);
+    });
+
+    it("returns null when the digest is unknown", async () => {
+      const unknown = "0".repeat(64);
+      await expect(dispatchGrep(unknown, "anything")).resolves.toBeNull();
+    });
+
+    it("rejects malformed regex patterns", async () => {
+      const digest = await putViaRpc("anything");
+      await expect(dispatchGrep(digest, "([")).rejects.toThrow(/Invalid regex/);
+    });
+  });
 });
