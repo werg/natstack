@@ -1,5 +1,9 @@
-import { githubCredential } from "./providers.js";
-import { getUrlCredentialClient, type UrlCredentialClient } from "./urlCredentialClient.js";
+import {
+  createGitHubClient,
+  type GitHubClient,
+  type GitHubIssue as ApiGitHubIssue,
+} from "./github.js";
+import type { CredentialClient } from "../../runtime/src/shared/credentials.js";
 
 export const manifest = {
   scopes: {
@@ -32,15 +36,11 @@ type GitHubUser = {
   login: string;
 };
 
-type GitHubIssue = {
-  number: number;
-  title: string;
-  body: string | null;
-  state: "open" | "closed";
-  html_url: string;
-  user: GitHubUser;
-  pull_request?: unknown;
-};
+/**
+ * Issue payload as received from the GitHub webhook OR from the API
+ * — the API's `GitHubIssue` is the widest shape, accept it.
+ */
+type GitHubIssue = ApiGitHubIssue;
 
 type SourceIssueEvent = {
   action: string;
@@ -56,7 +56,7 @@ type MirrorIssueParams = {
    * Caller-supplied credential client. Pass `this.credentials` from a
    * DurableObject or `runtime.credentials` from a workerd worker.
    */
-  credentials: import("../../runtime/src/shared/credentials.js").CredentialClient;
+  credentials: CredentialClient;
   sourceOwner: string;
   sourceRepo: string;
   issueNumber: number;
@@ -81,7 +81,7 @@ type MirrorIssueResult = {
 
 type MirrorLookupIssue = {
   number: number;
-  body: string | null;
+  body?: string | null;
   html_url: string;
   pull_request?: unknown;
 };
@@ -92,11 +92,9 @@ type CreateOrUpdateIssuePayload = {
   state: "open" | "closed";
 };
 
-const GITHUB_API_FALLBACK = "https://api.github.com";
-
 export async function onSourceIssue(
   event: SourceIssueEvent,
-  credentials: import("../../runtime/src/shared/credentials.js").CredentialClient,
+  credentials: CredentialClient,
 ): Promise<MirrorIssueResult | { skipped: true; reason: string }> {
   if (!shouldMirrorAction(event.action)) {
     return {
@@ -128,11 +126,11 @@ export async function onSourceIssue(
 }
 
 export async function mirrorIssue(params: MirrorIssueParams): Promise<MirrorIssueResult> {
-  const sourceAuth = await getUrlCredentialClient(params.credentials, githubCredential);
-  const targetAuth = await getUrlCredentialClient(params.credentials, githubCredential);
+  // Source and target both speak GitHub through the same credential
+  // audience, so one client suffices.
+  const github = createGitHubClient(params.credentials);
 
-  const sourceIssue = await getIssue(
-    sourceAuth,
+  const sourceIssue = await github.getIssue(
     params.sourceOwner,
     params.sourceRepo,
     params.issueNumber,
@@ -142,11 +140,12 @@ export async function mirrorIssue(params: MirrorIssueParams): Promise<MirrorIssu
     throw new Error("This example mirrors issues only, not pull requests");
   }
 
+  const marker = buildMirrorMarker(params.sourceOwner, params.sourceRepo, params.issueNumber);
   const existingTargetIssue = await findMirroredIssue(
-    targetAuth,
+    github,
     params.targetOwner,
     params.targetRepo,
-    buildMirrorMarker(params.sourceOwner, params.sourceRepo, params.issueNumber),
+    marker,
   );
 
   const payload = buildTargetIssuePayload(
@@ -156,8 +155,7 @@ export async function mirrorIssue(params: MirrorIssueParams): Promise<MirrorIssu
   );
 
   if (existingTargetIssue) {
-    const updatedIssue = await updateIssue(
-      targetAuth,
+    const updatedIssue = await github.updateIssue(
       params.targetOwner,
       params.targetRepo,
       existingTargetIssue.number,
@@ -180,8 +178,7 @@ export async function mirrorIssue(params: MirrorIssueParams): Promise<MirrorIssu
     };
   }
 
-  const createdIssue = await createIssue(
-    targetAuth,
+  const createdIssue = await github.createIssue(
     params.targetOwner,
     params.targetRepo,
     payload,
@@ -226,7 +223,7 @@ function buildTargetIssuePayload(
       `Mirrored from ${sourceOwner}/${sourceRepo}#${sourceIssue.number}`,
       "",
       `Source URL: ${sourceIssue.html_url}`,
-      `Original author: @${sourceIssue.user.login}`,
+      `Original author: @${sourceIssue.user?.login ?? "unknown"}`,
       "",
       sourceIssue.body?.trim() || "_No body provided on the source issue._",
     ].join("\n"),
@@ -238,106 +235,37 @@ function buildMirrorMarker(sourceOwner: string, sourceRepo: string, issueNumber:
   return `<!-- natstack-mirror-source: ${sourceOwner}/${sourceRepo}#${issueNumber} -->`;
 }
 
-async function getIssue(
-  auth: UrlCredentialClient,
-  owner: string,
-  repo: string,
-  issueNumber: number,
-): Promise<GitHubIssue> {
-  return githubRequest<GitHubIssue>(
-    auth,
-    buildIssuePath(owner, repo, issueNumber),
-    { method: "GET" },
-  );
-}
-
-async function createIssue(
-  auth: UrlCredentialClient,
-  owner: string,
-  repo: string,
-  payload: CreateOrUpdateIssuePayload,
-): Promise<GitHubIssue> {
-  return githubRequest<GitHubIssue>(
-    auth,
-    buildIssuesPath(owner, repo),
-    {
-      method: "POST",
-      body: JSON.stringify(payload),
-    },
-  );
-}
-
-async function updateIssue(
-  auth: UrlCredentialClient,
-  owner: string,
-  repo: string,
-  issueNumber: number,
-  payload: CreateOrUpdateIssuePayload,
-): Promise<GitHubIssue> {
-  return githubRequest<GitHubIssue>(
-    auth,
-    buildIssuePath(owner, repo, issueNumber),
-    {
-      method: "PATCH",
-      body: JSON.stringify(payload),
-    },
-  );
-}
-
+/**
+ * Walk pages of issues looking for one whose body contains the
+ * mirror marker. Capped at 10 pages × 100 issues; if you outgrow
+ * this, replace with a persistent source→target mapping.
+ */
 async function findMirroredIssue(
-  auth: UrlCredentialClient,
+  github: GitHubClient,
   owner: string,
   repo: string,
   marker: string,
 ): Promise<MirrorLookupIssue | null> {
   for (let page = 1; page <= 10; page += 1) {
-    const path = `${buildIssuesPath(owner, repo)}?state=all&per_page=100&page=${page}`;
-    const issues = await githubRequest<MirrorLookupIssue[]>(auth, path, { method: "GET" });
-
+    const issues = await github.listIssues(owner, repo, {
+      state: "all",
+      per_page: 100,
+      page,
+    });
     const match = issues.find((issue) => !issue.pull_request && issue.body?.includes(marker));
     if (match) {
-      return match;
+      return {
+        number: match.number,
+        body: match.body,
+        html_url: match.html_url,
+        pull_request: match.pull_request,
+      };
     }
-
     if (issues.length < 100) {
       return null;
     }
   }
-
-  throw new Error("Mirror lookup exceeded 10 pages of issues; narrow the target repository or add persistent mapping");
-}
-
-async function githubRequest<T>(
-  auth: UrlCredentialClient,
-  path: string,
-  init: RequestInit,
-): Promise<T> {
-  const headers = new Headers(init.headers);
-  headers.set("Accept", "application/vnd.github+json");
-
-  if (init.body) {
-    headers.set("Content-Type", "application/json");
-  }
-
-  const response = await auth.fetch(`${GITHUB_API_FALLBACK}${path}`, {
-    ...init,
-    headers,
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(
-      `GitHub API request failed (${response.status} ${response.statusText}) for ${path}: ${body}`,
-    );
-  }
-
-  return await response.json() as T;
-}
-
-function buildIssuesPath(owner: string, repo: string): string {
-  return `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues`;
-}
-
-function buildIssuePath(owner: string, repo: string, issueNumber: number): string {
-  return `${buildIssuesPath(owner, repo)}/${issueNumber}`;
+  throw new Error(
+    "Mirror lookup exceeded 10 pages of issues; narrow the target repository or add persistent mapping",
+  );
 }

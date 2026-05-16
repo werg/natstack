@@ -12,6 +12,7 @@ import type {
   ResolveUrlBoundCredentialRequest,
   StoredCredentialSummary,
   StoreUrlBoundCredentialRequest,
+  UrlAudience,
 } from "@natstack/shared/credentials/types";
 
 export type {
@@ -27,6 +28,7 @@ export type {
   ResolveUrlBoundCredentialRequest,
   StoredCredentialSummary,
   StoreUrlBoundCredentialRequest,
+  UrlAudience,
 } from "@natstack/shared/credentials/types";
 
 export interface CredentialClient {
@@ -50,6 +52,46 @@ export interface CredentialClient {
     opts?: { credentialId?: string },
   ): (init?: RequestInit) => Promise<Response>;
   gitHttp(opts?: { credentialId?: string }): GitHttpClient;
+  /**
+   * Resolve a URL-bound credential by walking a list of candidate
+   * audiences and return a fetch handle pre-bound to whichever
+   * credential matched first. Throws if no credential matches.
+   *
+   * Integrations (Gmail, Calendar, GitHub, …) use this as their
+   * entrypoint: pass the descriptor, get back a handle, call
+   * `handle.fetch(path)` without thinking about credentialId
+   * resolution.
+   *
+   * If `descriptor.credentialId` is set, that specific credential is
+   * required; otherwise the first audience match wins. The optional
+   * `label` is used only for the "no credential found" error
+   * message — pass the human-readable provider name.
+   */
+  forAudience(descriptor: UrlAudienceDescriptor): Promise<UrlCredentialHandle>;
+}
+
+/**
+ * Minimal descriptor consumed by `CredentialClient.forAudience`.
+ * Integration packages can extend this with display metadata
+ * (id / displayName / providerId) for their own UIs without the
+ * runtime caring about those fields.
+ */
+export interface UrlAudienceDescriptor {
+  audiences: UrlAudience[];
+  credentialId?: string;
+  /** Human-readable name used in "no credential found" error messages. */
+  label?: string;
+}
+
+/**
+ * Fetch handle pre-bound to a specific URL-credential. `fetch` injects
+ * the credential automatically — callers don't pass `credentialId`.
+ * `credentialId` is exposed for cases that need to refer to the
+ * credential elsewhere (push-state correlation, audit, etc.).
+ */
+export interface UrlCredentialHandle {
+  credentialId: string;
+  fetch(url: string | URL, init?: RequestInit): Promise<Response>;
 }
 
 export interface GitHttpRequest {
@@ -114,7 +156,41 @@ export function createCredentialClient(rpc: RpcCaller): CredentialClient {
     gitHttp(opts) {
       return createGitHttpClient(rpc, opts);
     },
+    async forAudience(descriptor) {
+      const credential = await resolveByAudienceList(this, descriptor);
+      if (!credential) {
+        const label = descriptor.label ?? descriptor.audiences[0]?.url ?? "<unknown>";
+        const where = descriptor.audiences.map((a) => a.url).join(", ");
+        throw new Error(
+          `No URL-bound credential found for ${label}. Store one with an audience matching ${where}.`,
+        );
+      }
+      const credentialId = credential.id;
+      return {
+        credentialId,
+        fetch: (url, init) => proxyFetch(rpc, url, init, { credentialId }),
+      };
+    },
   };
+}
+
+/**
+ * Walk a list of candidate audiences and return the first credential
+ * that matches one of them (or null if none do). Honors an explicit
+ * `credentialId` pin in the descriptor.
+ */
+async function resolveByAudienceList(
+  client: Pick<CredentialClient, "resolveCredential">,
+  descriptor: UrlAudienceDescriptor,
+): Promise<StoredCredentialSummary | null> {
+  for (const audience of descriptor.audiences) {
+    const credential = await client.resolveCredential({
+      url: audience.url,
+      credentialId: descriptor.credentialId,
+    });
+    if (credential) return credential;
+  }
+  return null;
 }
 
 function createGitHttpClient(rpc: RpcCaller, opts?: { credentialId?: string }): GitHttpClient {

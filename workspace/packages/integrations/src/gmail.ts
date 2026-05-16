@@ -1,6 +1,9 @@
 import { hasRecentPushDelivery } from "./pushState.js"
 import { googleWorkspaceCredential } from "./providers.js"
-import { getUrlCredentialClient, type UrlCredentialClient } from "./urlCredentialClient.js"
+import type {
+  CredentialClient,
+  UrlCredentialHandle,
+} from "../../runtime/src/shared/credentials.js"
 
 const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 const DEFAULT_POLL_INTERVAL_MS = 60_000
@@ -188,33 +191,6 @@ function toQueryParams(params?: Record<string, string | number | string[] | unde
   return query ? `?${query}` : ""
 }
 
-async function gmailFetch<T>(
-  handle: UrlCredentialClient,
-  path: string,
-  init?: RequestInit,
-): Promise<T> {
-  const headers = new Headers(init?.headers)
-  headers.set("Accept", "application/json")
-
-  if (init?.body && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json")
-  }
-
-  const response = await handle.fetch(`${GMAIL_API_BASE}${path}`, {
-    ...init,
-    headers,
-  })
-
-  if (!response.ok) {
-    const bodyText = await response.text()
-    throw new Error(
-      `Gmail API request failed: ${response.status} ${response.statusText}${bodyText ? ` - ${bodyText}` : ""}`,
-    )
-  }
-
-  return await response.json() as T
-}
-
 function joinAddressList(value?: string | string[]): string | undefined {
   if (!value) {
     return undefined
@@ -264,43 +240,6 @@ function isExpiredHistoryCursor(error: unknown): boolean {
   return message.includes("404") || message.includes("notFound")
 }
 
-/**
- * Resolve a Google-Workspace-bound credential handle from a per-context
- * `CredentialClient`. See the matching helper in `./calendar.ts`.
- */
-export function getGoogleWorkspaceCredentialClient(
-  credentials: import("../../runtime/src/shared/credentials.js").CredentialClient,
-): Promise<UrlCredentialClient> {
-  return getUrlCredentialClient(credentials, googleWorkspaceCredential)
-}
-
-async function listHistory(
-  handle: UrlCredentialClient,
-  opts: ListHistoryOptions,
-): Promise<GmailHistoryResponse> {
-  let pageToken: string | undefined
-  const combined: GmailHistoryResponse = { historyId: opts.startHistoryId }
-
-  do {
-    const page = await gmailFetch<GmailHistoryResponse>(
-      handle,
-      `/history${toQueryParams({
-        startHistoryId: opts.startHistoryId,
-        maxResults: opts.maxResults,
-        labelId: opts.labelId,
-        historyTypes: opts.historyTypes,
-        pageToken,
-      })}`,
-    )
-
-    combined.historyId = page.historyId
-    combined.history = [...(combined.history ?? []), ...(page.history ?? [])]
-    pageToken = page.nextPageToken
-  } while (pageToken)
-
-  return combined
-}
-
 function isWebhookEvent(value: unknown): value is {
   connectionId: string
   event: string
@@ -317,227 +256,237 @@ function isWebhookEvent(value: unknown): value is {
   )
 }
 
-export async function listMessages(
-  auth: UrlCredentialClient,
-  opts?: ListMessagesOptions,
-): Promise<ListMessagesResult> {
-  const { format = "full", metadataHeaders, ...query } = opts ?? {}
-  const data = await gmailFetch<{
-    messages?: Array<{ id: string; threadId: string }>
-    nextPageToken?: string
-    resultSizeEstimate?: number
-  }>(auth, `/messages${toQueryParams(query)}`)
+export interface GmailClient {
+  handle(): Promise<UrlCredentialHandle>
+  listMessages(opts?: ListMessagesOptions): Promise<ListMessagesResult>
+  getMessage(messageId: string, opts?: GetMessageOptions): Promise<GmailMessage>
+  sendMessage(params: SendMessageParams): Promise<GmailMessage>
+  getProfile(): Promise<GmailProfile>
+  listLabels(): Promise<GmailLabel[]>
+  startPolling(opts?: StartPollingOptions): () => void
+  onNewMessage(event: GmailNewMessageEvent | unknown): Promise<GmailNewMessageEvent | void>
+  search(q: string, opts?: Omit<ListMessagesOptions, "q">): Promise<ListMessagesResult>
+}
 
-  if (!data.messages?.length) {
+/**
+ * Build a Gmail client bound to the given `CredentialClient`. The
+ * credential handle is resolved on first use and memoized.
+ */
+export function createGmailClient(credentials: CredentialClient): GmailClient {
+  let handlePromise: Promise<UrlCredentialHandle> | null = null
+  const handle = (): Promise<UrlCredentialHandle> => {
+    if (!handlePromise) {
+      handlePromise = credentials.forAudience({
+        ...googleWorkspaceCredential,
+        label: googleWorkspaceCredential.displayName,
+      })
+    }
+    return handlePromise
+  }
+
+  const apiFetch = async <T>(path: string, init?: RequestInit): Promise<T> => {
+    const auth = await handle()
+    const headers = new Headers(init?.headers)
+    headers.set("Accept", "application/json")
+    if (init?.body && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json")
+    }
+    const response = await auth.fetch(`${GMAIL_API_BASE}${path}`, { ...init, headers })
+    if (!response.ok) {
+      const bodyText = await response.text()
+      throw new Error(
+        `Gmail API request failed: ${response.status} ${response.statusText}${bodyText ? ` - ${bodyText}` : ""}`,
+      )
+    }
+    return (await response.json()) as T
+  }
+
+  const listHistory = async (opts: ListHistoryOptions): Promise<GmailHistoryResponse> => {
+    let pageToken: string | undefined
+    const combined: GmailHistoryResponse = { historyId: opts.startHistoryId }
+    do {
+      const page = await apiFetch<GmailHistoryResponse>(
+        `/history${toQueryParams({
+          startHistoryId: opts.startHistoryId,
+          maxResults: opts.maxResults,
+          labelId: opts.labelId,
+          historyTypes: opts.historyTypes,
+          pageToken,
+        })}`,
+      )
+      combined.historyId = page.historyId
+      combined.history = [...(combined.history ?? []), ...(page.history ?? [])]
+      pageToken = page.nextPageToken
+    } while (pageToken)
+    return combined
+  }
+
+  const getMessage = async (messageId: string, opts?: GetMessageOptions): Promise<GmailMessage> => {
+    const query = toQueryParams({
+      format: opts?.format,
+      metadataHeaders: opts?.metadataHeaders,
+    })
+    return apiFetch<GmailMessage>(`/messages/${encodeURIComponent(messageId)}${query}`)
+  }
+
+  const getProfile = (): Promise<GmailProfile> => apiFetch<GmailProfile>("/profile")
+
+  const listMessages = async (opts?: ListMessagesOptions): Promise<ListMessagesResult> => {
+    const { format = "full", metadataHeaders, ...query } = opts ?? {}
+    const data = await apiFetch<{
+      messages?: Array<{ id: string; threadId: string }>
+      nextPageToken?: string
+      resultSizeEstimate?: number
+    }>(`/messages${toQueryParams(query)}`)
+
+    if (!data.messages?.length) {
+      return {
+        messages: [],
+        nextPageToken: data.nextPageToken,
+        resultSizeEstimate: data.resultSizeEstimate,
+      }
+    }
+
+    const messages = await Promise.all(
+      data.messages.map((m) => getMessage(m.id, { format, metadataHeaders })),
+    )
     return {
-      messages: [],
+      messages,
       nextPageToken: data.nextPageToken,
       resultSizeEstimate: data.resultSizeEstimate,
     }
   }
 
-  const messages = await Promise.all(
-    data.messages.map((message) => getMessage(auth, message.id, { format, metadataHeaders })),
-  )
-
-  return {
-    messages,
-    nextPageToken: data.nextPageToken,
-    resultSizeEstimate: data.resultSizeEstimate,
+  const sendMessage = async (params: SendMessageParams): Promise<GmailMessage> => {
+    const rawLines = [
+      params.from ? `From: ${params.from}` : undefined,
+      `To: ${joinAddressList(params.to)}`,
+      params.cc ? `Cc: ${joinAddressList(params.cc)}` : undefined,
+      params.bcc ? `Bcc: ${joinAddressList(params.bcc)}` : undefined,
+      params.replyTo ? `Reply-To: ${params.replyTo}` : undefined,
+      params.inReplyTo ? `In-Reply-To: ${params.inReplyTo}` : undefined,
+      params.references ? `References: ${joinAddressList(params.references)}` : undefined,
+      `Subject: ${params.subject}`,
+      "MIME-Version: 1.0",
+      "Content-Type: text/plain; charset=UTF-8",
+      "Content-Transfer-Encoding: 8bit",
+      ...Object.entries(params.headers ?? {}).map(([key, value]) => `${key}: ${value}`),
+      "",
+      params.body,
+    ].filter((line): line is string => typeof line === "string")
+    return apiFetch<GmailMessage>("/messages/send", {
+      method: "POST",
+      body: JSON.stringify({ raw: encodeBase64Url(rawLines.join("\r\n")) }),
+    })
   }
-}
 
-export async function getMessage(
-  auth: UrlCredentialClient,
-  messageId: string,
-  opts?: GetMessageOptions,
-): Promise<GmailMessage> {
-  const query = toQueryParams({
-    format: opts?.format,
-    metadataHeaders: opts?.metadataHeaders,
-  })
+  const startPolling = (opts: StartPollingOptions = {}): (() => void) => {
+    let disposed = false
+    let inFlight = false
+    let historyId = opts.historyId
 
-  return gmailFetch<GmailMessage>(auth, `/messages/${encodeURIComponent(messageId)}${query}`)
-}
-
-export async function sendMessage(
-  auth: UrlCredentialClient,
-  params: SendMessageParams,
-): Promise<GmailMessage> {
-  const rawLines = [
-    params.from ? `From: ${params.from}` : undefined,
-    `To: ${joinAddressList(params.to)}`,
-    params.cc ? `Cc: ${joinAddressList(params.cc)}` : undefined,
-    params.bcc ? `Bcc: ${joinAddressList(params.bcc)}` : undefined,
-    params.replyTo ? `Reply-To: ${params.replyTo}` : undefined,
-    params.inReplyTo ? `In-Reply-To: ${params.inReplyTo}` : undefined,
-    params.references ? `References: ${joinAddressList(params.references)}` : undefined,
-    `Subject: ${params.subject}`,
-    "MIME-Version: 1.0",
-    "Content-Type: text/plain; charset=UTF-8",
-    "Content-Transfer-Encoding: 8bit",
-    ...Object.entries(params.headers ?? {}).map(([key, value]) => `${key}: ${value}`),
-    "",
-    params.body,
-  ].filter((line): line is string => typeof line === "string")
-
-  return gmailFetch<GmailMessage>(auth, "/messages/send", {
-    method: "POST",
-    body: JSON.stringify({
-      raw: encodeBase64Url(rawLines.join("\r\n")),
-    }),
-  })
-}
-
-export async function getProfile(auth: UrlCredentialClient): Promise<GmailProfile> {
-  return gmailFetch<GmailProfile>(auth, "/profile")
-}
-
-export async function listLabels(auth: UrlCredentialClient): Promise<GmailLabel[]> {
-  const data = await gmailFetch<{ labels?: GmailLabel[] }>(auth, "/labels")
-  return data.labels ?? []
-}
-
-export function startPolling(
-  auth: UrlCredentialClient,
-  opts: StartPollingOptions = {},
-): () => void {
-  let disposed = false
-  let inFlight = false
-  let historyId = opts.historyId
-
-  const poll = async () => {
-    if (disposed || inFlight) {
-      return
-    }
-
-    inFlight = true
-
-    try {
-      if (
-        opts.standDownWhenPushActive !== false &&
-        await hasRecentPushDelivery(
-          "google-workspace",
-          "message.new",
-          auth.credentialId,
-          opts.pushQuietWindowMs ?? DEFAULT_PUSH_QUIET_WINDOW_MS,
-        )
-      ) {
+    const poll = async () => {
+      if (disposed || inFlight) return
+      inFlight = true
+      try {
+        const auth = await handle()
+        if (
+          opts.standDownWhenPushActive !== false &&
+          (await hasRecentPushDelivery(
+            "google-workspace",
+            "message.new",
+            auth.credentialId,
+            opts.pushQuietWindowMs ?? DEFAULT_PUSH_QUIET_WINDOW_MS,
+          ))
+        ) {
+          if (!historyId) historyId = (await getProfile()).historyId
+          return
+        }
         if (!historyId) {
-          historyId = (await getProfile(auth)).historyId
+          historyId = (await getProfile()).historyId
+          return
         }
-        return
-      }
-
-      if (!historyId) {
-        historyId = (await getProfile(auth)).historyId
-        return
-      }
-
-      const history = await listHistory(auth, {
-        startHistoryId: historyId,
-        historyTypes: ["messageAdded"],
-      })
-
-      const previousHistoryId = historyId
-      historyId = history.historyId
-
-      const messageIds = extractNewMessageIds(history)
-      if (messageIds.length === 0) {
-        return
-      }
-
-      const messages = await Promise.all(messageIds.map((id) => getMessage(auth, id)))
-      const event: GmailNewMessageEvent = {
-        type: "message.new",
-        historyId,
-        previousHistoryId,
-        messages,
-        rawHistory: history,
-      }
-
-      await (opts.onNewMessages ?? ((_e) => undefined))(event)
-    } catch (error) {
-      if (isExpiredHistoryCursor(error)) {
-        try {
-          historyId = (await getProfile(auth)).historyId
-        } catch (profileError) {
-          await opts.onError?.(profileError)
+        const history = await listHistory({
+          startHistoryId: historyId,
+          historyTypes: ["messageAdded"],
+        })
+        const previousHistoryId = historyId
+        historyId = history.historyId
+        const messageIds = extractNewMessageIds(history)
+        if (messageIds.length === 0) return
+        const messages = await Promise.all(messageIds.map((id) => getMessage(id)))
+        const event: GmailNewMessageEvent = {
+          type: "message.new",
+          historyId,
+          previousHistoryId,
+          messages,
+          rawHistory: history,
         }
-      } else {
-        await opts.onError?.(error)
+        await (opts.onNewMessages ?? ((_e) => undefined))(event)
+      } catch (error) {
+        if (isExpiredHistoryCursor(error)) {
+          try {
+            historyId = (await getProfile()).historyId
+          } catch (profileError) {
+            await opts.onError?.(profileError)
+          }
+        } else {
+          await opts.onError?.(error)
+        }
+      } finally {
+        inFlight = false
       }
-    } finally {
-      inFlight = false
+    }
+
+    void poll()
+    const interval = setInterval(() => {
+      void poll()
+    }, opts.intervalMs ?? DEFAULT_POLL_INTERVAL_MS)
+    return () => {
+      disposed = true
+      clearInterval(interval)
     }
   }
 
-  void poll()
-
-  const interval = setInterval(() => {
-    void poll()
-  }, opts.intervalMs ?? DEFAULT_POLL_INTERVAL_MS)
-
-  return () => {
-    disposed = true
-    clearInterval(interval)
+  const onNewMessage = async (
+    _event: GmailNewMessageEvent | unknown,
+  ): Promise<GmailNewMessageEvent | void> => {
+    if (!isWebhookEvent(_event)) return
+    const historyId = _event.cursor
+    const previousHistoryId = _event.previousCursor
+    if (!historyId || !previousHistoryId) return
+    const history = await listHistory({
+      startHistoryId: previousHistoryId,
+      historyTypes: ["messageAdded"],
+    })
+    const messageIds = extractNewMessageIds(history)
+    const messages = await Promise.all(messageIds.map((id) => getMessage(id)))
+    return {
+      type: "message.new",
+      historyId,
+      previousHistoryId,
+      messages,
+      rawHistory: history,
+    }
   }
-}
-
-/**
- * Webhook delivery handler — given a normalized webhook event and a
- * credential handle, fetches the new messages and returns a structured
- * `GmailNewMessageEvent`. The caller (e.g. a workspace webhook
- * dispatcher) supplies `auth` for the context the webhook was
- * delivered to.
- */
-export async function onNewMessage(
-  auth: UrlCredentialClient,
-  _event: GmailNewMessageEvent | unknown,
-): Promise<GmailNewMessageEvent | void> {
-  if (!isWebhookEvent(_event)) {
-    return
-  }
-
-  const historyId = _event.cursor
-  const previousHistoryId = _event.previousCursor
-  if (!historyId || !previousHistoryId) {
-    return
-  }
-
-  const history = await listHistory(auth, {
-    startHistoryId: previousHistoryId,
-    historyTypes: ["messageAdded"],
-  })
-  const messageIds = extractNewMessageIds(history)
-  const messages = await Promise.all(messageIds.map((id) => getMessage(auth, id)))
 
   return {
-    type: "message.new",
-    historyId,
-    previousHistoryId,
-    messages,
-    rawHistory: history,
+    handle,
+    listMessages,
+    getMessage,
+    sendMessage,
+    getProfile,
+    listLabels: async () => {
+      const data = await apiFetch<{ labels?: GmailLabel[] }>("/labels")
+      return data.labels ?? []
+    },
+    startPolling,
+    onNewMessage,
+    search: (q, opts) => listMessages({ ...opts, q }),
   }
-}
-
-export async function search(
-  auth: UrlCredentialClient,
-  q: string,
-  opts?: Omit<ListMessagesOptions, "q">,
-): Promise<ListMessagesResult> {
-  return listMessages(auth, { ...opts, q })
 }
 
 export const gmail = {
   manifest,
-  listMessages,
-  getMessage,
-  sendMessage,
-  getProfile,
-  listLabels,
-  startPolling,
-  onNewMessage,
-  search,
-  send: sendMessage,
+  createGmailClient,
 } as const

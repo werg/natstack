@@ -155,7 +155,10 @@ describe("createRpcBridge streaming", () => {
   it("propagates AbortSignal as a stream-cancel that triggers the handler's abortSignal", async () => {
     const { bridgeA, bridgeB } = createLoopbackPair();
     let observedAbortReason: unknown;
-    const handlerStarted = Promise.withResolvers<void>();
+    let resolveHandlerStarted!: () => void;
+    const handlerStarted = new Promise<void>((resolve) => {
+      resolveHandlerStarted = resolve;
+    });
 
     bridgeB.exposeStreamingMethod("credentials.proxyFetch", async (_args, sink, abortSignal) => {
       await sink({
@@ -165,7 +168,7 @@ describe("createRpcBridge streaming", () => {
         headerPairs: [],
         finalUrl: "",
       });
-      handlerStarted.resolve();
+      resolveHandlerStarted();
       // Stall on the signal — production code would loop reading
       // upstream and check `abortSignal.aborted` between chunks.
       await new Promise<void>((resolve) => {
@@ -184,7 +187,7 @@ describe("createRpcBridge streaming", () => {
       { signal: controller.signal },
     );
     expect(response.status).toBe(200);
-    await handlerStarted.promise;
+    await handlerStarted;
 
     controller.abort();
     // Give the cancel message a microtask to round-trip.
