@@ -1107,10 +1107,30 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       getApiKey: this.getApiKeyForChannel(channelId),
       hasCredentialForOrigin: async (originUrl) => {
         try {
+          // `resolveCredential` matches the probe URL against stored
+          // audience patterns. Model credentials are stored against
+          // `modelBaseUrl` with `match: "path-prefix"` (see
+          // `installUrlBoundModelFetchProxy`), so if the caller's
+          // probe is just the origin, a path-prefixed audience like
+          // `https://host/v1/` won't match. When the origins agree,
+          // probe with the full model base URL so path-prefix
+          // credentials are detected.
+          let probeUrl = originUrl;
+          try {
+            const modelBaseUrl = this.getModelBaseUrl();
+            if (new URL(modelBaseUrl).origin === new URL(originUrl).origin) {
+              probeUrl = modelBaseUrl;
+            }
+          } catch {
+            // No model URL configured (or unparseable). Fall through
+            // and probe with the caller's URL as-is — that's correct
+            // for search-provider credentials registered with
+            // `match: "origin"`.
+          }
           const c = await this.rpc.call<{ id: string } | null>(
             "main",
             "credentials.resolveCredential",
-            { url: originUrl },
+            { url: probeUrl },
           );
           return c !== null;
         } catch {

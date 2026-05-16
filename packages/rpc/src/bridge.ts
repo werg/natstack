@@ -42,7 +42,7 @@ function base64ToBytes(value: string): Uint8Array {
 }
 
 export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
-  let exposedMethods: ExposedMethods = {};
+  const exposedMethods: ExposedMethods = {};
   const streamingHandlers = new Map<string, StreamingMethodHandler>();
 
   const pendingRequests = new Map<

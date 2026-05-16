@@ -280,7 +280,6 @@ export class EgressProxy {
         ? Buffer.byteLength(body)
         : body.byteLength;
 
-    let headEmitted = false;
     let bytesInTotal = 0;
 
     const result = await this.executeAuthorizedRequest({
@@ -310,7 +309,6 @@ export class EgressProxy {
           headerPairs: Array.from(upstream.headers.entries()) as Array<[string, string]>,
           finalUrl: upstream.url || targetUrl.toString(),
         });
-        headEmitted = true;
 
         // Post-HEAD errors are caught INSIDE the execute callback so
         // `executeAuthorizedRequest` records the correct audit entry
