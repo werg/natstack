@@ -13,6 +13,7 @@ import type { RpcMessage, RpcResponse } from "@natstack/rpc";
 import type { WsClientMessage, WsServerMessage } from "@natstack/shared/ws/protocol";
 import type { RecoveryKind } from "@natstack/shared/shell/recoveryCoordinator";
 import { redactTokenIn } from "@natstack/shared/redact";
+import { mintCallerAssertion, type CallerKind } from "@natstack/shared/identity/callerAssertion";
 import { createPinnedTlsSocket } from "./tlsPinning.js";
 
 export interface TlsPinningOptions {
@@ -61,6 +62,12 @@ export interface ServerClientOptions {
   maxReconnectAttempts?: number;
   /** Refresh the caller token after an auth failure during reconnect. */
   refreshAuthToken?: () => Promise<string>;
+  /** Local caller assertion used for direct shell connections to a local gateway. */
+  callerAssertion?: {
+    secretBase64: string;
+    callerId: string;
+    callerKind: CallerKind;
+  };
 }
 
 class ServerAuthError extends Error {
@@ -70,15 +77,21 @@ class ServerAuthError extends Error {
   }
 }
 
-/** Connect a WebSocket and authenticate. Returns the connected+authed ws. */
-async function connectAndAuth(
+/** Connect a WebSocket and wait for the server to bind the verified caller. */
+async function connectAndReady(
   wsUrl: string,
-  authToken: string,
+  callerToken: string,
   tlsOpts: TlsPinningOptions | undefined,
-  connectionId: string
+  connectionId: string,
+  callerAssertion?: ServerClientOptions["callerAssertion"]
 ): Promise<{ ws: WebSocket; serverBootId?: string }> {
   const isTls = wsUrl.startsWith("wss://");
-  const wsOptions: Record<string, unknown> = {};
+  const readyUrl = appendConnectionId(wsUrl, connectionId);
+  const wsOptions: Record<string, unknown> = {
+    headers: callerAssertion
+      ? { "Proxy-Authorization": basicCallerAssertion(callerAssertion) }
+      : { Authorization: `Bearer ${callerToken}` },
+  };
 
   if (isTls && tlsOpts) {
     if (tlsOpts.caPath) {
@@ -92,9 +105,8 @@ async function connectAndAuth(
     if (tlsOpts.fingerprint) {
       // **Fingerprint pinning.** Install a `createConnection` factory that
       // validates the leaf cert in `secureConnect` — fires between TLS
-      // handshake completion and any app-layer write, so a mismatched peer
-      // is guaranteed never to receive our `ws:auth` frame or the upgrade
-      // request. See `tlsPinning.ts`. `rejectUnauthorized: false` below
+      // handshake completion and the upgrade request. See `tlsPinning.ts`.
+      // `rejectUnauthorized: false` below
       // only suspends Node's own CA path; the factory's secureConnect
       // listener is what actually enforces trust.
       wsOptions["rejectUnauthorized"] = false;
@@ -109,12 +121,12 @@ async function connectAndAuth(
     }
   }
 
-  const ws = new WebSocket(wsUrl, wsOptions);
+  const ws = new WebSocket(readyUrl, wsOptions);
   let serverBootId: string | undefined;
 
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
-      reject(new Error(`Server WS connection timeout (10s): ${wsUrl}`));
+      reject(new Error(`Server WS connection timeout (10s): ${readyUrl}`));
       ws.close();
     }, 10_000);
 
@@ -123,28 +135,33 @@ async function connectAndAuth(
       reject(err);
     });
 
-    ws.on("open", () => {
-      const authMsg: WsClientMessage = { type: "ws:auth", token: authToken, connectionId };
-      ws.send(JSON.stringify(authMsg));
-    });
-
-    ws.on("message", function onAuth(data) {
+    ws.on("message", function onReady(data) {
       const msg = JSON.parse(data.toString()) as WsServerMessage;
-      if (msg.type === "ws:auth-result") {
-        ws.off("message", onAuth);
+      if (msg.type === "ws:ready") {
+        ws.off("message", onReady);
         clearTimeout(timeout);
-        if (msg.success) {
-          serverBootId = msg.serverBootId;
-          resolve();
-        } else {
-          ws.close();
-          reject(new ServerAuthError(`Server auth failed: ${msg.error}`));
-        }
+        serverBootId = msg.serverBootId;
+        resolve();
       }
     });
   });
 
   return { ws, serverBootId };
+}
+
+function basicCallerAssertion(args: NonNullable<ServerClientOptions["callerAssertion"]>): string {
+  const assertion = mintCallerAssertion(Buffer.from(args.secretBase64, "base64"), {
+    callerId: args.callerId,
+    callerKind: args.callerKind,
+    audience: "egress-proxy",
+  });
+  return `Basic ${Buffer.from(`natstack:${assertion}`, "utf8").toString("base64")}`;
+}
+
+function appendConnectionId(wsUrl: string, connectionId: string): string {
+  const url = new URL(wsUrl);
+  url.searchParams.set("connectionId", connectionId);
+  return url.toString();
 }
 
 /**
@@ -165,6 +182,7 @@ export async function createServerClient(
   const shouldReconnect = options?.reconnect ?? !!(options?.wsUrl || options?.getWsUrl);
   const maxAttempts = options?.maxReconnectAttempts ?? 10;
   const tls = options?.tls;
+  const callerAssertion = options?.callerAssertion;
   const connectionId = randomUUID();
 
   let ws: WebSocket;
@@ -246,11 +264,12 @@ export async function createServerClient(
   }
 
   async function connectWithActiveToken(): Promise<{ socket: WebSocket; serverBootId?: string }> {
-    const { ws: socket, serverBootId } = await connectAndAuth(
+    const { ws: socket, serverBootId } = await connectAndReady(
       getWsUrl(),
       activeAuthToken,
       tls,
-      connectionId
+      connectionId,
+      callerAssertion
     );
     return { socket, serverBootId };
   }
@@ -362,7 +381,6 @@ export async function createServerClient(
         const rpcMsg: RpcMessage = {
           type: "request",
           requestId,
-          fromId: "admin",
           method: `${service}.${method}`,
           args,
         };

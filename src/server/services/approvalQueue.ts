@@ -71,6 +71,8 @@ export interface CapabilityApprovalQueueRequest extends ApprovalQueueRequestBase
   description?: string;
   resource?: PendingCapabilityApproval["resource"];
   details?: PendingCapabilityApproval["details"];
+  credentialOptions?: PendingCapabilityApproval["credentialOptions"];
+  defaultCredentialSelectionId?: string | null;
 }
 
 export interface ClientConfigApprovalQueueRequest extends ApprovalQueueRequestBase {
@@ -143,6 +145,10 @@ export type ClientConfigApprovalResult =
   | { decision: "deny" };
 export type FieldInputApprovalResult = ClientConfigApprovalResult;
 export type UserlandApprovalResult = UserlandApprovalChoice;
+export interface CapabilityApprovalResult {
+  decision: GrantedDecision;
+  credentialSelectionId?: string | null;
+}
 
 interface QueueWaiter {
   resolve: (decision: GrantedDecision) => void;
@@ -162,6 +168,12 @@ interface UserlandQueueWaiter {
   onAbort?: () => void;
 }
 
+interface CapabilityQueueWaiter {
+  resolve: (result: CapabilityApprovalResult) => void;
+  signal?: AbortSignal;
+  onAbort?: () => void;
+}
+
 interface DeviceCodeQueueWaiter {
   cancel: () => void;
 }
@@ -170,6 +182,7 @@ interface QueueEntry {
   approval: PendingApproval;
   dedupKey: string;
   waiters: Map<number, QueueWaiter>;
+  capabilityWaiters: Map<number, CapabilityQueueWaiter>;
   fieldInputWaiters: Map<number, FieldInputQueueWaiter>;
   userlandWaiters: Map<number, UserlandQueueWaiter>;
   deviceCodeWaiters: Map<number, DeviceCodeQueueWaiter>;
@@ -178,6 +191,7 @@ interface QueueEntry {
 
 export interface ApprovalQueue {
   request(req: DecisionApprovalQueueRequest): Promise<GrantedDecision>;
+  requestCapability(req: CapabilityApprovalQueueRequest): Promise<CapabilityApprovalResult>;
   requestClientConfig(req: ClientConfigApprovalQueueRequest): Promise<ClientConfigApprovalResult>;
   requestCredentialInput(
     req: CredentialInputApprovalQueueRequest
@@ -186,6 +200,11 @@ export interface ApprovalQueue {
   presentDeviceCode(req: DeviceCodeApprovalQueueRequest): DeviceCodeApprovalHandle;
   onPendingChanged?(listener: (pending: PendingApproval[]) => void): () => void;
   resolve(approvalId: string, decision: ApprovalDecision): void;
+  resolveCapability(
+    approvalId: string,
+    decision: ApprovalDecision,
+    credentialSelectionId?: string | null
+  ): void;
   resolveUserland(approvalId: string, choice: string): void;
   submitClientConfig(approvalId: string, values: Record<string, string>): void;
   submitCredentialInput(approvalId: string, values: Record<string, string>): void;
@@ -287,6 +306,8 @@ export function createApprovalQueue(deps: {
         description: req.description,
         resource: req.resource,
         details: req.details,
+        credentialOptions: req.credentialOptions,
+        defaultCredentialSelectionId: req.defaultCredentialSelectionId,
       } satisfies PendingCapabilityApproval;
     }
     if (req.kind === "client-config") {
@@ -360,6 +381,7 @@ export function createApprovalQueue(deps: {
         approval,
         dedupKey,
         waiters: new Map(),
+        capabilityWaiters: new Map(),
         fieldInputWaiters: new Map(),
         userlandWaiters: new Map(),
         deviceCodeWaiters: new Map(),
@@ -389,6 +411,7 @@ export function createApprovalQueue(deps: {
           e.fieldInputWaiters.delete(waiterId);
           if (
             e.waiters.size === 0 &&
+            e.capabilityWaiters.size === 0 &&
             e.fieldInputWaiters.size === 0 &&
             e.userlandWaiters.size === 0
           ) {
@@ -430,6 +453,13 @@ export function createApprovalQueue(deps: {
       waiter.resolve({ decision: "submit", values });
     }
     entry.fieldInputWaiters.clear();
+    for (const waiter of entry.capabilityWaiters.values()) {
+      if (waiter.signal && waiter.onAbort) {
+        waiter.signal.removeEventListener("abort", waiter.onAbort);
+      }
+      waiter.resolve({ decision: "deny" });
+    }
+    entry.capabilityWaiters.clear();
     for (const waiter of entry.waiters.values()) {
       if (waiter.signal && waiter.onAbort) {
         waiter.signal.removeEventListener("abort", waiter.onAbort);
@@ -448,8 +478,78 @@ export function createApprovalQueue(deps: {
     emitPendingChanged();
   }
 
+  function requestCapability(
+    req: CapabilityApprovalQueueRequest
+  ): Promise<CapabilityApprovalResult> {
+    const dedupKey = dedupKeyFor(req);
+    let entry = entriesByDedupKey.get(dedupKey);
+    let newEntry = false;
+    if (!entry) {
+      const approval = createPendingApproval(req);
+      entry = {
+        approval,
+        dedupKey,
+        waiters: new Map(),
+        capabilityWaiters: new Map(),
+        fieldInputWaiters: new Map(),
+        userlandWaiters: new Map(),
+        deviceCodeWaiters: new Map(),
+        nextWaiterId: 0,
+      };
+      entriesById.set(approval.approvalId, entry);
+      entriesByDedupKey.set(dedupKey, entry);
+      newEntry = true;
+    }
+
+    if (entry.approval.kind !== "capability") {
+      throw new Error("Approval dedup collision for capability request");
+    }
+
+    const bound = entry;
+    return new Promise<CapabilityApprovalResult>((resolve) => {
+      const waiterId = bound.nextWaiterId++;
+      const waiter: CapabilityQueueWaiter = { resolve, signal: req.signal };
+
+      if (req.signal) {
+        const onAbort = () => {
+          const e = entriesById.get(bound.approval.approvalId);
+          if (!e) {
+            resolve({ decision: "deny" });
+            return;
+          }
+          e.capabilityWaiters.delete(waiterId);
+          if (
+            e.waiters.size === 0 &&
+            e.capabilityWaiters.size === 0 &&
+            e.fieldInputWaiters.size === 0 &&
+            e.userlandWaiters.size === 0
+          ) {
+            removeEntry(e);
+            emitPendingChanged();
+          }
+          resolve({ decision: "deny" });
+        };
+        waiter.onAbort = onAbort;
+        if (req.signal.aborted) {
+          queueMicrotask(onAbort);
+        } else {
+          req.signal.addEventListener("abort", onAbort, { once: true });
+        }
+      }
+
+      bound.capabilityWaiters.set(waiterId, waiter);
+
+      if (newEntry) {
+        emitPendingChanged();
+      }
+    });
+  }
+
   return {
     request(req) {
+      if (req.kind === "capability") {
+        return requestCapability(req).then((result) => result.decision);
+      }
       const dedupKey = dedupKeyFor(req);
       let entry = entriesByDedupKey.get(dedupKey);
       let newEntry = false;
@@ -459,6 +559,7 @@ export function createApprovalQueue(deps: {
           approval,
           dedupKey,
           waiters: new Map(),
+          capabilityWaiters: new Map(),
           fieldInputWaiters: new Map(),
           userlandWaiters: new Map(),
           deviceCodeWaiters: new Map(),
@@ -484,6 +585,7 @@ export function createApprovalQueue(deps: {
             e.waiters.delete(waiterId);
             if (
               e.waiters.size === 0 &&
+              e.capabilityWaiters.size === 0 &&
               e.fieldInputWaiters.size === 0 &&
               e.userlandWaiters.size === 0
             ) {
@@ -508,6 +610,8 @@ export function createApprovalQueue(deps: {
       });
     },
 
+    requestCapability,
+
     requestClientConfig(req) {
       return enqueueFieldInputRequest(
         req,
@@ -531,6 +635,7 @@ export function createApprovalQueue(deps: {
         approval,
         dedupKey,
         waiters: new Map(),
+        capabilityWaiters: new Map(),
         fieldInputWaiters: new Map(),
         userlandWaiters: new Map(),
         deviceCodeWaiters: new Map(),
@@ -589,6 +694,7 @@ export function createApprovalQueue(deps: {
           approval,
           dedupKey,
           waiters: new Map(),
+          capabilityWaiters: new Map(),
           fieldInputWaiters: new Map(),
           userlandWaiters: new Map(),
           deviceCodeWaiters: new Map(),
@@ -618,6 +724,7 @@ export function createApprovalQueue(deps: {
             e.userlandWaiters.delete(waiterId);
             if (
               e.waiters.size === 0 &&
+              e.capabilityWaiters.size === 0 &&
               e.fieldInputWaiters.size === 0 &&
               e.userlandWaiters.size === 0
             ) {
@@ -656,7 +763,77 @@ export function createApprovalQueue(deps: {
       removeEntry(entry);
 
       const granted: GrantedDecision = decision === "dismiss" ? "deny" : decision;
+      const credentialSelectionId =
+        entry.approval.kind === "capability"
+          ? entry.approval.defaultCredentialSelectionId
+          : undefined;
 
+      for (const waiter of entry.capabilityWaiters.values()) {
+        if (waiter.signal && waiter.onAbort) {
+          waiter.signal.removeEventListener("abort", waiter.onAbort);
+        }
+        waiter.resolve({ decision: granted, credentialSelectionId });
+      }
+      entry.capabilityWaiters.clear();
+
+      for (const waiter of entry.waiters.values()) {
+        if (waiter.signal && waiter.onAbort) {
+          waiter.signal.removeEventListener("abort", waiter.onAbort);
+        }
+        waiter.resolve(granted);
+      }
+      entry.waiters.clear();
+      for (const waiter of entry.fieldInputWaiters.values()) {
+        if (waiter.signal && waiter.onAbort) {
+          waiter.signal.removeEventListener("abort", waiter.onAbort);
+        }
+        waiter.resolve({ decision: "deny" });
+      }
+      entry.fieldInputWaiters.clear();
+      for (const waiter of entry.userlandWaiters.values()) {
+        if (waiter.signal && waiter.onAbort) {
+          waiter.signal.removeEventListener("abort", waiter.onAbort);
+        }
+        waiter.resolve({ kind: "dismissed" });
+      }
+      entry.userlandWaiters.clear();
+      for (const waiter of entry.deviceCodeWaiters.values()) {
+        waiter.cancel();
+      }
+      entry.deviceCodeWaiters.clear();
+
+      emitPendingChanged();
+    },
+
+    resolveCapability(approvalId, decision, credentialSelectionId) {
+      const entry = entriesById.get(approvalId);
+      if (!entry || entry.approval.kind !== "capability") return;
+
+      const allowedSelections = entry.approval.credentialOptions;
+      if (
+        allowedSelections &&
+        !allowedSelections.some((option) => option.selectionId === (credentialSelectionId ?? null))
+      ) {
+        throw new Error("Capability credential selection was not presented to the user");
+      }
+
+      removeEntry(entry);
+
+      const granted: GrantedDecision = decision === "dismiss" ? "deny" : decision;
+      const selected =
+        granted === "deny"
+          ? undefined
+          : credentialSelectionId === undefined
+            ? entry.approval.defaultCredentialSelectionId
+            : credentialSelectionId;
+
+      for (const waiter of entry.capabilityWaiters.values()) {
+        if (waiter.signal && waiter.onAbort) {
+          waiter.signal.removeEventListener("abort", waiter.onAbort);
+        }
+        waiter.resolve({ decision: granted, credentialSelectionId: selected });
+      }
+      entry.capabilityWaiters.clear();
       for (const waiter of entry.waiters.values()) {
         if (waiter.signal && waiter.onAbort) {
           waiter.signal.removeEventListener("abort", waiter.onAbort);
@@ -703,6 +880,13 @@ export function createApprovalQueue(deps: {
         waiter.resolve({ kind: "choice", choice });
       }
       entry.userlandWaiters.clear();
+      for (const waiter of entry.capabilityWaiters.values()) {
+        if (waiter.signal && waiter.onAbort) {
+          waiter.signal.removeEventListener("abort", waiter.onAbort);
+        }
+        waiter.resolve({ decision: "deny" });
+      }
+      entry.capabilityWaiters.clear();
       for (const waiter of entry.waiters.values()) {
         if (waiter.signal && waiter.onAbort) {
           waiter.signal.removeEventListener("abort", waiter.onAbort);

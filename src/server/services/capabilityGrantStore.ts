@@ -15,6 +15,7 @@ export interface CapabilityGrant {
   scope: CapabilityGrantDecision;
   repoPath: string;
   effectiveVersion?: string;
+  credentialSelectionId?: string | null;
   grantedAt: number;
 }
 
@@ -23,7 +24,7 @@ interface CapabilityGrantFile {
 }
 
 export class CapabilityGrantStore {
-  private readonly sessionGrants = new Set<string>();
+  private readonly sessionGrants = new Map<string, CapabilityGrant>();
   private readonly filePath: string;
   private persistent: CapabilityGrantFile = { grants: [] };
 
@@ -33,17 +34,28 @@ export class CapabilityGrantStore {
   }
 
   hasGrant(capability: string, resourceKey: string, identity: CapabilityGrantIdentity): boolean {
-    if (this.sessionGrants.has(grantKey("session", capability, resourceKey, identity))) {
-      return true;
+    return !!this.getGrant(capability, resourceKey, identity);
+  }
+
+  getGrant(
+    capability: string,
+    resourceKey: string,
+    identity: CapabilityGrantIdentity
+  ): CapabilityGrant | null {
+    const sessionGrant = this.sessionGrants.get(grantKey("session", capability, resourceKey, identity));
+    if (sessionGrant) {
+      return sessionGrant;
     }
-    return this.persistent.grants.some(
-      (grant) =>
-        grant.capability === capability &&
-        grant.resourceKey === resourceKey &&
-        ((grant.scope === "repo" && grant.repoPath === identity.repoPath) ||
-          (grant.scope === "version" &&
-            grant.repoPath === identity.repoPath &&
-            grant.effectiveVersion === identity.effectiveVersion))
+    return (
+      this.persistent.grants.find(
+        (grant) =>
+          grant.capability === capability &&
+          grant.resourceKey === resourceKey &&
+          ((grant.scope === "repo" && grant.repoPath === identity.repoPath) ||
+            (grant.scope === "version" &&
+              grant.repoPath === identity.repoPath &&
+              grant.effectiveVersion === identity.effectiveVersion))
+      ) ?? null
     );
   }
 
@@ -52,20 +64,22 @@ export class CapabilityGrantStore {
     resourceKey: string,
     identity: CapabilityGrantIdentity,
     scope: CapabilityGrantDecision,
+    options: { credentialSelectionId?: string | null } = {},
     now = Date.now()
   ): void {
-    if (scope === "session") {
-      this.sessionGrants.add(grantKey(scope, capability, resourceKey, identity));
-      return;
-    }
     const next: CapabilityGrant = {
       capability,
       resourceKey,
       scope,
       repoPath: identity.repoPath,
-      effectiveVersion: scope === "version" ? identity.effectiveVersion : undefined,
+      effectiveVersion: scope === "repo" ? undefined : identity.effectiveVersion,
+      credentialSelectionId: options.credentialSelectionId,
       grantedAt: now,
     };
+    if (scope === "session") {
+      this.sessionGrants.set(grantKey(scope, capability, resourceKey, identity), next);
+      return;
+    }
     this.persistent.grants = [
       ...this.persistent.grants.filter(
         (grant) =>
@@ -86,7 +100,9 @@ export class CapabilityGrantStore {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as CapabilityGrantFile;
       this.persistent = {
-        grants: Array.isArray(parsed.grants) ? parsed.grants : [],
+        grants: Array.isArray(parsed.grants)
+          ? parsed.grants.filter((grant) => grant.capability !== "cors")
+          : [],
       };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") {

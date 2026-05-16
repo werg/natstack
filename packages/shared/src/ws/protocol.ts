@@ -14,12 +14,6 @@ import type { ToolExecutionResult } from "../types.js";
 // Client → Server messages
 // =============================================================================
 
-export interface WsAuthMessage {
-  type: "ws:auth";
-  token: string;
-  connectionId?: string;
-}
-
 export interface WsRpcMessage {
   type: "ws:rpc";
   message: RpcMessage;
@@ -40,7 +34,6 @@ export interface WsRouteMessage {
 }
 
 export type WsClientMessage =
-  | WsAuthMessage
   | WsRpcMessage
   | WsToolResultMessage
   | WsRouteMessage;
@@ -49,14 +42,12 @@ export type WsClientMessage =
 // Server → Client messages
 // =============================================================================
 
-export interface WsAuthResultMessage {
-  type: "ws:auth-result";
-  success: boolean;
+export interface WsReadyMessage {
+  type: "ws:ready";
   callerId?: string;
   callerKind?: string;
   connectionId?: string;
   serverBootId?: string;
-  error?: string;
 }
 
 export interface WsRpcResponseMessage {
@@ -73,7 +64,7 @@ export interface WsEventMessage {
 /** Delivery of a routed caller-to-caller message */
 export interface WsRoutedMessage {
   type: "ws:routed";
-  fromId: string;
+  sourceId: string;
   message: RpcMessage;
 }
 
@@ -94,7 +85,7 @@ export interface WsRoutedResponseErrorMessage {
 }
 
 export type WsServerMessage =
-  | WsAuthResultMessage
+  | WsReadyMessage
   | WsRpcResponseMessage
   | WsEventMessage
   | WsRoutedMessage

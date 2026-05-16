@@ -1,516 +1,249 @@
-import { WebSocketServer, WebSocket } from "ws";
 import { webContents } from "electron";
-import * as http from "http";
-import { URL } from "url";
-import { findServicePort } from "@natstack/port-utils";
-import type { TokenManager } from "@natstack/shared/tokenManager";
-import type { ViewManager } from "./viewManager.js";
 import { createDevLogger } from "@natstack/dev-log";
+import type { ViewManager } from "./viewManager.js";
 
 const log = createDevLogger("CdpServer");
+
 export interface CdpEndpoint {
   wsEndpoint: string;
-  token: string;
 }
 
-/**
- * Loopback bind address (audit finding #34). The CDP debugger surface is
- * absurdly powerful (`Runtime.evaluate` is full RCE in the browser context,
- * `Page.navigate` plus `Fetch.continueRequest` is full request forgery on
- * any session the panel can drive). It must NEVER be reachable from
- * non-loopback. Previously the WS bound the http.Server's default 0.0.0.0.
- */
-const CDP_BIND_HOST = "127.0.0.1";
-
-function readCdpAuthToken(ws: WebSocket): Promise<string | null> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      ws.close(4001, "CDP auth required");
-      resolve(null);
-    }, 5_000);
-    const cleanup = () => {
-      clearTimeout(timer);
-      ws.off("message", handleMessage);
-      ws.off("close", handleClose);
-      ws.off("error", handleClose);
-    };
-    const handleClose = () => {
-      cleanup();
-      resolve(null);
-    };
-    const handleMessage = (data: Buffer) => {
-      let parsed: { type?: unknown; token?: unknown };
-      try {
-        parsed = JSON.parse(data.toString()) as { type?: unknown; token?: unknown };
-      } catch {
-        cleanup();
-        ws.close(4001, "Invalid CDP auth frame");
-        resolve(null);
-        return;
-      }
-      if (
-        parsed.type !== "natstack:cdp-auth" ||
-        typeof parsed.token !== "string" ||
-        parsed.token.length === 0
-      ) {
-        cleanup();
-        ws.close(4001, "Invalid CDP auth frame");
-        resolve(null);
-        return;
-      }
-      cleanup();
-      resolve(parsed.token);
-    };
-    ws.once("message", handleMessage);
-    ws.once("close", handleClose);
-    ws.once("error", handleClose);
-  });
+export interface CdpOwnership {
+  ownerCallerId: string;
+  allowedCallers: string[];
 }
 
-/**
- * CDP WebSocket server for browser panel automation.
- * Uses the global TokenManager for authentication.
- *
- * This server allows panels/workers to connect via WebSocket and send CDP commands
- * to browser panels they own. The server forwards commands to Electron's
- * webContents.debugger API.
- *
- * Security model:
- * - Each panel/worker gets a unique token (shared via global TokenManager)
- * - Only the parent that created a browser can get its CDP endpoint
- * - Token is validated on WebSocket connection
- * - Multiple connections to the same browser are supported (e.g., reconnects)
- */
+export interface CdpDebuggerMessage {
+  type: "cdp-message";
+  browserId: string;
+  method: string;
+  params: Record<string, unknown>;
+  sessionId?: string;
+}
+
 export class CdpServer {
-  private server: http.Server | null = null;
-  private wss: WebSocketServer | null = null;
-  private actualPort: number | null = null;
-
-  // Global token manager for authentication
-  private tokenManager: TokenManager;
+  private readonly getCdpWebSocketBaseUrl: () => string;
+  private readonly sendIpcMessage?: (message: CdpDebuggerMessage) => void;
 
   // browserId -> webContentsId
   private browserRegistry = new Map<string, number>();
   // panelId -> Set<browserId> (which browser children this panel owns)
   private panelBrowsers = new Map<string, Set<string>>();
-  // browserId -> Set<WebSocket> (active connections, supports multiple per browser)
-  private activeConnections = new Map<string, Set<WebSocket>>();
   // browserId -> debugger attached flag
   private debuggerAttached = new Map<string, boolean>();
   // browserId -> debugger attach in progress (prevents race condition)
   private debuggerAttaching = new Map<string, Promise<void>>();
+  private debuggerMessageHandlers = new Map<
+    string,
+    (
+      event: Electron.Event,
+      method: string,
+      params: Record<string, unknown>,
+      sessionId?: string
+    ) => void
+  >();
 
   private viewManager: ViewManager | null = null;
 
-  constructor(tokenManager: TokenManager) {
-    this.tokenManager = tokenManager;
+  constructor(options: {
+    getCdpWebSocketBaseUrl: () => string;
+    sendIpcMessage?: (message: CdpDebuggerMessage) => void;
+  }) {
+    this.getCdpWebSocketBaseUrl = options.getCdpWebSocketBaseUrl;
+    this.sendIpcMessage = options.sendIpcMessage;
   }
 
   setViewManager(viewManager: ViewManager): void {
     this.viewManager = viewManager;
   }
 
-  /**
-   * Register a browser panel for CDP access.
-   * This is idempotent - multiple calls with the same browserId will update the webContentsId.
-   * @param browserId - The browser panel's ID
-   * @param webContentsId - The webContents ID for the browser's webview
-   * @param parentPanelId - The parent panel that created this browser
-   */
   registerBrowser(browserId: string, webContentsId: number, parentPanelId: string): void {
     const existingWebContentsId = this.browserRegistry.get(browserId);
+    if (existingWebContentsId === webContentsId) return;
 
-    // Skip if already registered with same webContentsId
-    if (existingWebContentsId === webContentsId) {
-      return;
-    }
-
-    // Log only on first registration or if webContentsId changed
     if (existingWebContentsId !== undefined) {
-      console.log(
-        `[CdpServer] Browser ${browserId} webContents changed: ${existingWebContentsId} -> ${webContentsId}`
+      log.verbose(
+        `Browser ${browserId} webContents changed: ${existingWebContentsId} -> ${webContentsId}`
       );
     } else {
-      console.log(
-        `[CdpServer] Registered browser ${browserId} (webContents ${webContentsId}) for parent ${parentPanelId}`
+      log.verbose(
+        `Registered browser ${browserId} (webContents ${webContentsId}) for parent ${parentPanelId}`
       );
     }
 
     this.browserRegistry.set(browserId, webContentsId);
 
-    // Track which panel owns this browser
     if (!this.panelBrowsers.has(parentPanelId)) {
       this.panelBrowsers.set(parentPanelId, new Set());
     }
     this.panelBrowsers.get(parentPanelId)!.add(browserId);
   }
 
-  /**
-   * Unregister a browser panel when it's destroyed.
-   */
   unregisterBrowser(browserId: string): void {
     this.browserRegistry.delete(browserId);
 
-    // Remove from parent's browser set
     for (const [panelId, browsers] of this.panelBrowsers) {
-      if (browsers.has(browserId)) {
-        browsers.delete(browserId);
-        if (browsers.size === 0) {
-          this.panelBrowsers.delete(panelId);
-        }
-        break;
-      }
+      if (!browsers.has(browserId)) continue;
+      browsers.delete(browserId);
+      if (browsers.size === 0) this.panelBrowsers.delete(panelId);
+      break;
     }
 
-    // Close all active connections to this browser
-    const connections = this.activeConnections.get(browserId);
-    if (connections) {
-      for (const ws of connections) {
-        ws.close(1000, "Browser closed");
-      }
-      this.activeConnections.delete(browserId);
-    }
-
-    // Detach debugger if attached
-    this.debuggerAttached.delete(browserId);
-
-    log.verbose(` Unregistered browser ${browserId}`);
+    void this.detach(browserId);
+    log.verbose(`Unregistered browser ${browserId}`);
   }
 
-  /**
-   * Revoke access when a panel is destroyed.
-   * Cleans up browser ownership tracking.
-   */
-  revokeTokenForPanel(panelId: string): void {
-    // Clean up browser ownership (tokens are managed by GitAuthManager)
+  revokeAccessForPanel(panelId: string): void {
     this.panelBrowsers.delete(panelId);
   }
 
-  /**
-   * Check if a panel can access a browser (direct parent or tree ancestor).
-   * Panel hierarchy format: tree/root, tree/root/child1, tree/root/child1/child2, etc.
-   * A panel can access a browser if:
-   * - It directly owns the browser, OR
-   * - It's a tree ancestor of the browser's owner
-   */
-  private canAccessBrowser(panelId: string, browserId: string): boolean {
-    // Check direct ownership first
-    const ownedBrowsers = this.panelBrowsers.get(panelId);
-    if (ownedBrowsers?.has(browserId)) {
-      log.verbose(`[CDP Access] Direct ownership: panel ${panelId} owns ${browserId}`);
-      return true;
-    }
-
-    // Check if panelId is a tree ancestor of any owner of this browser
-    // (i.e., if an owner's panel ID starts with panelId/)
-    for (const [ownerId, browsers] of this.panelBrowsers) {
+  getBrowserOwnership(browserId: string): CdpOwnership | null {
+    for (const [ownerCallerId, browsers] of this.panelBrowsers) {
       if (browsers.has(browserId)) {
-        // Found the owner, check if requesting panel is an ancestor
-        log.verbose(
-          `[CDP Access] Browser ${browserId} owned by ${ownerId}, checking ancestor ${panelId}`
-        );
-        if (ownerId.startsWith(panelId + "/")) {
-          log.verbose(`[CDP Access] Granted: ${panelId} is ancestor of ${ownerId}`);
-          return true;
-        }
+        return { ownerCallerId, allowedCallers: [ownerCallerId] };
       }
     }
+    return null;
+  }
 
-    log.verbose(
-      `[CDP Access] Denied: ${panelId} has no access to ${browserId}. panelBrowsers:`,
-      Array.from(this.panelBrowsers.entries()).map(
-        ([id, set]) => `${id}->[${Array.from(set).join(",")}]`
-      )
+  private canAccessBrowser(panelId: string, browserId: string): boolean {
+    const ownership = this.getBrowserOwnership(browserId);
+    if (!ownership) return false;
+    return (
+      ownership.ownerCallerId === panelId ||
+      ownership.ownerCallerId.startsWith(`${panelId}/`) ||
+      ownership.allowedCallers.includes(panelId)
     );
-    return false;
   }
 
   getCdpEndpoint(browserId: string, requestingPanelId: string): CdpEndpoint | null {
-    // Verify the requesting panel can access this browser (direct parent or tree ancestor)
-    if (!this.canAccessBrowser(requestingPanelId, browserId)) {
-      return null; // Access denied
-    }
-
-    const token = this.tokenManager.getToken(requestingPanelId);
+    if (!this.canAccessBrowser(requestingPanelId, browserId)) return null;
     return {
-      wsEndpoint: `ws://${CDP_BIND_HOST}:${this.getPort()}/${browserId}`,
-      token: token ?? "",
+      wsEndpoint: `${this.getCdpWebSocketBaseUrl()}/cdp/${encodeURIComponent(browserId)}`,
     };
   }
 
-  /**
-   * Get the webContents for a browser panel (for navigation control).
-   */
   getBrowserWebContents(browserId: string): Electron.WebContents | null {
-    if (!this.viewManager) {
-      return null;
-    }
-    return this.viewManager.getWebContents(browserId);
+    if (this.viewManager) return this.viewManager.getWebContents(browserId);
+    const webContentsId = this.browserRegistry.get(browserId);
+    return webContentsId ? (webContents.fromId(webContentsId) ?? null) : null;
   }
 
-  /**
-   * Check if a panel owns a specific browser.
-   * Used for authorization checks in IPC handlers.
-   */
   panelOwnsBrowser(panelId: string, browserId: string): boolean {
-    const ownedBrowsers = this.panelBrowsers.get(panelId);
-    return ownedBrowsers?.has(browserId) ?? false;
+    return this.panelBrowsers.get(panelId)?.has(browserId) ?? false;
   }
 
-  async start(): Promise<number> {
-    const port = await findServicePort("cdp");
-
-    this.server = http.createServer();
-    this.wss = new WebSocketServer({ server: this.server });
-
-    this.wss.on("connection", (ws: WebSocket, req: http.IncomingMessage) => {
-      void this.handleConnection(ws, req);
-    });
-
-    await new Promise<void>((resolve, reject) => {
-      this.server!.once("error", reject);
-      // Bind loopback only — never expose CDP to non-loopback (audit #34).
-      this.server!.listen(port, CDP_BIND_HOST, () => resolve());
-    });
-
-    this.actualPort = port;
-    log.verbose(` Started on ws://${CDP_BIND_HOST}:${port}`);
-    return port;
-  }
-
-  private async handleConnection(ws: WebSocket, req: http.IncomingMessage): Promise<void> {
-    const url = new URL(req.url!, `http://localhost`);
-    const browserId = url.pathname.slice(1); // Remove leading /
-    const token = await readCdpAuthToken(ws);
-    if (!token) return;
-
-    // Validate token and get panel ID
-    const entry = this.tokenManager.validateToken(token);
-    const panelId = entry?.callerId ?? null;
-    if (!panelId) {
-      ws.close(4001, "Invalid token");
-      return;
-    }
-
-    // Validate this panel can access the browser (direct parent or tree ancestor)
-    if (!this.canAccessBrowser(panelId, browserId)) {
-      ws.close(4003, "Access denied to this browser");
-      return;
-    }
-
-    // Get webContents - try ViewManager first, then browserRegistry fallback
+  async attach(browserId: string): Promise<void> {
     const contents = this.getBrowserWebContents(browserId);
     if (!contents || contents.isDestroyed()) {
-      ws.close(4004, "Browser webContents not found");
-      return;
+      throw new Error(`Browser webContents not found for ${browserId}`);
     }
 
-    log.verbose(` Client connected for browser ${browserId} from panel ${panelId}`);
-
-    // Track this connection (supports multiple connections per browser)
-    if (!this.activeConnections.has(browserId)) {
-      this.activeConnections.set(browserId, new Set());
-    }
-    this.activeConnections.get(browserId)!.add(ws);
-
-    // Attach debugger if not already attached (with lock to prevent race condition)
     await this.ensureDebuggerAttached(browserId, contents);
+  }
 
-    // Forward CDP messages bidirectionally
-    ws.on("message", async (data: Buffer) => {
-      let msgId: number | undefined;
-      let sessionId: string | undefined;
+  async detach(browserId: string): Promise<void> {
+    const contents = this.getBrowserWebContents(browserId);
+    const handler = this.debuggerMessageHandlers.get(browserId);
+    if (contents && handler) {
       try {
-        const msg = JSON.parse(data.toString()) as {
-          id: number;
-          method: string;
-          params?: Record<string, unknown>;
-          sessionId?: string;
-        };
-        msgId = msg.id;
-        sessionId = msg.sessionId;
-
-        let result: unknown;
-
-        // Intercept Page.captureScreenshot - temporarily show hidden views for capture
-        if (msg.method === "Page.captureScreenshot") {
-          const capture = () => contents.debugger.sendCommand(msg.method, msg.params, sessionId);
-          if (this.viewManager) {
-            const vm = this.viewManager;
-            // withViewVisible returns null if view not found, so fallback to direct capture
-            result = (await vm.withViewVisible(browserId, capture)) ?? (await capture());
-          } else {
-            result = await capture();
-          }
-        } else {
-          // Forward other CDP commands directly
-          // Pass sessionId to support flattened CDP sessions (iframes, targets, etc.)
-          result = await contents.debugger.sendCommand(msg.method, msg.params, sessionId);
-        }
-
-        // Include sessionId in response so client can route to correct session
-        const response: { id: number; result: unknown; sessionId?: string } = {
-          id: msg.id,
-          result,
-        };
-        if (sessionId) {
-          response.sessionId = sessionId;
-        }
-        ws.send(JSON.stringify(response));
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        console.error(`[CdpServer] CDP error for browser ${browserId}:`, errorMessage);
-        // Only send error response if we have a valid message ID
-        // CDP protocol requires responses to match request IDs; without an ID we can't send a valid response
-        if (msgId !== undefined) {
-          const errorResponse: { id: number; error: { message: string }; sessionId?: string } = {
-            id: msgId,
-            error: { message: errorMessage },
-          };
-          if (sessionId) {
-            errorResponse.sessionId = sessionId;
-          }
-          ws.send(JSON.stringify(errorResponse));
-        } else {
-          // Log the error but don't send an invalid response - malformed request without ID
-          console.error(`[CdpServer] Cannot send error response - no message ID in request`);
-        }
+        contents.debugger.off("message", handler);
+      } catch {
+        // Already detached/destroyed.
       }
-    });
-    ws.send(JSON.stringify({ type: "natstack:cdp-auth-ok" }));
+    }
+    this.debuggerMessageHandlers.delete(browserId);
 
-    // Forward CDP events from browser to WebSocket
-    // The message event includes sessionId for flattened CDP sessions
-    const debuggerMessageHandler = (
-      _event: Electron.Event,
-      method: string,
-      params: Record<string, unknown>,
-      sessionId?: string
-    ) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        const message: { method: string; params: Record<string, unknown>; sessionId?: string } = {
-          method,
-          params,
-        };
-        if (sessionId) {
-          message.sessionId = sessionId;
-        }
-        ws.send(JSON.stringify(message));
+    if (contents && this.debuggerAttached.get(browserId)) {
+      try {
+        contents.debugger.detach();
+      } catch {
+        // Already detached.
       }
-    };
-
-    contents.debugger.on("message", debuggerMessageHandler);
-
-    ws.on("close", () => {
-      log.verbose(` Client disconnected for browser ${browserId}`);
-
-      // Remove this connection from the set
-      const connections = this.activeConnections.get(browserId);
-      if (connections) {
-        connections.delete(ws);
-
-        // If no more connections, detach debugger
-        if (connections.size === 0) {
-          this.activeConnections.delete(browserId);
-          try {
-            contents.debugger.off("message", debuggerMessageHandler);
-            contents.debugger.detach();
-            this.debuggerAttached.delete(browserId);
-          } catch {
-            // Already detached
-          }
-        }
-      }
-    });
-
-    ws.on("error", (err: Error) => {
-      console.error(`[CdpServer] WebSocket error for browser ${browserId}:`, err);
-    });
+    }
+    this.debuggerAttached.delete(browserId);
+    this.debuggerAttaching.delete(browserId);
   }
 
-  getPort(): number {
-    return this.actualPort ?? 0;
+  async sendCommand(args: {
+    browserId: string;
+    method: string;
+    params?: Record<string, unknown>;
+    sessionId?: string;
+  }): Promise<unknown> {
+    const contents = this.getBrowserWebContents(args.browserId);
+    if (!contents || contents.isDestroyed()) {
+      throw new Error(`Browser webContents not found for ${args.browserId}`);
+    }
+    await this.ensureDebuggerAttached(args.browserId, contents);
+
+    if (args.method === "Page.captureScreenshot") {
+      const capture = () =>
+        contents.debugger.sendCommand(args.method, args.params, args.sessionId);
+      if (this.viewManager) {
+        return (await this.viewManager.withViewVisible(args.browserId, capture)) ?? capture();
+      }
+      return capture();
+    }
+
+    return contents.debugger.sendCommand(args.method, args.params, args.sessionId);
   }
 
-  /**
-   * Ensure debugger is attached, with locking to prevent race conditions
-   * when multiple connections arrive simultaneously.
-   */
+  async stop(): Promise<void> {
+    for (const browserId of Array.from(this.debuggerAttached.keys())) {
+      await this.detach(browserId);
+    }
+  }
+
   private async ensureDebuggerAttached(
     browserId: string,
     contents: Electron.WebContents
   ): Promise<void> {
-    // Already attached
-    if (this.debuggerAttached.get(browserId)) {
-      return;
-    }
+    if (this.debuggerAttached.get(browserId)) return;
 
-    // Another connection is currently attaching - wait for it
     const existingPromise = this.debuggerAttaching.get(browserId);
     if (existingPromise) {
       await existingPromise;
       return;
     }
 
-    // We're the first - create the attach promise
     const attachPromise = (async () => {
       try {
         contents.debugger.attach("1.3");
-        this.debuggerAttached.set(browserId, true);
       } catch {
-        // Already attached (by another process) - that's fine
-        this.debuggerAttached.set(browserId, true);
-      } finally {
-        this.debuggerAttaching.delete(browserId);
+        // Already attached by another debugger client.
       }
+
+      const handler = (
+        _event: Electron.Event,
+        method: string,
+        params: Record<string, unknown>,
+        sessionId?: string
+      ) => {
+        this.sendIpcMessage?.({
+          type: "cdp-message",
+          browserId,
+          method,
+          params,
+          ...(sessionId ? { sessionId } : {}),
+        });
+      };
+
+      const oldHandler = this.debuggerMessageHandlers.get(browserId);
+      if (oldHandler) {
+        try {
+          contents.debugger.off("message", oldHandler);
+        } catch {
+          // Already detached/destroyed.
+        }
+      }
+      contents.debugger.on("message", handler);
+      this.debuggerMessageHandlers.set(browserId, handler);
+      this.debuggerAttached.set(browserId, true);
+      this.debuggerAttaching.delete(browserId);
     })();
 
     this.debuggerAttaching.set(browserId, attachPromise);
     await attachPromise;
-  }
-
-  async stop(): Promise<void> {
-    // Close all active connections
-    for (const [browserId, connections] of this.activeConnections) {
-      for (const ws of connections) {
-        ws.close(1000, "Server shutting down");
-      }
-      this.activeConnections.delete(browserId);
-    }
-
-    // Detach all debuggers
-    for (const [browserId, attached] of this.debuggerAttached) {
-      if (attached) {
-        const webContentsId = this.browserRegistry.get(browserId);
-        if (webContentsId) {
-          const contents = webContents.fromId(webContentsId);
-          if (contents) {
-            try {
-              contents.debugger.detach();
-            } catch {
-              // Already detached
-            }
-          }
-        }
-      }
-    }
-    this.debuggerAttached.clear();
-
-    if (this.wss) {
-      this.wss.close();
-      this.wss = null;
-    }
-
-    if (this.server) {
-      return new Promise((resolve) => {
-        this.server!.close(() => {
-          this.actualPort = null;
-          this.server = null;
-          console.log("[CdpServer] Stopped");
-          resolve();
-        });
-      });
-    }
   }
 }

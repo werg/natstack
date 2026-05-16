@@ -48,7 +48,7 @@ type GitServiceDeps = {
   workspacePath?: string;
   workspaceConfig?: WorkspaceConfig;
   contextFolderManager?: Pick<ContextFolderManager, "syncDeclaredRemotes" | "syncRepoToContexts">;
-  egressProxy?: Pick<EgressProxy, "forwardGitHttp">;
+  egressProxy?: Pick<EgressProxy, "executeAuthorizedRequest">;
   approvalQueue?: ApprovalQueue;
   grantStore?: CapabilityGrantStore;
   codeIdentityResolver?: Pick<CodeIdentityResolver, "resolveByCallerId">;
@@ -587,7 +587,7 @@ async function propagateSharedRemote(
 }
 
 function createEgressGitHttpClient(
-  egressProxy: Pick<EgressProxy, "forwardGitHttp">,
+  egressProxy: Pick<EgressProxy, "executeAuthorizedRequest">,
   callerId: string,
   credentialId?: string
 ) {
@@ -599,13 +599,37 @@ function createEgressGitHttpClient(
       body?: Uint8Array | AsyncIterable<Uint8Array>;
     }) {
       const body = request.body ? await collectGitBody(request.body) : undefined;
-      const response = await egressProxy.forwardGitHttp({
+      const bytesOut = body?.byteLength ?? 0;
+      const response = await egressProxy.executeAuthorizedRequest({
         callerId,
-        url: request.url,
-        method: request.method ?? "GET",
-        headers: request.headers ?? {},
-        body,
+        targetUrl: new URL(request.url),
+        method: (request.method ?? "GET").toUpperCase(),
+        inputHeaders: request.headers ?? {},
         credentialId,
+        credentialUse: "git-http",
+        initialBytesOut: bytesOut,
+        replaySafe: false,
+        execute: async (targetUrl, headers) => {
+          const result = await fetch(targetUrl.toString(), {
+            method: request.method ?? "GET",
+            headers: headers as HeadersInit,
+            body: body as BodyInit | undefined,
+          });
+          const responseBody = new Uint8Array(await result.arrayBuffer());
+          return {
+            statusCode: result.status,
+            bytesIn: responseBody.byteLength,
+            bytesOut,
+            payload: {
+              url: result.url,
+              method: request.method ?? "GET",
+              statusCode: result.status,
+              statusMessage: result.statusText,
+              headers: Object.fromEntries(result.headers.entries()),
+              body: responseBody,
+            },
+          };
+        },
       });
       return {
         url: response.url,

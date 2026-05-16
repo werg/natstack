@@ -58,6 +58,9 @@ function buildServerInfo(
   return {
     gatewayConfig,
     workerdPort: ports.workerdPort ?? 0,
+    egressProxyPort: ports.egressProxyPort,
+    assertionSecret: ports.assertionSecret,
+    internalHopSecret: ports.internalHopSecret,
     externalHost,
     gatewayPort: ports.gatewayPort,
     protocol,
@@ -362,6 +365,13 @@ export async function establishServerSession(args: {
     serverClient = await createServerClient(localGatewayPort, shellToken, {
       reconnect: true,
       maxReconnectAttempts: 10,
+      callerAssertion: ports.assertionSecret
+        ? {
+            secretBase64: ports.assertionSecret,
+            callerId: "electron-main",
+            callerKind: "shell",
+          }
+        : undefined,
       getWsUrl: () => {
         const url = serverProcessManager?.getCurrentGatewayUrl();
         return url ?? `ws://127.0.0.1:${ports.gatewayPort}/rpc`;

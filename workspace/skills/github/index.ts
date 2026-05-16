@@ -183,7 +183,7 @@ function getCredentialRuntime(): RuntimeCredentials {
   if (!api) {
     throw new Error("NatStack credential runtime is unavailable: @workspace/runtime did not export credentials.");
   }
-  for (const method of ["requestCredentialInput", "listStoredCredentials", "revokeCredential", "fetch"] as const) {
+  for (const method of ["requestCredentialInput", "listStoredCredentials", "revokeCredential"] as const) {
     if (typeof api[method] !== "function") {
       throw new Error(`NatStack credential runtime is unavailable: credentials.${method} is missing.`);
     }
@@ -425,16 +425,16 @@ export async function revokeGitHubCredential(credentialId: string): Promise<void
 }
 
 export async function verifyGitHubCredential(credentialId: string): Promise<GitHubVerificationResult> {
-  return withCredentialRuntime(async (api) => {
-    const response = await api.fetch(
+  return withCredentialRuntime(async () => {
+    const response = await fetch(
       `${GITHUB_API_ORIGIN}/user`,
       {
         headers: {
           accept: "application/vnd.github+json",
           "x-github-api-version": "2022-11-28",
+          "X-NatStack-Use-Credential": credentialId,
         },
-      },
-      { credentialId }
+      }
     );
     if (!response.ok) {
       return { valid: false, credentialId, error: `${response.status} ${response.statusText}` };
@@ -556,16 +556,17 @@ export async function verifyGitHubRepoAccess(
 ): Promise<{ accessible: boolean; fullName?: string; private?: boolean; error?: string }> {
   const encodedOwner = encodeURIComponent(owner);
   const encodedRepo = encodeURIComponent(repo);
-  return withCredentialRuntime(async (api) => {
-    const response = await api.fetch(
+  return withCredentialRuntime(async () => {
+    const headers: Record<string, string> = {
+      accept: "application/vnd.github+json",
+      "x-github-api-version": "2022-11-28",
+    };
+    if (credentialId) headers["X-NatStack-Use-Credential"] = credentialId;
+    const response = await fetch(
       `${GITHUB_API_ORIGIN}/repos/${encodedOwner}/${encodedRepo}`,
       {
-        headers: {
-          accept: "application/vnd.github+json",
-          "x-github-api-version": "2022-11-28",
-        },
-      },
-      { credentialId }
+        headers,
+      }
     );
     if (!response.ok) {
       return { accessible: false, error: `${response.status} ${response.statusText}` };

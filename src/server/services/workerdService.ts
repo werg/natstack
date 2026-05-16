@@ -68,7 +68,7 @@ export function createWorkerdService(deps: {
     handler: async (_ctx, method, args) => {
       const wm = deps.workerdManager;
 
-      const stripToken = <T extends { token: string }>(inst: T): Omit<T, "token"> => {
+      const stripToken = <T extends { token?: string }>(inst: T): Omit<T, "token"> => {
         const { token: _token, ...rest } = inst;
         return rest;
       };

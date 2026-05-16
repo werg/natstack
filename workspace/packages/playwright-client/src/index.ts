@@ -19,10 +19,9 @@ export type Options = {
 export async function connect(
   wsEndpoint: string,
   _browserName: string,
-  options: Options & { authToken?: string } = {},
+  _options: Options = {},
 ): Promise<Browser> {
   return BrowserImpl.connect(wsEndpoint, {
     isElectronWebview: true,
-    transportOptions: options.authToken ? { authToken: options.authToken } : undefined,
   });
 }

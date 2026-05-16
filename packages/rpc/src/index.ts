@@ -8,6 +8,10 @@ export type {
   RpcBridgeConfig,
   RpcBridgeInternal,
   ExposedMethods,
+  RpcAccessPolicy,
+  RpcCallerContext,
+  RpcMethodDefinition,
+  RpcMethodHandler,
   RpcEventListener,
   RpcCaller,
   CallerKind,
@@ -18,3 +22,9 @@ export type {
 export { isParentPortEnvelope, ELECTRON_LOCAL_SERVICE_NAMES } from "./types.js";
 export { createRpcBridge } from "./bridge.js";
 export { createHandlerRegistry } from "./transport-helpers.js";
+export {
+  allowAllCallers,
+  allowCallerIds,
+  allowSourcePrefixes,
+  denyAllCallers,
+} from "./access.js";

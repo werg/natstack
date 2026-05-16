@@ -19,6 +19,8 @@ const log = createDevLogger("App");
 import { PanelRegistry } from "@natstack/shared/panelRegistry";
 import { PanelOrchestrator } from "./panelOrchestrator.js";
 import { PanelView } from "./panelView.js";
+import { ViewBackedPanelWebContentsRegistry } from "./panelRegistry.js";
+import { PanelProxyIdentity } from "./services/panelProxyIdentity.js";
 import { BrowserHistoryRecorder } from "./browserHistoryRecorder.js";
 import {
   setupMenu,
@@ -126,8 +128,6 @@ let mainWindow: BaseWindow | null = null;
 let viewManager: ViewManager | null = null;
 let isCleaningUp = false; // Prevent re-entry in will-quit handler
 let autofillManager: import("./autofill/autofillManager.js").AutofillManager | null = null;
-const corsApprovalCache = new Set<string>();
-const pendingCorsApprovals = new Map<string, Promise<{ allowed: boolean; cacheable: boolean }>>();
 let browserDataStoreForCredentialCapture: {
   cookies: {
     getByDomain(domain?: string): Promise<
@@ -296,116 +296,6 @@ function importedCookieMatchesOrigin(
     url.pathname === cookiePath ||
     url.pathname.startsWith(cookiePath.endsWith("/") ? cookiePath : `${cookiePath}/`)
   );
-}
-
-function getHttpOrigin(rawUrl: string): string | null {
-  try {
-    const url = new URL(rawUrl);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-    return url.origin;
-  } catch {
-    return null;
-  }
-}
-
-function getWebRequestPanelCallerId(
-  details: Electron.OnHeadersReceivedListenerDetails
-): string | null {
-  if (!viewManager) return null;
-  const webContentsId = details.webContentsId ?? details.webContents?.id;
-  if (typeof webContentsId !== "number") return null;
-  const shellContents = viewManager.getShellWebContents();
-  if (shellContents && !shellContents.isDestroyed() && shellContents.id === webContentsId) {
-    return null;
-  }
-  return viewManager.findViewIdByWebContentsId(webContentsId);
-}
-
-function getCorsRequestOrigin(details: Electron.OnHeadersReceivedListenerDetails): string | null {
-  const referrerOrigin = details.referrer ? getHttpOrigin(details.referrer) : null;
-  if (referrerOrigin) return referrerOrigin;
-  const currentUrl =
-    details.webContents && !details.webContents.isDestroyed() ? details.webContents.getURL() : "";
-  return currentUrl ? getHttpOrigin(currentUrl) : null;
-}
-
-async function authorizeCorsResponseAccess(
-  details: Electron.OnHeadersReceivedListenerDetails
-): Promise<{ allowed: boolean; requestOrigin: string | null }> {
-  if (details.resourceType !== "xhr") {
-    return { allowed: false, requestOrigin: null };
-  }
-  const targetOrigin = getHttpOrigin(details.url);
-  const requestOrigin = getCorsRequestOrigin(details);
-  if (!targetOrigin || !requestOrigin || targetOrigin === requestOrigin) {
-    return { allowed: false, requestOrigin };
-  }
-
-  const callerId = getWebRequestPanelCallerId(details);
-  if (!callerId || !serverSession?.serverClient) {
-    return { allowed: false, requestOrigin };
-  }
-
-  const cacheKey = `${callerId}\x00${targetOrigin}`;
-  if (corsApprovalCache.has(cacheKey)) {
-    return { allowed: true, requestOrigin };
-  }
-
-  let pending = pendingCorsApprovals.get(cacheKey);
-  if (!pending) {
-    pending = serverSession.serverClient
-      .call("corsApproval", "authorize", [
-        {
-          callerId,
-          targetUrl: details.url,
-          requestOrigin,
-        },
-      ])
-      .then((result: unknown) => {
-        const response = result as { allowed?: unknown; decision?: unknown };
-        const allowed = response.allowed === true;
-        const cacheable = allowed && response.decision !== "once";
-        if (cacheable) corsApprovalCache.add(cacheKey);
-        return { allowed, cacheable };
-      })
-      .catch((error: unknown) => {
-        log.warn(`CORS approval failed: ${error instanceof Error ? error.message : String(error)}`);
-        return { allowed: false, cacheable: false };
-      })
-      .finally(() => {
-        pendingCorsApprovals.delete(cacheKey);
-      });
-    pendingCorsApprovals.set(cacheKey, pending);
-  }
-
-  const result = await pending;
-  return { allowed: result.allowed, requestOrigin };
-}
-
-function withCorsRelaxedHeaders(
-  responseHeaders: Record<string, string[]> | undefined,
-  requestOrigin: string
-): Record<string, string[]> {
-  const strippedCorsHeaderNames = new Set([
-    "access-control-allow-origin",
-    "access-control-allow-headers",
-    "access-control-allow-methods",
-    "access-control-allow-credentials",
-    "access-control-expose-headers",
-  ]);
-  const headers: Record<string, string[]> = {};
-  for (const [key, value] of Object.entries(responseHeaders ?? {})) {
-    const lower = key.toLowerCase();
-    if (!strippedCorsHeaderNames.has(lower)) {
-      headers[key] = value;
-    }
-  }
-  headers["access-control-allow-origin"] = [requestOrigin];
-  headers["access-control-allow-headers"] = ["*"];
-  headers["access-control-allow-methods"] = ["GET, POST, PUT, PATCH, DELETE, OPTIONS"];
-  headers["access-control-allow-credentials"] = ["true"];
-  headers["access-control-expose-headers"] = ["*"];
-  return headers;
 }
 
 async function handleCredentialSessionCaptureRequest(
@@ -672,6 +562,15 @@ function createWindow(): void {
 
   if (viewManager && panelRegistry && panelOrchestrator && cdpServer && serverSession) {
     const browserHistoryRecorder = new BrowserHistoryRecorder(serverSession.serverClient);
+    const panelWebContentsRegistry = new ViewBackedPanelWebContentsRegistry(() => viewManager);
+    const panelProxyIdentity =
+      serverSession.serverInfo.assertionSecret && serverSession.serverInfo.egressProxyPort
+        ? new PanelProxyIdentity({
+            assertionSecret: Buffer.from(serverSession.serverInfo.assertionSecret, "base64"),
+            proxyPort: serverSession.serverInfo.egressProxyPort,
+            panelRegistry: panelWebContentsRegistry,
+          })
+        : undefined;
     panelView = new PanelView({
       viewManager,
       panelRegistry,
@@ -689,6 +588,7 @@ function createWindow(): void {
       panelPreloadPath: path.join(__dirname, "panelPreload.cjs"),
       browserPreloadPath: path.join(__dirname, "browserPreload.cjs"),
       browserHistoryRecorder,
+      panelProxyIdentity,
     });
 
     // Wire autofill overlay to window, z-order changes, and panel switches
@@ -750,28 +650,6 @@ function createWindow(): void {
 
 app.on("ready", async () => {
   performance.mark("startup:ready");
-
-  // Default to browser CORS. For panel fetch/XHR responses, relax CORS only
-  // after the trusted shell approval flow grants that panel access to the
-  // target origin. Browser panels use a separate "persist:browser" partition
-  // and are unaffected.
-  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    void authorizeCorsResponseAccess(details)
-      .then(({ allowed, requestOrigin }) => {
-        callback({
-          responseHeaders:
-            allowed && requestOrigin
-              ? withCorsRelaxedHeaders(details.responseHeaders, requestOrigin)
-              : details.responseHeaders,
-        });
-      })
-      .catch((error: unknown) => {
-        log.warn(
-          `CORS header handling failed: ${error instanceof Error ? error.message : String(error)}`
-        );
-        callback({ responseHeaders: details.responseHeaders });
-      });
-  });
 
   // -------------------------------------------------------------------------
   // Default-deny permission handlers (audit finding #37 / 01-MEDIUM-4).
@@ -975,6 +853,47 @@ app.on("ready", async () => {
     }
   }
 
+  async function handleCdpIpcRequest(
+    type: string,
+    msg: Record<string, unknown>
+  ): Promise<Record<string, unknown>> {
+    if (!cdpServer) return { error: "CDP bridge is not initialized" };
+    const browserId = typeof msg["browserId"] === "string" ? msg["browserId"] : null;
+    if (!browserId) return { error: "Missing browserId" };
+
+    try {
+      if (type === "cdp-ownership-request") {
+        const ownership = cdpServer.getBrowserOwnership(browserId);
+        return ownership ? { ...ownership } : { error: "Browser not found" };
+      }
+      if (type === "cdp-attach-request") {
+        await cdpServer.attach(browserId);
+        return {};
+      }
+      if (type === "cdp-detach-request") {
+        await cdpServer.detach(browserId);
+        return {};
+      }
+      if (type === "cdp-command-request") {
+        const method = typeof msg["method"] === "string" ? msg["method"] : null;
+        if (!method) return { error: "Missing CDP method" };
+        const result = await cdpServer.sendCommand({
+          browserId,
+          method,
+          params:
+            typeof msg["params"] === "object" && msg["params"] !== null
+              ? (msg["params"] as Record<string, unknown>)
+              : undefined,
+          sessionId: typeof msg["sessionId"] === "string" ? msg["sessionId"] : undefined,
+        });
+        return { result };
+      }
+      return { error: `Unknown CDP IPC request: ${type}` };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   try {
     performance.mark("startup:server-spawn-begin");
 
@@ -998,6 +917,9 @@ app.on("ready", async () => {
       onIpcRequest: async (type, msg) => {
         if (type === "credential-session-capture-request") {
           return handleCredentialSessionCaptureRequest(msg);
+        }
+        if (type.startsWith("cdp-")) {
+          return handleCdpIpcRequest(type, msg);
         }
         return null;
       },
@@ -1045,11 +967,15 @@ app.on("ready", async () => {
       });
     }
 
-    // CDP server (Electron-local) — must start before panel services
-    cdpServer = new CdpServer(tokenManager);
+    // CDP debugger bridge. The WebSocket endpoint is served by the server
+    // gateway; Electron main only owns webContents.debugger primitives.
+    cdpServer = new CdpServer({
+      getCdpWebSocketBaseUrl: () =>
+        `${serverSession!.protocol === "https" ? "wss" : "ws"}://127.0.0.1:${serverSession!.gatewayPort}`,
+      sendIpcMessage: (message) => serverSession?.serverProcessManager?.postMessage({ ...message }),
+    });
     if (viewManager) cdpServer.setViewManager(viewManager);
-    const cdpPort = await cdpServer.start();
-    log.info(`[CDP] Server started on port ${cdpPort}`);
+    log.info("[CDP] Debugger bridge attached to gateway");
 
     // Create PanelRegistry (pure in-memory — server owns persistence)
     panelRegistry = new PanelRegistry({

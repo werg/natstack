@@ -31,7 +31,7 @@ export interface ConnectionConfig {
   clientId: string;
   rpc?: {
     call<R = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<R>;
-    onEvent(event: string, listener: (fromId: string, payload: unknown) => void): () => void;
+    onEvent(event: string, listener: (sourceId: string, payload: unknown) => void): () => void;
     selfId: string;
   };
   recoveryCoordinator?: Pick<RecoveryCoordinator, "registerColdRecoverHandler">;

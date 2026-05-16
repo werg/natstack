@@ -16,7 +16,6 @@
 import { DurableObjectBase } from "@workspace/runtime/worker";
 import type { DurableObjectContext } from "@workspace/runtime/worker";
 import {
-  fetch as credentialFetch,
   listStoredCredentials,
   resolveCredential,
   type StoredCredentialSummary,
@@ -149,7 +148,9 @@ export class EmailSyncWorker extends DurableObjectBase {
   // --- Gmail API (native fetch — DOs have outbound network) ---
 
   private async gmailFetch<T>(path: string, handle: StoredCredentialSummary): Promise<T> {
-    const res = await credentialFetch(`${GMAIL_BASE}${path}`, undefined, { credentialId: handle.id });
+    const res = await fetch(`${GMAIL_BASE}${path}`, {
+      headers: { "X-NatStack-Use-Credential": handle.id },
+    });
     if (!res.ok) {
       const body = await res.text();
       throw new Error(`Gmail API ${res.status}: ${body}`);

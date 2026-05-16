@@ -91,7 +91,6 @@ function getCredentialRuntime(): RuntimeCredentials {
     "getClientConfigStatus",
     "listStoredCredentials",
     "revokeCredential",
-    "fetch",
   ] as const) {
     if (typeof api[method] !== "function") {
       throw new Error(
@@ -259,11 +258,12 @@ export async function revokeGoogleCredential(credentialId: string): Promise<void
 export async function verifyGoogleCredential(
   credentialId: string
 ): Promise<GoogleVerificationResult> {
-  return withCredentialRuntime(async (api) => {
-    const response = await api.fetch(
+  return withCredentialRuntime(async () => {
+    const response = await fetch(
       "https://www.googleapis.com/oauth2/v1/userinfo?alt=json",
-      undefined,
-      { credentialId }
+      {
+        headers: { "X-NatStack-Use-Credential": credentialId },
+      }
     );
     if (!response.ok) {
       return { valid: false, credentialId, error: `${response.status} ${response.statusText}` };

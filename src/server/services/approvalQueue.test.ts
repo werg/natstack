@@ -89,6 +89,39 @@ describe("approvalQueue", () => {
     await expect(promise).resolves.toBe("once");
   });
 
+  it("returns selected credential for capability approvals that need one", async () => {
+    const { queue } = createQueue();
+    const promise = queue.requestCapability({
+      kind: "capability",
+      callerId: "worker:1",
+      callerKind: "worker",
+      repoPath: "/repo",
+      effectiveVersion: "hash-1",
+      capability: "egress",
+      title: "Access API",
+      credentialOptions: [
+        { selectionId: "[\"cred-1\",\"api\"]", label: "Credential A" },
+        { selectionId: null, label: "No credential" },
+      ],
+      defaultCredentialSelectionId: null,
+    });
+
+    const pending = queue.listPending()[0]!;
+    expect(pending).toMatchObject({
+      kind: "capability",
+      credentialOptions: [
+        { selectionId: "[\"cred-1\",\"api\"]", label: "Credential A" },
+        { selectionId: null, label: "No credential" },
+      ],
+    });
+
+    queue.resolveCapability(pending.approvalId, "session", "[\"cred-1\",\"api\"]");
+    await expect(promise).resolves.toEqual({
+      decision: "session",
+      credentialSelectionId: "[\"cred-1\",\"api\"]",
+    });
+  });
+
   it("fans out pending changes to listeners and supports unsubscribe", async () => {
     const { queue } = createQueue();
     const listener = vi.fn();

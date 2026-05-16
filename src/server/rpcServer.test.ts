@@ -19,7 +19,11 @@ type TestRpcServer = {
   };
   connectionReconnectWaiters: Map<string, { resolve: (client: WsClientState) => void }>;
   reconnectWaiters: Map<string, unknown>;
-  handleAuth(ws: unknown, token: string | null, connectionId: string): void;
+  attachConnection(
+    ws: unknown,
+    caller: { callerId: string; callerKind: "panel" },
+    connectionId: string
+  ): void;
   handleRoute(client: WsClientState, targetId: string, message: unknown): Promise<void> | void;
   handleClose(client: WsClientState, code: number, reason: string): void;
   handleRpc(client: WsClientState, message: unknown): Promise<void>;
@@ -109,8 +113,7 @@ function registerClient(server: RpcServer, client: WsClientState): void {
 
 describe("RpcServer relay behavior", () => {
   it("keeps distinct connections for the same caller authenticated simultaneously", () => {
-    const { server, tokenManager } = createServer();
-    const token = tokenManager.getToken("panel-a");
+    const { server } = createServer();
     const ws1 = {
       readyState: WebSocket.OPEN,
       send: vi.fn(),
@@ -126,37 +129,34 @@ describe("RpcServer relay behavior", () => {
       off: vi.fn(),
     };
 
-    testServer(server).handleAuth(ws1, token, "conn-1");
-    testServer(server).handleAuth(ws2, token, "conn-2");
+    testServer(server).attachConnection(ws1, { callerId: "panel-a", callerKind: "panel" }, "conn-1");
+    testServer(server).attachConnection(ws2, { callerId: "panel-a", callerKind: "panel" }, "conn-2");
 
     expect(ws1.close).not.toHaveBeenCalled();
     expect(ws2.close).not.toHaveBeenCalled();
     expect(testServer(server).connections.getCallerConnections("panel-a")).toHaveLength(2);
     expect(JSON.parse(ws1.send.mock.calls[0]![0])).toMatchObject({
-      type: "ws:auth-result",
-      success: true,
+      type: "ws:ready",
       connectionId: "conn-1",
       serverBootId: expect.any(String),
     });
     expect(JSON.parse(ws2.send.mock.calls[0]![0])).toMatchObject({
-      type: "ws:auth-result",
-      success: true,
+      type: "ws:ready",
       connectionId: "conn-2",
       serverBootId: expect.any(String),
     });
   });
 
   it("keeps the replacement bridge when the old same-connection socket closes late", () => {
-    const { server, tokenManager } = createServer();
-    const token = tokenManager.getToken("panel-a");
+    const { server } = createServer();
     const ws1 = createTestWs();
     const ws2 = createTestWs();
 
-    testServer(server).handleAuth(ws1, token, "conn-1");
+    testServer(server).attachConnection(ws1, { callerId: "panel-a", callerKind: "panel" }, "conn-1");
     const firstBridge = server.getClientBridge("panel-a");
     expect(firstBridge).toBeTruthy();
 
-    testServer(server).handleAuth(ws2, token, "conn-1");
+    testServer(server).attachConnection(ws2, { callerId: "panel-a", callerKind: "panel" }, "conn-1");
     const replacementBridge = server.getClientBridge("panel-a");
     expect(replacementBridge).toBeTruthy();
     expect(replacementBridge).not.toBe(firstBridge);
@@ -171,16 +171,15 @@ describe("RpcServer relay behavior", () => {
   });
 
   it("ignores late frames from a replaced same-connection socket", async () => {
-    const { server, tokenManager } = createServer();
-    const token = tokenManager.getToken("panel-a");
+    const { server } = createServer();
     const ws1 = createTestWs();
     const ws2 = createTestWs();
 
     testServer(server).dispatcher.getPolicy.mockReturnValue({ allowed: ["panel"] });
     testServer(server).dispatcher.dispatch.mockResolvedValue("ok");
 
-    testServer(server).handleAuth(ws1, token, "conn-1");
-    testServer(server).handleAuth(ws2, token, "conn-1");
+    testServer(server).attachConnection(ws1, { callerId: "panel-a", callerKind: "panel" }, "conn-1");
+    testServer(server).attachConnection(ws2, { callerId: "panel-a", callerKind: "panel" }, "conn-1");
 
     ws1.emitMessage({
       type: "ws:rpc",
@@ -191,7 +190,7 @@ describe("RpcServer relay behavior", () => {
         args: [],
       },
     });
-    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(testServer(server).dispatcher.dispatch).not.toHaveBeenCalled();
   });
@@ -207,7 +206,6 @@ describe("RpcServer relay behavior", () => {
 
     testServer(server).handleRoute(source, "panel-b", {
       type: "event",
-      fromId: "panel-a",
       event: "test:event",
       payload: { ok: true },
     });
@@ -218,7 +216,7 @@ describe("RpcServer relay behavior", () => {
       JSON.parse((target1.ws.send as ReturnType<typeof vi.fn>).mock.calls[0]![0])
     ).toMatchObject({
       type: "ws:routed",
-      fromId: "panel-a",
+      sourceId: "panel-a",
       message: { type: "event", event: "test:event", payload: { ok: true } },
     });
   });
@@ -254,7 +252,7 @@ describe("RpcServer relay behavior", () => {
       JSON.parse((origin2.ws.send as ReturnType<typeof vi.fn>).mock.calls[0]![0])
     ).toMatchObject({
       type: "ws:routed",
-      fromId: "panel-b",
+      sourceId: "panel-b",
       message: { type: "response", requestId: "req-origin-2", result: { ok: true } },
     });
   });
@@ -301,7 +299,7 @@ describe("RpcServer relay behavior", () => {
         JSON.parse((reconnected.ws.send as ReturnType<typeof vi.fn>).mock.calls[0]![0])
       ).toMatchObject({
         type: "ws:routed",
-        fromId: "panel-b",
+        sourceId: "panel-b",
         message: { type: "response", requestId: "req-reconnect", result: { ok: true } },
       });
     } finally {
@@ -309,17 +307,17 @@ describe("RpcServer relay behavior", () => {
     }
   });
 
-  it("surfaces event relay auth failures with ws:routed-event-error", () => {
+  it("surfaces event relay reachability failures with ws:routed-event-error", async () => {
     const { server } = createServer();
     const client = createClient();
 
     testServer(server).handleRoute(client, "panel-b", {
       type: "event",
-      fromId: "panel-a",
       event: "test:event",
       payload: { ok: true },
     });
 
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(client.ws.send).toHaveBeenCalledTimes(1);
     expect(
       JSON.parse((client.ws.send as ReturnType<typeof vi.fn>).mock.calls[0]![0])
@@ -327,7 +325,7 @@ describe("RpcServer relay behavior", () => {
       type: "ws:routed-event-error",
       targetId: "panel-b",
       event: "test:event",
-      error: "Panel panel-a cannot relay to unrelated panel panel-b",
+      error: "Target not reachable: panel-b",
     });
   });
 

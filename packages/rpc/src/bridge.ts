@@ -7,6 +7,10 @@ import type {
   RpcResponse,
   RpcEvent,
   RpcEventListener,
+  RpcAccessPolicy,
+  RpcCallerContext,
+  RpcMethodDefinition,
+  RpcMethodHandler,
 } from "./types.js";
 
 function generateRequestId(): string {
@@ -27,8 +31,8 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
   const eventListeners = new Map<string, Set<RpcEventListener>>();
 
   const handleRequest = (sourceId: string, request: RpcRequest) => {
-    const handler = exposedMethods[request.method];
-    if (!handler) {
+    const method = exposedMethods[request.method];
+    if (!method) {
       const response: RpcResponse = {
         type: "response",
         requestId: request.requestId,
@@ -38,8 +42,17 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
       return;
     }
 
+    const ctx: RpcCallerContext = { sourceId };
     Promise.resolve()
-      .then(() => handler(...request.args))
+      .then(async () => {
+        const allowed = await method.access(ctx);
+        if (!allowed) {
+          const error = new Error(`RPC access denied for method "${request.method}"`);
+          (error as NodeJS.ErrnoException).code = "RPC_ACCESS_DENIED";
+          throw error;
+        }
+        return method.handler(ctx, ...request.args);
+      })
       .then((result) => {
         const response: RpcResponse = {
           type: "response",
@@ -53,6 +66,9 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
           type: "response",
           requestId: request.requestId,
           error: error instanceof Error ? error.message : String(error),
+          ...(error instanceof Error && (error as NodeJS.ErrnoException).code
+            ? { errorCode: (error as NodeJS.ErrnoException).code }
+            : {}),
         };
         return config.transport.send(sourceId, response).catch?.(() => {});
       });
@@ -94,15 +110,21 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
 
     exposeMethod<TArgs extends unknown[], TReturn>(
       method: string,
-      handler: (...args: TArgs) => TReturn | Promise<TReturn>
+      access: RpcAccessPolicy,
+      handler: RpcMethodHandler<TArgs, TReturn>
     ): void {
-      // Cast is safe: we're widening the type for storage, but runtime behavior is unchanged
-      exposedMethods[method] = handler as (...args: unknown[]) => unknown | Promise<unknown>;
+      exposedMethods[method] = {
+        access,
+        handler: handler as RpcMethodHandler<unknown[], unknown>,
+      };
     },
 
-    expose(methods: Record<string, (...args: any[]) => any>): void {
-      for (const [name, handler] of Object.entries(methods)) {
-        exposedMethods[name] = handler as (...args: unknown[]) => unknown | Promise<unknown>;
+    expose(methods: Record<string, RpcMethodDefinition<any[], any>>): void {
+      for (const [name, definition] of Object.entries(methods)) {
+        exposedMethods[name] = {
+          access: definition.access,
+          handler: definition.handler as RpcMethodHandler<unknown[], unknown>,
+        };
       }
     },
 
@@ -111,7 +133,6 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
       const request: RpcRequest = {
         type: "request",
         requestId,
-        fromId: config.selfId,
         method,
         args,
       };
@@ -132,7 +153,6 @@ export function createRpcBridge(config: RpcBridgeConfig): RpcBridgeInternal {
     async emit(targetId: string, event: string, payload: unknown): Promise<void> {
       const message: RpcEvent = {
         type: "event",
-        fromId: config.selfId,
         event,
         payload,
       };

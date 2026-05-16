@@ -7,6 +7,7 @@ import {
   Code,
   Flex,
   IconButton,
+  Select,
   Text,
   TextField,
   Tooltip,
@@ -109,6 +110,12 @@ export function ConsentApprovalBar() {
     void shellApproval
       .resolve(current.approvalId, decision)
       .catch((err: unknown) => console.error("[ConsentApprovalBar] resolve failed:", err));
+  };
+  const decideCapability = (decision: ApprovalDecision, credentialSelectionId?: string | null) => {
+    if (current?.kind !== "capability") return;
+    void shellApproval
+      .resolveCapability(current.approvalId, decision, credentialSelectionId)
+      .catch((err: unknown) => console.error("[ConsentApprovalBar] resolveCapability failed:", err));
   };
   const submitClientConfig = () => {
     if (current?.kind !== "client-config") return;
@@ -255,7 +262,11 @@ export function ConsentApprovalBar() {
           ) : current.kind === "device-code" ? (
             <DeviceCodeActions onCancel={() => decide("dismiss")} />
           ) : (
-            <StandardApprovalActions approval={current} decide={decide} />
+            <StandardApprovalActions
+              approval={current}
+              decide={decide}
+              decideCapability={decideCapability}
+            />
           )}
         </Flex>
       </Flex>
@@ -266,37 +277,77 @@ export function ConsentApprovalBar() {
 function StandardApprovalActions({
   approval,
   decide,
+  decideCapability,
 }: {
   approval: PendingCredentialApproval | PendingCapabilityApproval;
   decide: (decision: ApprovalDecision) => void;
+  decideCapability: (decision: ApprovalDecision, credentialSelectionId?: string | null) => void;
 }) {
   const copy = getStandardActionCopy(approval);
+  const capabilityApproval = approval.kind === "capability" ? approval : null;
+  const credentialOptions = capabilityApproval?.credentialOptions;
+  const defaultSelectionIndex = credentialOptions
+    ? Math.max(
+        0,
+        credentialOptions.findIndex(
+          (option) => option.selectionId === (capabilityApproval.defaultCredentialSelectionId ?? null)
+        )
+      )
+    : 0;
+  const [selectedCredentialIndex, setSelectedCredentialIndex] = useState(defaultSelectionIndex);
+  useEffect(() => {
+    setSelectedCredentialIndex(defaultSelectionIndex);
+  }, [approval.approvalId, defaultSelectionIndex]);
+  const selectedCredential =
+    credentialOptions?.[selectedCredentialIndex] ?? credentialOptions?.[0] ?? null;
+  const choose = (decision: ApprovalDecision) => {
+    if (credentialOptions) {
+      decideCapability(decision, selectedCredential?.selectionId ?? null);
+      return;
+    }
+    decide(decision);
+  };
   return (
     <Flex align="center" className="approval-actions" gap="2" wrap="wrap">
+      {credentialOptions ? (
+        <Select.Root
+          value={String(selectedCredentialIndex)}
+          onValueChange={(value) => setSelectedCredentialIndex(Number(value))}
+        >
+          <Select.Trigger aria-label="Credential" variant="surface" />
+          <Select.Content>
+            {credentialOptions.map((option, index) => (
+              <Select.Item key={`${option.selectionId ?? "none"}:${index}`} value={String(index)}>
+                {option.label}
+              </Select.Item>
+            ))}
+          </Select.Content>
+        </Select.Root>
+      ) : null}
       <DecisionButton
         label={copy.once.label}
         description={copy.once.description}
         variant="surface"
-        onClick={() => decide("once")}
+        onClick={() => choose("once")}
       />
       <DecisionButton
         label={copy.session.label}
         description={copy.session.description}
         color="sky"
         variant="solid"
-        onClick={() => decide("session")}
+        onClick={() => choose("session")}
       />
       <DecisionButton
         label={copy.version.label}
         description={copy.version.description}
         variant="surface"
-        onClick={() => decide("version")}
+        onClick={() => choose("version")}
       />
       <DecisionButton
         label={copy.repo.label}
         description={copy.repo.description}
         variant="surface"
-        onClick={() => decide("repo")}
+        onClick={() => choose("repo")}
       />
       <DecisionButton
         label="Deny"
@@ -304,7 +355,7 @@ function StandardApprovalActions({
         color="red"
         icon={<CrossCircledIcon />}
         style={{ marginLeft: 6 }}
-        onClick={() => decide("deny")}
+        onClick={() => choose("deny")}
       />
       <Tooltip content="Dismiss">
         <IconButton size="1" variant="ghost" color="gray" onClick={() => decide("dismiss")}>

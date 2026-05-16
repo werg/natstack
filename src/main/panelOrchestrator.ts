@@ -39,7 +39,7 @@ export interface PanelOrchestratorDeps {
 
   getPanelView?: () => PanelViewLike | null;
   cdpServer: {
-    revokeTokenForPanel(panelId: string): void;
+    revokeAccessForPanel(panelId: string): void;
     unregisterBrowser?(panelId: string): void;
   };
   panelHttpServer: PanelHttpServerLike;
@@ -227,11 +227,8 @@ export class PanelOrchestrator implements BridgePanelManager {
       const view = this.getPanelView();
       if (panelUrl && view) {
         const panel = this.registry.getPanel(result.id);
-        await view.createViewForPanel(
-          result.id,
-          panelUrl,
-          panel ? getPanelContextId(panel) : undefined
-        );
+        if (!panel) throw new Error(`Panel ${result.id} not found after creation`);
+        await view.createViewForPanel(result.id, panelUrl, getPanelContextId(panel));
       }
 
       this.registry.notifyPanelTreeUpdate();
@@ -730,7 +727,7 @@ export class PanelOrchestrator implements BridgePanelManager {
     this.tokenManager.revokeToken(panelId);
 
     // CDP cleanup
-    this.cdpServer?.revokeTokenForPanel(panelId);
+    this.cdpServer?.revokeAccessForPanel(panelId);
 
     // Destroy view
     const view = this.getPanelView();

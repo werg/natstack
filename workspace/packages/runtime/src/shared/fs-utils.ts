@@ -7,7 +7,7 @@ import type { FileStats } from "../types.js";
 /**
  * Convert any stat-like object to our FileStats interface.
  * Captures boolean values at creation time so they can be returned as methods.
- * Preserves `mode` for isomorphic-git compatibility.
+ * Preserves `mode` because isomorphic-git consumes the file type bits.
  */
 export function toFileStats(stats: unknown): FileStats {
   const s = stats as Record<string, unknown> | null | undefined;

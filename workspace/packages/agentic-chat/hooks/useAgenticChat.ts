@@ -5,8 +5,7 @@
  * debug, inline UI) into the full ChatContextValue.
  *
  * Roster tracking, pending agents, debug events, and dirty repo
- * warnings are now handled by SessionManager via useChatCore — the feature
- * hooks are retained as stubs for backward compatibility only.
+ * warnings are handled by SessionManager via useChatCore.
  *
  * For minimal chat (no tools, no feedback, no debug), use useChatCore directly.
  */

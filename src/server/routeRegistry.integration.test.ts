@@ -13,24 +13,27 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "http";
-import { TokenManager } from "@natstack/shared/tokenManager";
+import { randomBytes } from "crypto";
+import { mintCallerAssertion } from "@natstack/shared/identity/callerAssertion";
 import { Gateway } from "./gateway.js";
 import { RouteRegistry } from "./routeRegistry.js";
 
 interface Harness {
   gateway: Gateway;
   gatewayPort: number;
+  assertedGatewayPort: number;
   workerdPort: number;
   registry: RouteRegistry;
-  tokenManager: TokenManager;
+  assertionSecret: Buffer;
   workerdServer: HttpServer;
+  assertedGatewayServer: HttpServer;
   /** Record of paths workerd received (for rewrite-assertion). */
   workerdPaths: string[];
 }
 
 async function startHarness(): Promise<Harness> {
   const registry = new RouteRegistry();
-  const tokenManager = new TokenManager();
+  const assertionSecret = randomBytes(32);
 
   // Fake workerd — records the path it was called with and echoes it back.
   const workerdPaths: string[] = [];
@@ -52,15 +55,44 @@ async function startHarness(): Promise<Harness> {
     workerdPort,
     routeRegistry: registry,
     adminToken: "secret-token",
-    tokenManager,
+    assertionSecret,
   });
   const gatewayPort = await gateway.start(0);
+  const assertedGatewayServer = createServer((req: IncomingMessage, res: ServerResponse) => {
+    const callerId =
+      typeof req.headers["x-test-caller-id"] === "string" ? req.headers["x-test-caller-id"] : "p1";
+    const callerKind =
+      req.headers["x-test-caller-kind"] === "worker" ||
+      req.headers["x-test-caller-kind"] === "shell" ||
+      req.headers["x-test-caller-kind"] === "server"
+        ? req.headers["x-test-caller-kind"]
+        : "panel";
+    req.natstackCaller = { callerId, callerKind };
+    gateway.handleHttpRequest(req, res);
+  });
+  const assertedGatewayPort: number = await new Promise((resolve) => {
+    assertedGatewayServer.listen(0, "127.0.0.1", () => {
+      const addr = assertedGatewayServer.address();
+      resolve(typeof addr === "object" && addr ? addr.port : 0);
+    });
+  });
 
-  return { gateway, gatewayPort, workerdPort, registry, tokenManager, workerdServer, workerdPaths };
+  return {
+    gateway,
+    gatewayPort,
+    assertedGatewayPort,
+    workerdPort,
+    registry,
+    assertionSecret,
+    workerdServer,
+    assertedGatewayServer,
+    workerdPaths,
+  };
 }
 
 async function stopHarness(h: Harness): Promise<void> {
   await h.gateway.stop();
+  await new Promise<void>((resolve) => h.assertedGatewayServer.close(() => resolve()));
   await new Promise<void>((resolve) => h.workerdServer.close(() => resolve()));
 }
 
@@ -118,7 +150,7 @@ describe("RouteRegistry × Gateway integration", () => {
     expect(body).toContain("/_w/workers/hello-test/HelloDO/singleton/callback");
   });
 
-  it("rewrites regular-worker routes to /<instance>/<path>", async () => {
+  it("rewrites regular-worker routes to /_w/{instance}/{path}", async () => {
     h.registry.registerWorkerRoutes("workers/regular-test", "regular-test", [
       {
         path: "/hello",
@@ -131,7 +163,7 @@ describe("RouteRegistry × Gateway integration", () => {
     );
     expect(status).toBe(200);
     const seen = h.workerdPaths[h.workerdPaths.length - 1]!;
-    expect(seen).toBe("/regular-test/hello");
+    expect(seen).toBe("/_w/regular-test/hello");
     expect(h.workerdPaths.length).toBe(before + 1);
   });
 
@@ -197,7 +229,7 @@ describe("RouteRegistry × Gateway integration", () => {
     expect(status).toBe(401);
   });
 
-  it("accepts caller-token routes with panel and worker tokens", async () => {
+  it("accepts caller-token routes with verified panel and worker callers", async () => {
     h.registry.registerService([
       {
         serviceName: "caller",
@@ -209,23 +241,20 @@ describe("RouteRegistry × Gateway integration", () => {
       },
     ]);
 
-    const panelToken = h.tokenManager.ensureToken("p1", "panel");
-    const workerToken = h.tokenManager.ensureToken("w1", "worker");
-
     await expect(
-      fetchText(`http://127.0.0.1:${h.gatewayPort}/_r/s/caller/token`, {
-        headers: { Authorization: `Bearer ${panelToken}` },
+      fetchText(`http://127.0.0.1:${h.assertedGatewayPort}/_r/s/caller/token`, {
+        headers: { "x-test-caller-id": "p1", "x-test-caller-kind": "panel" },
       })
     ).resolves.toEqual({ status: 200, body: "caller allowed" });
 
     await expect(
-      fetchText(`http://127.0.0.1:${h.gatewayPort}/_r/s/caller/token`, {
-        headers: { Authorization: `Bearer ${workerToken}` },
+      fetchText(`http://127.0.0.1:${h.assertedGatewayPort}/_r/s/caller/token`, {
+        headers: { "x-test-caller-id": "w1", "x-test-caller-kind": "worker" },
       })
     ).resolves.toEqual({ status: 200, body: "caller allowed" });
   });
 
-  it("rejects admin and unknown tokens for caller-token routes", async () => {
+  it("rejects bearer tokens for caller-token routes without verified caller identity", async () => {
     h.registry.registerService([
       {
         serviceName: "caller-reject",
@@ -246,5 +275,32 @@ describe("RouteRegistry × Gateway integration", () => {
       headers: { Authorization: "Bearer unknown" },
     });
     expect(unknown.status).toBe(401);
+  });
+
+  it("accepts caller assertions on direct local gateway connections", async () => {
+    h.registry.registerService([
+      {
+        serviceName: "caller-assertion",
+        path: "/token",
+        auth: "caller-token",
+        handler: (req, res) => {
+          res.end(req.natstackCaller?.callerId ?? "missing");
+        },
+      },
+    ]);
+
+    const assertion = mintCallerAssertion(h.assertionSecret, {
+      callerId: "electron-main",
+      callerKind: "shell",
+      audience: "egress-proxy",
+    });
+    const basic = Buffer.from(`natstack:${assertion}`, "utf8").toString("base64");
+    const { status, body } = await fetchText(
+      `http://127.0.0.1:${h.gatewayPort}/_r/s/caller-assertion/token`,
+      { headers: { "Proxy-Authorization": `Basic ${basic}` } }
+    );
+
+    expect(status).toBe(200);
+    expect(body).toBe("electron-main");
   });
 });

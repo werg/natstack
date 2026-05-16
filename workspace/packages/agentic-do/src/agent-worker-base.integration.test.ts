@@ -178,6 +178,7 @@ class TestWorker extends AgentWorkerBase {
       getParticipants: async () => [
         { participantId: "panel-1", metadata: { type: "panel", hostPlatform: "electron" } },
       ],
+      publish: async () => undefined,
       callMethod: async () => { /* no-op */ },
       cancelCall: async () => { /* no-op */ },
       getEventRange: async () => [],

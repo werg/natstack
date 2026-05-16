@@ -2,7 +2,7 @@
  * Shared Zod schemas for standard agentic tools.
  *
  * These schemas define the API contract for tools that can be exposed via pubsub RPC.
- * They ensure compatibility between:
+ * They define a shared contract for:
  * - Panel implementations (providers)
  * - Worker tool definitions (consumers)
  * - Claude Agent expected tool APIs

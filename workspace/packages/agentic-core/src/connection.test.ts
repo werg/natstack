@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConnectionManager } from "./connection.js";
 import type { ChatParticipantMetadata, ConnectionConfig } from "./types.js";
 
@@ -30,18 +30,36 @@ const metadata: ChatParticipantMetadata = {
 };
 
 describe("ConnectionManager", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("closes a pubsub client when a pending connect is aborted", async () => {
     const config = createConfig();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/subscribe")) {
+        return new Promise<Response>(() => {});
+      }
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
     const manager = new ConnectionManager({ config, metadata, callbacks: {} });
 
     const connectPromise = manager.connect({ channelId: "chat-1", methods: {} });
     manager.disconnect();
 
     await expect(connectPromise).rejects.toThrow("ready aborted");
-    expect(config.rpc!.call).toHaveBeenCalledWith(
-      "do:workers/pubsub-channel:PubSubChannel:chat-1",
-      "unsubscribe",
-      "panel-1"
+    for (let index = 0; index < 20; index += 1) {
+      if (fetchMock.mock.calls.some(([url]) => String(url).endsWith("/unsubscribe"))) break;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(fetchMock).toHaveBeenCalledWith(
+      "ws://unused/_w/workers/pubsub-channel/PubSubChannel/chat-1/unsubscribe",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify(["panel-1"]),
+      })
     );
   });
 });

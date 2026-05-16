@@ -5,9 +5,6 @@ import type {
   ConnectCredentialRequest,
   DeleteClientConfigRequest,
   GetClientConfigStatusRequest,
-  GrantUrlBoundCredentialRequest,
-  ProxyGitHttpRequest,
-  ProxyGitHttpResponse,
   RequestCredentialInputRequest,
   ResolveUrlBoundCredentialRequest,
   StoredCredentialSummary,
@@ -20,9 +17,6 @@ export type {
   ConnectCredentialRequest,
   DeleteClientConfigRequest,
   GetClientConfigStatusRequest,
-  GrantUrlBoundCredentialRequest,
-  ProxyGitHttpRequest,
-  ProxyGitHttpResponse,
   RequestCredentialInputRequest,
   ResolveUrlBoundCredentialRequest,
   StoredCredentialSummary,
@@ -38,17 +32,7 @@ export interface CredentialClient {
   deleteClientConfig(input: DeleteClientConfigRequest | string): Promise<void>;
   listStoredCredentials(): Promise<StoredCredentialSummary[]>;
   revokeCredential(credentialId: string): Promise<void>;
-  grantCredential(input: GrantUrlBoundCredentialRequest): Promise<StoredCredentialSummary>;
   resolveCredential(input: ResolveUrlBoundCredentialRequest): Promise<StoredCredentialSummary | null>;
-  fetch(
-    url: string | URL,
-    init?: RequestInit,
-    opts?: { credentialId?: string },
-  ): Promise<Response>;
-  hookForUrl(
-    url: string | URL,
-    opts?: { credentialId?: string },
-  ): (init?: RequestInit) => Promise<Response>;
   gitHttp(opts?: { credentialId?: string }): GitHttpClient;
 }
 
@@ -99,17 +83,8 @@ export function createCredentialClient(rpc: RpcCaller): CredentialClient {
     async revokeCredential(credentialId) {
       await rpc.call<void>("main", "credentials.revokeCredential", { credentialId });
     },
-    async grantCredential(input) {
-      return rpc.call<StoredCredentialSummary>("main", "credentials.grantCredential", input);
-    },
     async resolveCredential(input) {
       return rpc.call<StoredCredentialSummary | null>("main", "credentials.resolveCredential", input);
-    },
-    async fetch(url, init, opts) {
-      return proxyFetch(rpc, url, init, opts);
-    },
-    hookForUrl(url, opts) {
-      return (init?: RequestInit) => proxyFetch(rpc, url, init, opts);
     },
     gitHttp(opts) {
       return createGitHttpClient(rpc, opts);
@@ -118,26 +93,26 @@ export function createCredentialClient(rpc: RpcCaller): CredentialClient {
 }
 
 function createGitHttpClient(rpc: RpcCaller, opts?: { credentialId?: string }): GitHttpClient {
+  void rpc;
   return {
     async request(request) {
       const body = request.body ? await collectGitBody(request.body) : undefined;
-      const result = await rpc.call<ProxyGitHttpResponse>("main", "credentials.proxyGitHttp", {
-        url: request.url,
+      const headers = new Headers(request.headers ?? {});
+      if (opts?.credentialId) {
+        headers.set("X-NatStack-Use-Credential", opts.credentialId);
+      }
+      const response = await fetch(request.url, {
         method: request.method ?? "GET",
-        headers: request.headers ?? {},
-        bodyBase64: body ? bytesToBase64(body) : undefined,
-        credentialId: opts?.credentialId,
-      } satisfies ProxyGitHttpRequest);
-      const responseBody = base64ToBytes(result.bodyBase64);
+        headers,
+        body: body as BodyInit | undefined,
+      });
       return {
-        url: result.url,
-        method: result.method,
-        statusCode: result.statusCode,
-        statusMessage: result.statusMessage,
-        headers: result.headers,
-        body: (async function* () {
-          yield responseBody;
-        })(),
+        url: response.url,
+        method: request.method ?? "GET",
+        statusCode: response.status,
+        statusMessage: response.statusText,
+        headers: Object.fromEntries(response.headers.entries()),
+        body: response.body ? toAsyncIterable(response.body) : emptyAsyncIterable(),
       };
     },
   };
@@ -161,54 +136,17 @@ async function collectGitBody(body: Uint8Array | AsyncIterable<Uint8Array>): Pro
   return output;
 }
 
-async function proxyFetch(
-  rpc: RpcCaller,
-  url: string | URL,
-  init?: RequestInit,
-  opts?: { credentialId?: string },
-): Promise<Response> {
-  const headers = Object.fromEntries(new Headers(init?.headers).entries());
-  const body = init?.body === undefined || init.body === null
-    ? undefined
-    : typeof init.body === "string"
-      ? init.body
-      : init.body instanceof URLSearchParams
-        ? init.body.toString()
-        : (() => {
-            throw new Error("credentials.fetch currently supports string and URLSearchParams request bodies");
-          })();
-  const result = await rpc.call<{
-    status: number;
-    statusText: string;
-    headers: Record<string, string>;
-    body: string;
-  }>("main", "credentials.proxyFetch", {
-    url: url.toString(),
-    method: init?.method ?? "GET",
-    headers,
-    body,
-    credentialId: opts?.credentialId,
-  });
-  return new Response(result.body, {
-    status: result.status,
-    statusText: result.statusText,
-    headers: result.headers,
-  });
+async function* toAsyncIterable(stream: ReadableStream<Uint8Array>): AsyncIterableIterator<Uint8Array> {
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      if (value) yield value;
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary);
-}
-
-function base64ToBytes(value: string): Uint8Array {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
+async function* emptyAsyncIterable(): AsyncIterableIterator<Uint8Array> {}

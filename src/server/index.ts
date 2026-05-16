@@ -78,6 +78,7 @@ const ipcChannel = detectServerIpcChannel();
 // responses to their pending promises.
 
 const pendingIpcResponses = new Map<string, (response: unknown) => void>();
+const ipcMessageListeners = new Set<(message: Record<string, unknown>) => void>();
 
 if (ipcChannel) {
   ipcChannel.on("message", (msg: unknown) => {
@@ -86,6 +87,9 @@ if (ipcChannel) {
     if (id && pendingIpcResponses.has(id)) {
       pendingIpcResponses.get(id)!(msg);
       pendingIpcResponses.delete(id);
+    }
+    if (record) {
+      for (const listener of ipcMessageListeners) listener(record);
     }
   });
 }
@@ -523,26 +527,9 @@ async function main() {
     console.warn(`[Server] Panel token recovery unavailable: ${msg}`);
   }
 
-  // Re-seed TokenManager from persisted DO state so DOs that wake from a
-  // restart-survived alarm don't 401 with a token issued by a previous
-  // server lifetime. See recoverPersistedDOTokens.ts for the rationale.
-  // Best-effort: if `node:sqlite` is unavailable (Node < 22.5) the recovery
-  // skips silently and the system falls back to pre-fix behavior.
-  try {
-    const { recoverPersistedDOTokens } = await import("./recoverPersistedDOTokens.js");
-    const summary = recoverPersistedDOTokens(tokenManager, statePath);
-    if (summary.recovered > 0 || summary.errors > 0) {
-      console.log(
-        `[Server] Recovered ${summary.recovered} persisted DO token(s)` +
-          (summary.errors > 0 ? ` (${summary.errors} unreadable)` : "")
-      );
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[Server] DO token recovery unavailable: ${msg}`);
-  }
-
-  const workerdGatewayToken = randomBytes(32).toString("hex");
+  const assertionSecret = randomBytes(32);
+  const internalHopSecret = randomBytes(32).toString("base64url");
+  const workerdGatewayToken = internalHopSecret;
   const { CredentialStore } = await import("../../packages/shared/src/credentials/store.js");
   const { ClientConfigStore } =
     await import("../../packages/shared/src/credentials/clientConfigStore.js");
@@ -550,13 +537,11 @@ async function main() {
   const { CodeIdentityResolver } = await import("./services/codeIdentityResolver.js");
   const { createEgressProxy } = await import("./services/egressProxy.js");
   const { CredentialLifecycle } = await import("./services/credentialLifecycle.js");
-  const { CredentialSessionGrantStore } = await import("./services/credentialSessionGrants.js");
 
   const credentialStore = new CredentialStore();
   const clientConfigStore = new ClientConfigStore();
   const auditLog = new AuditLog({ logDir: path.join(statePath, "credentials-audit") });
   const codeIdentityResolver = new CodeIdentityResolver();
-  const credentialSessionGrantStore = new CredentialSessionGrantStore();
   const { CapabilityGrantStore } = await import("./services/capabilityGrantStore.js");
   const capabilityGrantStore = new CapabilityGrantStore({ statePath });
   const { UserlandApprovalGrantStore } = await import("./services/userlandApprovalGrantStore.js");
@@ -572,8 +557,9 @@ async function main() {
     credentialStore,
     auditLog,
     codeIdentityResolver,
+    assertionSecret,
     approvalQueue,
-    sessionGrantStore: credentialSessionGrantStore,
+    capabilityGrantStore,
     credentialLifecycle,
   });
   const egressProxyPort = await egressProxy.start();
@@ -903,16 +889,6 @@ async function main() {
   // ── Shell approval service (consent bar queue) ──
   const { createShellApprovalService } = await import("./services/shellApprovalService.js");
   container.register(rpcService(createShellApprovalService({ approvalQueue })));
-  const { createCorsApprovalService } = await import("./services/corsApprovalService.js");
-  container.register(
-    rpcService(
-      createCorsApprovalService({
-        approvalQueue,
-        grantStore: capabilityGrantStore,
-        codeIdentityResolver,
-      })
-    )
-  );
   const { createUserlandApprovalService } = await import("./services/userlandApprovalService.js");
   container.register(
     rpcService(
@@ -950,10 +926,8 @@ async function main() {
       auditLog,
       eventService,
       tokenManager,
-      egressProxy,
       codeIdentityResolver,
       approvalQueue,
-      sessionGrantStore: credentialSessionGrantStore,
       credentialLifecycle,
       sessionCredentialCapture: {
         captureCookies: async (params) => {
@@ -1039,7 +1013,7 @@ async function main() {
       // Dispatch DO method calls via HTTP POST to the workerd /_w/ URL scheme.
       const workerdManager =
         resolve<import("./workerdManager.js").WorkerdManager>("workerdManager")!;
-      doDispatch.setDispatcher(async (urlPath, args) => {
+      doDispatch.setDispatcher(async (urlPath, body) => {
         const port = workerdManager.getPort();
         if (!port) {
           throw new Error(`workerd not running — cannot dispatch to ${urlPath}`);
@@ -1050,12 +1024,8 @@ async function main() {
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${workerdGatewayToken}`,
-            // Internal DO dispatches stamp the process-private secret. The
-            // router verifies this when present, but public gateway-routed DO
-            // routes intentionally do not require it.
-            "X-NatStack-Dispatch-Secret": workerdManager.getDispatchSecret(),
           },
-          body: JSON.stringify(args),
+          body: JSON.stringify(body),
         });
         if (!resp.ok) {
           const body = await resp.text();
@@ -1064,8 +1034,6 @@ async function main() {
         return await resp.json();
       });
 
-      // Wire per-instance identity tokens into DO dispatch.
-      doDispatch.setTokenManager(tokenManager);
       doDispatch.setBeforeDispatch(async (ref) => {
         let identity = workerdManager.getDoCodeIdentity(ref.source, ref.className);
         if (!identity) {
@@ -1089,10 +1057,6 @@ async function main() {
         }
         return `http://127.0.0.1:${port}`;
       });
-      // SECURITY (audit 4.8): stamp every postToDOWithToken-based dispatch
-      // with the dispatch secret. See WorkerdManager.dispatchSecret for the
-      // full rationale.
-      doDispatch.setGetDispatchSecret(() => workerdManager.getDispatchSecret());
       doDispatch.setGetWorkerdGatewayToken(() => workerdGatewayToken);
 
       return doDispatch;
@@ -1357,6 +1321,7 @@ async function main() {
             return manifest?.routes ?? [];
           },
           getProxyPort: () => egressProxyPort,
+          assertionSecret,
           getWorkerdGatewayToken: () => workerdGatewayToken,
           codeIdentityResolver,
         });
@@ -1510,6 +1475,25 @@ async function main() {
     container.register(rpcService(createSettingsServiceStandalone({ dispatcher })));
   }
 
+  let cdpServiceForGateway: import("./services/cdpService.js").CdpService | null = null;
+  if (ipcChannel) {
+    const { CdpService } = await import("./services/cdpService.js");
+    cdpServiceForGateway = new CdpService({ requestMain: ipcRequest });
+    ipcMessageListeners.add((message) => {
+      if (message["type"] === "cdp-message") {
+        cdpServiceForGateway?.handleMainMessage(
+          message as {
+            type: "cdp-message";
+            browserId: string;
+            method: string;
+            params?: Record<string, unknown>;
+            sessionId?: string;
+          }
+        );
+      }
+    });
+  }
+
   // ── W1k: image service (server-side resize/convert via photon WASM) ──
   // Placed at the end of the registration block to minimize merge conflicts
   // with parallel tracks editing the auth/AI sections above.
@@ -1555,6 +1539,7 @@ async function main() {
       ).server;
     },
     getGitHandler: () => gitServer,
+    getCdpHandler: () => cdpServiceForGateway,
     getWorkerdPort: () => workerdManagerForGateway?.getPort() ?? null,
     externalHost: hostConfig.externalHost,
     bindHost: hostConfig.bindHost,
@@ -1562,7 +1547,7 @@ async function main() {
     tlsKey: hostConfig.tlsKey,
     adminToken,
     workerdGatewayToken,
-    tokenManager,
+    assertionSecret,
     routeRegistry,
     getPublicUrl: () => {
       try {
@@ -1591,6 +1576,7 @@ async function main() {
   });
   const gatewayPort = await gateway.start(requestedGatewayPort ?? 0);
   gatewayPortResolved = gatewayPort;
+  egressProxy.configureGateway(gateway, gatewayPort);
 
   // ── Public URL: explicit input now, auto-detection in parallel below ──
   // The explicit --public-url path runs synchronously; auto-detection runs
@@ -1713,6 +1699,9 @@ async function main() {
       type: "ready",
       workerdPort: workerdMgr?.getPort() ?? 0,
       gatewayPort,
+      egressProxyPort,
+      assertionSecret: assertionSecret.toString("base64"),
+      internalHopSecret: Buffer.from(internalHopSecret, "utf8").toString("base64"),
       adminToken,
       shellToken,
     });

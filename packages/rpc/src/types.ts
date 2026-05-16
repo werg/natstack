@@ -11,7 +11,6 @@
 export interface RpcRequest {
   type: "request";
   requestId: string;
-  fromId: string;
   method: string;
   args: unknown[];
 }
@@ -46,7 +45,6 @@ export type RpcResponse = RpcResponseSuccess | RpcResponseError;
  */
 export interface RpcEvent {
   type: "event";
-  fromId: string;
   event: string;
   payload: unknown;
 }
@@ -57,15 +55,39 @@ export interface RpcEvent {
 export type RpcMessage = RpcRequest | RpcResponse | RpcEvent;
 
 /**
+ * Authenticated context attached by the receiving transport.
+ *
+ * This is the only caller identity exposed to RPC receivers. It is derived
+ * from the transport/source envelope, not from caller-controlled message data.
+ */
+export interface RpcCallerContext {
+  sourceId: string;
+}
+
+export type RpcAccessPolicy = (ctx: RpcCallerContext) => boolean | Promise<boolean>;
+export type RpcMethodHandler<TArgs extends unknown[] = unknown[], TReturn = unknown> = (
+  ctx: RpcCallerContext,
+  ...args: TArgs
+) => TReturn | Promise<TReturn>;
+
+export interface RpcMethodDefinition<
+  TArgs extends unknown[] = unknown[],
+  TReturn = unknown,
+> {
+  access: RpcAccessPolicy;
+  handler: RpcMethodHandler<TArgs, TReturn>;
+}
+
+/**
  * Internal type for method storage.
  * Use exposeMethod() for type-safe method registration.
  */
-export type ExposedMethods = Record<string, (...args: unknown[]) => unknown | Promise<unknown>>;
+export type ExposedMethods = Record<string, RpcMethodDefinition>;
 
 /**
  * Event listener callback type.
  */
-export type RpcEventListener = (fromId: string, payload: unknown) => void;
+export type RpcEventListener = (sourceId: string, payload: unknown) => void;
 
 /**
  * Transport abstraction for sending and receiving RPC messages.
@@ -106,13 +128,14 @@ export interface RpcBridge {
    * Expose a method with full type safety.
    *
    * @example
-   * bridge.exposeMethod("notes.create", (title: string) => {
+   * bridge.exposeMethod("notes.create", allowAllCallers, (_ctx, title: string) => {
    *   return notes.create(title);
    * });
    */
   exposeMethod<TArgs extends unknown[], TReturn>(
     method: string,
-    handler: (...args: TArgs) => TReturn | Promise<TReturn>
+    access: RpcAccessPolicy,
+    handler: RpcMethodHandler<TArgs, TReturn>
   ): void;
 
   /**
@@ -120,11 +143,11 @@ export interface RpcBridge {
    *
    * @example
    * rpc.expose({
-   *   async search(query: string) { return results; },
-   *   async getThread(id: string) { return thread; },
+   *   search: { access: allowAllCallers, async handler(_ctx, query: string) { return results; } },
+   *   getThread: { access: allowAllCallers, async handler(_ctx, id: string) { return thread; } },
    * });
    */
-  expose(methods: Record<string, (...args: any[]) => any>): void;
+  expose(methods: Record<string, RpcMethodDefinition<any[], any>>): void;
 
   call<T = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<T>;
   emit(targetId: string, event: string, payload: unknown): Promise<void>;
@@ -180,7 +203,6 @@ export type ElectronLocalServiceName = (typeof ELECTRON_LOCAL_SERVICE_NAMES)[num
  */
 export interface ParentPortEnvelope {
   targetId: string;
-  sourceId?: string;
   message: RpcMessage;
 }
 

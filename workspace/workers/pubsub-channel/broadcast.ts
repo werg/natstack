@@ -1,68 +1,82 @@
 /**
  * Broadcast + delivery for the PubSub Channel DO.
  *
- * All participants (panels and DOs) receive events via RPC emit.
+ * All participants receive events through runtime RPC events.
  * ChannelEvent is the single canonical format. channelEventToWsJson()
- * derives the wire encoding for RPC emit payloads.
- * DO participants additionally receive ChannelEvent via RPC call
- * for ordered delivery with promise chains.
+ * derives the inbox payload sent to subscribers.
  */
 
 import type { SqlStorage } from "@workspace/runtime/worker";
-import type { RpcBridge } from "@natstack/rpc";
 import type { ChannelEvent } from "@natstack/harness/types";
 import type { BroadcastEnvelope, StoredAttachment, ChannelConfig } from "./types.js";
 
 export interface BroadcastDeps {
   sql: SqlStorage;
-  rpc: RpcBridge;
   objectKey: string;
+  emit(targetId: string, event: string, payload: unknown): Promise<void>;
 }
 
-/** Delivery chains for ordered DO delivery. Resets on hibernation — safe because
- *  agent DOs handle ordering via their own checkpoints. */
+/** Per-subscriber delivery chains for FIFO RPC event delivery. */
 const deliveryChains = new Map<string, Promise<void>>();
 
-/** Per-subscriber emit chains. Used to serialize `rpc.emit` calls to the same
- *  subscriber in FIFO order without blocking the caller — awaiting each emit
- *  inline would deadlock against RPC transport backpressure (the subscriber
- *  is typically parked on an outstanding RPC call when replay runs). */
-const emitChains = new Map<string, Promise<void>>();
-
 /**
- * Queue an `rpc.emit` to `subscriberId` behind any previously queued emits to
+ * Queue an RPC event to `subscriberId` behind previously queued deliveries to
  * the same subscriber. Returns the tail of the chain for callers that want to
- * wait until every enqueued emit has drained (e.g. subscribe handlers that
- * need `ready` to land after replay before they return).
+ * wait until every enqueued delivery has drained.
  */
-export function queueEmit(
+export function queueDelivery(
   deps: BroadcastDeps,
   subscriberId: string,
   payload: unknown,
   onFatalDelivery?: (err: { code?: string }) => void,
 ): Promise<void> {
-  const prev = emitChains.get(subscriberId) ?? Promise.resolve();
+  const prev = deliveryChains.get(subscriberId) ?? Promise.resolve();
   const next = prev.then(() =>
-    deps.rpc.emit(subscriberId, "channel:message", payload).catch((err) => {
+    emitDelivery(deps, subscriberId, payload).catch((err) => {
       onFatalDelivery?.(err as { code?: string });
     }),
   );
-  emitChains.set(subscriberId, next);
+  deliveryChains.set(subscriberId, next);
+  void next.finally(() => {
+    if (deliveryChains.get(subscriberId) === next) {
+      deliveryChains.delete(subscriberId);
+    }
+  });
   return next;
 }
 
 /** Clean up delivery chain for a participant that unsubscribed. */
 export function cleanupDeliveryChain(participantId: string): void {
   deliveryChains.delete(participantId);
-  emitChains.delete(participantId);
+}
+
+export function resetDeliveryChainsForTest(): void {
+  deliveryChains.clear();
+}
+
+async function emitDelivery(
+  deps: BroadcastDeps,
+  subscriberId: string,
+  payload: unknown,
+): Promise<void> {
+  try {
+    await deps.emit(subscriberId, "channel:message", {
+      channelId: deps.objectKey,
+      message: payload,
+    });
+  } catch (error) {
+    deps.sql.exec(`DELETE FROM participants WHERE id = ?`, subscriberId);
+    cleanupDeliveryChain(subscriberId);
+    const err = error instanceof Error ? error : new Error(String(error));
+    (err as { code?: string }).code = "TARGET_NOT_REACHABLE";
+    throw err;
+  }
 }
 
 // ── Broadcast ────────────────────────────────────────────────────────────────
 
 /**
- * Broadcast a ChannelEvent to all participants via RPC.
- * RPC clients receive the event encoded via channelEventToWsJson().
- * DO clients additionally receive the ChannelEvent via ordered RPC call.
+ * Broadcast a ChannelEvent to all participants via runtime RPC.
  */
 export function broadcast(
   deps: BroadcastDeps,
@@ -71,7 +85,7 @@ export function broadcast(
   senderId: string,
 ): void {
   const participants = deps.sql.exec(
-    `SELECT id, transport, do_source, do_class, do_key FROM participants`,
+    `SELECT id FROM participants`,
   ).toArray();
 
   const msg = channelEventToWsJson(event, envelope.kind);
@@ -82,27 +96,15 @@ export function broadcast(
       ? { channelId: deps.objectKey, message: { ...msg, ref: envelope.ref } }
       : { channelId: deps.objectKey, message: msg };
 
-    // Route through the per-subscriber emit chain so replay emits queued
+    // Route through the per-subscriber delivery chain so replay events queued
     // during a concurrent subscribe stay ahead of live broadcasts.
-    void queueEmit(deps, pid, data, (err) => {
+    void queueDelivery(deps, pid, data.message, (err) => {
       const code = err?.code;
       if (code === "TARGET_NOT_REACHABLE" || code === "RECONNECT_GRACE_EXPIRED") {
         deps.sql.exec(`DELETE FROM participants WHERE id = ?`, pid);
         cleanupDeliveryChain(pid);
       }
     });
-
-    // For DO participants, also deliver the structured ChannelEvent via RPC call
-    // for ordered delivery (agent DOs process these via onChannelEvent)
-    if (p["transport"] === "do") {
-      const prev = deliveryChains.get(pid) ?? Promise.resolve();
-      const next: Promise<void> = prev.then(() =>
-        deps.rpc.call(pid, "onChannelEvent", deps.objectKey, event)
-          .then(() => {})
-          .catch(err => console.error(`[Channel] delivery failed for ${pid}:`, err)),
-      );
-      deliveryChains.set(pid, next);
-    }
   }
 }
 
@@ -120,49 +122,33 @@ export function broadcastConfigUpdate(
   const msg = { kind: "config-update" as const, channelConfig: config as ChannelConfig };
 
   const participants = deps.sql.exec(
-    `SELECT id, transport, do_source, do_class, do_key FROM participants`,
+    `SELECT id FROM participants`,
   ).toArray();
 
   for (const p of participants) {
     const pid = p["id"] as string;
 
-    // Only include ref for the sender (ack token)
+    // Only include ref for the sender's publish acknowledgment.
     const outMsg = (pid === senderId && senderRef !== undefined)
       ? { ...msg, ref: senderRef }
       : msg;
 
-    deps.rpc.emit(pid, "channel:message", {
-      channelId: deps.objectKey,
-      message: outMsg,
-    }).catch(err => console.warn(`[Channel] emit failed:`, err));
-
-    // For DO participants, also deliver as a ChannelEvent for ordered processing
-    if (p["transport"] === "do") {
-      const event: ChannelEvent = {
-        id: 0,
-        messageId: "",
-        type: "config-update",
-        payload: config,
-        senderId: "",
-        ts: Date.now(),
-        persist: false,
-      };
-
-      const prev = deliveryChains.get(pid) ?? Promise.resolve();
-      const next: Promise<void> = prev.then(() =>
-        deps.rpc.call(pid, "onChannelEvent", deps.objectKey, event)
-          .then(() => {})
-          .catch(err => console.error(`[Channel] config-update delivery failed for ${pid}:`, err)),
-      );
-      deliveryChains.set(pid, next);
-    }
+    void queueDelivery(deps, pid, outMsg, (err) => {
+      const code = err?.code;
+      if (code === "TARGET_NOT_REACHABLE" || code === "RECONNECT_GRACE_EXPIRED") {
+        deps.sql.exec(`DELETE FROM participants WHERE id = ?`, pid);
+        cleanupDeliveryChain(pid);
+      } else {
+        console.warn(`[Channel] config update delivery failed:`, err);
+      }
+    });
   }
 }
 
 // ── Ready message ────────────────────────────────────────────────────────────
 
 /**
- * Send a ready message to a single subscriber via RPC event.
+ * Send a ready message to a single subscriber via runtime RPC.
  */
 export function sendReady(
   deps: BroadcastDeps,
@@ -193,15 +179,9 @@ export function sendReady(
     firstChatMessageId,
   };
 
-  // Queued (not awaited) so the subscribe handler returns and unblocks the
-  // subscriber's RPC call reply; the same ready payload is also returned from
-  // subscribe as an acknowledgment fallback if event delivery is interrupted.
-  void queueEmit(deps, subscriberId, {
-    channelId: deps.objectKey,
-    message: {
-      kind: "ready",
-      ...ready,
-    },
+  void queueDelivery(deps, subscriberId, {
+    kind: "ready",
+    ...ready,
   });
   return ready;
 }
@@ -210,7 +190,7 @@ export function sendReady(
 
 /**
  * Build a ChannelEvent from message data.
- * This is the canonical event format for both RPC emit and DO delivery.
+ * This is the canonical event format before inbox wire encoding.
  */
 export function buildChannelEvent(
   id: number,
@@ -283,7 +263,7 @@ export function parseRowToChannelEvent(row: Record<string, unknown>): ChannelEve
 // ── Wire encoding ────────────────────────────────────────────────────────────
 
 /**
- * Convert a ChannelEvent to the wire format for RPC emit / WS send.
+ * Convert a ChannelEvent to the wire format posted to subscriber inboxes.
  * This is the thin transport layer — the only place wire-specific encoding lives.
  */
 export function channelEventToWsJson(

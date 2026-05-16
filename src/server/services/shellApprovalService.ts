@@ -35,6 +35,9 @@ export function createShellApprovalService(deps: {
     policy: { allowed: ["shell", "server"] },
     methods: {
       resolve: { args: z.tuple([z.string(), z.enum(APPROVAL_DECISIONS)]) },
+      resolveCapability: {
+        args: z.tuple([z.string(), z.enum(APPROVAL_DECISIONS), z.string().nullable().optional()]),
+      },
       resolveUserland: {
         args: z.tuple([
           z.string(),
@@ -56,6 +59,40 @@ export function createShellApprovalService(deps: {
           if (existed) {
             metrics.recordApprovalResolved({ decision, source: ctx.callerKind });
           }
+          return;
+        }
+        case "resolveCapability": {
+          const [approvalId, decision, credentialSelectionId] = args as [
+            string,
+            ApprovalDecision,
+            string | null | undefined,
+          ];
+          const pending = approvalQueue
+            .listPending()
+            .find((approval) => approval.approvalId === approvalId);
+          if (!pending || pending.kind !== "capability") {
+            throw new ServiceError(
+              serviceName,
+              method,
+              "No pending capability approval found",
+              "ENOENT"
+            );
+          }
+          if (
+            pending.credentialOptions &&
+            !pending.credentialOptions.some(
+              (option) => option.selectionId === (credentialSelectionId ?? null)
+            )
+          ) {
+            throw new ServiceError(
+              serviceName,
+              method,
+              "Capability credential selection was not presented to the user",
+              "EINVAL"
+            );
+          }
+          approvalQueue.resolveCapability(approvalId, decision, credentialSelectionId ?? null);
+          metrics.recordApprovalResolved({ decision, source: ctx.callerKind });
           return;
         }
         case "resolveUserland": {

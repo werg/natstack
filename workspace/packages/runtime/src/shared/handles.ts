@@ -35,8 +35,8 @@ export function createParentHandle<
       await rpc.emit(parentId, event, payload);
     },
     onEvent(event: string, listener: (payload: unknown) => void): () => void {
-      return rpc.onEvent(event, (fromId, payload) => {
-        if (fromId === parentId) listener(payload);
+      return rpc.onEvent(event, (sourceId, payload) => {
+        if (sourceId === parentId) listener(payload);
       });
     },
   } as ParentHandle<T, E, EmitE>;

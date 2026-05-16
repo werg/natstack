@@ -146,6 +146,12 @@ export interface PendingCapabilityApproval extends PendingApprovalBase {
     label: string;
     value: string;
   }>;
+  credentialOptions?: Array<{
+    selectionId: string | null;
+    label: string;
+    description?: string;
+  }>;
+  defaultCredentialSelectionId?: string | null;
 }
 
 export interface PendingClientConfigField {

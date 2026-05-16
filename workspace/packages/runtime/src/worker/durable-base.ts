@@ -2,7 +2,7 @@
  * DurableObjectBase — Tiny generic foundation for all Durable Objects.
  *
  * Only what every DO needs: context, SQL, schema versioning, state KV,
- * alarm support, HTTP dispatch, WebSocket upgrade stub, and hibernation hooks.
+ * alarm support, and HTTP dispatch.
  *
  * Agent-specific concerns (harnesses, turns, subscriptions, streams) live
  * in @workspace/agentic-do — composable modules that extend this base.
@@ -12,7 +12,6 @@ import { createHttpRpcBridge } from "../shared/httpRpcBridge.js";
 import { createCredentialClient, type CredentialClient } from "../shared/credentials.js";
 import { createNotificationClient, type NotificationClient } from "../shared/notifications.js";
 import { _initFsWithRpc } from "./fs.js";
-import { createParentHandle } from "../shared/handles.js";
 import type { RpcBridge } from "@natstack/rpc";
 import type { RuntimeFs } from "../types.js";
 
@@ -96,10 +95,6 @@ export interface DurableObjectContext {
      */
     transactionSync<T>(callback: () => T): T;
   };
-  // Tagged accept: tags survive hibernation, retrievable via getWebSockets(tag)
-  acceptWebSocket(ws: WebSocket, tags?: string[]): void;
-  // Retrieve by tag, or all if no tag
-  getWebSockets(tag?: string): WebSocket[];
   // Run async init during construction or upgrade (blocks other events)
   blockConcurrencyWhile<T>(fn: () => Promise<T>): Promise<T>;
 }
@@ -129,6 +124,7 @@ export abstract class DurableObjectBase {
   private _credentials: CredentialClient | null = null;
   private _notifications: NotificationClient | null = null;
   private _fs: RuntimeFs | null = null;
+  private _objectProxyAssertion: string | null = null;
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     this.ctx = ctx;
@@ -197,45 +193,10 @@ export abstract class DurableObjectBase {
     this.sql.exec(`DELETE FROM state WHERE key = ?`, key);
   }
 
-  /** Persist identity fields from postToDOWithToken envelope. */
-  protected persistIdentity(instanceToken?: string, instanceId?: string, parentId?: string): void {
-    if (instanceToken) {
-      const existing = this.getStateValue("__instanceToken");
-      if (existing !== instanceToken) {
-        this.setStateValue("__instanceToken", instanceToken);
-        this._rpc = null;
-      }
-    }
-    if (parentId && !this.getStateValue("__parentId")) {
-      this.setStateValue("__parentId", parentId);
-    }
-    if (instanceId) {
-      this.setStateValue("__instanceId", instanceId);
-    }
-  }
-
-  /**
-   * Parse a POST body, handling the postToDOWithToken envelope format.
-   * Returns the extracted args and an optional error string if the envelope is malformed.
-   * On success, also calls persistIdentity() with the envelope fields.
-   */
   protected parseRequestBody(body: string): { args: unknown[]; error?: string } {
     const parsed = JSON.parse(body);
     if (Array.isArray(parsed)) {
       return { args: parsed };
-    }
-    if (parsed && typeof parsed === "object" && "__instanceToken" in parsed) {
-      const args = Array.isArray(parsed.args) ? parsed.args : parsed.args !== undefined ? [parsed.args] : [];
-      const token = parsed.__instanceToken;
-      if (typeof token !== "string") {
-        return { args: [], error: "Invalid envelope: __instanceToken must be a string" };
-      }
-      this.persistIdentity(
-        token,
-        typeof parsed.__instanceId === "string" ? parsed.__instanceId : undefined,
-        typeof parsed.__parentId === "string" ? parsed.__parentId : undefined,
-      );
-      return { args };
     }
     return { args: [parsed] };
   }
@@ -245,19 +206,16 @@ export abstract class DurableObjectBase {
   /** RPC bridge for calling services and other workers/DOs */
   protected get rpc(): RpcBridge & { handleIncomingPost(body: unknown): Promise<unknown> } {
     if (!this._rpc) {
-      const token = this.getStateValue("__instanceToken");
-      if (!token) {
-        throw new Error("RPC not available: no instance token. This DO has not been dispatched via postToDOWithToken yet.");
-      }
       const serverUrl = this.env["GATEWAY_URL"] as string;
       if (!serverUrl) {
         throw new Error("RPC not available: GATEWAY_URL not configured");
       }
-      const instanceId = this.getStateValue("__instanceId");
+      const source = typeof this.env["WORKER_SOURCE"] === "string" ? this.env["WORKER_SOURCE"] : "unknown";
+      const className = typeof this.env["WORKER_CLASS_NAME"] === "string" ? this.env["WORKER_CLASS_NAME"] : "unknown";
       this._rpc = createHttpRpcBridge({
-        selfId: instanceId ?? `do:unknown:${this.objectKey}`,
+        selfId: `do:${source}:${className}:${this.objectKey}`,
         serverUrl,
-        authToken: token,
+        proxyAssertion: () => this.getObjectProxyAssertion(),
       });
       // Bridge DO `console.*` to the server terminal. Installed lazily on
       // first rpc access — constructor-time logs are still local-only, but
@@ -287,8 +245,7 @@ export abstract class DurableObjectBase {
 
   /** Get a handle to the parent (first dispatcher) */
   protected getParent() {
-    const parentId = this.getStateValue("__parentId");
-    return createParentHandle({ rpc: this.rpc, parentId: parentId ?? null });
+    return null;
   }
 
   // --- Object key identity ---
@@ -313,6 +270,27 @@ export abstract class DurableObjectBase {
     throw new Error("objectKey not available — no request received yet and ctx.id.name not set");
   }
 
+  protected captureObjectRequestIdentity(request: Request): void {
+    const assertion = request.headers.get("X-NatStack-Object-Assertion");
+    if (!assertion) return;
+    this._objectProxyAssertion = assertion;
+    try {
+      this.setStateValue("__objectProxyAssertion", assertion);
+    } catch {
+      /* state table may not be initialized in tests */
+    }
+  }
+
+  private getObjectProxyAssertion(): string | null {
+    if (this._objectProxyAssertion) return this._objectProxyAssertion;
+    try {
+      this._objectProxyAssertion = this.getStateValue("__objectProxyAssertion");
+    } catch {
+      this._objectProxyAssertion = null;
+    }
+    return this._objectProxyAssertion;
+  }
+
   // --- Alarm (persists across workerd restarts) ---
 
   protected setAlarm(delayMs: number): void {
@@ -328,6 +306,7 @@ export abstract class DurableObjectBase {
 
   async fetch(request: Request): Promise<Response> {
     this.ensureReady();
+    this.captureObjectRequestIdentity(request);
 
     // Parse /{objectKey}/{method} — router includes objectKey in forwarded URL
     const url = new URL(request.url);
@@ -337,10 +316,6 @@ export abstract class DurableObjectBase {
       // Persist for hibernation recovery
       try { this.sql.exec(`INSERT OR IGNORE INTO state (key, value) VALUES ('__objectKey', ?)`, this._objectKey); }
       catch { /* state table may not exist yet — ensureReady hasn't run */ }
-    }
-
-    if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
-      return this.handleWebSocketUpgrade(request);
     }
 
     const method = segments.slice(1).join("/") || "getState";
@@ -369,21 +344,6 @@ export abstract class DurableObjectBase {
         }
       }
 
-      // Event endpoint — handle incoming events
-      if (method === "__event") {
-        if (args.length < 2) {
-          return new Response(JSON.stringify({ error: "__event requires at least [event, payload]" }), {
-            status: 400,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        const [event, payload, fromId] = args as [string, unknown, string | undefined];
-        await this.rpc.handleIncomingPost({ type: "emit", event, payload, fromId: fromId ?? "" });
-        return new Response(JSON.stringify({ result: "ok" }), {
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-
       const fn = (this as unknown as Record<string, unknown>)[method];
       if (typeof fn !== "function") {
         return new Response(JSON.stringify({ error: `Unknown method: ${method}` }), {
@@ -405,35 +365,10 @@ export abstract class DurableObjectBase {
     }
   }
 
-  /** Override in subclasses to accept WebSocket connections. */
-  protected handleWebSocketUpgrade(_request: Request): Response {
-    return new Response("WebSocket not supported", { status: 426 });
-  }
-
-  // --- Hibernation hooks ---
-  // On a resumed hibernated DO, workerd can invoke these on a fresh instance
-  // WITHOUT going through fetch(), so schema must be ready here too.
-  // Subclasses that override these MUST call super.webSocketMessage() etc.
-
-  async webSocketMessage(_ws: WebSocket, _msg: string | ArrayBuffer): Promise<void> {
-    this.ensureReady();
-  }
-
-  async webSocketClose(_ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): Promise<void> {
-    this.ensureReady();
-  }
-
-  async webSocketError(_ws: WebSocket, _error: unknown): Promise<void> {
-    this.ensureReady();
-  }
-
   // --- Clone support ---
 
-  /** Scrub RPC identity state after cloning so the clone gets fresh identity on next dispatch. */
+  /** Clear cached clients after cloning so they bind to the clone's object key. */
   protected scrubRpcIdentity(): void {
-    this.deleteStateValue("__instanceToken");
-    this.deleteStateValue("__parentId");
-    this.deleteStateValue("__instanceId");
     this._rpc = null;
     this._credentials = null;
     this._notifications = null;

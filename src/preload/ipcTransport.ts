@@ -8,22 +8,22 @@
 import { ipcRenderer } from "electron";
 import type { TransportBridge } from "./wsTransport.js";
 
-type AnyMessageHandler = (fromId: string, message: unknown) => void;
+type AnyMessageHandler = (sourceId: string, message: unknown) => void;
 
 /**
  * Create an IPC-based transport bridge for the shell.
  *
  * Messages are sent via ipcRenderer.send("natstack:rpc:send", targetId, message)
- * and received via ipcRenderer.on("natstack:rpc:message", (event, fromId, message)).
+ * and received via ipcRenderer.on("natstack:rpc:message", (event, sourceId, message)).
  */
 export function createIpcTransport(): TransportBridge {
   const listeners = new Set<AnyMessageHandler>();
 
   // Receive messages from main process
-  ipcRenderer.on("natstack:rpc:message", (_event, fromId: string, message: unknown) => {
+  ipcRenderer.on("natstack:rpc:message", (_event, sourceId: string, message: unknown) => {
     for (const listener of listeners) {
       try {
-        listener(fromId, message);
+        listener(sourceId, message);
       } catch (error) {
         console.error("Error in IPC transport message handler:", error);
       }

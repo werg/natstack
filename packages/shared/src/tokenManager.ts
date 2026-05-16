@@ -94,11 +94,8 @@ export class TokenManager {
 
   /**
    * Re-register a token that was issued in a previous process lifetime and
-   * persisted by the caller (e.g., a Durable Object's `__instanceToken` saved
-   * to its SQLite storage). Without this, the token would be unknown to the
-   * fresh in-memory TokenManager and any inbound RPC from the persisted
-   * caller would 401 until the next dispatch refreshes the token — long
-   * enough for alarm-driven server calls to fail visibly.
+   * persisted by the shell/panel token store. Without this, the token would be
+   * unknown to the fresh in-memory TokenManager after restart.
    *
    * Idempotent: returns true if the registration took effect, false if a
    * binding already exists for the callerId or the token is already mapped

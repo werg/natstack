@@ -30,11 +30,7 @@ export async function callWorkerHostRpc<T>(method: string, ...args: unknown[]): 
     throw new Error("NatStack worker RPC is unavailable: missing __natstack_rpc and GATEWAY_URL");
   }
 
-  const authToken = env["RPC_AUTH_TOKEN"];
   const headers = new Headers({ "Content-Type": "application/json" });
-  if (authToken) {
-    headers.set("Authorization", `Bearer ${authToken}`);
-  }
 
   const response = await globalThis.fetch(`${serverUrl}/rpc`, {
     method: "POST",

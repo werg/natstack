@@ -21,7 +21,7 @@ import type { RuntimeFs, ThemeAppearance } from "../types.js";
 
 export interface BaseRuntimeDeps {
   selfId: string;
-  /** Primary transport (single WS for panels, WS for workers) */
+  /** Primary RPC transport supplied by the host runtime. */
   createTransport: () => RpcTransport;
   id: string;
   contextId: string;
@@ -57,7 +57,7 @@ export function createBaseRuntime(deps: BaseRuntimeDeps) {
     return null;
   };
 
-  const onThemeEvent = (_fromId: string, payload: unknown) => {
+  const onThemeEvent = (_sourceId: string, payload: unknown) => {
     const theme = parseThemeAppearance(payload);
     if (!theme) return;
     currentTheme = theme;
@@ -118,8 +118,8 @@ export function createBaseRuntime(deps: BaseRuntimeDeps) {
   const onConnectionError = (
     callback: (error: { code: number; reason: string; source?: "electron" | "server" }) => void
   ): (() => void) => {
-    return rpc.onEvent("runtime:connection-error", (fromId: string, payload: unknown) => {
-      if (fromId !== "main") return;
+    return rpc.onEvent("runtime:connection-error", (sourceId: string, payload: unknown) => {
+      if (sourceId !== "main") return;
       const data = payload as { code?: unknown; reason?: unknown; source?: unknown } | null;
       if (!data || typeof data.code !== "number" || typeof data.reason !== "string") return;
       callback({

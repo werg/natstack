@@ -50,7 +50,6 @@ class IpcSubscriber implements Subscriber {
     // Deliver as an RPC event message that the shell transport understands
     wc.send("natstack:rpc:message", "main", {
       type: "event",
-      fromId: "main",
       event: channel,
       payload,
     });
@@ -103,10 +102,10 @@ export class IpcDispatcher {
   /**
    * Send an event to the shell renderer.
    */
-  sendToShell(fromId: string, message: RpcMessage): void {
+  sendToShell(sourceId: string, message: RpcMessage): void {
     const wc = this.deps.getShellWebContents();
     if (wc && !wc.isDestroyed()) {
-      wc.send("natstack:rpc:message", fromId, message);
+      wc.send("natstack:rpc:message", sourceId, message);
     }
   }
 
@@ -116,7 +115,6 @@ export class IpcDispatcher {
   broadcastEvent(event: string, payload: unknown): void {
     this.sendToShell("main", {
       type: "event",
-      fromId: "main",
       event,
       payload,
     });

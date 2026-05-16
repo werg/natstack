@@ -30,7 +30,7 @@ function createOrchestrator(registry: PanelRegistry, emit = vi.fn()) {
     eventService: { emit } as never,
     serverClient: {} as never,
     shellCore: shellCore as never,
-    cdpServer: { revokeTokenForPanel: vi.fn() },
+    cdpServer: { revokeAccessForPanel: vi.fn() },
     panelHttpServer: {} as never,
     externalHost: "localhost",
     protocol: "http",

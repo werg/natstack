@@ -13,7 +13,6 @@ import type {
 } from "../../../packages/shared/src/credentials/types.js";
 import type { ClientConfigRecord } from "../../../packages/shared/src/credentials/clientConfigStore.js";
 import { createCredentialService } from "./credentialService.js";
-import { CredentialSessionGrantStore } from "./credentialSessionGrants.js";
 import { TokenManager } from "@natstack/shared/tokenManager";
 import {
   installPanelTokenPersistence,
@@ -136,6 +135,7 @@ function jwtWithPayload(payload: Record<string, unknown>): string {
 function approvingQueue(decision: "once" | "session" | "version" | "repo" = "version") {
   return {
     request: vi.fn(async () => decision),
+    requestCapability: vi.fn(async () => ({ decision })),
     requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
     requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
     requestUserland: vi.fn(async () => ({ kind: "dismissed" as const })),
@@ -145,6 +145,7 @@ function approvingQueue(decision: "once" | "session" | "version" | "repo" = "ver
       dispose: vi.fn(),
     })),
     resolve: vi.fn(),
+    resolveCapability: vi.fn(),
     resolveUserland: vi.fn(),
     submitClientConfig: vi.fn(),
     submitCredentialInput: vi.fn(),
@@ -280,7 +281,6 @@ describe("credentialService", () => {
     const service = createCredentialService({
       credentialStore: store as never,
       approvalQueue: approvalQueue as never,
-      sessionGrantStore: new CredentialSessionGrantStore(),
       codeIdentityResolver: {
         resolveByCallerId: () => ({
           callerId: "worker:test",
@@ -343,7 +343,6 @@ describe("credentialService", () => {
     const service = createCredentialService({
       credentialStore: new MemoryCredentialStore() as never,
       approvalQueue: approvalQueue as never,
-      sessionGrantStore: new CredentialSessionGrantStore(),
       codeIdentityResolver: {
         resolveByCallerId: () => ({
           callerId: "worker:test",
@@ -423,7 +422,7 @@ describe("credentialService", () => {
     expect((await store.loadUrlBound(stored.id))?.revokedAt).toBeUndefined();
   });
 
-  it("keeps session approvals process-local but stable across caller instances for the same version", async () => {
+  it("resolves visible credential handles without credential-use approval", async () => {
     const store = new MemoryCredentialStore();
     const approvalQueue = {
       request: vi.fn(async () => "session" as const),
@@ -433,7 +432,6 @@ describe("credentialService", () => {
     const service = createCredentialService({
       credentialStore: store as never,
       approvalQueue: approvalQueue as never,
-      sessionGrantStore: new CredentialSessionGrantStore(),
       codeIdentityResolver: {
         resolveByCallerId: (callerId: string) => {
           if (callerId === "worker:first" || callerId === "do:worker:first") {
@@ -470,7 +468,6 @@ describe("credentialService", () => {
       ]
     )) as StoredCredentialSummary;
 
-    expect((await store.loadUrlBound(stored.id))?.grants).toEqual([]);
     approvalQueue.request.mockClear();
 
     await expect(
@@ -478,17 +475,17 @@ describe("credentialService", () => {
         { url: "https://api.example.test/v1" },
       ])
     ).resolves.toMatchObject({ id: stored.id });
-    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
+    expect(approvalQueue.request).not.toHaveBeenCalled();
 
-    await service.handler(
+    await expect(service.handler(
       { callerId: "worker:new-version", callerKind: "worker" },
       "resolveCredential",
       [{ url: "https://api.example.test/v1" }]
-    );
-    expect(approvalQueue.request).toHaveBeenCalledTimes(2);
+    )).resolves.toMatchObject({ id: stored.id });
+    expect(approvalQueue.request).not.toHaveBeenCalled();
   });
 
-  it("does not persist allow-once credential access approvals", async () => {
+  it("does not approve credential handle lookup for a different repo", async () => {
     const store = new MemoryCredentialStore();
     const approvalQueue = {
       request: vi.fn(async () => "once" as const),
@@ -498,7 +495,6 @@ describe("credentialService", () => {
     const service = createCredentialService({
       credentialStore: store as never,
       approvalQueue: approvalQueue as never,
-      sessionGrantStore: new CredentialSessionGrantStore(),
       codeIdentityResolver: {
         resolveByCallerId: (callerId: string) =>
           callerId === "worker:owner"
@@ -521,22 +517,21 @@ describe("credentialService", () => {
     )) as StoredCredentialSummary;
     approvalQueue.request.mockClear();
 
-    await service.handler(
+    await expect(service.handler(
       { callerId: "worker:consumer", callerKind: "worker" },
       "resolveCredential",
       [{ url: "https://api.example.test/v1" }]
-    );
-    await service.handler(
+    )).resolves.toBeNull();
+    await expect(service.handler(
       { callerId: "worker:consumer", callerKind: "worker" },
       "resolveCredential",
       [{ url: "https://api.example.test/v1" }]
-    );
+    )).resolves.toBeNull();
 
-    expect(approvalQueue.request).toHaveBeenCalledTimes(2);
-    expect((await store.loadUrlBound(stored.id))?.grants).toEqual([]);
+    expect(approvalQueue.request).not.toHaveBeenCalled();
   });
 
-  it.each(["version", "repo"] as const)("reuses %s credential access grants", async (decision) => {
+  it.each(["version", "repo"] as const)("does not persist %s credential-use records", async (decision) => {
     const store = new MemoryCredentialStore();
     const approvalQueue = {
       request: vi.fn(async () => decision),
@@ -546,7 +541,6 @@ describe("credentialService", () => {
     const service = createCredentialService({
       credentialStore: store as never,
       approvalQueue: approvalQueue as never,
-      sessionGrantStore: new CredentialSessionGrantStore(),
       codeIdentityResolver: {
         resolveByCallerId: (callerId: string) =>
           callerId === "worker:owner"
@@ -569,29 +563,18 @@ describe("credentialService", () => {
     )) as StoredCredentialSummary;
     approvalQueue.request.mockClear();
 
-    await service.handler(
+    await expect(service.handler(
       { callerId: "worker:consumer", callerKind: "worker" },
       "resolveCredential",
       [{ url: "https://api.example.test/v1" }]
-    );
-    await service.handler(
+    )).resolves.toBeNull();
+    await expect(service.handler(
       { callerId: "worker:consumer", callerKind: "worker" },
       "resolveCredential",
       [{ url: "https://api.example.test/v1" }]
-    );
+    )).resolves.toBeNull();
 
-    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
-    expect((await store.loadUrlBound(stored.id))?.grants).toContainEqual(
-      expect.objectContaining({
-        bindingId: "fetch",
-        use: "fetch",
-        resource: "https://api.example.test/",
-        action: "use",
-        scope: decision,
-        repoPath: "/consumer",
-        grantedBy: decision,
-      })
-    );
+    expect(approvalQueue.request).not.toHaveBeenCalled();
   });
 
   it("creates URL-bound credentials through generic OAuth PKCE and discards refresh tokens", async () => {
@@ -671,18 +654,7 @@ describe("credentialService", () => {
 
     const persisted = await store.loadUrlBound(completed.id);
     expect(persisted?.accessToken).toBe("oauth-access-token");
-    expect(persisted?.grants).toEqual([
-      expect.objectContaining({
-        bindingId: "fetch",
-        use: "fetch",
-        resource: "https://api.example.test/v1",
-        action: "use",
-        scope: "version",
-        repoPath: "panel:test",
-        effectiveVersion: "unknown",
-        grantedBy: "version",
-      }),
-    ]);
+    expect(persisted).not.toHaveProperty("grants");
     expect(JSON.stringify(persisted)).not.toContain("must-not-persist");
   });
 

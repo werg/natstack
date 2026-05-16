@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { WebSocket } from "ws";
+import { createServer, type Server as HttpServer } from "http";
 import { RpcServer } from "./rpcServer.js";
 import { Gateway } from "./gateway.js";
 import type {
@@ -68,19 +69,25 @@ function createTestSetup() {
     dispatcher,
     dispatched,
     dispatchResults,
+    workerCaller: { callerId: "do:test:Worker:obj1", callerKind: "worker" as CallerKind },
+    panelCaller: { callerId: "panel-abc", callerKind: "panel" as CallerKind },
+    parentPanelCaller: { callerId: "panel-parent", callerKind: "panel" as CallerKind },
+    childPanelCaller: { callerId: "panel-child", callerKind: "panel" as CallerKind },
+    shellCaller: { callerId: "electron-shell", callerKind: "shell" as CallerKind },
   };
 }
 
 async function postRpc(
   port: number,
-  token: string,
+  caller: { callerId: string; callerKind: CallerKind },
   body: Record<string, unknown>
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const res = await fetch(`http://127.0.0.1:${port}/rpc`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
+      "x-test-caller-id": caller.callerId,
+      "x-test-caller-kind": caller.callerKind,
     },
     body: JSON.stringify(body),
   });
@@ -92,24 +99,60 @@ async function postRpc(
 
 describe("RpcServer HTTP POST /rpc", () => {
   let setup: ReturnType<typeof createTestSetup>;
-  let gateway: Gateway;
+  let gateway: Gateway | null;
+  let rpcHttpServer: HttpServer | null;
   let port: number;
 
   beforeEach(async () => {
     setup = createTestSetup();
     setup.server.initHandlers();
-    gateway = new Gateway({
-      tokenManager: setup.tokenManager,
-      externalHost: "localhost",
-      getRpcHandler: () => setup.server,
+    gateway = null;
+    rpcHttpServer = createServer((req, res) => {
+      const callerId =
+        typeof req.headers["x-test-caller-id"] === "string" ? req.headers["x-test-caller-id"] : "";
+      const callerKind = req.headers["x-test-caller-kind"];
+      if (
+        callerId &&
+        (callerKind === "panel" ||
+          callerKind === "worker" ||
+          callerKind === "shell" ||
+          callerKind === "server")
+      ) {
+        req.natstackCaller = { callerId, callerKind };
+      }
+      void setup.server.handleGatewayHttpRequest(req, res);
     });
-    port = await gateway.start(0);
+    port = await new Promise((resolve) => {
+      rpcHttpServer!.listen(0, "127.0.0.1", () => {
+        const addr = rpcHttpServer!.address();
+        resolve(typeof addr === "object" && addr ? addr.port : 0);
+      });
+    });
   });
 
   afterEach(async () => {
-    await gateway.stop();
+    if (gateway) await gateway.stop();
+    if (rpcHttpServer) {
+      await new Promise<void>((resolve) => rpcHttpServer!.close(() => resolve()));
+    }
     await setup.server.stop();
   });
+
+  async function startGatewayForOriginTest(options?: {
+    externalHost?: string;
+    getPublicUrl?: () => string;
+  }): Promise<void> {
+    if (rpcHttpServer) {
+      await new Promise<void>((resolve) => rpcHttpServer!.close(() => resolve()));
+      rpcHttpServer = null;
+    }
+    gateway = new Gateway({
+      externalHost: options?.externalHost ?? "localhost",
+      getPublicUrl: options?.getPublicUrl,
+      getRpcHandler: () => setup.server,
+    });
+    port = await gateway.start(0);
+  }
 
   // ── Authentication ──────────────────────────────────────────────────────────
 
@@ -122,29 +165,28 @@ describe("RpcServer HTTP POST /rpc", () => {
       });
       expect(res.status).toBe(401);
       const body = (await res.json()) as { error: string };
-      expect(body["error"]).toContain("Missing authorization");
+      expect(body["error"]).toContain("Missing verified caller identity");
     });
 
-    it("rejects invalid token", async () => {
-      const { status, body } = await postRpc(port, "invalid-token-xxx", {
-        method: "credentials.listStoredCredentials",
-        args: [],
+    it("rejects bearer tokens without verified caller identity", async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/rpc`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer invalid-token-xxx",
+        },
+        body: JSON.stringify({
+          method: "credentials.listStoredCredentials",
+          args: [],
+        }),
       });
-      expect(status).toBe(401);
-      expect(body["error"]).toContain("Invalid token");
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(res.status).toBe(401);
+      expect(body["error"]).toContain("Missing verified caller identity");
     });
 
-    it("rejects admin token", async () => {
-      const { status, body } = await postRpc(port, setup.adminToken, {
-        method: "build.recompute",
-        args: [],
-      });
-      expect(status).toBe(401);
-      expect(body["error"]).toContain("issue a device credential");
-    });
-
-    it("accepts worker token", async () => {
-      const { status, body } = await postRpc(port, setup.workerToken, {
+    it("accepts verified worker caller", async () => {
+      const { status, body } = await postRpc(port, setup.workerCaller, {
         method: "credentials.listStoredCredentials",
         args: [],
       });
@@ -155,6 +197,7 @@ describe("RpcServer HTTP POST /rpc", () => {
 
   describe("websocket origin allow-list", () => {
     it("rejects websocket upgrades from disallowed origins", async () => {
+      await startGatewayForOriginTest();
       await expect(
         new Promise<void>((resolve, reject) => {
           const ws = new WebSocket(`ws://127.0.0.1:${port}/rpc`, {
@@ -177,6 +220,7 @@ describe("RpcServer HTTP POST /rpc", () => {
     });
 
     it("allows loopback websocket origins", async () => {
+      await startGatewayForOriginTest();
       await expect(
         new Promise<void>((resolve, reject) => {
           const ws = new WebSocket(`ws://127.0.0.1:${port}/rpc`, {
@@ -184,22 +228,25 @@ describe("RpcServer HTTP POST /rpc", () => {
           });
           ws.once("open", () => {
             ws.close();
-            resolve();
+            reject(new Error("unexpected websocket upgrade without caller identity"));
           });
-          ws.once("error", reject);
+          ws.once("error", (err) => {
+            try {
+              expect(err.message).toContain("Unexpected server response: 401");
+              resolve();
+            } catch (expectErr) {
+              reject(expectErr);
+            }
+          });
         })
       ).resolves.toBeUndefined();
     });
 
     it("allows the configured public URL origin", async () => {
-      await gateway.stop();
-      gateway = new Gateway({
-        tokenManager: setup.tokenManager,
+      await startGatewayForOriginTest({
         externalHost: "internal.example",
         getPublicUrl: () => "https://public.example:8443/base",
-        getRpcHandler: () => setup.server,
       });
-      port = await gateway.start(0);
 
       await expect(
         new Promise<void>((resolve, reject) => {
@@ -208,9 +255,16 @@ describe("RpcServer HTTP POST /rpc", () => {
           });
           ws.once("open", () => {
             ws.close();
-            resolve();
+            reject(new Error("unexpected websocket upgrade without caller identity"));
           });
-          ws.once("error", reject);
+          ws.once("error", (err) => {
+            try {
+              expect(err.message).toContain("Unexpected server response: 401");
+              resolve();
+            } catch (expectErr) {
+              reject(expectErr);
+            }
+          });
         })
       ).resolves.toBeUndefined();
     });
@@ -224,7 +278,7 @@ describe("RpcServer HTTP POST /rpc", () => {
         { id: "cred-1", label: "Example" },
       ]);
 
-      const { body } = await postRpc(port, setup.workerToken, {
+      const { body } = await postRpc(port, setup.workerCaller, {
         method: "credentials.listStoredCredentials",
         args: [],
       });
@@ -235,7 +289,7 @@ describe("RpcServer HTTP POST /rpc", () => {
     });
 
     it("passes args to dispatcher", async () => {
-      await postRpc(port, setup.workerToken, {
+      await postRpc(port, setup.workerCaller, {
         method: "credentials.resolveCredential",
         args: [{ url: "https://api.example.com/", credentialId: "cred-1" }],
       });
@@ -246,7 +300,7 @@ describe("RpcServer HTTP POST /rpc", () => {
     });
 
     it("builds correct ServiceContext from worker token", async () => {
-      await postRpc(port, setup.workerToken, {
+      await postRpc(port, setup.workerCaller, {
         method: "credentials.listStoredCredentials",
         args: [],
       });
@@ -258,8 +312,7 @@ describe("RpcServer HTTP POST /rpc", () => {
     });
 
     it("builds correct ServiceContext from shell token", async () => {
-      const shellToken = setup.tokenManager.ensureToken("electron-shell", "shell");
-      await postRpc(port, shellToken, {
+      await postRpc(port, setup.shellCaller, {
         method: "build.recompute",
         args: [],
       });
@@ -275,7 +328,7 @@ describe("RpcServer HTTP POST /rpc", () => {
         new Error("token expired")
       );
 
-      const { status, body } = await postRpc(port, setup.workerToken, {
+      const { status, body } = await postRpc(port, setup.workerCaller, {
         method: "credentials.resolveCredential",
         args: [{ url: "https://api.example.com/", credentialId: "cred-1" }],
       });
@@ -290,7 +343,7 @@ describe("RpcServer HTTP POST /rpc", () => {
 
   describe("policy enforcement", () => {
     it("rejects panel calling harness service", async () => {
-      const { body } = await postRpc(port, setup.panelToken, {
+      const { body } = await postRpc(port, setup.panelCaller, {
         method: "harness.spawn",
         args: [{}],
       });
@@ -300,7 +353,7 @@ describe("RpcServer HTTP POST /rpc", () => {
     });
 
     it("allows worker calling credentials service", async () => {
-      await postRpc(port, setup.workerToken, {
+      await postRpc(port, setup.workerCaller, {
         method: "credentials.listStoredCredentials",
         args: [],
       });
@@ -309,7 +362,7 @@ describe("RpcServer HTTP POST /rpc", () => {
     });
 
     it("rejects invalid method format", async () => {
-      const { body } = await postRpc(port, setup.workerToken, {
+      const { body } = await postRpc(port, setup.workerCaller, {
         method: "no-dot-separator",
         args: [],
       });
@@ -318,7 +371,7 @@ describe("RpcServer HTTP POST /rpc", () => {
     });
 
     it("rejects unknown service", async () => {
-      const { body } = await postRpc(port, setup.workerToken, {
+      const { body } = await postRpc(port, setup.workerCaller, {
         method: "nonexistent.foo",
         args: [],
       });
@@ -330,6 +383,16 @@ describe("RpcServer HTTP POST /rpc", () => {
   // ── HTTP routing ────────────────────────────────────────────────────────────
 
   describe("HTTP routing", () => {
+    it("does not expose POST /rpc on the direct gateway HTTP listener", async () => {
+      await startGatewayForOriginTest();
+      const res = await fetch(`http://127.0.0.1:${port}/rpc`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ method: "credentials.listStoredCredentials", args: [] }),
+      });
+      expect(res.status).toBe(404);
+    });
+
     it("returns 404 for non-/rpc paths", async () => {
       const res = await fetch(`http://127.0.0.1:${port}/other`, {
         method: "POST",
@@ -348,7 +411,7 @@ describe("RpcServer HTTP POST /rpc", () => {
     });
 
     it("treats targetId=main as direct dispatch", async () => {
-      await postRpc(port, setup.workerToken, {
+      await postRpc(port, setup.workerCaller, {
         targetId: "main",
         method: "credentials.listStoredCredentials",
         args: [],
@@ -357,19 +420,20 @@ describe("RpcServer HTTP POST /rpc", () => {
       expect(setup.dispatched).toHaveLength(1);
     });
 
-    it("rejects panel relay to an unrelated panel", async () => {
-      const { body } = await postRpc(port, setup.childPanelToken, {
+    it("allows panel relay to unrelated panels and reports reachability separately", async () => {
+      const { body } = await postRpc(port, setup.childPanelCaller, {
         type: "call",
         targetId: "panel-unrelated",
         method: "foo.bar",
         args: [],
       });
 
-      expect(body["error"]).toContain("cannot relay to unrelated panel");
+      expect(body["error"]).toContain("Target not reachable");
+      expect(body["error"]).not.toContain("cannot relay to unrelated panel");
     });
 
     it("allows panel relay to an ancestor panel", async () => {
-      const { body } = await postRpc(port, setup.childPanelToken, {
+      const { body } = await postRpc(port, setup.childPanelCaller, {
         type: "call",
         targetId: "panel-parent",
         method: "foo.bar",
@@ -381,7 +445,7 @@ describe("RpcServer HTTP POST /rpc", () => {
     });
 
     it("allows panel relay to itself", async () => {
-      const { body } = await postRpc(port, setup.parentPanelToken, {
+      const { body } = await postRpc(port, setup.parentPanelCaller, {
         type: "call",
         targetId: "panel-parent",
         method: "foo.bar",

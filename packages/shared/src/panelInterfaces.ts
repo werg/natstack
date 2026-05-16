@@ -57,6 +57,12 @@ export interface PanelRelationshipProvider {
 export interface ServerInfoLike {
   gatewayConfig: { serverUrl: string; token?: string };
   workerdPort: number;
+  /** Local egress proxy port, when the server process exposes proxy identity plumbing. */
+  egressProxyPort?: number;
+  /** Base64-encoded caller assertion HMAC secret shared with trusted main-process code. */
+  assertionSecret?: string;
+  /** Base64-encoded gateway-to-workerd internal hop secret. */
+  internalHopSecret?: string;
   /** Protocol for panel-facing URLs */
   protocol: "http" | "https";
   /** External hostname for panel URLs (e.g., "localhost" or "my-server.example.com") */
@@ -71,7 +77,7 @@ export interface ServerInfoLike {
  * Absent in headless mode.
  */
 export interface PanelViewLike {
-  createViewForPanel(panelId: string, url: string, contextId?: string): Promise<void>;
+  createViewForPanel(panelId: string, url: string, contextId: string): Promise<void>;
   createViewForBrowser?(panelId: string, url: string, contextId: string): Promise<void>;
   hasView(panelId: string): boolean;
   destroyView(panelId: string): void;

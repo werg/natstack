@@ -9,12 +9,14 @@ describe("shellApprovalService", () => {
     const service = createShellApprovalService({
       approvalQueue: {
         request: vi.fn(),
+        requestCapability: vi.fn(),
         requestClientConfig: vi.fn(),
         requestCredentialInput: vi.fn(),
         requestUserland: vi.fn(),
         presentDeviceCode: vi.fn(),
         onPendingChanged: vi.fn(),
         resolve: vi.fn(),
+        resolveCapability: vi.fn(),
         resolveUserland: vi.fn(),
         submitClientConfig: vi.fn(),
         submitCredentialInput: vi.fn(),
@@ -33,12 +35,14 @@ describe("shellApprovalService", () => {
     const service = createShellApprovalService({
       approvalQueue: {
         request: vi.fn(),
+        requestCapability: vi.fn(),
         requestClientConfig: vi.fn(),
         requestCredentialInput: vi.fn(),
         requestUserland: vi.fn(),
         presentDeviceCode: vi.fn(),
         onPendingChanged: vi.fn(),
         resolve,
+        resolveCapability: vi.fn(),
         resolveUserland,
         submitClientConfig: vi.fn(),
         submitCredentialInput: vi.fn(),
@@ -87,12 +91,14 @@ describe("shellApprovalService", () => {
     const service = createShellApprovalService({
       approvalQueue: {
         request: vi.fn(),
+        requestCapability: vi.fn(),
         requestClientConfig: vi.fn(),
         requestCredentialInput: vi.fn(),
         requestUserland: vi.fn(),
         presentDeviceCode: vi.fn(),
         onPendingChanged: vi.fn(),
         resolve: vi.fn(),
+        resolveCapability: vi.fn(),
         resolveUserland: vi.fn(),
         submitClientConfig: vi.fn(),
         submitCredentialInput: vi.fn(),

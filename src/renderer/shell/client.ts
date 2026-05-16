@@ -11,7 +11,7 @@ import { RPC_METHODS } from "@natstack/shared/approvalContract";
 // Type for the shell transport bridge injected by the preload script
 type ShellTransportBridge = {
   send: (targetId: string, message: unknown) => Promise<void>;
-  onMessage: (handler: (fromId: string, message: unknown) => void) => () => void;
+  onMessage: (handler: (sourceId: string, message: unknown) => void) => () => void;
 };
 
 const g = globalThis as unknown as { __natstackTransport?: ShellTransportBridge };
@@ -20,11 +20,11 @@ if (!g.__natstackTransport) throw new Error("Shell transport not available");
 const transport: RpcTransport = {
   send: g.__natstackTransport.send,
   onMessage: (_sourceId, handler) =>
-    g.__natstackTransport!.onMessage((fromId, msg) => {
-      if (fromId === "main") handler(msg as RpcMessage);
+    g.__natstackTransport!.onMessage((sourceId, msg) => {
+      if (sourceId === "main") handler(msg as RpcMessage);
     }),
   onAnyMessage: (handler) =>
-    g.__natstackTransport!.onMessage((fromId, msg) => handler(fromId, msg as RpcMessage)),
+    g.__natstackTransport!.onMessage((sourceId, msg) => handler(sourceId, msg as RpcMessage)),
 };
 
 const rpc: RpcBridge = createRpcBridge({
@@ -353,6 +353,18 @@ import type { ApprovalDecision, PendingApproval } from "@natstack/shared/approva
 export const shellApproval = {
   resolve: (approvalId: string, decision: ApprovalDecision) =>
     rpc.call<undefined>("main", "shellApproval.resolve", approvalId, decision),
+  resolveCapability: (
+    approvalId: string,
+    decision: ApprovalDecision,
+    credentialSelectionId?: string | null,
+  ) =>
+    rpc.call<undefined>(
+      "main",
+      "shellApproval.resolveCapability",
+      approvalId,
+      decision,
+      credentialSelectionId ?? null,
+    ),
   resolveUserland: (approvalId: string, choice: string | "dismiss") =>
     rpc.call<undefined>("main", "shellApproval.resolveUserland", approvalId, choice),
   submitClientConfig: (approvalId: string, values: Record<string, string>) =>

@@ -10,7 +10,7 @@ import type { RecoveryCoordinator, RecoveryKind } from "@natstack/shared/shell/r
 
 type NatstackTransportBridge = {
   send: (targetId: string, message: unknown) => void | Promise<void>;
-  onMessage: (handler: (fromId: string, message: unknown) => void) => () => void;
+  onMessage: (handler: (sourceId: string, message: unknown) => void) => () => void;
   onRecovery?: (kind: RecoveryKind, handler: () => void | Promise<void>) => () => void;
 };
 
@@ -49,8 +49,8 @@ export function createPanelTransport(): RpcTransport {
   bridge.onRecovery?.("resubscribe", () => recoveryCoordinator.run("resubscribe"));
   bridge.onRecovery?.("cold-recover", () => recoveryCoordinator.run("cold-recover"));
 
-  bridge.onMessage((fromId, message) => {
-    const sourceId = normalizeEndpointId(fromId);
+  bridge.onMessage((rawSourceId, message) => {
+    const sourceId = normalizeEndpointId(rawSourceId);
     const msg = message as RpcMessage;
     if (!msg || typeof msg !== "object" || typeof (msg as { type?: unknown }).type !== "string") {
       return;

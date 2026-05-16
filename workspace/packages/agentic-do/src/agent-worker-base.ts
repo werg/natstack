@@ -349,7 +349,7 @@ interface AgentAbortContext {
 }
 
 export abstract class AgentWorkerBase extends DurableObjectBase {
-  static override schemaVersion = 9;
+  static override schemaVersion = 10;
 
   protected identity: DOIdentity;
   protected subscriptions: SubscriptionManager;
@@ -385,6 +385,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   private failedEvents = new Map<number, number>();
   private static readonly POISON_MAX_ATTEMPTS = 3;
   private recoveredChannels = new Set<string>();
+  private channelEventListenerInstalled = false;
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
@@ -398,8 +399,13 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.identity = new DOIdentity(this.sql);
     this.subscriptions = new SubscriptionManager(
       this.sql,
-      (channelId) => new ChannelClient(lazyRpc, channelId),
+      (channelId) => new ChannelClient(
+        lazyRpc,
+        channelId,
+        typeof this.env["GATEWAY_URL"] === "string" ? this.env["GATEWAY_URL"] as string : null,
+      ),
       this.identity,
+      () => typeof this.env["GATEWAY_URL"] === "string" ? this.env["GATEWAY_URL"] as string : null,
     );
     this.dispatches = new DispatchedCallStore(this.sql);
 
@@ -412,20 +418,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.identity.createTables();
     this.subscriptions.createTables();
     this.dispatches.createTables();
-    this.sql.exec(`DROP TABLE IF EXISTS pending_calls`);
     // Delivery cursor for event dedup + gap repair.
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS delivery_cursor (
         channel_id TEXT PRIMARY KEY,
         last_delivered_seq INTEGER NOT NULL
-      )
-    `);
-    // Legacy table — kept for lazy migration to pi_messages.
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS pi_sessions (
-        channel_id TEXT PRIMARY KEY,
-        messages_blob TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
       )
     `);
     // Per-channel Pi agent message history for warm restore after DO hibernation.
@@ -480,7 +477,11 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
   }
 
   protected createChannelClient(channelId: string): ChannelClient {
-    return new ChannelClient(this.rpc, channelId);
+    return new ChannelClient(
+      this.rpc,
+      channelId,
+      typeof this.env["GATEWAY_URL"] === "string" ? this.env["GATEWAY_URL"] as string : null,
+    );
   }
 
   // ── Customization hooks (Pi-native) ─────────────────────────────────────
@@ -706,23 +707,10 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         throw new Error(`Refusing to send URL-bound model credential to non-model URL: ${targetUrl.origin}`);
       }
       headers.delete("authorization");
-
-      const result = await this.rpc.call<{
-        status: number;
-        statusText: string;
-        headers: Record<string, string>;
-        body: string;
-      }>("main", "credentials.proxyFetch", {
-        url: targetUrl.toString(),
+      return originalFetch(targetUrl, {
         method: request.method,
-        headers: Object.fromEntries(headers.entries()),
+        headers,
         body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.text(),
-      });
-
-      return new Response(result.body, {
-        status: result.status,
-        statusText: result.statusText,
-        headers: result.headers,
       });
     };
 
@@ -878,7 +866,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.dispatches.deleteForChannel(channelId);
     this.subscriptions.deleteSubscription(channelId);
     this.sql.exec(`DELETE FROM pi_messages WHERE channel_id = ?`, channelId);
-    this.sql.exec(`DELETE FROM pi_sessions WHERE channel_id = ?`, channelId);
 
     return { ok: true };
   }
@@ -924,6 +911,16 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         console.error("[AgentWorkerBase] onChannelEvent failed for ephemeral event:", err);
       }
     }
+  }
+
+  private ensureChannelEventListener(): void {
+    if (this.channelEventListenerInstalled) return;
+    this.channelEventListenerInstalled = true;
+    this.rpc.onEvent("channel:message", (_sourceId, payload) => {
+      const delivery = payload as { channelId?: unknown; message?: unknown };
+      if (typeof delivery.channelId !== "string" || !delivery.message) return;
+      void this.handleIncomingChannelEvent(delivery.channelId, delivery.message as ChannelEvent);
+    });
   }
 
   private getDeliveryCursor(channelId: string): number {
@@ -1002,6 +999,42 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       return;
     }
 
+    if (event.type === "method-call") {
+      const payload = event.payload as Record<string, unknown> | undefined;
+      const callId = payload?.["callId"];
+      const providerId = payload?.["providerId"];
+      const methodName = payload?.["methodName"];
+      const participantId = this.subscriptions.getParticipantId(channelId);
+      if (
+        !payload ||
+        typeof callId !== "string" ||
+        typeof providerId !== "string" ||
+        typeof methodName !== "string" ||
+        providerId !== participantId
+      ) {
+        return;
+      }
+      const channel = this.createChannelClient(channelId);
+      try {
+        const args = payload["args"];
+        const result = await this.onMethodCall(channelId, callId, methodName, args);
+        await channel.publish(participantId, "method-result", {
+          callId,
+          content: result.result,
+          complete: true,
+          isError: result.isError === true,
+        }, { persist: true });
+      } catch (err) {
+        await channel.publish(participantId, "method-result", {
+          callId,
+          content: err instanceof Error ? err.message : String(err),
+          complete: true,
+          isError: true,
+        }, { persist: true });
+      }
+      return;
+    }
+
     // Intercept streaming method-result events (complete: false) and forward
     // to the registered stream callback. This bridges ctx.stream() from method
     // providers through to Pi's tool_execution_update event system.
@@ -1036,7 +1069,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     // or freshly cloned DO whose parent's blob was copied in postClone).
     let initialMessages: AgentMessage[] = [];
 
-    // Try normalized pi_messages table first.
     const msgRows = this.sql.exec(
       `SELECT content FROM pi_messages WHERE channel_id = ? ORDER BY idx`,
       channelId,
@@ -1046,26 +1078,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
         initialMessages = msgRows.map(r => JSON.parse(r["content"] as string) as AgentMessage);
       } catch (err) {
         console.warn(`[AgentWorkerBase] failed to parse pi_messages for channel=${channelId}:`, err);
-      }
-    } else {
-      // Lazy migration: read from legacy pi_sessions blob, migrate to pi_messages.
-      const sessionRow = this.sql.exec(
-        `SELECT messages_blob FROM pi_sessions WHERE channel_id = ?`, channelId,
-      ).toArray();
-      if (sessionRow.length > 0 && sessionRow[0]!["messages_blob"]) {
-        try {
-          initialMessages = JSON.parse(sessionRow[0]!["messages_blob"] as string) as AgentMessage[];
-          // Migrate to normalized table.
-          for (let i = 0; i < initialMessages.length; i++) {
-            this.sql.exec(
-              `INSERT INTO pi_messages (channel_id, idx, content) VALUES (?, ?, ?)`,
-              channelId, i, JSON.stringify(initialMessages[i]),
-            );
-          }
-          this.sql.exec(`DELETE FROM pi_sessions WHERE channel_id = ?`, channelId);
-        } catch (err) {
-          console.warn(`[AgentWorkerBase] failed to migrate pi_sessions for channel=${channelId}:`, err);
-        }
       }
     }
 
@@ -2124,14 +2136,12 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     this.sql.exec(`DELETE FROM delivery_cursor`);
     this.sql.exec(`DELETE FROM dispatched_calls`);
 
-    // Migrate parent's message history from oldChannelId → newChannelId.
-    // Check pi_messages first (normalized), fall back to legacy pi_sessions blob.
+    // Move parent's message history from oldChannelId to newChannelId.
     const hasPiMessages = (this.sql.exec(
       `SELECT COUNT(*) as cnt FROM pi_messages WHERE channel_id = ?`, oldChannelId,
     ).toArray()[0]?.["cnt"] as number ?? 0) > 0;
 
     if (hasPiMessages) {
-      // Normalized path: rename channel via UPDATE, trim via DELETE.
       this.sql.exec(
         `UPDATE pi_messages SET channel_id = ? WHERE channel_id = ?`,
         newChannelId, oldChannelId,
@@ -2141,26 +2151,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           `DELETE FROM pi_messages WHERE channel_id = ? AND idx >= ?`,
           newChannelId, forkAtMessageIndex,
         );
-      }
-    } else {
-      // Legacy blob path: migrate to pi_messages during fork.
-      const parentSession = this.sql.exec(
-        `SELECT messages_blob FROM pi_sessions WHERE channel_id = ?`, oldChannelId,
-      ).toArray();
-      if (parentSession.length > 0) {
-        try {
-          let messages = JSON.parse(parentSession[0]!["messages_blob"] as string) as AgentMessage[];
-          if (forkAtMessageIndex != null) messages = messages.slice(0, forkAtMessageIndex);
-          for (let i = 0; i < messages.length; i++) {
-            this.sql.exec(
-              `INSERT INTO pi_messages (channel_id, idx, content) VALUES (?, ?, ?)`,
-              newChannelId, i, JSON.stringify(messages[i]),
-            );
-          }
-          this.sql.exec(`DELETE FROM pi_sessions WHERE channel_id = ?`, oldChannelId);
-        } catch (err) {
-          console.warn(`[AgentWorkerBase] failed to migrate pi_sessions during fork:`, err);
-        }
       }
     }
 
@@ -2212,6 +2202,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
 
   override async fetch(request: Request): Promise<Response> {
     this.ensureReady();
+    this.captureObjectRequestIdentity(request);
 
     const url = new URL(request.url);
     const segments = url.pathname.split("/").filter(Boolean);
@@ -2220,10 +2211,7 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     }
 
     this.ensureBootstrapped();
-
-    if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
-      return this.handleWebSocketUpgrade(request);
-    }
+    this.ensureChannelEventListener();
 
     const method = segments.slice(1).join("/") || "getState";
 
@@ -2231,32 +2219,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
       const body = await request.json();
       const result = await this.rpc.handleIncomingPost(body);
       return new Response(JSON.stringify(result), {
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    if (method === "__event") {
-      let args: unknown[] = [];
-      if (request.method === "POST") {
-        const body = await request.text();
-        if (body) {
-          const result = this.parseRequestBody(body);
-          if (result.error) {
-            return new Response(JSON.stringify({ error: result.error }), {
-              status: 400, headers: { "Content-Type": "application/json" },
-            });
-          }
-          args = result.args;
-        }
-      }
-      if (args.length < 2) {
-        return new Response(JSON.stringify({ error: "__event requires at least [event, payload]" }), {
-          status: 400, headers: { "Content-Type": "application/json" },
-        });
-      }
-      const [event, payload, fromId] = args as [string, unknown, string | undefined];
-      await this.rpc.handleIncomingPost({ type: "emit", event, payload, fromId: fromId ?? "" });
-      return new Response(JSON.stringify({ result: "ok" }), {
         headers: { "Content-Type": "application/json" },
       });
     }
@@ -2274,13 +2236,6 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
           }
           args = result.args;
         }
-      }
-
-      if (method === "onChannelEvent" && args.length === 2) {
-        await this.handleIncomingChannelEvent(args[0] as string, args[1] as ChannelEvent);
-        return new Response(JSON.stringify(null), {
-          headers: { "Content-Type": "application/json" },
-        });
       }
 
       const fn = (this as unknown as Record<string, unknown>)[method];
@@ -2309,10 +2264,9 @@ export abstract class AgentWorkerBase extends DurableObjectBase {
     const piMessages = this.sql.exec(
       `SELECT channel_id, idx, LENGTH(content) as content_len FROM pi_messages`,
     ).toArray();
-    const piSessionsLegacy = this.sql.exec(`SELECT channel_id, updated_at FROM pi_sessions`).toArray();
     const dispatchedCalls = this.sql.exec(`SELECT * FROM dispatched_calls`).toArray();
     const deliveryCursors = this.sql.exec(`SELECT * FROM delivery_cursor`).toArray();
-    return { subscriptions, piMessages, piSessionsLegacy, dispatchedCalls, deliveryCursors };
+    return { subscriptions, piMessages, dispatchedCalls, deliveryCursors };
   }
 
   // Reference SAFE_TOOL_NAMES_DEFAULT to suppress unused-import warnings;

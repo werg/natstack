@@ -10,7 +10,7 @@
  *   2. Read the peer's leaf-cert SHA-256 hash in the `secureConnect`
  *      event, synchronously.
  *   3. Destroy the socket on mismatch — before any application-layer
- *      byte (HTTP upgrade line, ws:auth frame, GET request line) is
+ *      byte (HTTP upgrade line, GET request line) is
  *      written. `secureConnect` fires between TLS handshake completion
  *      and any user-level write, so this window is the correct hook.
  *

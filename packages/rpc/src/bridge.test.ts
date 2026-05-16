@@ -1,4 +1,5 @@
 import { createRpcBridge } from "./bridge.js";
+import { allowAllCallers, allowCallerIds, denyAllCallers } from "./access.js";
 import type { RpcTransport, RpcMessage, RpcResponse, RpcRequest, RpcEvent } from "./types.js";
 
 function createMockTransport() {
@@ -68,12 +69,15 @@ describe("createRpcBridge", () => {
     const bridge = createRpcBridge({ selfId: "test", transport });
     const handler = captureOnAnyMessageHandler(transport);
 
-    bridge.exposeMethod("add", (a: number, b: number) => a + b);
+    const seenContexts: string[] = [];
+    bridge.exposeMethod("add", allowAllCallers, (ctx, a: number, b: number) => {
+      seenContexts.push(ctx.sourceId);
+      return a + b;
+    });
 
     const request: RpcRequest = {
       type: "request",
       requestId: "req-1",
-      fromId: "caller",
       method: "add",
       args: [3, 4],
     };
@@ -91,6 +95,7 @@ describe("createRpcBridge", () => {
         })
       );
     });
+    expect(seenContexts).toEqual(["caller"]);
   });
 
   it("error response causes call to reject with Error", async () => {
@@ -123,7 +128,6 @@ describe("createRpcBridge", () => {
 
     const event: RpcEvent = {
       type: "event",
-      fromId: "source",
       event: "update",
       payload: { value: 42 },
     };
@@ -144,7 +148,6 @@ describe("createRpcBridge", () => {
 
     const event: RpcEvent = {
       type: "event",
-      fromId: "source",
       event: "update",
       payload: "data",
     };
@@ -158,14 +161,13 @@ describe("createRpcBridge", () => {
     const bridge = createRpcBridge({ selfId: "test", transport });
     const handler = captureOnAnyMessageHandler(transport);
 
-    bridge.exposeMethod("boom", () => {
+    bridge.exposeMethod("boom", allowAllCallers, () => {
       throw new Error("kaboom");
     });
 
     const request: RpcRequest = {
       type: "request",
       requestId: "req-err",
-      fromId: "caller",
       method: "boom",
       args: [],
     };
@@ -179,6 +181,60 @@ describe("createRpcBridge", () => {
           type: "response",
           requestId: "req-err",
           error: "kaboom",
+        })
+      );
+    });
+  });
+
+  it("denies incoming request when access policy rejects", async () => {
+    const transport = createMockTransport();
+    const bridge = createRpcBridge({ selfId: "test", transport });
+    const handler = captureOnAnyMessageHandler(transport);
+
+    bridge.exposeMethod("secret", denyAllCallers, () => "nope");
+
+    const request: RpcRequest = {
+      type: "request",
+      requestId: "req-denied",
+      method: "secret",
+      args: [],
+    };
+
+    handler("caller", request);
+
+    await vi.waitFor(() => {
+      expect(vi.mocked(transport.send)).toHaveBeenCalledWith(
+        "caller",
+        expect.objectContaining({
+          type: "response",
+          requestId: "req-denied",
+          errorCode: "RPC_ACCESS_DENIED",
+        })
+      );
+    });
+  });
+
+  it("allows incoming request when caller id policy matches", async () => {
+    const transport = createMockTransport();
+    const bridge = createRpcBridge({ selfId: "test", transport });
+    const handler = captureOnAnyMessageHandler(transport);
+
+    bridge.exposeMethod("secret", allowCallerIds("trusted"), () => "ok");
+
+    handler("trusted", {
+      type: "request",
+      requestId: "req-trusted",
+      method: "secret",
+      args: [],
+    });
+
+    await vi.waitFor(() => {
+      expect(vi.mocked(transport.send)).toHaveBeenCalledWith(
+        "trusted",
+        expect.objectContaining({
+          type: "response",
+          requestId: "req-trusted",
+          result: "ok",
         })
       );
     });

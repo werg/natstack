@@ -1,8 +1,8 @@
 /**
  * ChannelClient — Typed wrapper for channel DO operations.
  *
- * All operations go through the RPC bridge, which routes to the
- * channel service DO via the server's userland service resolver.
+ * Operations resolve the channel service DO through the host, then use runtime
+ * RPC for all calls.
  */
 
 import type { ChannelEvent, SendMessageOptions } from "@natstack/harness/types";
@@ -21,6 +21,7 @@ export class ChannelClient {
   constructor(
     private rpc: RpcCaller,
     private channelId: string,
+    _gatewayUrl?: string | null,
   ) {}
 
   private async target(): Promise<string> {
@@ -36,7 +37,8 @@ export class ChannelClient {
   }
 
   private async call<T = unknown>(method: string, ...args: unknown[]): Promise<T> {
-    return this.rpc.call<T>(await this.target(), method, ...args);
+    const targetId = await this.target();
+    return this.rpc.call<T>(targetId, method, ...args);
   }
 
   async send(participantId: string, messageId: string, content: string, opts?: SendMessageOptions): Promise<void> {
@@ -93,6 +95,15 @@ export class ChannelClient {
 
   async getParticipants(): Promise<Array<{ participantId: string; metadata: Record<string, unknown> }>> {
     return this.call("getParticipants") as Promise<Array<{ participantId: string; metadata: Record<string, unknown> }>>;
+  }
+
+  async publish(
+    participantId: string,
+    type: string,
+    payload: unknown,
+    opts?: { persist?: boolean; ref?: number; senderMetadata?: Record<string, unknown> },
+  ): Promise<{ id?: number } | undefined> {
+    return this.call("publish", participantId, type, payload, opts) as Promise<{ id?: number } | undefined>;
   }
 
   async callMethod(callerPid: string, targetPid: string, callId: string, method: string, args: unknown): Promise<void> {

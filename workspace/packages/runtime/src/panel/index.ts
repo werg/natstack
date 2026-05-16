@@ -11,6 +11,8 @@ import { initRuntime } from "../setup/initRuntime.js";
 import { helpfulNamespace } from "../shared/helpfulNamespace.js";
 import { createGatewayFetch } from "../shared/gatewayFetch.js";
 import { createGadClient } from "../shared/gad.js";
+import { connectViaRpc } from "@natstack/pubsub";
+import type { ParticipantMetadata, PubSubClient, RpcConnectOptions } from "@natstack/pubsub";
 export type { ThemeAppearance, RuntimeFs, FileStats, MkdirOptions, RmOptions } from "../types.js";
 export { createGatewayFetch } from "../shared/gatewayFetch.js";
 export type { GatewayFetch, GatewayFetchConfig } from "../shared/gatewayFetch.js";
@@ -47,6 +49,11 @@ const gatewayFetch = createGatewayFetch(gatewayConfig);
 const gitConfig = config.gitConfig;
 const pubsubConfig = config.pubsubConfig;
 const env = config.env;
+
+export type PanelSubscribeOptions<T extends ParticipantMetadata = ParticipantMetadata> =
+  Omit<RpcConnectOptions<T>, "rpc" | "channel" | "serverUrl" | "clientId" | "recoveryCoordinator"> & {
+    clientId?: string;
+  };
 
 const {
   parentId: runtimeParentId,
@@ -88,6 +95,18 @@ export {
   recoveryCoordinator,
   runtimeParentId as parentId,
 };
+
+export const subscribe = <T extends ParticipantMetadata = ParticipantMetadata>(
+  channel: string,
+  options: PanelSubscribeOptions<T> = {},
+): PubSubClient<T> => connectViaRpc<T>({
+  ...options,
+  rpc,
+  channel,
+  clientId: options.clientId ?? id,
+  serverUrl: gatewayConfig.serverUrl,
+  recoveryCoordinator,
+});
 
 const { workers } = runtime;
 const helpfulWorkers = helpfulNamespace("workers", workers);
@@ -131,10 +150,8 @@ import {
   configureClient as configureCredentialClient,
   connect as connectCredential,
   deleteClientConfig as deleteCredentialClientConfig,
-  fetch as credentialFetch,
   getClientConfigStatus as getCredentialClientConfigStatus,
   gitHttp as credentialGitHttp,
-  hookForUrl as credentialHookForUrl,
   initPanelCredentials,
   listStoredCredentials as listUrlBoundCredentials,
   requestCredentialInput as requestCredentialSecretInput,
@@ -163,8 +180,6 @@ const credentialApi = {
   deleteClientConfig: deleteCredentialClientConfig,
   listStoredCredentials: listUrlBoundCredentials,
   revokeCredential: revokeUrlBoundCredential,
-  fetch: credentialFetch,
-  hookForUrl: credentialHookForUrl,
   gitHttp: credentialGitHttp,
 };
 export const credentials = helpfulNamespace("credentials", credentialApi);
@@ -236,13 +251,19 @@ export const webhooks = helpfulNamespace("webhooks", createWebhookIngressClient(
 
 // Userland consent approvals.
 import {
+  createUserlandApprovalAccessPolicy,
   listUserlandApprovals,
   requestUserlandApproval,
   revokeUserlandApproval,
+  type UserlandApprovalAccessPolicyOptions,
 } from "../approvals.js";
 export const requestApproval = requestUserlandApproval.bind(null, rpc);
 export const revokeApproval = revokeUserlandApproval.bind(null, rpc);
 export const listApprovals = listUserlandApprovals.bind(null, rpc);
+export const approvalAccessPolicy = (options: UserlandApprovalAccessPolicyOptions) =>
+  createUserlandApprovalAccessPolicy(rpc, options);
+export { createUserlandApprovalAccessPolicy };
+export type { UserlandApprovalAccessPolicyOptions };
 
 // Shell notifications
 import { createNotificationClient } from "./notifications.js";

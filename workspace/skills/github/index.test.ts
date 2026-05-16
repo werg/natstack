@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StoredCredentialSummary } from "@workspace/runtime";
 
 const runtimeMock = vi.hoisted(() => ({
@@ -6,7 +6,6 @@ const runtimeMock = vi.hoisted(() => ({
     requestCredentialInput: vi.fn(),
     listStoredCredentials: vi.fn(),
     revokeCredential: vi.fn(),
-    fetch: vi.fn(),
     gitHttp: vi.fn(),
   },
   createBrowserPanel: vi.fn(),
@@ -45,12 +44,12 @@ describe("github skill facade", () => {
     vi.clearAllMocks();
     runtimeMock.credentials.listStoredCredentials.mockResolvedValue([]);
     runtimeMock.credentials.requestCredentialInput.mockResolvedValue(githubCredential);
-    runtimeMock.credentials.fetch.mockResolvedValue(
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ login: "octocat", id: 1 }), {
         status: 200,
         headers: { "content-type": "application/json" },
       })
-    );
+    ));
     runtimeMock.credentials.gitHttp.mockReturnValue({
       request: vi.fn().mockResolvedValue({
         url: "https://github.com/octo/project.git/info/refs?service=git-upload-pack",
@@ -61,6 +60,10 @@ describe("github skill facade", () => {
         body: (async function* () {})(),
       }),
     });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("reports needs-token when no GitHub credential exists", async () => {
@@ -184,16 +187,19 @@ describe("github skill facade", () => {
     expect(status.verification).toMatchObject({ valid: true, credentialId: "cred-github" });
   });
 
-  it("verifies a credential through credentials.fetch", async () => {
+  it("verifies a credential through egress fetch", async () => {
     const result = await verifyGitHubCredential("cred-github");
 
     expect(result).toMatchObject({ valid: true, login: "octocat", userId: 1 });
-    expect(runtimeMock.credentials.fetch).toHaveBeenCalledWith(
+    expect(fetch).toHaveBeenCalledWith(
       "https://api.github.com/user",
       expect.objectContaining({
-        headers: expect.objectContaining({ accept: "application/vnd.github+json" }),
-      }),
-      { credentialId: "cred-github" }
+        headers: expect.objectContaining({
+          accept: "application/vnd.github+json",
+          "x-github-api-version": "2022-11-28",
+          "X-NatStack-Use-Credential": "cred-github",
+        }),
+      })
     );
   });
 

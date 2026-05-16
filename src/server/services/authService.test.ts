@@ -50,7 +50,6 @@ describe("auth service device credentials", () => {
       workerdPort: 9,
       routeRegistry,
       adminToken: "admin-secret",
-      tokenManager,
     });
     gatewayPort = await gateway.start(0);
   });

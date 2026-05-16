@@ -143,7 +143,6 @@ export class MobileTransport implements RpcBridge {
       const rpcMsg: RpcMessage = {
         type: "request",
         requestId,
-        fromId: this.selfId,
         method,
         args,
       };
@@ -163,7 +162,6 @@ export class MobileTransport implements RpcBridge {
 
     const rpcMsg: RpcMessage = {
       type: "event",
-      fromId: this.selfId,
       event,
       payload,
     };

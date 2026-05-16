@@ -6,33 +6,51 @@
  * connections (e.g., Durable Objects calling back to the server).
  */
 
-import type { RpcBridge } from "@natstack/rpc";
+import type {
+  RpcAccessPolicy,
+  RpcBridge,
+  RpcCallerContext,
+  RpcMethodDefinition,
+  RpcMethodHandler,
+} from "@natstack/rpc";
 
-const rpcFetch = globalThis.fetch.bind(globalThis);
+export type { RpcCallerContext } from "@natstack/rpc";
+
+let currentRpcCaller: RpcCallerContext | null = null;
+
+export function getCurrentRpcCaller(): RpcCallerContext | null {
+  return currentRpcCaller;
+}
 
 export interface HttpRpcBridgeConfig {
   selfId: string;
   serverUrl: string;
-  authToken: string;
+  proxyAssertion?: string | (() => string | null | undefined);
 }
 
 export function createHttpRpcBridge(config: HttpRpcBridgeConfig): RpcBridge & {
   handleIncomingPost(body: unknown): Promise<unknown>;
 } {
-  const { selfId, serverUrl, authToken } = config;
-  const methodHandlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
-  const eventListeners = new Map<string, Set<(fromId: string, payload: unknown) => void>>();
+  const { selfId, serverUrl } = config;
+  const methodHandlers = new Map<string, RpcMethodDefinition>();
+  const eventListeners = new Map<string, Set<(sourceId: string, payload: unknown) => void>>();
 
   async function postToServer(payload: object): Promise<unknown> {
     const maxRetries = 3;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       let res: Response;
       try {
-        res = await rpcFetch(`${serverUrl}/rpc`, {
+        const proxyAssertion =
+          typeof config.proxyAssertion === "function"
+            ? config.proxyAssertion()
+            : config.proxyAssertion;
+        res = await globalThis.fetch(`${serverUrl}/rpc`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": `Bearer ${authToken}`,
+            ...(proxyAssertion
+              ? { "X-NatStack-Object-Assertion": proxyAssertion }
+              : {}),
           },
           body: JSON.stringify(payload),
         });
@@ -70,31 +88,48 @@ export function createHttpRpcBridge(config: HttpRpcBridgeConfig): RpcBridge & {
   return {
     selfId,
 
-    exposeMethod(method, handler) {
-      methodHandlers.set(method, handler as any);
+    exposeMethod<TArgs extends unknown[], TReturn>(
+      method: string,
+      access: RpcAccessPolicy,
+      handler: RpcMethodHandler<TArgs, TReturn>,
+    ): void {
+      methodHandlers.set(method, {
+        access,
+        handler: handler as RpcMethodHandler<unknown[], unknown>,
+      });
     },
 
-    expose(methods) {
-      for (const [name, handler] of Object.entries(methods)) {
-        methodHandlers.set(name, handler as any);
+    expose(methods: Record<string, RpcMethodDefinition<any[], any>>): void {
+      for (const [name, definition] of Object.entries(methods)) {
+        methodHandlers.set(name, {
+          access: definition.access,
+          handler: definition.handler as RpcMethodHandler<unknown[], unknown>,
+        });
       }
     },
 
     async call<T>(targetId: string, method: string, ...args: unknown[]): Promise<T> {
       if (targetId === selfId) {
         // Local dispatch
-        const handler = methodHandlers.get(method);
-        if (!handler) throw new Error(`No handler for method '${method}'`);
-        return handler(...args) as T;
+        const definition = methodHandlers.get(method);
+        if (!definition) throw new Error(`No handler for method '${method}'`);
+        const ctx: RpcCallerContext = { sourceId: selfId };
+        const allowed = await definition.access(ctx);
+        if (!allowed) {
+          const err = new Error(`RPC access denied for method "${method}"`);
+          (err as any).code = "RPC_ACCESS_DENIED";
+          throw err;
+        }
+        return definition.handler(ctx, ...args) as T;
       }
       return postToServer({ type: "call", targetId, method, args }) as Promise<T>;
     },
 
     async emit(targetId: string, event: string, payload: unknown): Promise<void> {
-      await postToServer({ type: "emit", targetId, event, payload, fromId: selfId });
+      await postToServer({ type: "emit", targetId, event, payload });
     },
 
-    onEvent(event: string, listener: (fromId: string, payload: unknown) => void): () => void {
+    onEvent(event: string, listener: (sourceId: string, payload: unknown) => void): () => void {
       if (!eventListeners.has(event)) eventListeners.set(event, new Set());
       eventListeners.get(event)!.add(listener);
       return () => eventListeners.get(event)?.delete(listener);
@@ -103,11 +138,32 @@ export function createHttpRpcBridge(config: HttpRpcBridgeConfig): RpcBridge & {
     async handleIncomingPost(body: unknown): Promise<unknown> {
       const msg = body as any;
       if (msg.type === "call") {
-        const handler = methodHandlers.get(msg.method);
-        if (!handler) return { error: `No handler for method '${msg.method}'` };
+        const definition = methodHandlers.get(msg.method);
+        if (!definition) return { error: `No handler for method '${msg.method}'` };
         try {
-          const result = await handler(...(msg.args ?? []));
-          return { result };
+          const previousCaller = currentRpcCaller;
+          const ctx =
+            typeof msg.sourceId === "string"
+              ? ({ sourceId: msg.sourceId } satisfies RpcCallerContext)
+              : null;
+          currentRpcCaller = ctx;
+          try {
+            if (!ctx) {
+              const err = new Error("Missing RPC caller context");
+              (err as any).code = "RPC_MISSING_CALLER_CONTEXT";
+              throw err;
+            }
+            const allowed = await definition.access(ctx);
+            if (!allowed) {
+              const err = new Error(`RPC access denied for method "${msg.method}"`);
+              (err as any).code = "RPC_ACCESS_DENIED";
+              throw err;
+            }
+            const result = await definition.handler(ctx, ...(msg.args ?? []));
+            return { result };
+          } finally {
+            currentRpcCaller = previousCaller;
+          }
         } catch (err: any) {
           return { error: err.message, errorCode: err.code };
         }
@@ -117,7 +173,7 @@ export function createHttpRpcBridge(config: HttpRpcBridgeConfig): RpcBridge & {
         if (listeners) {
           for (const listener of listeners) {
             try {
-              listener(msg.fromId ?? "", msg.payload);
+              listener(msg.sourceId ?? "", msg.payload);
             } catch (err) {
               console.error(`[RpcBridge] Event listener error for '${msg.event}':`, err);
             }

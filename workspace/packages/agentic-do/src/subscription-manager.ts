@@ -16,6 +16,7 @@ export class SubscriptionManager {
     private sql: SqlStorage,
     private channelFactory: (channelId: string) => ChannelClient,
     private identity: DOIdentity,
+    _getGatewayUrl?: () => string | null,
   ) {}
 
   createTables(): void {

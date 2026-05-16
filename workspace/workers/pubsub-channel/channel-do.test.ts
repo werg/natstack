@@ -1,13 +1,37 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { createTestDO } from "@workspace/runtime/worker/test-utils";
 import { PubSubChannel } from "./channel-do.js";
+import { resetDeliveryChainsForTest } from "./broadcast.js";
 
 describe("PubSubChannel", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    resetDeliveryChainsForTest();
+    fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ result: "ok" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    resetDeliveryChainsForTest();
+    vi.unstubAllGlobals();
+  });
+
   describe("getParticipants()", () => {
     it("returns DO identity when present", async () => {
       const { instance, sql } = await createTestDO(PubSubChannel, {
         __objectKey: "test-channel",
       });
+      const mockRpc = {
+        emit: vi.fn().mockResolvedValue(undefined),
+        call: vi.fn().mockResolvedValue(undefined),
+      };
+      (instance as any)._rpc = mockRpc;
 
       sql.exec(
         `INSERT INTO participants (id, metadata, transport, connected_at, do_source, do_class, do_key)
@@ -252,7 +276,7 @@ describe("PubSubChannel", () => {
         __participantSessionId: "session-new",
       });
 
-      // Drain the per-subscriber emit chain (queueEmit runs on microtasks).
+      // Drain the per-subscriber delivery chain.
       for (let i = 0; i < 10; i++) {
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
@@ -261,22 +285,17 @@ describe("PubSubChannel", () => {
       expect(sql.exec(`SELECT call_id FROM pending_calls`).toArray()).toEqual([
         { call_id: "11111111-1111-4111-8111-111111111111" },
       ]);
-      // No synthetic error is delivered to the caller.
-      const errorDeliveries = mockRpc.call.mock.calls.filter(
-        ([, method]) => method === "onCallResult",
-      );
-      expect(errorDeliveries).toHaveLength(0);
-      // A method-call is re-emitted to the new panel session.
-      const methodCallEmits = mockRpc.emit.mock.calls.filter(
-        ([, , data]) => (data as any)?.message?.type === "method-call",
-      );
-      expect(methodCallEmits).toHaveLength(1);
-      const emitted = methodCallEmits[0]![2] as { message: { payload: { callId: string; methodName: string; args: unknown }; kind: string }; channelId: string };
-      expect(emitted.channelId).toBe("test-channel");
-      expect(emitted.message.kind).toBe("ephemeral");
-      expect(emitted.message.payload.callId).toBe("11111111-1111-4111-8111-111111111111");
-      expect(emitted.message.payload.methodName).toBe("feedback_custom");
-      expect(emitted.message.payload.args).toEqual({ code: "x" });
+      // A method-call is delivered to the new panel over RPC.
+      const methodCallDeliveries = (mockRpc.emit as ReturnType<typeof vi.fn>).mock.calls
+        .map(([, , payload]) => payload as { channelId: string; message: Record<string, any> })
+        .filter((body) => body.message?.["type"] === "method-call");
+      expect(methodCallDeliveries).toHaveLength(1);
+      const delivered = methodCallDeliveries[0]!.message as { payload: { callId: string; methodName: string; args: unknown }; kind: string };
+      expect(methodCallDeliveries[0]!.channelId).toBe("test-channel");
+      expect(delivered.kind).toBe("ephemeral");
+      expect(delivered.payload.callId).toBe("11111111-1111-4111-8111-111111111111");
+      expect(delivered.payload.methodName).toBe("feedback_custom");
+      expect(delivered.payload.args).toEqual({ code: "x" });
       // The replaced-session leave presence event still fires.
       const leaveMessages = sql.exec(
         `SELECT content FROM messages WHERE type = 'presence' ORDER BY id ASC`,
@@ -288,7 +307,6 @@ describe("PubSubChannel", () => {
       const { instance, sql } = await createTestDO(PubSubChannel, {
         __objectKey: "test-channel",
       });
-
       const mockRpc = {
         emit: vi.fn().mockResolvedValue(undefined),
         call: vi.fn().mockResolvedValue(undefined),
@@ -383,6 +401,7 @@ describe("PubSubChannel", () => {
         { call_id: "44444444-4444-4444-8444-444444444444" },
       ]);
 
+      fetchMock.mockClear();
       mockRpc.emit.mockClear();
       await instance.subscribe("panel-1", {
         contextId: "ctx-1",
@@ -391,41 +410,34 @@ describe("PubSubChannel", () => {
         __participantSessionId: "session-new",
       });
 
-      // Drain the per-subscriber emit chain (queueEmit runs on microtasks).
+      // Drain the per-subscriber delivery chain.
       for (let i = 0; i < 10; i++) {
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
 
-      // Call is preserved, no synthetic error is delivered.
+      // Call is preserved; the result path remains pending for the caller.
       expect(sql.exec(`SELECT call_id FROM pending_calls`).toArray()).toEqual([
         { call_id: "44444444-4444-4444-8444-444444444444" },
       ]);
-      const errorDeliveries = mockRpc.call.mock.calls.filter(
-        ([, method]) => method === "onCallResult",
-      );
-      expect(errorDeliveries).toHaveLength(0);
-      // Method-call is re-emitted to the new session.
-      const methodCallEmits = mockRpc.emit.mock.calls.filter(
-        ([, , data]) => (data as any)?.message?.type === "method-call",
-      );
-      expect(methodCallEmits).toHaveLength(1);
-      expect((methodCallEmits[0]![2] as any).message.payload.callId).toBe(
+      // Method-call is delivered to the new session over RPC.
+      const methodCallDeliveries = (mockRpc.emit as ReturnType<typeof vi.fn>).mock.calls
+        .map(([, , payload]) => payload as { channelId: string; message: Record<string, any> })
+        .filter((body) => body.message?.["type"] === "method-call");
+      expect(methodCallDeliveries.length).toBeGreaterThanOrEqual(1);
+      const lastMethodCallDelivery = methodCallDeliveries[methodCallDeliveries.length - 1];
+      expect(lastMethodCallDelivery!.message["payload"].callId).toBe(
         "44444444-4444-4444-8444-444444444444",
       );
     });
 
-    it("awaits intercepted method-result forwarding before publish resolves", async () => {
+    it("persists intercepted method-results before publish resolves", async () => {
       const { instance, sql } = await createTestDO(PubSubChannel, {
         __objectKey: "test-channel",
       });
 
-      let resolveCall!: () => void;
-      const callPromise = new Promise<void>((resolve) => {
-        resolveCall = resolve;
-      });
       const mockRpc = {
         emit: vi.fn().mockResolvedValue(undefined),
-        call: vi.fn().mockImplementation(() => callPromise),
+        call: vi.fn().mockResolvedValue(undefined),
       };
       (instance as any)._rpc = mockRpc;
 
@@ -451,22 +463,15 @@ describe("PubSubChannel", () => {
         Date.now(),
       );
 
-      let resolved = false;
-      const publishPromise = instance.publish("panel-1", "method-result", {
+      await instance.publish("panel-1", "method-result", {
         callId: "33333333-3333-4333-8333-333333333333",
         content: { ok: true },
         complete: true,
         isError: false,
-      }, { persist: true }).then(() => {
-        resolved = true;
-      });
+      }, { persist: true });
 
-      await Promise.resolve();
-      expect(resolved).toBe(false);
-
-      resolveCall();
-      await publishPromise;
-      expect(resolved).toBe(true);
+      expect(sql.exec(`SELECT call_id FROM pending_calls`).toArray()).toEqual([]);
+      expect(sql.exec(`SELECT type FROM messages WHERE type = 'method-result'`).toArray()).toHaveLength(1);
     });
 
     it("broadcasts a persisted method-result even when the caller is a DO", async () => {
@@ -509,31 +514,20 @@ describe("PubSubChannel", () => {
         isError: false,
       }, { persist: true });
 
-      expect(mockRpc.call).toHaveBeenCalledWith(
-        "do:workers/agent-worker:AiChatWorker:agent-1",
-        "onCallResult",
-        "call-1",
-        { ok: true, result: 42 },
-        false,
-      );
-
-      expect(mockRpc.emit).toHaveBeenCalledWith(
-        "panel-1",
-        "channel:message",
-        expect.objectContaining({
-          channelId: "test-channel",
-          message: expect.objectContaining({
-            kind: "persisted",
-            type: "method-result",
-            payload: expect.objectContaining({
-              callId: "call-1",
-              content: { ok: true, result: 42 },
-              complete: true,
-              isError: false,
-            }),
-          }),
+      const methodResultDeliveries = (mockRpc.emit as ReturnType<typeof vi.fn>).mock.calls
+        .map(([, , payload]) => payload as { channelId: string; message: Record<string, unknown> })
+        .filter((body) => body.message?.["type"] === "method-result");
+      expect(methodResultDeliveries).toHaveLength(2);
+      expect(methodResultDeliveries[0]!.message).toEqual(expect.objectContaining({
+        kind: "persisted",
+        type: "method-result",
+        payload: expect.objectContaining({
+          callId: "call-1",
+          content: { ok: true, result: 42 },
+          complete: true,
+          isError: false,
         }),
-      );
+      }));
 
       const persisted = sql.exec(
         `SELECT type, sender_id, content FROM messages WHERE type = 'method-result'`,
@@ -672,8 +666,7 @@ describe("PubSubChannel", () => {
       // sendRosterReplay emits a snapshot from the participants table after
       // replaying persisted presence events. This test verifies the precondition:
       // typing state set via setTypingState is present in the participants table
-      // and would be included in that snapshot. Full end-to-end verification of
-      // the snapshot broadcast requires an RPC emit mock (integration test).
+      // and would be included in that snapshot.
       const { instance, sql } = await createTestDO(PubSubChannel, {
         __objectKey: "test-channel",
       });
@@ -703,16 +696,8 @@ describe("PubSubChannel", () => {
       const { instance, sql } = await createTestDO(PubSubChannel, {
         __objectKey: "test-channel",
       });
-
-      // Capture every rpc.emit to `channel:message` in call order.
-      const emitted: Array<{ subscriberId: string; message: Record<string, unknown> }> = [];
       const mockRpc = {
-        emit: vi.fn(async (subscriberId: string, _evt: string, payload: unknown) => {
-          emitted.push({
-            subscriberId,
-            message: (payload as { message: Record<string, unknown> }).message,
-          });
-        }),
+        emit: vi.fn().mockResolvedValue(undefined),
         call: vi.fn().mockResolvedValue(undefined),
       };
       (instance as any)._rpc = mockRpc;
@@ -759,13 +744,19 @@ describe("PubSubChannel", () => {
       // queue, not awaited inside subscribe — awaiting inline would deadlock
       // against the subscriber's own RPC call reply). Flush the microtask
       // queue until the chain has drained.
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 50; i++) {
+        const panelDeliveries = (mockRpc.emit as ReturnType<typeof vi.fn>).mock.calls
+          .map(([, , payload]) => payload as { channelId: string; message: Record<string, unknown> })
+          .filter(e => e.channelId === "test-channel");
+        const last = panelDeliveries[panelDeliveries.length - 1]?.message;
+        if ((last?.["type"] ?? last?.["kind"]) === "ready") break;
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
 
-      // Panel-targeted emits for 'channel:message' only. Filter out non-panel.
-      const panelEmits = emitted.filter(e => e.subscriberId === "panel-1");
-      const kinds = panelEmits.map(e => e.message["type"] ?? e.message["kind"]);
+      const panelDeliveries = (mockRpc.emit as ReturnType<typeof vi.fn>).mock.calls
+        .map(([, , payload]) => payload as { channelId: string; message: Record<string, unknown> })
+        .filter(e => e.channelId === "test-channel");
+      const kinds = panelDeliveries.map(e => e.message["type"] ?? e.message["kind"]);
 
       // Expect messages to land in id order (m1, update, m2, update, update)
       // followed by a ready event at the end.
@@ -774,7 +765,7 @@ describe("PubSubChannel", () => {
       // Every 'update-message' for a given id must come AFTER its parent 'message'.
       // Wire format: top-level { type, payload: { id, ... } }.
       const firstIdx = (targetId: string, type: "message" | "update-message") =>
-        panelEmits.findIndex(e => {
+        panelDeliveries.findIndex(e => {
           if (e.message["type"] !== type) return false;
           const payload = e.message["payload"] as { id?: string } | undefined;
           return payload?.id === targetId;

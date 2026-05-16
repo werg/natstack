@@ -4,8 +4,8 @@ import { DurableObjectBase, type DurableObjectContext } from "@workspace/runtime
  * Sample Durable Object showing the canonical userland storage primitive.
  *
  * Each instance owns a single SQLite-backed `visits` table addressed via
- * `this.sql`. Callers reach the DO through the server's dispatch path
- * (postToDOWithToken / DODispatch); the fetch handler below is an info
+ * `this.sql`. Callers reach the DO through the server's HTTP dispatch path
+ * (DODispatch); the fetch handler below is an info
  * message — DOs aren't routed from a sibling worker's fetch handler.
  *
  * For an end-to-end demonstration that round-trips through `this.sql`, see

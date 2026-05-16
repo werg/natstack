@@ -927,6 +927,9 @@ importers:
       '@natstack/harness':
         specifier: workspace:*
         version: link:../../../packages/harness
+      '@natstack/pubsub':
+        specifier: workspace:*
+        version: link:../pubsub
       '@natstack/rpc':
         specifier: workspace:*
         version: link:../../../packages/rpc

@@ -7,7 +7,6 @@ import {
   type DeleteClientConfigRequest,
   type GetClientConfigStatusRequest,
   type GitHttpClient,
-  type GrantUrlBoundCredentialRequest,
   type RequestCredentialInputRequest,
   type ResolveUrlBoundCredentialRequest,
   type StoredCredentialSummary,
@@ -59,29 +58,10 @@ export async function revokeCredential(credentialId: string): Promise<void> {
   await client.revokeCredential(credentialId);
 }
 
-export async function grantCredential(input: GrantUrlBoundCredentialRequest): Promise<StoredCredentialSummary> {
-  return client.grantCredential(input);
-}
-
 export async function resolveCredential(
   input: ResolveUrlBoundCredentialRequest,
 ): Promise<StoredCredentialSummary | null> {
   return client.resolveCredential(input);
-}
-
-export async function fetch(
-  url: string | URL,
-  init?: RequestInit,
-  opts?: { credentialId?: string },
-): Promise<Response> {
-  return client.fetch(url, init, opts);
-}
-
-export function hookForUrl(
-  url: string | URL,
-  opts?: { credentialId?: string },
-): (init?: RequestInit) => Promise<Response> {
-  return client.hookForUrl(url, opts);
 }
 
 export function gitHttp(opts?: { credentialId?: string }): GitHttpClient {
@@ -96,7 +76,6 @@ export type {
   DeleteClientConfigRequest,
   GetClientConfigStatusRequest,
   GitHttpClient,
-  GrantUrlBoundCredentialRequest,
   RequestCredentialInputRequest,
   ResolveUrlBoundCredentialRequest,
   StoredCredentialSummary,

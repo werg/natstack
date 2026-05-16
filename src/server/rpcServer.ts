@@ -10,7 +10,6 @@ import { randomUUID } from "crypto";
 import {
   createRpcBridge,
   type RpcBridge,
-  type RpcEvent,
   type RpcMessage,
   type RpcRequest,
   type RpcResponse,
@@ -358,71 +357,13 @@ export class RpcServer {
   }
   private handlersInitialized = false;
 
-  private handleConnection(ws: WebSocket): void {
-    // Expect first message to be ws:auth
-    let authTimeout: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-      ws.close(4003, "Auth timeout");
-    }, 10000);
-
-    const onFirstMessage = (data: Buffer | ArrayBuffer | Buffer[]) => {
-      if (authTimeout) {
-        clearTimeout(authTimeout);
-        authTimeout = null;
-      }
-      ws.off("message", onFirstMessage);
-
-      let msg: WsClientMessage;
-      try {
-        msg = JSON.parse(data.toString()) as WsClientMessage;
-      } catch {
-        ws.close(4004, "Invalid message");
-        return;
-      }
-
-      if (msg.type !== "ws:auth") {
-        ws.close(4005, "Expected ws:auth as first message");
-        return;
-      }
-
-      this.handleAuth(ws, msg.token, msg.connectionId);
-    };
-
-    ws.on("message", onFirstMessage);
-    ws.on("close", () => {
-      if (authTimeout) {
-        clearTimeout(authTimeout);
-        authTimeout = null;
-      }
-    });
-  }
-
-  private handleAuth(ws: WebSocket, token: string, requestedConnectionId?: string): void {
-    // Admin tokens are management-only. RPC clients must use caller tokens.
-    if (this.deps.tokenManager.validateAdminToken(token)) {
-      const msg: WsServerMessage = {
-        type: "ws:auth-result",
-        success: false,
-        error:
-          "Admin token cannot authenticate RPC; issue a device credential and refresh a shell token first.",
-      };
-      ws.send(JSON.stringify(msg));
-      ws.close(4006, "Admin token cannot authenticate RPC");
-      return;
-    }
-
-    const entry = this.deps.tokenManager.validateToken(token);
-    if (!entry) {
-      const msg: WsServerMessage = {
-        type: "ws:auth-result",
-        success: false,
-        error: "Invalid token",
-      };
-      ws.send(JSON.stringify(msg));
-      ws.close(4006, "Invalid token");
-      return;
-    }
-    const callerKind = entry.callerKind;
-    const callerId = entry.callerId;
+  private attachConnection(
+    ws: WebSocket,
+    caller: { callerId: string; callerKind: CallerKind },
+    requestedConnectionId?: string
+  ): void {
+    const callerKind = caller.callerKind;
+    const callerId = caller.callerId;
     const connectionId = requestedConnectionId || randomUUID();
     const connectionKey = this.connectionKey(callerId, connectionId);
 
@@ -480,16 +421,14 @@ export class RpcServer {
     });
     this.setBridge(callerId, connectionId, bridge, transport);
 
-    // Send auth result
-    const authResult: WsServerMessage = {
-      type: "ws:auth-result",
-      success: true,
+    const ready: WsServerMessage = {
+      type: "ws:ready",
       callerId,
       callerKind,
       connectionId,
       serverBootId: this.bootId,
     };
-    ws.send(JSON.stringify(authResult));
+    ws.send(JSON.stringify(ready));
 
     // Register the authenticated connection as a direct-address event session.
     // Pub/sub subscriptions still opt in per event; direct delivery can target
@@ -548,9 +487,6 @@ export class RpcServer {
         break;
       case "ws:route":
         this.handleRoute(client, msg.targetId, msg.message, msg.targetConnectionId);
-        break;
-      case "ws:auth":
-        // Ignore duplicate auth messages
         break;
     }
   }
@@ -647,7 +583,7 @@ export class RpcServer {
           (originClient) => {
             this.sendToWs(originClient.ws, {
               type: "ws:routed",
-              fromId: client.callerId,
+              sourceId: client.callerId,
               message,
             });
           },
@@ -695,53 +631,15 @@ export class RpcServer {
           this.sendRouteError(client, targetId, message, err);
         });
       } else if (message.type === "event") {
-        const { fromId: eventFromId, event, payload } = message;
-        // Audit finding #20 (04-4.7): the event `fromId` MUST be derived from
-        // the authenticated transport, not trusted from the caller payload.
-        // Otherwise any panel can spoof events that claim to come from the
-        // server / another panel (e.g. "notification:show", "credentials:*").
-        // Server / harness callers may set fromId explicitly (they're trusted
-        // brokers); everyone else gets their real callerId substituted.
-        const trustedSource = client.callerKind === "server" || client.callerKind === "harness";
-        if (!trustedSource && eventFromId && eventFromId !== client.callerId) {
-          log.warn("rejecting event fromId spoof", {
-            callerId: client.callerId,
-            callerKind: client.callerKind,
-            attemptedFromId: eventFromId,
-            event,
-            targetId,
-          });
-        }
-        const sourceId = trustedSource ? (eventFromId ?? client.callerId) : client.callerId;
-        void this.relayEvent(sourceId, targetId, event, payload).catch((err) => {
+        const { event, payload } = message;
+        void this.relayEvent(client.callerId, targetId, event, payload).catch((err) => {
           this.sendRouteError(client, targetId, message, err);
         });
       }
       return;
     }
 
-    // Authenticated direct delivery — overwrite fromId on relayed events to
-    // match the authenticated source unless the caller is a trusted broker.
-    // Without this, a panel can send a `ws:route` whose embedded message is
-    // an event with a forged fromId; the routed envelope below would carry
-    // the correct fromId at the outer level, but consumers also see the
-    // inner message.fromId and may use it. Normalize both.
-    let outboundMessage = message;
-    if (message.type === "event") {
-      const trustedSource = client.callerKind === "server" || client.callerKind === "harness";
-      const eventFromId = message.fromId;
-      if (!trustedSource && eventFromId && eventFromId !== client.callerId) {
-        log.warn("rejecting event fromId spoof (direct)", {
-          callerId: client.callerId,
-          callerKind: client.callerKind,
-          attemptedFromId: eventFromId,
-          event: message.event,
-          targetId,
-        });
-      }
-      const sourceId = trustedSource ? (eventFromId ?? client.callerId) : client.callerId;
-      outboundMessage = { ...message, fromId: sourceId };
-    }
+    const outboundMessage = message;
     if (outboundMessage.type === "request") {
       this.recordRoutedRequestOrigin(outboundMessage.requestId, client);
     }
@@ -750,7 +648,7 @@ export class RpcServer {
       for (const connection of this.getCallerConnections(targetId)) {
         this.sendToWs(connection.ws, {
           type: "ws:routed",
-          fromId: client.callerId,
+          sourceId: client.callerId,
           message: outboundMessage,
         });
       }
@@ -759,7 +657,7 @@ export class RpcServer {
 
     this.sendToWs(targetClient.ws, {
       type: "ws:routed",
-      fromId: client.callerId,
+      sourceId: client.callerId,
       message: outboundMessage,
     });
   }
@@ -783,7 +681,7 @@ export class RpcServer {
     if (message.type === "request") {
       this.sendToWs(client.ws, {
         type: "ws:routed",
-        fromId: targetId,
+        sourceId: targetId,
         message: {
           type: "response",
           requestId: message.requestId,
@@ -814,20 +712,18 @@ export class RpcServer {
     }
 
     {
-      const eventMessage = message as RpcEvent;
       log.warn("relay event drop", {
         callerId: client.callerId,
         callerKind: client.callerKind,
         targetId,
-        event: eventMessage.event,
-        fromId: eventMessage.fromId,
+        event: message.event,
         error: errorMessage,
         errorCode,
       });
       this.sendToWs(client.ws, {
         type: "ws:routed-event-error",
         targetId,
-        event: eventMessage.event,
+        event: message.event,
         error: errorMessage,
         ...(errorCode ? { errorCode } : {}),
       });
@@ -851,13 +747,13 @@ export class RpcServer {
 
   private async sendRoutedResponseToOrigin(
     origin: WsClientState,
-    fromId: string,
+    sourceId: string,
     message: RpcResponse
   ): Promise<void> {
     const originClient = await this.resolveWsRelayTarget(origin.callerId, origin.connectionId);
     this.sendToWs(originClient.ws, {
       type: "ws:routed",
-      fromId,
+      sourceId,
       message,
     });
   }
@@ -1075,34 +971,14 @@ export class RpcServer {
       return;
     }
 
-    // Auth: validate Bearer token
-    const authHeader = req.headers["authorization"];
-    const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    if (!token) {
+    const caller = req.natstackCaller;
+    if (!caller) {
       res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Missing authorization" }));
+      res.end(JSON.stringify({ error: "Missing verified caller identity" }));
       return;
     }
-
-    if (this.deps.tokenManager.validateAdminToken(token)) {
-      res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          error:
-            "Admin token cannot authenticate RPC; issue a device credential and refresh a shell token first.",
-        })
-      );
-      return;
-    }
-
-    const entry = this.deps.tokenManager.validateToken(token);
-    if (!entry) {
-      res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Invalid token" }));
-      return;
-    }
-    const callerId = entry.callerId;
-    const callerKind = entry.callerKind;
+    const callerId = caller.callerId;
+    const callerKind = caller.callerKind;
 
     try {
       const result = await this.handleHttpRpc(callerId, callerKind, body);
@@ -1149,26 +1025,10 @@ export class RpcServer {
     if (type === "emit") {
       const event = body["event"] as string;
       const payload = body["payload"];
-      const requestedFromId = body["fromId"] as string | undefined;
-      // Audit finding #20 (04-4.7): only trusted broker callers (server /
-      // harness) may set fromId; everyone else has their authenticated
-      // callerId substituted. Otherwise any caller can spoof events that
-      // claim to come from any other source.
-      const trustedSource = callerKind === "server" || callerKind === "harness";
-      if (!trustedSource && requestedFromId && requestedFromId !== callerId) {
-        log.warn("rejecting HTTP emit fromId spoof", {
-          callerId,
-          callerKind,
-          attemptedFromId: requestedFromId,
-          event,
-          targetId,
-        });
-      }
-      const fromId = trustedSource ? (requestedFromId ?? callerId) : callerId;
       if (!targetId) throw new Error("Missing targetId for emit");
       const auth = this.checkRelayAuth(callerId, callerKind, targetId);
       if (!auth.ok) throw new Error(auth.reason);
-      await this.relayEvent(fromId, targetId, event, payload);
+      await this.relayEvent(callerId, targetId, event, payload);
       return "ok";
     }
 
@@ -1186,28 +1046,11 @@ export class RpcServer {
    * relay authorization is now based only on caller authentication.
    */
   private checkRelayAuth(
-    callerId: string,
+    _callerId: string,
     callerKind: CallerKind,
-    targetId: string
+    _targetId: string
   ): RelayAuthCheck {
-    if (callerKind !== "panel") return { ok: true };
-    if (targetId === callerId) return { ok: true };
-    if (targetId.startsWith("do:") || targetId.startsWith("worker:")) return { ok: true };
-
-    const parentId = this.deps.tokenManager.getPanelParent(callerId);
-    const targetParentId = this.deps.tokenManager.getPanelParent(targetId);
-    const isDirectParent = parentId === targetId;
-    const isDirectChild = targetParentId === callerId;
-    const isRelated =
-      isDirectParent ||
-      isDirectChild ||
-      this.deps.tokenManager.isPanelDescendantOf(callerId, targetId) ||
-      this.deps.tokenManager.isPanelDescendantOf(targetId, callerId);
-
-    if (!isRelated) {
-      return { ok: false, reason: `Panel ${callerId} cannot relay to unrelated panel ${targetId}` };
-    }
-
+    void callerKind;
     return { ok: true };
   }
 
@@ -1294,21 +1137,21 @@ export class RpcServer {
     }
 
     if (targetId.startsWith("worker:")) {
-      return await this.relayToWorker(targetId, method, args);
+      return await this.relayToWorker(callerId, targetId, method, args);
     }
 
     throw createRelayError(`Unknown target kind: ${targetId}`, "UNKNOWN_TARGET_KIND");
   }
 
   private async relayResponse(
-    fromId: string,
+    sourceId: string,
     targetId: string,
     response: RpcResponse
   ): Promise<void> {
     const client = await this.resolveWsRelayTarget(targetId);
     this.sendToWs(client.ws, {
       type: "ws:routed",
-      fromId,
+      sourceId,
       message: response,
     });
   }
@@ -1321,28 +1164,24 @@ export class RpcServer {
   ): Promise<unknown> {
     const ref = parseDOTarget(targetId);
 
-    const { postToDOWithToken } = await import("./doDispatch.js");
+    const { postRpcToDO } = await import("./doDispatch.js");
 
-    if (!this.deps.tokenManager || !this.workerdUrl || !this.workerdGatewayToken) {
-      throw new Error(
-        "Cannot relay to DO: tokenManager, workerdUrl, or workerdGatewayToken not configured"
-      );
+    if (!this.workerdUrl || !this.workerdGatewayToken) {
+      throw new Error("Cannot relay to DO: workerdUrl or workerdGatewayToken not configured");
     }
 
-    return await postToDOWithToken(
-      ref,
-      method,
-      args,
-      {
-        tokenManager: this.deps.tokenManager,
-        workerdUrl: this.workerdUrl,
-        workerdGatewayToken: this.workerdGatewayToken,
-      },
-      callerId
-    );
+    return await postRpcToDO(ref, { type: "call", method, args, sourceId: callerId }, {
+      workerdUrl: this.workerdUrl,
+      workerdGatewayToken: this.workerdGatewayToken,
+    });
   }
 
-  private async relayToWorker(targetId: string, method: string, args: unknown[]): Promise<unknown> {
+  private async relayToWorker(
+    callerId: string,
+    targetId: string,
+    method: string,
+    args: unknown[]
+  ): Promise<unknown> {
     // targetId format: "worker:{workerName}"
     const workerName = targetId.slice(7); // Remove "worker:"
     if (!this.workerdUrl) throw new Error("workerdUrl not configured");
@@ -1356,7 +1195,7 @@ export class RpcServer {
           ? { Authorization: `Bearer ${this.workerdGatewayToken}` }
           : {}),
       },
-      body: JSON.stringify({ type: "call", method, args }),
+      body: JSON.stringify({ type: "call", method, args, sourceId: callerId }),
     });
 
     if (!res.ok) {
@@ -1385,7 +1224,7 @@ export class RpcServer {
   }
 
   private async relayEvent(
-    fromId: string,
+    sourceId: string,
     targetId: string,
     event: string,
     payload: unknown
@@ -1397,8 +1236,8 @@ export class RpcServer {
         for (const wsClient of wsClients) {
           this.sendToWs(wsClient.ws, {
             type: "ws:routed",
-            fromId,
-            message: { type: "event", fromId, event, payload },
+            sourceId,
+            message: { type: "event", event, payload },
           });
         }
         return;
@@ -1410,8 +1249,8 @@ export class RpcServer {
           for (const wsClient of this.getCallerConnections(targetId)) {
             this.sendToWs(wsClient.ws, {
               type: "ws:routed",
-              fromId,
-              message: { type: "event", fromId, event, payload },
+              sourceId,
+              message: { type: "event", event, payload },
             });
           }
           return;
@@ -1431,17 +1270,12 @@ export class RpcServer {
     if (targetId.startsWith("do:")) {
       const ref = parseDOTarget(targetId);
 
-      if (!this.deps.tokenManager || !this.workerdUrl || !this.workerdGatewayToken) {
-        throw new Error(
-          "Cannot relay event to DO: tokenManager, workerdUrl, or workerdGatewayToken not configured"
-        );
+      if (!this.workerdUrl || !this.workerdGatewayToken) {
+        throw new Error("Cannot relay event to DO: workerdUrl or workerdGatewayToken not configured");
       }
 
-      const { postToDOWithToken } = await import("./doDispatch.js");
-      // Don't pass fromId as callerId — callerId is for parent tracking,
-      // fromId is the event source (already in the args).
-      await postToDOWithToken(ref, "__event", [event, payload, fromId], {
-        tokenManager: this.deps.tokenManager,
+      const { postRpcToDO } = await import("./doDispatch.js");
+      await postRpcToDO(ref, { type: "emit", event, payload, sourceId }, {
         workerdUrl: this.workerdUrl,
         workerdGatewayToken: this.workerdGatewayToken,
       });
@@ -1461,7 +1295,7 @@ export class RpcServer {
             ? { Authorization: `Bearer ${this.workerdGatewayToken}` }
             : {}),
         },
-        body: JSON.stringify({ type: "emit", event, payload, fromId }),
+        body: JSON.stringify({ type: "emit", event, payload, sourceId }),
       });
       if (!res.ok) {
         let text: string;
@@ -1553,8 +1387,12 @@ export class RpcServer {
   // ===========================================================================
 
   /** Accept a pre-upgraded WebSocket from the gateway (no WSS needed on our side). */
-  handleGatewayWsConnection(ws: WebSocket): void {
-    this.handleConnection(ws);
+  handleGatewayWsConnection(
+    ws: WebSocket,
+    caller: { callerId: string; callerKind: CallerKind },
+    connectionId?: string
+  ): void {
+    this.attachConnection(ws, caller, connectionId);
   }
 
   /** Handle an HTTP POST /rpc from the gateway (in-process dispatch). */

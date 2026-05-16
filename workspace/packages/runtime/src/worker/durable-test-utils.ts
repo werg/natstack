@@ -7,35 +7,11 @@ interface SqlResult {
   one(): Record<string, unknown>;
 }
 
-/** Mock WebSocket for testing channel DO and hibernation flows. */
-export class MockWebSocket {
-  sent: string[] = [];
-  closed = false;
-  closeCode?: number;
-  closeReason?: string;
-  private attachment: unknown = undefined;
-  send(data: string) { this.sent.push(data); }
-  close(code?: number, reason?: string) {
-    this.closed = true;
-    this.closeCode = code;
-    this.closeReason = reason;
-  }
-  serializeAttachment(value: unknown) { this.attachment = value; }
-  deserializeAttachment() { return this.attachment; }
-}
-
-interface AcceptedWebSocket {
-  ws: unknown;
-  tags: string[];
-}
-
 interface TestDOResult<T> {
   instance: T;
   sql: { exec(query: string, ...bindings: unknown[]): SqlResult };
   /** Alarms scheduled via ctx.storage.setAlarm(). Inspectable in tests. */
   alarms: number[];
-  /** WebSockets accepted via ctx.acceptWebSocket(). Inspectable in tests. */
-  acceptedWebSockets: AcceptedWebSocket[];
   /**
    * Call a DO method through fetch(), matching the production dispatch path.
    * Runs ensureReady(), ensureBootstrapped(), and objectKey parsing from the URL.
@@ -97,7 +73,6 @@ function createSqlProxy(db: Database) {
  *  The HTTP clients are created but never called in unit tests. */
 const AGENTIC_ENV_DEFAULTS: Record<string, string> = {
   GATEWAY_URL: "http://test-server.invalid",
-  RPC_AUTH_TOKEN: "test-token",
 };
 
 /**
@@ -105,8 +80,8 @@ const AGENTIC_ENV_DEFAULTS: Record<string, string> = {
  * Eliminates the need for workerd or native modules in unit tests.
  *
  * Works with both DurableObjectBase and AgentWorkerBase subclasses.
- * For AgentWorkerBase subclasses, GATEWAY_URL/RPC_AUTH_TOKEN
- * are automatically stubbed unless overridden via the env parameter.
+ * For AgentWorkerBase subclasses, GATEWAY_URL is automatically stubbed unless
+ * overridden via the env parameter.
  *
  * Must be awaited since sql.js initialization is async.
  */
@@ -120,8 +95,6 @@ export async function createTestDO<T>(
   const sqlProxy = createSqlProxy(db);
 
   const alarms: number[] = [];
-  const acceptedWebSockets: AcceptedWebSocket[] = [];
-
   const objectKey = (env?.["__objectKey"] as string) ?? "test-key";
 
   const ctx = {
@@ -155,25 +128,11 @@ export async function createTestDO<T>(
         }
       },
     },
-    acceptWebSocket(ws: unknown, tags?: string[]) {
-      acceptedWebSockets.push({ ws, tags: tags ?? [] });
-    },
-    getWebSockets(tag?: string) {
-      if (tag) return acceptedWebSockets.filter(s => s.tags.includes(tag)).map(s => s.ws);
-      return acceptedWebSockets.map(s => s.ws);
-    },
     blockConcurrencyWhile<T>(fn: () => Promise<T>) { return fn(); },
   };
 
   const mergedEnv = { ...AGENTIC_ENV_DEFAULTS, ...env };
   const instance = new DOClass(ctx, mergedEnv);
-
-  // Seed __instanceToken so that this.rpc is available in tests.
-  // In production, this is set by postToDOWithToken before the first fetch.
-  try {
-    sqlProxy.exec(`INSERT OR IGNORE INTO state (key, value) VALUES ('__instanceToken', 'test-instance-token')`);
-    sqlProxy.exec(`INSERT OR IGNORE INTO state (key, value) VALUES ('__instanceId', 'do:test:TestDO:${objectKey}')`);
-  } catch { /* state table may not exist yet for non-agentic DOs */ }
 
   // call() dispatches through fetch(), matching the production DO invocation path:
   // URL /{objectKey}/{method} → ensureReady() → ensureBootstrapped() → method dispatch
@@ -197,5 +156,5 @@ export async function createTestDO<T>(
     return (text ? JSON.parse(text) : undefined) as R;
   };
 
-  return { instance, sql: sqlProxy, alarms, acceptedWebSockets, call };
+  return { instance, sql: sqlProxy, alarms, call };
 }

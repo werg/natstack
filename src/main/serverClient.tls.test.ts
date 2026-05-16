@@ -2,7 +2,7 @@
  * ServerClient TLS pinning smoke tests.
  *
  * Generates a self-signed cert with openssl, stands up a minimal HTTPS
- * WebSocket server that speaks the ws:auth handshake, and verifies that
+ * WebSocket server that validates the upgrade Authorization header, and verifies that
  * fingerprint pinning in createServerClient accepts matching certs and
  * rejects mismatches.
  *
@@ -10,7 +10,6 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { createServer as createHttpServer } from "http";
 import { createServer as createHttpsServer } from "https";
 import { WebSocket, WebSocketServer } from "ws";
 import { execFileSync } from "child_process";
@@ -87,21 +86,13 @@ describeIf("ServerClient TLS pinning", () => {
     wss = new WebSocketServer({ noServer: true });
 
     server.on("upgrade", (req, socket, head) => {
-      if (req.url === "/rpc") {
+      if (req.url?.startsWith("/rpc")) {
+        if (req.headers.authorization !== `Bearer ${adminToken}`) {
+          socket.destroy();
+          return;
+        }
         wss.handleUpgrade(req, socket, head, (ws) => {
-          ws.on("message", (data) => {
-            const msg = JSON.parse(data.toString());
-            if (msg.type === "ws:auth") {
-              const success = msg.token === adminToken;
-              ws.send(
-                JSON.stringify({
-                  type: "ws:auth-result",
-                  success,
-                  error: success ? undefined : "bad token",
-                })
-              );
-            }
-          });
+          ws.send(JSON.stringify({ type: "ws:ready", serverBootId: "test-boot" }));
         });
       } else {
         socket.destroy();
@@ -192,7 +183,7 @@ describeIf("ServerClient TLS pinning", () => {
       // captured at the "connection" event *before* TLS decryption — so
       // we'll see those. What MUST NOT be in `received` is any plaintext
       // HTTP upgrade framing, because that would imply we wrote
-      // `ws:auth` or anything else after handshake completion.
+      // any bytes after handshake completion.
       await new Promise((r) => setTimeout(r, 50));
 
       // TLS records (content-type byte 0x14/0x16/0x17 for CCS/Handshake/
@@ -207,73 +198,6 @@ describeIf("ServerClient TLS pinning", () => {
       expect(concatenated).not.toContain(adminToken);
     } finally {
       await new Promise<void>((resolve) => probeServer.close(() => resolve()));
-    }
-  });
-});
-
-describe("ServerClient reconnect auth refresh", () => {
-  it("refreshes the caller token when reconnect auth is rejected", async () => {
-    const server = createHttpServer();
-    const wss = new WebSocketServer({ noServer: true });
-    const sockets: WebSocket[] = [];
-    let acceptOldToken = true;
-    let newTokenAccepted = false;
-
-    server.on("upgrade", (req, socket, head) => {
-      if (req.url !== "/rpc") {
-        socket.destroy();
-        return;
-      }
-      wss.handleUpgrade(req, socket, head, (ws) => {
-        sockets.push(ws);
-        ws.on("message", (data) => {
-          const msg = JSON.parse(data.toString()) as { type?: string; token?: string };
-          if (msg.type !== "ws:auth") return;
-          const success =
-            (acceptOldToken && msg.token === "old-token") || msg.token === "new-token";
-          if (msg.token === "new-token" && success) newTokenAccepted = true;
-          ws.send(
-            JSON.stringify({
-              type: "ws:auth-result",
-              success,
-              error: success ? undefined : "stale token",
-            })
-          );
-        });
-      });
-    });
-
-    const port: number = await new Promise((resolve) => {
-      server.listen(0, "127.0.0.1", () => {
-        resolve((server.address() as { port: number }).port);
-      });
-    });
-
-    let refreshCalled = false;
-    const client = await createServerClient(port, "old-token", {
-      reconnect: true,
-      maxReconnectAttempts: 2,
-      refreshAuthToken: async () => {
-        refreshCalled = true;
-        return "new-token";
-      },
-    });
-
-    try {
-      expect(client.isConnected()).toBe(true);
-      acceptOldToken = false;
-      sockets[0]?.close();
-
-      await expect
-        .poll(() => ({ refreshCalled, newTokenAccepted, connected: client.isConnected() }), {
-          timeout: 5_000,
-          interval: 50,
-        })
-        .toEqual({ refreshCalled: true, newTokenAccepted: true, connected: true });
-    } finally {
-      await client.close();
-      wss.close();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 });

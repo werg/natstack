@@ -28,6 +28,8 @@ if (typeof globalThis.Buffer === "undefined") {
 }
 
 import type { RpcBridge } from "@natstack/rpc";
+import { connectViaRpc } from "@natstack/pubsub";
+import type { ParticipantMetadata, PubSubClient, RpcConnectOptions } from "@natstack/pubsub";
 import { createHttpRpcBridge } from "../shared/httpRpcBridge.js";
 import type { OpenExternalOptions, OpenExternalResult } from "@natstack/shared/externalOpen";
 import { fs, _initFsWithRpc } from "./fs.js";
@@ -41,14 +43,17 @@ import { createParentHandle } from "../shared/handles.js";
 import { helpfulNamespace } from "../shared/helpfulNamespace.js";
 import { createGatewayFetch, type GatewayFetch } from "../shared/gatewayFetch.js";
 import {
+  createUserlandApprovalAccessPolicy,
   listUserlandApprovals,
   requestUserlandApproval,
   revokeUserlandApproval,
+  type UserlandApprovalAccessPolicyOptions,
   type UserlandApprovalChoice,
   type UserlandApprovalGrant,
   type UserlandApprovalRequest,
 } from "../approvals.js";
-import { GitClient, createBearerHttpClient, createRoutingHttpClient } from "@natstack/git";
+import { GitClient, createRoutingHttpClient } from "@natstack/git";
+import type { HttpClient, GitHttpRequest, GitHttpResponse } from "isomorphic-git";
 import type { ParentHandle } from "../core/index.js";
 import type { WorkerEnv } from "./types.js";
 import type { RuntimeFs } from "../types.js";
@@ -80,6 +85,7 @@ export { DurableObjectBase } from "./durable-base.js";
 export type { DurableObjectContext, SqlStorage, SqlResult, DORef } from "./durable-base.js";
 export { fs } from "./fs.js";
 export { createGatewayFetch } from "../shared/gatewayFetch.js";
+export { getCurrentRpcCaller, type RpcCallerContext } from "../shared/httpRpcBridge.js";
 export type { GatewayFetch } from "../shared/gatewayFetch.js";
 export type {
   UserlandApprovalChoice,
@@ -87,7 +93,9 @@ export type {
   UserlandApprovalOption,
   UserlandApprovalRequest,
   UserlandApprovalSubject,
+  UserlandApprovalAccessPolicyOptions,
 } from "../approvals.js";
+export { createUserlandApprovalAccessPolicy } from "../approvals.js";
 // Note: createTestDO is intentionally NOT exported here because it depends on
 // sql.js test-only helpers that should not be bundled into production workers.
 // Import directly from "@workspace/runtime/src/worker/durable-test-utils" in tests.
@@ -123,6 +131,11 @@ export interface RuntimeGitApi {
   client(options?: { credentialId?: string }): GitClient;
 }
 
+export type WorkerSubscribeOptions<T extends ParticipantMetadata = ParticipantMetadata> =
+  Omit<RpcConnectOptions<T>, "rpc" | "channel" | "serverUrl" | "clientId"> & {
+    clientId?: string;
+  };
+
 // Cache runtime per worker ID to avoid creating multiple bridges
 let cachedRuntime: WorkerRuntime | null = null;
 let cachedWorkerId: string | null = null;
@@ -137,12 +150,13 @@ export interface WorkerRuntime {
   readonly webhooks: WebhookIngressClient;
   readonly notifications: NotificationClient;
   readonly contextId: string;
-  readonly gatewayConfig: { serverUrl: string; token: string };
+  readonly gatewayConfig: { serverUrl: string; token?: string };
   readonly gatewayFetch: GatewayFetch;
-  readonly gitConfig: { serverUrl: string; token: string } | null;
+  readonly gitConfig: { serverUrl: string; token?: string } | null;
   readonly git: RuntimeGitApi;
   readonly gad: GadClient;
   readonly pubsubConfig: null;
+  readonly subscribe: <T extends ParticipantMetadata = ParticipantMetadata>(channel: string, options?: WorkerSubscribeOptions<T>) => PubSubClient<T>;
 
   /** Call a server-side service method via RPC. */
   callMain<T>(method: string, ...args: unknown[]): Promise<T>;
@@ -151,6 +165,7 @@ export interface WorkerRuntime {
   listBranches(repoPath: string): Promise<unknown[]>;
   listCommits(repoPath: string, ref?: string, limit?: number): Promise<unknown[]>;
   requestApproval(req: UserlandApprovalRequest): Promise<UserlandApprovalChoice>;
+  approvalAccessPolicy(options: UserlandApprovalAccessPolicyOptions): import("@natstack/rpc").RpcAccessPolicy;
   revokeApproval(subjectId: string): Promise<boolean>;
   listApprovals(): Promise<UserlandApprovalGrant[]>;
   /** Expose a method callable by other callers (panels, workers, server). */
@@ -186,16 +201,15 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
   const rpc = createHttpRpcBridge({
     selfId,
     serverUrl,
-    authToken: env.RPC_AUTH_TOKEN,
   });
 
   const runtimeFs = _initFsWithRpc(rpc);
   const workers = helpfulNamespace("workers", createWorkerdClient(rpc));
   const workspaceApi = helpfulNamespace("workspace", createWorkspaceClient(rpc));
   const credentials = helpfulNamespace("credentials", createCredentialClient(rpc));
-  const gatewayConfig = { serverUrl, token: env.RPC_AUTH_TOKEN };
+  const gatewayConfig = { serverUrl };
   const gatewayFetch = createGatewayFetch(gatewayConfig);
-  const gitConfig = { serverUrl: `${serverUrl}/_git`, token: env.RPC_AUTH_TOKEN };
+  const gitConfig = { serverUrl: `${serverUrl}/_git` };
   const git = helpfulNamespace("git", {
     http: credentials.gitHttp,
     importProject(request: ImportProjectRequest): Promise<ImportedWorkspaceRepo> {
@@ -218,11 +232,11 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
         serverUrl: gitConfig.serverUrl,
         http: createRoutingHttpClient({
           internalOrigin: gitConfig.serverUrl,
-          internal: createBearerHttpClient(gitConfig.token),
-          external: credentials.gitHttp({ credentialId: options.credentialId }),
-        }),
-      });
-    },
+        internal: createFetchHttpClient(),
+        external: credentials.gitHttp({ credentialId: options.credentialId }),
+      }),
+    });
+  },
   });
   const webhooks = helpfulNamespace("webhooks", createWebhookIngressClient(rpc));
   const notifications = helpfulNamespace("notifications", createNotificationClient(rpc));
@@ -232,6 +246,15 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
 
   const callMain = <T>(method: string, ...args: unknown[]) =>
     rpc.call<T>("main", method, ...args);
+  const subscribe = <T extends ParticipantMetadata = ParticipantMetadata>(
+    channel: string,
+    options: WorkerSubscribeOptions<T> = {},
+  ): PubSubClient<T> => connectViaRpc<T>({
+    ...options,
+    rpc,
+    channel,
+    clientId: options.clientId ?? selfId,
+  });
 
   const runtime: WorkerRuntime = {
     id: workerId,
@@ -249,6 +272,7 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     gatewayFetch,
     gitConfig,
     pubsubConfig: null,
+    subscribe,
 
     callMain,
     openExternal: (url: string, options?: OpenExternalOptions) => callMain<OpenExternalResult>("externalOpen.openExternal", url, options),
@@ -257,6 +281,8 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
     listCommits: (repoPath: string, ref?: string, limit?: number) =>
       callMain<unknown[]>("git.listCommits", repoPath, ref, limit),
     requestApproval: (req: UserlandApprovalRequest) => requestUserlandApproval(rpc, req),
+    approvalAccessPolicy: (options: UserlandApprovalAccessPolicyOptions) =>
+      createUserlandApprovalAccessPolicy(rpc, options),
     revokeApproval: (subjectId: string) => revokeUserlandApproval(rpc, subjectId),
     listApprovals: () => listUserlandApprovals(rpc),
     exposeMethod: rpc.exposeMethod.bind(rpc),
@@ -275,6 +301,59 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
 
   return runtime;
 }
+
+function createFetchHttpClient(): HttpClient {
+  return {
+    async request(request: GitHttpRequest): Promise<GitHttpResponse> {
+      const { url, method = "GET", headers = {}, body } = request;
+      const requestBody = body ? await collectGitBody(body) : undefined;
+      const response = await fetch(url, {
+        method,
+        headers,
+        body: requestBody as BodyInit | undefined,
+      });
+      return {
+        url: response.url,
+        method,
+        statusCode: response.status,
+        statusMessage: response.statusText,
+        headers: Object.fromEntries(response.headers.entries()),
+        body: response.body ? toAsyncIterable(response.body) : emptyAsyncIterable(),
+      };
+    },
+  };
+}
+
+async function collectGitBody(body: Uint8Array | AsyncIterable<Uint8Array>): Promise<Uint8Array> {
+  if (body instanceof Uint8Array) return body;
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of body) {
+    chunks.push(chunk);
+  }
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const output = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return output;
+}
+
+async function* toAsyncIterable(stream: ReadableStream<Uint8Array>): AsyncIterableIterator<Uint8Array> {
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      if (value) yield value;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function* emptyAsyncIterable(): AsyncIterableIterator<Uint8Array> {}
 
 /**
  * Handle incoming RPC POST requests for a worker.

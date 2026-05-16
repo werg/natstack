@@ -7,12 +7,10 @@
 
 import { BrowserImpl, validateBrowserEnvironment } from '@workspace/playwright-core';
 
-type CdpEndpoint = { wsEndpoint: string; token: string };
+type CdpEndpoint = { wsEndpoint: string };
 
 function connectBrowser(cdpEndpoint: CdpEndpoint) {
-  return BrowserImpl.connect(cdpEndpoint.wsEndpoint, {
-    transportOptions: { authToken: cdpEndpoint.token },
-  });
+  return BrowserImpl.connect(cdpEndpoint.wsEndpoint);
 }
 
 /**

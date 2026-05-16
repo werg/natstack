@@ -147,7 +147,7 @@ interface PresencePayload {
 export interface RpcConnectOptions<T extends ParticipantMetadata = ParticipantMetadata> {
   rpc: {
     call<R = unknown>(targetId: string, method: string, ...args: unknown[]): Promise<R>;
-    onEvent(event: string, listener: (fromId: string, payload: unknown) => void): () => void;
+    onEvent(event: string, listener: (sourceId: string, payload: unknown) => void): () => void;
     selfId: string;
   };
   channel: string;
@@ -164,6 +164,7 @@ export interface RpcConnectOptions<T extends ParticipantMetadata = ParticipantMe
   replayMode?: "collect" | "stream" | "skip";
   methods?: Record<string, MethodDefinition>;
   recoveryCoordinator?: Pick<RecoveryCoordinator, "registerColdRecoverHandler">;
+  serverUrl?: string;
 }
 
 export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadata>(
@@ -183,8 +184,10 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       });
     return doTargetPromise;
   };
-  const callChannel = async <R = unknown>(method: string, ...args: unknown[]): Promise<R> =>
-    rpc.call<R>(await getDoTarget(), method, ...args);
+  const callChannel = async <R = unknown>(method: string, ...args: unknown[]): Promise<R> => {
+    const targetId = await getDoTarget();
+    return rpc.call<R>(targetId, method, ...args);
+  };
 
   // Convert MethodDefinitions to MethodAdvertisements
   function toMethodAdvertisements(methods: Record<string, MethodDefinition>): MethodAdvertisement[] {
@@ -797,67 +800,56 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   const gapBuffer: ServerMessage[] = [];
   const MAX_GAP_SIZE = 500;
 
-  // Register event listener for channel messages
-  const removeEventListener = rpc.onEvent("channel:message", (_fromId: string, payload: unknown) => {
+  const removeInboxListener = rpc.onEvent("channel:message", (_sourceId: string, payload: unknown) => {
     if (closed) return;
-    const data = payload as { channelId?: string; message?: ServerMessage };
-    if (data.channelId !== channel) return;
-    if (data.message) {
-      const msg = data.message;
+    const delivery = payload as { channelId?: string; message?: ServerMessage };
+    if (delivery.channelId !== channel || !delivery.message) return;
+    const msg = delivery.message;
 
-      // Buffer events that arrive during gap repair — process them after the gap is filled
-      if (repairingGap) {
-        gapBuffer.push(msg);
+    if (repairingGap) {
+      gapBuffer.push(msg);
+      return;
+    }
+
+    if (msg.id !== undefined && msg.id > 0 && lastSeenSeq !== undefined && msg.id > lastSeenSeq + 1) {
+      const gap = msg.id - lastSeenSeq - 1;
+      if (gap <= MAX_GAP_SIZE) {
+        repairingGap = true;
+        callChannel<Array<{ id: number; type: string; payload: unknown; senderId: string; ts: number; senderMetadata?: Record<string, unknown>; attachments?: unknown[] }>>(
+          "getEventRange", lastSeenSeq, msg.id - 1,
+        ).then(events => {
+          if (events && Array.isArray(events)) {
+            for (const evt of events) {
+              if (evt.id !== undefined && lastSeenSeq !== undefined && evt.id <= lastSeenSeq) continue;
+              handleServerMessage({
+                kind: "persisted",
+                id: evt.id,
+                type: evt.type,
+                payload: evt.payload,
+                senderId: evt.senderId,
+                ts: evt.ts,
+                senderMetadata: evt.senderMetadata,
+                attachments: evt.attachments as ServerMessage["attachments"],
+              });
+            }
+          }
+        }).catch(err => {
+          console.warn("[RpcPubSubClient] Gap repair failed:", err);
+        }).finally(() => {
+          repairingGap = false;
+          handleServerMessage(msg);
+          const buffered = gapBuffer.splice(0);
+          for (const bufferedMsg of buffered) handleServerMessage(bufferedMsg);
+        });
         return;
       }
-
-      // Phase 2C: Gap detection for persisted messages
-      if (msg.id !== undefined && msg.id > 0 && lastSeenSeq !== undefined) {
-        if (msg.id > lastSeenSeq + 1) {
-          const gap = msg.id - lastSeenSeq - 1;
-          if (gap <= MAX_GAP_SIZE) {
-            repairingGap = true;
-            callChannel<Array<{ id: number; type: string; payload: unknown; senderId: string; ts: number; senderMetadata?: Record<string, unknown>; attachments?: unknown[] }>>(
-              "getEventRange", lastSeenSeq, msg.id - 1,
-            ).then(events => {
-              if (events && Array.isArray(events)) {
-                for (const evt of events) {
-                  if (evt.id !== undefined && lastSeenSeq !== undefined && evt.id <= lastSeenSeq) continue;
-                  const replayMsg: ServerMessage = {
-                    kind: "persisted",
-                    id: evt.id,
-                    type: evt.type,
-                    payload: evt.payload,
-                    senderId: evt.senderId,
-                    ts: evt.ts,
-                    senderMetadata: evt.senderMetadata,
-                    attachments: evt.attachments as ServerMessage["attachments"],
-                  };
-                  handleServerMessage(replayMsg);
-                }
-              }
-            }).catch(err => {
-              console.warn("[RpcPubSubClient] Gap repair failed:", err);
-            }).finally(() => {
-              repairingGap = false;
-              // Process the triggering message, then any buffered events
-              handleServerMessage(msg);
-              const buffered = gapBuffer.splice(0);
-              for (const bufferedMsg of buffered) {
-                handleServerMessage(bufferedMsg);
-              }
-            });
-            return;
-          } else {
-            console.warn(`[RpcPubSubClient] Gap too large (${gap} events), skipping repair`);
-          }
-        }
-      }
-      if (msg.id !== undefined && msg.id > 0) {
-        lastSeenSeq = msg.id;
-      }
-      handleServerMessage(msg);
+      console.warn(`[RpcPubSubClient] Gap too large (${gap} events), skipping repair`);
     }
+
+    if (msg.id !== undefined && msg.id > 0) {
+      lastSeenSeq = msg.id;
+    }
+    handleServerMessage(msg);
   });
 
   // Subscribe to channel
@@ -1239,7 +1231,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     rejectReady(new PubSubError("connection closed before ready", "connection"));
     clearInterval(touchInterval);
     eventsFanout.close();
-    removeEventListener();
+    removeInboxListener();
     if (messageResolve) {
       messageResolve(null);
       messageResolve = null;
@@ -1264,7 +1256,7 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
   }
 
   async function sendRaw(_message: Record<string, unknown>): Promise<void> {
-    // No-op for RPC transport
+    // Channel publishes go through typed HTTP methods.
   }
 
   return {

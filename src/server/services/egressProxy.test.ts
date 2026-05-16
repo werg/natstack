@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createServer, request as httpRequest } from "node:http";
+import { connect as netConnect } from "node:net";
 
 import type { AuditEntry, Credential } from "../../../packages/shared/src/credentials/types.js";
+import { mintCallerAssertion } from "../../../packages/shared/src/identity/callerAssertion.js";
 import { EgressProxy } from "./egressProxy.js";
-import { CredentialSessionGrantStore } from "./credentialSessionGrants.js";
 import { CredentialLifecycleError } from "./credentialLifecycle.js";
 
 class MemoryCredentialStore {
@@ -10,6 +12,10 @@ class MemoryCredentialStore {
 
   loadUrlBound(id: string): Credential | null {
     return this.credentials.get(id) ?? null;
+  }
+
+  listUrlBound(): Credential[] {
+    return [...this.credentials.values()];
   }
 
   saveUrlBound(credential: Credential & { id: string }): void {
@@ -22,6 +28,34 @@ class MemoryAuditLog {
 
   append(entry: AuditEntry): void {
     this.entries.push(entry);
+  }
+}
+
+class MemoryCapabilityGrantStore {
+  readonly grants = new Map<string, { credentialSelectionId?: string | null }>();
+
+  hasGrant(capability: string, resourceKey: string, identity: { repoPath: string; effectiveVersion: string }): boolean {
+    return !!this.getGrant(capability, resourceKey, identity);
+  }
+
+  getGrant(capability: string, resourceKey: string, identity: { repoPath: string; effectiveVersion: string }): { credentialSelectionId?: string | null } | null {
+    return this.grants.get(this.key(capability, resourceKey, identity)) ?? null;
+  }
+
+  grant(
+    capability: string,
+    resourceKey: string,
+    identity: { repoPath: string; effectiveVersion: string },
+    scope: string,
+    options: { credentialSelectionId?: string | null } = {}
+  ): void {
+    if (scope === "session" || scope === "version" || scope === "repo") {
+      this.grants.set(this.key(capability, resourceKey, identity), options);
+    }
+  }
+
+  private key(capability: string, resourceKey: string, identity: { repoPath: string; effectiveVersion: string }): string {
+    return `${capability}:${resourceKey}:${identity.repoPath}:${identity.effectiveVersion}`;
   }
 }
 
@@ -38,18 +72,6 @@ function createCredential(overrides: Partial<Credential> = {}): Credential {
         injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
       },
     ],
-    grants: [
-      {
-        bindingId: "api",
-        use: "fetch",
-        resource: "https://api.example.test/v1",
-        action: "use",
-        scope: "caller",
-        callerId: "worker:test",
-        grantedAt: 1,
-        grantedBy: "self",
-      },
-    ],
     providerId: "url-bound",
     connectionId: "cred-1",
     connectionLabel: "Example",
@@ -62,7 +84,8 @@ function createCredential(overrides: Partial<Credential> = {}): Credential {
 
 function createProxy(
   credential = createCredential(),
-  auditLog = new MemoryAuditLog()
+  auditLog = new MemoryAuditLog(),
+  assertionSecret?: Buffer,
 ): EgressProxy {
   return new EgressProxy({
     credentialStore: new MemoryCredentialStore(
@@ -74,6 +97,193 @@ function createProxy(
         callerId === "worker:test"
           ? { callerId, callerKind: "worker", repoPath: "/repo", effectiveVersion: "hash-1" }
           : null,
+    },
+    assertionSecret,
+  });
+}
+
+function basicProxyAuthorization(secret: Buffer, callerId = "worker:test"): string {
+  const assertion = mintCallerAssertion(secret, {
+    callerId,
+    callerKind: "worker",
+    audience: "egress-proxy",
+  });
+  return `Basic ${Buffer.from(`natstack:${assertion}`, "utf8").toString("base64")}`;
+}
+
+function proxyGet(port: number, target: string, proxyAuthorization?: string): Promise<{
+  statusCode: number;
+  body: string;
+}>;
+function proxyGet(
+  port: number,
+  target: string,
+  proxyAuthorization: string | undefined,
+  extraHeaders: Record<string, string>
+): Promise<{
+  statusCode: number;
+  body: string;
+}>;
+function proxyGet(
+  port: number,
+  target: string,
+  proxyAuthorization?: string,
+  extraHeaders: Record<string, string> = {}
+): Promise<{
+  statusCode: number;
+  body: string;
+}> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      {
+        host: "127.0.0.1",
+        port,
+        method: "GET",
+        path: target,
+        headers: {
+          ...extraHeaders,
+          ...(proxyAuthorization ? { "Proxy-Authorization": proxyAuthorization } : {}),
+        },
+      },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          body += chunk;
+        });
+        res.on("end", () => {
+          resolve({ statusCode: res.statusCode ?? 0, body });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+function proxyConnect(
+  proxyPort: number,
+  authority: string,
+  proxyAuthorization?: string
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = netConnect(proxyPort, "127.0.0.1", () => {
+      socket.write(
+        [
+          `CONNECT ${authority} HTTP/1.1`,
+          `Host: ${authority}`,
+          ...(proxyAuthorization ? [`Proxy-Authorization: ${proxyAuthorization}`] : []),
+          "",
+          "",
+        ].join("\r\n")
+      );
+    });
+    let data = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      data += chunk;
+      if (data.includes("\r\n\r\n")) {
+        socket.destroy();
+        resolve(data);
+      }
+    });
+    socket.on("error", reject);
+  });
+}
+
+function runProxyFetch(
+  proxy: EgressProxy,
+  params: {
+    callerId: string;
+    url: string;
+    method: string;
+    headers?: Record<string, string>;
+    body?: string;
+    credentialId?: string;
+  },
+): Promise<{ status: number; statusText: string; headers: Record<string, string>; body: string }> {
+  const body = params.body;
+  const bytesOut = body ? Buffer.byteLength(body) : 0;
+  return proxy.executeAuthorizedRequest({
+    callerId: params.callerId,
+    method: params.method.toUpperCase(),
+    targetUrl: new URL(params.url),
+    inputHeaders: params.headers ?? {},
+    credentialId: params.credentialId,
+    credentialUse: "fetch",
+    initialBytesOut: bytesOut,
+    replaySafe: true,
+    execute: async (targetUrl, headers) => {
+      const response = await fetch(targetUrl.toString(), {
+        method: params.method,
+        headers: headers as HeadersInit,
+        body,
+      });
+      const responseBody = await response.text();
+      return {
+        statusCode: response.status,
+        bytesIn: Buffer.byteLength(responseBody),
+        bytesOut,
+        payload: {
+          status: response.status,
+          statusText: response.statusText,
+          headers: Object.fromEntries(response.headers.entries()),
+          body: responseBody,
+        },
+      };
+    },
+  });
+}
+
+function runGitHttp(
+  proxy: EgressProxy,
+  params: {
+    callerId: string;
+    url: string;
+    method: string;
+    headers?: Record<string, string>;
+    body?: Uint8Array;
+    credentialId?: string;
+  },
+): Promise<{
+  url: string;
+  method: string;
+  statusCode: number;
+  statusMessage: string;
+  headers: Record<string, string>;
+  body: Uint8Array;
+}> {
+  const body = params.body;
+  const bytesOut = body?.byteLength ?? 0;
+  return proxy.executeAuthorizedRequest({
+    callerId: params.callerId,
+    method: params.method.toUpperCase(),
+    targetUrl: new URL(params.url),
+    inputHeaders: params.headers ?? {},
+    credentialId: params.credentialId,
+    credentialUse: "git-http",
+    initialBytesOut: bytesOut,
+    replaySafe: false,
+    execute: async (targetUrl, headers) => {
+      const response = await fetch(targetUrl.toString(), {
+        method: params.method,
+        headers: headers as HeadersInit,
+        body: body as BodyInit | undefined,
+      });
+      const responseBody = new Uint8Array(await response.arrayBuffer());
+      return {
+        statusCode: response.status,
+        bytesIn: responseBody.byteLength,
+        bytesOut,
+        payload: {
+          url: response.url,
+          method: params.method,
+          statusCode: response.status,
+          statusMessage: response.statusText,
+          headers: Object.fromEntries(response.headers.entries()),
+          body: responseBody,
+        },
+      };
     },
   });
 }
@@ -91,6 +301,7 @@ describe("EgressProxy", () => {
       {
         Authorization: "Bearer attacker",
         "x-api-key": "attacker",
+        "x-natstack-caller-id": "attacker",
         "x-safe": "keep",
         Connection: "close",
       },
@@ -104,7 +315,343 @@ describe("EgressProxy", () => {
       host: "api.example.test",
     });
     expect(prepared.headers["x-api-key"]).toBeUndefined();
+    expect(prepared.headers["x-natstack-caller-id"]).toBeUndefined();
     expect(prepared.headers.connection).toBeUndefined();
+  });
+
+  it("requires Basic proxy authorization on HTTP proxy requests", async () => {
+    const proxy = createProxy(createCredential(), new MemoryAuditLog(), Buffer.from("a".repeat(64), "hex"));
+    const port = await proxy.start();
+    try {
+      const response = await proxyGet(port, "http://example.test/");
+      expect(response.statusCode).toBe(407);
+      expect(response.body).toContain("Proxy authentication required");
+    } finally {
+      await proxy.stop();
+    }
+  });
+
+  it("rejects a bad proxy assertion signature", async () => {
+    const proxy = createProxy(createCredential(), new MemoryAuditLog(), Buffer.from("a".repeat(64), "hex"));
+    const port = await proxy.start();
+    try {
+      const badHeader = basicProxyAuthorization(Buffer.from("b".repeat(64), "hex"));
+      const response = await proxyGet(port, "http://example.test/", badHeader);
+      expect(response.statusCode).toBe(407);
+    } finally {
+      await proxy.stop();
+    }
+  });
+
+  it("attributes HTTP proxy requests from verified assertions", async () => {
+    const assertionSecret = Buffer.from("a".repeat(64), "hex");
+    const auditLog = new MemoryAuditLog();
+    const upstream = createServer((req, res) => {
+      expect(req.headers["x-natstack-caller-id"]).toBeUndefined();
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("ok");
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", () => resolve()));
+    const upstreamAddress = upstream.address();
+    if (!upstreamAddress || typeof upstreamAddress === "string") {
+      throw new Error("test upstream did not bind");
+    }
+
+    const proxy = createProxy(createCredential(), auditLog, assertionSecret);
+    const port = await proxy.start();
+    try {
+      const response = await proxyGet(
+        port,
+        `http://127.0.0.1:${upstreamAddress.port}/`,
+        basicProxyAuthorization(assertionSecret),
+      );
+      expect(response).toEqual({ statusCode: 200, body: "ok" });
+      expect(auditLog.entries[auditLog.entries.length - 1]).toMatchObject({
+        callerId: "worker:test",
+        workerId: "/repo",
+        status: 200,
+      });
+    } finally {
+      await proxy.stop();
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
+  });
+
+  it("uses explicit credential header on HTTP proxy requests and strips it upstream", async () => {
+    const assertionSecret = Buffer.from("a".repeat(64), "hex");
+    const auditLog = new MemoryAuditLog();
+    const upstream = createServer((req, res) => {
+      expect(req.headers.authorization).toBe("Bearer secret-token");
+      expect(req.headers["x-natstack-use-credential"]).toBeUndefined();
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("ok");
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", () => resolve()));
+    const upstreamAddress = upstream.address();
+    if (!upstreamAddress || typeof upstreamAddress === "string") {
+      throw new Error("test upstream did not bind");
+    }
+
+    const origin = `http://127.0.0.1:${upstreamAddress.port}`;
+    const credential = createCredential({
+      bindings: [
+        {
+          id: "api",
+          use: "fetch",
+          audience: [{ url: `${origin}/v1`, match: "path-prefix" }],
+          injection: { type: "header", name: "authorization", valueTemplate: "Bearer {token}" },
+        },
+      ],
+    });
+    const proxy = createProxy(credential, auditLog, assertionSecret);
+    const port = await proxy.start();
+    try {
+      const response = await proxyGet(
+        port,
+        `${origin}/v1/items`,
+        basicProxyAuthorization(assertionSecret),
+        {
+          "X-NatStack-Use-Credential": "cred-1",
+          Authorization: "Bearer attacker",
+        }
+      );
+      expect(response).toEqual({ statusCode: 200, body: "ok" });
+      expect(auditLog.entries[auditLog.entries.length - 1]).toMatchObject({
+        callerId: "worker:test",
+        connectionId: "cred-1",
+        status: 200,
+      });
+    } finally {
+      await proxy.stop();
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
+  });
+
+  it("rejects CONNECT without opening a tunnel when egress approval is denied", async () => {
+    const assertionSecret = Buffer.from("a".repeat(64), "hex");
+    const auditLog = new MemoryAuditLog();
+    let upstreamConnections = 0;
+    const upstream = createServer((_req, res) => {
+      upstreamConnections += 1;
+      res.end("unexpected");
+    });
+    upstream.on("connection", () => {
+      upstreamConnections += 1;
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", () => resolve()));
+    const upstreamAddress = upstream.address();
+    if (!upstreamAddress || typeof upstreamAddress === "string") {
+      throw new Error("test upstream did not bind");
+    }
+    const approvalQueue = {
+      request: vi.fn(async () => "deny" as const),
+      requestCapability: vi.fn(async () => ({ decision: "deny" as const })),
+      resolve: vi.fn(),
+      listPending: vi.fn(() => []),
+    };
+    const proxy = new EgressProxy({
+      credentialStore: new MemoryCredentialStore(),
+      auditLog: auditLog as never,
+      assertionSecret,
+      approvalQueue: approvalQueue as never,
+      capabilityGrantStore: new MemoryCapabilityGrantStore() as never,
+      codeIdentityResolver: {
+        resolveByCallerId: (callerId: string) =>
+          callerId === "worker:test"
+            ? { callerId, callerKind: "worker", repoPath: "/repo", effectiveVersion: "hash-1" }
+            : null,
+      },
+    });
+    const port = await proxy.start();
+    try {
+      const response = await proxyConnect(
+        port,
+        `127.0.0.1:${upstreamAddress.port}`,
+        basicProxyAuthorization(assertionSecret)
+      );
+      expect(response).toContain("HTTP/1.1 403 Forbidden");
+      expect(upstreamConnections).toBe(0);
+      expect(auditLog.entries[auditLog.entries.length - 1]).toMatchObject({
+        callerId: "worker:test",
+        status: 403,
+      });
+    } finally {
+      await proxy.stop();
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
+  });
+
+  it("dispatches internal gateway CONNECT tunnel requests with verified caller identity", async () => {
+    const assertionSecret = Buffer.from("a".repeat(64), "hex");
+    const auditLog = new MemoryAuditLog();
+    const gatewayPort = 43210;
+    const gateway = {
+      handleHttpRequest: vi.fn((req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => {
+        expect(req.natstackCaller).toMatchObject({
+          callerId: "worker:test",
+          callerKind: "worker",
+        });
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end(`internal:${req.url}`);
+      }),
+      handleUpgrade: vi.fn(),
+    };
+    const proxy = new EgressProxy({
+      credentialStore: new MemoryCredentialStore(),
+      auditLog: auditLog as never,
+      assertionSecret,
+      gateway: gateway as never,
+      gatewayPort,
+      codeIdentityResolver: {
+        resolveByCallerId: () => ({
+          callerId: "worker:test",
+          callerKind: "worker",
+          repoPath: "/repo",
+          effectiveVersion: "hash-1",
+        }),
+      },
+    });
+    const port = await proxy.start();
+    try {
+      const response = await new Promise<string>((resolve, reject) => {
+        const socket = netConnect(port, "127.0.0.1", () => {
+          socket.write(
+            [
+              `CONNECT 127.0.0.1:${gatewayPort} HTTP/1.1`,
+              `Host: 127.0.0.1:${gatewayPort}`,
+              `Proxy-Authorization: ${basicProxyAuthorization(assertionSecret)}`,
+              "",
+              "POST /rpc HTTP/1.1",
+              `Host: 127.0.0.1:${gatewayPort}`,
+              "Connection: close",
+              "",
+              "",
+            ].join("\r\n")
+          );
+        });
+        let data = "";
+        socket.setEncoding("utf8");
+        socket.on("data", (chunk) => {
+          data += chunk;
+        });
+        socket.on("end", () => resolve(data));
+        socket.on("close", () => resolve(data));
+        socket.on("error", reject);
+      });
+
+      expect(response).toContain("HTTP/1.1 200 Connection Established");
+      expect(response).toContain("internal:/rpc");
+      expect(gateway.handleHttpRequest).toHaveBeenCalledTimes(1);
+      expect(auditLog.entries[auditLog.entries.length - 1]).toMatchObject({
+        callerId: "worker:test",
+        status: 200,
+        method: "CONNECT",
+      });
+    } finally {
+      await proxy.stop();
+    }
+  });
+
+  it("parses bracketed IPv6 CONNECT authorities before internal gateway dispatch", async () => {
+    const assertionSecret = Buffer.from("a".repeat(64), "hex");
+    const gatewayPort = 43210;
+    const gateway = {
+      handleHttpRequest: vi.fn((req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end(`internal:${req.natstackCaller?.callerId}:${req.url}`);
+      }),
+      handleUpgrade: vi.fn(),
+    };
+    const proxy = new EgressProxy({
+      credentialStore: new MemoryCredentialStore(),
+      auditLog: new MemoryAuditLog() as never,
+      assertionSecret,
+      gateway: gateway as never,
+      gatewayPort,
+      codeIdentityResolver: {
+        resolveByCallerId: () => ({
+          callerId: "worker:test",
+          callerKind: "worker",
+          repoPath: "/repo",
+          effectiveVersion: "hash-1",
+        }),
+      },
+    });
+    const port = await proxy.start();
+    try {
+      const response = await new Promise<string>((resolve, reject) => {
+        const socket = netConnect(port, "127.0.0.1", () => {
+          socket.write(
+            [
+              `CONNECT [::1]:${gatewayPort} HTTP/1.1`,
+              `Host: [::1]:${gatewayPort}`,
+              `Proxy-Authorization: ${basicProxyAuthorization(assertionSecret)}`,
+              "",
+              "GET /healthz HTTP/1.1",
+              `Host: [::1]:${gatewayPort}`,
+              "Connection: close",
+              "",
+              "",
+            ].join("\r\n")
+          );
+        });
+        let data = "";
+        socket.setEncoding("utf8");
+        socket.on("data", (chunk) => {
+          data += chunk;
+        });
+        socket.on("end", () => resolve(data));
+        socket.on("close", () => resolve(data));
+        socket.on("error", reject);
+      });
+
+      expect(response).toContain("HTTP/1.1 200 Connection Established");
+      expect(response).toContain("internal:worker:test:/healthz");
+      expect(gateway.handleHttpRequest).toHaveBeenCalledTimes(1);
+    } finally {
+      await proxy.stop();
+    }
+  });
+
+  it("rejects internal gateway fallback paths before panel HTTP fallback can handle them", async () => {
+    const assertionSecret = Buffer.from("a".repeat(64), "hex");
+    const gatewayPort = 43210;
+    const gateway = {
+      handleHttpRequest: vi.fn((_req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end("unexpected");
+      }),
+      handleUpgrade: vi.fn(),
+    };
+    const proxy = new EgressProxy({
+      credentialStore: new MemoryCredentialStore(),
+      auditLog: new MemoryAuditLog() as never,
+      assertionSecret,
+      gateway: gateway as never,
+      gatewayPort,
+      codeIdentityResolver: {
+        resolveByCallerId: () => ({
+          callerId: "worker:test",
+          callerKind: "worker",
+          repoPath: "/repo",
+          effectiveVersion: "hash-1",
+        }),
+      },
+    });
+    const port = await proxy.start();
+    try {
+      const response = await proxyGet(
+        port,
+        `http://127.0.0.1:${gatewayPort}/`,
+        basicProxyAuthorization(assertionSecret)
+      );
+
+      expect(response.statusCode).toBe(403);
+      expect(response.body).toContain("internal-route-not-exposed");
+      expect(gateway.handleHttpRequest).not.toHaveBeenCalled();
+    } finally {
+      await proxy.stop();
+    }
   });
 
   it("injects query-param credentials by replacing any incoming value", () => {
@@ -115,18 +662,6 @@ describe("EgressProxy", () => {
           use: "fetch",
           audience: [{ url: "https://api.example.test/v1", match: "path-prefix" }],
           injection: { type: "query-param", name: "key" },
-        },
-      ],
-      grants: [
-        {
-          bindingId: "github-git",
-          use: "git-http",
-          resource: "https://github.com/acme/project.git",
-          action: "read",
-          scope: "caller",
-          callerId: "worker:test",
-          grantedAt: 1,
-          grantedBy: "self",
         },
       ],
     });
@@ -151,18 +686,6 @@ describe("EgressProxy", () => {
           use: "fetch",
           audience: [{ url: "https://app.example.test/", match: "origin" }],
           injection: { type: "cookie" },
-        },
-      ],
-      grants: [
-        {
-          bindingId: "app",
-          use: "fetch",
-          resource: "https://app.example.test/",
-          action: "use",
-          scope: "caller",
-          callerId: "worker:test",
-          grantedAt: 1,
-          grantedBy: "self",
         },
       ],
       cookieHeader: "sid=secret; admin=wrong-path",
@@ -209,18 +732,6 @@ describe("EgressProxy", () => {
             usernameTemplate: "x-access-token",
             passwordTemplate: "{token}",
           },
-        },
-      ],
-      grants: [
-        {
-          bindingId: "github-git",
-          use: "git-http",
-          resource: "https://github.com/acme/project.git",
-          action: "read",
-          scope: "caller",
-          callerId: "worker:test",
-          grantedAt: 1,
-          grantedBy: "self",
         },
       ],
     });
@@ -284,7 +795,7 @@ describe("EgressProxy", () => {
       )
     );
 
-    await proxy.forwardProxyFetch({
+    await runProxyFetch(proxy, {
       callerId: "worker:test",
       credentialId: "cred-1",
       url: "https://api.example.test/v1/items?key=attacker&x=1",
@@ -310,7 +821,7 @@ describe("EgressProxy", () => {
       })
     );
 
-    const response = await proxy.forwardProxyFetch({
+    const response = await runProxyFetch(proxy, {
       callerId: "worker:test",
       credentialId: "cred-1",
       url: "https://api.example.test/v1/items",
@@ -369,7 +880,7 @@ describe("EgressProxy", () => {
       })
     );
 
-    await proxy.forwardProxyFetch({
+    await runProxyFetch(proxy, {
       callerId: "worker:test",
       credentialId: "cred-1",
       url: "https://api.example.test/v1/items",
@@ -406,7 +917,7 @@ describe("EgressProxy", () => {
     vi.stubGlobal("fetch", vi.fn());
 
     await expect(
-      proxy.forwardProxyFetch({
+      runProxyFetch(proxy, {
         callerId: "worker:test",
         credentialId: "cred-1",
         url: "https://api.example.test/v1/items",
@@ -431,18 +942,6 @@ describe("EgressProxy", () => {
           },
         },
       ],
-      grants: [
-        {
-          bindingId: "github-git",
-          use: "git-http",
-          resource: "https://github.com/acme/project.git",
-          action: "read",
-          scope: "caller",
-          callerId: "worker:test",
-          grantedAt: 1,
-          grantedBy: "self",
-        },
-      ],
     });
     const proxy = createProxy(credential, auditLog);
     vi.stubGlobal(
@@ -458,7 +957,7 @@ describe("EgressProxy", () => {
       })
     );
 
-    const response = await proxy.forwardGitHttp({
+    const response = await runGitHttp(proxy, {
       callerId: "worker:test",
       credentialId: "cred-1",
       url: "https://github.com/acme/project.git/git-upload-pack",
@@ -478,7 +977,6 @@ describe("EgressProxy", () => {
 
   it("requests git-specific approval copy metadata for git HTTP writes", async () => {
     const credential = createCredential({
-      grants: [],
       bindings: [
         {
           id: "github-git",
@@ -494,13 +992,16 @@ describe("EgressProxy", () => {
     });
     const approvalQueue = {
       request: vi.fn(async () => "once" as const),
+      requestCapability: vi.fn(async () => ({ decision: "once" as const, credentialSelectionId: JSON.stringify(["cred-1", "github-git"]) })),
       resolve: vi.fn(),
       listPending: vi.fn(() => []),
     };
+    const capabilityGrantStore = new MemoryCapabilityGrantStore();
     const proxy = new EgressProxy({
       credentialStore: new MemoryCredentialStore(new Map([[credential.id!, credential]])),
       auditLog: new MemoryAuditLog() as never,
       approvalQueue: approvalQueue as never,
+      capabilityGrantStore: capabilityGrantStore as never,
       codeIdentityResolver: {
         resolveByCallerId: () => ({
           callerId: "worker:test",
@@ -515,24 +1016,99 @@ describe("EgressProxy", () => {
       vi.fn(async () => new Response(new Uint8Array(), { status: 200, statusText: "OK" }))
     );
 
-    await proxy.forwardGitHttp({
+    await runGitHttp(proxy, {
       callerId: "worker:test",
       credentialId: "cred-1",
       url: "https://github.com/acme/project.git/git-receive-pack",
       method: "POST",
     });
 
-    expect(approvalQueue.request).toHaveBeenCalledWith(
+    expect(approvalQueue.requestCapability).toHaveBeenCalledWith(
       expect.objectContaining({
-        credentialUse: "git-http",
-        gitOperation: {
-          action: "write",
-          label: "git push",
-          remote: "https://github.com/acme/project.git",
-          service: "git-receive-pack",
-        },
+        kind: "capability",
+        capability: "egress",
+        details: expect.arrayContaining([
+          { label: "Credential", value: "Example" },
+          { label: "Credential binding", value: "github-git" },
+          { label: "Git operation", value: "git push" },
+          { label: "Git remote", value: "https://github.com/acme/project.git" },
+          { label: "Git service", value: "git-receive-pack" },
+        ]),
       })
     );
+  });
+
+  it("offers all matching implicit credentials plus no credential in one egress approval", async () => {
+    const credentialA = createCredential({
+      id: "cred-1",
+      label: "Credential A",
+      accessToken: "secret-a",
+    });
+    const credentialB = createCredential({
+      id: "cred-2",
+      connectionId: "cred-2",
+      label: "Credential B",
+      accessToken: "secret-b",
+    });
+    const selected = JSON.stringify(["cred-2", "api"]);
+    const approvalQueue = {
+      request: vi.fn(async () => "session" as const),
+      requestCapability: vi.fn(async (req: { credentialOptions?: unknown }) => {
+        expect(req.credentialOptions).toEqual([
+          {
+            selectionId: JSON.stringify(["cred-1", "api"]),
+            label: "Credential A (api)",
+            description: "api",
+          },
+          {
+            selectionId: selected,
+            label: "Credential B (api)",
+            description: "api",
+          },
+          {
+            selectionId: null,
+            label: "No credential",
+            description: "Send the request without credential injection",
+          },
+        ]);
+        return { decision: "session" as const, credentialSelectionId: selected };
+      }),
+      resolve: vi.fn(),
+      listPending: vi.fn(() => []),
+    };
+    const proxy = new EgressProxy({
+      credentialStore: new MemoryCredentialStore(new Map([
+        [credentialA.id!, credentialA],
+        [credentialB.id!, credentialB],
+      ])),
+      auditLog: new MemoryAuditLog() as never,
+      approvalQueue: approvalQueue as never,
+      capabilityGrantStore: new MemoryCapabilityGrantStore() as never,
+      codeIdentityResolver: {
+        resolveByCallerId: () => ({
+          callerId: "worker:test",
+          callerKind: "worker",
+          repoPath: "/repo",
+          effectiveVersion: "hash-1",
+        }),
+      },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer secret-b");
+        return new Response("ok", { status: 200, statusText: "OK" });
+      })
+    );
+
+    const response = await runProxyFetch(proxy, {
+      callerId: "worker:test",
+      url: "https://api.example.test/v1/items",
+      method: "GET",
+    });
+
+    expect(response.status).toBe(200);
+    expect(approvalQueue.requestCapability).toHaveBeenCalledTimes(1);
   });
 
   it("retries replay-safe retryable responses and records retry count", async () => {
@@ -549,7 +1125,7 @@ describe("EgressProxy", () => {
       })
     );
 
-    const response = await proxy.forwardProxyFetch({
+    const response = await runProxyFetch(proxy, {
       callerId: "worker:test",
       credentialId: "cred-1",
       url: "https://api.example.test/v1/items",
@@ -566,7 +1142,7 @@ describe("EgressProxy", () => {
     vi.stubGlobal("fetch", vi.fn());
 
     await expect(
-      proxy.forwardProxyFetch({
+      runProxyFetch(proxy, {
         callerId: "worker:test",
         credentialId: "cred-1",
         url: "https://api.example.test/v2/items",
@@ -575,7 +1151,7 @@ describe("EgressProxy", () => {
     ).rejects.toThrow(/credential-audience-mismatch/);
 
     await expect(
-      proxy.forwardProxyFetch({
+      runProxyFetch(proxy, {
         callerId: "worker:other",
         credentialId: "cred-1",
         url: "https://api.example.test/v1/items",
@@ -587,18 +1163,20 @@ describe("EgressProxy", () => {
   });
 
   it("keeps session grants in memory across callers with the same code version", async () => {
-    const credential = createCredential({ grants: [] });
+    const credential = createCredential();
     const store = new MemoryCredentialStore(new Map([[credential.id!, credential]]));
     const approvalQueue = {
       request: vi.fn(async () => "session" as const),
+      requestCapability: vi.fn(async () => ({ decision: "session" as const, credentialSelectionId: JSON.stringify(["cred-1", "api"]) })),
       resolve: vi.fn(),
       listPending: vi.fn(() => []),
     };
+    const capabilityGrantStore = new MemoryCapabilityGrantStore();
     const proxy = new EgressProxy({
       credentialStore: store,
       auditLog: new MemoryAuditLog() as never,
       approvalQueue: approvalQueue as never,
-      sessionGrantStore: new CredentialSessionGrantStore(),
+      capabilityGrantStore: capabilityGrantStore as never,
       codeIdentityResolver: {
         resolveByCallerId: (callerId: string) => {
           if (callerId === "worker:first" || callerId === "do:worker:first") {
@@ -618,37 +1196,45 @@ describe("EgressProxy", () => {
       vi.fn(async () => new Response("ok", { status: 200, statusText: "OK" }))
     );
 
-    await proxy.forwardProxyFetch({
+    await runProxyFetch(proxy, {
       callerId: "worker:first",
       credentialId: "cred-1",
       url: "https://api.example.test/v1/items",
       method: "GET",
     });
-    await proxy.forwardProxyFetch({
+    await runProxyFetch(proxy, {
       callerId: "do:worker:first",
       credentialId: "cred-1",
       url: "https://api.example.test/v1/items",
       method: "GET",
     });
 
-    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
-    expect(store.loadUrlBound("cred-1")?.grants).toEqual([]);
+    expect(approvalQueue.requestCapability).toHaveBeenCalledTimes(1);
+    expect(
+      capabilityGrantStore.getGrant("egress", "https://api.example.test", {
+        repoPath: "/repo",
+        effectiveVersion: "hash-1",
+      })
+    ).toMatchObject({ credentialSelectionId: JSON.stringify(["cred-1", "api"]) });
   });
 
   it.each(["version", "repo"] as const)(
-    "reuses persisted %s grants across callers",
+    "reuses persisted %s capability grants across callers",
     async (decision) => {
-      const credential = createCredential({ grants: [] });
+      const credential = createCredential();
       const store = new MemoryCredentialStore(new Map([[credential.id!, credential]]));
       const approvalQueue = {
         request: vi.fn(async () => decision),
+        requestCapability: vi.fn(async () => ({ decision, credentialSelectionId: JSON.stringify(["cred-1", "api"]) })),
         resolve: vi.fn(),
         listPending: vi.fn(() => []),
       };
+      const capabilityGrantStore = new MemoryCapabilityGrantStore();
       const proxy = new EgressProxy({
         credentialStore: store,
         auditLog: new MemoryAuditLog() as never,
         approvalQueue: approvalQueue as never,
+        capabilityGrantStore: capabilityGrantStore as never,
         codeIdentityResolver: {
           resolveByCallerId: (callerId: string) => {
             if (callerId === "worker:first" || callerId === "do:worker:first") {
@@ -668,30 +1254,26 @@ describe("EgressProxy", () => {
         vi.fn(async () => new Response("ok", { status: 200, statusText: "OK" }))
       );
 
-      await proxy.forwardProxyFetch({
+      await runProxyFetch(proxy, {
         callerId: "worker:first",
         credentialId: "cred-1",
         url: "https://api.example.test/v1/items",
         method: "GET",
       });
-      await proxy.forwardProxyFetch({
+      await runProxyFetch(proxy, {
         callerId: "do:worker:first",
         credentialId: "cred-1",
         url: "https://api.example.test/v1/items",
         method: "GET",
       });
 
-      expect(approvalQueue.request).toHaveBeenCalledTimes(1);
-      expect(store.loadUrlBound("cred-1")?.grants).toContainEqual(
-        expect.objectContaining({
-          bindingId: "api",
-          resource: "https://api.example.test/v1",
-          action: "use",
-          scope: decision,
+      expect(approvalQueue.requestCapability).toHaveBeenCalledTimes(1);
+      expect(
+        capabilityGrantStore.getGrant("egress", "https://api.example.test", {
           repoPath: "/repo",
-          grantedBy: decision,
+          effectiveVersion: "hash-1",
         })
-      );
+      ).toMatchObject({ credentialSelectionId: JSON.stringify(["cred-1", "api"]) });
     }
   );
 });

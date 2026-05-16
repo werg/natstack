@@ -9,23 +9,7 @@ import type { RpcMessage, RpcEvent } from "@natstack/rpc";
 import type { WsClientMessage, WsServerMessage } from "@natstack/shared/ws/protocol";
 import type { RecoveryKind } from "@natstack/shared/shell/recoveryCoordinator";
 
-type AnyMessageHandler = (fromId: string, message: unknown) => void;
-
-type PanelInitPayload = {
-  gatewayConfig?: {
-    token?: unknown;
-  };
-};
-
-type PanelInitProvider = {
-  getPanelInit: () => Promise<PanelInitPayload>;
-};
-
-type NatstackTransportGlobals = typeof globalThis & {
-  __natstackShell?: PanelInitProvider;
-  __natstackElectron?: PanelInitProvider;
-  __natstackGatewayToken?: string;
-};
+type AnyMessageHandler = (sourceId: string, message: unknown) => void;
 
 export type TransportBridge = {
   send: (targetId: string, message: unknown) => Promise<void>;
@@ -36,7 +20,6 @@ export type TransportBridge = {
 export interface WsTransportConfig {
   viewId: string;
   wsPort: number;
-  authToken: string;
   callerKind: string;
   /** Override WebSocket URL. Default: ws://127.0.0.1:{wsPort} */
   wsUrl?: string;
@@ -49,7 +32,7 @@ const normalizeEndpointId = (targetId: string): string => {
 
 export function createWsTransport(config: WsTransportConfig): TransportBridge {
   const listeners = new Set<AnyMessageHandler>();
-  const bufferedMessages: Array<{ fromId: string; message: RpcMessage }> = [];
+  const bufferedMessages: Array<{ sourceId: string; message: RpcMessage }> = [];
   const outgoingBuffer: string[] = [];
   let transportReady = false;
   let flushScheduled = false;
@@ -58,23 +41,20 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
   let reconnectAttempt = 0;
   let hasConnectedBefore = false;
   let lastSeenBootId: string | null = null;
-  let authToken = config.authToken;
-  let refreshingAuth = false;
-  let authRefreshReconnectScheduled = false;
   let connectionGeneration = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   const connectionId = makeConnectionId();
   const recoveryListeners = new Map<RecoveryKind, Set<() => void | Promise<void>>>();
 
-  const deliver = (fromId: string, message: RpcMessage) => {
+  const deliver = (sourceId: string, message: RpcMessage) => {
     if (!transportReady) {
-      bufferedMessages.push({ fromId, message });
+      bufferedMessages.push({ sourceId, message });
       if (bufferedMessages.length > 500) bufferedMessages.shift();
       return;
     }
     for (const listener of listeners) {
       try {
-        listener(fromId, message);
+        listener(sourceId, message);
       } catch (error) {
         console.error("Error in WS transport message handler:", error);
       }
@@ -107,25 +87,22 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
     if (payload["panelId"] !== config.viewId) return;
 
     if (payload["type"] === "focus") {
-      deliver("main", { type: "event", fromId: "main", event: "runtime:focus", payload: null });
+      deliver("main", { type: "event", event: "runtime:focus", payload: null });
     } else if (payload["type"] === "theme") {
       deliver("main", {
         type: "event",
-        fromId: "main",
         event: "runtime:theme",
         payload: payload["theme"],
       });
     } else if (payload["type"] === "child-created") {
       deliver("main", {
         type: "event",
-        fromId: "main",
         event: "runtime:child-created",
         payload: { childId: payload["childId"], url: payload["url"] },
       });
     } else if (payload["type"] === "child-creation-error") {
       deliver("main", {
         type: "event",
-        fromId: "main",
         event: "runtime:child-creation-error",
         payload: { url: payload["url"], error: payload["error"] },
       });
@@ -134,23 +111,18 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
 
   const handleServerMessage = (msg: WsServerMessage): void => {
     switch (msg.type) {
-      case "ws:auth-result": {
-        if (msg.success) {
-          authenticated = true;
-          const previousBootId = lastSeenBootId;
-          const nextBootId = msg.serverBootId ?? null;
-          const isReconnect = hasConnectedBefore;
-          hasConnectedBefore = true;
-          lastSeenBootId = nextBootId;
-          reconnectAttempt = 0;
-          flushOutgoing();
-          emitRecovery("resubscribe");
-          if (isReconnect && previousBootId && nextBootId && previousBootId !== nextBootId) {
-            emitRecovery("cold-recover");
-          }
-        } else {
-          console.error("[WsTransport] Auth failed:", msg.error);
-          void refreshAuthTokenAndReconnect();
+      case "ws:ready": {
+        authenticated = true;
+        const previousBootId = lastSeenBootId;
+        const nextBootId = msg.serverBootId ?? null;
+        const isReconnect = hasConnectedBefore;
+        hasConnectedBefore = true;
+        lastSeenBootId = nextBootId;
+        reconnectAttempt = 0;
+        flushOutgoing();
+        emitRecovery("resubscribe");
+        if (isReconnect && previousBootId && nextBootId && previousBootId !== nextBootId) {
+          emitRecovery("cold-recover");
         }
         break;
       }
@@ -167,7 +139,6 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
         } else {
           deliver("main", {
             type: "event",
-            fromId: "main",
             event: msg.event,
             payload: msg.payload,
           } as RpcEvent);
@@ -176,14 +147,13 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
       }
 
       case "ws:routed": {
-        deliver(msg.fromId, msg.message);
+        deliver(msg.sourceId, msg.message);
         break;
       }
 
       case "ws:routed-event-error": {
         deliver("main", {
           type: "event",
-          fromId: "main",
           event: "runtime:routed-event-error",
           payload: {
             targetId: msg.targetId,
@@ -198,7 +168,6 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
       case "ws:routed-response-error": {
         deliver("main", {
           type: "event",
-          fromId: "main",
           event: "runtime:routed-response-error",
           payload: {
             targetId: msg.targetId,
@@ -209,36 +178,6 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
         } as RpcEvent);
         break;
       }
-    }
-  };
-
-  const refreshAuthTokenAndReconnect = async (): Promise<void> => {
-    if (refreshingAuth) return;
-    refreshingAuth = true;
-    try {
-      const globals = globalThis as NatstackTransportGlobals;
-      const shell = globals.__natstackShell ?? globals.__natstackElectron;
-      if (!shell || typeof shell.getPanelInit !== "function") return;
-      const panelInit = await shell.getPanelInit();
-      const nextToken = panelInit?.gatewayConfig?.token;
-      if (typeof nextToken !== "string" || nextToken.length === 0 || nextToken === authToken)
-        return;
-      authToken = nextToken;
-      globals.__natstackGatewayToken = nextToken;
-      try {
-        sessionStorage.setItem("__natstackPanelInit", JSON.stringify(panelInit));
-      } catch {
-        // Ignore storage failures; the in-memory token is enough for this reconnect.
-      }
-      authenticated = false;
-      authRefreshReconnectScheduled = true;
-      ws?.close(4000, "Refreshing auth token");
-      setTimeout(() => {
-        connect();
-        authRefreshReconnectScheduled = false;
-      }, 0);
-    } finally {
-      refreshingAuth = false;
     }
   };
 
@@ -260,15 +199,9 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
       reconnectTimer = null;
     }
     const generation = ++connectionGeneration;
-    const url = config.wsUrl ?? `ws://127.0.0.1:${config.wsPort}`;
+    const url = appendConnectionId(config.wsUrl ?? `ws://127.0.0.1:${config.wsPort}`, connectionId);
     const socket = new WebSocket(url);
     ws = socket;
-
-    socket.onopen = () => {
-      if (generation !== connectionGeneration || ws !== socket) return;
-      // Send auth message immediately — callerKind determined server-side
-      socket.send(JSON.stringify({ type: "ws:auth", token: authToken, connectionId }));
-    };
 
     socket.onmessage = (event) => {
       if (generation !== connectionGeneration || ws !== socket) return;
@@ -283,22 +216,19 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
     socket.onclose = (event) => {
       if (generation !== connectionGeneration || ws !== socket) return;
       authenticated = false;
-      // Terminal close codes — don't reconnect
-      // 4001 = token revoked (panel closing), 4005 = bad handshake, 4006 = invalid token
+      // Terminal close code for intentional panel teardown.
       if (event.code === 4001 || event.code === 4005 || event.code === 4006) {
         if (event.code !== 4001) {
           // Auth failures on a live panel — surface to UI
           console.error(`[WsTransport] Terminal auth failure (${event.code}): ${event.reason}`);
           deliver("main", {
             type: "event",
-            fromId: "main",
             event: "runtime:connection-error",
             payload: { code: event.code, reason: event.reason || "Authentication failed" },
           } as RpcEvent);
         }
         return;
       }
-      if (authRefreshReconnectScheduled) return;
       const jitter = Math.random() * 500;
       const delay = Math.min(1000 * Math.pow(2, reconnectAttempt) + jitter, 10000);
       reconnectAttempt++;
@@ -360,7 +290,7 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
           for (const buffered of bufferedMessages) {
             for (const listener of listeners) {
               try {
-                listener(buffered.fromId, buffered.message);
+                listener(buffered.sourceId, buffered.message);
               } catch (error) {
                 console.error("Error delivering buffered WS transport message:", error);
               }
@@ -391,4 +321,10 @@ function makeConnectionId(): string {
     return globalThis.crypto.randomUUID();
   }
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function appendConnectionId(wsUrl: string, connectionId: string): string {
+  const url = new URL(wsUrl);
+  url.searchParams.set("connectionId", connectionId);
+  return url.toString();
 }

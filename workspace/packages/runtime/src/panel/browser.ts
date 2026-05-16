@@ -39,7 +39,6 @@ export interface BrowserHandle {
 
 export interface CdpEndpoint {
   wsEndpoint: string;
-  token: string;
 }
 
 let _rpc: RpcBridge | null = null;
@@ -99,7 +98,7 @@ export function onChildCreated(
 
   // Also listen on RPC events (works in both modes; standalone relies on this)
   const rpc = getRpc();
-  unsubs.push(rpc.onEvent("runtime:child-created", (_fromId, payload) => {
+  unsubs.push(rpc.onEvent("runtime:child-created", (_sourceId, payload) => {
     const data = payload as { childId?: string; url?: string } | null;
     if (data?.childId && data?.url) {
       handler({ childId: data.childId, url: data.url });
@@ -167,7 +166,6 @@ function makeBrowserHandle(rpc: RpcBridge, id: string, title: string): BrowserHa
       }
       const browser = await BrowserImpl.connect(endpoint.wsEndpoint, {
         isElectronWebview: true,
-        transportOptions: { authToken: endpoint.token },
       });
       const page = browser.contexts()[0]?.pages()[0];
       if (!page) throw new Error("No page found in browser panel");

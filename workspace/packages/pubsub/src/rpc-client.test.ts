@@ -23,10 +23,10 @@ interface MockRpc {
 
 /**
  * Creates a mock RPC object. The `onEvent` mock captures the listener
- * so tests can emit events by calling `emit(fromId, payload)`.
+ * so tests can emit events by calling `emit(sourceId, payload)`.
  */
 function createMockRpc() {
-  let eventListener: ((fromId: string, payload: unknown) => void) | null = null;
+  const eventListeners = new Map<string, (sourceId: string, payload: unknown) => void>();
   const removeListener = vi.fn();
 
   const rpc: MockRpc = {
@@ -37,8 +37,8 @@ function createMockRpc() {
       return undefined;
     }),
     onEvent: vi.fn().mockImplementation(
-      (_event: string, listener: (fromId: string, payload: unknown) => void) => {
-        eventListener = listener;
+      (event: string, listener: (sourceId: string, payload: unknown) => void) => {
+        eventListeners.set(event, listener);
         return removeListener;
       },
     ),
@@ -46,6 +46,7 @@ function createMockRpc() {
   };
 
   function emit(msg: Record<string, unknown>) {
+    const eventListener = eventListeners.get("channel:message");
     if (!eventListener) throw new Error("No event listener registered");
     eventListener("server", { channelId: CHANNEL, message: msg });
   }

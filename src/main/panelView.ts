@@ -7,6 +7,7 @@
  */
 
 import { createDevLogger } from "@natstack/dev-log";
+import { session as electronSession } from "electron";
 import type { ViewManager } from "./viewManager.js";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 import type { PanelViewLike, ServerInfoLike } from "@natstack/shared/panelInterfaces";
@@ -33,7 +34,7 @@ const log = createDevLogger("PanelView");
 interface CdpServerLike {
   registerBrowser(panelId: string, contentsId: number, parentId: string): void;
   unregisterBrowser(panelId: string): void;
-  revokeTokenForPanel(panelId: string): void;
+  revokeAccessForPanel(panelId: string): void;
 }
 
 interface PanelOrchestratorLike {
@@ -67,6 +68,10 @@ interface AutofillManagerLike {
   detachFromWebContents(webContentsId: number, webContents?: Electron.WebContents): void;
 }
 
+interface PanelProxyIdentityLike {
+  ensureSessionConfigured(session: Electron.Session): Promise<void>;
+}
+
 export class PanelView implements PanelViewLike {
   private viewManager: ViewManager;
   private readonly panelRegistry: PanelRegistry;
@@ -80,6 +85,7 @@ export class PanelView implements PanelViewLike {
   private panelPreloadPath?: string;
   private browserPreloadPath?: string;
   private browserHistoryRecorder?: BrowserHistoryRecorder;
+  private panelProxyIdentity?: PanelProxyIdentityLike;
 
   private browserStateCleanup = new Map<
     string,
@@ -113,6 +119,7 @@ export class PanelView implements PanelViewLike {
     panelPreloadPath?: string;
     browserPreloadPath?: string;
     browserHistoryRecorder?: BrowserHistoryRecorder;
+    panelProxyIdentity?: PanelProxyIdentityLike;
   }) {
     this.viewManager = deps.viewManager;
     this.panelRegistry = deps.panelRegistry;
@@ -126,11 +133,15 @@ export class PanelView implements PanelViewLike {
     this.panelPreloadPath = deps.panelPreloadPath;
     this.browserPreloadPath = deps.browserPreloadPath;
     this.browserHistoryRecorder = deps.browserHistoryRecorder;
+    this.panelProxyIdentity = deps.panelProxyIdentity;
   }
 
   // ==== PanelViewLike implementation ========================================
 
-  async createViewForPanel(panelId: string, url: string, contextId?: string): Promise<void> {
+  async createViewForPanel(panelId: string, url: string, contextId: string): Promise<void> {
+    if (!contextId) {
+      throw new Error("App panel created without contextId");
+    }
     if (this.viewManager.hasView(panelId)) {
       const currentUrl = this.viewManager.getViewUrl(panelId);
       if (currentUrl !== url) void this.viewManager.navigateView(panelId, url);
@@ -138,6 +149,10 @@ export class PanelView implements PanelViewLike {
     }
 
     const parentId = this.panelRegistry.findParentId(panelId);
+    const partition = contextIdToPartition(contextId);
+    if (this.panelProxyIdentity) {
+      await this.panelProxyIdentity.ensureSessionConfigured(electronSession.fromPartition(partition));
+    }
 
     const view = this.viewManager.createView({
       id: panelId,
@@ -145,7 +160,7 @@ export class PanelView implements PanelViewLike {
       preload: this.panelPreloadPath ?? null,
       url,
       parentId: parentId ?? undefined,
-      partition: contextId ? contextIdToPartition(contextId) : undefined,
+      partition,
       injectHostThemeVariables: true,
     });
 
@@ -175,7 +190,7 @@ export class PanelView implements PanelViewLike {
     }
     this.cleanupBrowserStateTracking(panelId, contents ?? undefined);
     this.cleanupLinkInterception(panelId, contents ?? undefined);
-    this.cdpServer.revokeTokenForPanel(panelId);
+    this.cdpServer.revokeAccessForPanel(panelId);
     this.cdpServer.unregisterBrowser(panelId);
     this.crashHistory.delete(panelId);
     this.viewManager.destroyView(panelId);

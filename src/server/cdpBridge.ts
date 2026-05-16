@@ -9,8 +9,8 @@
  * - `/api/cdp-bridge` — single extension connection
  * - `/cdp/{browserId}` — per-browser Playwright client connections
  *
- * Both paths authenticate with a first WebSocket message:
- * `{ "type": "natstack:cdp-auth", "token": "..." }`.
+ * Extension connections use the host admin bearer at upgrade time. Client
+ * connections use the verified caller identity attached by EgressProxy.
  *
  * The client ↔ server protocol is standard CDP (same as Electron's CdpServer),
  * so Playwright connects identically regardless of backend.
@@ -19,7 +19,6 @@
 import { WebSocket, type WebSocketServer } from "ws";
 import type { IncomingMessage } from "http";
 import type { Duplex } from "stream";
-import type { TokenManager } from "@natstack/shared/tokenManager";
 import { constantTimeStringEqual } from "@natstack/shared/tokenManager";
 import { createDevLogger } from "@natstack/dev-log";
 
@@ -27,8 +26,13 @@ const log = createDevLogger("CdpBridge");
 
 const NAV_COMMAND_TIMEOUT_MS = 30_000;
 
+function readBearer(req: IncomingMessage): string | null {
+  const header = req.headers["authorization"];
+  if (typeof header !== "string") return null;
+  return header.startsWith("Bearer ") ? header.slice("Bearer ".length) : null;
+}
+
 interface CdpBridgeOptions {
-  tokenManager: TokenManager;
   adminToken: string;
   canAccessBrowser: (requestingPanelId: string, browserId: string) => boolean;
   panelOwnsBrowser: (requestingPanelId: string, browserId: string) => boolean;
@@ -39,7 +43,6 @@ interface CdpBridgeOptions {
 
 export interface CdpEndpoint {
   wsEndpoint: string;
-  token: string;
 }
 
 interface PendingCommand {
@@ -68,7 +71,6 @@ interface ExtensionBridgeMessage {
 }
 
 export class CdpBridge {
-  private tokenManager: TokenManager;
   private adminToken: string;
   private canAccessBrowser: (requestingPanelId: string, browserId: string) => boolean;
   private panelOwnsBrowser: (requestingPanelId: string, browserId: string) => boolean;
@@ -100,7 +102,6 @@ export class CdpBridge {
   private nextRequestId = 1;
 
   constructor(options: CdpBridgeOptions) {
-    this.tokenManager = options.tokenManager;
     this.adminToken = options.adminToken;
     this.canAccessBrowser = options.canAccessBrowser;
     this.panelOwnsBrowser = options.panelOwnsBrowser;
@@ -112,55 +113,6 @@ export class CdpBridge {
   // Public API
   // =========================================================================
 
-  private authenticateConnection(
-    ws: WebSocket,
-    validate: (token: string) => boolean
-  ): Promise<boolean> {
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        cleanup();
-        ws.close(4001, "CDP auth required");
-        resolve(false);
-      }, 5_000);
-      const cleanup = () => {
-        clearTimeout(timer);
-        ws.off("message", handleMessage);
-        ws.off("close", handleClose);
-        ws.off("error", handleClose);
-      };
-      const handleClose = () => {
-        cleanup();
-        resolve(false);
-      };
-      const handleMessage = (data: Buffer) => {
-        let parsed: { type?: unknown; token?: unknown };
-        try {
-          parsed = JSON.parse(data.toString()) as { type?: unknown; token?: unknown };
-        } catch {
-          cleanup();
-          ws.close(4001, "Invalid CDP auth frame");
-          resolve(false);
-          return;
-        }
-        if (
-          parsed.type !== "natstack:cdp-auth" ||
-          typeof parsed.token !== "string" ||
-          !validate(parsed.token)
-        ) {
-          cleanup();
-          ws.close(4001, "Invalid CDP token");
-          resolve(false);
-          return;
-        }
-        cleanup();
-        resolve(true);
-      };
-      ws.once("message", handleMessage);
-      ws.once("close", handleClose);
-      ws.once("error", handleClose);
-    });
-  }
-
   /**
    * Route WebSocket upgrade requests by URL path.
    */
@@ -169,34 +121,32 @@ export class CdpBridge {
     const pathname = url.pathname;
 
     if (pathname === "/api/cdp-bridge") {
+      const token = readBearer(req);
+      if (!token || !constantTimeStringEqual(token, this.adminToken)) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
       wss.handleUpgrade(req, socket, head, (ws) => {
-        void this.authenticateConnection(ws, (token) =>
-          constantTimeStringEqual(token, this.adminToken)
-        ).then((ok) => {
-          if (!ok) return;
-          this.handleExtensionConnection(ws);
-          ws.send(JSON.stringify({ type: "natstack:cdp-auth-ok" }));
-        });
+        this.handleExtensionConnection(ws);
       });
     } else if (pathname.startsWith("/cdp/")) {
       const browserId = pathname.slice("/cdp/".length);
+      const caller = req.natstackCaller;
 
       if (!this.browserRegistry.has(browserId)) {
         socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
         socket.destroy();
         return;
       }
+      if (!caller || !this.canAccessBrowser(caller.callerId, browserId)) {
+        socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
 
       wss.handleUpgrade(req, socket, head, (ws) => {
-        void this.authenticateConnection(ws, (token) => {
-          const entry = this.tokenManager.validateToken(token);
-          if (!entry) return false;
-          return this.canAccessBrowser(entry.callerId, browserId);
-        }).then((ok) => {
-          if (!ok) return;
-          this.handleClientConnection(ws, browserId);
-          ws.send(JSON.stringify({ type: "natstack:cdp-auth-ok" }));
-        });
+        this.handleClientConnection(ws, browserId);
       });
     } else {
       socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
@@ -217,10 +167,8 @@ export class CdpBridge {
       return null;
     }
 
-    const token = this.tokenManager.getToken(requestingPanelId);
     return {
       wsEndpoint: `ws://127.0.0.1:${this.port}/cdp/${browserId}`,
-      token: token ?? "",
     };
   }
 

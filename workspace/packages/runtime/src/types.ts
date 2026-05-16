@@ -103,7 +103,7 @@ export interface RuntimeFs {
   // Extensions beyond FsPromisesLike
   rm(path: string, options?: RmOptions): Promise<void>;
   exists(path: string): Promise<boolean>;
-  // Additional methods for broader compatibility
+  // Additional filesystem methods exposed by the NatStack runtime
   access(path: string, mode?: number): Promise<void>;
   appendFile(path: string, data: string | Uint8Array): Promise<void>;
   copyFile(src: string, dest: string): Promise<void>;
@@ -117,4 +117,3 @@ export interface RuntimeFs {
   utimes(path: string, atime: Date | number, mtime: Date | number): Promise<void>;
   truncate(path: string, len?: number): Promise<void>;
 }
-

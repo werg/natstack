@@ -13,6 +13,7 @@ function tempStatePath(): string {
 function createApprovalQueueMock(): ApprovalQueue {
   return {
     request: vi.fn(async () => "deny" as const),
+    requestCapability: vi.fn(async () => ({ decision: "deny" as const })),
     requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
     requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
     requestUserland: vi.fn(async () => ({ kind: "dismissed" as const })),
@@ -22,6 +23,7 @@ function createApprovalQueueMock(): ApprovalQueue {
       dispose: vi.fn(),
     })),
     resolve: vi.fn(),
+    resolveCapability: vi.fn(),
     resolveUserland: vi.fn(),
     submitClientConfig: vi.fn(),
     submitCredentialInput: vi.fn(),

@@ -6,10 +6,11 @@
  */
 
 import { type ProcessAdapter } from "@natstack/process-adapter";
+import type { ProxyIdentityServerInfo } from "@natstack/shared/serverInfo";
 import { shell, utilityProcess } from "electron";
 import { getEsbuildBinaryPath, getServerProcessEntryPath } from "./paths.js";
 
-export interface ServerPorts {
+export interface ServerPorts extends ProxyIdentityServerInfo {
   workerdPort?: number;
   gatewayPort: number;
   adminToken: string;
@@ -166,6 +167,10 @@ export class ServerProcessManager {
     return this.ports;
   }
 
+  postMessage(message: Record<string, unknown>): void {
+    this.proc?.postMessage(message);
+  }
+
   getCurrentGatewayUrl(): string | null {
     return this.ports ? `ws://127.0.0.1:${this.ports.gatewayPort}/rpc` : null;
   }
@@ -219,6 +224,10 @@ export class ServerProcessManager {
             typeof msg["gatewayPort"] !== "number" ||
             typeof msg["adminToken"] !== "string" ||
             (msg["workerdPort"] !== undefined && typeof msg["workerdPort"] !== "number") ||
+            (msg["egressProxyPort"] !== undefined && typeof msg["egressProxyPort"] !== "number") ||
+            (msg["assertionSecret"] !== undefined && typeof msg["assertionSecret"] !== "string") ||
+            (msg["internalHopSecret"] !== undefined &&
+              typeof msg["internalHopSecret"] !== "string") ||
             (msg["shellToken"] !== undefined && typeof msg["shellToken"] !== "string")
           ) {
             reject(new Error("Server startup returned an invalid ready payload"));
@@ -229,6 +238,9 @@ export class ServerProcessManager {
             gatewayPort: msg["gatewayPort"],
             adminToken: msg["adminToken"],
             shellToken: msg["shellToken"],
+            egressProxyPort: msg["egressProxyPort"],
+            assertionSecret: msg["assertionSecret"],
+            internalHopSecret: msg["internalHopSecret"],
           });
         } else if (msg["type"] === "error") {
           reject(new Error(`Server startup failed: ${String(msg["message"])}`));

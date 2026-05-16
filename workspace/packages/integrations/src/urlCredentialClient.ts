@@ -1,8 +1,4 @@
-import {
-  fetch as credentialFetch,
-  resolveCredential,
-  type StoredCredentialSummary,
-} from "../../runtime/src/worker/credentials.js";
+import { resolveCredential, type StoredCredentialSummary } from "../../runtime/src/worker/credentials.js";
 import type { UrlCredentialDescriptor } from "./providers.js";
 
 export interface UrlCredentialClient {
@@ -20,7 +16,9 @@ export async function getUrlCredentialClient(descriptor: UrlCredentialDescriptor
   return {
     credentialId: credential.id,
     fetch(url, init) {
-      return credentialFetch(url, init, { credentialId: credential.id });
+      const headers = new Headers(init?.headers);
+      headers.set("X-NatStack-Use-Credential", credential.id);
+      return fetch(url, { ...init, headers });
     },
   };
 }

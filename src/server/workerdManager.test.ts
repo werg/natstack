@@ -8,6 +8,7 @@ import {
   type WorkerdManagerDeps,
   type WorkerCreateOptions,
 } from "./workerdManager.js";
+import { verifyCallerAssertion } from "@natstack/shared/identity/callerAssertion";
 
 // Mock child_process to prevent actual workerd spawning
 vi.mock("child_process", () => ({
@@ -69,6 +70,7 @@ function createMockDeps(overrides: Partial<WorkerdManagerDeps> = {}): WorkerdMan
     workspacePath: "/tmp/test-workspace",
     statePath: "/tmp/test-workspace-state",
     getProxyPort: () => 49444,
+    assertionSecret: Buffer.from("a".repeat(64), "hex"),
     getWorkerdGatewayToken: () => "mock-workerd-gateway-token",
     codeIdentityResolver: {
       upsertCallerIdentity: vi.fn(),
@@ -101,17 +103,17 @@ describe("WorkerdManager", () => {
       expect(instance.source).toBe("workers/hello");
       expect(instance.contextId).toBe("ctx-1");
       expect(instance.callerId).toBe("worker:hello");
-      expect(instance.token).toBe("mock-token-123");
+      expect(instance).not.toHaveProperty("token");
       expect(instance.status).toBe("running");
     });
 
-    it("registers token and fs context", async () => {
+    it("registers fs context without minting a JS-visible RPC token", async () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
       await mgr.createInstance(defaultCreateOptions());
 
-      expect(deps.tokenManager.ensureToken).toHaveBeenCalledWith("worker:hello", "worker");
+      expect(deps.tokenManager.ensureToken).not.toHaveBeenCalled();
       expect(deps.fsService.registerCallerContext).toHaveBeenCalledWith("worker:hello", "ctx-1");
     });
 
@@ -142,7 +144,7 @@ describe("WorkerdManager", () => {
 
       await expect(mgr.createInstance(defaultCreateOptions())).rejects.toThrow("build failed");
 
-      expect(deps.tokenManager.revokeToken).toHaveBeenCalledWith("worker:hello");
+      expect(deps.tokenManager.revokeToken).not.toHaveBeenCalledWith("worker:hello");
       expect(deps.fsService.unregisterCallerContext).toHaveBeenCalledWith("worker:hello");
       expect(mgr.listInstances()).toHaveLength(0);
     });
@@ -287,6 +289,76 @@ describe("WorkerdManager", () => {
     it("getInstanceStatus returns null for unknown", () => {
       const mgr = new WorkerdManager(createMockDeps());
       expect(mgr.getInstanceStatus("nope")).toBeNull();
+    });
+  });
+
+  describe("proxy assertion config", () => {
+    function proxyTokenFromHeader(header: string): string {
+      expect(header).toMatch(/^Basic /);
+      const decoded = Buffer.from(header.slice("Basic ".length), "base64").toString("utf8");
+      expect(decoded.startsWith("natstack:")).toBe(true);
+      return decoded.slice("natstack:".length);
+    }
+
+    async function generatedConfig(mgr: WorkerdManager): Promise<{ services: any[] }> {
+      return (mgr as unknown as { generateConfig(): Promise<{ services: any[] }> }).generateConfig();
+    }
+
+    it("emits proxy-style external service with a Basic caller assertion", async () => {
+      const deps = createMockDeps();
+      const mgr = new WorkerdManager(deps);
+      await mgr.createInstance(defaultCreateOptions());
+
+      const config = await generatedConfig(mgr);
+      const network = config.services.find((service) => service.name === "hello_network");
+      expect(network.external.http.style).toBe("proxy");
+      const header = network.external.http.injectRequestHeaders[0];
+      expect(header.name).toBe("Proxy-Authorization");
+
+      expect(verifyCallerAssertion(
+        deps.assertionSecret!,
+        proxyTokenFromHeader(header.value),
+        "egress-proxy",
+      )).toMatchObject({
+        callerId: "worker:hello",
+        callerKind: "worker",
+      });
+
+      const worker = config.services.find((service) => service.name === "hello");
+      expect(worker.worker.bindings).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: ["RPC", "AUTH", "TOKEN"].join("_") })]),
+      );
+    });
+
+    it("uses distinct assertions for distinct workers", async () => {
+      const mgr = new WorkerdManager(createMockDeps());
+      await mgr.createInstance(defaultCreateOptions({ name: "one" }));
+      await mgr.createInstance(defaultCreateOptions({ name: "two", contextId: "ctx-2" }));
+
+      const config = await generatedConfig(mgr);
+      const headers = ["one_network", "two_network"].map((name) => {
+        const network = config.services.find((service) => service.name === name);
+        return network.external.http.injectRequestHeaders[0].value as string;
+      });
+
+      expect(headers[0]).not.toBe(headers[1]);
+    });
+
+    it("emits a DO service assertion using the do-service caller id", async () => {
+      const deps = createMockDeps();
+      const mgr = new WorkerdManager(deps);
+      await mgr.registerAllDOClasses([{ source: "workers/agent", className: "AgentDO" }]);
+
+      const config = await generatedConfig(mgr);
+      const network = config.services.find(
+        (service) => typeof service.name === "string" && service.name.endsWith("_network"),
+      );
+      const token = proxyTokenFromHeader(network.external.http.injectRequestHeaders[0].value);
+
+      expect(verifyCallerAssertion(deps.assertionSecret!, token, "egress-proxy")).toMatchObject({
+        callerId: "do-service:workers/agent:AgentDO",
+        callerKind: "worker",
+      });
     });
   });
 

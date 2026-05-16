@@ -22,7 +22,8 @@ import { connect as connectNet } from "net";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Duplex } from "stream";
 import { createDevLogger } from "@natstack/dev-log";
-import { constantTimeStringEqual, type TokenManager } from "@natstack/shared/tokenManager";
+import { verifyCallerAssertion } from "@natstack/shared/identity/callerAssertion";
+import { constantTimeStringEqual } from "@natstack/shared/tokenManager";
 import type { RouteRegistry, LookupResult } from "./routeRegistry.js";
 
 const log = createDevLogger("Gateway");
@@ -72,7 +73,11 @@ export interface PanelHttpHandler {
 /** Handler interface for RpcServer (in-process dispatch) */
 export interface RpcHandler {
   /** Accept a pre-upgraded WebSocket connection from the gateway */
-  handleGatewayWsConnection(ws: WebSocket): void;
+  handleGatewayWsConnection(
+    ws: WebSocket,
+    caller: NonNullable<IncomingMessage["natstackCaller"]>,
+    connectionId?: string
+  ): void;
   /** Handle an HTTP POST /rpc request */
   handleGatewayHttpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> | void;
 }
@@ -83,6 +88,17 @@ export interface GitHttpHandler {
     res: ServerResponse,
     callerId: string | null,
     callerKind: string | null
+  ): Promise<void> | void;
+}
+
+export interface CdpHandler {
+  upgradeWebSocket(
+    caller: NonNullable<IncomingMessage["natstackCaller"]>,
+    req: IncomingMessage,
+    socket: Duplex,
+    head: Buffer,
+    wss: WebSocketServer,
+    browserId: string
   ): Promise<void> | void;
 }
 
@@ -97,12 +113,16 @@ export interface GatewayDeps {
   getPanelHttpHandler?: () => PanelHttpHandler | null | undefined;
   /** Dynamic in-process git handler getter. */
   getGitHandler?: () => GitHttpHandler | null | undefined;
+  /** Dynamic in-process CDP handler getter. */
+  getCdpHandler?: () => CdpHandler | null | undefined;
   /** Workerd port for /_w/ path (reverse proxy) */
   workerdPort?: number | null;
   /** Dynamic workerd port getter. */
   getWorkerdPort?: () => number | null | undefined;
   /** Optional pre-shared workerd gateway token. */
   workerdGatewayToken?: string;
+  /** Optional caller assertion secret for trusted direct shell connections. */
+  assertionSecret?: Buffer;
   /** External hostname for generated public URLs and origin checks */
   externalHost: string;
   /** Current public URL for origin checks, including --public-url / NATSTACK_PUBLIC_URL overrides. */
@@ -117,8 +137,6 @@ export interface GatewayDeps {
   healthProvider?: (detailed: boolean) => Record<string, unknown>;
   /** Admin token — when provided and presented as Bearer, /healthz returns detailed fields */
   adminToken?: string;
-  /** Caller token manager for route auth modes used by panels/workers/shell/server callers. */
-  tokenManager: TokenManager;
   /** Route registry for `/_r/` dispatch (worker and service routes). Optional
    *  — when absent, `/_r/` paths fall through to 404. */
   routeRegistry?: RouteRegistry;
@@ -144,13 +162,173 @@ export class Gateway {
     return this.workerdGatewayToken;
   }
 
+  handleHttpRequest(req: IncomingMessage, res: ServerResponse): void {
+    const url = req.url ?? "/";
+    const rpcHandler = this.deps.getRpcHandler?.() ?? this.deps.rpcHandler;
+    const panelHttpHandler = this.deps.getPanelHttpHandler?.() ?? this.deps.panelHttpHandler;
+    const gitHandler = this.deps.getGitHandler?.();
+    const workerdPort = this.deps.getWorkerdPort?.() ?? this.deps.workerdPort;
+    const caller = req.natstackCaller;
+    const routeRegistry = this.deps.routeRegistry;
+
+    if (req.method === "GET" && (url === "/healthz" || url.startsWith("/healthz?"))) {
+      let detailed = false;
+      if (this.deps.adminToken) {
+        const bearer = extractBearerToken(req);
+        if (bearer && constantTimeStringEqual(bearer, this.deps.adminToken)) detailed = true;
+      }
+      const body = this.deps.healthProvider ? this.deps.healthProvider(detailed) : { ok: true };
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(body));
+      return;
+    }
+
+    if (url.startsWith("/_w/")) {
+      if (!caller) {
+        res.writeHead(401, { "Content-Type": "text/plain" });
+        res.end("Unauthorized");
+        return;
+      }
+      if (!workerdPort) {
+        res.writeHead(503, { "Content-Type": "text/plain" });
+        res.end("Service starting up");
+        return;
+      }
+      stampVerifiedCaller(req, caller);
+      return proxyRequest(req, res, workerdPort, url, this.workerdGatewayToken);
+    }
+
+    if (url.startsWith("/_r/") && routeRegistry) {
+      const handled = handleRouteRequest(
+        req,
+        res,
+        url,
+        routeRegistry,
+        workerdPort,
+        this.deps.adminToken,
+        this.workerdGatewayToken
+      );
+      if (handled) return;
+    }
+
+    if (url.startsWith("/_git/") && gitHandler) {
+      if (req.method === "OPTIONS") {
+        void gitHandler.handleHttpRequest(req, res, null, null);
+        return;
+      }
+      if (!caller) {
+        res.writeHead(401, { "Content-Type": "text/plain" });
+        res.end("Unauthorized");
+        return;
+      }
+      void gitHandler.handleHttpRequest(req, res, caller.callerId, caller.callerKind);
+      return;
+    }
+
+    if (url === "/rpc" && req.method === "POST" && rpcHandler) {
+      void rpcHandler.handleGatewayHttpRequest(req, res);
+      return;
+    }
+
+    if (panelHttpHandler) {
+      return panelHttpHandler.handleGatewayRequest(req, res);
+    }
+
+    res.writeHead(404, { "Content-Type": "text/plain" });
+    res.end("Not Found");
+  }
+
+  handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
+    const url = req.url ?? "/";
+    const rpcHandler = this.deps.getRpcHandler?.() ?? this.deps.rpcHandler;
+    const panelHttpHandler = this.deps.getPanelHttpHandler?.() ?? this.deps.panelHttpHandler;
+    const workerdPort = this.deps.getWorkerdPort?.() ?? this.deps.workerdPort;
+    const caller = req.natstackCaller;
+    const routeRegistry = this.deps.routeRegistry;
+    const cdpHandler = this.deps.getCdpHandler?.();
+
+    if ((url === "/rpc" || url.startsWith("/rpc?")) && rpcHandler) {
+      if (!this.wss) {
+        socket.destroy();
+        return;
+      }
+      if (!caller) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      this.wss.handleUpgrade(req, socket, head, (ws) => {
+        rpcHandler.handleGatewayWsConnection(ws, stampVerifiedCaller(req, caller), connectionIdFromUrl(url));
+      });
+      return;
+    }
+
+    if (url.startsWith("/_w/")) {
+      if (!caller) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      if (!workerdPort) {
+        socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      stampVerifiedCaller(req, caller);
+      return proxyUpgrade(req, socket, head, workerdPort, this.workerdGatewayToken);
+    }
+
+    if (url.startsWith("/_r/") && routeRegistry) {
+      const handled = handleRouteUpgrade(
+        req,
+        socket,
+        head,
+        url,
+        routeRegistry,
+        workerdPort,
+        this.deps.adminToken,
+        this.workerdGatewayToken
+      );
+      if (handled) return;
+    }
+
+    const cdpBrowserId = browserIdFromCdpPath(url);
+    if (cdpBrowserId && cdpHandler) {
+      if (!this.wss) {
+        socket.destroy();
+        return;
+      }
+      if (!caller) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      void cdpHandler.upgradeWebSocket(
+        stampVerifiedCaller(req, caller),
+        req,
+        socket,
+        head,
+        this.wss,
+        cdpBrowserId
+      );
+      return;
+    }
+
+    if (panelHttpHandler) {
+      return panelHttpHandler.handleGatewayUpgrade(req, socket, head);
+    }
+
+    socket.destroy();
+  }
+
   async start(port: number): Promise<number> {
     const { tlsCert, tlsKey } = this.deps;
 
-    const { healthProvider, adminToken, tokenManager, routeRegistry } = this.deps;
+    const { healthProvider, adminToken, routeRegistry } = this.deps;
     const workerdToken = this.workerdGatewayToken;
 
     const requestHandler = (req: IncomingMessage, res: ServerResponse) => {
+      attachDirectCallerAssertion(req, this.deps.assertionSecret);
       const url = req.url ?? "/";
       const rpcHandler = this.deps.getRpcHandler?.() ?? this.deps.rpcHandler;
       const panelHttpHandler = this.deps.getPanelHttpHandler?.() ?? this.deps.panelHttpHandler;
@@ -175,7 +353,8 @@ export class Gateway {
 
       // /_w/ → workerd reverse proxy
       if (url.startsWith("/_w/")) {
-        if (!validateCallerBearer(req, tokenManager)) {
+        const caller = req.natstackCaller;
+        if (!caller) {
           res.writeHead(401, { "Content-Type": "text/plain" });
           res.end("Unauthorized");
           return;
@@ -197,7 +376,6 @@ export class Gateway {
           routeRegistry,
           workerdPort,
           adminToken,
-          tokenManager,
           workerdToken
         );
         if (handled) return;
@@ -209,18 +387,13 @@ export class Gateway {
         if (req.method === "OPTIONS") {
           return gitHandler.handleHttpRequest(req, res, null, null);
         }
-        const entry = validateCallerBearer(req, tokenManager);
-        if (!entry) {
+        const caller = req.natstackCaller;
+        if (!caller) {
           res.writeHead(401, { "Content-Type": "text/plain" });
           res.end("Unauthorized");
           return;
         }
-        return gitHandler.handleHttpRequest(req, res, entry.callerId, entry.callerKind);
-      }
-
-      // POST /rpc → RPC handler (in-process)
-      if (url === "/rpc" && req.method === "POST" && rpcHandler) {
-        return rpcHandler.handleGatewayHttpRequest(req, res);
+        return gitHandler.handleHttpRequest(req, res, caller.callerId, caller.callerKind);
       }
 
       // Everything else → panel HTTP handler (in-process)
@@ -247,19 +420,19 @@ export class Gateway {
     this.wss = new WebSocketServer({ noServer: true });
 
     this.server.on("upgrade", (req, socket, head) => {
+      attachDirectCallerAssertion(req, this.deps.assertionSecret);
       const url = req.url ?? "/";
       const rpcHandler = this.deps.getRpcHandler?.() ?? this.deps.rpcHandler;
       const panelHttpHandler = this.deps.getPanelHttpHandler?.() ?? this.deps.panelHttpHandler;
       const workerdPort = this.deps.getWorkerdPort?.() ?? this.deps.workerdPort;
+      const cdpHandler = this.deps.getCdpHandler?.();
       const allowedOrigins = buildOriginAllowList(
         this.deps.externalHost,
         this.deps.getPublicUrl?.()
       );
 
-      // Origin allow-list (audit #30). Bearer auth still gates the actual
-      // RPC, but rejecting cross-site browser connects defends against the
-      // case where a malicious local web page learns the loopback port and
-      // tries to ride an existing token via XSS.
+      // Origin allow-list for direct loopback upgrades. Proxied panel traffic is
+      // already tied to a verified caller assertion by EgressProxy.
       if (!isOriginAllowed(req.headers["origin"], allowedOrigins)) {
         log.warn(`WS upgrade rejected: disallowed Origin ${String(req.headers["origin"])}`);
         socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
@@ -269,15 +442,26 @@ export class Gateway {
 
       // /rpc → RPC WebSocket (in-process via WSS)
       if ((url === "/rpc" || url.startsWith("/rpc?")) && rpcHandler) {
+        const caller = req.natstackCaller;
+        if (!caller) {
+          socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+          socket.destroy();
+          return;
+        }
         this.wss!.handleUpgrade(req, socket, head, (ws) => {
-          rpcHandler.handleGatewayWsConnection(ws);
+          rpcHandler.handleGatewayWsConnection(
+            ws,
+            stampVerifiedCaller(req, caller),
+            connectionIdFromUrl(url)
+          );
         });
         return;
       }
 
       // /_w/ → workerd WebSocket proxy
       if (url.startsWith("/_w/")) {
-        if (!validateCallerBearer(req, tokenManager)) {
+        const caller = req.natstackCaller;
+        if (!caller) {
           socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
           socket.destroy();
           return;
@@ -300,11 +484,29 @@ export class Gateway {
           routeRegistry,
           workerdPort,
           adminToken,
-          tokenManager,
           workerdToken
         );
         if (handled) return;
         // Miss → fall through to destroy below.
+      }
+
+      const cdpBrowserId = browserIdFromCdpPath(url);
+      if (cdpBrowserId && cdpHandler) {
+        const caller = req.natstackCaller;
+        if (!caller) {
+          socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+        void cdpHandler.upgradeWebSocket(
+          stampVerifiedCaller(req, caller),
+          req,
+          socket,
+          head,
+          this.wss!,
+          cdpBrowserId
+        );
+        return;
       }
 
       // Default: panel HTTP handler (CDP bridge, etc.)
@@ -449,6 +651,10 @@ function proxyRequest(
   // upstream can attribute the request to "the gateway".
   const safeHeaders = stripUpstreamHeaders(req.headers);
   safeHeaders["authorization"] = `Bearer ${upstreamToken}`;
+  if (req.natstackCaller) {
+    safeHeaders["x-natstack-verified-caller-id"] = req.natstackCaller.callerId;
+    safeHeaders["x-natstack-verified-caller-kind"] = req.natstackCaller.callerKind;
+  }
   if (hostHeader) safeHeaders["host"] = hostHeader;
 
   const proxyReq = request(
@@ -494,6 +700,10 @@ function proxyUpgrade(
   // After stripping, stamp the per-upstream gateway bearer.
   const safeHeaders = stripUpstreamHeaders(req.headers);
   safeHeaders["authorization"] = `Bearer ${upstreamToken}`;
+  if (req.natstackCaller) {
+    safeHeaders["x-natstack-verified-caller-id"] = req.natstackCaller.callerId;
+    safeHeaders["x-natstack-verified-caller-kind"] = req.natstackCaller.callerKind;
+  }
   const targetSocket = connectNet(targetPort, "127.0.0.1", () => {
     const headers = Object.entries(safeHeaders)
       .filter(([, v]) => v !== undefined)
@@ -529,13 +739,60 @@ function extractBearerToken(req: IncomingMessage): string | null {
   return token.length > 0 ? token : null;
 }
 
-function validateCallerBearer(
+function extractBasicCallerAssertion(req: IncomingMessage): string | null {
+  const header = req.headers["proxy-authorization"] ?? req.headers["authorization"];
+  if (typeof header !== "string" || !header.startsWith("Basic ")) return null;
+  try {
+    const decoded = Buffer.from(header.slice("Basic ".length), "base64").toString("utf8");
+    const idx = decoded.indexOf(":");
+    if (idx === -1) return null;
+    const assertion = decoded.slice(idx + 1);
+    return assertion.length > 0 ? assertion : null;
+  } catch {
+    return null;
+  }
+}
+
+function attachDirectCallerAssertion(req: IncomingMessage, assertionSecret?: Buffer): void {
+  if (req.natstackCaller || !assertionSecret) return;
+  const assertion = extractBasicCallerAssertion(req);
+  if (!assertion) return;
+  const verified = verifyCallerAssertion(assertionSecret, assertion, "egress-proxy");
+  if ("error" in verified) return;
+  req.natstackCaller = {
+    callerId: verified.callerId,
+    callerKind: verified.callerKind,
+  };
+}
+
+function stampVerifiedCaller(
   req: IncomingMessage,
-  tokenManager: TokenManager
-): { callerId: string; callerKind: string } | null {
-  const token = extractBearerToken(req);
-  if (!token) return null;
-  return tokenManager.validateToken(token);
+  caller: { callerId: string; callerKind: string }
+): NonNullable<IncomingMessage["natstackCaller"]> {
+  req.natstackCaller = {
+    callerId: caller.callerId,
+    callerKind: caller.callerKind as NonNullable<IncomingMessage["natstackCaller"]>["callerKind"],
+  };
+  return req.natstackCaller;
+}
+
+function connectionIdFromUrl(url: string): string | undefined {
+  try {
+    return new URL(url, "http://127.0.0.1").searchParams.get("connectionId") ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function browserIdFromCdpPath(rawUrl: string): string | null {
+  try {
+    const pathname = new URL(rawUrl, "http://127.0.0.1").pathname;
+    if (!pathname.startsWith("/cdp/")) return null;
+    const encoded = pathname.slice("/cdp/".length);
+    return encoded ? decodeURIComponent(encoded) : null;
+  } catch {
+    return null;
+  }
 }
 
 function validateAdminBearer(req: IncomingMessage, adminToken: string | undefined): boolean {
@@ -549,8 +806,7 @@ function enforceAuth(
   lookup: LookupResult,
   req: IncomingMessage,
   _url: string,
-  adminToken: string | undefined,
-  tokenManager: TokenManager
+  adminToken: string | undefined
 ): boolean {
   switch (lookup.auth) {
     case "public":
@@ -558,7 +814,7 @@ function enforceAuth(
     case "admin-token":
       return validateAdminBearer(req, adminToken);
     case "caller-token":
-      return validateCallerBearer(req, tokenManager) !== null;
+      return !!req.natstackCaller;
   }
 }
 
@@ -566,7 +822,7 @@ function enforceAuth(
  * Build the rewritten target path for a worker-route lookup.
  *
  * - DO-backed: `/_w/<source0>/<source1>/<className>/<objectKey>/<remainder>`
- * - Regular-worker: `/<instanceName>/<remainder>`
+ * - Regular-worker: `/_w/<instanceName>/<remainder>`
  *
  * Preserves the original query string.
  */
@@ -580,7 +836,7 @@ function buildWorkerTargetPath(
   if (lookup.kind === "worker-do") {
     return `/_w/${lookup.source}/${lookup.className}/${lookup.objectKey}${remainder}${query}`;
   }
-  return `/${lookup.targetInstanceName}${remainder}${query}`;
+  return `/_w/${lookup.targetInstanceName}${remainder}${query}`;
 }
 
 /**
@@ -595,7 +851,6 @@ function handleRouteRequest(
   routeRegistry: RouteRegistry,
   workerdPort: number | null | undefined,
   adminToken: string | undefined,
-  tokenManager: TokenManager,
   workerdToken: string
 ): boolean {
   const qIdx = url.indexOf("?");
@@ -613,7 +868,7 @@ function handleRouteRequest(
     return true;
   }
 
-  if (!enforceAuth(result, req, url, adminToken, tokenManager)) {
+  if (!enforceAuth(result, req, url, adminToken)) {
     res.writeHead(401, { "Content-Type": "text/plain" });
     res.end("Unauthorized");
     return true;
@@ -658,7 +913,6 @@ function handleRouteUpgrade(
   routeRegistry: RouteRegistry,
   workerdPort: number | null | undefined,
   adminToken: string | undefined,
-  tokenManager: TokenManager,
   workerdToken: string
 ): boolean {
   const qIdx = url.indexOf("?");
@@ -670,7 +924,7 @@ function handleRouteUpgrade(
     return true;
   }
 
-  if (!enforceAuth(result, req, url, adminToken, tokenManager)) {
+  if (!enforceAuth(result, req, url, adminToken)) {
     socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
     socket.destroy();
     return true;

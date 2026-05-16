@@ -10,7 +10,7 @@ import type { PanelRegistry } from "@natstack/shared/panelRegistry";
 
 describe("getCdpEndpointForCaller", () => {
   it("returns endpoint when cdpServer.getCdpEndpoint succeeds", () => {
-    const endpoint = { wsEndpoint: "ws://127.0.0.1:9222", token: "token" };
+    const endpoint = { wsEndpoint: "ws://127.0.0.1:9222" };
     const cdpServer = {
       getCdpEndpoint: vi.fn().mockReturnValue(endpoint),
     };
@@ -34,7 +34,7 @@ describe("getCdpEndpointForCaller", () => {
 });
 
 describe("browserService handler", () => {
-  const endpoint = { wsEndpoint: "ws://127.0.0.1:9222", token: "token" };
+  const endpoint = { wsEndpoint: "ws://127.0.0.1:9222" };
   const cdpServer = {
     getCdpEndpoint: vi.fn().mockReturnValue(endpoint),
     panelOwnsBrowser: vi.fn().mockReturnValue(true),

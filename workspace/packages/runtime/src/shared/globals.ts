@@ -60,12 +60,6 @@ const g = globalThis as unknown as {
   __natstackEnv?: Record<string, string>;
 };
 
-function toWebSocketUrl(serverUrl: string): string {
-  const url = new URL(serverUrl);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  return url.toString().replace(/\/$/, "");
-}
-
 /**
  * Get the injected configuration from globals.
  */
@@ -93,7 +87,7 @@ export function getInjectedConfig(): InjectedConfig {
     sourceRepo,
   };
   const pubsubConfig: PubSubConfig = {
-    serverUrl: toWebSocketUrl(g.__natstackGatewayConfig.serverUrl),
+    serverUrl: g.__natstackGatewayConfig.serverUrl.replace(/\/$/, ""),
     token: g.__natstackGatewayConfig.token,
   };
 

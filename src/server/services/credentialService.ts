@@ -31,16 +31,12 @@ import type {
   CredentialBindingUse,
   CredentialFlowType,
   CredentialGrantAction,
-  CredentialUseGrant,
   DeleteClientConfigRequest,
   ForwardOAuthCallbackRequest,
   GetClientConfigStatusRequest,
-  GrantUrlBoundCredentialRequest,
   OAuthConnectionErrorCode,
   OAuthConnectionTransactionState,
   OAuthAccountValidationSpec,
-  ProxyGitHttpRequest,
-  ProxyGitHttpResponse,
   RequestCredentialInputRequest,
   ConfigureClientRequest,
   ResolveUrlBoundCredentialRequest,
@@ -56,14 +52,8 @@ import {
 import type { ServiceContext } from "../../../packages/shared/src/serviceDispatcher.js";
 import type { ServiceDefinition } from "../../../packages/shared/src/serviceDefinition.js";
 import type { CodeIdentityResolver } from "./codeIdentityResolver.js";
-import type { EgressProxy } from "./egressProxy.js";
 import type { ApprovalQueue, GrantedDecision } from "./approvalQueue.js";
 import { CredentialLifecycle, CredentialLifecycleError } from "./credentialLifecycle.js";
-import {
-  CredentialSessionGrantStore,
-  type CredentialSessionGrantResource,
-  type CredentialSessionGrantScope,
-} from "./credentialSessionGrants.js";
 
 const log = createDevLogger("CredentialService");
 const IDENTIFIER_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9._@+=:-]{0,127}$/;
@@ -537,39 +527,11 @@ const credentialIdParamsSchema = z
   })
   .strict();
 
-const grantCredentialParamsSchema = z
-  .object({
-    credentialId: identifierSchema,
-    callerId: identifierSchema,
-    grantedBy: z.string().min(1).max(128).optional(),
-  })
-  .strict();
-
 const resolveCredentialParamsSchema = z
   .object({
     url: z.string().url(),
     credentialId: identifierSchema.optional(),
     use: z.enum(["fetch", "git-http", "git-ssh"]).optional(),
-  })
-  .strict();
-
-const proxyFetchParamsSchema = z
-  .object({
-    url: z.string().url(),
-    method: z.string().min(1).max(16),
-    headers: z.record(z.string()).optional(),
-    body: z.string().optional(),
-    credentialId: identifierSchema.optional(),
-  })
-  .strict();
-
-const proxyGitHttpParamsSchema = z
-  .object({
-    url: z.string().url(),
-    method: z.string().min(1).max(16).optional(),
-    headers: z.record(z.string()).optional(),
-    bodyBase64: z.string().optional(),
-    credentialId: identifierSchema.optional(),
   })
   .strict();
 
@@ -597,10 +559,7 @@ type ConnectCredentialParams = z.infer<typeof connectCredentialParamsSchema>;
 type DeleteClientConfigParams = z.infer<typeof deleteClientConfigParamsSchema>;
 type ForwardOAuthCallbackParams = z.infer<typeof forwardOAuthCallbackParamsSchema>;
 type CredentialIdParams = z.infer<typeof credentialIdParamsSchema>;
-type GrantCredentialParams = z.infer<typeof grantCredentialParamsSchema>;
 type ResolveCredentialParams = z.infer<typeof resolveCredentialParamsSchema>;
-type ProxyFetchParams = z.infer<typeof proxyFetchParamsSchema>;
-type ProxyGitHttpParams = z.infer<typeof proxyGitHttpParamsSchema>;
 type AuditParams = z.infer<typeof auditParamsSchema>;
 type AuthCodeConnectRequest = {
   flow: {
@@ -647,7 +606,6 @@ interface CredentialUseContext {
   binding: CredentialBinding;
   resource: string;
   action: CredentialGrantAction;
-  sessionResource: CredentialSessionGrantResource;
   gitOperation?: {
     action: "read" | "write";
     label: string;
@@ -796,10 +754,8 @@ interface CredentialServiceDeps {
   auditLog?: AuditLog;
   eventService?: Pick<EventService, "emit" | "emitToCaller" | "emitToConnection">;
   tokenManager?: Pick<TokenManager, "getPanelOwner" | "getPanelOwnerConnection">;
-  egressProxy?: Pick<EgressProxy, "forwardProxyFetch" | "forwardGitHttp">;
   codeIdentityResolver?: Pick<CodeIdentityResolver, "resolveByCallerId">;
   approvalQueue?: ApprovalQueue;
-  sessionGrantStore?: CredentialSessionGrantStore;
   credentialLifecycle?: CredentialLifecycle;
   sessionCredentialCapture?: SessionCredentialCapture;
 }
@@ -876,10 +832,8 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
   const auditLog = deps.auditLog;
   const eventService = deps.eventService;
   const tokenManager = deps.tokenManager;
-  const egressProxy = deps.egressProxy;
   const codeIdentityResolver = deps.codeIdentityResolver;
   const approvalQueue = deps.approvalQueue;
-  const sessionGrantStore = deps.sessionGrantStore ?? new CredentialSessionGrantStore();
   const sessionCredentialCapture = deps.sessionCredentialCapture;
   const credentialLifecycle =
     deps.credentialLifecycle ??
@@ -953,7 +907,6 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     params: StoreUrlBoundCredentialParams,
     opts: {
       approvalDecision?: Exclude<GrantedDecision, "deny">;
-      preapprovedUseDecision?: Exclude<GrantedDecision, "deny">;
       replaceCredentialId?: string;
       replacementCredentialLabel?: string;
     } = {}
@@ -990,7 +943,6 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       label: request.label,
       owner,
       bindings,
-      grants: [],
       providerId: "url-bound",
       connectionId: id,
       connectionLabel: request.label,
@@ -1005,16 +957,6 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         materialType: request.material.type,
       },
     };
-
-    if (opts.preapprovedUseDecision) {
-      applyPreapprovedCredentialUseGrants(
-        ctx,
-        credential as Credential & { id: string },
-        bindings,
-        opts.preapprovedUseDecision,
-        now
-      );
-    }
 
     await credentialStore.saveUrlBound(credential as Credential & { id: string });
     await appendAudit({
@@ -1801,10 +1743,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
           sshPublicKey: publicKey,
         },
       },
-      {
-        approvalDecision,
-        preapprovedUseDecision: approvalDecision,
-      }
+      { approvalDecision }
     );
     const persisted = await credentialStore.loadUrlBound(stored.id);
     if (persisted?.id) {
@@ -1892,10 +1831,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
           ...(request.flow.revocationUrl ? { oauthRevocationUrl: request.flow.revocationUrl } : {}),
         },
       },
-      {
-        approvalDecision,
-        preapprovedUseDecision: approvalDecision,
-      }
+      { approvalDecision }
     );
   }
 
@@ -1967,7 +1903,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
           ...(request.flow.revocationUrl ? { oauthRevocationUrl: request.flow.revocationUrl } : {}),
         },
       },
-      { approvalDecision, preapprovedUseDecision: approvalDecision }
+      { approvalDecision }
     );
     if (token.refreshToken) {
       const persisted = await credentialStore.loadUrlBound(stored.id);
@@ -2024,7 +1960,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         "Subject credential binding cannot be authorized"
       );
     }
-    await authorizeCredentialUse(ctx, subject, subjectUsage);
+    if (!canCallerSeeStoredCredential(ctx, subject)) {
+      throw new OAuthConnectionError("client_not_authorized", "Subject credential is unavailable");
+    }
     const audience = normalizeUrlAudiences(request.credential.audience);
     const injection = normalizeCredentialInjection(request.credential.injection);
     const identity = resolveApprovalIdentity(ctx);
@@ -2082,7 +2020,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
           ...(request.flow.revocationUrl ? { oauthRevocationUrl: request.flow.revocationUrl } : {}),
         },
       },
-      { approvalDecision, preapprovedUseDecision: approvalDecision }
+      { approvalDecision }
     );
     if (token.refreshToken) {
       const persisted = await credentialStore.loadUrlBound(stored.id);
@@ -2162,10 +2100,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
           capturedCookieNames: request.flow.capture.cookies.join(","),
         },
       },
-      {
-        approvalDecision,
-        preapprovedUseDecision: approvalDecision,
-      }
+      { approvalDecision }
     );
     const persisted = await credentialStore.loadUrlBound(stored.id);
     if (persisted?.id) {
@@ -2251,10 +2186,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
           capturedCookieNames: request.flow.capture.cookies?.join(",") ?? "",
         },
       },
-      {
-        approvalDecision,
-        preapprovedUseDecision: approvalDecision,
-      }
+      { approvalDecision }
     );
     const persisted = await credentialStore.loadUrlBound(stored.id);
     if (persisted?.id) {
@@ -2398,10 +2330,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
           ...(request.flow.revocationUrl ? { oauthRevocationUrl: request.flow.revocationUrl } : {}),
         },
       },
-      {
-        approvalDecision,
-        preapprovedUseDecision: approvalDecision,
-      }
+      { approvalDecision }
     );
     if (token.refreshToken) {
       const persisted = await credentialStore.loadUrlBound(stored.id);
@@ -2547,10 +2476,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
             oauthAuthorizeOrigin: new URL(request.flow.authorizeUrl).origin,
           },
         },
-        {
-          approvalDecision,
-          preapprovedUseDecision: approvalDecision,
-        }
+        { approvalDecision }
       );
       const persisted = await credentialStore.loadUrlBound(stored.id);
       if (persisted?.id) {
@@ -2751,7 +2677,6 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         },
         {
           approvalDecision: duplicate ? undefined : approvalDecision,
-          preapprovedUseDecision: approvalDecision,
           replaceCredentialId: duplicate?.id,
           replacementCredentialLabel: duplicate?.label ?? duplicate?.connectionLabel,
         }
@@ -3374,17 +3299,6 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     }
   }
 
-  async function grantCredential(
-    ctx: ServiceContext,
-    params: GrantCredentialParams
-  ): Promise<StoredCredentialSummary> {
-    requireShellOrServer(ctx, "grantCredential");
-    const request = params as GrantUrlBoundCredentialRequest;
-    void request.callerId;
-    void request.grantedBy;
-    throw new Error("credentials.grantCredential was replaced by scoped approval grants");
-  }
-
   async function resolveCredential(
     ctx: ServiceContext,
     params: ResolveCredentialParams
@@ -3397,56 +3311,14 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       if (!usage) {
         throw new Error("Credential audience does not match requested URL");
       }
-      await authorizeCredentialUse(ctx, credential, usage);
+      if (!canCallerSeeStoredCredential(ctx, credential)) {
+        throw new Error("Credential caller is not granted");
+      }
       return summarizeUrlBoundCredential(credential);
     }
 
     const credential = await resolveCredentialForUrl(ctx, new URL(request.url), use);
     return credential ? summarizeUrlBoundCredential(credential) : null;
-  }
-
-  async function proxyFetch(
-    ctx: ServiceContext,
-    params: ProxyFetchParams
-  ): Promise<{
-    status: number;
-    statusText: string;
-    headers: Record<string, string>;
-    body: string;
-  }> {
-    if (!egressProxy) {
-      throw new Error("Egress proxy is unavailable");
-    }
-    return egressProxy.forwardProxyFetch({
-      callerId: ctx.callerId,
-      url: params.url,
-      method: params.method,
-      headers: params.headers,
-      body: params.body,
-      credentialId: params.credentialId,
-    });
-  }
-
-  async function proxyGitHttp(
-    ctx: ServiceContext,
-    params: ProxyGitHttpParams
-  ): Promise<ProxyGitHttpResponse> {
-    if (!egressProxy) {
-      throw new Error("Egress proxy is unavailable");
-    }
-    const request = params as ProxyGitHttpRequest;
-    const result = await egressProxy.forwardGitHttp({
-      callerId: ctx.callerId,
-      url: request.url,
-      method: request.method ?? "GET",
-      headers: request.headers ?? {},
-      body: request.bodyBase64 ? Buffer.from(request.bodyBase64, "base64") : undefined,
-      credentialId: request.credentialId,
-    });
-    return {
-      ...result,
-      bodyBase64: Buffer.from(result.body).toString("base64"),
-    };
   }
 
   async function audit(params: AuditParams): Promise<AuditEntry[]> {
@@ -3682,7 +3554,9 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         if (!usage) {
           throw new Error("Credential audience does not match requested URL");
         }
-        await authorizeCredentialUse(ctx, active, usage);
+        if (!canCallerSeeStoredCredential(ctx, active)) {
+          return null;
+        }
         return active;
       }
       return credential;
@@ -3745,66 +3619,6 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     );
   }
 
-  async function authorizeCredentialUse(
-    ctx: ServiceContext,
-    credential: Credential,
-    usage: CredentialUseContext
-  ): Promise<void> {
-    if (canCallerUseStoredCredential(ctx, credential, usage)) {
-      return;
-    }
-    if (!approvalQueue || (ctx.callerKind !== "panel" && ctx.callerKind !== "worker")) {
-      throw new Error("Credential caller is not granted");
-    }
-    if (!credential.id) {
-      throw new Error("Credential is missing URL-bound metadata");
-    }
-    const identity = resolveApprovalIdentity(ctx);
-    const decision = await approvalQueue.request({
-      callerId: ctx.callerId,
-      callerKind: ctx.callerKind,
-      repoPath: identity.repoPath,
-      effectiveVersion: identity.effectiveVersion,
-      credentialId: credential.id,
-      credentialLabel: credential.label ?? credential.connectionLabel,
-      audience: usage.binding.audience,
-      injection: usage.binding.injection,
-      accountIdentity: credential.accountIdentity,
-      scopes: credential.scopes,
-      credentialUse: usage.binding.use,
-      gitOperation: usage.gitOperation,
-      oauthAuthorizeOrigin: credential.metadata?.["oauthAuthorizeOrigin"],
-      oauthTokenOrigin: credential.metadata?.["oauthTokenOrigin"],
-      oauthUserinfoOrigin: credential.metadata?.["oauthUserinfoOrigin"],
-      oauthAudienceDomainMismatch: hasOAuthAudienceDomainMismatch(usage.binding.audience, [
-        credential.metadata?.["oauthAuthorizeOrigin"],
-        credential.metadata?.["oauthTokenOrigin"],
-      ]),
-    });
-    if (decision === "deny") {
-      throw new Error("Credential approval denied");
-    }
-    if (decision === "once") {
-      return;
-    }
-    const now = Date.now();
-    if (decision === "session") {
-      grantSessionCredentialUse(credential.id, identity, usage.sessionResource);
-      return;
-    }
-    await credentialStore.saveUrlBound({
-      ...credential,
-      grants: upsertCredentialUseGrant(
-        credential.grants ?? [],
-        grantForDecision(ctx.callerId, identity, decision, now, usage)
-      ),
-      metadata: {
-        ...(credential.metadata ?? {}),
-        updatedAt: String(now),
-      },
-    } as Credential & { id: string });
-  }
-
   function canCallerSeeStoredCredential(ctx: ServiceContext, credential: Credential): boolean {
     if (ctx.callerKind === "shell" || ctx.callerKind === "server") {
       return true;
@@ -3816,21 +3630,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     if (credential.owner?.sourceId === identity.repoPath) {
       return true;
     }
-    return !!credential.grants?.some((grant) => grantAppliesToIdentity(grant, identity));
-  }
-
-  function canCallerUseStoredCredential(
-    ctx: ServiceContext,
-    credential: Credential,
-    usage: CredentialUseContext
-  ): boolean {
-    if (ctx.callerKind === "shell" || ctx.callerKind === "server") {
-      return true;
-    }
-    return (
-      hasPersistentCredentialUse(ctx, credential, usage) ||
-      hasSessionCredentialUse(ctx, credential, usage)
-    );
+    return false;
   }
 
   function canCallerAdministerStoredCredential(
@@ -3841,67 +3641,6 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       return true;
     }
     return canCallerSeeStoredCredential(ctx, credential);
-  }
-
-  function grantSessionCredentialUse(
-    credentialId: string,
-    identity: CredentialSessionGrantScope,
-    resource: CredentialSessionGrantResource
-  ): void {
-    sessionGrantStore.grant(credentialId, identity, resource);
-  }
-
-  function applyPreapprovedCredentialUseGrants(
-    ctx: ServiceContext,
-    credential: Credential & { id: string },
-    bindings: CredentialBinding[],
-    decision: Exclude<GrantedDecision, "deny">,
-    now: number
-  ): void {
-    const identity = resolveApprovalIdentity(ctx);
-    const usageContexts = bindings.flatMap(preapprovedUseContextsForBinding);
-    if (decision === "once" || decision === "session") {
-      for (const usage of usageContexts) {
-        grantSessionCredentialUse(credential.id, identity, usage.sessionResource);
-      }
-      return;
-    }
-    credential.grants = usageContexts.reduce(
-      (grants, usage) =>
-        upsertCredentialUseGrant(
-          grants,
-          grantForDecision(ctx.callerId, identity, decision, now, usage)
-        ),
-      credential.grants ?? []
-    );
-  }
-
-  function hasSessionCredentialUse(
-    ctx: ServiceContext,
-    credential: Credential,
-    usage: CredentialUseContext
-  ): boolean {
-    const credentialId = credential.id ?? credential.connectionId;
-    if (!credentialId) {
-      return false;
-    }
-    return sessionGrantStore.has(credentialId, resolveApprovalIdentity(ctx), usage.sessionResource);
-  }
-
-  function hasPersistentCredentialUse(
-    ctx: ServiceContext,
-    credential: Credential,
-    usage: CredentialUseContext
-  ): boolean {
-    const identity = resolveApprovalIdentity(ctx);
-    return !!credential.grants?.some(
-      (grant) =>
-        grant.bindingId === usage.binding.id &&
-        grant.use === usage.binding.use &&
-        grant.resource === usage.resource &&
-        grant.action === usage.action &&
-        grantAppliesToIdentity(grant, identity)
-    );
   }
 
   const definition: ServiceDefinition = {
@@ -3918,10 +3657,7 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
       forwardOAuthCallback: { args: z.tuple([forwardOAuthCallbackParamsSchema]) },
       listStoredCredentials: { args: z.tuple([]) },
       revokeCredential: { args: z.tuple([credentialIdParamsSchema]) },
-      grantCredential: { args: z.tuple([grantCredentialParamsSchema]) },
       resolveCredential: { args: z.tuple([resolveCredentialParamsSchema]) },
-      proxyFetch: { args: z.tuple([proxyFetchParamsSchema]) },
-      proxyGitHttp: { args: z.tuple([proxyGitHttpParamsSchema]) },
       audit: { args: z.tuple([auditParamsSchema]) },
     },
     handler: async (ctx, method, args) => {
@@ -3944,14 +3680,8 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
           return listStoredCredentials(ctx);
         case "revokeCredential":
           return revokeCredential(ctx, (args as [CredentialIdParams])[0]);
-        case "grantCredential":
-          return grantCredential(ctx, (args as [GrantCredentialParams])[0]);
         case "resolveCredential":
           return resolveCredential(ctx, (args as [ResolveCredentialParams])[0]);
-        case "proxyFetch":
-          return proxyFetch(ctx, (args as [ProxyFetchParams])[0]);
-        case "proxyGitHttp":
-          return proxyGitHttp(ctx, (args as [ProxyGitHttpParams])[0]);
         case "audit":
           return audit((args as [AuditParams])[0]);
         default:
@@ -4447,31 +4177,8 @@ function credentialUseContext(
     binding,
     resource,
     action,
-    sessionResource: {
-      bindingId: binding.id,
-      resource,
-      action,
-    },
     gitOperation,
   };
-}
-
-function preapprovedUseContextsForBinding(binding: CredentialBinding): CredentialUseContext[] {
-  return binding.audience.map((audience) => {
-    const action: CredentialGrantAction =
-      binding.use === "git-http" || binding.use === "git-ssh" ? "read" : "use";
-    return {
-      binding,
-      resource: audience.url,
-      action,
-      sessionResource: {
-        bindingId: binding.id,
-        resource: audience.url,
-        action,
-      },
-      gitOperation: undefined,
-    };
-  });
 }
 
 function describeGitHttpOperation(
@@ -4513,73 +4220,6 @@ function requireShellOrServer(ctx: ServiceContext, method: string): void {
   if (ctx.callerKind !== "shell" && ctx.callerKind !== "server") {
     throw new Error(`credentials.${method} is restricted to shell/server callers`);
   }
-}
-
-function grantForDecision(
-  callerId: string,
-  identity: { repoPath: string; effectiveVersion: string },
-  decision: Exclude<GrantedDecision, "deny" | "once" | "session">,
-  grantedAt: number,
-  usage: CredentialUseContext
-): CredentialUseGrant {
-  const base = {
-    bindingId: usage.binding.id,
-    use: usage.binding.use,
-    resource: usage.resource,
-    action: usage.action,
-    grantedAt,
-    grantedBy: decision,
-  };
-  if (decision === "repo") {
-    return { ...base, scope: "repo", repoPath: identity.repoPath };
-  }
-  if (decision === "version") {
-    return {
-      ...base,
-      scope: "version",
-      repoPath: identity.repoPath,
-      effectiveVersion: identity.effectiveVersion,
-    };
-  }
-  return { ...base, scope: "caller", callerId };
-}
-
-function upsertCredentialUseGrant(
-  grants: CredentialUseGrant[],
-  grant: CredentialUseGrant
-): CredentialUseGrant[] {
-  return [
-    ...grants.filter((entry) => credentialUseGrantKey(entry) !== credentialUseGrantKey(grant)),
-    grant,
-  ];
-}
-
-function credentialUseGrantKey(grant: CredentialUseGrant): string {
-  return [
-    grant.bindingId,
-    grant.use,
-    grant.resource,
-    grant.action,
-    grant.scope,
-    grant.callerId ?? "",
-    grant.repoPath ?? "",
-    grant.effectiveVersion ?? "",
-  ].join("\x00");
-}
-
-function grantAppliesToIdentity(
-  grant: CredentialUseGrant,
-  identity: { callerId?: string; repoPath: string; effectiveVersion: string }
-): boolean {
-  if (grant.scope === "caller") {
-    return !!identity.callerId && grant.callerId === identity.callerId;
-  }
-  if (grant.scope === "repo") {
-    return grant.repoPath === identity.repoPath;
-  }
-  return (
-    grant.repoPath === identity.repoPath && grant.effectiveVersion === identity.effectiveVersion
-  );
 }
 
 function hasOAuthAudienceDomainMismatch(

@@ -40,6 +40,7 @@ function createWorkerdHarness(overrides: Partial<WorkerdManagerDeps> = {}) {
     workspacePath: mkdtempSync(join(tmpdir(), "natstack-workerd-workspace-")),
     statePath: mkdtempSync(join(tmpdir(), "natstack-workerd-state-")),
     getProxyPort: () => 9,
+    assertionSecret: Buffer.from("a".repeat(64), "hex"),
     getWorkerdGatewayToken: () => "internal-test-workerd-gateway-token",
     codeIdentityResolver: {
       upsertCallerIdentity: () => {},
@@ -49,13 +50,11 @@ function createWorkerdHarness(overrides: Partial<WorkerdManagerDeps> = {}) {
   } satisfies WorkerdManagerDeps);
 
   const dispatch = new DODispatch();
-  dispatch.setTokenManager(tokenManager);
   dispatch.setGetWorkerdUrl(() => {
     const port = manager.getPort();
     if (!port) throw new Error("workerd port is not available");
     return `http://127.0.0.1:${port}`;
   });
-  dispatch.setGetDispatchSecret(() => manager.getDispatchSecret());
   dispatch.setGetWorkerdGatewayToken(() => manager.getWorkerdGatewayToken());
   dispatch.setEnsureDO((source, className, objectKey) =>
     manager.ensureDO(source, className, objectKey)

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StoredCredentialSummary } from "@workspace/runtime";
 
 const runtimeMock = vi.hoisted(() => ({
@@ -8,7 +8,6 @@ const runtimeMock = vi.hoisted(() => ({
     getClientConfigStatus: vi.fn(),
     listStoredCredentials: vi.fn(),
     revokeCredential: vi.fn(),
-    fetch: vi.fn(),
   },
 }));
 
@@ -67,12 +66,16 @@ describe("google-workspace skill facade", () => {
       },
     });
     runtimeMock.credentials.connect.mockResolvedValue(googleCredential);
-    runtimeMock.credentials.fetch.mockResolvedValue(
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ email: "user@example.com" }), {
         status: 200,
         headers: { "content-type": "application/json" },
       })
-    );
+    ));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("reports needs-setup when no client or Google credential exists", async () => {
@@ -249,5 +252,13 @@ describe("google-workspace skill facade", () => {
       email: "user@example.com",
       scopes: googleCredential.scopes,
     });
+    expect(fetch).toHaveBeenCalledWith(
+      "https://www.googleapis.com/oauth2/v1/userinfo?alt=json",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "X-NatStack-Use-Credential": "cred-google",
+        }),
+      })
+    );
   });
 });

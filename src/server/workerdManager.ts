@@ -17,6 +17,7 @@ import * as path from "path";
 import * as os from "os";
 import { pathToFileURL } from "url";
 import type { TokenManager } from "@natstack/shared/tokenManager";
+import { mintCallerAssertion } from "@natstack/shared/identity/callerAssertion";
 import type { FsService } from "@natstack/shared/fsService";
 import type { BuildResult } from "./buildV2/buildStore.js";
 import type { RouteRegistry, ManifestRouteDecl } from "./routeRegistry.js";
@@ -96,7 +97,7 @@ export interface WorkerInstance {
   source: string;
   contextId: string;
   callerId: string;
-  token: string;
+  token?: string;
   env: Record<string, string>;
   bindings: Record<string, WorkerBinding>;
   stateArgs?: Record<string, unknown>;
@@ -130,6 +131,7 @@ export interface WorkerdManagerDeps {
   /** Manifest-route lookup, keyed by source. Used alongside routeRegistry. */
   getManifestRoutes?: (source: string) => ManifestRouteDecl[];
   getProxyPort: () => number | null;
+  assertionSecret?: Buffer;
   getWorkerdGatewayToken: () => string;
   codeIdentityResolver: Pick<CodeIdentityResolver, "upsertCallerIdentity" | "unregisterCaller">;
   cleanupWebhookSubscriptions?: (callerId: string) => Promise<void>;
@@ -162,7 +164,6 @@ export class WorkerdManager {
   >();
   /** Session ID — generated once per WorkerdManager lifetime, used for restart detection in bootstrap. */
   private sessionId = crypto.randomUUID();
-  private dispatchSecret = crypto.randomBytes(32).toString("base64url");
 
   constructor(deps: WorkerdManagerDeps) {
     this.deps = deps;
@@ -342,9 +343,6 @@ export class WorkerdManager {
     const callerId = `worker:${name}`;
     const contextId = options.contextId;
 
-    // Create auth token
-    const token = this.deps.tokenManager.ensureToken(callerId, "worker");
-
     // Register context with FsService
     this.deps.fsService.registerCallerContext(callerId, contextId);
 
@@ -353,7 +351,6 @@ export class WorkerdManager {
       source: options.source,
       contextId,
       callerId,
-      token,
       env: options.env ?? {},
       bindings: options.bindings ?? {},
       stateArgs: options.stateArgs,
@@ -397,7 +394,6 @@ export class WorkerdManager {
       // Rollback: clean up token, context registration, and instance map entry
       instance.status = "error";
       this.instances.delete(name);
-      this.deps.tokenManager.revokeToken(callerId);
       this.deps.fsService.unregisterCallerContext(callerId);
       log.error(`Failed to start worker "${name}":`, error);
       throw error;
@@ -476,10 +472,6 @@ export class WorkerdManager {
     return this.port;
   }
 
-  getDispatchSecret(): string {
-    return this.dispatchSecret;
-  }
-
   getWorkerdGatewayToken(): string {
     return this.deps.getWorkerdGatewayToken();
   }
@@ -530,11 +522,7 @@ export class WorkerdManager {
 
       doServiceNames.add(doService.serviceName);
 
-      // Service-level auth token — shared by all DO instances of this source:className.
-      // Created once when the service is first built, revoked only when the last instance is destroyed.
-      // NOT tied to any individual instance's lifecycle.
       const serviceCallerId = `do-service:${serviceKey}`;
-      const serviceToken = this.deps.tokenManager.ensureToken(serviceCallerId, "worker");
 
       this.deps.codeIdentityResolver.upsertCallerIdentity({
         callerId: serviceCallerId,
@@ -543,7 +531,6 @@ export class WorkerdManager {
         effectiveVersion: doService.buildKey,
       });
       const bindings: object[] = [
-        { name: "RPC_AUTH_TOKEN", text: serviceToken },
         // Source-scoped class identity
         { name: "WORKER_SOURCE", text: doService.source },
         { name: "WORKER_CLASS_NAME", text: className },
@@ -593,7 +580,16 @@ export class WorkerdManager {
         name: networkServiceName,
         external: {
           address: `127.0.0.1:${proxyPort}`,
-          http: { forwardedProtoHeader: "X-Forwarded-Proto" },
+          http: {
+            style: "proxy",
+            forwardedProtoHeader: "X-Forwarded-Proto",
+            injectRequestHeaders: [
+              {
+                name: "Proxy-Authorization",
+                value: this.mintProxyAuthorization(serviceCallerId),
+              },
+            ],
+          },
         },
       });
     }
@@ -621,8 +617,8 @@ export class WorkerdManager {
 
       // Build bindings array
       const bindings: object[] = [
-        { name: "RPC_AUTH_TOKEN", text: instance.token },
         { name: "WORKER_ID", text: instance.name },
+        { name: "WORKER_SOURCE", text: instance.source },
         { name: "CONTEXT_ID", text: instance.contextId },
         { name: "GATEWAY_URL", text: this.deps.getServerUrl() },
       ];
@@ -685,7 +681,16 @@ export class WorkerdManager {
         name: networkServiceName,
         external: {
           address: `127.0.0.1:${proxyPort}`,
-          http: { forwardedProtoHeader: "X-Forwarded-Proto" },
+          http: {
+            style: "proxy",
+            forwardedProtoHeader: "X-Forwarded-Proto",
+            injectRequestHeaders: [
+              {
+                name: "Proxy-Authorization",
+                value: this.mintProxyAuthorization(instance.callerId),
+              },
+            ],
+          },
         },
       });
     }
@@ -720,11 +725,16 @@ export class WorkerdManager {
       }
 
       const routerCode = this.generateRouterCode(instanceNames, doClassNames);
-      routerBindings.push({ name: "DISPATCH_SECRET", text: this.dispatchSecret });
       routerBindings.push({
         name: "WORKERD_GATEWAY_TOKEN",
         text: this.deps.getWorkerdGatewayToken(),
       });
+      if (this.deps.assertionSecret) {
+        routerBindings.push({
+          name: "NATSTACK_ASSERTION_SECRET_B64",
+          text: this.deps.assertionSecret.toString("base64"),
+        });
+      }
 
       services.push({
         name: "router",
@@ -778,6 +788,10 @@ export class WorkerdManager {
       const bindingName = `worker_${name.replace(/[^a-zA-Z0-9_]/g, "_")}`;
       return `    if (prefix === ${JSON.stringify(name)}) return env.${bindingName}.fetch(new Request(newUrl, strippedRequest));`;
     });
+    const wCases = instanceNames.map((name) => {
+      const bindingName = `worker_${name.replace(/[^a-zA-Z0-9_]/g, "_")}`;
+      return `        if (workerName === ${JSON.stringify(name)}) return env.${bindingName}.fetch(new Request(workerUrl, strippedRequest));`;
+    });
 
     // Build DO lookup map: "source:className" → binding name.
     // The lookup key combines source + className so same-named classes from different sources
@@ -788,57 +802,82 @@ export class WorkerdManager {
       return `      ${JSON.stringify(lookupKey)}: env.${bindingName}`;
     });
 
-    // Generate DO routing block for /_w/{source0}/{source1}/{className}/{objectKey}/{method...}
+    // Generate DO routing block for /_w/{source0}/{source1}/{className}/{objectKey}/{route...}
     // Source path is always exactly 2 segments (e.g., "workers/agent-worker")
     let doBlock = "";
     if (doClassNames.length > 0) {
       doBlock = `
-    // /_w/{source0}/{source1}/{className}/{objectKey}/{...method} — source-scoped DO routes
+    // /_w/{source0}/{source1}/{className}/{objectKey}/{...route} — source-scoped DO routes
     if (prefix === "_w") {
-      const presented = request.headers.get("x-natstack-dispatch-secret") || "";
-      const expected = env.DISPATCH_SECRET || "";
-      if (presented) {
-        if (!expected || presented.length !== expected.length) {
-          return new Response(JSON.stringify({ error: "unauthorized: invalid dispatch secret" }), {
-            status: 401,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        let diff = 0;
-        for (let i = 0; i < expected.length; i++) {
-          diff |= presented.charCodeAt(i) ^ expected.charCodeAt(i);
-        }
-        if (diff !== 0) {
-          return new Response(JSON.stringify({ error: "unauthorized: dispatch secret mismatch" }), {
-            status: 401,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-      }
       const source = parts[1] + "/" + parts[2];
       const doClass = parts[3] || "";
       const objectKey = parts[4] || "";
       const doRest = parts.slice(5);
-      if (!doClass || !objectKey) {
-        return new Response("Usage: /_w/{source0}/{source1}/{className}/{objectKey}/{method}", { status: 400 });
-      }
       const doLookup = {
 ${doLookupEntries.join(",\n")}
       };
-      const ns = doLookup[source + ":" + doClass];
+      const ns = doClass && objectKey ? doLookup[source + ":" + doClass] : undefined;
       if (ns) {
         const id = ns.idFromName(objectKey);
         const stub = ns.get(id);
         const doUrl = new URL("/" + objectKey + (doRest.length ? "/" + doRest.join("/") : ""), url.origin);
         doUrl.search = url.search;
-        return stub.fetch(new Request(doUrl, strippedRequest));
+        const doHeaders = new Headers(strippedHeaders);
+        const objectCallerId = "do:" + source + ":" + doClass + ":" + objectKey;
+        const objectAssertion = await mintCallerAssertion(env.NATSTACK_ASSERTION_SECRET_B64, objectCallerId);
+        if (objectAssertion) {
+          doHeaders.set("X-NatStack-Object-Caller-Id", objectCallerId);
+          doHeaders.set("X-NatStack-Object-Assertion", objectAssertion);
+        }
+        return stub.fetch(new Request(doUrl, new Request(strippedRequest, { headers: doHeaders })));
       }
-      return new Response("DO class not found: " + doClass + " (source: " + source + ")", { status: 404 });
+      const workerName = parts[1] || "";
+      const workerRest = "/" + parts.slice(2).join("/");
+      const workerUrl = new URL(workerRest, url.origin);
+      workerUrl.search = url.search;
+${wCases.join("\n")}
+      return new Response("Worker route not found: " + parts.slice(1).join("/"), { status: 404 });
     }
 `;
     }
 
-    return `export default {
+    return `const encoder = new TextEncoder();
+
+function base64UrlFromBytes(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/g, "");
+}
+
+function bytesFromBase64(value) {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function mintCallerAssertion(secretB64, callerId) {
+  if (!secretB64) return null;
+  const issuedAt = Date.now();
+  const payload = {
+    cid: callerId,
+    ck: "worker",
+    aud: "egress-proxy",
+    iat: issuedAt,
+  };
+  const payloadB64 = base64UrlFromBytes(encoder.encode(JSON.stringify(payload)));
+  const key = await crypto.subtle.importKey(
+    "raw",
+    bytesFromBase64(secretB64),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(payloadB64));
+  return payloadB64 + "." + base64UrlFromBytes(new Uint8Array(signature));
+}
+
+export default {
   async fetch(request, env) {
     const expectedAuth = "Bearer " + env.WORKERD_GATEWAY_TOKEN;
     if (request.headers.get("Authorization") !== expectedAuth) {
@@ -912,12 +951,27 @@ ${doBlock}${cases.join("\n")}
           fs.writeFileSync(path.join(this.configDir, filename), v);
           return `${indent}${k} = embed "${filename}",`;
         }
+        if (k === "style" && v === "proxy") {
+          return `${indent}${k} = proxy,`;
+        }
         return `${indent}${k} = ${this.capnpValue(v, depth + 1)},`;
       });
       return `(\n${fields.join("\n")}\n${"  ".repeat(depth - 1)})`;
     }
 
     return String(value);
+  }
+
+  private mintProxyAuthorization(callerId: string): string {
+    if (!this.deps.assertionSecret) {
+      throw new Error("Caller assertion secret not configured");
+    }
+    const assertion = mintCallerAssertion(this.deps.assertionSecret, {
+      callerId,
+      callerKind: "worker",
+      audience: "egress-proxy",
+    });
+    return `Basic ${Buffer.from(`natstack:${assertion}`, "utf8").toString("base64")}`;
   }
 
   // =========================================================================
@@ -1261,8 +1315,7 @@ ${doBlock}${cases.join("\n")}
    *
    * DO class reconciliation:
    *   - `doClasses === undefined`: caller doesn't know the current DO shape
-   *     for this source, leave DO services untouched (legacy/conservative
-   *     behavior).
+   *     for this source, so DO services are left untouched.
    *   - `doClasses` is an explicit array (possibly empty): treat it as the
    *     authoritative current list. Classes in the list that aren't yet
    *     registered get registered; classes registered but missing from the

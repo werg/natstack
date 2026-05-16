@@ -22,6 +22,7 @@ describe("externalOpenService", () => {
   function createApprovalQueueMock(): ApprovalQueue {
     return {
       request: vi.fn(async () => "session" as const),
+      requestCapability: vi.fn(async () => ({ decision: "session" as const })),
       requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
       requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
       requestUserland: vi.fn(async () => ({ kind: "dismissed" as const })),
@@ -31,6 +32,7 @@ describe("externalOpenService", () => {
         dispose: vi.fn(),
       })),
       resolve: vi.fn(),
+      resolveCapability: vi.fn(),
       resolveUserland: vi.fn(),
       submitClientConfig: vi.fn(),
       submitCredentialInput: vi.fn(),

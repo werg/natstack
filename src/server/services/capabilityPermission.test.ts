@@ -15,6 +15,7 @@ function createApprovalQueueMock(
 ): ApprovalQueue {
   return {
     request: vi.fn(async () => decision),
+    requestCapability: vi.fn(async () => ({ decision })),
     requestClientConfig: vi.fn(async () => ({ decision: "deny" as const })),
     requestCredentialInput: vi.fn(async () => ({ decision: "deny" as const })),
     requestUserland: vi.fn(async () => ({ kind: "dismissed" as const })),
@@ -24,6 +25,7 @@ function createApprovalQueueMock(
       dispose: vi.fn(),
     })),
     resolve: vi.fn(),
+    resolveCapability: vi.fn(),
     resolveUserland: vi.fn(),
     submitClientConfig: vi.fn(),
     submitCredentialInput: vi.fn(),

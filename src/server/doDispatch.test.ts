@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { TokenManager } from "@natstack/shared/tokenManager";
-import { doRefKey, doRefUrl, DODispatch, type DORef } from "./doDispatch.js";
+import { doRefKey, doRefRpcUrl, DODispatch, type DORef } from "./doDispatch.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -27,38 +26,32 @@ describe("doRefKey", () => {
   });
 });
 
-describe("doRefUrl", () => {
+describe("doRefRpcUrl", () => {
   it("produces correct /_w/ URL path", () => {
     const ref = makeRef();
-    expect(doRefUrl(ref, "onChannelEvent")).toBe(
-      "/_w/workers/agent-worker/AiChatWorker/ch-123/onChannelEvent"
+    expect(doRefRpcUrl(ref)).toBe(
+      "/_w/workers/agent-worker/AiChatWorker/ch-123/__rpc"
     );
   });
 
   it("encodes special characters in className", () => {
     const ref = makeRef({ className: "My Worker" });
-    const url = doRefUrl(ref, "doSomething");
-    expect(url).toBe("/_w/workers/agent-worker/My%20Worker/ch-123/doSomething");
+    const url = doRefRpcUrl(ref);
+    expect(url).toBe("/_w/workers/agent-worker/My%20Worker/ch-123/__rpc");
     expect(url).toContain(encodeURIComponent("My Worker"));
   });
 
   it("encodes special characters in objectKey", () => {
     const ref = makeRef({ objectKey: "key/with:special chars" });
-    const url = doRefUrl(ref, "method");
+    const url = doRefRpcUrl(ref);
     expect(url).toBe(
-      `/_w/workers/agent-worker/AiChatWorker/${encodeURIComponent("key/with:special chars")}/method`
+      `/_w/workers/agent-worker/AiChatWorker/${encodeURIComponent("key/with:special chars")}/__rpc`
     );
-  });
-
-  it("encodes the method name", () => {
-    const ref = makeRef();
-    const url = doRefUrl(ref, "some method");
-    expect(url).toContain(encodeURIComponent("some method"));
   });
 
   it("does not encode the source path segments", () => {
     const ref = makeRef();
-    const url = doRefUrl(ref, "ping");
+    const url = doRefRpcUrl(ref);
     // source "workers/agent-worker" should keep its slash
     expect(url.startsWith("/_w/workers/agent-worker/")).toBe(true);
   });
@@ -82,17 +75,17 @@ describe("DODispatch", () => {
   });
 
   describe("dispatch with dispatcher", () => {
-    it("calls the dispatcher with the correct URL path and args", async () => {
+    it("calls the dispatcher with the correct RPC URL path and envelope", async () => {
       const dispatcher = vi.fn().mockResolvedValue({ ok: true });
       dispatch.setDispatcher(dispatcher);
 
       const ref = makeRef();
-      await dispatch.dispatch(ref, "onChannelEvent", "arg1", 42);
+      await dispatch.dispatch(ref, "ping", "arg1", 42);
 
       expect(dispatcher).toHaveBeenCalledTimes(1);
       expect(dispatcher).toHaveBeenCalledWith(
-        "/_w/workers/agent-worker/AiChatWorker/ch-123/onChannelEvent",
-        ["arg1", 42]
+        "/_w/workers/agent-worker/AiChatWorker/ch-123/__rpc",
+        { type: "call", method: "ping", args: ["arg1", 42], sourceId: "main" }
       );
     });
 
@@ -122,7 +115,12 @@ describe("DODispatch", () => {
       const ref = makeRef();
       await dispatch.dispatch(ref, "noArgs");
 
-      expect(dispatcher).toHaveBeenCalledWith(expect.any(String), []);
+      expect(dispatcher).toHaveBeenCalledWith(expect.any(String), {
+        type: "call",
+        method: "noArgs",
+        args: [],
+        sourceId: "main",
+      });
     });
 
     it("replaces the dispatcher when setDispatcher is called again", async () => {
@@ -140,9 +138,8 @@ describe("DODispatch", () => {
     });
   });
 
-  describe("dispatch with token-backed workerd URL", () => {
+  describe("dispatch with workerd URL", () => {
     it("retries fetch failures after ensuring the DO and refreshes the workerd URL", async () => {
-      const tokenManager = new TokenManager();
       const ensureDO = vi.fn().mockResolvedValue(undefined);
       const getWorkerdUrl = vi
         .fn()
@@ -152,16 +149,14 @@ describe("DODispatch", () => {
         .fn()
         .mockRejectedValueOnce(new TypeError("fetch failed"))
         .mockResolvedValueOnce(
-          new Response(JSON.stringify({ ok: true }), {
+          new Response(JSON.stringify({ result: { ok: true } }), {
             status: 200,
             headers: { "Content-Type": "application/json" },
           })
         );
 
       vi.stubGlobal("fetch", fetchMock);
-      dispatch.setTokenManager(tokenManager);
       dispatch.setGetWorkerdUrl(getWorkerdUrl);
-      dispatch.setGetDispatchSecret(() => "dispatch-secret");
       dispatch.setGetWorkerdGatewayToken(() => "workerd-gateway-token");
       dispatch.setEnsureDO(ensureDO);
 
@@ -171,12 +166,12 @@ describe("DODispatch", () => {
       expect(ensureDO).toHaveBeenCalledWith(ref.source, ref.className, ref.objectKey);
       expect(fetchMock).toHaveBeenNthCalledWith(
         1,
-        "http://127.0.0.1:10001/_w/workers/agent-worker/AiChatWorker/ch-123/ping",
+        "http://127.0.0.1:10001/_w/workers/agent-worker/AiChatWorker/ch-123/__rpc",
         expect.any(Object)
       );
       expect(fetchMock).toHaveBeenNthCalledWith(
         2,
-        "http://127.0.0.1:10002/_w/workers/agent-worker/AiChatWorker/ch-123/ping",
+        "http://127.0.0.1:10002/_w/workers/agent-worker/AiChatWorker/ch-123/__rpc",
         expect.objectContaining({
           headers: expect.objectContaining({
             Authorization: "Bearer workerd-gateway-token",

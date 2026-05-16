@@ -1,9 +1,8 @@
 /**
  * PubSubChannel — Durable Object for pub/sub messaging.
  *
- * Each channel is a single DO instance. All participants (panels, DOs, workers)
- * interact via RPC calls. Broadcasting uses this.rpc.emit() to push events
- * to subscribers.
+ * Each channel is a single DO instance. Participants publish with runtime RPC
+ * calls and receive pushes through runtime RPC events.
  *
  * State: messages, participants, pending_calls in local SQLite.
  */
@@ -26,7 +25,7 @@ import {
   buildChannelEvent,
   parseRowToChannelEvent,
   channelEventToWsJson,
-  queueEmit,
+  queueDelivery,
   type BroadcastDeps,
   cleanupDeliveryChain,
 } from "./broadcast.js";
@@ -38,7 +37,7 @@ import {
   cancelCallsForTarget,
 } from "./method-calls.js";
 
-/** How long before an RPC participant is considered stale (no heartbeat). */
+/** How long before a heartbeat-based participant is considered stale. */
 const PARTICIPANT_STALE_MS = 5 * 60 * 1000; // 5 minutes
 /** How often to check for stale participants. */
 const PARTICIPANT_CLEANUP_INTERVAL_MS = 60 * 1000; // 1 minute
@@ -46,7 +45,7 @@ const PARTICIPANT_CLEANUP_INTERVAL_MS = 60 * 1000; // 1 minute
 const REPLAY_LIMIT = 50;
 
 export class PubSubChannel extends DurableObjectBase {
-  static override schemaVersion = 3;
+  static override schemaVersion = 4;
 
   constructor(ctx: DurableObjectContext, env: unknown) {
     super(ctx, env);
@@ -109,8 +108,8 @@ export class PubSubChannel extends DurableObjectBase {
   private get broadcastDeps(): BroadcastDeps {
     return {
       sql: this.sql,
-      rpc: this.rpc,
       objectKey: this.objectKey,
+      emit: (targetId, event, payload) => this.rpc.emit(targetId, event, payload),
     };
   }
 
@@ -182,15 +181,15 @@ export class PubSubChannel extends DurableObjectBase {
     }
   }
 
-  // ── RPC-callable methods ──────────────────────────────────────────────
+  // ── HTTP-callable methods ─────────────────────────────────────────────
 
   /**
    * Subscribe a participant to this channel.
-   * Called by panels (via RPC through server relay) and DOs (via RPC call).
+   * Called by panels and DOs through the channel's HTTP route.
    *
    * Two subscriber contracts:
-   * - Panel/RPC clients: expect streamed channel:message events for replay, then a ready event.
-   * - DO clients: use the returned replay array and process events via onChannelEvent.
+   * - Inbox subscribers receive replay events followed by ready.
+   * - DO clients can also use the returned replay array for catch-up.
    */
   async subscribe(
     participantId: string,
@@ -341,14 +340,12 @@ export class PubSubChannel extends DurableObjectBase {
     }
 
     // Stream roster replay + message replay + ready to the subscriber.
-    // All three enqueue through the per-subscriber emit chain (not awaited
-    // inline — that would deadlock RPC backpressure, since the subscriber is
-    // typically parked on this very subscribe call's reply). FIFO order is
-    // enforced by `queueEmit`, so `update-message` always lands after its
+    // All three enqueue through the per-subscriber delivery chain. FIFO order is
+    // enforced by `queueDelivery`, so `update-message` always lands after its
     // parent `message` and `ready` lands after the whole replay batch.
     const rosterReplay = this.sendRosterReplay(participantId);
     const messageReplay = this.sendMessageReplay(participantId, sinceId, replayMessageLimit);
-    // Re-emit any still-pending method-calls to the new session. Gated on
+    // Redeliver any still-pending method-calls to the new session. Gated on
     // session-replacement: a same-session resubscribe already has the
     // handler in flight (or done), so redelivering would cause a second
     // execution.
@@ -357,7 +354,7 @@ export class PubSubChannel extends DurableObjectBase {
     }
     const ready = sendReady(this.broadcastDeps, participantId, this.sql, this.getStateValue("contextId"), this.getChannelConfig());
 
-    // Schedule stale participant cleanup for RPC participants
+    // Schedule stale participant cleanup for heartbeat-based participants.
     if (transport !== "do") {
       this.scheduleParticipantCleanup();
     }
@@ -373,7 +370,7 @@ export class PubSubChannel extends DurableObjectBase {
   }
 
   /**
-   * Send roster (presence) replay to a newly subscribed participant via RPC emit.
+   * Send roster (presence) replay to a newly subscribed participant via inbox.
    * After replaying persisted presence history, emits a snapshot of current
    * participant metadata from the participants table. This ensures transient
    * state (e.g. typing indicators) that was broadcast ephemerally is visible
@@ -397,10 +394,7 @@ export class PubSubChannel extends DurableObjectBase {
       const event = parseRowToChannelEvent(row);
       const msg = channelEventToWsJson(event, "replay");
       replayMessages.push(msg);
-      void queueEmit(this.broadcastDeps, subscriberId, {
-        channelId: this.objectKey,
-        message: msg,
-      }, onFatal);
+      void queueDelivery(this.broadcastDeps, subscriberId, msg, onFatal);
     }
 
     // 2. Emit current metadata snapshot from the participants table.
@@ -421,16 +415,13 @@ export class PubSubChannel extends DurableObjectBase {
       );
       const msg = channelEventToWsJson(event, "replay");
       replayMessages.push(msg);
-      void queueEmit(this.broadcastDeps, subscriberId, {
-        channelId: this.objectKey,
-        message: msg,
-      });
+      void queueDelivery(this.broadcastDeps, subscriberId, msg);
     }
     return replayMessages;
   }
 
   /**
-   * Send message replay to a newly subscribed participant via RPC emit.
+   * Send message replay to a newly subscribed participant via inbox.
    * Honors sinceId and replayMessageLimit for reconnect/history.
    */
   private sendMessageReplay(subscriberId: string, sinceId?: number, replayMessageLimit?: number): Array<Record<string, unknown>> {
@@ -477,10 +468,7 @@ export class PubSubChannel extends DurableObjectBase {
       const event = parseRowToChannelEvent(row);
       const msg = channelEventToWsJson(event, "replay");
       replayMessages.push(msg);
-      void queueEmit(this.broadcastDeps, subscriberId, {
-        channelId: this.objectKey,
-        message: msg,
-      }, onFatal);
+      void queueDelivery(this.broadcastDeps, subscriberId, msg, onFatal);
     }
     return replayMessages;
   }
@@ -547,10 +535,7 @@ export class PubSubChannel extends DurableObjectBase {
         payload, senderId: callerId, senderMetadata, ts, persist: false,
       };
       const msg = channelEventToWsJson(event, "ephemeral");
-      void queueEmit(this.broadcastDeps, participantId, {
-        channelId: this.objectKey,
-        message: msg,
-      }, onFatal);
+      void queueDelivery(this.broadcastDeps, participantId, msg, onFatal);
     }
     console.log(`[Channel] Redelivered ${rows.length} pending call(s) to ${participantId}`);
   }
@@ -585,7 +570,7 @@ export class PubSubChannel extends DurableObjectBase {
   }
 
   /**
-   * Heartbeat from an RPC participant. Updates connected_at to prevent stale eviction.
+   * Heartbeat from a participant. Updates connected_at to prevent stale eviction.
    * Panels should call this periodically (e.g., every 60s).
    */
   async touch(participantId: string): Promise<void> {
@@ -1030,7 +1015,7 @@ export class PubSubChannel extends DurableObjectBase {
 
     // Deliver to target
     const target = this.sql.exec(
-      `SELECT transport, do_source, do_class, do_key FROM participants WHERE id = ?`,
+      `SELECT id FROM participants WHERE id = ?`,
       targetPid,
     ).toArray();
 
@@ -1041,54 +1026,21 @@ export class PubSubChannel extends DurableObjectBase {
       return;
     }
 
-    const t = target[0]!;
-    if (t["transport"] === "do") {
-      // Deliver to DO target via RPC call
-      try {
-        const result = await this.rpc.call(
-          targetPid,
-          "onMethodCall",
-          this.objectKey,
-          callId,
-          method,
-          args,
-        );
-        // Method returned a result — deliver to caller
-        const pending = consumeCall(this.sql, callId);
-        if (pending) {
-          const res = result as { result: unknown; isError?: boolean };
-          await this.deliverCallResult(callerPid, callId, res.result, !!res.isError);
-        }
-      } catch (err) {
-        const pending = consumeCall(this.sql, callId);
-        if (pending) {
-          await this.deliverCallResult(callerPid, callId, err instanceof Error ? err.message : String(err), true);
-        }
+    const payload = { callId, providerId: targetPid, methodName: method, args };
+    const senderMetadata = this.getSenderMetadata(callerPid);
+    const ts = Date.now();
+    const event: ChannelEvent = {
+      id: 0, messageId: "", type: "method-call",
+      payload, senderId: callerPid, senderMetadata, ts, persist: false,
+    };
+    const msg = channelEventToWsJson(event, "ephemeral");
+    void queueDelivery(this.broadcastDeps, targetPid, msg, (err) => {
+      const code = err?.code;
+      if (code === "TARGET_NOT_REACHABLE" || code === "RECONNECT_GRACE_EXPIRED") {
+        this.sql.exec(`DELETE FROM participants WHERE id = ?`, targetPid);
+        cleanupDeliveryChain(targetPid);
       }
-    } else {
-      // RPC target — emit method-call as ephemeral channel message
-      const payload = { callId, providerId: targetPid, methodName: method, args };
-      const senderMetadata = this.getSenderMetadata(callerPid);
-      const ts = Date.now();
-      const event: ChannelEvent = {
-        id: 0, messageId: "", type: "method-call",
-        payload, senderId: callerPid, senderMetadata, ts, persist: false,
-      };
-      const msg = channelEventToWsJson(event, "ephemeral");
-      // Emit to all participants via RPC (the client filters by providerId === self)
-      const participants = this.sql.exec(`SELECT id FROM participants`).toArray();
-      const data = { channelId: this.objectKey, message: msg };
-      for (const p of participants) {
-        const pid = p["id"] as string;
-        this.rpc.emit(pid, "channel:message", data).catch(err => {
-          const code = (err as { code?: string })?.code;
-          if (code === "TARGET_NOT_REACHABLE" || code === "RECONNECT_GRACE_EXPIRED") {
-            this.sql.exec(`DELETE FROM participants WHERE id = ?`, pid);
-            cleanupDeliveryChain(pid);
-          }
-        });
-      }
-    }
+    });
   }
 
   /**
@@ -1114,10 +1066,13 @@ export class PubSubChannel extends DurableObjectBase {
     // Notify the provider so it can abort the executing method
     if (call.length > 0) {
       const providerId = call[0]!["target_id"] as string;
-      this.rpc.emit(providerId, "channel:message", {
-        channelId: this.objectKey,
-        message: { kind: "ephemeral", type: "method-cancel", payload: { callId }, senderId: "system", ts: Date.now() },
-      }).catch((err) => { console.warn("[Channel] cancel emit failed:", err); });
+      void queueDelivery(this.broadcastDeps, providerId, {
+        kind: "ephemeral",
+        type: "method-cancel",
+        payload: { callId },
+        senderId: "system",
+        ts: Date.now(),
+      }).catch((err) => { console.warn("[Channel] cancel delivery failed:", err); });
     }
   }
 
@@ -1127,33 +1082,8 @@ export class PubSubChannel extends DurableObjectBase {
     result: unknown,
     isError: boolean,
   ): Promise<void> {
-    const caller = this.sql.exec(
-      `SELECT transport, do_source, do_class, do_key FROM participants WHERE id = ?`,
-      callerId,
-    ).toArray();
-
+    const caller = this.sql.exec(`SELECT id FROM participants WHERE id = ?`, callerId).toArray();
     if (caller.length === 0) return;
-
-    const c = caller[0]!;
-    if (c["transport"] === "do") {
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          await this.rpc.call(
-            callerId,
-            "onCallResult",
-            callId,
-            result,
-            isError,
-          );
-          break; // Success
-        } catch (err) {
-          console.error(`[Channel] Failed to deliver call result to ${callerId} (attempt ${attempt + 1}/3):`, err);
-          if (attempt < 2) {
-            await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
-          }
-        }
-      }
-    }
 
     // Persist and broadcast result as a normal channel message so provider-side
     // clients can clear pending tool state even when the actual caller is a DO.
@@ -1173,19 +1103,7 @@ export class PubSubChannel extends DurableObjectBase {
       id, messageId, type: "method-result",
       payload, senderId: callerId, ts, persist: true,
     };
-    const msg = channelEventToWsJson(event, "persisted");
-    const participants = this.sql.exec(`SELECT id FROM participants`).toArray();
-    const data = { channelId: this.objectKey, message: msg };
-    for (const p of participants) {
-      const pid = p["id"] as string;
-      this.rpc.emit(pid, "channel:message", data).catch(err => {
-        const code = (err as { code?: string })?.code;
-        if (code === "TARGET_NOT_REACHABLE" || code === "RECONNECT_GRACE_EXPIRED") {
-          this.sql.exec(`DELETE FROM participants WHERE id = ?`, pid);
-          cleanupDeliveryChain(pid);
-        }
-      });
-    }
+    broadcast(this.broadcastDeps, event, { kind: "persisted" }, callerId);
   }
 
   /**
@@ -1293,9 +1211,8 @@ export class PubSubChannel extends DurableObjectBase {
       `INSERT OR REPLACE INTO state (key, value) VALUES ('__objectKey', ?)`,
       this.objectKey,
     );
-    // RPC identity is automatically updated: the dispatch that calls postClone
-    // delivers the clone's fresh instance token via X-Instance-Token header,
-    // and fetch() always overwrites identity from headers.
+    // The cloned channel keeps the copied message history but starts with its
+    // own object key and an empty delivery roster.
     this.setStateValue("forkedFrom", parentChannelId);
     this.setStateValue("forkPointId", String(forkPointId));
     // Delete messages after fork point
