@@ -9,9 +9,9 @@ Before this rearchitecture, NatStack used a 4-layer pipeline:
 3. Worker DO (workerd, turn lifecycle SQL state)
 4. **Harness child process** (Node.js, AI SDK adapter)
 
-The harness layer existed because the workerd runtime couldn't host the
-Anthropic SDK. The DO orchestrated turn lifecycle and forwarded events back
-and forth via WebSocket-RPC to the harness child.
+The removed harness layer existed because the workerd runtime couldn't host the
+Anthropic SDK. The DO orchestrated turn lifecycle and forwarded events to the
+harness child.
 
 After Pi research (`@mariozechner/pi-coding-agent`), it became clear that
 Pi's `AgentSession` could run inside the worker DO directly:
@@ -158,7 +158,7 @@ A panel forks at a specific message. The chat panel calls
 
 The cloned worker:
 1. Inherits the parent's Durable Object SQL storage via cloneDO
-2. Migrates the parent's `pi_sessions` row from `oldChannelId` to `newChannelId`
+2. Carries Pi message state in the canonical message store
 3. Resubscribes to the new channel
 4. On the next user message, lazily constructs a fresh `PiRunner` with
    `resumeSessionFile = parentSessionFile` (or a forked one if the user

@@ -14,21 +14,24 @@ Generated from `runtimeSurface.worker.ts`. Use `await help()` at runtime for the
 | `fs` | value |  |  |
 | `workers` | namespace | `create`, `destroy`, `update`, `list`, `status`, `listInstanceSources`, `listServices`, `resolveService`, `getPort`, `restartAll`, `cloneDO`, `destroyDO` |  |
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo` |  |
-| `credentials` | namespace | `store`, `connect`, `configureClient`, `requestCredentialInput`, `getClientConfigStatus`, `deleteClientConfig`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
+| `credentials` | namespace | `store`, `connect`, `configureClient`, `requestCredentialInput`, `getClientConfigStatus`, `deleteClientConfig`, `listStoredCredentials`, `revokeCredential`, `resolveCredential`, `gitHttp` |  |
 | `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote`, `client` |  |
+| `gad` | namespace | `rawSql`, `query`, `status`, `ensureBlob`, `ensureBranch`, `recordSession`, `endSession`, `recordTurn`, `beginToolCall`, `completeToolCall`, `recordRead`, `recordMutation`, `listBranches`, `getBranch`, `listBranchFiles`, `forkBranch`, `createBranchSnapshot`, `listBranchSnapshots`, `recordPlan`, `supersedePlan`, `listPlans`, `getPlanChain`, `createChunk`, `addChunkMention`, `relateChunk`, `listChunks`, `getChunkMentions`, `getChunksFor`, `getRelationsFor`, `walkDependencies`, `upsertChunkEmbedding`, `upsertTurnEmbedding`, `findSimilarChunks`, `findSimilarTurns`, `parseFileVersion`, `getStructures`, `findParsedByName`, `getStructuresInRange`, `getSupportedLanguages`, `indexTurn`, `indexFileVersion`, `indexSession`, `getReviewContext`, `setBlobPolicy`, `getBlobPolicy`, `redactBlob`, `listBlobReferences`, `revokeRawSqlWriteApproval` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
 | `contextId` | value |  |  |
 | `gatewayConfig` | value |  | Gateway base URL and bearer token for NatStack service routes. |
 | `gatewayFetch` | value |  | Fetch helper that prefixes gateway-relative paths and adds Authorization: Bearer. |
 | `gitConfig` | value |  | Git HTTP endpoint and token derived from the gateway config. |
-| `pubsubConfig` | value |  | Always null in worker runtime; PubSub access goes through service routes. |
+| `pubsubConfig` | value |  | Always null in worker runtime; PubSub access goes through runtime.subscribe(). |
+| `subscribe` | value |  | Create a PubSub channel client backed by runtime RPC. |
 | `callMain` | value |  |  |
 | `openExternal` | value |  |  |
 | `getWorkspaceTree` | value |  |  |
 | `listBranches` | value |  |  |
 | `listCommits` | value |  |  |
 | `requestApproval` | value |  |  |
+| `approvalAccessPolicy` | value |  | Create an RPC access policy that prompts the user and scopes the grant to the caller source. |
 | `revokeApproval` | value |  |  |
 | `listApprovals` | value |  |  |
 | `exposeMethod` | value |  |  |
@@ -69,6 +72,48 @@ const svc = await workers.resolveService("example.my-store.v1", "tenant-1");
 if (svc.kind !== "durable-object") throw new Error("Expected DO service");
 await rpc.call(svc.targetId, "methodName", arg);
 ```
+
+## Exposing RPC Methods
+
+RPC receivers must authorize callers with the runtime RPC access-policy API.
+Do not pass caller IDs in method arguments and do not read caller identity from
+message bodies. The runtime derives `ctx.sourceId` from the authenticated
+transport.
+
+Use a narrow policy for each exposed method:
+
+```ts
+import { allowCallerIds } from "@natstack/rpc";
+
+runtime.exposeMethod(
+  "notes.read",
+  allowCallerIds("panel:trusted"),
+  async (ctx, noteId: string) => {
+    return readNoteForCaller(ctx.sourceId, noteId);
+  },
+);
+```
+
+For user-approved access, use the approval-backed helper. Grants are
+automatically keyed by the calling source ID, so approving one caller does not
+approve a different panel, worker, or DO.
+
+```ts
+runtime.exposeMethod(
+  "notes.delete",
+  runtime.approvalAccessPolicy({
+    subjectId: "notes.delete",
+    title: (ctx) => `Allow ${ctx.sourceId} to delete notes?`,
+    summary: "This permits the caller to delete notes through this worker.",
+    warning: "Deleted notes cannot be recovered.",
+  }),
+  async (ctx, noteId: string) => {
+    return deleteNoteForCaller(ctx.sourceId, noteId);
+  },
+);
+```
+
+Use `allowAllCallers` only for intentionally public, side-effect-free methods.
 
 **Stateless worker service**:
 
@@ -156,8 +201,8 @@ provider compatibility matrix.
 ## Use
 
 ```ts
-await credentials.fetch("https://api.example.com/v1/items", undefined, {
-  credentialId: stored.id,
+await fetch("https://api.example.com/v1/items", {
+  headers: { "X-NatStack-Use-Credential": stored.id },
 });
 ```
 
@@ -226,7 +271,7 @@ The per-workspace blobstore stores arbitrary content keyed by sha256 digest.
 Use it for anything large or binary — model outputs, fetched documents,
 generated artifacts, the object layer for a custom git-like format.
 
-**Metadata via RPC** (uses the worker's existing `RPC_AUTH_TOKEN` automatically):
+**Metadata via RPC**:
 
 ```ts
 const exists = await callMain("blobstore.has", digest);
@@ -247,9 +292,9 @@ const get = await runtime.gatewayFetch(`/_r/s/blobstore/blob/${digest}`);
 // `get.body` is a ReadableStream of the original bytes.
 ```
 
-`gatewayFetch` prefixes `GATEWAY_URL` and sends `Authorization: Bearer
-<RPC_AUTH_TOKEN>`. Worker tokens are minted from the central `TokenManager`,
-so the route's `caller-token` auth admits them.
+`gatewayFetch` prefixes `GATEWAY_URL`. Worker identity is attached by the
+runtime proxy layer, so route `caller-token` auth sees the verified worker
+caller without a JavaScript-visible token.
 
 `blobstore.delete` and `blobstore.list` are restricted to shell/server callers
 and cannot be invoked from a worker — design the upper layer (e.g. a server

@@ -281,8 +281,8 @@ The base class creates these tables on initialization:
 |-------|---------|
 | `state` | Key-value store (schema version, custom state) |
 | `subscriptions` | Channel subscriptions with config + participant ID |
-| `pi_sessions` | Per-channel Pi message persistence (`messages_blob` JSON) |
-| `pending_calls` | Continuation state for async method calls (survives hibernation) |
+| `pi_messages` | Per-channel Pi message persistence, one row per message |
+| `dispatched_calls` | Continuation state for async method calls |
 | `delivery_cursor` | Last-processed event ID per channel (dedup + gap detection) |
 
 ### Helper Methods
@@ -353,7 +353,7 @@ describe("MyWorker", () => {
 The `sql` object exposes `exec(query, ...bindings)` for direct database inspection:
 
 ```typescript
-const rows = sql.exec(`SELECT * FROM pi_sessions`).toArray();
+const rows = sql.exec(`SELECT * FROM pi_messages WHERE channel_id = ?`, "ch-1").toArray();
 expect(rows).toHaveLength(1);
 ```
 
@@ -434,7 +434,7 @@ Called on the **newly cloned** DO after `cloneDO()` copies the parent's SQLite. 
 
 1. Fixes `__objectKey` and restores identity
 2. Records fork metadata in state KV
-3. Migrates the parent's `pi_sessions` row from oldChannelId → newChannelId (messages blob is truncated at the fork point)
+3. Moves the parent's `pi_messages` rows from oldChannelId to newChannelId and truncates at the fork point
 4. Renames `approvalLevel:{oldChannel}` → `approvalLevel:{newChannel}`
 5. Deletes old subscription, clears ephemeral state, resubscribes to forked channel
 6. Calls `onPostClone()` subclass hook

@@ -78,6 +78,31 @@ import {
 export type { BrowserHandle } from "@workspace/runtime";
 ```
 
+## RPC Receiver Rules
+
+When a panel exposes RPC methods, it must provide an access policy:
+
+```ts
+import { allowCallerIds } from "@natstack/rpc";
+import { exposeMethod, approvalAccessPolicy } from "@workspace/runtime";
+
+exposeMethod("selection.read", allowCallerIds("panel:inspector"), async (ctx) => {
+  return readSelectionForCaller(ctx.sourceId);
+});
+
+exposeMethod(
+  "selection.replace",
+  approvalAccessPolicy({
+    subjectId: "selection.replace",
+    title: (ctx) => `Allow ${ctx.sourceId} to edit the current selection?`,
+  }),
+  async (ctx, text: string) => replaceSelectionForCaller(ctx.sourceId, text),
+);
+```
+
+Do not include `callerId`, `sourceId`, or similar identity fields in RPC args.
+The runtime supplies authenticated caller context as `ctx.sourceId`.
+
 ## Navigation
 
 Use `openPanel` to open panels. It handles both URLs (browser panels) and workspace sources:

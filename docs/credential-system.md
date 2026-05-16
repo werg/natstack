@@ -168,14 +168,11 @@ store and captures only the declared origins and cookie names.
 ## Use
 
 ```ts
-await credentials.fetch("https://api.example.com/v1/items", undefined, {
-  credentialId: stored.id,
+await fetch("https://api.example.com/v1/items", {
+  headers: {
+    "X-NatStack-Use-Credential": stored.id,
+  },
 });
-
-const fetchExample = credentials.hookForUrl("https://api.example.com/v1/items", {
-  credentialId: stored.id,
-});
-await fetchExample();
 ```
 
 The host validates URL audiences, strips common incoming credential carriers,

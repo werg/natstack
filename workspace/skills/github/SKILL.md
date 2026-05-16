@@ -110,7 +110,8 @@ not the default happy path.
 
 The stored credential is URL-bound to `https://api.github.com/` and, for every
 friendly access level, to `https://github.com/` git HTTP as well. API requests
-should use `credentials.fetch()`. Direct GitHub clone/pull/push should use
+should use plain `fetch()` with `X-NatStack-Use-Credential` when selecting a
+specific stored credential. Direct GitHub clone/pull/push should use
 `git.client()` or `credentials.gitHttp()`. The internal git server does not
 consume GitHub credentials; NatStack's host-mediated isomorphic-git HTTP
 adapter handles `https://github.com/...` git remotes without exposing the PAT to

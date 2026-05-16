@@ -18,13 +18,13 @@ However, the implementation has substantive gaps between the declared policy mod
 
 3. **`fs.bindContext` lets any panel re-bind its own fs context to an arbitrary `contextId`.** This means a panel that learns another panel's contextId (they appear in URLs, logs, and the management API) can read and write the victim context's folder via the regular fs methods without any further authorization.
 
-4. **Relay event authorization accepts a caller-supplied `fromId`.** Both `handleRoute` and the HTTP `emit` code path propagate the user-supplied `fromId` onto the target as-is, so a panel can impersonate any other panel/worker/server as the source of an event the target subscribes to (e.g., `runtime:*`, `notification:show`, `credentials:*`).
+4. **Relay event source spoofing is remediated.** RPC event bodies no longer carry caller identity. Routed delivery uses server-derived `sourceId`, and method receivers authorize with `RpcCallerContext.sourceId`.
 
 5. **No Origin / Host check on the WebSocket handshake.** `WebSocketServer` is created with default options and accepts any Origin, so a malicious page in the user's browser that learns or guesses the RPC port can attempt to handshake. Bearer auth protects it, but the token is in sessionStorage of panel pages served from the same gateway and therefore retrievable by any XSS on any panel.
 
 6. **No WebSocket frame size limit.** `new WebSocketServer({ noServer: true })` and `new WebSocketServer({ server: this.httpServer })` both default to `maxPayload = 100 MiB`. A single authenticated (or even a pre-auth) client can send 100 MiB frames forcing buffer allocation. HTTP POST `/rpc` caps the body at `200 MiB` (also very generous).
 
-7. **DO dispatch attaches an `__instanceToken` in the body envelope that no code in-tree verifies.** `src/server/doDispatch.ts:78` passes the token and parentId alongside args, but there is no workerd-side receiver that rejects requests missing or carrying a mismatched token. Any process that can reach the workerd port can POST directly to `/_w/<source>/<className>/<objectKey>/<method>` and pretend to be the gateway.
+7. **Historical direct DO method dispatch issue is remediated.** DO dispatch now targets the runtime `__rpc` endpoint rather than arbitrary `/_w/<source>/<className>/<objectKey>/<method>` method paths. The remaining security boundary is the gateway-to-workerd bearer plus the runtime RPC caller identity stamped by the egress proxy.
 
 8. **Route registry auth is coarse.** Service-registered HTTP routes default to `auth: "public"` (`routeRegistry.ts:350`); the only gate is `"admin-token"`. There is no `"panel"` / `"shell"` / `"worker"` tier, no per-method scoping, and no integration with `TokenManager` for panel tokens on route requests.
 
@@ -44,11 +44,11 @@ Nothing in this report is a panic-level remote code execution, but several items
 
 - `types.ts` defines three message kinds: `RpcRequest`, `RpcResponse` (ok or error), `RpcEvent`. Union `RpcMessage` is the wire type.
 - `bridge.ts::createRpcBridge({ selfId, transport })` exposes:
-  - `exposeMethod(name, handler)` and `expose(object)` — stored in a single `exposedMethods: Record<string, Fn>` map.
+  - `exposeMethod(name, access, handler)` and `expose(object)` — every exposed method carries an explicit access policy and a handler.
   - `call(targetId, method, ...args)` — generates a UUID `requestId`, stores a resolver in `pendingRequests`, and delegates to `transport.send`.
-  - Incoming `request`: looks up handler, runs under `Promise.resolve().then(...)`, sends response.
+  - Incoming `request`: receives the transport-authenticated `sourceId`, evaluates the access policy with `RpcCallerContext`, invokes the handler as `handler(ctx, ...args)`, then sends a response.
   - Incoming `response`: resolves/rejects the pending request; carries optional `errorCode` to preserve `NodeJS.ErrnoException.code` across boundaries.
-  - Incoming `event`: fan-out to `eventListeners` by event name.
+  - Incoming `event`: fans out to `eventListeners` by event name, with the authenticated transport `sourceId`.
 - `transport-helpers.ts::createHandlerRegistry` provides the shared `deliver`/`onMessage`/`onAnyMessage` fan-out used by every transport.
 - The bridge trusts the transport: it does not authenticate `sourceId` in `_handleMessage`. Upstream transports are expected to attribute messages correctly.
 
@@ -87,7 +87,7 @@ dispatcher.dispatch({callerId, callerKind, wsClient}, service, method, args)
 
 Routed traffic (panel→panel, panel→worker, panel→DO) uses `ws:route` / `ws:panel-rpc`. `handleRoute` calls `checkRelayAuth` (panels may only relay to self, an ancestor/descendant, or a `do:`/`worker:` target) then forwards.
 
-There is also an HTTP fallback: `POST /rpc` on the same server (or via gateway). Auth is `Authorization: Bearer <token>`. The body is `{method, args}` for direct dispatch, or `{type:"call"|"emit", targetId, method|event, args|payload, fromId?}` for relays.
+There is also an HTTP fallback: `POST /rpc` on the same server (or via gateway). Auth is provided by the gateway/egress proxy caller assertion. The body is `{method, args}` for direct dispatch, or `{type:"call"|"emit", targetId, method|event, args|payload}` for relays. Caller identity is not accepted from the body.
 
 ### 2.4 Gateway (`src/server/gateway.ts`)
 
@@ -136,7 +136,7 @@ Two separate IPC surfaces:
 | The bearer token only lives in authenticated panel pages and the Electron renderer. | `configLoader.ts` stores it in `sessionStorage`. | Not rechecked anywhere. | Any XSS on any panel page exfiltrates the token and impersonates that caller. |
 | `callerKind` in the `ServiceContext` is always produced by the transport. | `rpcServer.ts handleAuth` uses the token entry. | `dispatcher.dispatch` never re-validates. | In IPC mode, `natstack:serviceCall` passes an attacker-friendly heuristic kind directly to dispatch. |
 | The WS frame has already been authenticated. | `handleMessage` dispatches on `msg.type`. | Yes — any message before `ws:auth` is discarded and the socket is closed. | OK. |
-| The event `fromId` of relayed messages is trustworthy. | Consumers of `ws:routed`/`runtime:*` events treat `fromId` as the origin. | Neither WS nor HTTP relay paths overwrite `fromId` with the caller's id. | Sender can impersonate any other caller on events. |
+| Routed event source identity is trustworthy. | Consumers of `ws:routed`/`runtime:*` events use the delivered source. | `RpcEvent` has no caller identity field; WS delivery uses server-derived `sourceId`; worker/DO delivery uses server-derived `sourceId`. | Remediated. |
 | DO dispatch `__instanceToken` is verified workerd-side. | `doDispatch.ts:78`. | No in-tree receiver verifies it. | Direct POST to workerd bypasses server-enforced identity. |
 | The gateway's admin token is opaque to downstream proxies. | `gateway.ts proxyRequest`. | Headers are forwarded verbatim (`gateway.ts:240`). | `Authorization: Bearer <admin>` reaches workerd if a panel/worker route is visited with it. |
 | Only the shell IPC renderer hits `natstack:rpc:send`. | `ipcDispatcher.ts:86`. | No `event.sender.id` check. | In principle any webContents with `preload: "index.cjs"` (the shell preload) bypasses the callerKind heuristic — today only the shell has that preload, so it's a structural invariant, not an enforced one. |
@@ -257,33 +257,11 @@ for another panel's bearer credential.
 - Attack path: any webContents that happens to have the shell preload loaded (currently only the shell, but this is a convention, not an enforcement) can run any service as `shell`. There is no `event.sender.id === shellContents.id` check.
 - Remediation: guard `ipcMain.on("natstack:rpc:send", …)` with `if (event.sender.id !== viewManager.getShellWebContents().id) return;`. Also consider not trusting a bare `"shell"` kind for server-side forwarding — the `serverClient.call` path should attach a bearer token that the server validates as admin/shell.
 
-### 4.7 HIGH — Event `fromId` spoofing in relay
+### 4.7 HIGH — Event source spoofing in relay
 
-- Files: `src/server/rpcServer.ts:586-592, 920-929`.
-- Snippet (WS path):
-
-  ```ts
-  } else if (message.type === "event") {
-    const { fromId: eventFromId, event, payload } = message;
-    void this.relayEvent(eventFromId ?? client.callerId, targetId, event, payload).catch(...);
-  }
-  ```
-
-  Snippet (HTTP path):
-
-  ```ts
-  if (type === "emit") {
-    const event = body["event"] as string;
-    const payload = body["payload"];
-    const fromId = (body["fromId"] as string) ?? callerId;
-    ...
-    await this.relayEvent(fromId, targetId, event, payload);
-  }
-  ```
-
-- `relayEvent` uses this `fromId` in the delivered `{ type: "event", fromId, event, payload }` payload. `checkRelayAuth` inspects `callerId`/`callerKind`/`targetId` but never the event's fromId.
-- Attack path: panel A (legitimately related to panel B through the panel tree) sends `ws:route` with `{ type: "event", fromId: "server", event: "notification:show", payload: {...} }` → panel B sees an event that claims to be from the server and acts on it (e.g., renders a phishing notification prompting for credentials). Similar for impersonating `runtime:theme`, `runtime:focus`, `credentials:*`, custom app events.
-- Remediation: in both `handleRoute` and the HTTP emit branch, always overwrite `message.fromId`/`fromId` with `client.callerId`/`callerId` before relaying. Accept a caller-supplied `fromId` only when caller is admin/server.
+- Status: remediated in the current implementation.
+- `RpcEvent` no longer carries a caller-controlled source field. WS routed envelopes carry server-derived `sourceId`, and HTTP worker/DO delivery envelopes use server-derived `sourceId`.
+- RPC method receivers authorize through explicit access policies and receive `RpcCallerContext` from the transport source, not from request args or message bodies.
 
 ### 4.8 HIGH — DO `__instanceToken` is attached but never verified
 
@@ -495,7 +473,7 @@ for another panel's bearer credential.
    - `webhooks.subscribe` → require `workerId === ctx.callerId` for worker callers.
    - `fs.bindContext` → drop `panel`; bind only from trusted server code.
 
-4. **Overwrite `fromId` on every relay.** Treat caller-supplied `fromId` as informational only when `callerKind ∈ {server, harness}`. Otherwise force `fromId = ctx.callerId`.
+4. **Keep caller identity out of RPC bodies.** `RpcRequest` and `RpcEvent` must not carry source identity. Receivers should authorize with `RpcCallerContext.sourceId`, and every exposed method should declare an access policy.
 
 5. **Hard-limit WS frames and HTTP bodies.** `maxPayload: 8 MiB` for RPC WS; POST `/rpc` should check `content-length` against a much smaller budget (e.g., 16 MiB) and reject early; parse Authorization before consuming body.
 

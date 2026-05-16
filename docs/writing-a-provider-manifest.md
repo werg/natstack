@@ -21,7 +21,9 @@ await credentials.store({
 Use stored credentials only through host-mediated egress:
 
 ```ts
-await credentials.fetch("https://api.example.com/v1/models", undefined, {
-  credentialId,
+await fetch("https://api.example.com/v1/models", {
+  headers: {
+    "X-NatStack-Use-Credential": credentialId,
+  },
 });
 ```

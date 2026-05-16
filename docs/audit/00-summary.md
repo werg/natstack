@@ -79,7 +79,7 @@ services.
 | `natstack:rpc:send` [01-HIGH-1] | Hard-coded `callerKind: "shell"` | Relay to any target at shell privilege |
 | `natstack:navigate`, `view.browserNavigate`, `view.setBounds`, `view.setVisible`, `view.setThemeCss`, `view.updateLayout`, `view.setShellOverlay` [01-C3, 01-MEDIUM-1] | `resolveCallerId(event)` only checks the caller is *some* known view — no ownership check against the target | Any panel steers the shell or any sibling panel to any URL / any layout |
 | Autofill overlay IPC (`overlay:select` / `overlay:dismiss`) [01-HIGH-2] | No sender attribution | Any webContents can force a credential fill into any other loaded panel |
-| Event relay `fromId` [04-4.7] | Caller-supplied source attribution forwarded unmodified | Any caller can spoof any other source on `runtime:*`, `credentials:*`, `notification:show` |
+| Event relay source identity [04-4.7] | Remediated: caller identity removed from RPC bodies and derived from transport metadata | Receivers authorize with system-provided caller context |
 
 **Fix shape:** single-choke-point enforcement. Every dispatch path — IPC,
 WS, HTTP-RPC, relay — must derive `callerKind` from authenticated
@@ -311,7 +311,7 @@ Outside the runtime trust model:
 | 17 | protobufjs < 7.5.5 RCE via transitive dep | 08 | Critical |
 | 18 | `ServiceDispatcher.dispatch` never calls `checkServiceAccess` | 01, 04 | High |
 | 19 | `IpcDispatcher` / `natstack:rpc:send` hard-coded `callerKind:"shell"` | 01, 04 | High |
-| 20 | Event `fromId` spoofing in relay | 04 | High |
+| 20 | Event source spoofing in relay | 04 | Remediated |
 | 21 | `git.getTokenForPanel` / `revokeTokenForPanel` reachable by panel | 04 | Remediated |
 | 22 | `workers.callDO` reachable by panel | 04 | High |
 | 23 | `RpcServer.checkRelayAuth` only ACLs `panel`, leaves worker/shell/server/harness open | 02 | High |

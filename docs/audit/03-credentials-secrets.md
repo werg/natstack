@@ -233,9 +233,10 @@ reach that IP), the attacker can:
    `Authorization: Bearer <user_GitHub_token>` onto the request to
    `api.github.com`.
 
-Worker IDs are deterministic/enumerable (panel IDs, service keys of
-`do-service:…`). An attacker can guess or list them. Even if they can't, they
-can simply wait, observe an audit entry, and replay.
+Worker IDs and runtime caller IDs are deterministic/enumerable (panel IDs,
+worker IDs, and DO object IDs). An attacker can guess or list them. Even if
+they can't, they can simply wait, observe an audit entry, and replay unless
+the proxy requires a verified caller assertion.
 
 The *same* loopback `127.0.0.1` proxy design is exactly what NanoClaw /
 OpenClaw use, but those projects gate the proxy with a per-instance shared

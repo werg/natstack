@@ -95,7 +95,7 @@ Panels and workers are built **on demand** — when you navigate to a panel URL 
 └─────────────────────────────────────────────────┘
 ```
 
-- **Panels** connect to the server over WebSocket for RPC
+- **Panels** reach server RPC through the gateway-backed host transport
 - The **server** handles builds, file access, git, database, AI proxy, and service routing
 - **Workerd** runs workers and Durable Objects in V8 isolates
 - The **git server** stores workspace source code; pushes trigger rebuilds

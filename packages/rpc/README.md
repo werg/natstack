@@ -19,7 +19,7 @@ The RPC system has three main components:
 ## Quick Start
 
 ```typescript
-import { createRpcBridge, createHandlerRegistry } from "@workspace/rpc";
+import { allowAllCallers, createRpcBridge, createHandlerRegistry } from "@workspace/rpc";
 
 // 1. Create a transport (platform-specific)
 const registry = createHandlerRegistry();
@@ -38,8 +38,8 @@ const rpc = createRpcBridge({
 });
 
 // 3. Expose methods that others can call
-rpc.exposeMethod("greet", (name: string) => `Hello, ${name}!`);
-rpc.exposeMethod("fetchData", async (id: string) => {
+rpc.exposeMethod("greet", allowAllCallers, (_ctx, name: string) => `Hello, ${name}!`);
+rpc.exposeMethod("fetchData", allowAllCallers, async (_ctx, id: string) => {
   return await database.get(id);
 });
 
@@ -50,8 +50,8 @@ const result = await rpc.call<string>("panel:other", "greet", "World");
 await rpc.emit("panel:other", "data-updated", { id: "123" });
 
 // 6. Listen for events
-const unsub = rpc.onEvent("data-updated", (fromId, payload) => {
-  console.log(`Got update from ${fromId}:`, payload);
+const unsub = rpc.onEvent("data-updated", (sourceId, payload) => {
+  console.log(`Got update from ${sourceId}:`, payload);
 });
 ```
 
@@ -79,13 +79,17 @@ agent/LLM work) into spurious failures.
 
 Returns an `RpcBridge` with these methods:
 
-#### `rpc.exposeMethod(method, handler)`
+#### `rpc.exposeMethod(method, access, handler)`
 
-Register a method that can be called by other endpoints.
+Register a method that can be called by other endpoints. The access policy and
+handler receive a system-provided caller context. Do not accept caller identity
+as an RPC argument.
 
 ```typescript
-rpc.exposeMethod("methodName", (arg1: string, arg2: number) => result);
-rpc.exposeMethod("asyncMethod", async (arg: string) => await doWork(arg));
+rpc.exposeMethod("methodName", allowAllCallers, (_ctx, arg1: string, arg2: number) => result);
+rpc.exposeMethod("asyncMethod", allowAllCallers, async (ctx, arg: string) => {
+  return await doWorkForSource(ctx.sourceId, arg);
+});
 ```
 
 #### `rpc.call<T>(targetId, method, ...args)`
@@ -109,8 +113,8 @@ await rpc.emit("panel:dashboard", "refresh", { reason: "data-changed" });
 Listen for events from any endpoint. Returns an unsubscribe function.
 
 ```typescript
-const unsub = rpc.onEvent("refresh", (fromId, payload) => {
-  console.log(`Refresh requested by ${fromId}`);
+const unsub = rpc.onEvent("refresh", (sourceId, payload) => {
+  console.log(`Refresh requested by ${sourceId}`);
 });
 
 // Later: stop listening
@@ -163,8 +167,8 @@ export function createWorkerTransport(): RpcTransport {
   const registry = createHandlerRegistry({ context: "worker" });
 
   // Hook into worker's message receiver
-  globalThis.__rpcReceive = (fromId, message) => {
-    registry.deliver(fromId, message);
+  globalThis.__rpcReceive = (sourceId, message) => {
+    registry.deliver(sourceId, message);
   };
 
   return {
@@ -187,7 +191,6 @@ The RPC system uses three message types:
 {
   type: "request",
   requestId: "uuid",
-  fromId: "panel:sender",
   method: "methodName",
   args: [arg1, arg2]
 }
@@ -208,7 +211,6 @@ The RPC system uses three message types:
 ```typescript
 {
   type: "event",
-  fromId: "panel:sender",
   event: "eventName",
   payload: data
 }
@@ -249,7 +251,7 @@ const tree = await rpc.call<Panel[]>("main", "panel.getTree");
 await rpc.call("main", "events.subscribe", "panel-tree-updated");
 
 // Listen for events
-rpc.onEvent("event:panel-tree-updated", (fromId, payload) => {
+rpc.onEvent("event:panel-tree-updated", (sourceId, payload) => {
   console.log("Panel tree updated:", payload);
 });
 ```

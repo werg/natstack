@@ -142,13 +142,13 @@ GitLab, Slack, Twitch, Spotify, Dropbox, Atlassian, Discord.** Apple does
 Use credentials only through host-mediated egress:
 
 ```ts
-await credentials.fetch("https://api.example.com/v1/items", undefined, {
-  credentialId: stored.id,
+await fetch("https://api.example.com/v1/items", {
+  headers: { "X-NatStack-Use-Credential": stored.id },
 });
 ```
 
 Use `credentials.gitHttp()` for Git smart HTTP traffic. Do not route git
-packfiles through `credentials.fetch()`, and do not expose PATs to userland
+packfiles through credentialed API fetches, and do not expose PATs to userland
 `onAuth` callbacks:
 
 ```ts

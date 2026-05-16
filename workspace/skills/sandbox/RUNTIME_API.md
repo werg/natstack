@@ -34,13 +34,15 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `onFocus` | value |  |  |
 | `exposeMethod` | value |  |  |
 | `contextId` | value |  |  |
+| `recoveryCoordinator` | value |  | Panel transport recovery phase coordinator. |
 | `parentId` | value |  |  |
 | `fs` | value |  |  |
 | `createGatewayFetch` | value |  | Create a gateway-authenticated fetch helper from an explicit config. |
 | `gatewayConfig` | value |  | Gateway base URL and bearer token for NatStack service routes. |
 | `gatewayFetch` | value |  | Fetch helper that prefixes gateway-relative paths and adds Authorization: Bearer. |
 | `gitConfig` | value |  | Git HTTP endpoint and token derived from the gateway config. |
-| `pubsubConfig` | value |  | PubSub WebSocket endpoint and token derived from the gateway config. |
+| `pubsubConfig` | value |  | PubSub HTTP gateway endpoint and token derived from the gateway config. |
+| `subscribe` | value |  | Create a PubSub channel client backed by runtime RPC. |
 | `env` | value |  |  |
 | `workers` | namespace | `create`, `destroy`, `update`, `list`, `status`, `listInstanceSources`, `listServices`, `resolveService`, `getPort`, `restartAll`, `cloneDO`, `destroyDO` |  |
 | `normalizePath` | value |  |  |
@@ -56,14 +58,54 @@ Generated from `runtimeSurface.panel.ts`. Use `await help()` at runtime for the 
 | `openPanel` | value |  |  |
 | `adblock` | namespace | `getStats`, `isActive`, `getStatsForPanel`, `isEnabledForPanel`, `setEnabledForPanel`, `resetStatsForPanel`, `getPanelUrl`, `addToWhitelist`, `removeFromWhitelist` |  |
 | `workspace` | namespace | `list`, `getActive`, `getActiveEntry`, `getConfig`, `create`, `setInitPanels`, `switchTo`, `openPanel` |  |
-| `credentials` | namespace | `store`, `connect`, `configureClient`, `requestCredentialInput`, `getClientConfigStatus`, `deleteClientConfig`, `listStoredCredentials`, `revokeCredential`, `grantCredential`, `resolveCredential`, `fetch`, `hookForUrl`, `gitHttp` |  |
+| `credentials` | namespace | `store`, `connect`, `configureClient`, `requestCredentialInput`, `getClientConfigStatus`, `deleteClientConfig`, `listStoredCredentials`, `revokeCredential`, `gitHttp` |  |
 | `git` | namespace | `http`, `importProject`, `completeWorkspaceDependencies`, `setSharedRemote`, `removeSharedRemote`, `client` |  |
+| `gad` | namespace | `rawSql`, `query`, `status`, `ensureBlob`, `ensureBranch`, `recordSession`, `endSession`, `recordTurn`, `beginToolCall`, `completeToolCall`, `recordRead`, `recordMutation`, `listBranches`, `getBranch`, `listBranchFiles`, `forkBranch`, `createBranchSnapshot`, `listBranchSnapshots`, `recordPlan`, `supersedePlan`, `listPlans`, `getPlanChain`, `createChunk`, `addChunkMention`, `relateChunk`, `listChunks`, `getChunkMentions`, `getChunksFor`, `getRelationsFor`, `walkDependencies`, `upsertChunkEmbedding`, `upsertTurnEmbedding`, `findSimilarChunks`, `findSimilarTurns`, `parseFileVersion`, `getStructures`, `findParsedByName`, `getStructuresInRange`, `getSupportedLanguages`, `indexTurn`, `indexFileVersion`, `indexSession`, `getReviewContext`, `setBlobPolicy`, `getBlobPolicy`, `redactBlob`, `listBlobReferences`, `revokeRawSqlWriteApproval` |  |
 | `webhooks` | namespace | `createSubscription`, `listSubscriptions`, `revokeSubscription`, `rotateSecret` |  |
 | `requestApproval` | value |  |  |
+| `approvalAccessPolicy` | value |  | Create an RPC access policy that prompts the user and scopes the grant to the caller source. |
+| `createUserlandApprovalAccessPolicy` | value |  | Create an RPC access policy from an explicit RPC bridge. |
 | `revokeApproval` | value |  |  |
 | `listApprovals` | value |  |  |
 | `notifications` | namespace | `show`, `dismiss` |  |
 <!-- END GENERATED: panel-runtime-surface -->
+
+## Exposing RPC Methods
+
+Every exposed RPC method must declare an access policy. The handler receives a
+system-provided `ctx` as its first argument; use `ctx.sourceId` for receiver-side
+authorization. Never accept caller identity as a method argument or event
+payload field.
+
+```ts
+import { allowAllCallers, allowCallerIds } from "@natstack/rpc";
+import { exposeMethod, approvalAccessPolicy } from "@workspace/runtime";
+
+exposeMethod("health.ping", allowAllCallers, async () => ({ ok: true }));
+
+exposeMethod(
+  "profile.update",
+  allowCallerIds("panel:settings"),
+  async (ctx, patch: Record<string, unknown>) => {
+    return updateProfileForCaller(ctx.sourceId, patch);
+  },
+);
+```
+
+For user-approved access, use `approvalAccessPolicy`. The grant subject is
+automatically scoped to the calling source.
+
+```ts
+exposeMethod(
+  "profile.delete",
+  approvalAccessPolicy({
+    subjectId: "profile.delete",
+    title: (ctx) => `Allow ${ctx.sourceId} to delete this profile?`,
+    warning: "This action is destructive.",
+  }),
+  async (ctx) => deleteProfileForCaller(ctx.sourceId),
+);
+```
 
 ## Store
 
@@ -113,8 +155,8 @@ const stored = await credentials.connect({
 ## Use
 
 ```ts
-await credentials.fetch("https://api.example.com/v1/items", undefined, {
-  credentialId: stored.id,
+await fetch("https://api.example.com/v1/items", {
+  headers: { "X-NatStack-Use-Credential": stored.id },
 });
 ```
 

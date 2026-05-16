@@ -84,7 +84,6 @@ and are discovered through the `workspace.*` RPC service.
 |-------|---------|
 | `state` | Key-value store (approval level per channel, fork metadata) |
 | `subscriptions` | Channel subscriptions + participant ID |
-| `pi_sessions` | Per-channel Pi session JSONL file path (for restart resume) |
 | `delivery_cursor` | Last-processed channel event id (dedup + gap detection) |
 | `pending_calls` | Promise continuations for tool callMethod and UI feedback_form awaits |
 

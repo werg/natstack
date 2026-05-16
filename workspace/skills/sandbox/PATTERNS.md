@@ -165,14 +165,15 @@ eval({
       material: { type: "bearer-token", token: process.env.NOTION_TOKEN! },
     });
 
-    const response = await credentials.fetch("https://api.notion.com/v1/search", {
+    const response = await fetch("https://api.notion.com/v1/search", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Notion-Version": "2022-06-28",
+        "X-NatStack-Use-Credential": credential.id,
       },
       body: JSON.stringify({ query: "meeting notes" }),
-    }, { credentialId: credential.id });
+    });
     const results = await response.json();
     for (const page of results.results ?? []) {
       if (page.object === "page") {
