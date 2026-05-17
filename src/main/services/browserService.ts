@@ -3,6 +3,7 @@ import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { CdpEndpoint, CdpServer } from "../cdpServer.js";
 import type { ViewManager } from "../viewManager.js";
 import type { PanelRegistry } from "@natstack/shared/panelRegistry";
+import { assertHttpUrl } from "../utils.js";
 
 export function getCdpEndpointForCaller(
   cdpServer: CdpServer,
@@ -56,6 +57,7 @@ export function createBrowserService(deps: {
 
         case "navigate": {
           const [, url] = args as [string, string];
+          assertHttpUrl(url);
           assertOwner();
           const wc = getContents();
           try {

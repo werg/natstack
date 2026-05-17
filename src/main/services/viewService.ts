@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
 import type { ViewManager } from "../viewManager.js";
+import { assertHttpUrl } from "../utils.js";
 
 export function createViewService(deps: { getViewManager: () => ViewManager }): ServiceDefinition {
   /**
@@ -176,6 +177,7 @@ export function createViewService(deps: { getViewManager: () => ViewManager }): 
         case "browserNavigate": {
           const [browserId, url] = args as [string, string];
           assertOwnsOrShell(ctx.callerId, browserId, "browserNavigate");
+          assertHttpUrl(url);
           await vm.navigateView(browserId, url);
           return;
         }

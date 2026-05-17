@@ -66,8 +66,8 @@ eval({ code: `
 | Launch worker | `eval` — `workers.create({ source: "workers/my-worker", contextId })` |
 | Read a file | `Read({ file_path: "panels/my-app/index.tsx" })` |
 | Edit a file | `Edit({ file_path: "panels/my-app/index.tsx", old_string: "...", new_string: "..." })` |
-| Check types | `eval` — `extensions.use("@workspace-extensions/typecheck-service").check("panels/my-app")` |
-| Run tests | `eval` — `rpc.call("main", "test.run", contextId, "panels/my-app")` |
+| Check types | `eval` — `extensions.use("@workspace-extensions/typecheck-service").checkPanel("panels/my-app")` |
+| Run tests | Not available from panel context — `test.run` is server-only (see TOOLS.md) |
 | Git status | `eval` with `imports` — `import { GitClient } from "@natstack/git"` (see TOOLS.md) |
 | List workspaces | `eval` — `workspace.list()` |
 | Get workspace config | `eval` — `workspace.getConfig()` |
@@ -78,4 +78,5 @@ eval({ code: `
 ## Environment Compatibility
 
 - Panel lifecycle operations (`openPanel`, `createBrowserPanel`, `focusPanel`, panel reload) require **panel context**.
-- Project scaffolding (`createProject`), git operations (`commitAndPush`), typecheck, and tests work in **headless** sessions via eval + RPC.
+- Project scaffolding (`createProject`), git operations (`commitAndPush`), and typecheck work in **headless** sessions via eval + RPC.
+- `test.run` is restricted to server-origin callers; panel-side eval cannot run tests directly.

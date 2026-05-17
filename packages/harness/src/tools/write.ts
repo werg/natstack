@@ -7,8 +7,8 @@
  */
 
 import { Type, type Static } from "@sinclair/typebox";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import type { TextContent, ImageContent } from "@mariozechner/pi-ai";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
 import { dirname } from "node:path";
 import type { RuntimeFs } from "./runtime-fs.js";
 import { resolveToCwd } from "./path-utils.js";

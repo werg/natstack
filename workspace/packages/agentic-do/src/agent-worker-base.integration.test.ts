@@ -22,7 +22,7 @@ import { describe, it, expect, vi } from "vitest";
 import type {
   AgentEvent,
   AgentMessage,
-} from "@mariozechner/pi-agent-core";
+} from "@earendil-works/pi-agent-core";
 import type { ChannelEvent } from "@natstack/harness/types";
 import type { PiRunner } from "@natstack/harness";
 

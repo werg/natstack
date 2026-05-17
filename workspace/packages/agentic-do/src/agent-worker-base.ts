@@ -1,7 +1,7 @@
 /**
  * AgentWorkerBase — Pi-native agent DO base.
  *
- * Embeds `@mariozechner/pi-agent-core`'s `Agent` in-process via `PiRunner`
+ * Embeds `@earendil-works/pi-agent-core`'s `Agent` in-process via `PiRunner`
  * from `@natstack/harness`. One PiRunner per channel, owned by the DO for
  * the lifetime of the chat. The runner drives agent state (messages,
  * streaming, tool calls); the DO persists `AgentMessage[]` snapshots to
@@ -53,8 +53,8 @@ import {
   type SystemPromptMode,
   DispatchedError,
 } from "@natstack/harness";
-import type { AgentEvent, AgentMessage, AgentToolResult } from "@mariozechner/pi-agent-core";
-import { getModel as getPiModel, type ImageContent } from "@mariozechner/pi-ai";
+import type { AgentEvent, AgentMessage, AgentToolResult } from "@earendil-works/pi-agent-core";
+import { getModel as getPiModel, type ImageContent } from "@earendil-works/pi-ai";
 
 import { DOIdentity } from "./identity.js";
 import { SubscriptionManager } from "./subscription-manager.js";

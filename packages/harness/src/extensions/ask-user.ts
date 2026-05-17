@@ -6,7 +6,7 @@
  * channel as a feedback_form and awaits the user's answer.
  */
 
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { PiExtensionAPI, PiExtensionFactory } from "../pi-extension-api.js";
 
 export interface AskUserQuestion {
