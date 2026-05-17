@@ -16,6 +16,7 @@ interface RunningExtension {
   health: ExtensionHealth | null;
   inspectorUrl: string | null;
   stderrTail: string[];
+  exitHandler: (code: number | null) => void;
 }
 
 interface CrashState {
@@ -73,6 +74,7 @@ export class ExtensionProcessManager {
         preferNode: true,
       },
     );
+    const exitHandler = (code: number | null) => this.handleExit(state, code);
     const running: RunningExtension = {
       state,
       proc,
@@ -85,10 +87,11 @@ export class ExtensionProcessManager {
       health: null,
       inspectorUrl: null,
       stderrTail: [],
+      exitHandler,
     };
     this.running.set(state.name, running);
 
-    proc.on("exit", (code) => this.handleExit(state, code));
+    proc.on("exit", exitHandler);
     proc.stdout?.on("data", (chunk) => this.handleStdout(state.name, "info", chunk));
     proc.stderr?.on("data", (chunk) => this.handleStdout(state.name, "error", chunk));
 
@@ -120,14 +123,23 @@ export class ExtensionProcessManager {
     running.stopping = true;
     running.proc.postMessage({ type: "shutdown" });
     await new Promise<void>((resolve) => {
+      let settled = false;
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        running.proc.off("exit", waitHandler);
+        resolve();
+      };
+      const waitHandler = () => settle();
       const timeout = setTimeout(() => {
         running.proc.kill();
-        resolve();
+        // If kill doesn't produce an exit within the grace window we still
+        // resolve; the existing spawn-time exit handler will deal with the
+        // late exit (it short-circuits respawn via running.stopping).
+        setTimeout(settle, 500).unref?.();
       }, 2_000);
-      running.proc.on("exit", () => {
-        clearTimeout(timeout);
-        resolve();
-      });
+      running.proc.on("exit", waitHandler);
     });
     this.running.delete(name);
     if (reason !== "restart") this.deps.onStatus(name, "stopped", null);

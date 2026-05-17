@@ -17,11 +17,20 @@ import type {
   UserlandApprovalIssuer,
   UserlandApprovalRequest,
 } from "@natstack/shared/approvals";
+import { userlandApprovalRequestSchema } from "@natstack/shared/approvals";
 import { execGitFileSync } from "@natstack/shared/gitRuntime";
 
 import { ExtensionRegistry } from "./registry.js";
 import { ExtensionProcessManager } from "./processManager.js";
 import { SourcePushGrantStore } from "./sourcePushGrants.js";
+import {
+  isBinaryEnvelope,
+  isStreamEnvelope,
+  type BinaryEnvelope,
+  type BodyEnvelope,
+  type StreamChunkEnvelope,
+  type StreamEnvelope,
+} from "./wireEnvelopes.js";
 import type {
   ExtensionHostCodeIdentityResolver,
   ExtensionHealth,
@@ -226,6 +235,7 @@ export class ExtensionHost {
   }
 
   async ensureBuiltInExtensions(names: string[]): Promise<void> {
+    const newlyPending: string[] = [];
     for (const name of names) {
       const node = this.findExtensionNode(name);
       const current = this.registry.get(node.name);
@@ -245,6 +255,7 @@ export class ExtensionHost {
           status: "pending-approval",
           lastError: null,
         });
+        newlyPending.push(node.name);
         continue;
       }
 
@@ -258,6 +269,28 @@ export class ExtensionHost {
       }
       if (current.enabled && !current.activeBundleKey) {
         await this.buildAndActivate(node.name);
+      }
+    }
+    if (newlyPending.length > 0) {
+      // Surface the pending-approval state on first boot so the user knows
+      // the migrated built-in extensions need to be installed; without this
+      // the user only discovers them when a feature that depends on them
+      // appears broken.
+      const list = newlyPending.length === 1
+        ? newlyPending[0]!
+        : `${newlyPending.slice(0, -1).join(", ")} and ${newlyPending[newlyPending.length - 1]!}`;
+      this.deps.notificationService?.show({
+        id: `extensions-pending-approval-${newlyPending.join(",")}`,
+        type: "info",
+        title: "Extensions need approval",
+        message: `${list} ${newlyPending.length === 1 ? "is" : "are"} installed but disabled. Approve installation from the extensions panel to enable.`,
+      });
+      for (const pendingName of newlyPending) {
+        this.deps.eventService.emit("extensions:status", {
+          name: pendingName,
+          status: "pending-approval",
+          error: null,
+        });
       }
     }
   }
@@ -404,6 +437,18 @@ export class ExtensionHost {
       return entry?.enabled ? entry : null;
     }
 
+    // Re-entrant self-invocation: extension code that calls
+    // `extensions.use("self")` during its own activate / fetch / invoke
+    // would otherwise await the same in-flight install/update promise that
+    // its own activation is fulfilling. If the process is already running
+    // and the registry entry is enabled, skip the availability gate.
+    if (ctx.callerKind === "extension" && ctx.callerId === node.name) {
+      const entry = this.registry.get(node.name);
+      if (entry?.enabled && this.processes.isRunning(node.name)) {
+        return entry;
+      }
+    }
+
     const entry = this.registry.get(node.name);
     if (entry?.enabled) {
       if (!entry.activeBundleKey) {
@@ -540,12 +585,24 @@ export class ExtensionHost {
 
   private registerRequestBody(extensionName: string, req: IncomingMessage): StreamEnvelope | undefined {
     if (req.method === "GET" || req.method === "HEAD") return undefined;
+    const contentLengthHeader = req.headers["content-length"];
+    if (typeof contentLengthHeader === "string") {
+      const declared = Number(contentLengthHeader);
+      if (Number.isFinite(declared) && declared > EXTENSION_REQUEST_BODY_MAX_BYTES) {
+        const err = new Error(
+          `Request body exceeds the ${EXTENSION_REQUEST_BODY_MAX_BYTES}-byte extension fetch limit`,
+        );
+        (err as NodeJS.ErrnoException).code = "EFBIG";
+        throw err;
+      }
+    }
     const id = randomUUID();
     this.fetchRequestBodies.set(id, {
       extensionName,
       iterator: req[Symbol.asyncIterator](),
       pending: null,
       offset: 0,
+      bytesRead: 0,
     });
     return { __stream: true, id };
   }
@@ -678,7 +735,18 @@ export class ExtensionHost {
     if (!invocation || invocation.extensionName !== ctx.callerId) {
       throw new ServiceError("extensions", "approvalForCaller", "Extension approval invocation mismatch", "EACCES");
     }
-    return this.requestUserlandApprovalForCaller(invocation, reqValue as UserlandApprovalRequest);
+    // Enforce the same schema validation the direct panel/worker path applies
+    // in userlandApprovalService. Without this, an extension can inject
+    // control chars, oversized fields, or reserved option values into the
+    // shell's approval prompt.
+    let parsed: UserlandApprovalRequest;
+    try {
+      parsed = userlandApprovalRequestSchema.parse(reqValue) as UserlandApprovalRequest;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new ServiceError("extensions", "approvalForCaller", `Invalid approval request: ${message}`, "EINVAL");
+    }
+    return this.requestUserlandApprovalForCaller(invocation, parsed);
   }
 
   private async requestUserlandApprovalForCaller(
@@ -1131,11 +1199,12 @@ export class ExtensionHost {
     action: "install" | "uninstall" | "enable" | "disable" | "update" | "reload",
     name: string,
   ): Promise<void> {
-    // Trusted internal callers (CLI shell, server bootstrap) are pre-authorized
-    // and skip the user prompt. Panels and workers always go through approval.
-    // Other caller kinds (e.g., `extension`) are rejected — extensions cannot
-    // self-install other extensions in v1.
-    if (ctx.callerKind === "shell" || ctx.callerKind === "server") return;
+    // Trusted internal callers (CLI shell) are pre-authorized and skip the
+    // user prompt. Panels and workers always go through approval. Other
+    // caller kinds (e.g., `extension`) are rejected — extensions cannot
+    // self-install other extensions in v1. `server` is not in the
+    // dispatcher's allow list for `extensions`, so it never reaches here.
+    if (ctx.callerKind === "shell") return;
     if (ctx.callerKind !== "panel" && ctx.callerKind !== "worker") {
       throw new ServiceError(
         "extensions",
@@ -1270,45 +1339,16 @@ function headersToRecord(headers: IncomingMessage["headers"]): Record<string, st
   return out;
 }
 
-interface BinaryEnvelope {
-  __bin: true;
-  data: string;
-}
-
-interface StreamEnvelope {
-  __stream: true;
-  id: string;
-}
-
-type BodyEnvelope = BinaryEnvelope | StreamEnvelope;
-
-interface StreamChunkEnvelope {
-  done: boolean;
-  chunk?: BinaryEnvelope;
-}
-
 interface FetchRequestBodyStream {
   extensionName: string;
   iterator: AsyncIterator<unknown>;
   pending: Buffer | null;
   offset: number;
+  bytesRead: number;
 }
 
 const STREAM_CHUNK_BYTES = 64 * 1024;
-
-function isBinaryEnvelope(value: unknown): value is BinaryEnvelope {
-  return typeof value === "object"
-    && value !== null
-    && (value as { __bin?: unknown }).__bin === true
-    && typeof (value as { data?: unknown }).data === "string";
-}
-
-function isStreamEnvelope(value: unknown): value is StreamEnvelope {
-  return typeof value === "object"
-    && value !== null
-    && (value as { __stream?: unknown }).__stream === true
-    && typeof (value as { id?: unknown }).id === "string";
-}
+const EXTENSION_REQUEST_BODY_MAX_BYTES = 32 * 1024 * 1024;
 
 function bufferToChunk(buf: Buffer): StreamChunkEnvelope {
   return { done: false, chunk: { __bin: true, data: buf.toString("base64") } };
@@ -1329,6 +1369,19 @@ async function readNextBodyChunk(stream: FetchRequestBodyStream): Promise<Stream
   const next = await stream.iterator.next();
   if (next.done) return { done: true };
   const buf = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value as ArrayBufferLike);
+  stream.bytesRead += buf.length;
+  if (stream.bytesRead > EXTENSION_REQUEST_BODY_MAX_BYTES) {
+    try {
+      await stream.iterator.return?.();
+    } catch {
+      // Best-effort: caller already saw the failure.
+    }
+    const err = new Error(
+      `Request body exceeds the ${EXTENSION_REQUEST_BODY_MAX_BYTES}-byte extension fetch limit`,
+    );
+    (err as NodeJS.ErrnoException).code = "EFBIG";
+    throw err;
+  }
   if (buf.length <= STREAM_CHUNK_BYTES) return bufferToChunk(buf);
   stream.pending = buf;
   stream.offset = 0;

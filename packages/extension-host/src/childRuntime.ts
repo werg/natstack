@@ -14,6 +14,14 @@ import {
 import type { WsClientMessage, WsServerMessage } from "@natstack/shared/ws/protocol";
 
 import type { ExtensionInvocation } from "./types.js";
+import {
+  isBinaryEnvelope,
+  isStreamEnvelope,
+  type BinaryEnvelope,
+  type BodyEnvelope,
+  type StreamChunkEnvelope,
+  type StreamEnvelope,
+} from "./wireEnvelopes.js";
 
 type ChildMessage =
   | { type: "shutdown" };
@@ -33,23 +41,7 @@ interface UserlandApprovalRequest {
   options: Array<{ value: string; label: string; description?: string; tone?: "primary" | "danger" | "neutral" }>;
 }
 
-interface BinaryEnvelope {
-  __bin: true;
-  data: string;
-}
-
-interface StreamEnvelope {
-  __stream: true;
-  id: string;
-}
-
-type BodyEnvelope = BinaryEnvelope | StreamEnvelope;
 type ExtensionRuntimePhase = "runtime-import" | "activate" | "invoke" | "fetch";
-
-interface StreamChunkEnvelope {
-  done: boolean;
-  chunk?: BinaryEnvelope;
-}
 
 interface FetchResponseBodyStream {
   reader: ReadableStreamDefaultReader<Uint8Array>;
@@ -201,20 +193,6 @@ function encodeBinary(data: Uint8Array): BinaryEnvelope {
   return { __bin: true, data: Buffer.from(data).toString("base64") };
 }
 
-function isBinaryEnvelope(value: unknown): value is BinaryEnvelope {
-  return typeof value === "object"
-    && value !== null
-    && (value as { __bin?: unknown }).__bin === true
-    && typeof (value as { data?: unknown }).data === "string";
-}
-
-function isStreamEnvelope(value: unknown): value is StreamEnvelope {
-  return typeof value === "object"
-    && value !== null
-    && (value as { __stream?: unknown }).__stream === true
-    && typeof (value as { id?: unknown }).id === "string";
-}
-
 async function requestBodyFromEnvelope(body: BodyEnvelope | undefined): Promise<BodyInit | undefined> {
   if (!body) return undefined;
   if (isBinaryEnvelope(body)) return Buffer.from(body.data, "base64");
@@ -353,10 +331,14 @@ function createContext() {
   const name = requiredEnv("NATSTACK_EXTENSION_NAME");
   const version = requiredEnv("NATSTACK_EXTENSION_VERSION");
   const storageRoot = requiredEnv("NATSTACK_EXTENSION_STORAGE_DIR");
+  const normalizedRoot = path.resolve(storageRoot);
+  const rootWithSep = normalizedRoot.endsWith(path.sep) ? normalizedRoot : normalizedRoot + path.sep;
   const storagePath = (p: string) => {
-    const resolved = path.resolve(storageRoot, p);
-    const relative = path.relative(storageRoot, resolved);
-    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    const resolved = path.resolve(normalizedRoot, p);
+    // Boundary check: resolved must be the root itself or strictly inside it.
+    // Using a prefix check on the normalized form is robust to ".." segments,
+    // absolute inputs, and accidental sibling-dir prefixes (e.g. /storage-extra).
+    if (resolved !== normalizedRoot && !resolved.startsWith(rootWithSep)) {
       const err = new Error(`Storage path escapes extension storage: ${p}`) as NodeJS.ErrnoException;
       err.code = "EACCES";
       throw err;
@@ -376,7 +358,6 @@ function createContext() {
     },
     fs: createFsClient(),
     git: serviceProxy("git"),
-    panel: serviceProxy("panel"),
     workspace: serviceProxy("workspace"),
     workers: {
       callDO: <T>(
@@ -388,7 +369,6 @@ function createContext() {
       ) => rpcCall<T>("workers.callDO", [source, className, objectKey, method, ...args]),
     },
     credentials: serviceProxy("credentials"),
-    db: serviceProxy("db"),
     webhooks: serviceProxy("webhookIngress"),
     notifications: serviceProxy("notification"),
     extensions: createExtensionsClient(),
