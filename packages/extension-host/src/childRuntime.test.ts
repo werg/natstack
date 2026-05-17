@@ -45,8 +45,9 @@ describe("extension child runtime", () => {
 
     expect(source).toContain("installCommonJsGlobals(bundlePath)");
     expect(source.indexOf("installCommonJsGlobals(bundlePath)")).toBeLessThan(
-      source.indexOf("await import(pathToFileURL(bundlePath).href)"),
+      source.indexOf("await importExtensionModule(bundlePath)"),
     );
+    expect(source).toContain("return import(pathToFileURL(bundlePath).href)");
     expect(source).toContain("createRequire(pathToFileURL(bundlePath).href)");
     expect(source).toContain("globals.__dirname = path.dirname(bundlePath)");
   });

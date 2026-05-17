@@ -34,6 +34,8 @@ export interface RpcResponseError {
   error: string;
   /** Original error code (e.g. "ENOENT", "EACCES") preserved across the RPC boundary */
   errorCode?: string;
+  /** Original stack, when available. Intended for diagnostics, not control flow. */
+  errorStack?: string;
 }
 
 /**

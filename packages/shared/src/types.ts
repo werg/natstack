@@ -44,6 +44,11 @@ export interface PackageManifest {
   extension?: {
     /** v1 accepts only eager activation (`"*"`). */
     activationEvents?: string[];
+    /**
+     * Extension dependency handling. Defaults to "auto": bundle ordinary JS
+     * dependencies and externalize packages that need runtime assets/native code.
+     */
+    dependencyMode?: "auto" | "bundle" | "external";
   };
   /** Future shared manifest discriminator for worker units. */
   worker?: Record<string, unknown>;

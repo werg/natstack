@@ -44,6 +44,7 @@ interface StreamEnvelope {
 }
 
 type BodyEnvelope = BinaryEnvelope | StreamEnvelope;
+type ExtensionRuntimePhase = "runtime-import" | "activate" | "invoke" | "fetch";
 
 interface StreamChunkEnvelope {
   done: boolean;
@@ -70,6 +71,55 @@ const invocationStore = new AsyncLocalStorage<ExtensionInvocation>();
 const extensionEventCallbacks = new Map<string, Set<(payload: unknown) => void>>();
 const fetchResponseBodies = new Map<string, FetchResponseBodyStream>();
 const STREAM_CHUNK_BYTES = 64 * 1024;
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function likelyCauseForExtensionError(error: unknown): string | null {
+  const message = errorMessage(error);
+  if (message.includes("require is not defined")) {
+    return "Code crossed an ESM/CommonJS boundary without an explicit require. Check the stack to identify whether this came from generated extension code, a bundled dependency, or a host/runtime module. For native or WASM CommonJS packages, prefer dependencyMode auto/external and default imports.";
+  }
+  if (message.includes("Cannot find module") || message.includes("ERR_MODULE_NOT_FOUND")) {
+    return "A runtime dependency was not installed or was externalized without being available in the extension runtime node_modules.";
+  }
+  if (message.includes("Named export") && message.includes("not found")) {
+    return "Generated ESM code used a named import from an external CommonJS package. Use a default import and destructure from it.";
+  }
+  if (message.includes(".node") || message.includes("invalid ELF") || message.includes("NODE_MODULE_VERSION")) {
+    return "A native dependency could not load for this Node/Electron runtime. Reinstall or rebuild the dependency for the active runtime.";
+  }
+  return null;
+}
+
+function extensionRuntimeError(
+  phase: ExtensionRuntimePhase,
+  error: unknown,
+  fields: Record<string, unknown>,
+): Error {
+  const likelyCause = likelyCauseForExtensionError(error);
+  const detail = Object.entries(fields)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(" ");
+  const message = [
+    `[ExtensionRuntime:${phase}] ${detail ? `${detail} ` : ""}${errorMessage(error)}`,
+    likelyCause ? `Likely cause: ${likelyCause}` : null,
+  ].filter(Boolean).join("\n");
+  const wrapped = new Error(message);
+  if (error instanceof Error) {
+    (wrapped as Error & { cause?: unknown }).cause = error;
+  }
+  const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+  if (typeof code === "string") {
+    (wrapped as NodeJS.ErrnoException).code = code;
+  }
+  if (error instanceof Error && error.stack) {
+    wrapped.stack = `${wrapped.message}\nCaused by: ${error.stack}`;
+  }
+  return wrapped;
+}
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
@@ -580,13 +630,27 @@ function settleWaitUntil(waitUntil: Promise<unknown>[]): void {
 async function main(): Promise<void> {
   runtimeBridge = await connectRuntimeBridge();
   const bundlePath = requiredEnv("NATSTACK_EXTENSION_BUNDLE_PATH");
+  const extensionName = requiredEnv("NATSTACK_EXTENSION_NAME");
   installCommonJsGlobals(bundlePath);
-  const mod = await import(pathToFileURL(bundlePath).href);
+  let mod: Awaited<ReturnType<typeof importExtensionModule>>;
+  try {
+    mod = await importExtensionModule(bundlePath);
+  } catch (err) {
+    throw extensionRuntimeError("runtime-import", err, { extension: extensionName, bundlePath });
+  }
   const ctx = createContext();
-  const api = typeof mod.activate === "function" ? await mod.activate(ctx) : undefined;
+  let api: unknown;
+  try {
+    api = typeof mod["activate"] === "function" ? await mod["activate"](ctx) : undefined;
+  } catch (err) {
+    throw extensionRuntimeError("activate", err, { extension: extensionName, bundlePath });
+  }
   const apiObject = api && typeof api === "object" ? api as Record<string, unknown> : {};
   const methods = Object.keys(apiObject).filter((key) => typeof apiObject[key] === "function");
-  const fetchHandler = typeof mod.default?.fetch === "function" ? mod.default.fetch.bind(mod.default) : null;
+  const defaultExport = mod["default"] as { fetch?: unknown } | undefined;
+  const fetchHandler = typeof defaultExport?.fetch === "function"
+    ? defaultExport.fetch.bind(defaultExport)
+    : null;
 
   runtimeBridge.exposeMethod("extension.invoke", async (method: string, args: unknown[], invocation: ExtensionInvocation) => {
     return invocationStore.run(invocation, async () => {
@@ -598,7 +662,15 @@ async function main(): Promise<void> {
         err.code = "ENOMETHOD";
         throw err;
       }
-      return fn(...args);
+      try {
+        return await fn(...args);
+      } catch (err) {
+        throw extensionRuntimeError("invoke", err, {
+          extension: extensionName,
+          method,
+          caller: invocation.caller.callerId,
+        });
+      }
     });
   });
 
@@ -637,7 +709,16 @@ async function main(): Promise<void> {
           },
         };
         try {
-          const response = await fetchHandler(request, fetchCtx);
+          let response: Response;
+          try {
+            response = await fetchHandler(request, fetchCtx);
+          } catch (err) {
+            throw extensionRuntimeError("fetch", err, {
+              extension: extensionName,
+              method: requestEnvelope.method,
+              url: requestEnvelope.url,
+            });
+          }
           return {
             status: response.status,
             headers: Object.fromEntries(response.headers.entries()),
@@ -663,7 +744,8 @@ async function main(): Promise<void> {
 
   process.on("message", (message: ChildMessage) => {
     if (message.type === "shutdown") {
-      void Promise.resolve(mod.deactivate?.())
+      const deactivate = mod["deactivate"];
+      void Promise.resolve(typeof deactivate === "function" ? deactivate() : undefined)
         .catch((err) => console.error("[ExtensionRuntime] deactivate threw:", err))
         .finally(() => {
           disposeSubscriptions();
@@ -676,6 +758,10 @@ async function main(): Promise<void> {
     console.error("[ExtensionRuntime] Failed to report initial health:", err);
   });
   await rpcCall("extensions.ready", [{ methods, hasFetch: !!fetchHandler }]);
+}
+
+function importExtensionModule(bundlePath: string): Promise<Record<string, any>> {
+  return import(pathToFileURL(bundlePath).href) as Promise<Record<string, any>>;
 }
 
 function installCommonJsGlobals(bundlePath: string): void {

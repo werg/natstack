@@ -10,12 +10,14 @@ vi.mock("@natstack/shared/envPaths", () => ({
   getUserDataPath: vi.fn().mockReturnValue("/tmp/test-extdeps"),
 }));
 
-vi.mock("child_process", () => ({
-  execSync: vi.fn(),
+vi.mock("@natstack/shared/npmInstaller", () => ({
+  runNpmInstall: vi.fn((cwd: string) => {
+    fs.mkdirSync(path.join(cwd, "node_modules"), { recursive: true });
+  }),
 }));
 
 import { PackageGraph, type GraphNode } from "./packageGraph.js";
-import { collectTransitiveExternalDeps } from "./externalDeps.js";
+import { collectTransitiveExternalDeps, ensureExternalDeps } from "./externalDeps.js";
 
 /** Helper: create a minimal GraphNode. */
 function makeNode(
@@ -242,5 +244,21 @@ describe("collectTransitiveExternalDeps", () => {
     expect(deps).toHaveProperty("zod", "^3.0.0");
     expect(deps).toHaveProperty("react", "^18.0.0");
     expect(deps).toHaveProperty("axios", "^1.0.0");
+  });
+});
+
+describe("ensureExternalDeps", () => {
+  it("reinstalls a cache entry when the ready sentinel exists but node_modules is missing", async () => {
+    fs.rmSync("/tmp/test-extdeps", { recursive: true, force: true });
+    const first = await ensureExternalDeps({ leftpad: "1.0.0" });
+    expect(fs.existsSync(first)).toBe(true);
+
+    const cacheDir = path.dirname(first);
+    fs.rmSync(first, { recursive: true, force: true });
+    expect(fs.existsSync(path.join(cacheDir, ".ready"))).toBe(true);
+
+    const repaired = await ensureExternalDeps({ leftpad: "1.0.0" });
+    expect(repaired).toBe(first);
+    expect(fs.existsSync(repaired)).toBe(true);
   });
 });

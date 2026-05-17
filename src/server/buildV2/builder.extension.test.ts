@@ -84,6 +84,7 @@ describe("buildUnit extension builds", () => {
       name: "@workspace-extensions/hello",
       sourcemap: true,
       runtimeDepsKey: null,
+      extensionRuntimeAbi: "2",
     });
     expect(fs.readFileSync(path.join(result.dir, "package.json"), "utf8")).toBe('{"type":"module"}');
     expect(result.bundle).toContain("ping() {");

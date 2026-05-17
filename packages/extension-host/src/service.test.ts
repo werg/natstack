@@ -31,7 +31,7 @@ function makeHost(overrides: {
   extensionTransport?: { call: ReturnType<typeof vi.fn> };
   installed?: boolean;
   enabled?: boolean;
-  status?: "running" | "stopped" | "building" | "error";
+  status?: "running" | "stopped" | "building" | "error" | "pending-approval";
   activeBundleKey?: string | null;
 } = {}) {
   const statePath = tempDir();
@@ -65,7 +65,11 @@ function makeHost(overrides: {
     getBuild: vi.fn(async () => ({
       bundlePath: path.join(statePath, "builds", "candidate-key", "bundle.js"),
       dir: path.join(statePath, "builds", "candidate-key"),
-      metadata: { ev: "ev-candidate", runtimeDepsKey: "runtime-candidate" },
+      metadata: {
+        ev: "ev-candidate",
+        runtimeDepsKey: "runtime-candidate",
+        extensionRuntimeAbi: "2",
+      },
     })),
     getBuildByKey: vi.fn((key: string) => key === "bundle-key" || key === "candidate-key"
       ? {
@@ -74,6 +78,7 @@ function makeHost(overrides: {
           metadata: {
             ev: key === "candidate-key" ? "ev-candidate" : (overrides.activeEv ?? "ev-current"),
             runtimeDepsKey: key === "candidate-key" ? "runtime-candidate" : "runtime-key",
+            extensionRuntimeAbi: "2",
           },
         }
       : null),
@@ -227,6 +232,29 @@ describe("ExtensionHost built-in extension bootstrap", () => {
       bundlePath: expect.stringContaining("candidate-key"),
     }));
   });
+
+  it("builds and activates when enabling an installed extension without an active bundle", async () => {
+    const { host, buildSystem, extensionNode } = makeHost({
+      activeBundleKey: null,
+      enabled: false,
+      status: "pending-approval",
+    });
+    const start = vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
+
+    await host.setEnabled({ callerId: "panel-1", callerKind: "panel" }, extensionNode.name, true);
+
+    expect(buildSystem.getBuild).toHaveBeenCalledWith(extensionNode.name, "main");
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({
+      name: extensionNode.name,
+      bundlePath: expect.stringContaining("candidate-key"),
+    }));
+    expect(host.registry.get(extensionNode.name)).toMatchObject({
+      enabled: true,
+      activeBundleKey: "candidate-key",
+      status: "building",
+      lastError: null,
+    });
+  });
 });
 
 describe("ExtensionHost update", () => {
@@ -327,6 +355,33 @@ describe("ExtensionHost activation", () => {
         method: "blame",
       }),
     );
+  });
+
+  it("records extension invocation failures with stack context", async () => {
+    const err = new Error("boom");
+    (err as NodeJS.ErrnoException).code = "EBOOM";
+    const extensionTransport = { call: vi.fn(async () => { throw err; }) };
+    const { host, extensionNode } = makeHost({ extensionTransport });
+    vi.spyOn(host.processes, "isRunning").mockReturnValue(true);
+
+    await expect(
+      host.invoke({ callerId: "panel-1", callerKind: "panel" }, extensionNode.name, "blame", []),
+    ).rejects.toThrow(`Extension ${extensionNode.name}.blame invocation failed: boom`);
+
+    expect(host.listWorkspaceUnitLogs(extensionNode.name, { level: "error" })).toEqual([
+      expect.objectContaining({
+        level: "error",
+        source: "console",
+        message: expect.stringContaining("invocation failed: boom"),
+        fields: expect.objectContaining({
+          method: "blame",
+          callerId: "panel-1",
+          callerKind: "panel",
+          code: "EBOOM",
+          stack: expect.stringContaining("Caused by: Error: boom"),
+        }),
+      }),
+    ]);
   });
 
   it("prompts to install a pending workspace extension on first invoke", async () => {

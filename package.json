@@ -40,6 +40,7 @@
     "type-check": "tsc --noEmit && tsc --project tsconfig.workspace.json",
     "type-check:watch": "tsc --noEmit --watch --preserveWatchOutput",
     "test": "pnpm run check:runtime-docs && vitest run",
+    "test:extension-smoke": "NODE_ENV=development node build.mjs && NATSTACK_RUN_SERVER_INTEGRATION=1 vitest run tests/extension-image-service.integration.test.ts",
     "test:watch": "vitest",
     "test:e2e": "playwright test -c tests/config/playwright.config.ts",
     "test:e2e:headed": "playwright test -c tests/config/playwright.config.ts --headed",

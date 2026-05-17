@@ -9,6 +9,7 @@ import type { TokenManager } from "@natstack/shared/tokenManager";
 import type { EventName } from "@natstack/shared/events";
 import type { NotificationPayload } from "@natstack/shared/events";
 import type { EventService, Subscriber } from "@natstack/shared/eventsService";
+import { EXTENSION_RUNTIME_ABI_VERSION } from "@natstack/shared/extensionRuntimeAbi";
 import type {
   PendingExtensionApproval,
   PendingExtensionApprovalAction,
@@ -34,8 +35,8 @@ interface BuildSystemLike {
   getBuild(
     unitPath: string,
     ref?: string,
-  ): Promise<{ bundlePath: string; dir: string; metadata: { ev: string; runtimeDepsKey?: string | null } }>;
-  getBuildByKey?(key: string): { bundlePath: string; dir: string; metadata: { ev: string; runtimeDepsKey?: string | null } } | null;
+  ): Promise<{ bundlePath: string; dir: string; metadata: ExtensionBuildMetadataLike }>;
+  getBuildByKey?(key: string): { bundlePath: string; dir: string; metadata: ExtensionBuildMetadataLike } | null;
   getEffectiveVersion(unitName: string): string | null;
   getExternalDeps(unitName: string): Record<string, string>;
   getGraph(): {
@@ -50,6 +51,13 @@ interface BuildSystemLike {
     }>;
   };
   onPushBuild(callback: (source: string) => void): void;
+}
+
+interface ExtensionBuildMetadataLike {
+  ev: string;
+  runtimeDepsKey?: string | null;
+  extensionRuntimeAbi?: string | null;
+  extensionExternalDeps?: Record<string, string>;
 }
 
 interface ExtensionTransportLike {
@@ -202,7 +210,12 @@ export class ExtensionHost {
     for (const entry of this.registry.list()) {
       if (!entry.enabled || !entry.activeBundleKey) continue;
       try {
-        await this.activate(entry.name);
+        const node = this.findExtensionNode(entry.name);
+        if (this.needsBuildRefresh(entry, node)) {
+          await this.buildAndActivate(entry.name, entry.source.ref);
+        } else {
+          await this.activate(entry.name);
+        }
       } catch (err) {
         this.registry.patch(entry.name, {
           status: "error",
@@ -339,7 +352,44 @@ export class ExtensionHost {
     if (!this.processes.isRunning(entry.name)) {
       throw new ServiceError("extensions", "invoke", `Extension is not running: ${entry.name}`, "ENOEXT");
     }
-    return this.deps.extensionTransport.call(entry.name, "extension.invoke", method, args, invocation);
+    try {
+      return await this.deps.extensionTransport.call(
+        entry.name,
+        "extension.invoke",
+        method,
+        args,
+        invocation,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const wrapped = new Error(
+        `Extension ${entry.name}.${method} invocation failed: ${message}`,
+      );
+      if (error instanceof Error) {
+        (wrapped as Error & { cause?: unknown }).cause = error;
+        if (error.stack) {
+          wrapped.stack = `${wrapped.message}\nCaused by: ${error.stack}`;
+        }
+      }
+      const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+      if (typeof code === "string") {
+        (wrapped as NodeJS.ErrnoException).code = code;
+      }
+      this.recordExtensionLog(
+        entry.name,
+        "error",
+        wrapped.message,
+        {
+          method,
+          callerId: ctx.callerId,
+          callerKind: ctx.callerKind,
+          code: typeof code === "string" ? code : undefined,
+          stack: wrapped.stack,
+        },
+        "console",
+      );
+      throw wrapped;
+    }
   }
 
   private async ensureAvailableForInvoke(
@@ -708,9 +758,20 @@ export class ExtensionHost {
 
   async setEnabled(ctx: ServiceContext, name: string, enabled: boolean): Promise<void> {
     await this.requestManagementApproval(ctx, enabled ? "enable" : "disable", name);
-    this.registry.patch(name, { enabled, status: enabled ? "stopped" : "stopped" });
-    if (enabled) await this.activate(name);
-    else await this.processes.stop(name);
+    if (!enabled) {
+      this.registry.patch(name, { enabled: false, status: "stopped" });
+      await this.processes.stop(name);
+      return;
+    }
+
+    const entry = this.registry.get(name);
+    if (!entry?.activeBundleKey) {
+      await this.buildAndActivate(name, entry?.source.ref);
+      return;
+    }
+
+    this.registry.patch(name, { enabled: true, status: "stopped" });
+    await this.activate(name);
   }
 
   async update(ctx: ServiceContext, name: string): Promise<void> {
@@ -726,6 +787,7 @@ export class ExtensionHost {
       && shallowRecordEqual(entry.activeDependencyEvs, currentDependencyEvs)
       && shallowRecordEqual(entry.activeExternalDeps ?? {}, currentExternalDeps)
       && (Object.keys(currentExternalDeps).length === 0 || entry.activeRuntimeDepsKey)
+      && this.hasCurrentExtensionRuntimeAbi(entry)
     ) {
       return;
     }
@@ -1022,7 +1084,23 @@ export class ExtensionHost {
     if (!shallowRecordEqual(entry.activeDependencyEvs, this.currentDependencyEvs(node))) return true;
     const currentExternalDeps = this.currentExternalDeps(node);
     if (!shallowRecordEqual(entry.activeExternalDeps ?? {}, currentExternalDeps)) return true;
-    return Object.keys(currentExternalDeps).length > 0 && !entry.activeRuntimeDepsKey;
+    if (!this.hasCurrentExtensionRuntimeAbi(entry)) return true;
+    return Object.keys(currentExternalDeps).length > 0 && !this.hasUsableActiveRuntimeDeps(entry);
+  }
+
+  private hasCurrentExtensionRuntimeAbi(entry: RegistryEntry): boolean {
+    if (!entry.activeBundleKey) return false;
+    const build = this.deps.buildSystem.getBuildByKey?.(entry.activeBundleKey);
+    return build?.metadata.extensionRuntimeAbi === EXTENSION_RUNTIME_ABI_VERSION;
+  }
+
+  private hasUsableActiveRuntimeDeps(entry: RegistryEntry): boolean {
+    if (!entry.activeBundleKey || !entry.activeRuntimeDepsKey) return false;
+    const build = this.deps.buildSystem.getBuildByKey?.(entry.activeBundleKey);
+    if (!build) return false;
+    const externalDeps = build.metadata.extensionExternalDeps ?? {};
+    if (Object.keys(externalDeps).length === 0) return true;
+    return fs.existsSync(path.join(build.dir, "node_modules"));
   }
 
   private findExtensionNode(nameOrRepo: string) {

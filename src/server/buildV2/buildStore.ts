@@ -38,6 +38,21 @@ export interface BuildMetadata {
   sourcemap: boolean;
   framework?: string;
   runtimeDepsKey?: string | null;
+  extensionRuntimeAbi?: string | null;
+  extensionDependencyMode?: "auto" | "bundle" | "external";
+  extensionExternalDeps?: Record<string, string>;
+  extensionClassifiedDeps?: Array<{
+    name: string;
+    version: string;
+    external: boolean;
+    format: "cjs" | "esm" | "unknown";
+    reasons: string[];
+    explanation: string;
+  }>;
+  extensionSmokeTest?: {
+    mode: "child-process";
+    passed: boolean;
+  };
   builtAt: string;
 }
 

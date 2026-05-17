@@ -35,15 +35,19 @@ import {
 import * as buildStore from "./buildStore.js";
 import type { BuildResult } from "./buildStore.js";
 import {
+  analyzeExtensionDependencies,
   buildUnit,
   buildNpmLibrary,
   buildPlatformLibrary,
   initBuilder,
+  normalizeExtensionDependencyMode,
   type BuildUnitOptions,
+  type ExtensionDependencyDiagnostics,
 } from "./builder.js";
 import { PushTrigger } from "./pushTrigger.js";
-import { collectTransitiveExternalDeps } from "./externalDeps.js";
+import { collectTransitiveExternalDeps, ensureExternalDeps } from "./externalDeps.js";
 import type { GitServer } from "@natstack/git-server";
+import { EXTENSION_RUNTIME_ABI_VERSION } from "@natstack/shared/extensionRuntimeAbi";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -54,6 +58,15 @@ export interface AboutPageMeta {
   title: string;
   description?: string;
   hiddenInLauncher: boolean;
+}
+
+export interface ExtensionDoctorReport {
+  name: string;
+  kind: "extension";
+  path: string;
+  dependencyDiagnostics: ExtensionDependencyDiagnostics;
+  buildMetadata: BuildResult["metadata"] | null;
+  checks: Array<{ name: string; status: "pass" | "warn" | "fail"; message: string }>;
 }
 
 export type { BuildUnitOptions } from "./builder.js";
@@ -77,6 +90,9 @@ export interface BuildSystemV2 {
 
   /** Get external npm runtime/build dependencies for a unit. */
   getExternalDeps(unitName: string): Record<string, string>;
+
+  /** Inspect an extension manifest, dependency routing, cached metadata, and smoke/build status. */
+  doctorExtension(unitName: string): Promise<ExtensionDoctorReport>;
 
   /** Force recompute all effective versions */
   recompute(): Promise<ChangeSet>;
@@ -352,6 +368,96 @@ export async function initBuildSystemV2(
       const node = resolveUnit(currentGraph, unitName, workspaceRoot);
       if (!node) return {};
       return collectTransitiveExternalDeps(node, currentGraph, workspaceRoot, appNodeModuleRoots);
+    },
+
+    async doctorExtension(unitName: string): Promise<ExtensionDoctorReport> {
+      const node = resolveUnit(currentGraph, unitName, workspaceRoot);
+      if (!node) {
+        throw new Error(`Unknown extension: ${unitName}`);
+      }
+      if (node.kind !== "extension") {
+        throw new Error(`Build unit is not an extension: ${unitName}`);
+      }
+
+      const dependencyMode = normalizeExtensionDependencyMode(node.manifest.extension?.dependencyMode);
+      const externalDeps = collectTransitiveExternalDeps(
+        node,
+        currentGraph,
+        workspaceRoot,
+        appNodeModuleRoots,
+      );
+      const nodeModulesDir = await ensureExternalDeps(externalDeps);
+      const nodePaths = [
+        ...(nodeModulesDir ? [nodeModulesDir] : []),
+        ...appNodeModuleRoots,
+      ];
+      const dependencyDiagnostics = analyzeExtensionDependencies(
+        externalDeps,
+        nodePaths,
+        dependencyMode,
+      );
+      const ev = currentEvMap[node.name] ?? null;
+      const buildKey = ev
+        ? computeBuildKey(
+            node.name,
+            `${ev}:extension-runtime-abi:${EXTENSION_RUNTIME_ABI_VERSION}`,
+            true,
+          )
+        : null;
+      const build = buildKey ? buildStore.get(buildKey) : null;
+      const checks: ExtensionDoctorReport["checks"] = [
+        { name: "manifest", status: "pass", message: "Extension manifest was discovered." },
+        {
+          name: "dependency-mode",
+          status: "pass",
+          message: `dependencyMode=${dependencyDiagnostics.dependencyMode}`,
+        },
+        {
+          name: "runtime-deps",
+          status: "pass",
+          message: Object.keys(dependencyDiagnostics.runtimeExternalDeps).length
+            ? `External runtime deps: ${Object.keys(dependencyDiagnostics.runtimeExternalDeps).join(", ")}`
+            : "No external runtime deps are required.",
+        },
+        {
+          name: "build-cache",
+          status: build ? "pass" : "warn",
+          message: build
+            ? `Cached build found with ABI ${build.metadata.extensionRuntimeAbi ?? "unknown"}.`
+            : "No cached build found for the current runtime ABI.",
+        },
+      ];
+      if (build?.metadata.extensionSmokeTest?.passed) {
+        checks.push({
+          name: "smoke-test",
+          status: "pass",
+          message: `Build smoke test passed in ${build.metadata.extensionSmokeTest.mode}.`,
+        });
+      } else if (build) {
+        checks.push({
+          name: "smoke-test",
+          status: "warn",
+          message: "Cached build has no recorded smoke-test result.",
+        });
+      }
+      for (const dep of dependencyDiagnostics.classifiedDeps) {
+        checks.push({
+          name: `dependency:${dep.name}`,
+          status: dep.reasons.includes("missing-package-json") || dep.reasons.includes("unreadable-package-json")
+            ? "warn"
+            : "pass",
+          message: dep.explanation,
+        });
+      }
+
+      return {
+        name: node.name,
+        kind: "extension",
+        path: node.relativePath,
+        dependencyDiagnostics,
+        buildMetadata: build?.metadata ?? null,
+        checks,
+      };
     },
 
     async recompute(): Promise<ChangeSet> {

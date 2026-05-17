@@ -285,7 +285,14 @@ async function ensureDepsInstalled(
 
   // Check sentinel
   if (fs.existsSync(sentinelPath)) {
-    return nodeModulesDir;
+    if (fs.existsSync(nodeModulesDir)) {
+      return nodeModulesDir;
+    }
+    try {
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+    } catch (cleanupError) {
+      warnCleanupFailure(cacheDir, cleanupError);
+    }
   }
 
   // Install to temp dir, then atomically rename. Use crypto.randomBytes for

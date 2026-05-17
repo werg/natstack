@@ -11,6 +11,17 @@ function tinyPng(): Uint8Array {
   return new Uint8Array(Buffer.from(TINY_PNG_BASE64, "base64"));
 }
 
+async function photonPng(): Promise<Uint8Array> {
+  const photon = await loadPhoton();
+  if (!photon) throw new Error("photon test dependency did not load");
+  const image = new photon.PhotonImage(new Uint8Array([255, 0, 0, 255]), 1, 1);
+  try {
+    return image.get_bytes();
+  } finally {
+    image.free();
+  }
+}
+
 async function api() {
   return activate({ log: { info: () => {} } });
 }
@@ -28,10 +39,14 @@ describe("@workspace-extensions/image-service", () => {
 
   it("resizes tiny PNGs without changing dimensions", async () => {
     const service = await api();
-    const result = await service.resize(tinyPng(), "image/png", undefined);
+    const result = await service.resize(await photonPng(), "image/png", undefined);
 
     expect(result.mimeType).toBe("image/png");
     expect(result.wasResized).toBe(false);
+    expect(result.originalWidth).toBe(1);
+    expect(result.originalHeight).toBe(1);
+    expect(result.width).toBe(1);
+    expect(result.height).toBe(1);
     expect(result.dimensionNote).toBeUndefined();
     expect(result.data).toBeInstanceOf(Uint8Array);
   });
@@ -49,5 +64,11 @@ describe("@workspace-extensions/image-service", () => {
   it("keeps shared image helpers loadable", () => {
     expect(detectMimeFromBytes(tinyPng())).toBe("image/png");
     expect(typeof loadPhoton).toBe("function");
+  });
+
+  it("loads the CommonJS/WASM photon dependency", async () => {
+    await expect(loadPhoton()).resolves.toMatchObject({
+      PhotonImage: expect.any(Function),
+    });
   });
 });
