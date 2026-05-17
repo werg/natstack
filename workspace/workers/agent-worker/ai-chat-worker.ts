@@ -6,7 +6,7 @@ const OPENAI_CODEX_ACCOUNT_CLAIM = "https://api.openai.com/auth";
 /**
  * AiChatWorker — The default AI chat Durable Object.
  *
- * Pi-native: embeds `@mariozechner/pi-agent-core`'s `Agent` in-process via
+ * Pi-native: embeds `@earendil-works/pi-agent-core`'s `Agent` in-process via
  * the `PiRunner` harness (see `AgentWorkerBase`). The system prompt is
  * loaded from `meta/AGENTS.md` via the workspace.* RPC service;
  * skill metadata is merged in from each skill's SKILL.md.

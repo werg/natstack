@@ -2,7 +2,7 @@
 
 In-process Pi runtime for the NatStack agent worker DO.
 
-This package wraps `@mariozechner/pi-agent-core` + `@mariozechner/pi-ai`
+This package wraps `@earendil-works/pi-agent-core` + `@earendil-works/pi-ai`
 ("Pi") for use inside NatStack's agentic Durable Objects. It provides:
 
 - **`PiRunner`** — Worker DO companion class that owns one Pi `Agent`
